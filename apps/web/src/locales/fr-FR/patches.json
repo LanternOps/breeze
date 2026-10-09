@@ -72,6 +72,7 @@
       "queued": "Rapport de conformité {{reportId}} en file d’attente. Préparation du téléchargement...",
       "ready": "Le rapport de conformité {{reportId}} est prêt. Téléchargement en cours...",
       "failed": "Rapport de conformité {{reportId}} échoué",
+      "expired": "Le rapport de conformité {{reportId}} a expiré. Générez un nouveau rapport pour le télécharger.",
       "checkFailed": "Impossible de vérifier le statut du rapport",
       "noReportId": "Le rapport était mis en file d’attente mais aucun rapport ID n’a été retourné"
     },

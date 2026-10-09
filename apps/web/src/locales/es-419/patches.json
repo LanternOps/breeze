@@ -72,6 +72,7 @@
       "queued": "Informe de cumplimiento {{reportId}} en cola. Preparando descarga...",
       "ready": "El informe de cumplimiento {{reportId}} está listo. Iniciando descarga...",
       "failed": "Error en el informe de cumplimiento {{reportId}}",
+      "expired": "El informe de cumplimiento {{reportId}} venció. Genera un informe nuevo para descargarlo.",
       "checkFailed": "No se pudo verificar el estado del informe",
       "noReportId": "El informe estaba en cola pero no se devolvió ningún informe ID"
     },

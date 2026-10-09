@@ -38,6 +38,7 @@ const dbCtx = await vi.hoisted(async () => {
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(),
   writeFile: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -141,7 +142,7 @@ vi.mock('../services/siteScope', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 
 import { db, withSystemDbAccessContext } from '../db';
-import { writeFile } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import {
   enqueuePatchComplianceReport,
   formatComplianceCsv,
@@ -313,6 +314,46 @@ describe('patch compliance report worker authority', () => {
 
     expect(db.select).toHaveBeenCalledTimes(1);
     expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('removes the file it just wrote when the report row was deleted during generation', async () => {
+    installSelects();
+    let updateCall = 0;
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        state.updateSets.push(values);
+        const call = updateCall++;
+        return {
+          where: vi.fn(() => ({
+            // First update is the claim; the second is the completion write,
+            // which finds no row because the org was erased meanwhile.
+            returning: vi.fn(async () => (call === 0 ? [{ id: REPORT_ID }] : [])),
+          })),
+        };
+      }),
+    }) as never);
+
+    await expect(processPatchComplianceReportJob({
+      type: 'generate-compliance-report',
+      reportId: REPORT_ID,
+    })).resolves.toBeNull();
+
+    expect(writeFile).toHaveBeenCalledOnce();
+    const written = vi.mocked(writeFile).mock.calls[0]![0];
+    expect(String(written)).toMatch(new RegExp(`${REPORT_ID}\\.csv$`));
+    expect(unlink).toHaveBeenCalledWith(written);
+  });
+
+  it('keeps the file when the completion write finds the row', async () => {
+    installSelects();
+
+    await processPatchComplianceReportJob({
+      type: 'generate-compliance-report',
+      reportId: REPORT_ID,
+    });
+
+    expect(writeFile).toHaveBeenCalledOnce();
+    expect(unlink).not.toHaveBeenCalled();
   });
 
   it('runs the Redis-down inline fallback in a fresh system context, not the request transaction', async () => {

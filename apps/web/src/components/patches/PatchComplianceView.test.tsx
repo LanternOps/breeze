@@ -96,6 +96,36 @@ describe('PatchComplianceView', () => {
     expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
   });
 
+  it('stops polling and shows the expired state when the report file has expired', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      orgState.currentOrgId = 'org-1';
+      fetchMock.mockImplementation(
+        emptyComplianceImpl((url) => {
+          if (url.startsWith('/patches/compliance/report?')) return makeJsonResponse({ reportId: 'rep-1' });
+          if (url === '/patches/compliance/report/rep-1') {
+            return makeJsonResponse({ data: { id: 'rep-1', status: 'expired', downloadUrl: null } });
+          }
+          return null;
+        })
+      );
+
+      render(<PatchComplianceView ringId={null} />);
+      fireEvent.click(await screen.findByRole('button', { name: /Export/i }));
+      await screen.findByText(/Compliance report rep-1 queued/i);
+
+      await vi.advanceTimersByTimeAsync(3100);
+
+      expect(await screen.findByText(/Compliance report rep-1 has expired/i)).toBeTruthy();
+      const statusCalls = () => fetchMock.mock.calls.filter((c) => String(c[0]) === '/patches/compliance/report/rep-1').length;
+      const callsAfterExpiry = statusCalls();
+      await vi.advanceTimersByTimeAsync(6100);
+      expect(statusCalls()).toBe(callsAfterExpiry);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('surfaces an error toast when the export request fails (HTTP 500)', async () => {
     orgState.currentOrgId = 'org-1';
     fetchMock.mockImplementation(

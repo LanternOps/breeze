@@ -72,6 +72,7 @@
       "queued": "Relatório de conformidade {{reportId}} enfileirado. Preparando download...",
       "ready": "Relatório de conformidade {{reportId}} pronto. Iniciando download...",
       "failed": "Relatório de conformidade {{reportId}} falhou",
+      "expired": "O relatório de conformidade {{reportId}} expirou. Gere um novo relatório para baixá-lo.",
       "checkFailed": "Falha ao verificar o status do relatório",
       "noReportId": "O relatório foi enfileirado, mas nenhum ID de relatório foi retornado"
     },

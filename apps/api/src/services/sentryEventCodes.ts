@@ -306,6 +306,12 @@ export const SENTRY_EVENT_CODES = [
    * owner left on disk until the next orphan sweep succeeds.
    */
   'screenshot_file_removal_failed',
+  /**
+   * Patch compliance report files could not be removed after their rows were
+   * deleted (org erasure) or by the retention job's orphan sweep. The bytes
+   * stay on disk with no row until a later sweep succeeds.
+   */
+  'patch_report_file_removal_failed',
 
   // --- agent binary serving ---------------------------------------------
   /** No promoted `agent_versions` row, so downloads fall back to the

@@ -1,0 +1,13 @@
+-- Patch compliance report retention: the `expired` report status.
+--
+-- The patch report retention job (jobs/patchReportRetention.ts) removes a
+-- report's CSV once it is past PATCH_REPORT_RETENTION_DAYS and marks the row
+-- `expired` (output_path cleared), so the status and download endpoints can
+-- say the file is gone rather than "not found".
+--
+-- Enum add ONLY, in its own file: a label added by ALTER TYPE cannot be used
+-- until the transaction that added it commits (precedent:
+-- 2026-12-17-100000-contract-line-type-hour-block.sql). No DML, so no
+-- breeze.scope election. Idempotent via IF NOT EXISTS. ADD VALUE appends, which
+-- is why the Drizzle list in apps/api/src/db/schema/patches.ts names it last.
+ALTER TYPE public.patch_compliance_report_status ADD VALUE IF NOT EXISTS 'expired';

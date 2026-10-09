@@ -333,6 +333,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               }
               setBulkError(report?.errorMessage || t('patchComplianceView.export.failed', { reportId }));
               setBulkSuccess(undefined);
+            } else if (report?.status === 'expired') {
+              // The report file is past its retention window and was removed.
+              if (reportPollTimerRef.current) {
+                clearInterval(reportPollTimerRef.current);
+                reportPollTimerRef.current = null;
+              }
+              setBulkError(t('patchComplianceView.export.expired', { reportId }));
+              setBulkSuccess(undefined);
             }
           } catch (err) {
             if (reportPollTimerRef.current) {

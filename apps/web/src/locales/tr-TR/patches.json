@@ -72,6 +72,7 @@
       "queued": "Uyumluluk raporu {{reportId}} sıraya alındı. İndirmeye hazırlanıyor...",
       "ready": "Uyumluluk raporu {{reportId}} hazır. İndirme başlatılıyor...",
       "failed": "Uyumluluk raporu {{reportId}} başarısız oldu",
+      "expired": "{{reportId}} numaralı uyumluluk raporunun süresi doldu. İndirmek için yeni bir rapor oluşturun.",
       "checkFailed": "Rapor durumu kontrol edilemedi",
       "noReportId": "Rapor sıraya alındı ancak rapor kimliği döndürülmedi"
     },

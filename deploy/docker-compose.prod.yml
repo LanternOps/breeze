@@ -108,6 +108,8 @@ x-api-env: &api-env
   ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
   MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+  # Days a generated patch compliance report file is kept (minimum 1).
+  PATCH_REPORT_RETENTION_DAYS: ${PATCH_REPORT_RETENTION_DAYS:-30}
   # Scratch directory for bare-metal-recovery bundle/ISO builds (a 45-65MB
   # helper binary plus a tarball or ISO, written under mkdtemp). Both the api
   # and worker containers below mount /tmp as a 64MB tmpfs, so building

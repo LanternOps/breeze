@@ -54,6 +54,7 @@ import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
 import { removeScreenshotFiles } from './screenshotFiles';
+import { removePatchReportFiles } from './patchReportFiles';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
 import {
   captureBackupErasureFence,
@@ -1656,6 +1657,34 @@ async function deleteAiScreenshotsCascadeStep(orgId: string): Promise<number> {
 }
 
 /**
+ * Walk step for `patch_compliance_reports`. A completed report is a CSV under
+ * PATCH_REPORT_STORAGE_PATH that the row only points at, so deleting the rows
+ * alone left the org's report files on disk after an erasure. The DELETE
+ * returns each row's `output_path`, and the files are unlinked only once that
+ * delete has COMMITTED. A filesystem fault never fails or rolls back the
+ * erasure: `removePatchReportFiles` logs it and reports it to Sentry, and the
+ * report retention job's orphan sweep retries the leftovers.
+ */
+async function deletePatchComplianceReportsCascadeStep(orgId: string): Promise<number> {
+  const { count, reports } = await dbModule.withSystemDbAccessContext(async () => {
+    await setBackupErasureContext(orgId);
+    const result = await dbModule.db.execute(
+      sql`DELETE FROM patch_compliance_reports WHERE org_id = ${orgId} RETURNING id, output_path`,
+    );
+    return {
+      count: extractRowCount(result),
+      reports: rowsFromExecute<{ id: string; output_path: string | null }>(result)
+        .filter((row) => row.output_path)
+        .map((row) => ({ id: row.id, outputPath: row.output_path })),
+    };
+  });
+  if (reports.length > 0) {
+    await removePatchReportFiles(reports, `org erasure org=${orgId}`);
+  }
+  return count;
+}
+
+/**
  * Test seams for the erasure scenarios in backupErasureFence.integration.test.ts.
  * Never set in production code.
  */
@@ -2021,6 +2050,8 @@ export async function cascadeDeleteOrg(
         ? await deleteBackupSnapshotsCascadeStep(orgId)
         : table === 'ai_screenshots'
         ? await deleteAiScreenshotsCascadeStep(orgId)
+        : table === 'patch_compliance_reports'
+        ? await deletePatchComplianceReportsCascadeStep(orgId)
         : await dbModule.withSystemDbAccessContext(async () => {
             // Every walk transaction is marked as this org's erasure, so the
             // on-delete fence trigger records any backup source row deleted in

@@ -136,6 +136,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('unifiTelemetryWorker'),
   consumers('snmpRetention'),
   consumers('patchComplianceReportWorker'),
+  consumers('patchReportRetention'),
   consumers('reportScheduleWorker'),
   consumers('cveEnrichmentWorker'),
   consumers('wingetIndexSyncWorker'),
