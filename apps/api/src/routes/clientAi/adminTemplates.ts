@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { clientAiPromptTemplates } from '../../db/schema/clientAi';
 import { organizations } from '../../db/schema/orgs';
@@ -13,6 +13,7 @@ import {
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
 import { resolveScopedOrgId } from '../c2c/helpers';
+import { notHiddenOrgType } from '../../services/unassignedPool/visibility';
 import { templateBodySchema, templateUpdateSchema, templateListQuerySchema } from './schemas';
 
 /**
@@ -30,10 +31,12 @@ import { templateBodySchema, templateUpdateSchema, templateListQuerySchema } fro
  * a template by delete + recreate. Keeps the dual-axis invariants trivial.
  *
  * Permissions: reads require client_ai_templates:read; create/update/delete
- * require client_ai_templates:write AND an MFA-assured session. Both gates run
- * before body validation and before any DB access. The partner-wide
+ * require client_ai_templates:write AND an MFA-assured session (permission
+ * first, then MFA, as in admin.ts). A denied request is refused before body
+ * validation and before any template read or write. The partner-wide
  * capability gate (canManagePartnerWidePolicies) and resolveScopedOrgId still
- * apply on top.
+ * apply on top. GET /templates/org-options feeds the create dialog's scope
+ * picker and is gated on client_ai_templates:write.
  */
 
 export const clientAiAdminTemplateRoutes = new Hono();
@@ -46,6 +49,7 @@ const requireTemplatesWrite = requirePermission(
   PERMISSIONS.CLIENT_AI_TEMPLATES_WRITE.resource,
   PERMISSIONS.CLIENT_AI_TEMPLATES_WRITE.action
 );
+const requireTemplatesMfa = requireMfa();
 
 type TemplateAuth = {
   scope: 'system' | 'partner' | 'organization';
@@ -97,11 +101,29 @@ clientAiAdminTemplateRoutes.get(
   }
 );
 
+// ── GET /templates/org-options ────────────────────────────────────────────────
+// Org choices for the create dialog's scope picker: id + name only, for the
+// orgs the caller can reach. Deliberately not GET /orgs (organizations:read),
+// which also returns tenant mappings, consent state and usage cost — a
+// template author does not need those. Same app-layer scoping as GET /orgs:
+// orgCondition (undefined for system scope), the hidden-org exclusion, and the
+// optional ?orgId= narrowing that fetchWithAuth injects for the active org.
+clientAiAdminTemplateRoutes.get('/templates/org-options', requireTemplatesWrite, async (c) => {
+  const auth = c.get('auth');
+  const orgFilter = c.req.query('orgId') || null;
+  const rows = await db
+    .select({ orgId: organizations.id, orgName: organizations.name })
+    .from(organizations)
+    .where(and(auth.orgCondition?.(organizations.id), notHiddenOrgType()))
+    .orderBy(asc(organizations.name));
+  return c.json({ data: rows.filter((r) => !orgFilter || r.orgId === orgFilter) });
+});
+
 // ── POST /templates ───────────────────────────────────────────────────────────
 clientAiAdminTemplateRoutes.post(
   '/templates',
   requireTemplatesWrite,
-  requireMfa(),
+  requireTemplatesMfa,
   zValidator('json', templateBodySchema),
   async (c) => {
     const auth = c.get('auth') as TemplateAuth & Parameters<typeof resolveScopedOrgId>[0];
@@ -167,7 +189,7 @@ clientAiAdminTemplateRoutes.post(
 clientAiAdminTemplateRoutes.put(
   '/templates/:id',
   requireTemplatesWrite,
-  requireMfa(),
+  requireTemplatesMfa,
   zValidator('json', templateUpdateSchema),
   async (c) => {
     const auth = c.get('auth') as TemplateAuth;
@@ -216,7 +238,7 @@ clientAiAdminTemplateRoutes.put(
 );
 
 // ── DELETE /templates/:id ─────────────────────────────────────────────────────
-clientAiAdminTemplateRoutes.delete('/templates/:id', requireTemplatesWrite, requireMfa(), async (c) => {
+clientAiAdminTemplateRoutes.delete('/templates/:id', requireTemplatesWrite, requireTemplatesMfa, async (c) => {
   const auth = c.get('auth') as TemplateAuth;
   const id = c.req.param('id')!;
 

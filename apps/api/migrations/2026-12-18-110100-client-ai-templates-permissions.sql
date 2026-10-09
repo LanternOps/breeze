@@ -2,7 +2,8 @@
 -- for the AI for Office prompt-template manager (list, create, edit and
 -- remove under /client-ai/admin/templates). Those routes were gated on the generic
 -- organizations:read / organizations:write grants. Template writes now also
--- require an MFA-assured session (enforced at the route, not here).
+-- require MFA when the caller's MFA policy requires it (requireMfa() at the
+-- route, not here).
 --
 -- Grants, matching SYSTEM_ROLES in apps/api/src/db/seed.ts:
 --
@@ -11,12 +12,14 @@
 --      client_ai_templates:write. Matching is on the EXISTING GRANT, never on
 --      a role's name, so it covers system role templates, per-partner
 --      is_system clones AND custom (is_system = FALSE) roles alike — the same
---      approach as 2026-10-27-100100-quotes-accept-permission.sql. No role
---      gains template access it did not already have through the
---      organizations grants. Partners who want template access narrower than
---      the organizations grant revoke it afterwards in the role editor.
+--      approach as 2026-10-27-100100-quotes-accept-permission.sql. This step
+--      only re-issues access a role already had through the organizations
+--      grants. Partners who want template access narrower than the
+--      organizations grant revoke it afterwards in the role editor.
 --
---   2. Built-in Org Admin gets both read and write. Matched on
+--   2. Built-in Org Admin gets both read and write. This is a deliberate
+--      widening: Org Admin holds neither organizations grant, so it had no
+--      template access before. Matched on
 --      `r.name = 'Org Admin' AND r.scope = 'organization' AND
 --      r.is_system = TRUE` with no `partner_id IS NULL` clause, as in
 --      2026-10-15-150200-pam-dedicated-permissions.sql: per-partner is_system

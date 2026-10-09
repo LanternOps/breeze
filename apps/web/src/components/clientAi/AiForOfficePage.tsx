@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { Loader2 } from "lucide-react";
 import { useHashState } from "@/lib/useHashState";
 import { usePermissions } from "@/lib/permissions";
 import OrgsTab from "./OrgsTab";
@@ -15,7 +17,9 @@ import "@/lib/i18n";
  * query params. Deep links and reloads land on the right tab.
  *
  * The Templates tab is shown only to holders of client_ai_templates:read
- * (UX only; the API enforces the same permission).
+ * (UX only; the API enforces the same permission). A #templates deep link
+ * shows a spinner while permissions load, and once they are known to lack
+ * the grant it falls back to #orgs (the URL is rewritten to match).
  */
 
 const SIMPLE_TABS = ["orgs", "sessions", "usage", "templates"] as const;
@@ -43,15 +47,27 @@ export default function AiForOfficePage() {
   );
   const { permissions, can } = usePermissions();
   const canReadTemplates = can("client_ai_templates", "read");
+  // While permissions load, a #templates deep link keeps its tab selected
+  // (next to the spinner) rather than leaving no tab active.
   const visibleTabs = SIMPLE_TABS.filter(
-    (tab) => tab !== "templates" || canReadTemplates,
+    (tab) =>
+      tab !== "templates" ||
+      canReadTemplates ||
+      (permissions === undefined && state.tab === "templates"),
   );
-  // A #templates deep link without the grant falls back to the default tab
-  // once permissions are known (while they load, nothing is rendered for it).
-  const view: TabState =
-    state.tab === "templates" && permissions !== undefined && !canReadTemplates
-      ? { tab: "orgs" }
-      : state;
+  const templatesDenied =
+    state.tab === "templates" && permissions !== undefined && !canReadTemplates;
+  const view: TabState = templatesDenied ? { tab: "orgs" } : state;
+
+  useEffect(() => {
+    if (!templatesDenied) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}#orgs`,
+    );
+    setState({ tab: "orgs" });
+  }, [templatesDenied, setState]);
 
   const switchTab = (tab: SimpleTab) => {
     window.location.hash = tab;
@@ -104,6 +120,14 @@ export default function AiForOfficePage() {
       )}
       {view.tab === "sessions" && <SessionsTab />}
       {view.tab === "usage" && <UsageTab />}
+      {view.tab === "templates" && permissions === undefined && (
+        <div
+          className="flex items-center justify-center py-12"
+          data-testid="ai-office-tab-loading"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      )}
       {view.tab === "templates" && canReadTemplates && <TemplatesTab />}
     </div>
   );

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
+import { useOrgStore } from "../../stores/orgStore";
 import { Dialog } from "../shared/Dialog";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { runAction, handleActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { usePermissions } from "@/lib/permissions";
+import { useJwtClaims } from "@/lib/authScope";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -18,8 +20,14 @@ import "@/lib/i18n";
  *
  * Create/edit/delete controls render only for holders of
  * client_ai_templates:write. The API additionally requires an MFA-assured
- * session for those writes; a 403 MFA_REQUIRED surfaces through runAction's
- * shared errors:MFA_REQUIRED toast.
+ * session for those writes (when the caller's MFA policy requires one); a 403
+ * MFA_REQUIRED surfaces through runAction's shared errors:MFA_REQUIRED toast.
+ *
+ * The create dialog's org choices come from GET /templates/org-options. If
+ * that lookup fails, an organization-scoped session falls back to its own
+ * org. The partner-wide option is offered only to sessions that may create
+ * one (not organization scope, and canManagePartnerWide not false), mirroring
+ * the server's partner_scope_required / canManagePartnerWidePolicies gates.
  */
 
 /** The four Office hosts a template can target. Empty/all ⇒ shown everywhere. */
@@ -109,7 +117,25 @@ export default function TemplatesTab() {
   const { can } = usePermissions();
   const canWrite = can("client_ai_templates", "write");
   const [rows, setRows] = useState<TemplateRow[]>([]);
-  const [orgs, setOrgs] = useState<{ orgId: string; orgName: string }[]>([]);
+  // null = not loaded or the lookup failed (use the own-org fallback below).
+  const [orgOptions, setOrgOptions] = useState<
+    { orgId: string; orgName: string }[] | null
+  >(null);
+  const jwt = useJwtClaims();
+  const orgScoped =
+    jwt.status === "resolved" && jwt.claims.scope === "organization";
+  const ownOrgId = orgScoped ? jwt.claims.orgId : null;
+  const ownOrgName = useOrgStore(
+    (s) => s.organizations.find((o) => o.id === ownOrgId)?.name ?? null,
+  );
+  const canManagePartnerWide =
+    useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const offerPartnerWide = !orgScoped && canManagePartnerWide;
+  const orgs =
+    orgOptions ??
+    (ownOrgId
+      ? [{ orgId: ownOrgId, orgName: ownOrgName ?? t("templatesTab.org") }]
+      : []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [editor, setEditor] = useState<EditorState>({ mode: "closed" });
@@ -141,7 +167,8 @@ export default function TemplatesTab() {
   // Org options for the create-dialog scope selector (writers only).
   useEffect(() => {
     if (!canWrite) return;
-    void fetchWithAuth("/client-ai/admin/orgs")
+    let cancelled = false;
+    void fetchWithAuth("/client-ai/admin/templates/org-options")
       .then((r) =>
         r.ok
           ? (r.json() as Promise<{
@@ -150,10 +177,19 @@ export default function TemplatesTab() {
           : null,
       )
       .then((b) => {
-        if (b?.data)
-          setOrgs(b.data.map(({ orgId, orgName }) => ({ orgId, orgName })));
+        if (cancelled) return;
+        setOrgOptions(
+          b?.data
+            ? b.data.map(({ orgId, orgName }) => ({ orgId, orgName }))
+            : null,
+        );
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setOrgOptions(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [canWrite]);
 
   const confirmDelete = async () => {
@@ -324,6 +360,7 @@ export default function TemplatesTab() {
         <TemplateEditorDialog
           state={editor}
           orgs={orgs}
+          offerPartnerWide={offerPartnerWide}
           onClose={() => setEditor({ mode: "closed" })}
           onSaved={() => {
             setEditor({ mode: "closed" });
@@ -355,11 +392,13 @@ export default function TemplatesTab() {
 function TemplateEditorDialog({
   state,
   orgs,
+  offerPartnerWide,
   onClose,
   onSaved,
 }: {
   state: Exclude<EditorState, { mode: "closed" }>;
   orgs: { orgId: string; orgName: string }[];
+  offerPartnerWide: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -370,10 +409,20 @@ function TemplateEditorDialog({
   const [category, setCategory] = useState(editing?.category ?? "");
   const [body, setBody] = useState(editing?.promptBody ?? "");
   // 'partner' or an orgId. Immutable in edit mode (templateUpdateSchema has no
-  // orgId — Plan-4 Task 5).
+  // orgId — Plan-4 Task 5). A creator who may not author partner-wide rows
+  // starts on the first org; "" until the org list arrives.
+  const defaultScope = offerPartnerWide ? "partner" : (orgs[0]?.orgId ?? "");
   const [scope, setScope] = useState<string>(
-    editing ? (editing.orgId ?? "partner") : "partner",
+    editing ? (editing.orgId ?? "partner") : defaultScope,
   );
+  useEffect(() => {
+    if (editing) return;
+    if (scope === "" || (scope === "partner" && !offerPartnerWide)) {
+      setScope(defaultScope);
+    }
+  }, [editing, scope, offerPartnerWide, defaultScope]);
+  // Disabled in edit mode, so an existing partner-wide row still displays.
+  const showPartnerOption = offerPartnerWide || editing?.orgId === null;
   // Host targeting — empty array ⇒ "all apps" (server canonicalizes to null).
   const [hosts, setHosts] = useState<TemplateHost[]>(
     (editing?.hosts as TemplateHost[] | null | undefined) ?? [],
@@ -385,7 +434,8 @@ function TemplateEditorDialog({
       prev.includes(host) ? prev.filter((h) => h !== host) : [...prev, host],
     );
 
-  const valid = name.trim().length > 0 && body.trim().length > 0;
+  const valid =
+    name.trim().length > 0 && body.trim().length > 0 && scope !== "";
 
   const save = async () => {
     if (!valid || saving) return;
@@ -523,7 +573,9 @@ function TemplateEditorDialog({
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-60"
             data-testid="ai-office-template-scope"
           >
-            <option value="partner">{t("templatesTab.partnerWide")}</option>
+            {showPartnerOption && (
+              <option value="partner">{t("templatesTab.partnerWide")}</option>
+            )}
             {orgs.map((o) => (
               <option key={o.orgId} value={o.orgId}>
                 {o.orgName}

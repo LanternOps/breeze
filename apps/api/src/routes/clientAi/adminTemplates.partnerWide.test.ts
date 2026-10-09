@@ -59,6 +59,7 @@ vi.mock('../../db/schema/clientAi', () => ({
   },
 }));
 vi.mock('../../db/schema/orgs', () => ({ organizations: { id: 'id', name: 'name' } }));
+vi.mock('../../services/unassignedPool/visibility', () => ({ notHiddenOrgType: vi.fn() }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {

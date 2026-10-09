@@ -9,13 +9,16 @@ import { Hono } from 'hono';
  * body validation and before any database access, so a denied request never
  * reads, writes or audits anything.
  *
- * requirePermission / requireMfa are replaced with grant-set stand-ins that
- * apply the same wildcard matching as services/permissions.ts hasPermission
- * and the same 403 MFA_REQUIRED body as middleware/auth.ts requireMfa.
+ * requirePermission / requireMfa are replaced with grant-set stand-ins. The
+ * permission stand-in decides with the real hasPermission from
+ * services/permissions (so wildcard grants are matched exactly as in
+ * production); the MFA stand-in returns the same 403 MFA_REQUIRED body as
+ * middleware/auth.ts requireMfa.
  */
 
-const { dbSelectMock, dbInsertMock, dbUpdateMock, dbDeleteMock, writeRouteAuditMock, gate } =
+const { dbSelectMock, dbInsertMock, dbUpdateMock, dbDeleteMock, writeRouteAuditMock, orgConditionMock, gate } =
   vi.hoisted(() => ({
+    orgConditionMock: vi.fn(() => undefined),
     dbSelectMock: vi.fn(),
     dbInsertMock: vi.fn(),
     dbUpdateMock: vi.fn(),
@@ -36,15 +39,27 @@ vi.mock('../../middleware/auth', () => ({
       partnerOrgAccess: 'all',
       orgId: null,
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
+      orgCondition: orgConditionMock,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
     });
     return next();
   }),
-  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
-    const allowed = gate.grants.some((g) => {
-      const [r, a] = g.split(':');
-      return (r === resource || r === '*') && (a === action || a === '*');
-    });
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    const { hasPermission } = await import('../../services/permissions');
+    const allowed = hasPermission(
+      {
+        permissions: gate.grants.map((g) => {
+          const [r, a] = g.split(':');
+          return { resource: r!, action: a! };
+        }),
+        partnerId: 'f0f0f0f0-1111-4222-8333-444455556666',
+        orgId: null,
+        roleId: 'role-under-test',
+        scope: 'partner',
+      },
+      resource,
+      action
+    );
     if (!allowed) return c.json({ error: 'Permission denied' }, 403);
     return next();
   }),
@@ -269,5 +284,45 @@ describe('gates run before body validation', () => {
     const res = await send(POST, INVALID);
     expect(res.status).toBe(400);
     expectNoDbAccess();
+  });
+});
+
+describe('GET /client-ai/admin/templates/org-options (create-dialog org list)', () => {
+  const OPTIONS: Verb = {
+    label: 'GET /templates/org-options',
+    method: 'GET',
+    path: '/client-ai/admin/templates/org-options',
+    okStatus: 200,
+  };
+
+  it('returns 403 to a reader without client_ai_templates:write and never reads the db', async () => {
+    gate.grants = ['organizations:read', 'client_ai_templates:read'];
+    const res = await send(OPTIONS);
+    expect(res.status).toBe(403);
+    expectNoDbAccess();
+  });
+
+  it('lists only id and name of the orgs the caller can reach for a writer without organizations:read', async () => {
+    gate.grants = ['client_ai_templates:write'];
+    gate.mfa = false; // a read: no MFA requirement
+    dbSelectMock.mockImplementation(() => chain([{ orgId: ORG_ID, orgName: 'Contoso' }]));
+    const res = await send(OPTIONS);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [{ orgId: ORG_ID, orgName: 'Contoso' }] });
+    expect(orgConditionMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('honors the ?orgId= narrowing the web client injects', async () => {
+    gate.grants = ['client_ai_templates:write'];
+    dbSelectMock.mockImplementation(() =>
+      chain([
+        { orgId: ORG_ID, orgName: 'Contoso' },
+        { orgId: '9d9d9d9d-1111-4222-8333-444455556666', orgName: 'Fabrikam' },
+      ])
+    );
+    const res = await send({ ...OPTIONS, path: `${OPTIONS.path}?orgId=${ORG_ID}` });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ orgId: ORG_ID, orgName: 'Contoso' }]);
   });
 });

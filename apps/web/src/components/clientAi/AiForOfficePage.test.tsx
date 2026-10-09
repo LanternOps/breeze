@@ -98,20 +98,25 @@ describe('AiForOfficePage', () => {
       expect(screen.queryByTestId('ai-office-tab-templates')).toBeNull();
     });
 
-    it('falls back to the orgs tab on a #templates deep link without the grant', () => {
+    it('falls back to the orgs tab on a #templates deep link without the grant and rewrites the hash', () => {
       grants.current = [{ resource: 'organizations', action: 'read' }];
       window.location.hash = '#templates';
       render(<AiForOfficePage />);
       expect(screen.queryByTestId('stub-templates')).toBeNull();
       expect(screen.getByTestId('stub-orgs')).toBeInTheDocument();
+      expect(window.location.hash).toBe('#orgs');
+      expect(screen.getByTestId('ai-office-tab-orgs').className).toContain('border-primary');
     });
 
-    it('renders nothing for #templates while permissions are still loading', () => {
+    it('shows a loading state for #templates while permissions are still loading', () => {
       grants.current = undefined;
       window.location.hash = '#templates';
       render(<AiForOfficePage />);
+      expect(screen.getByTestId('ai-office-tab-loading')).toBeInTheDocument();
+      expect(screen.getByTestId('ai-office-tab-templates').className).toContain('border-primary');
       expect(screen.queryByTestId('stub-templates')).toBeNull();
       expect(screen.queryByTestId('stub-orgs')).toBeNull();
+      expect(window.location.hash).toBe('#templates');
     });
 
     it('shows the templates tab to the wildcard grant', () => {

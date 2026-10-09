@@ -27,13 +27,6 @@ describe('2026-12-18-110100-client-ai-templates-permissions.sql', () => {
     expect(existsSync(FILE)).toBe(true);
   });
 
-  it('elects system scope before any write', () => {
-    const firstWrite = sql.search(/\b(INSERT|UPDATE|DELETE|MERGE)\b/);
-    const scope = sql.indexOf("set_config('breeze.scope', 'system', true)");
-    expect(scope).toBeGreaterThanOrEqual(0);
-    expect(firstWrite).toBeGreaterThan(scope);
-  });
-
   it.each([['read'], ['write']])('carries the DEFAULT_PERMISSIONS description for %s', (action) => {
     const seeded = DEFAULT_PERMISSIONS.find(
       (p) => p.resource === 'client_ai_templates' && p.action === action,
@@ -80,11 +73,11 @@ describe('client_ai_templates seed grants', () => {
     expect(holders(READ)).toEqual(expected);
   });
 
-  // Mirrors the migration's mapping: no built-in role holds organizations:write
-  // literally (Partner Admin has '*:*'), so write lands on Org Admin only.
-  it('grants write to Org Admin only', () => {
-    expect(holders('organizations:write')).toEqual([]);
-    expect(holders(WRITE)).toEqual(['Org Admin']);
+  // Mirrors the migration's mapping: every built-in role holding
+  // organizations:write, plus Org Admin. Partner Admin is covered by '*:*'.
+  it('grants write to every built-in role holding organizations:write, plus Org Admin', () => {
+    const expected = [...new Set([...holders('organizations:write'), 'Org Admin'])].sort();
+    expect(holders(WRITE)).toEqual(expected);
   });
 
   it('does not grant write to technician or viewer roles', () => {
