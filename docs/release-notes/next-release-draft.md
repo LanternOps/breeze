@@ -45,6 +45,7 @@ Last release: **v0.121.0** (2026-10-03).
   re-applies cleanly on the next restart. Avoid deploying this release during a
   database backup window. No data is rewritten; the new constraints are
   validated afterwards without blocking writes.
+- **Approving an audit baseline apply request now requires MFA and checks its target devices.** On deployments with MFA enabled (`ENABLE_2FA`), approving a request returns 403 `MFA_REQUIRED` unless the approver's session has completed MFA. API keys cannot approve apply requests when MFA is enabled. Rejecting a request does not need MFA. Approving is also refused with 409 ("One or more target devices no longer exist in this organization; ask the requester to submit a new apply request") when any device in the request has since been decommissioned, deleted or moved to another organization. Applying an approved request runs the same check and leaves the approval unconsumed. When two decisions on the same request race, or a decision races the request's expiry, the later one returns 409 ("Apply request was already decided") instead of overwriting the first. Pending requests refused this way can be rejected and resubmitted.
 - **Deleting a role that an access review covered now returns 409** ("Role is
   referenced by access reviews") instead of a server error, so review evidence
   is kept. Deleting a notification channel keeps the alert delivery history it
