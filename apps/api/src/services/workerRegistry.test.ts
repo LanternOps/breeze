@@ -63,7 +63,7 @@ const EXPECTED_WORKER_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   // #5291 W04 — dispatches `script` monitors' diagnostic probes.
   'monitorScriptWorker',
-  'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
+  'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker', 'patchReportRetention',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker',
   // Backup provider integration W02 (#6008 / #6010).

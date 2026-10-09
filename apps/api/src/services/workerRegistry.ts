@@ -883,6 +883,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'patchReportRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/patchReportRetention');
+      return { init: m.initializePatchReportRetentionWorker, shutdown: m.shutdownPatchReportRetentionWorker };
+    },
+  },
+  {
     name: 'reportScheduleWorker',
     placement: 'global',
     load: async () => {

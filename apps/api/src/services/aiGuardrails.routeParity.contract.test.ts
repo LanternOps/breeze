@@ -271,6 +271,16 @@ describe('manage_catalog archive_item requires catalog:delete, like POST /catalo
   });
 });
 
+describe('query_webhooks requires webhooks:read, like GET /webhooks', () => {
+  it('organizations:read without webhooks:read loses the AI webhook read', () => {
+    expect(allows(parseGrants(['organizations:read']), 'query_webhooks')).toBe(false);
+    expect(allows(parseGrants(['organizations:read']), 'query_webhooks', { includeDeliveries: true })).toBe(false);
+  });
+  it('webhooks:read is allowed', () => {
+    expect(allows(parseGrants(['webhooks:read']), 'query_webhooks', { includeDeliveries: true })).toBe(true);
+  });
+});
+
 describe('test_webhook requires organizations:write, like POST /webhooks/:id/test', () => {
   it('devices:write without organizations:write loses the AI webhook test', () => {
     expect(allows(parseGrants(['devices:write']), 'test_webhook')).toBe(false);

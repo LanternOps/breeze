@@ -221,6 +221,9 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'organizations', action: 'write', description: 'Create and edit organizations' },
   { resource: 'organizations', action: 'delete', description: 'Delete organizations' },
 
+  // Outbound webhooks. Managing them stays on organizations:write.
+  { resource: 'webhooks', action: 'read', description: 'View webhook configuration and delivery history' },
+
   // Partner-wide OAuth/MCP connected applications. Partner Admin satisfies
   // these through its wildcard; custom roles must be granted them explicitly.
   { resource: 'connected_apps', action: 'read', description: 'View partner connected OAuth applications' },
@@ -361,6 +364,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'organizations:read',
       // AI for Office prompt templates: view only; authoring is an admin action.
       'client_ai_templates:read',
+      'webhooks:read',
       // AI chat (#6396): same reasoning as Org Technician.
       'ai_sessions:use',
       // Tier 1 (read-only) external tools only (#5216).
@@ -472,7 +476,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // requires partner scope with org_access='all'
       // (canManagePartnerWidePolicies), so this grant reaches the caller's own
       // org's templates only.
-      'client_ai_templates:read', 'client_ai_templates:write'
+      'client_ai_templates:read', 'client_ai_templates:write',
+      // Webhook configuration and delivery history (managing them is organizations:write).
+      'webhooks:read'
     ]
   },
   {
@@ -499,7 +505,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // and calling mutating external tools stay admin actions.
       'external_tools:use',
       // Org document library (service deliverables W03).
-      'documents:read', 'documents:write'
+      'documents:read', 'documents:write',
+      // Webhook configuration and delivery history (managing them is organizations:write).
+      'webhooks:read'
     ]
   },
   {

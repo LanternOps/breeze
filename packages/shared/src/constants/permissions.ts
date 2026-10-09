@@ -132,6 +132,12 @@ export const PERMISSION_GRANTS = {
   ORGS_WRITE: { resource: 'organizations', action: 'write' },
   ORGS_DELETE: { resource: 'organizations', action: 'delete' },
 
+  // Outbound webhooks: reading endpoint configuration and delivery history.
+  // Kept apart from organizations:read so a role that can see an organization
+  // does not thereby see where its events are sent. Managing webhooks stays on
+  // organizations:write, so there is no webhooks:write.
+  WEBHOOKS_READ: { resource: 'webhooks', action: 'read' },
+
   // Partner-wide OAuth/MCP connected applications. These are deliberately
   // separate from organization administration: one disconnect revokes every
   // grant for the shared client under the partner.

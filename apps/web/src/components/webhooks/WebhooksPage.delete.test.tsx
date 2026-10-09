@@ -2,6 +2,13 @@ import '@/lib/i18n';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// This suite drives webhook writes, so the caller can read webhooks and manage
+// them (organizations:write). Read-only behaviour is covered in
+// WebhooksPage.permissions.test.tsx.
+const GRANTED = vi.hoisted(() => new Set(['webhooks:read', 'organizations:write']));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => GRANTED.has(`${r}:${a}`) }),
+}));
 vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: vi.fn(), handleSessionExpired: vi.fn() };

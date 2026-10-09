@@ -96,3 +96,16 @@ describe('AI for Office prompt-template permissions', () => {
     expect(PERMISSION_GRANTS.CLIENT_AI_TEMPLATES_WRITE).not.toEqual(PERMISSION_GRANTS.ORGS_WRITE);
   });
 });
+
+describe('webhooks permission', () => {
+  it('declares a dedicated read capability, distinct from organizations:read', () => {
+    expect(PERMISSION_GRANTS.WEBHOOKS_READ).toEqual({ resource: 'webhooks', action: 'read' });
+    expect(PERMISSION_GRANTS.WEBHOOKS_READ).not.toEqual(PERMISSION_GRANTS.ORGS_READ);
+  });
+
+  // Managing webhooks stays on organizations:write; no webhooks:write exists.
+  it('declares no write action', () => {
+    const keys = Object.keys(PERMISSION_GRANTS).filter((k) => k.startsWith('WEBHOOKS_'));
+    expect(keys).toEqual(['WEBHOOKS_READ']);
+  });
+});

@@ -433,6 +433,8 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'query_custom_fields', action: 'list_definitions', routeFile: 'customFields.ts', method: 'get', path: '/' },
   { tool: 'query_psa_status', routeFile: 'psa.ts', method: 'get', path: '/connections' },
   { tool: 'query_webhooks', routeFile: 'webhooks.ts', method: 'get', path: '/' },
+  // includeDeliveries returns per-webhook delivery history, the data behind GET /:id/deliveries.
+  { tool: 'query_webhooks', input: { includeDeliveries: true }, routeFile: 'webhooks.ts', method: 'get', path: '/:id/deliveries' },
   { tool: 'search_script_library', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },

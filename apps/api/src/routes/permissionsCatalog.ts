@@ -21,6 +21,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   billing_profiles: 'Rates & Work Types',
   users: 'Users',
   organizations: 'Organizations',
+  webhooks: 'Webhooks',
   connected_apps: 'Connected Applications',
   sites: 'Sites',
   automations: 'Automations',

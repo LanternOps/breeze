@@ -133,6 +133,11 @@ export const JOB_SCHEDULES = {
   'vulnerability-msrc-sync': '3 9 * * *',
   'abuse-signals-digest': '18 9 * * 1',
   'vulnerability-nvd-sync': '3 10 * * *',
+  // Patch compliance report files past PATCH_REPORT_RETENTION_DAYS (default
+  // 30) are removed and their rows marked expired, then orphaned report files
+  // are swept. Daily against a 30-day window; hour 10 held only :03 in this
+  // lane, so :33 keeps the daily = 3 (mod 5) lane.
+  'patch-report-retention': '33 10 * * *',
   'vulnerability-kev-epss-sync': '3 11 * * *',
   'vulnerability-sofa-sync': '3 12 * * *',
   'vulnerability-correlate': '3 13 * * *',

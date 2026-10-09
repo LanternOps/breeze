@@ -272,6 +272,19 @@ export default function IntegrationsPage({
     orgId: string | null;
   }>({ result: null, refreshKey: 0, orgId: null });
 
+  // Webhooks require `webhooks:read`. Without it the tab is not listed, and a
+  // page opened without a hash starts on the first tab the user can see rather
+  // than on Webhooks. A deep link to #webhooks still opens the webhooks panel,
+  // which renders its own access-denied state. While grants are loading
+  // (permissions undefined) the default is left alone, so nothing flashes.
+  // UX only — every webhook route re-checks server-side.
+  const { permissions: grants, can } = usePermissions();
+  const canReadWebhooks = can("webhooks", "read");
+  const webhooksDenied = grants !== undefined && !canReadWebhooks;
+  const visibleTabs = canReadWebhooks ? tabs : tabs.filter((tab) => tab.id !== "webhooks");
+  // True when the current hash names #webhooks explicitly (a deep link).
+  const webhooksExplicitRef = useRef(false);
+
   // Keep the latest org id available to applyHash below without making it a
   // dependency of that effect (see the comment there). useRef's initial value
   // is set synchronously during render, so it's already correct for the
@@ -298,6 +311,7 @@ export default function IntegrationsPage({
   useIsomorphicLayoutEffect(() => {
     const applyHash = () => {
       const parsed = parseHash(initialTab);
+      webhooksExplicitRef.current = window.location.hash.replace(/^#/, "") === "webhooks";
       setActiveTab(parsed.tab);
       if (parsed.securitySub) setSecuritySubTab(parsed.securitySub);
       if (parsed.cloudTenantsSub) setCloudTenantsSubTab(parsed.cloudTenantsSub);
@@ -366,6 +380,17 @@ export default function IntegrationsPage({
     return () => window.removeEventListener("hashchange", applyHash);
   }, [initialTab]);
 
+  // Leave the default Webhooks tab for the first visible tab once grants show
+  // the user cannot read webhooks. Never overrides an explicit #webhooks link
+  // and never writes the hash. The update is functional because on mount this
+  // runs in the same commit as applyHash above, so `activeTab` from this render
+  // can still be the SSR fallback.
+  const firstVisibleTab = visibleTabs[0]?.id ?? initialTab;
+  useIsomorphicLayoutEffect(() => {
+    if (!webhooksDenied || webhooksExplicitRef.current) return;
+    setActiveTab((current) => (current === "webhooks" ? firstVisibleTab : current));
+  }, [activeTab, webhooksDenied, firstVisibleTab]);
+
   // Backfill a captured-but-unscoped callback result once the org id resolves
   // (cold load: the result was captured from the hash before the org store
   // hydrated, so it went in with orgId: null). This never re-parses the hash,
@@ -418,7 +443,7 @@ export default function IntegrationsPage({
   // permission-denied state instead of a screen of 403s. The Stripe payments
   // sub-tab is a separate integration with its own routes and is NOT gated on
   // the accounting capability. UX only — every route re-checks server-side.
-  const canReadAccounting = usePermissions().can("accounting", "read");
+  const canReadAccounting = can("accounting", "read");
   const selectedAccountingProvider = isAccountingProviderId(accountingSubTab)
     ? accountingSubTab
     : null;
@@ -494,7 +519,7 @@ export default function IntegrationsPage({
 
       {/* Top-level tabs */}
       <div className="flex flex-wrap gap-3">
-        {tabs.map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = tab.id === activeTab;
           return (

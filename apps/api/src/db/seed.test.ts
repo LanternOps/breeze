@@ -629,3 +629,31 @@ describe('ai_sessions:use (#6396)', () => {
     }
   });
 });
+
+describe('webhooks:read', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name)!;
+
+  it('is seeded in the permission catalog and registered in PERMISSION_GRANTS', () => {
+    expect(DEFAULT_PERMISSIONS.some((p) => p.resource === 'webhooks' && p.action === 'read')).toBe(true);
+    expect(PERMISSION_GRANTS.WEBHOOKS_READ).toEqual({ resource: 'webhooks', action: 'read' });
+  });
+
+  it('is granted to Org Admin, Org Technician and Partner Technician', () => {
+    for (const name of ['Org Admin', 'Org Technician', 'Partner Technician']) {
+      expect(byName(name).permissions, `${name} missing webhooks:read`).toContain('webhooks:read');
+    }
+  });
+
+  it('is NOT granted to viewer, billing or security-approver roles', () => {
+    for (const name of [
+      'Org Viewer', 'Partner Viewer', 'Partner Billing', 'Partner Billing Viewer',
+      'Security Approver', 'Partner Security Approver',
+    ]) {
+      expect(byName(name).permissions, `${name} unexpectedly received webhooks:read`).not.toContain('webhooks:read');
+    }
+  });
+
+  it('Partner Admin covers webhooks:read via the wildcard grant', () => {
+    expect(byName('Partner Admin').permissions).toEqual(['*:*']);
+  });
+});
