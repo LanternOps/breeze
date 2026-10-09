@@ -1666,20 +1666,20 @@ async function deleteAiScreenshotsCascadeStep(orgId: string): Promise<number> {
  * report retention job's orphan sweep retries the leftovers.
  */
 async function deletePatchComplianceReportsCascadeStep(orgId: string): Promise<number> {
-  const { count, reports } = await dbModule.withSystemDbAccessContext(async () => {
+  const { count, reportFiles } = await dbModule.withSystemDbAccessContext(async () => {
     await setBackupErasureContext(orgId);
     const result = await dbModule.db.execute(
       sql`DELETE FROM patch_compliance_reports WHERE org_id = ${orgId} RETURNING id, output_path`,
     );
     return {
       count: extractRowCount(result),
-      reports: rowsFromExecute<{ id: string; output_path: string | null }>(result)
+      reportFiles: rowsFromExecute<{ id: string; output_path: string | null }>(result)
         .filter((row) => row.output_path)
         .map((row) => ({ id: row.id, outputPath: row.output_path })),
     };
   });
-  if (reports.length > 0) {
-    await removePatchReportFiles(reports, `org erasure org=${orgId}`);
+  if (reportFiles.length > 0) {
+    await removePatchReportFiles(reportFiles, `org erasure org=${orgId}`);
   }
   return count;
 }
