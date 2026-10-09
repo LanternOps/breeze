@@ -179,7 +179,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.
-  ['services/aiToolsUserRisk.ts:340', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
+  ['services/aiToolsUserRisk.ts:341', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
 ]);
 
 function usersFkPropertyNames(): ReadonlySet<string> {
