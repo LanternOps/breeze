@@ -47,6 +47,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Per-request deadline for every Graph call, response body included. The mailbox
+ * poll sweep processes mailboxes one at a time on a concurrency-1 worker, so a
+ * request Graph accepts but never answers would otherwise hold the sweep forever
+ * and stop ingestion for every mailbox (#8299). On expiry fetch rejects with a
+ * TimeoutError, which classifyGraphPollError treats as transient. 60 s covers the
+ * largest attachment download (10 MB, base64 in JSON).
+ */
+export const GRAPH_REQUEST_TIMEOUT_MS = 60_000;
+
+function graphSignal(init?: RequestInit): AbortSignal {
+  const deadline = AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS);
+  return init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+}
+
 /** Graph fetch with one 429 retry honoring Retry-After. Never follows redirects with the bearer token. */
 async function graphFetch(url: string, token: string, init?: RequestInit): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -54,6 +69,7 @@ async function graphFetch(url: string, token: string, init?: RequestInit): Promi
       ...init,
       headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
       redirect: 'error',
+      signal: graphSignal(init),
     });
     if (res.status !== 429) return res;
 
@@ -65,6 +81,7 @@ async function graphFetch(url: string, token: string, init?: RequestInit): Promi
     ...init,
     headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
     redirect: 'error',
+    signal: graphSignal(init),
   });
 }
 
