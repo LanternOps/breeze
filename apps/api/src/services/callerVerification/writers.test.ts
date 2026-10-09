@@ -16,7 +16,11 @@ it('every direct contact destination writer records provenance', () => {
     const s = readFileSync(path, 'utf8');
     if (!/\.(insert|update)\(contacts\)/.test(s)) continue;
     const rel = relative(root, path);
-    if (['services/contacts/loginLink.ts', 'services/orgMergeCustomExecutors.ts'].includes(rel)) {
+    if ([
+      'services/contacts/loginLink.ts',
+      'services/contacts/responsibilities.ts',
+      'services/orgMergeCustomExecutors.ts',
+    ].includes(rel)) {
       expect(s).not.toMatch(/\.set\(\{[^}]*\b(email|mobile):/s);
       continue;
     }

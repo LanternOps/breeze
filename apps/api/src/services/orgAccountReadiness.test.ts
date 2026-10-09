@@ -55,6 +55,10 @@ function setupDb(rowsByTable: Map<unknown, unknown[]>) {
               call.joins.push({ table: joined, on });
               return chain;
             },
+            leftJoin(joined: unknown, on: unknown) {
+              call.joins.push({ table: joined, on });
+              return chain;
+            },
             where(condition: unknown) {
               call.where = condition;
               return chain;
