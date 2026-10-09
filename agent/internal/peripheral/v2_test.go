@@ -235,6 +235,46 @@ func TestApplyPeripheralPolicyV2RevisionRulesAndRestart(t *testing.T) {
 	}
 }
 
+// #8317 — after a move to another org or site the agent adopts its new
+// identity, and its last-known-good state still carries the old org/site. The
+// next revision for the same device must apply; a state that belongs to a
+// different device must still be refused.
+func TestApplyPeripheralPolicyV2AcceptsTheNextRevisionAfterADeviceMove(t *testing.T) {
+	store := newV2TestStore(t)
+	var detects atomic.Int32
+	enforcer := &v2TestEnforcer{}
+	first := testV2Envelope(t, 5, "enforce", nil)
+	if got := ApplyPeripheralPolicyV2(first, first.Identity, store, testV2Deps(&detects, enforcer)); got.Outcome != "applied" {
+		t.Fatalf("first apply = %+v", got)
+	}
+
+	envelopeFor := func(identity PeripheralPolicyIdentityV2, revision int) PeripheralPolicyEnvelopeV2 {
+		e := testV2Envelope(t, revision, "enforce", nil)
+		e.Identity = identity
+		digest, err := DigestPeripheralPolicyEnvelopeV2(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Digest = digest
+		return e
+	}
+
+	moved := first.Identity
+	moved.OrgID, moved.SiteID = "org-2", "site-2"
+	if got := ApplyPeripheralPolicyV2(envelopeFor(moved, 6), moved, store, testV2Deps(&detects, enforcer)); got.Outcome != "applied" {
+		t.Fatalf("next revision after the move = %+v", got)
+	}
+	if got := ApplyPeripheralPolicyV2(envelopeFor(moved, 4), moved, store, testV2Deps(&detects, enforcer)); got.ReasonCode != "lower_revision" {
+		t.Fatalf("revision floor not kept across the move = %+v", got)
+	}
+
+	other := moved
+	other.DeviceID = "device-2"
+	if got := ApplyPeripheralPolicyV2(envelopeFor(other, 7), other, store, testV2Deps(&detects, enforcer)); got.ReasonCode != "invalid_payload" {
+		t.Fatalf("another device's last-known-good was accepted = %+v", got)
+	}
+}
+
 func TestApplyPeripheralPolicyV2CorruptStateFailsClosed(t *testing.T) {
 	store := newV2TestStore(t)
 	if err := os.WriteFile(store.v2Path, []byte("{"), 0600); err != nil {
