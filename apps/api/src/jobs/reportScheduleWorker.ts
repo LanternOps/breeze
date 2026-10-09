@@ -82,6 +82,7 @@ import { reconcileAllSeries, seriesChildGate } from '../services/reportSeries/re
 import { isValidRecipientEmail, resolveSeriesChildRecipients } from '../services/reportSeries/recipients';
 import { parseSeriesRecipientRule, type SeriesGateDecision } from '../services/reportSeries/types';
 import { attachWorkerObservability } from './workerObservability';
+import { reportRunOwnerColumns } from '../services/reportRunOwner';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -527,12 +528,15 @@ async function stampOccurrence(reportId: string): Promise<void> {
  * envelope the org-axis run predicates already admit.
  */
 async function recordSeriesSkip(
-  reportId: string,
+  report: { id: string; orgId: string; partnerId: string | null },
   decision: Exclude<SeriesGateDecision, 'run'>,
 ): Promise<void> {
+  const reportId = report.id;
   console.warn('[ReportScheduleWorker] Series child skipped by the series gate', { reportId, decision });
   await db.insert(reportRuns).values({
     reportId,
+    // #4247: the run carries its parent's owner (a series child is org-owned).
+    ...reportRunOwnerColumns(report),
     status: 'failed',
     completedAt: new Date(),
     errorMessage: `series_${decision}`,
@@ -566,7 +570,7 @@ async function loadGatedSeriesChild(
     // and, once BullMQ trims the deduped job, writes a fresh skip row every
     // tick. Stamped only on a decision — a gate throw propagates unstamped.
     if (!opts.occurrenceClaimed) await stampOccurrence(report.id);
-    await recordSeriesSkip(report.id, decision);
+    await recordSeriesSkip(report, decision);
     return null;
   }
   const [fresh] = await db
@@ -761,6 +765,9 @@ export async function processRunScheduledReport(
       .insert(reportRuns)
       .values({
         reportId: report.id,
+        // #4247: copied from the loaded definition, not from `knownOwner` —
+        // a deny can precede owner resolution.
+        ...reportRunOwnerColumns(report),
         status: 'failed',
         completedAt: new Date(),
         errorMessage: reason,
@@ -955,6 +962,7 @@ export async function processRunScheduledReport(
     .insert(reportRuns)
     .values({
       reportId: report.id,
+      ...reportRunOwnerColumns(report),
       status: 'running',
       startedAt: new Date(),
       requestedByKind: 'user',

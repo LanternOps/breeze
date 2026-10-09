@@ -301,6 +301,7 @@
       "approval": "Approbation",
       "actions": "Actions"
     },
+    "releaseUnknown": "Inconnue",
     "pagination": {
       "rowsPerPage": "Lignes par page",
       "pageStatus": "Page {{current}} de {{total}}"

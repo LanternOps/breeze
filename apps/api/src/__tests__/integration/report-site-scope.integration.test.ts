@@ -132,10 +132,15 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 // Without it every later design/patch-schedule suite in the shard died 23514
 // (aiAgentSchedulesPartnerRls, aiAgentFleetDesign, aiAgentPatchLane,
 // fleetDesignDrift).
+// 2026-12-17-160300 (#4247) owns report_runs' policies now: replaying
+// 2026-10-27-130100 above re-creates the four breeze_org_isolation_* EXISTS-join
+// policies on report_runs, and without this restore they leak (alongside the
+// direct report_runs_owner_isolation) into every later suite in the shard.
 const SUCCESSOR_MIGRATION_FILES = [
   '2026-09-24-b-ai-agents-org-narrative.sql',
   '2026-10-16-182700-ai-agents-patch-profile.sql',
   '2026-10-27-130100-reports-partner-ownership.sql',
+  '2026-12-17-160300-report-runs-owner-policies.sql',
 ] as const;
 
 // Second-order hazard, and the reason `restoreSuccessorMigrations` does more
@@ -850,7 +855,7 @@ describe('Wave 2 · forced RLS blocks cross-organization report forgery', () => 
       '';
     expect(forgeMessage).toContain('new row violates row-level security policy');
 
-    // ── Same for report_runs, whose policy joins through its parent report. ──
+    // ── Same for report_runs, whose direct owner policy (#4247) keys on its own org_id. ──
     let runForgeError: unknown;
     try {
       await appDb.transaction(async (tx) => {
@@ -893,7 +898,7 @@ describe('Wave 2 · forced RLS blocks cross-organization report forgery', () => 
     expect(forgedCount).toBe(0);
   });
 
-  runDb('report_runs keeps its parent-join policy and both tables force RLS', async () => {
+  runDb('report_runs keeps a direct owner policy and both tables force RLS', async () => {
     const rows = await rawRows<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>(sql`
       SELECT relname, relrowsecurity, relforcerowsecurity
         FROM pg_class WHERE relname IN ('reports', 'report_runs')
@@ -907,19 +912,21 @@ describe('Wave 2 · forced RLS blocks cross-organization report forgery', () => 
       SELECT policyname, cmd, qual, with_check FROM pg_policies WHERE tablename = 'report_runs'
     `);
     // #6771: the ONE policy that does not key on breeze_has_org_access is the
-    // additive report-history read branch. It must stay SELECT-only and still
-    // reach the org through the owning report.
+    // additive report-history read branch. It must stay SELECT-only. Since
+    // #4247 it keys on the run's own org_id instead of joining the report.
     const HISTORY_POLICY = 'report_runs_report_history_select';
     const history = runPolicies.find((policy) => policy.policyname === HISTORY_POLICY);
     expect(history?.cmd).toBe('SELECT');
-    expect(history?.qual ?? '').toContain('FROM reports');
-    expect(history?.qual ?? '').toContain('breeze_has_report_history_access');
+    expect(history?.qual ?? '').toContain('breeze_has_report_history_access(org_id)');
+    // #4247: one direct dual-axis FOR ALL owner policy on the run's own columns.
     const ownerPolicies = runPolicies.filter((policy) => policy.policyname !== HISTORY_POLICY);
-    expect(ownerPolicies.length).toBeGreaterThanOrEqual(4);
+    expect(ownerPolicies.map((p) => `${p.policyname}:${p.cmd}`)).toEqual(['report_runs_owner_isolation:ALL']);
     for (const policy of ownerPolicies) {
-      const predicate = `${policy.qual ?? ''}${policy.with_check ?? ''}`;
-      expect(predicate).toContain('FROM reports');
-      expect(predicate).toContain('breeze_has_org_access');
+      for (const predicate of [policy.qual ?? '', policy.with_check ?? '']) {
+        expect(predicate).toContain('breeze_has_org_access(org_id)');
+        expect(predicate).toContain('breeze_has_partner_access(partner_id)');
+        expect(predicate).not.toContain('FROM reports');
+      }
     }
   });
 });
@@ -2783,6 +2790,18 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
     for (const row of rows) {
       expect(row.definition, row.conname).toContain("'partner_wide'");
     }
+  });
+
+  // #4247: replaying 2026-10-27-130100 re-creates report_runs' four
+  // EXISTS-join policies; the 2026-12-17-160300 restore must drop them again.
+  runDb('the successor replay leaves report_runs on its direct owner policy only', async () => {
+    const rows = await rawRows<{ policyname: string }>(sql`
+      SELECT policyname FROM pg_policies WHERE tablename = 'report_runs' ORDER BY policyname
+    `);
+    expect(rows.map((r) => r.policyname)).toEqual([
+      'report_runs_owner_isolation',
+      'report_runs_report_history_select',
+    ]);
   });
 
   runDb('the successor replay leaves ai_agent_schedules_kind_chk on the CURRENT kind set', async () => {

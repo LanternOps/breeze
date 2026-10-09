@@ -15,6 +15,7 @@ import type { AuthContext } from '../middleware/auth';
 import { createAuditLogAsync } from './auditService';
 import {
   BareMetalRecoveryError,
+  RecoveryIntegrityRefusedError,
   cancelBareMetalRecovery,
   createBareMetalRecovery,
   mintRecoveryTokenForRecovery,
@@ -27,6 +28,7 @@ import {
   backupReadCredentialPayload,
 } from './backupCommandCredentials';
 import { withoutCredentialShapedKeys } from './drStoredCredentialKeys';
+import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { resolveServerUrl } from './recoveryBootstrap';
 import {
   authorizeQueuedRecoveryWork,
@@ -593,7 +595,7 @@ async function resolveProviderSnapshotIdWithDb(
 async function resolveDrStepStorageReference(
   orgId: string,
   payload: Record<string, unknown>,
-): Promise<ReturnType<typeof backupReadCredentialPayload> | null> {
+): Promise<{ reference: ReturnType<typeof backupReadCredentialPayload>; snapshotDbId: string } | null> {
   const snapshotRef =
     typeof payload.snapshotId === 'string' && payload.snapshotId.trim()
       ? payload.snapshotId
@@ -624,7 +626,21 @@ async function resolveDrStepStorageReference(
   const internal = rows.filter((row) => row.id === snapshotRef);
   const matches = internal.length === 1 ? internal : rows.filter((row) => row.snapshotId === snapshotRef);
   if (matches.length !== 1 || !matches[0]!.configId) return null;
-  return backupReadCredentialPayload(matches[0]!.configId, orgId, matches[0]!.provider);
+  return {
+    reference: backupReadCredentialPayload(matches[0]!.configId, orgId, matches[0]!.provider),
+    snapshotDbId: matches[0]!.id,
+  };
+}
+
+/**
+ * Integrity decision for a DR step (services/backupRestoreActorGate.ts): DR
+ * runs as a system actor, which can never confirm a restore of a snapshot
+ * without a usable attestation; such a step fails with the reason. Delivery
+ * and recovery authentication enforce the same rules again.
+ */
+async function drIntegrityRefusal(snapshotDbId: string, targetDeviceId: string, commandType: string): Promise<string | null> {
+  const refusal = await restoreIntegrityRefusalForActor({ snapshotDbId, targetDeviceId, commandType, actor: 'system' });
+  return refusal ? refusal.message : null;
 }
 
 const DR_STORAGE_DESTINATION_COMMAND_TYPES = new Set(BACKUP_READ_CREDENTIAL_COMMAND_TYPES);
@@ -894,10 +910,25 @@ async function dispatchBareMetalRebuildGroup(
         executingDeviceId: host,
         drExecutionId: execution.id,
         drGroupId: group.id,
+        integrity: async (snap) => {
+          const refusal = await restoreIntegrityRefusalForActor({
+            snapshotDbId: snap.id,
+            targetDeviceId: snap.deviceId,
+            commandType: rehearsal ? CommandTypes.BARE_METAL_REBUILD : CommandTypes.BMR_RECOVER,
+            actor: 'system',
+          });
+          return refusal
+            ? { ok: false, status: 409, body: { error: refusal.code, message: refusal.message } }
+            : { ok: true };
+        },
       });
       recoveryId = created.row.id;
       createdAt = created.row.createdAt;
     } catch (error) {
+      if (error instanceof RecoveryIntegrityRefusedError) {
+        failDevice(typeof error.body.message === 'string' ? error.body.message : error.message);
+        continue;
+      }
       if (error instanceof BareMetalRecoveryError) {
         failDevice(error.code);
         continue;
@@ -1087,8 +1118,11 @@ export async function dispatchGroup(
   // a REFERENCE derived from the step's snapshot, set after the plan payload so
   // the plan can never supply its own.
   let storageReference: ReturnType<typeof backupReadCredentialPayload> | null = null;
+  let stepSnapshotDbId: string | null = null;
   if (DR_STORAGE_DESTINATION_COMMAND_TYPES.has(commandType)) {
-    storageReference = await resolveDrStepStorageReference(execution.orgId, payload);
+    const resolved = await resolveDrStepStorageReference(execution.orgId, payload);
+    storageReference = resolved?.reference ?? null;
+    stepSnapshotDbId = resolved?.snapshotDbId ?? null;
     if (!storageReference) {
       for (const deviceId of deviceIds) {
         if (alreadyQueued.has(deviceId)) continue;
@@ -1109,6 +1143,16 @@ export async function dispatchGroup(
     }
     if (DR_STORAGE_DESTINATION_COMMAND_TYPES.has(commandType) && !storageReference) {
       continue;
+    }
+    // Steps whose snapshot is resolved here are decided now; the others (VM
+    // steps name a provider snapshot id the helper resolves) are decided at
+    // delivery, which refuses them the same way.
+    if (stepSnapshotDbId) {
+      const refusal = await drIntegrityRefusal(stepSnapshotDbId, deviceId, commandType);
+      if (refusal) {
+        nextResults.failedDispatches.push({ groupId: group.id, groupName: group.name, deviceId, commandType, error: refusal });
+        continue;
+      }
     }
 
     pending.push({

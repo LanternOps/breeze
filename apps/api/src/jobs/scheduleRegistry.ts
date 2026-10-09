@@ -94,6 +94,9 @@ export const JOB_SCHEDULES = {
   'backup-weekly-test-restore': '38 3 * * 0',
   'stripe-account-cache-refresh': '48 3 * * *',
   'enrollment-key-cleanup': '8 4 * * *',
+  // Partner API ticket-write idempotency claims (design doc §4.4). Daily
+  // tier, minute ≡ 3 (mod 5), ten minutes after the enrollment-key sweep.
+  'partner-api-idempotency-retention': '18 4 * * *',
   'audit-chain-verify': '13 4 * * *',
   'pax8-sync': '28 4 * * *',
   'audit-chain-anchor': '48 4 * * *',

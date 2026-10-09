@@ -342,6 +342,9 @@ describe('persistNarrativeReport', () => {
     const values = state.insertValues[1]!;
     expect(values).toMatchObject({
       reportId: REPORT_ID,
+      // #4247: the artifact run carries its parent definition's owner.
+      orgId: ORG_ID,
+      partnerId: null,
       status: 'completed',
       rowCount: 0,
       executionScopePrincipalKind: 'system',

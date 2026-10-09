@@ -56,17 +56,27 @@ import {
 } from './backupCommandCredentials';
 import { recordBackupReadDispatch, recordRestoreIntegrity, recordStorageSessionMint, type RestoreIntegrityMetricStatus } from './backupMetrics';
 import {
-  INTEGRITY_LOOKUP_FAILED,
   evaluateRestoreIntegrity,
   indexFailedOnAttestation,
   indexMatchesAttestation,
   integrityMetricLabels,
   integrityPayload,
-  lookupIntegrityInformational,
   snapshotIntegrityFailed,
   type IntegrityAttestationInput,
-  type IntegrityLookup,
 } from './backupRestoreIntegrity';
+import {
+  MIN_RESTORE_INTEGRITY_PROTOCOL,
+  RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE,
+  RESTORE_INTEGRITY_MESSAGES,
+  decideRestoreGate,
+  isPrivilegedRestoreCommandType,
+  overrideIntegrityPayload,
+} from './backupRestoreGate';
+import {
+  authorizationCovers,
+  findCommandRestoreAuthorization,
+  type StoredRestoreAuthorization,
+} from './backupRestoreAuthorization';
 import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
@@ -212,6 +222,8 @@ export interface BrokeredReadStore {
     orgId: string;
     /** NULL until the device's first heartbeat reports its helper. */
     backupReadProtocolVersion: number | null;
+    /** Snapshot integrity protocol; same NULL semantics. Optional for stores that predate it (read as unknown). */
+    backupIntegrityProtocolVersion?: number | null;
     agentServerUrl: string | null;
   } | null>;
   findSnapshots(args: { orgId: string; externalSnapshotId: string; configId: string | null }): Promise<StorageSnapshotRow[]>;
@@ -269,6 +281,13 @@ export interface BrokeredReadDeps {
   /** Run `fn` inside the delivery path's DB context, or an org-scoped one when none is held. */
   inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T>;
   lookupDeviceOrg(deviceId: string): Promise<string | null>;
+  /**
+   * The device's stored snapshot integrity protocol: a number, NULL when it
+   * has not reported its helper yet, undefined when the device is not found.
+   */
+  lookupDeviceIntegrityProtocol(deviceId: string): Promise<number | null | undefined>;
+  /** The restore authorization bound to a command id (services/backupRestoreAuthorization.ts), in the delivery path's context. */
+  findCommandAuthorization(commandId: string): Promise<StoredRestoreAuthorization | null>;
 }
 
 function defaultInOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
@@ -280,6 +299,22 @@ function defaultInOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T>
     { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'backupStorageSessions.delivery' },
     fn,
   );
+}
+
+async function defaultLookupDeviceIntegrityProtocol(deviceId: string): Promise<number | null | undefined> {
+  const load = async () => {
+    const device = await drizzleBrokeredReadStore.loadDevice(deviceId);
+    return device ? (device.backupIntegrityProtocolVersion ?? null) : undefined;
+  };
+  return hasDbAccessContext() ? load() : withSystemDbAccessContext(load);
+}
+
+async function defaultFindCommandAuthorization(commandId: string): Promise<StoredRestoreAuthorization | null> {
+  // The authorization is org-scoped (RLS); the delivery path's context is the
+  // device's org (heartbeat), a system context (poll/drain) or the
+  // requesting org (immediate push), all of which can see it.
+  const find = () => findCommandRestoreAuthorization(commandId);
+  return hasDbAccessContext() ? find() : withSystemDbAccessContext(find);
 }
 
 async function defaultLookupDeviceOrg(deviceId: string): Promise<string | null> {
@@ -323,6 +358,8 @@ export const defaultBrokeredReadDeps: BrokeredReadDeps = {
   recordIntegrity: (commandType, status, reason) => recordRestoreIntegrity(commandType, status, reason),
   inOrgContext: (orgId, fn) => defaultInOrgContext(orgId, fn),
   lookupDeviceOrg: (deviceId) => defaultLookupDeviceOrg(deviceId),
+  lookupDeviceIntegrityProtocol: (deviceId) => defaultLookupDeviceIntegrityProtocol(deviceId),
+  findCommandAuthorization: (commandId) => defaultFindCommandAuthorization(commandId),
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -464,6 +501,18 @@ function refusalMessage(reason: string): string {
  * be brokered, a local destination path, or a VM command as queued. Throws
  * CommandDeliveryDeferredError (index not ready) or CommandDeliveryRefusedError
  * otherwise — a storage destination is never delivered for a read.
+ *
+ * Every delivered payload carries the integrity block the server decided
+ * (services/backupRestoreIntegrity.ts); a block in the queued payload is never
+ * passed through. A PRIVILEGED restore (services/backupRestoreGate.ts) is
+ * decided before anything else: it is refused for a helper below integrity
+ * protocol 2, deferred while the device has not reported its helper or the
+ * snapshot's attestation is still being checked, refused for a snapshot that
+ * failed its check or could not be resolved, and, for a snapshot without a
+ * usable attestation, delivered only when a confirmed authorization is bound
+ * to this command (services/backupRestoreAuthorization.ts). A lookup that
+ * fails is an ordinary error: the row is released for a later attempt, never
+ * delivered without a decided block.
  */
 export async function deliverBrokeredReadCommand(
   queuedPayload: Record<string, unknown>,
@@ -474,19 +523,22 @@ export async function deliverBrokeredReadCommand(
   // from what was queued.
   const { [INTEGRITY_FIELD]: _queuedIntegrity, ...payload } = queuedPayload;
 
+  const gated = isPrivilegedRestoreCommandType(ctx.type) ? await gatePrivilegedRestore(payload, ctx, deps) : null;
+
   if (REF_TYPES.has(ctx.type) && payload.provider === 'local' && !hasInlineDestination(payload)) {
     // A local destination is a path the device reaches itself. The resolver
     // refuses if the referenced configuration is no longer local.
     const local = await deps.materializeLocalDestination(payload, ctx);
+    const integrity = gated ?? integrityFor(await findSnapshotForIntegrity(payload, ctx, deps));
     deps.recordDispatch(ctx.type, 'local', 'no_credential');
-    return attachIntegrity(local, ctx.type, await lookupSnapshotForIntegrity(payload, ctx, deps), deps);
+    return attachIntegrity(local, ctx.type, integrity, deps);
   }
 
   const decision = await decide(payload, ctx, deps);
   if (decision.mode === 'brokered') {
     deps.recordMint('snapshot_read', 'minted', 'ok');
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
-    return attachIntegrity(decision.payload, ctx.type, decision.snapshot, deps);
+    return attachIntegrity(decision.payload, ctx.type, gated ?? integrityFor(decision.snapshot), deps);
   }
   const deferral = DEFERRAL_MESSAGES[decision.reason];
   if (deferral) {
@@ -503,63 +555,142 @@ export async function deliverBrokeredReadCommand(
   }
   // VM commands name no destination; they go as queued — never for a
   // snapshot that failed its integrity check, whichever way it was reached.
-  const queuedSnapshot = await lookupSnapshotForIntegrity(payload, ctx, deps);
-  if (queuedSnapshot && queuedSnapshot !== INTEGRITY_LOOKUP_FAILED && snapshotIntegrityFailed(queuedSnapshot)) {
-    deps.recordMint('snapshot_read', 'refused', 'attestation_failed');
-    deps.recordDispatch(ctx.type, 'refused', 'attestation_failed');
-    throw new CommandDeliveryRefusedError(refusalMessage('attestation_failed'));
+  // Both VM types are privileged, so the gate above has already decided
+  // their block; the snapshot is re-read only when it has not.
+  if (!gated) {
+    const queuedSnapshot = await findSnapshotForIntegrity(payload, ctx, deps);
+    if (queuedSnapshot && snapshotIntegrityFailed(queuedSnapshot)) {
+      deps.recordMint('snapshot_read', 'refused', 'attestation_failed');
+      deps.recordDispatch(ctx.type, 'refused', 'attestation_failed');
+      throw new CommandDeliveryRefusedError(refusalMessage('attestation_failed'));
+    }
+    deps.recordMint('snapshot_read', 'legacy', decision.reason);
+    deps.recordDispatch(ctx.type, 'legacy', decision.reason);
+    return attachIntegrity(payload, ctx.type, integrityFor(queuedSnapshot), deps);
   }
   deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
-  return attachIntegrity(payload, ctx.type, queuedSnapshot, deps);
+  return attachIntegrity(payload, ctx.type, gated, deps);
 }
 
 export const INTEGRITY_FIELD = 'integrity';
 
+/** A decided integrity block and the labels it is counted under. */
+type DecidedIntegrity = {
+  block: Record<string, unknown> | null;
+  status: RestoreIntegrityMetricStatus;
+  reason: string;
+};
+
+/** The informational block for a non-privileged command (none when the snapshot is not resolved). */
+function integrityFor(snapshot: StorageSnapshotRow | null): DecidedIntegrity {
+  const integrity = snapshot ? evaluateRestoreIntegrity(snapshot, snapshot.attestation) : null;
+  const labels = integrityMetricLabels(integrity);
+  return {
+    block: integrity ? integrityPayload(integrity) : null,
+    status: labels.status as RestoreIntegrityMetricStatus,
+    reason: labels.reason,
+  };
+}
+
 /**
- * Adds the integrity expectation for `snapshot` (services/backupRestoreIntegrity.ts)
- * to a payload that is about to be delivered, and counts it. Without a
- * resolvable snapshot the payload goes without a block.
+ * Adds a decided integrity block to a payload that is about to be delivered,
+ * and counts it (only here, so a delivery that is refused or deferred later is
+ * never counted as delivered).
  */
 function attachIntegrity(
   payload: Record<string, unknown>,
   commandType: string,
-  snapshot: StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED,
+  integrity: DecidedIntegrity,
   deps: BrokeredReadDeps,
 ): Record<string, unknown> {
-  const integrity: IntegrityLookup = snapshot === INTEGRITY_LOOKUP_FAILED || snapshot === null
-    ? snapshot
-    : evaluateRestoreIntegrity(snapshot, snapshot.attestation);
-  const labels = integrityMetricLabels(integrity);
-  deps.recordIntegrity(commandType, labels.status as RestoreIntegrityMetricStatus, labels.reason);
+  deps.recordIntegrity(commandType, integrity.status, integrity.reason);
   const { [INTEGRITY_FIELD]: _stale, ...out } = payload;
-  return integrity && integrity !== INTEGRITY_LOOKUP_FAILED ? { ...out, [INTEGRITY_FIELD]: integrityPayload(integrity) } : out;
+  return integrity.block ? { ...out, [INTEGRITY_FIELD]: integrity.block } : out;
+}
+
+function refuseRestore(ctx: DeliveryRefreshContext, deps: BrokeredReadDeps, reason: string, message: string): never {
+  deps.recordIntegrity(ctx.type, 'refused', reason);
+  deps.recordDispatch(ctx.type, 'refused', reason);
+  throw new CommandDeliveryRefusedError(message);
 }
 
 /**
- * The snapshot a command delivered without a storage session reads (a local
- * destination, or a VM command as queued), resolved the way `mint` resolves
- * it: by its provider snapshot id, in the referenced organization and
- * configuration, else in the target device's organization. Null unless
- * exactly one row matches. The lookup only feeds the integrity block, so a
- * failure never holds the command back (INTEGRITY_LOOKUP_FAILED).
+ * The integrity decision for a privileged restore (services/backupRestoreGate.ts),
+ * made before any storage session is minted or destination resolved. Returns
+ * the block to deliver, or throws a deferral or refusal.
  */
-function lookupSnapshotForIntegrity(
+async function gatePrivilegedRestore(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps,
-): Promise<StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED> {
-  return lookupIntegrityInformational(
-    {
-      label: `${ctx.type} delivery`,
-      commandId: ctx.commandId,
-      deviceId: ctx.deviceId,
-      snapshotRef: typeof payload.snapshotId === 'string' ? payload.snapshotId : null,
-    },
-    () => findSnapshotForIntegrity(payload, ctx, deps),
+): Promise<DecidedIntegrity> {
+  // The helper that will perform it must check restored bytes against the
+  // attestation. This heartbeat's report wins over the stored column; a device
+  // that has not reported its helper yet waits for the report.
+  const protocol = effectiveHelperProtocol(
+    ctx.reportedBackupIntegrityProtocolVersion,
+    await deps.lookupDeviceIntegrityProtocol(ctx.deviceId),
   );
+  if (protocol === null) {
+    deps.recordDispatch(ctx.type, 'deferred', 'helper_unreported');
+    throw new CommandDeliveryDeferredError(BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE);
+  }
+  if (!(protocol >= MIN_RESTORE_INTEGRITY_PROTOCOL)) {
+    refuseRestore(ctx, deps, 'helper_update_required', RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE);
+  }
+
+  const snapshot = await findSnapshotForIntegrity(payload, ctx, deps);
+  const integrity = snapshot ? evaluateRestoreIntegrity(snapshot, snapshot.attestation) : null;
+  const decision = decideRestoreGate({ commandType: ctx.type, integrity, targetDeviceId: ctx.deviceId });
+  // Hydration already found the stored manifest is not the attested one:
+  // permanent, whatever the attestation's own state (a failed attestation is
+  // refused below with its own reason).
+  if (
+    snapshot && snapshot.fileIndexStatus === 'failed' && indexFailedOnAttestation(snapshot.fileIndexError)
+    && !(decision.kind === 'refuse' && decision.code === 'snapshot_integrity_failed')
+  ) {
+    deps.recordMint('snapshot_read', 'refused', 'manifest_differs_from_attestation');
+    refuseRestore(ctx, deps, 'manifest_differs_from_attestation', refusalMessage('manifest_differs_from_attestation'));
+  }
+  if (decision.kind === 'allow') {
+    const labels = integrityMetricLabels(integrity);
+    return { block: integrityPayload(integrity!), status: labels.status as RestoreIntegrityMetricStatus, reason: labels.reason };
+  }
+  if (decision.kind === 'refuse') {
+    switch (decision.code) {
+      case 'attestation_pending':
+        // Verification is automatic: the next delivery attempt decides.
+        deps.recordDispatch(ctx.type, 'deferred', 'attestation_pending');
+        throw new CommandDeliveryDeferredError(decision.message);
+      case 'snapshot_integrity_failed':
+        // Same refusal every restore-shaped type gets for this snapshot.
+        deps.recordMint('snapshot_read', 'refused', 'attestation_failed');
+        refuseRestore(ctx, deps, 'attestation_failed', refusalMessage('attestation_failed'));
+      default:
+        refuseRestore(ctx, deps, decision.code, decision.message);
+    }
+  }
+  // No usable attestation: delivered only with a confirmed authorization bound
+  // to this very command, for this snapshot, target device and command type.
+  const authorization = await deps.findCommandAuthorization(ctx.commandId);
+  if (!authorizationCovers(authorization, { snapshotDbId: snapshot!.id, targetDeviceId: ctx.deviceId, commandTypes: [ctx.type] })) {
+    refuseRestore(ctx, deps, 'authorization_missing', RESTORE_INTEGRITY_MESSAGES.authorization_missing);
+  }
+  return {
+    block: overrideIntegrityPayload(snapshot!.snapshotId, authorization.id),
+    status: 'override',
+    reason: decision.reason,
+  };
 }
 
+/**
+ * The snapshot a command reads, resolved the way `mint` resolves it: by its
+ * provider snapshot id, in the referenced organization and configuration,
+ * else in the target device's organization. Null unless exactly one row
+ * matches. A failure propagates (the row is released, never delivered
+ * without a decided block).
+ */
 async function findSnapshotForIntegrity(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,

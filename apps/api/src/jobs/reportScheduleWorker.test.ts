@@ -258,6 +258,7 @@ import {
   resolveScheduledReportRecipientSets,
   resolveScheduledDeliveryContext,
 } from './reportScheduleWorker';
+import { seriesChildGate } from '../services/reportSeries/reconcile';
 import { persistedSiteScopeValues } from '../services/siteScope';
 import { getEmailService } from '../services/email';
 
@@ -878,10 +879,38 @@ describe('processRunScheduledReport', () => {
       { partnerAxisOnly: true },
     );
     expect(failedInsert.values).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', errorMessage: 'scope_permission_missing' }),
+      // #4247: a denial run carries its parent's owner like every other run.
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: 'scope_permission_missing',
+        orgId: ORG_ID,
+        partnerId: null,
+      }),
     );
     expect(generateReportMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  // #4247: the series gate records its skip run BEFORE any authority
+  // resolution — it must still carry the (org-owned) child's owner.
+  it('records a series-gate skip run on the child report\'s org owner', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, seriesId: 'series-1', seriesRevision: 1 }]));
+    vi.mocked(seriesChildGate).mockResolvedValueOnce('skip_disabled');
+    const skipInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(skipInsert);
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(skipInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'failed',
+        errorMessage: 'series_skip_disabled',
+        orgId: ORG_ID,
+        partnerId: null,
+      }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
   });
 
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
@@ -924,6 +953,8 @@ describe('processRunScheduledReport', () => {
     );
     expect(runInsert.values).toHaveBeenCalledWith(
       expect.objectContaining({
+        orgId: ORG_ID,
+        partnerId: null,
         executionScopeVersion: 1,
         executionScopeKind: 'unrestricted',
         executionScopeSiteIds: null,
@@ -2010,6 +2041,8 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     expect(insertMock).toHaveBeenCalledTimes(1);
     expect(runInsert.values).toHaveBeenCalledWith(
       expect.objectContaining({
+        orgId: null,
+        partnerId: PARTNER_ID,
         status: 'running',
         executionScopeKind: 'partner_wide',
         executionScopeSiteIds: null,
@@ -2260,6 +2293,8 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
 
       expect(failedInsert.values).toHaveBeenCalledWith({
         reportId: REPORT_ID,
+        orgId: null,
+        partnerId: PARTNER_ID,
         status: 'failed',
         completedAt: expect.any(Date),
         errorMessage: reason,

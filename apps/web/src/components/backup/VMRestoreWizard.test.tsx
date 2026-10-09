@@ -134,6 +134,22 @@ describe('VMRestoreWizard', () => {
     expect(card.textContent).toContain('512 GB');
   });
 
+  it('shows each snapshot\'s integrity status in the picker', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snapshot-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z', integrityStatus: 'pending' },
+          { id: 'snapshot-2', label: 'Weekly Snapshot', createdAt: '2026-03-21T10:00:00Z' },
+        ] });
+      }
+      return base(input, init);
+    });
+    render(<VMRestoreWizard />);
+    await screen.findByRole('button', { name: /Nightly Snapshot/i });
+    expect(screen.getAllByTestId('snapshot-integrity-badge').map((el) => el.textContent)).toEqual(['Checking']);
+  });
+
   it('renders alpha banner', async () => {
     render(<VMRestoreWizard />);
 
@@ -276,6 +292,53 @@ describe('VMRestoreWizard', () => {
         diskSizeGb: expect.any(Number),
       })
     );
+  });
+
+  it('asks for confirmation before an instant boot of a backup without an integrity attestation, then resubmits', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/restore/instant-boot') {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            error: 'Confirm the restore.',
+            code: 'STEP_UP_REQUIRED',
+            stepUp: {
+              operation: 'backup_unattested_restore',
+              method: 'confirm',
+              reason: 'producer_only_other_target',
+              resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'vm_instant_boot' },
+            },
+          }, false, 403);
+        }
+      }
+      return base(input, init);
+    });
+
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /3\. Target Host/i }));
+    fireEvent.click(await screen.findByRole('radio'));
+    fireEvent.click(screen.getByRole('button', { name: /5\. VM Name/i }));
+    fireEvent.change(screen.getByLabelText(/VM Name/i), { target: { value: 'Instant VM' } });
+    fireEvent.click(screen.getByRole('button', { name: /2\. Mode/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Instant Boot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Instant Boot/i }));
+
+    const prompt = await screen.findByTestId('unattested-restore-stepup');
+    expect(prompt.textContent).toMatch(/only the original device can check/i);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-confirm'));
+    await waitFor(() => expect(posts).toBe(2));
+    const bodies = fetchMock.mock.calls
+      .filter(([url]) => url === '/backup/restore/instant-boot')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies[0]).not.toHaveProperty('confirmUnattestedRestore');
+    expect(bodies[1]).toMatchObject({ snapshotId: 'snapshot-1', vmName: 'Instant VM', confirmUnattestedRestore: true });
+    await waitFor(() => expect(screen.queryByTestId('unattested-restore-stepup')).toBeNull());
   });
 
   it('does not offer the rebuild engine for a snapshot without a layout manifest', async () => {

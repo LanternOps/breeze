@@ -207,6 +207,8 @@ describe('managed evidence path and visible refusal state (#5784 W01)', () => {
     expect(generateReportMock).not.toHaveBeenCalled();
     // The run row records that the SYSTEM authority ran, org-wide, no user.
     expect(inserted[0]).toMatchObject({ reportId: 'r1', requestedByKind: 'system', requestedByUserId: null,
+      // #4247: the run carries its parent definition's owner axis.
+      orgId: 'org1', partnerId: null,
       executionScopePrincipalKind: 'system', executionScopeKind: 'unrestricted', executionScopeUserId: null });
     expect(inserted.at(-2)).toMatchObject({ kind: 'report_run', reportId: 'r1', reportRunId: 'run1' });
   });

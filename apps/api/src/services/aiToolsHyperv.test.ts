@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const actorGate = vi.hoisted(() => ({ refusal: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('./backupRestoreActorGate', () => ({
+  restoreIntegrityRefusalForActor: (...args: unknown[]) => actorGate.refusal(...(args as [])),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -419,6 +423,31 @@ describe('aiToolsHyperv handlers', () => {
       },
       expect.objectContaining({ userId: 'user-1' })
     );
+  });
+
+  it('refuses an AI Hyper-V restore of a snapshot without an integrity attestation, before queueing anything', async () => {
+    prepareHandlerMocks('restore_hyperv_vm');
+    actorGate.refusal.mockResolvedValueOnce({
+      code: 'snapshot_integrity_unavailable',
+      message: 'This backup has no integrity attestation. A technician must restore it from the Breeze console with two-factor confirmation.',
+    });
+
+    const result = await toolMap.get('restore_hyperv_vm')!.handler(
+      { deviceId: DEVICE_ID, snapshotId: '66666666-6666-4666-8666-666666666666', vmName: 'Recovered VM' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(result)).toEqual({
+      error: 'This backup has no integrity attestation. A technician must restore it from the Breeze console with two-factor confirmation.',
+      code: 'snapshot_integrity_unavailable',
+    });
+    expect(actorGate.refusal).toHaveBeenCalledWith({
+      snapshotDbId: '66666666-6666-4666-8666-666666666666',
+      targetDeviceId: DEVICE_ID,
+      commandType: 'hyperv_restore',
+      actor: 'ai_agent',
+    });
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 
   // D20b follow-up: a snapshot that predates destination tracking (configId

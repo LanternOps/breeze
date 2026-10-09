@@ -24,6 +24,7 @@ import {
 } from './backupProviderConfig';
 import { backupReadCredentialPayload, backupWriteCredentialPayload } from './backupCommandCredentials';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -474,6 +475,15 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         const { message } = resolveBackupDestinationError(snapshot.configId);
         return JSON.stringify({ error: message });
       }
+
+      // Integrity: an AI agent can only restore an attested snapshot.
+      const integrityRefusal = await restoreIntegrityRefusalForActor({
+        snapshotDbId: snapshot.id,
+        targetDeviceId: deviceId,
+        commandType: CommandTypes.HYPERV_RESTORE,
+        actor: 'ai_agent',
+      });
+      if (integrityRefusal) return JSON.stringify({ error: integrityRefusal.message, code: integrityRefusal.code });
 
       const { command, error } = await aiQueueCommandForExecution(
         auth,

@@ -646,6 +646,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'partnerApiIdempotencyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/partnerApiIdempotencyRetention');
+      return { init: m.initializePartnerApiIdempotencyRetentionWorker, shutdown: m.shutdownPartnerApiIdempotencyRetentionWorker };
+    },
+  },
+  {
     name: 'quickSupportReaper',
     placement: 'socket-owner',
     load: async () => {

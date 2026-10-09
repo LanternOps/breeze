@@ -23,6 +23,7 @@ import './setup';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
+import { attestSnapshotForTest } from './restoreIntegrityFixture';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
@@ -86,10 +87,14 @@ async function seedRecovery(codeSuffix: string, plainCode: string) {
     jobId: job.id,
     deviceId: device.id,
     snapshotId: `bmr-provider-${suffix}`,
+    storageIdentity: `local::/tmp/bmr-public-${suffix}`,
     metadata: { platform: 'linux' },
     bareMetalRestorable: true,
   }).returning();
   if (!snapshot) throw new Error('snapshot fixture insert failed');
+  // Attested by its producing helper (recovery clients refuse nothing else
+  // without a confirmed authorization).
+  await attestSnapshotForTest(snapshot.id);
 
   const code = normalizeRecoveryCode(plainCode);
   if (!code) throw new Error(`test code did not normalize: ${plainCode}`);
@@ -118,7 +123,7 @@ describe('bare-metal recovery public routes against real PostgreSQL (W04a review
     const res = await app.request('/bmr/recover/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, integrityProtocolVersion: 2 }),
     });
 
     expect(res.status).toBe(200);
@@ -146,7 +151,7 @@ describe('bare-metal recovery public routes against real PostgreSQL (W04a review
         app.request('/bmr/recover/exchange', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({ code, integrityProtocolVersion: 2 }),
         })
       )
     );
@@ -167,7 +172,7 @@ describe('bare-metal recovery public routes against real PostgreSQL (W04a review
     const exchangeRes = await app.request('/bmr/recover/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, integrityProtocolVersion: 2 }),
     });
     expect(exchangeRes.status).toBe(200);
     const { token } = await exchangeRes.json() as { token: string };

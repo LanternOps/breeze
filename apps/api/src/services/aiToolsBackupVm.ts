@@ -22,6 +22,7 @@ import { authorizeAiRestore, type AiRestoreAuthorization } from './aiToolsRestor
 import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
 import type { HypervOptions } from './bareMetalRebuildSchemas';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -170,7 +171,18 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           // Shape already validated by aiToolSchemasBackup (hypervOptionsSchema).
           ...(hyperv ? { hyperv } : {}),
           userId: auth.user?.id ?? null,
+          // Integrity: an AI agent can only rebuild an attested snapshot.
+          integrity: async (snap) => {
+            const refusal = await restoreIntegrityRefusalForActor({
+              snapshotDbId: snap.id,
+              targetDeviceId: snap.deviceId,
+              commandType: CommandTypes.BARE_METAL_REBUILD,
+              actor: 'ai_agent',
+            });
+            return refusal ? { ok: false, status: 409, body: { error: refusal.message, code: refusal.code } } : { ok: true };
+          },
         });
+        if (!result.ok && result.body) return JSON.stringify(result.body);
         if (!result.ok) {
           return JSON.stringify({
             error: result.error,
@@ -228,6 +240,15 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       // same org; a cross-site target needs backup:cross_site_restore (route parity).
       const targetDenied = restoreDenied(await authorizeAiRestore(auth, { snapshot, targetDeviceId }));
       if (targetDenied) return targetDenied;
+
+      // Integrity: an AI agent can only restore an attested snapshot.
+      const integrityRefusal = await restoreIntegrityRefusalForActor({
+        snapshotDbId: snapshot.id,
+        targetDeviceId,
+        commandType: CommandTypes.VM_RESTORE_FROM_BACKUP,
+        actor: 'ai_agent',
+      });
+      if (integrityRefusal) return JSON.stringify({ error: integrityRefusal.message, code: integrityRefusal.code });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -363,6 +384,15 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       // same org; a cross-site target needs backup:cross_site_restore (route parity).
       const targetDenied = restoreDenied(await authorizeAiRestore(auth, { snapshot, targetDeviceId }));
       if (targetDenied) return targetDenied;
+
+      // Integrity: an AI agent can only restore an attested snapshot.
+      const integrityRefusal = await restoreIntegrityRefusalForActor({
+        snapshotDbId: snapshot.id,
+        targetDeviceId,
+        commandType: CommandTypes.VM_INSTANT_BOOT,
+        actor: 'ai_agent',
+      });
+      if (integrityRefusal) return JSON.stringify({ error: integrityRefusal.message, code: integrityRefusal.code });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'

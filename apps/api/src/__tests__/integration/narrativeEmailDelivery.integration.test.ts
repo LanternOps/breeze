@@ -394,8 +394,8 @@ describe('narrative email delivery against live Postgres (#4248 W03)', () => {
 
   /**
    * The ON DELETE CASCADE is why this table needs no ASSOCIATED_SYSTEM_SCOPED_TABLES
-   * entry and no merge-registry entry: the existing report_runs pre-clear in
-   * tenantCascade removes the deliveries for free. If the FK were NO ACTION,
+   * entry and no merge-registry entry: org erasure deletes report_runs (an
+   * org-cascade table since #4247) and the deliveries go with them. If the FK were NO ACTION,
    * this cascade would abort with 23503.
    */
   runDb('org erasure succeeds with delivery rows present, and cascades them', async () => {

@@ -1105,5 +1105,27 @@
     "restrictedDescriptorsShowPaths_other": "Show {{count}} paths",
     "restrictedDescriptorsUnlisted_one": "{{count}} more item is not listed.",
     "restrictedDescriptorsUnlisted_other": "{{count}} more items are not listed."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Confirm this restore",
+    "introUnattested": "This backup has no integrity attestation, so its contents cannot be checked against a verified record before they are restored.",
+    "introProducerOnly": "This backup was stored where only the original device can check its integrity. Restoring it to a different device needs your confirmation.",
+    "twoFactor": "Confirm with two-factor authentication to continue.",
+    "confirmOnly": "Confirm to continue. The restore is recorded in the audit log.",
+    "typedIntro": "This backup was taken before integrity checks existed. Type the device name to confirm. The restore is recorded in the audit log.",
+    "typedLabel": "Type {{phrase}} to confirm",
+    "code": "Authentication code",
+    "passkey": "You will be asked to use your passkey.",
+    "noFactor": "Set up two-factor authentication on your profile, then try again.",
+    "confirm": "Confirm and restore",
+    "cancel": "Cancel",
+    "failed": "Verification was not accepted. Try again.",
+    "unavailable": "Could not start verification. Try again."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verified",
+    "checking": "Checking",
+    "unverified": "Not verified",
+    "failed": "Failed integrity check"
   }
 }

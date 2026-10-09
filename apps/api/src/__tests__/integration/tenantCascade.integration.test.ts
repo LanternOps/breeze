@@ -4,6 +4,7 @@ import { db } from '../../db';
 import {
   getOrgCascadeDeleteOrder,
   topologicalCascadeOrder,
+  CASCADE_ORDER_SET_NULL_EDGE_BREAKS,
 } from '../../services/tenantCascade';
 
 /**
@@ -125,7 +126,9 @@ describe('Tenant cascade list contract', () => {
     const edges = (await db.execute(sql`
       SELECT
         tc.relname AS child_table,
-        tp.relname AS parent_table
+        tp.relname AS parent_table,
+        c.conname AS conname,
+        c.confdeltype::text AS confdeltype
       FROM pg_constraint c
       JOIN pg_class tc ON tc.oid = c.conrelid
       JOIN pg_class tp ON tp.oid = c.confrelid
@@ -135,11 +138,13 @@ describe('Tenant cascade list contract', () => {
         AND nc.nspname = 'public'
         AND np.nspname = 'public'
         AND tc.relname <> tp.relname;
-    `)) as unknown as Array<{ child_table: string; parent_table: string }>;
+    `)) as unknown as Array<{ child_table: string; parent_table: string; conname: string; confdeltype: string }>;
 
     const violations: Array<{ child: string; parent: string }> = [];
     for (const e of edges) {
       if (!cascadeSet.has(e.child_table) || !cascadeSet.has(e.parent_table)) continue;
+      // A SET NULL cycle break is safe in either order (see the next test).
+      if (CASCADE_ORDER_SET_NULL_EDGE_BREAKS.has(e.conname) && e.confdeltype === 'n') continue;
       const ci = indexOf.get(e.child_table)!;
       const pi = indexOf.get(e.parent_table)!;
       // Child must be deleted before parent → child must come first.
@@ -152,5 +157,24 @@ describe('Tenant cascade list contract', () => {
         `AFTER their parents, leaving orphan rows):\n` +
         `${JSON.stringify(violations, null, 2)}`,
     ).toEqual([]);
+  });
+
+  it('every CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry exists, is ON DELETE SET NULL, and is on nullable columns', async () => {
+    const names = [...CASCADE_ORDER_SET_NULL_EDGE_BREAKS];
+    const rows = (await db.execute(sql`
+      SELECT c.conname,
+             c.confdeltype::text AS confdeltype,
+             bool_and(NOT a.attnotnull) AS all_nullable
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+       WHERE c.contype = 'f'
+         AND c.conname IN (${sql.join(names.map((n) => sql`${n}`), sql`, `)})
+       GROUP BY c.conname, c.confdeltype
+    `)) as unknown as Array<{ conname: string; confdeltype: string; all_nullable: boolean }>;
+    expect(rows.map((r) => r.conname).sort()).toEqual(names.sort());
+    for (const r of rows) {
+      expect(r.confdeltype, `${r.conname} must stay ON DELETE SET NULL`).toBe('n');
+      expect(r.all_nullable, `${r.conname} columns must be nullable`).toBe(true);
+    }
   });
 });

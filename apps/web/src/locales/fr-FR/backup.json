@@ -1105,5 +1105,27 @@
     "restrictedDescriptorsShowPaths_other": "Afficher {{count}} chemins",
     "restrictedDescriptorsUnlisted_one": "{{count}} autre élément n'est pas listé.",
     "restrictedDescriptorsUnlisted_other": "{{count}} autres éléments ne sont pas listés."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Confirmer cette restauration",
+    "introUnattested": "Cette sauvegarde n'a pas d'attestation d'intégrité : son contenu ne peut donc pas être vérifié par rapport à un enregistrement contrôlé avant sa restauration.",
+    "introProducerOnly": "Cette sauvegarde a été stockée à un emplacement où seul l'appareil d'origine peut vérifier son intégrité. La restaurer sur un autre appareil nécessite votre confirmation.",
+    "twoFactor": "Confirmez avec l'authentification à deux facteurs pour continuer.",
+    "confirmOnly": "Confirmez pour continuer. La restauration est consignée dans le journal d'audit.",
+    "typedIntro": "Cette sauvegarde a été créée avant l'existence des contrôles d'intégrité. Saisissez le nom de l'appareil pour confirmer. La restauration est consignée dans le journal d'audit.",
+    "typedLabel": "Saisissez {{phrase}} pour confirmer",
+    "code": "Code d'authentification",
+    "passkey": "Il vous sera demandé d'utiliser votre clé d'accès.",
+    "noFactor": "Configurez l'authentification à deux facteurs dans votre profil, puis réessayez.",
+    "confirm": "Confirmer et restaurer",
+    "cancel": "Annuler",
+    "failed": "La vérification n'a pas été acceptée. Réessayez.",
+    "unavailable": "Impossible de démarrer la vérification. Réessayez."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Vérifiée",
+    "checking": "Vérification en cours",
+    "unverified": "Non vérifiée",
+    "failed": "Échec du contrôle d'intégrité"
   }
 }

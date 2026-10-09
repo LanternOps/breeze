@@ -746,6 +746,9 @@ describe('generatePortalReport', () => {
         requestedByPortalUserId: PORTAL_USER_ID,
         executionScopePrincipalKind: 'portal_user',
         executionScopeUserId: null,
+        // #4247: the run carries its parent definition's owner axis.
+        orgId: ORG_ID,
+        partnerId: null,
       }),
     );
     expect(state.generateReport).toHaveBeenCalledTimes(1);

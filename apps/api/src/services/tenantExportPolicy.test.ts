@@ -389,7 +389,14 @@ describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
       created_at: 'include',
     });
 
-    expect(CORE_TENANT_EXPORT_POLICY).not.toHaveProperty('report_runs');
+    // #4247: report_runs gained org_id, so every column is classified; the
+    // stored result payload is an open container and never exported.
+    const runs = CORE_TENANT_EXPORT_POLICY.report_runs!;
+    expect(runs.organizationKey).toBe('org_id');
+    expect(runs.columns.result).toMatchObject({ decision: 'exclude' });
+    expect(runs.columns.org_id!.decision).toBe('include');
+    expect(runs.columns.partner_id!.decision).toBe('include');
+    expect(runs.columns.output_url!.decision).toBe('include');
   });
 
   // #2787 wave 04 — `devices` is in CORE_ORG_CASCADE_DELETE_ORDER, so EVERY

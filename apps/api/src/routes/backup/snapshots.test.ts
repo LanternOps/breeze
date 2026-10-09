@@ -477,6 +477,27 @@ describe('snapshot routes', () => {
     ]);
   });
 
+  it('exposes each snapshot\'s integrity status so restore screens can label it', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ integrityStatus: 'attested' }),
+      makeSnapshot({ id: 'snapshot-2', snapshotId: 'snap-2', integrityStatus: 'unattested_legacy' }),
+      makeSnapshot({ id: 'snapshot-3', snapshotId: 'snap-3' }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((row: { integrityStatus: unknown }) => row.integrityStatus)).toEqual([
+      'attested',
+      'unattested_legacy',
+      'unattested_legacy',
+    ]);
+  });
+
   it('exposes the sizing fields of the stored hardware profile so Restore-as-VM cards can show CPU / memory / disk', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({

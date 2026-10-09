@@ -1,3 +1,4 @@
+import { RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupRestoreGate';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -394,7 +395,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   });
 
   it('queues a storage-destination read to a device whose backup helper supports storage sessions', async () => {
-    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1 });
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2 });
     claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
@@ -444,14 +445,51 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(res.ok).toBe(true);
   });
 
-  it('queues a local-destination read to any helper', async () => {
-    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0 });
+  it('queues a local-destination restore to any helper that checks attestations, whatever its storage protocol', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0, backupIntegrityProtocolVersion: 2 });
     claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
       type: 'backup_restore',
       payload: { snapshotId: 'snap-1', provider: 'local', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it.each([
+    ['backup_restore', 1, { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } }],
+    ['backup_restore', 0, { snapshotId: 'snap-1', provider: 'local', providerConfigRef: { configId: 'c', orgId: ORG } }],
+    ['vm_instant_boot', 1, { snapshotId: 'snap-1', vmName: 'vm1' }],
+    ['bare_metal_rebuild', 1, { recoveryId: 'r1' }],
+  ] as const)('refuses %s to a helper below integrity protocol 2 (reports %s), writing no row', async (type, protocol, payload) => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: protocol });
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type, payload });
+    expect(res).toMatchObject({ ok: false, code: 'backup_helper_update_required', error: RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(claimMock).not.toHaveBeenCalled();
+  });
+
+  it('queues a privileged restore for a device that has not reported its helper yet (delivery waits for the report)', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'backup_restore',
+      payload: { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('never refuses read-only validation on integrity grounds', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 1 });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'backup_verify',
+      payload: { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
     });
     expect(res.ok).toBe(true);
   });

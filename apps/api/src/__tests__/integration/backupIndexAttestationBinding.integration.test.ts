@@ -25,7 +25,7 @@ import './setup';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
 import { deliverRecoveryCommandIntegrity, defaultRecoveryCommandIntegrityDeps } from '../../services/backupRecoveryCommandIntegrity';
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
@@ -36,6 +36,7 @@ import { backupReadCredentialPayload } from '../../services/backupCommandCredent
 import { CommandDeliveryDeferredError } from '../../services/commandDeliveryRefusal';
 import { WRITE_IDENTITY, insertSnapshotRow, orgContext, seedWriteTenant, type WriteTenant } from './backupWriteFixtures';
 import { getTestDb } from './setup';
+import { markHelperChecksAttestations } from './restoreIntegrityFixture';
 
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../jobs/backupSnapshotFileIndexWorker')>()),
@@ -274,6 +275,7 @@ describe('readers apply the binding', () => {
 
   runDb('a brokered restore carries the attested expectation, and is deferred while its index is unbound', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
+    await markHelperChecksAttestations(t.deviceId);
     const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
     await insertAttestation(t, snapshotDbId, snapshotId, manifest, 'verified');
     await getTestDb().execute(sql`
@@ -355,27 +357,24 @@ describe('index membership is decided in one statement with the binding', () => 
   });
 });
 
-describe('a failed integrity lookup never aborts the delivery transaction', () => {
-  runDb('a VM command delivered as queued: the block is dropped and the caller\'s transaction stays usable', async () => {
+describe('a failed integrity lookup is never delivered, and never aborts the delivery transaction', () => {
+  // Delivery runs each refresher in a savepoint (commandDelivery.ts
+  // runRefresher); a lookup that fails releases the row for a later attempt.
+  runDb('a VM command: not delivered, and the caller\'s transaction stays usable', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     await getTestDb().execute(sql`UPDATE devices SET backup_read_protocol_version = 0 WHERE id = ${t.deviceId}`);
+    await markHelperChecksAttestations(t.deviceId);
     const { snapshotId } = await seedSnapshot(t);
-    const realFind = drizzleBrokeredReadStore.findSnapshots.bind(drizzleBrokeredReadStore);
-    const spy = vi.spyOn(drizzleBrokeredReadStore, 'findSnapshots')
-      // The delivery decision reads the snapshot first; the lookup that
-      // feeds the block runs a statement that fails in the database.
-      .mockImplementationOnce(realFind)
-      .mockImplementation(async () => {
-        await db.execute(sql`SELECT 1 / 0`);
-        return [];
-      });
+    const spy = vi.spyOn(drizzleBrokeredReadStore, 'findSnapshots').mockImplementation(async () => {
+      await db.execute(sql`SELECT 1 / 0`);
+      return [];
+    });
     try {
       const after = await withDbAccessContext(orgContext(t.orgId), async () => {
-        const out = await deliverBrokeredReadCommand(
+        await expect(withDbTransaction(() => deliverBrokeredReadCommand(
           { restoreJobId: 'r1', snapshotId, vmName: 'vm1' },
           { commandId: randomUUID(), deviceId: t.deviceId, type: 'vm_instant_boot', claimedAt: new Date() },
-        );
-        expect(out).not.toHaveProperty('integrity');
+        ))).rejects.toThrow();
         // Same transaction: still usable after the failed statement.
         return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
       });
@@ -385,8 +384,9 @@ describe('a failed integrity lookup never aborts the delivery transaction', () =
     }
   });
 
-  runDb('a bare-metal recovery command: the block is dropped and the caller\'s transaction stays usable', async () => {
+  runDb('a bare-metal recovery command: not delivered, and the caller\'s transaction stays usable', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
+    await markHelperChecksAttestations(t.deviceId);
     const { snapshotId } = await seedSnapshot(t);
     const deps = {
       ...defaultRecoveryCommandIntegrityDeps,
@@ -396,14 +396,14 @@ describe('a failed integrity lookup never aborts the delivery transaction', () =
       },
     };
     const after = await withDbAccessContext(orgContext(t.orgId), async () => {
-      const out = await deliverRecoveryCommandIntegrity(
+      await expect(withDbTransaction(() => deliverRecoveryCommandIntegrity(
         { snapshotId, recoveryToken: 'enc', serverUrl: 'https://api.example' },
         { commandId: randomUUID(), deviceId: t.deviceId, type: 'bmr_recover', claimedAt: new Date() },
         deps,
-      );
-      expect(out).not.toHaveProperty('integrity');
+      ))).rejects.toThrow();
       return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
     });
     expect((after as unknown as Array<{ n: number }>)[0]!.n).toBe(1);
   });
 });
+

@@ -223,7 +223,34 @@ export const usageHistoryQuerySchema = z.object({
   days: z.coerce.number().int().min(3).max(90).optional()
 });
 
+/**
+ * Confirmation fields every privileged-restore request may carry
+ * (routes/backup/restoreIntegrityGate.ts): a step-up grant for operation
+ * `backup_unattested_restore`, or — only on a deployment running with
+ * two-factor authentication disabled — an explicit confirmation.
+ */
+export const restoreIntegrityConfirmationFields = {
+  stepUpGrant: z.string().uuid().optional(),
+  confirmUnattestedRestore: z.boolean().optional(),
+};
+
+/**
+ * POST /backup/restore-confirmations: the typed confirmation of one restore
+ * (routes/backup/restoreConfirmations.ts). The resource fields mirror the
+ * `stepUp.resource` a restore route answered with.
+ */
+export const restoreTypedConfirmationSchema = z.object({
+  snapshotId: z.string().uuid(),
+  targetDeviceId: z.string().uuid(),
+  commandType: z.enum([
+    'backup_restore', 'mssql_restore', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
+    'bmr_recover', 'bare_metal_rebuild',
+  ]),
+  confirmationText: z.string().min(1).max(255),
+});
+
 export const restoreSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
   targetPath: z.string().optional(),
@@ -341,6 +368,7 @@ export const extendedPolicyUpdateSchema = policyUpdateSchema.extend({
 // ── BMR / Recovery Token schemas ────────────────────────────────────
 
 export const bmrCreateTokenSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().guid(),
   restoreType: z.enum(['full', 'selective', 'bare_metal']),
   targetConfig: z
@@ -352,9 +380,15 @@ export const bmrCreateTokenSchema = z.object({
   expiresInHours: z.number().int().min(1).max(168).default(24),
 });
 
+// The snapshot integrity protocol the recovery client implements (2 = checks
+// every restored byte against the snapshot attestation). Optional in the
+// schema so an older client gets an actionable refusal, not a 400.
+const recoveryIntegrityProtocolVersion = z.number().int().min(0).max(1000).optional();
+
 export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
   capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
+  integrityProtocolVersion: recoveryIntegrityProtocolVersion,
 });
 
 export const bmrRecoveryDownloadSchema = z.object({
@@ -376,6 +410,7 @@ export const bmrRecoveryBinarySignatureSchema = z.object({
 // ── Bare-metal recovery schemas (W04a) ──────────────────────────────
 
 export const bmrRecoveryCreateSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().guid(),
   identity: z.enum(['original', 'new']).default('original'),
 });
@@ -403,6 +438,7 @@ export const bmrExchangeSchema = z.object({
   // W07a: the OS the recovery media boots, so a code issued for the other
   // platform is refused (409 media_platform_mismatch) before it is claimed.
   mediaPlatform: z.enum(['linux', 'windows']).optional(),
+  integrityProtocolVersion: recoveryIntegrityProtocolVersion,
 });
 
 // W09a (#6464) Task 6: bound the agent-reported `result` payload so an
@@ -498,6 +534,7 @@ export const bmrMediaListSchema = z.object({
 // with `identity: 'new'` (spec §9: a rehearsal image can never resume the
 // production identity), so a client cannot even ask.
 const bmrVmRestoreHypervSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   engine: z.literal('hyperv'),
   snapshotId: z.string().guid(),
   targetDeviceId: z.string().guid(),
@@ -524,6 +561,7 @@ export const rebuildVhdxOutputPathSchema = z
 
 const bmrVmRestoreRebuildSchema = z
   .object({
+    ...restoreIntegrityConfirmationFields,
     engine: z.literal('rebuild'),
     snapshotId: z.string().guid(),
     rebuildHostDeviceId: z.string().guid(),
@@ -549,6 +587,7 @@ export const bmrVmRestoreSchema = z.preprocess(
 export type BmrVmRestoreInput = z.infer<typeof bmrVmRestoreSchema>;
 
 export const instantBootSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().guid(),
   targetDeviceId: z.string().guid(),
   vmName: z.string().min(1).max(200),
@@ -570,6 +609,7 @@ export const hypervBackupSchema = z.object({
 });
 
 export const hypervRestoreSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   deviceId: z.string().guid(),
   snapshotId: z.string().guid(),
   vmName: z.string().min(1).max(256).optional(),

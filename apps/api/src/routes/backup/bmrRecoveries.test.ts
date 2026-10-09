@@ -201,6 +201,22 @@ vi.mock('../../services/backupRestoreIntegrity', async (importOriginal) => ({
   resolveRestoreIntegrity: (id: string) => resolveRestoreIntegrityMock(id),
 }));
 
+// Integrity checks themselves are covered in restoreIntegrityGate.test.ts and
+// backupRecoveryIntegrityGate.test.ts; here only how the routes use them.
+const ATTESTED_BLOCK = {
+  v: 1, mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-1',
+  objects: [{ role: 'manifest', key: 'snapshots/snap-ext-1/manifest.json', sha256: 'a'.repeat(64), size: 9 }],
+};
+const integrityGate = vi.hoisted(() => ({ check: vi.fn(), record: vi.fn(), evaluate: vi.fn() }));
+vi.mock('./restoreIntegrityGate', () => ({
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
+vi.mock('../../services/backupRecoveryIntegrityGate', () => ({
+  evaluateRecoveryIntegrity: (...args: unknown[]) => integrityGate.evaluate(...args),
+}));
+
 const enqueueSnapshotFileIndexHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
   enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueSnapshotFileIndexHydrationMock(...(args as [])),
@@ -215,6 +231,12 @@ describe('bare-metal recoveries routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    integrityGate.check.mockReset();
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockReset();
+    integrityGate.record.mockResolvedValue('authorization-1');
+    integrityGate.evaluate.mockReset();
+    integrityGate.evaluate.mockResolvedValue({ ok: true, integrity: ATTESTED_BLOCK });
     selectMock.mockReset();
     selectMock.mockImplementation(() => chainMock([]));
     insertMock.mockReset();
@@ -402,6 +424,55 @@ describe('bare-metal recoveries routes', () => {
       }));
     });
 
+    it('answers a step-up request for an unattested snapshot without creating a recovery', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [] }]))
+        .mockReturnValueOnce(chainMock([]));
+      integrityGate.check.mockResolvedValueOnce({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', error: 'confirm' } });
+      const res = await app.request('/backup/bmr/recoveries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshotId: SNAPSHOT_ID, stepUpGrant: '66666666-6666-4666-8666-666666666666' }),
+      });
+      expect(res.status).toBe(403);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG_ID,
+        snapshotDbId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        commandType: 'bmr_recover',
+        stepUpGrant: '66666666-6666-4666-8666-666666666666',
+        confirmUnattestedRestore: undefined,
+      });
+    });
+
+    it('records a confirmed recovery\'s authorization bound to the recovery, in the same transaction', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [] }]))
+        .mockReturnValueOnce(chainMock([]));
+      insertMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+        status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+        target: null, plan: null, result: null, failureReason: null, warnings: null,
+        createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+        validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      }]));
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
+      const res = await app.request('/backup/bmr/recoveries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshotId: SNAPSHOT_ID }),
+      });
+      expect(res.status).toBe(201);
+      expect(integrityGate.record).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bmr_recover' }),
+        'unattested_legacy',
+        { recoveryId: RECOVERY_ID },
+        { inCurrentTransaction: true, confirmationMethod: 'typed' },
+      );
+    });
+
     it('refuses a snapshot the guard marked non-restorable, naming the reasons', async () => {
       selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: false, bareMetalReasons: ['LVM volumes are not supported'] }]));
       const res = await app.request('/backup/bmr/recoveries', {
@@ -574,8 +645,14 @@ describe('bare-metal recoveries routes', () => {
       // bmr.SnapshotExpectsSystemState): the exchange bootstrap must carry
       // it alongside systemStateManifest, exactly as authenticate does.
       expect(body.bootstrap.bootstrap.snapshot).toMatchObject({ snapshotId: 'snap-ext-1', backupType: 'full', systemStateManifest: null });
-      // No integrity expectation resolved: the block is omitted.
-      expect(body.bootstrap).not.toHaveProperty('integrity');
+      // The decided integrity block rides on the bootstrap.
+      expect(body.bootstrap.integrity).toEqual(ATTESTED_BLOCK);
+      expect(integrityGate.evaluate).toHaveBeenCalledWith({
+        snapshotDbId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        clientIntegrityProtocolVersion: undefined,
+        recoveryId: RECOVERY_ID,
+      });
 
       const updateCall = updateMock.mock.results
         .map((r) => r.value.set.mock.calls[0]?.[0])
@@ -585,12 +662,10 @@ describe('bare-metal recoveries routes', () => {
       expect(updateCall.codeUsedAt).toBeInstanceOf(Date);
     });
 
-    it('the exchange bootstrap carries the snapshot integrity expectation', async () => {
+    it('the exchange bootstrap carries the decided integrity block (override for a confirmed unattested restore)', async () => {
       const code = 'ABCDEFGHJ';
-      resolveRestoreIntegrityMock.mockResolvedValueOnce({
-        mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-1', sourceDeviceId: DEVICE_ID,
-        objects: [{ role: 'manifest', key: 'snapshots/snap-ext-1/manifest.json', sha256: 'a'.repeat(64), size: 9 }],
-      });
+      const block = { v: 1, mode: 'unattested_override', snapshotId: 'snap-ext-1', authorizationId: 'auth-1' };
+      integrityGate.evaluate.mockResolvedValueOnce({ ok: true, integrity: block });
       selectMock
         .mockReturnValueOnce(chainMock([{
           id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
@@ -613,18 +688,40 @@ describe('bare-metal recoveries routes', () => {
       const res = await publicApp.request('/backup/bmr/recover/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: 'abc-def-ghj' }),
+        body: JSON.stringify({ code: 'abc-def-ghj', integrityProtocolVersion: 2 }),
       });
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      const block = {
-        v: 1, mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-1',
-        objects: [{ role: 'manifest', key: 'snapshots/snap-ext-1/manifest.json', sha256: 'a'.repeat(64), size: 9 }],
-      };
       expect(body.bootstrap.integrity).toEqual(block);
       expect(body.bootstrap.bootstrap.integrity).toEqual(block);
-      expect(resolveRestoreIntegrityMock).toHaveBeenCalledWith(SNAPSHOT_ID);
+      expect(integrityGate.evaluate).toHaveBeenCalledWith(expect.objectContaining({ clientIntegrityProtocolVersion: 2 }));
+    });
+
+    it('an integrity refusal is a terminal 409 BEFORE the code is claimed', async () => {
+      const code = 'ABCDEFGHJ';
+      integrityGate.evaluate.mockResolvedValueOnce({
+        ok: false, status: 409, body: { error: 'recovery_client_update_required', message: 'This recovery tool is too old to check backup integrity.' },
+      });
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'recovery_client_update_required',
+        message: 'This recovery tool is too old to check backup integrity.',
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(transactionMock).not.toHaveBeenCalled();
     });
 
     it('#5629: helper older than the server floor — 409 helper_version_too_old BEFORE the code is claimed', async () => {

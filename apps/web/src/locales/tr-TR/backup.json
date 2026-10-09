@@ -1105,5 +1105,27 @@
     "restrictedDescriptorsShowPaths_other": "{{count}} yolu göster",
     "restrictedDescriptorsUnlisted_one": "{{count}} öğe daha listelenmedi.",
     "restrictedDescriptorsUnlisted_other": "{{count}} öğe daha listelenmedi."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Bu geri yüklemeyi onaylayın",
+    "introUnattested": "Bu yedeğin bütünlük onayı yok; bu nedenle içeriği geri yüklenmeden önce doğrulanmış bir kayıtla karşılaştırılamaz.",
+    "introProducerOnly": "Bu yedek, bütünlüğünü yalnızca özgün cihazın denetleyebileceği bir yerde saklandı. Başka bir cihaza geri yüklemek için onayınız gerekir.",
+    "twoFactor": "Devam etmek için iki faktörlü kimlik doğrulamayla onaylayın.",
+    "confirmOnly": "Devam etmek için onaylayın. Geri yükleme denetim günlüğüne kaydedilir.",
+    "typedIntro": "Bu yedek, bütünlük denetimleri var olmadan önce alındı. Onaylamak için cihaz adını yazın. Geri yükleme denetim günlüğüne kaydedilir.",
+    "typedLabel": "Onaylamak için {{phrase}} yazın",
+    "code": "Kimlik doğrulama kodu",
+    "passkey": "Geçiş anahtarınızı kullanmanız istenecek.",
+    "noFactor": "Profilinizde iki faktörlü kimlik doğrulamayı ayarlayın ve yeniden deneyin.",
+    "confirm": "Onayla ve geri yükle",
+    "cancel": "İptal",
+    "failed": "Doğrulama kabul edilmedi. Yeniden deneyin.",
+    "unavailable": "Doğrulama başlatılamadı. Yeniden deneyin."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Doğrulandı",
+    "checking": "Denetleniyor",
+    "unverified": "Doğrulanmadı",
+    "failed": "Bütünlük denetimi başarısız"
   }
 }

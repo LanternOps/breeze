@@ -1105,5 +1105,27 @@
     "restrictedDescriptorsShowPaths_other": "{{count}} Pfade anzeigen",
     "restrictedDescriptorsUnlisted_one": "{{count}} weiteres Element ist nicht aufgeführt.",
     "restrictedDescriptorsUnlisted_other": "{{count}} weitere Elemente sind nicht aufgeführt."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Diese Wiederherstellung bestätigen",
+    "introUnattested": "Für diese Sicherung gibt es keine Integritätsbestätigung, daher kann ihr Inhalt vor der Wiederherstellung nicht mit einem überprüften Datensatz abgeglichen werden.",
+    "introProducerOnly": "Diese Sicherung wurde dort gespeichert, wo nur das ursprüngliche Gerät ihre Integrität prüfen kann. Die Wiederherstellung auf ein anderes Gerät erfordert Ihre Bestätigung.",
+    "twoFactor": "Bestätigen Sie mit Zwei-Faktor-Authentifizierung, um fortzufahren.",
+    "confirmOnly": "Bestätigen Sie, um fortzufahren. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
+    "typedIntro": "Diese Sicherung wurde erstellt, bevor es Integritätsprüfungen gab. Geben Sie zur Bestätigung den Gerätenamen ein. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
+    "typedLabel": "Geben Sie {{phrase}} zur Bestätigung ein",
+    "code": "Authentifizierungscode",
+    "passkey": "Sie werden aufgefordert, Ihren Passkey zu verwenden.",
+    "noFactor": "Richten Sie in Ihrem Profil die Zwei-Faktor-Authentifizierung ein und versuchen Sie es erneut.",
+    "confirm": "Bestätigen und wiederherstellen",
+    "cancel": "Abbrechen",
+    "failed": "Die Überprüfung wurde nicht akzeptiert. Versuchen Sie es erneut.",
+    "unavailable": "Die Überprüfung konnte nicht gestartet werden. Versuchen Sie es erneut."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verifiziert",
+    "checking": "Wird geprüft",
+    "unverified": "Nicht verifiziert",
+    "failed": "Integritätsprüfung fehlgeschlagen"
   }
 }
