@@ -21,7 +21,12 @@ function orgContext(orgId: string, partnerId: string): DbAccessContext {
   };
 }
 
-async function seedDevice(orgId: string, siteId: string, marker: string) {
+async function seedDevice(
+  orgId: string,
+  siteId: string,
+  marker: string,
+  overrides: { cpuAvg?: number; cpuMax?: number; sampleCount?: number; networkIn?: bigint; networkOut?: bigint } = {},
+) {
   const testDb = getTestDb();
   const [device] = await testDb.insert(devices).values({
     orgId,
@@ -44,9 +49,9 @@ async function seedDevice(orgId: string, siteId: string, marker: string) {
       metricName: 'cpu_percent',
       bucketStart: BUCKET,
       bucketSeconds: 300,
-      avgValue: marker === 'ORG-A' ? 21 : 91,
-      maxValue: marker === 'ORG-A' ? 42 : 99,
-      sampleCount: 2,
+      avgValue: overrides.cpuAvg ?? (marker === 'ORG-A' ? 21 : 91),
+      maxValue: overrides.cpuMax ?? (marker === 'ORG-A' ? 42 : 99),
+      sampleCount: overrides.sampleCount ?? 2,
       gapSeconds: 0,
     },
     {
@@ -77,8 +82,8 @@ async function seedDevice(orgId: string, siteId: string, marker: string) {
     diskWriteBytes: 987654321n,
     diskReadOps: 123n,
     diskWriteOps: 456n,
-    networkInBytes: marker === 'ORG-A' ? 1000n : 9000n,
-    networkOutBytes: marker === 'ORG-A' ? 2000n : 8000n,
+    networkInBytes: overrides.networkIn ?? (marker === 'ORG-A' ? 1000n : 9000n),
+    networkOutBytes: overrides.networkOut ?? (marker === 'ORG-A' ? 2000n : 8000n),
     bandwidthInBps: 100n,
     bandwidthOutBps: 200n,
     processCount: 777,
@@ -99,6 +104,24 @@ async function seedDevice(orgId: string, siteId: string, marker: string) {
 
   return device.id;
 }
+
+describe('performanceReadModel aggregation (#7733)', () => {
+  it('weights organization averages by sampleCount across devices and keeps the highest maximum', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    await seedDevice(org.id, site.id, 'WEIGHT-A', { cpuAvg: 20, cpuMax: 40, sampleCount: 1 });
+    await seedDevice(org.id, site.id, 'WEIGHT-B', { cpuAvg: 80, cpuMax: 95, sampleCount: 3 });
+
+    const overview = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      performanceOverview(org.id, '24h', NOW),
+    );
+
+    // Weighted average: (20 * 1 + 80 * 3) / (1 + 3) = 65.
+    expect(overview.series[0]?.metrics.cpuPercent).toEqual({ average: 65, maximum: 95 });
+  });
+});
 
 describe('performanceReadModel org isolation (#7733)', () => {
   it('keeps org/device tenancy and the closed performance projection under real Postgres', async () => {
