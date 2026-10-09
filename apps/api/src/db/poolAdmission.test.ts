@@ -36,6 +36,25 @@ describe('classifyPoolSlotSettlement', () => {
 });
 
 describe('createPoolAdmission', () => {
+  it('rejects a permit count that is not a positive integer', () => {
+    for (const permits of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createPoolAdmission({ permits })).toThrow(RangeError);
+    }
+  });
+
+  it('rejects a nested reserve that is negative, fractional, or leaves no top-level permit', () => {
+    expect(() => createPoolAdmission({ permits: 3, nestedReserve: -1 })).toThrow(RangeError);
+    expect(() => createPoolAdmission({ permits: 3, nestedReserve: 0.5 })).toThrow(RangeError);
+    expect(() => createPoolAdmission({ permits: 3, nestedReserve: 3 })).toThrow(RangeError);
+    expect(() => createPoolAdmission({ permits: 1, nestedReserve: 1 })).toThrow(RangeError);
+  });
+
+  it('accepts the smallest valid shapes, including the derived default for tiny pools', () => {
+    expect(createPoolAdmission({ permits: 1 }).snapshot()).toMatchObject({ permits: 1, nestedReserve: 0 });
+    expect(createPoolAdmission({ permits: 2 }).snapshot()).toMatchObject({ permits: 2, nestedReserve: 0 });
+    expect(createPoolAdmission({ permits: 3, nestedReserve: 2 }).snapshot()).toMatchObject({ permits: 3, nestedReserve: 2 });
+  });
+
   it('grants immediately below the top-level cap and counts in-use', async () => {
     const gate = createPoolAdmission({ permits: 3 });
     const a = await gate.acquire('t');

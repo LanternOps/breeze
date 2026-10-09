@@ -7,12 +7,21 @@
  *
  * `onexecute` is what reserves the connection for `sql.begin()`. When BEGIN is
  * pipelined behind another query at the pipeline limit (or hits write
- * backpressure) the && chain short-circuits, `begin()` rejects with
- * "Cannot set properties of undefined (setting 'onclose')", a TypeError escapes
- * unhandled, and the connection returns to the pool INSIDE the BEGIN: later
- * bare statements share one leaked transaction. Reproduced 2026-10-08 with
- * { max: 1, max_pipeline: 1 }. Production hits it via backpressure or 100
- * pipelined queries; the test forces it with max_pipeline: 1.
+ * backpressure) the && chain short-circuits and the connection is never
+ * reserved. What happens next depends on the pool size:
+ *
+ * - max: 1 — `begin()` rejects with "Cannot set properties of undefined
+ *   (setting 'onclose')" and a TypeError escapes unhandled.
+ * - max > 1 (production: DB_POOL_MAX defaults to 30) — CommandComplete's guard
+ *   (`result.command === 'BEGIN' && max !== 1 && !connection.reserved`) fails
+ *   the BEGIN with UNSAFE_TRANSACTION, so `begin()` rejects.
+ *
+ * In BOTH cases the server already ran the BEGIN, and the connection returns
+ * to the pool INSIDE that transaction: later bare statements on it share one
+ * leaked transaction. Reproduced 2026-10-08 with { max: 1, max_pipeline: 1 }
+ * and { max: 2, max_pipeline: 1 }. Production reaches it via write
+ * backpressure or 100 pipelined queries; the tests force it with
+ * max_pipeline: 1.
  *
  * Runs against BOTH builds (see postgresJsPoolPoisoning.test.ts for why).
  */
@@ -53,6 +62,50 @@ describeIf.each(DRIVER_BUILDS)('postgres.js (%s): BEGIN pipelined behind a busy 
       await new Promise((resolve) => setTimeout(resolve, 50));
       const second = await sql`select now()::text as n`;
       expect(first[0]!.n).not.toBe(second[0]!.n);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await sql.end({ timeout: 1 });
+    }
+  });
+
+  it('max > 1 (the UNSAFE_TRANSACTION path): BEGIN queued behind two busy connections still reserves', async () => {
+    const sql = postgres(APP_URL!, { max: 2, max_pipeline: 1 } as postgresEsm.Options<{}>);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // Open both connections first. While they are still connecting, a queued
+      // BEGIN is handed to a fresh socket with an empty pipeline and never
+      // reaches the short-circuit.
+      await Promise.all([sql`select pg_sleep(0.05)`, sql`select pg_sleep(0.05)`]);
+      // Both connections busy, each at its pipeline limit, so BEGIN is queued
+      // and then pipelined onto whichever connection frees up first.
+      const busy = [sql`select pg_sleep(0.2), 1 as x`, sql`select pg_sleep(0.2), 1 as x`];
+      for (const q of busy) q.then(() => {}, () => {});
+      await new Promise((resolve) => setImmediate(resolve));
+      const tx = sql.begin(async (t) => (await t`select 2 as y`)[0]!.y as number);
+
+      const settled = await Promise.allSettled([...busy, tx]);
+      expect(settled.slice(0, 2).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(settled[2]).toEqual({ status: 'fulfilled', value: 2 });
+
+      // Two bare statements must be two transactions. A leaked BEGIN freezes
+      // now() and txid on whichever connection carries it, so sample both
+      // pool connections (concurrent pair), twice, >= 50 ms apart.
+      const sample = () => Promise.all([0, 1].map(() =>
+        sql<Array<{ n: string; txid: string }>>`select now()::text as n, txid_current()::text as txid, pg_sleep(0.02)`));
+      const first = await sample();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const second = await sample();
+      const rows = [...first, ...second].map((r) => r[0]!);
+      expect(new Set(rows.map((r) => r.txid)).size).toBe(rows.length);
+      // now() across the 50 ms gap only: two concurrent statements on different
+      // backends can legitimately share a microsecond.
+      const earlier = new Set(first.map((r) => r[0]!.n));
+      for (const r of second) expect(earlier.has(r[0]!.n)).toBe(false);
 
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(unhandled).toEqual([]);

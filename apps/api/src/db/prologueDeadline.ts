@@ -61,7 +61,8 @@
  * carries `timer: 'late' | 'on-time'`. `acquisition.signal` aborts at acquire
  * expiry (after the caller is rejected) so a request waiting in the admission
  * gate leaves the queue and never reaches the driver. The acquire default is
- * 10 s so the default budgets stay under the agent's 30 s HTTP timeout.
+ * 10 s so one opener's default budgets stay under the agent's 30 s HTTP
+ * timeout (see getDbPoolAcquireTimeoutMs for what that does not cover).
  */
 
 import {
@@ -92,7 +93,11 @@ export function getDbAccessContextPrologueTimeoutMs(): number {
 /**
  * #8229 — bound on waiting for a pooled connection (admission gate + driver
  * queue + `BEGIN`). 0 disables it. Default 10 s (#8143): acquire 10 + prologue
- * 15 + two 2 s graces = 29 s, under the agent's 30 s HTTP timeout.
+ * 15 + two 2 s graces = 29 s, under the agent's 30 s HTTP timeout. That bound
+ * is per opener, i.e. for a request that opens ONE context. A nested escalation
+ * (withResolvedDbAccessContext / runOutsideDbContext opening its own
+ * transaction) runs a second acquire + prologue budget, so such a request can
+ * exceed 30 s in the worst case.
  */
 export function getDbPoolAcquireTimeoutMs(): number {
   return readDeadlineKnobMs('DB_POOL_ACQUIRE_TIMEOUT_MS', 10_000);

@@ -80,6 +80,14 @@ const client = postgres(requestDatabaseConfig.url, {
 // inside #8229's acquire budget. See db/poolAdmission.ts.
 const requestPoolAdmission = createPoolAdmission({ permits: requestPoolMax });
 registerRequestPoolAdmission(requestPoolAdmission);
+if (requestPoolAdmission.snapshot().nestedReserve === 0) {
+  console.warn(
+    `[database] DB_POOL_MAX=${requestPoolMax} leaves no nested-escalation reserve (needs >= 3): `
+      + 'a nested withResolvedDbAccessContext / runOutsideDbContext transaction competes with '
+      + 'top-level requests for the same permits, so it can wait out its acquire budget while its '
+      + 'own parent holds the last one (#8143).',
+  );
+}
 const abandonedSlotReclaimScheduler = createAbandonedSlotReclaimScheduler();
 
 export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
@@ -1432,6 +1440,9 @@ export {
 import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
 
 export async function closeDb(): Promise<void> {
+  // No reclaim passes against a pool that is shutting down (#8143). stop() is
+  // idempotent; a later abandonment would re-arm it, as before close.
+  abandonedSlotReclaimScheduler.stop();
   // Drain the dedicated audit-admin pool (#915) alongside the main pool so a
   // graceful shutdown doesn't leak its connection.
   await Promise.all([client.end(), closeAuditAdminPoolInternal()]);

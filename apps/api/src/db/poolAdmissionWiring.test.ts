@@ -16,7 +16,10 @@ const { drizzleFactory, transactionImpl } = vi.hoisted(() => {
 
 vi.mock('drizzle-orm/postgres-js', () => ({ drizzle: drizzleFactory }));
 vi.mock('postgres', () => ({
-  default: vi.fn(() => Object.assign(vi.fn(), { options: { parsers: {}, serializers: {} } })),
+  default: vi.fn(() => Object.assign(vi.fn(), {
+    options: { parsers: {}, serializers: {} },
+    end: vi.fn(() => Promise.resolve()),
+  })),
 }));
 vi.mock('./wedgedBackends', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./wedgedBackends')>()),
@@ -225,5 +228,66 @@ describe('#8143 pool admission wiring', () => {
     expect(callbackRejection).toBeInstanceOf(db.DbPoolAcquireAbortedError);
     expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ inUse: 0, waiting: 0, abandoned: 0 });
     await expect(db.withSystemDbAccessContext(async () => 'next')).resolves.toBe('next');
+  });
+
+  it('a transaction rejection reaches the caller only: no derived promise rejects unhandled', async () => {
+    process.env.DB_POOL_MAX = '3';
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      transactionImpl.mockImplementation(runCallback(okTx()));
+      const db = await import('./index');
+      const boom = new Error('device organization mismatch');
+      // Top-level, and a nested escalation from inside a held context (the
+      // runOutsideDbContext(() => withSystemDbAccessContext(...)) shape).
+      await expect(db.withSystemDbAccessContext(async () => { throw boom; })).rejects.toBe(boom);
+      await expect(db.withSystemDbAccessContext(async () =>
+        db.runOutsideDbContext(() => db.withSystemDbAccessContext(async () => { throw boom; })),
+      )).rejects.toBe(boom);
+      // Let Node's unhandled-rejection pass run (it follows the microtask drain).
+      await new Promise((resolve) => process.nextTick(resolve));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(unhandled).toEqual([]);
+      expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ inUse: 0, abandoned: 0 });
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('warns once at startup when the request pool is too small for a nested reserve', async () => {
+    process.env.DB_POOL_MAX = '2';
+    await import('./index');
+    const lines = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('no nested-escalation reserve'))).toHaveLength(1);
+  });
+
+  it('does not warn about the nested reserve at the default pool size', async () => {
+    delete process.env.DB_POOL_MAX;
+    await import('./index');
+    const lines = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('no nested-escalation reserve'))).toHaveLength(0);
+  });
+
+  it('closeDb stops the abandoned-slot reclaim scheduler, and is idempotent', async () => {
+    process.env.DB_POOL_MAX = '1';
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '10000';
+    // A prologue that never settles: the permit stays abandoned and tracked.
+    const wedgedTx = { execute: vi.fn(() => new Promise(() => {})) };
+    transactionImpl.mockImplementationOnce(runCallback(wedgedTx));
+    const db = await import('./index');
+    const { requestWedgedBackendReclaim } = await import('./wedgedBackends');
+
+    const first = db.withSystemDbAccessContext(async () => 'never');
+    const assertion = expect(first).rejects.toBeInstanceOf(db.DbAccessContextPrologueTimeoutError);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ abandoned: 1 });
+
+    await db.closeDb();
+    await db.closeDb();
+    // Well past eligibility (prologue budget + margin): nothing may fire.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
   });
 });

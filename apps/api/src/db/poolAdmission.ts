@@ -127,7 +127,16 @@ interface Waiter {
 
 export function createPoolAdmission(input: { permits: number; nestedReserve?: number }): PoolAdmission {
   const permits = input.permits;
+  if (!Number.isInteger(permits) || permits < 1) {
+    throw new RangeError(`pool admission permits must be an integer >= 1, got ${permits}`);
+  }
   const nestedReserve = input.nestedReserve ?? nestedReserveFor(permits);
+  // A reserve equal to the permit count would leave top-level callers nothing.
+  if (!Number.isInteger(nestedReserve) || nestedReserve < 0 || nestedReserve >= permits) {
+    throw new RangeError(
+      `pool admission nestedReserve must be an integer in [0, ${permits - 1}], got ${nestedReserve}`,
+    );
+  }
   const topWaiters: Waiter[] = [];
   const nestedWaiters: Waiter[] = [];
   let inUse = 0;
