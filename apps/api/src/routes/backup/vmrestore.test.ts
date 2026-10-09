@@ -575,7 +575,7 @@ describe('vm restore routes — rebuild engine', () => {
 
     it('records a confirmed rebuild\'s authorization bound to the recovery, in the same transaction', async () => {
       mockHappyPath();
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
       const res = await app.request('/backup/restore/as-vm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -587,7 +587,7 @@ describe('vm restore routes — rebuild engine', () => {
         expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bare_metal_rebuild' }),
         'unattested_legacy',
         { recoveryId: RECOVERY_ID },
-        { inCurrentTransaction: true, confirmationMethod: 'typed' },
+        { inCurrentTransaction: true, confirmationMethod: 'mfa' },
       );
       // The factor state is read in the request context, not the engine's org-scoped transaction.
       expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userMfaProtected: false }));

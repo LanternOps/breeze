@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource } from './schemas';
+import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
 // `XXXX-XXXX` recovery-code form, and the `method` enum must include
@@ -133,12 +134,15 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
-  // The typed restore confirmation is minted only by POST
-  // /backup/restore-confirmations after the device name was typed.
-  it('rejects backup_unattested_restore_typed — restore-confirmation mint only, never client-requestable', () => {
+  // An unattested restore is confirmed only with a proven second factor
+  // (operation backup_unattested_restore); there is no other grant for it.
+  it('rejects backup_unattested_restore_typed — not a step-up operation', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'backup_unattested_restore_typed' })
     ).toThrow();
+    // @ts-expect-error -- not a grant operation, so no grant for it can be minted or consumed
+    const removed: StepUpOperation = 'backup_unattested_restore_typed';
+    expect(removed).toBe('backup_unattested_restore_typed');
   });
 
   // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a

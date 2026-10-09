@@ -18,23 +18,18 @@
  *     runs with two-factor authentication disabled, an explicit
  *     `confirmUnattestedRestore: true` stands in for the grant; the
  *     authorization and its audit event are recorded the same way.
- *   - a snapshot taken before attestations existed (`unattested_legacy`),
- *     requested by a user who has no second factor to step up with: the 403
- *     names `method: 'typed'` and the phrase to type (the target device's
- *     name). POST /backup/restore-confirmations checks the typed phrase and
- *     mints a single-use grant for operation `backup_unattested_restore_typed`,
- *     bound exactly like the two-factor grant; it is consumed and recorded
- *     here the same way. A user with a second factor always gets the
- *     two-factor step-up, and every other reason (`unattested`, a device-local
- *     snapshot restored onto another device) needs it too.
+ *   - the same, requested by a user who has no second factor to step up
+ *     with (two-factor authentication enabled): 403 `MFA_ENROLLMENT_REQUIRED`
+ *     with `stepUp.method: 'enrol'` and the same operation and resource, so
+ *     the client can resume with the step-up once a factor is enrolled.
+ *     Nothing is consumed or recorded. If the factor lookup fails, the
+ *     two-factor step-up is asked for instead.
  *   - a caller without an interactive user session (API key, MCP token) can
  *     never confirm one: 409 `snapshot_integrity_unavailable`.
  */
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
 import type { Context } from 'hono';
-import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
-import { devices } from '../../db/schema/devices';
+import { runOutsideDbContext, withDbAccessContext } from '../../db';
 import { getUserEpochs } from '../../services/authEpochs';
 import {
   RESTORE_INTEGRITY_MESSAGES,
@@ -42,7 +37,11 @@ import {
   gateForActor,
   type RestoreAuthorizationReason,
 } from '../../services/backupRestoreGate';
-import { recordRestoreAuthorization, type RestoreAuthorizationBinding } from '../../services/backupRestoreAuthorization';
+import {
+  recordRestoreAuthorization,
+  type RestoreAuthorizationBinding,
+  type RestoreConfirmationMethod,
+} from '../../services/backupRestoreAuthorization';
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { consumeStepUpGrant, unattestedRestoreResourceDigest } from '../../services/mfaStepUpGrant';
@@ -51,27 +50,14 @@ import { userIsMfaProtected } from '../auth/helpers';
 import { ENABLE_2FA } from '../auth/schemas';
 
 export const UNATTESTED_RESTORE_STEP_UP_OPERATION = 'backup_unattested_restore' as const;
-/** Grant operation minted by POST /backup/restore-confirmations (typed confirmation). */
-export const UNATTESTED_RESTORE_TYPED_OPERATION = 'backup_unattested_restore_typed' as const;
 
-/**
- * How the operator confirms a restore that needs it: a two-factor step-up
- * (`mfa`), typing the target device's name (`typed`, users without a second
- * factor, snapshots taken before attestations existed), or an explicit
- * confirmation on a deployment running without two-factor authentication
- * (`confirm`).
- */
-export type RestoreConfirmationMethod = 'mfa' | 'typed' | 'confirm';
-
-/** The only reason a typed confirmation can stand in for the two-factor step-up. */
-export function typedConfirmationAllowedFor(reason: RestoreAuthorizationReason): boolean {
-  return reason === 'unattested_legacy';
-}
+/** Answer code for a user who must enrol a second factor before confirming a restore. */
+export const MFA_ENROLLMENT_REQUIRED_CODE = 'MFA_ENROLLMENT_REQUIRED' as const;
 
 /**
  * Whether the user has a factor to step up with. A failed lookup answers
- * true, so the user is asked for the two-factor step-up rather than offered
- * the typed confirmation.
+ * true, so the user is asked for the two-factor step-up rather than told to
+ * enrol a factor they may already have.
  */
 export async function userCanStepUp(userId: string, prefetched?: boolean): Promise<boolean> {
   if (prefetched !== undefined) return prefetched;
@@ -81,22 +67,6 @@ export async function userCanStepUp(userId: string, prefetched?: boolean): Promi
     console.error('[restoreIntegrityGate] factor lookup failed; asking for the two-factor step-up:', err);
     return true;
   }
-}
-
-/** The phrase a typed confirmation must match: the target device's display name, else its hostname. */
-export async function restoreConfirmationPhrase(orgId: string, targetDeviceId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ displayName: devices.displayName, hostname: devices.hostname })
-    .from(devices)
-    .where(and(eq(devices.id, targetDeviceId), eq(devices.orgId, orgId)))
-    .limit(1);
-  const phrase = row?.displayName?.trim() || row?.hostname?.trim() || '';
-  return phrase || null;
-}
-
-/** Case-insensitive, surrounding whitespace ignored. */
-export function typedConfirmationMatches(phrase: string, typed: string): boolean {
-  return typed.trim().toLowerCase() === phrase.trim().toLowerCase();
 }
 
 export type RestoreIntegrityRequest = {
@@ -170,14 +140,22 @@ export async function checkRestoreIntegrityRequest(
     if (notReady) return { ok: false, status: 409, body: { error: notReady.message, code: notReady.code } };
   }
 
-  let method: RestoreConfirmationMethod = 'mfa';
-  let phrase: string | null = null;
-  if (!ENABLE_2FA) {
-    method = 'confirm';
-  } else if (typedConfirmationAllowedFor(decision.reason) && !(await userCanStepUp(userId!, req.userMfaProtected))) {
-    phrase = await restoreConfirmationPhrase(req.orgId, req.targetDeviceId);
-    // Without a phrase there is nothing to type: the two-factor step-up is the only way.
-    if (phrase) method = 'typed';
+  const method: RestoreConfirmationMethod = ENABLE_2FA ? 'mfa' : 'confirm';
+  const resource = { snapshotId: req.snapshotDbId, targetDeviceId: req.targetDeviceId, commandType: req.commandType };
+
+  // Only a proven second factor confirms a restore while two-factor
+  // authentication is enabled: a user without one is told to enrol one, with
+  // the step-up to resume with once they have. Nothing is consumed.
+  if (method === 'mfa' && !(await userCanStepUp(userId!, req.userMfaProtected))) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        error: RESTORE_INTEGRITY_MESSAGES.mfa_enrollment_required,
+        code: MFA_ENROLLMENT_REQUIRED_CODE,
+        stepUp: { operation: UNATTESTED_RESTORE_STEP_UP_OPERATION, method: 'enrol', reason: decision.reason, resource },
+      },
+    };
   }
 
   const stepUpRequired = (): RestoreIntegrityCheck => ({
@@ -186,17 +164,9 @@ export async function checkRestoreIntegrityRequest(
     body: {
       error: decision.reason === 'producer_only_other_target'
         ? RESTORE_INTEGRITY_MESSAGES.producer_only_other_target
-        : method === 'typed'
-          ? RESTORE_INTEGRITY_MESSAGES.typed_confirmation_required
-          : RESTORE_INTEGRITY_MESSAGES.step_up_required,
+        : RESTORE_INTEGRITY_MESSAGES.step_up_required,
       code: 'STEP_UP_REQUIRED',
-      stepUp: {
-        operation: UNATTESTED_RESTORE_STEP_UP_OPERATION,
-        method,
-        reason: decision.reason,
-        resource: { snapshotId: req.snapshotDbId, targetDeviceId: req.targetDeviceId, commandType: req.commandType },
-        ...(method === 'typed' ? { confirmation: { phrase, orgId: req.orgId } } : {}),
-      },
+      stepUp: { operation: UNATTESTED_RESTORE_STEP_UP_OPERATION, method, reason: decision.reason, resource },
     },
   });
   const authorized = (): RestoreIntegrityCheck => ({ ok: true, authorizationReason: decision.reason, confirmationMethod: method });
@@ -211,11 +181,9 @@ export async function checkRestoreIntegrityRequest(
   const epochs = req.userEpochs !== undefined ? req.userEpochs : await getUserEpochs(userId!);
   if (!epochs) return stepUpRequired();
   // Missing, stale, replayed and mismatched grants are one answer on purpose.
-  // The operation follows the method: a typed-confirmation grant is never
-  // accepted from a user who has a second factor, and the reverse.
   const consumed = await consumeStepUpGrant(req.stepUpGrant, {
     userId: userId!,
-    operation: method === 'typed' ? UNATTESTED_RESTORE_TYPED_OPERATION : UNATTESTED_RESTORE_STEP_UP_OPERATION,
+    operation: UNATTESTED_RESTORE_STEP_UP_OPERATION,
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid: sid!,

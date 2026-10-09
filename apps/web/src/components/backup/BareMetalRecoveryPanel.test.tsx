@@ -126,6 +126,59 @@ describe('BareMetalRecoveryPanel', () => {
     ]);
   });
 
+  it('sends a user without a second factor to set one up, and Retry resubmits the recovery', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enrol a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enrol',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: SNAPSHOT_ID, targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+        return makeJsonResponse({
+          id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z', failureReason: null,
+          code: 'ABC-DEF-GHJ',
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    fireEvent.change(screen.getByLabelText('Snapshot'), { target: { value: SNAPSHOT_ID } });
+    fireEvent.click(screen.getByText('Create recovery code'));
+    await flush();
+
+    expect(screen.getByTestId('unattested-restore-stepup-enrol')).toHaveAttribute('href', '/settings/profile');
+    expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
+    expect(screen.queryByTestId('bare-metal-recovery-create-error')).toBeNull();
+    expect(screen.queryByTestId('bare-metal-recovery-code')).toBeNull();
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await flush();
+
+    expect(screen.getByTestId('bare-metal-recovery-code')).toHaveTextContent('ABC-DEF-GHJ');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => String(url).startsWith('/backup/bmr/recoveries?') && (init as RequestInit | undefined)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies).toEqual([
+      { snapshotId: SNAPSHOT_ID, identity: 'original' },
+      { snapshotId: SNAPSHOT_ID, identity: 'original' },
+    ]);
+  });
+
   it('formats the snapshot option timestamp with the app date format, not a raw US locale string (#6496)', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
