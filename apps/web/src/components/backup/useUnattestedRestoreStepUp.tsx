@@ -56,14 +56,21 @@ export function isUnattestedRestoreStepUp(err: unknown): boolean {
   return stepUpDetails(err) !== null;
 }
 
-async function discoverTier(): Promise<ReauthTier> {
+/**
+ * The factor this prompt can confirm with. `smsOnly`: the account's only
+ * factor is text-message codes, which this prompt cannot use.
+ */
+async function discoverFactors(): Promise<{ tier: ReauthTier; smsOnly: boolean }> {
   const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
   if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = await user.json() as { mfaMethod?: string | null } | null;
+  const me = await user.json() as { mfaEnabled?: boolean | null; mfaMethod?: string | null } | null;
   const keys = await passkeys.json() as unknown;
   const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
   if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
-  return pickReauthTier(list.length, me.mfaMethod ?? null);
+  return {
+    tier: pickReauthTier(list.length, me.mfaMethod ?? null),
+    smsOnly: list.length === 0 && me.mfaEnabled === true && me.mfaMethod === 'sms',
+  };
 }
 
 /**
@@ -83,6 +90,8 @@ type Pending = {
   submit: UnattestedRestoreSubmit;
   details: StepUpDetails;
   mode: PromptMode;
+  /** With mode `enroll`: the account has text-message codes but no factor this prompt can use. */
+  smsOnly: boolean;
 };
 
 /**
@@ -125,9 +134,12 @@ export function useUnattestedRestoreStepUp(): {
     details: StepUpDetails,
   ): Promise<Pending | null> => {
     let mode: PromptMode;
+    let smsOnly = false;
     if (details.method === 'mfa') {
       try {
-        mode = modeForTier(await discoverTier());
+        const factors = await discoverFactors();
+        mode = modeForTier(factors.tier);
+        smsOnly = factors.smsOnly;
       } catch {
         if (live.current) setError(t('unattestedRestoreStepUp.unavailable'));
         return null;
@@ -136,7 +148,7 @@ export function useUnattestedRestoreStepUp(): {
       mode = details.method;
     }
     if (!live.current) return null;
-    const next: Pending = { submit, details, mode };
+    const next: Pending = { submit, details, mode, smsOnly };
     setCode('');
     setError(undefined);
     setPending(next);
@@ -173,7 +185,11 @@ export function useUnattestedRestoreStepUp(): {
       const details = stepUpDetails(cause);
       if (!details || !live.current) return;
       const next = await present(submit, details);
-      if (next?.mode === 'enroll' && live.current) setError(t('unattestedRestoreStepUp.enrollStillRequired'));
+      if (next?.mode === 'enroll' && live.current) {
+        setError(next.smsOnly
+          ? t('unattestedRestoreStepUp.enrollStillRequiredSmsOnly')
+          : t('unattestedRestoreStepUp.enrollStillRequired'));
+      }
     } finally {
       if (live.current) setBusy(false);
     }
@@ -216,7 +232,7 @@ export function useUnattestedRestoreStepUp(): {
     return { run, prompt: error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null };
   }
 
-  const { details, mode } = pending;
+  const { details, mode, smsOnly } = pending;
   const prompt = (
     <div
       data-testid="unattested-restore-stepup"
@@ -232,7 +248,9 @@ export function useUnattestedRestoreStepUp(): {
       </p>
       {mode === 'enroll' ? (
         <>
-          <p className="text-xs text-muted-foreground">{t('unattestedRestoreStepUp.enrollIntro')}</p>
+          <p className="text-xs text-muted-foreground">
+            {smsOnly ? t('unattestedRestoreStepUp.enrollIntroSmsOnly') : t('unattestedRestoreStepUp.enrollIntro')}
+          </p>
           <a
             data-testid="unattested-restore-stepup-enroll"
             href={ENROLL_HREF}

@@ -250,6 +250,31 @@ describe('useUnattestedRestoreStepUp', () => {
     expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
   });
 
+  it('an account whose only factor is text-message codes is told to add an authenticator app or passkey', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      // The server counts the SMS factor, so it asks for the step-up.
+      if (url === '/backup/restore') return json(stepUpBody('mfa'), 403);
+      if (url === '/users/me') return json({ mfaEnabled: true, mfaMethod: 'sms' });
+      if (url === '/auth/passkeys') return json([]);
+      return json({}, 404);
+    });
+    render(<Harness />);
+    fireEvent.click(screen.getByText('Start restore'));
+
+    const prompt = await screen.findByTestId('unattested-restore-stepup');
+    expect(prompt.textContent).toMatch(/only has text-message codes/i);
+    expect(prompt.textContent).not.toMatch(/has none yet/i);
+    expect(screen.getByTestId('unattested-restore-stepup-enroll').getAttribute('href')).toBe('/settings/profile');
+    expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    expect(await screen.findByText('Your account still has no authenticator app or passkey.')).toBeTruthy();
+    expect(screen.queryByText(/still has no second factor/i)).toBeNull();
+    expect(screen.getByTestId('unattested-restore-stepup-retry')).toBeTruthy();
+    expect(restoreBodies()).toEqual([{ snapshotId: 's' }, { snapshotId: 's' }]);
+  });
+
   it('Retry refreshes the session before it resubmits the restore', async () => {
     let restoreCalls = 0;
     fetchMock.mockImplementation(async (input) => {
