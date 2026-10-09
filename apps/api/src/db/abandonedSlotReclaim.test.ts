@@ -94,6 +94,23 @@ describe('createAbandonedSlotReclaimScheduler', () => {
     scheduler.stop();
   });
 
+  it('a tick whose dependency throws logs it and keeps the timer alive', async () => {
+    const warn = vi.fn();
+    const requestReclaim = vi.fn(() => Promise.resolve(OUTCOME));
+    let calls = 0;
+    const now = () => {
+      calls += 1;
+      if (calls === 2) throw new Error('clock exploded'); // first tick's now()
+      return Date.now();
+    };
+    const scheduler = createAbandonedSlotReclaimScheduler({ requestReclaim, report: vi.fn(), warn, now, retryIntervalMs: () => 60_000 });
+    scheduler.track(await abandonedSlot(), 1_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('clock exploded'))).toBe(true);
+    expect(requestReclaim).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
   it('declined reclaim (disabled or inside the floor) warns at the retry pace, not every tick', async () => {
     const warn = vi.fn();
     const requestReclaim = vi.fn(() => null);

@@ -121,6 +121,23 @@ export function createAbandonedSlotReclaimScheduler(
 
   function tick(): void {
     timer = undefined;
+    // try/finally: a throwing dependency (clock, retry knob, reporter) must be
+    // logged and must never kill the timer, or every permit tracked after it
+    // would silently stop being reclaimed.
+    try {
+      reclaimIfDue();
+    } catch (err) {
+      try {
+        warn(`[db-pool-admission] abandoned-slot reclaim tick failed: ${err instanceof Error ? err.message : String(err)} (#8143)`);
+      } catch {
+        // The logger itself failed: still re-arm below.
+      }
+    } finally {
+      schedule();
+    }
+  }
+
+  function reclaimIfDue(): void {
     const t = now();
     let due = 0;
     let minAgeMs = Number.POSITIVE_INFINITY;
@@ -136,26 +153,20 @@ export function createAbandonedSlotReclaimScheduler(
         oldestAbandonedAt = Math.min(oldestAbandonedAt, entry.abandonedAt);
       }
     }
-    if (due > 0 && t >= nextRequestAt) {
-      const retryMs = retryIntervalMs();
-      nextRequestAt = t + retryMs;
-      try {
-        const pass = requestReclaim({ minAgeMs });
-        if (pass === null) {
-          warn(
-            `[db-pool-admission] ${due} abandoned transaction permit(s) still held (oldest abandoned `
-              + `${Math.round((t - oldestAbandonedAt) / 1000)}s ago) and the wedged-backend reclaim was declined `
-              + '(DB_WEDGED_BACKEND_RECLAIM_DISABLED, or inside its retry floor). The effective pool stays '
-              + `reduced until they settle; retrying in ${Math.round(retryMs / 1000)}s (#8143).`,
-          );
-        } else {
-          report(pass);
-        }
-      } catch (err) {
-        warn(`[db-pool-admission] reclaim request threw: ${err instanceof Error ? err.message : String(err)} (#8143)`);
-      }
+    if (due === 0 || t < nextRequestAt) return;
+    const retryMs = retryIntervalMs();
+    nextRequestAt = t + retryMs;
+    const pass = requestReclaim({ minAgeMs });
+    if (pass === null) {
+      warn(
+        `[db-pool-admission] ${due} abandoned transaction permit(s) still held (oldest abandoned `
+          + `${Math.round((t - oldestAbandonedAt) / 1000)}s ago) and the wedged-backend reclaim was declined `
+          + '(DB_WEDGED_BACKEND_RECLAIM_DISABLED, or inside its retry floor). The effective pool stays '
+          + `reduced until they settle; retrying in ${Math.round(retryMs / 1000)}s (#8143).`,
+      );
+    } else {
+      report(pass);
     }
-    schedule();
   }
 
   return {

@@ -230,6 +230,193 @@ describe('#8143 pool admission wiring', () => {
     await expect(db.withSystemDbAccessContext(async () => 'next')).resolves.toBe('next');
   });
 
+  it('acquire expiry with a GRANTED permit marks it abandoned (not reclaim-tracked) until the late connection is refused', async () => {
+    // The gate granted the permit, but BEGIN is still queued in the driver when
+    // the acquire budget expires. The permit is genuinely held: it must show as
+    // abandoned (effective_permits, the alert) until the transaction settles.
+    process.env.DB_POOL_MAX = '1';
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '10000';
+    let callbackRejection: unknown;
+    transactionImpl.mockImplementationOnce(
+      (fn: (t: unknown) => Promise<unknown>) =>
+        new Promise((resolve, reject) => {
+          setTimeout(() => {
+            Promise.resolve()
+              .then(() => fn(okTx()))
+              .then(resolve, (err: unknown) => {
+                callbackRejection = err;
+                reject(err);
+              });
+          }, 20_000);
+        }),
+    );
+    transactionImpl.mockImplementationOnce(runCallback(okTx()));
+    const db = await import('./index');
+    const { requestWedgedBackendReclaim } = await import('./wedgedBackends');
+
+    const late = db.withSystemDbAccessContext(async () => 'never');
+    const assertion = expect(late).rejects.toBeInstanceOf(db.DbPoolAcquireTimeoutError);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+    const admission = db.getRequestPoolAdmission()!;
+    expect(admission.snapshot()).toMatchObject({ inUse: 1, abandoned: 1, effectivePermits: 0 });
+    expect(admission.totals().abandoned).toBe(1);
+    const lines = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    const acquireLine = lines.find((l) => l.includes('[db-pool-acquire]'));
+    expect(acquireLine).toContain('abandoned');
+    expect(acquireLine).not.toContain('nothing is wedged');
+
+    // The late connection arrives: refused, rolled back, permit returned once.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(callbackRejection).toBeInstanceOf(db.DbPoolAcquireAbortedError);
+    expect(admission.snapshot()).toMatchObject({ inUse: 0, waiting: 0, abandoned: 0, effectivePermits: 1 });
+    expect(admission.totals()).toMatchObject({ abandoned: 1, abandonedReturned: { rollback: 1, 'connection-closed': 0 } });
+    // Never tracked for wedged-backend reclaim: its predicate cannot match a hung BEGIN.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+    await expect(db.withSystemDbAccessContext(async () => 'next')).resolves.toBe('next');
+  });
+
+  it('logs the after-exit tasks an abandoned transaction is still holding', async () => {
+    process.env.DB_POOL_MAX = '4';
+    let statements = 0;
+    const tx = {
+      execute: vi.fn(() => (++statements === 2 ? new Promise(() => {}) : Promise.resolve([]))),
+    };
+    transactionImpl.mockImplementationOnce(runCallback(tx));
+    const db = await import('./index');
+    const caller = db.withSystemDbAccessContext(async () => {
+      db.runAfterDbContextExit('wiring.held-a', vi.fn());
+      db.runAfterDbContextExit('wiring.held-b', vi.fn());
+      await db.withResolvedDbAccessContext(
+        async () => ({ context: { ...db.SYSTEM_DB_ACCESS_CONTEXT, scope: 'organization', orgId: null, accessibleOrgIds: [] }, value: 1 }),
+        async () => 'inner',
+      );
+      return 'unreachable';
+    });
+    const assertion = expect(caller).rejects.toBeInstanceOf(db.DbAccessContextPrologueTimeoutError);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    const lines = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    const held = lines.filter((l) => l.includes('wiring.held-a'));
+    expect(held).toHaveLength(1);
+    expect(held[0]).toContain('wiring.held-b');
+  });
+
+  it('a throwing release on the settle path is logged, never an unhandled rejection', async () => {
+    process.env.DB_POOL_MAX = '3';
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.doMock('./poolAdmission', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./poolAdmission')>();
+      return {
+        ...actual,
+        createPoolAdmission: (input: Parameters<typeof actual.createPoolAdmission>[0]) => {
+          const real = actual.createPoolAdmission(input);
+          return {
+            ...real,
+            acquire: async (...args: Parameters<typeof real.acquire>) => {
+              const slot = await real.acquire(...args);
+              return Object.create(slot, {
+                release: {
+                  value: (settlement: Parameters<typeof slot.release>[0]) => {
+                    slot.release(settlement);
+                    throw new Error('release blew up');
+                  },
+                },
+              });
+            },
+          };
+        },
+      };
+    });
+    try {
+      transactionImpl.mockImplementation(runCallback(okTx()));
+      const db = await import('./index');
+      await expect(db.withSystemDbAccessContext(async () => 'ok')).resolves.toBe('ok');
+      await new Promise((resolve) => process.nextTick(resolve));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(unhandled).toEqual([]);
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).some((l) => l.includes('[db-pool-admission]'))).toBe(true);
+    } finally {
+      vi.doUnmock('./poolAdmission');
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('never commits an abandoned withArchivedOrgReadContext transaction, even when caller code swallows the inner timeout', async () => {
+    process.env.DB_POOL_MAX = '4';
+    let statements = 0;
+    const tx = {
+      // 1: SET TRANSACTION READ ONLY. 2: archived prologue. 3: narrowing prologue, which wedges.
+      execute: vi.fn(() => (++statements === 3 ? new Promise(() => {}) : Promise.resolve([]))),
+    };
+    let transactionOutcome: 'committed' | 'rolled-back' | null = null;
+    transactionImpl.mockImplementationOnce(async (fn: (t: unknown) => Promise<unknown>) => {
+      try {
+        const value = await fn(tx);
+        transactionOutcome = 'committed';
+        return value;
+      } catch (err) {
+        transactionOutcome = 'rolled-back';
+        throw err;
+      }
+    });
+    const db = await import('./index');
+
+    const caller = db.withArchivedOrgReadContext(['00000000-0000-4000-8000-000000000001'], async () => {
+      try {
+        await db.withResolvedDbAccessContext(
+          async () => ({ context: { ...db.SYSTEM_DB_ACCESS_CONTEXT, scope: 'organization', orgId: null, accessibleOrgIds: [] }, value: 1 }),
+          async () => 'inner',
+        );
+      } catch {
+        // swallowed on purpose: the hazard under test
+      }
+      return 'swallowed';
+    });
+    const assertion = expect(caller).rejects.toBeInstanceOf(db.DbAccessContextPrologueTimeoutError);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(transactionOutcome).toBe('rolled-back');
+    expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ inUse: 0, abandoned: 0 });
+  });
+
+  it('inner contexts join the held one: no second permit, no self-deadlock at DB_POOL_MAX=1', async () => {
+    process.env.DB_POOL_MAX = '1';
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '1000';
+    transactionImpl.mockImplementation(runCallback(okTx()));
+    const db = await import('./index');
+    const outcome = db
+      .withSystemDbAccessContext(() =>
+        db.withDbAccessContext({ ...db.SYSTEM_DB_ACCESS_CONTEXT, scope: 'organization', orgId: null, accessibleOrgIds: [] }, () =>
+          db.withSystemDbAccessContext(async () => 'inner'),
+        ),
+      )
+      .then((value) => value, (err: unknown) => (err as Error).name);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await outcome).toBe('inner');
+    expect(transactionImpl).toHaveBeenCalledTimes(1);
+    expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ inUse: 0, waiting: 0 });
+  });
+
+  it('a synchronous throw from the opener releases the permit', async () => {
+    process.env.DB_POOL_MAX = '1';
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '1000';
+    const boom = new Error('driver threw synchronously');
+    transactionImpl.mockImplementationOnce(() => { throw boom; });
+    transactionImpl.mockImplementationOnce(runCallback(okTx()));
+    const db = await import('./index');
+    await expect(db.withSystemDbAccessContext(async () => 'never')).rejects.toBe(boom);
+    expect(db.getRequestPoolAdmission()!.snapshot()).toMatchObject({ inUse: 0, waiting: 0 });
+    const next = db.withSystemDbAccessContext(async () => 'next').then((v) => v, (err: unknown) => (err as Error).name);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await next).toBe('next');
+  });
+
   it('a transaction rejection reaches the caller only: no derived promise rejects unhandled', async () => {
     process.env.DB_POOL_MAX = '3';
     const unhandled: unknown[] = [];

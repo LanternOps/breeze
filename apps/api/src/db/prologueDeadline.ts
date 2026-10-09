@@ -39,12 +39,14 @@
  * timer, so it expires just as readily when the main thread is too busy to run
  * the socket callbacks as when the connection is genuinely wedged — the exact ambiguity
  * `services/postgresConnectTimeout.ts` exists to resolve for `connect_timeout`
- * (#3022). That is why the recovery it triggers does not trust the timer's
- * verdict: `reclaimWedgedBackends` re-derives wedged-ness from
- * `pg_stat_activity` across two snapshots and terminates nothing the database
- * itself does not still show as stuck. Under event-loop starvation the timer
- * fires, the sweep finds nothing, and the only cost is a typed error — not a
- * terminated backend.
+ * (#3022). That is why the deferred recovery (`abandonedSlotReclaim.ts`) does
+ * not trust the timer's verdict. Under starvation the abandoned transaction
+ * usually settles on its own (the late statement completes, the opener's abort
+ * check throws, the driver rolls back) and no reclaim pass is ever requested;
+ * the only cost is a typed error. If the permit is still held one prologue
+ * budget plus ~1 s later and a pass IS requested, `reclaimWedgedBackends`
+ * re-derives wedged-ness from `pg_stat_activity` across two snapshots and
+ * terminates nothing the database itself does not still show as stuck.
  *
  * WHY THE ERROR NEEDS THE RACE. Throwing from inside the transaction callback is
  * NOT enough to free the slot or even to reach the caller: postgres.js's
@@ -130,7 +132,7 @@ export class DbAccessContextPrologueTimeoutError extends Error {
     super(
       `RLS GUC prologue for ${input.contextLabel} did not complete within ${input.timeoutMs}ms `
         + `(elapsed ${input.elapsedMs}ms${lateSuffix(timer)}). The transaction was abandoned and will roll back; `
-        + 'if its pool permit is still held one more prologue budget later, a wedged-backend reclamation '
+        + 'if its pool permit is still held one more prologue budget plus ~1 s later, a wedged-backend reclamation '
         + 'pass is requested (see [db-pool-admission] and [db-wedged-backend] logs) (#6048, #8143).',
       input.cause === undefined ? undefined : { cause: input.cause },
     );
