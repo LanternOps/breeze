@@ -80,3 +80,21 @@ describe('scoreDeviceReliability (#5876)', () => {
     expect(scoreDeviceReliability({ ...baseInput, rows: [], baseline: null }).coverageDays).toBe(0);
   });
 });
+
+describe('buildHistoryPoints (#5876)', () => {
+  it('dedupes a re-posted crash and flags pre-marker days instead of dropping them', () => {
+    const crash = { type: 'bsod', timestamp: '2026-03-20T09:00:00.000Z' };
+    const rows = [
+      { collectedAt: new Date('2026-03-20T10:00:00.000Z'), uptimeSeconds: 60, bootTime: new Date('2026-03-20T09:30:00.000Z'), crashEvents: [crash], appHangs: [], serviceFailures: [], hardwareErrors: [] },
+      { collectedAt: new Date('2026-03-20T11:00:00.000Z'), uptimeSeconds: 120, bootTime: new Date('2026-03-20T09:30:00.000Z'), crashEvents: [crash], appHangs: [], serviceFailures: [], hardwareErrors: [] },
+      { collectedAt: new Date('2026-03-25T11:00:00.000Z'), uptimeSeconds: 120, bootTime: new Date('2026-03-25T09:30:00.000Z'), crashEvents: [], appHangs: [], serviceFailures: [], hardwareErrors: [] },
+    ];
+    const points = I.buildHistoryPoints(rows as any, new Date('2026-03-22T00:00:00.000Z'), windowEnd, 30);
+    const day20 = points.find((p) => p.date === '2026-03-20')!;
+    expect(day20.crashCount).toBe(1);
+    expect(day20.beforeBaseline).toBe(true);
+    expect(points.find((p) => p.date === '2026-03-25')!.beforeBaseline).toBe(false);
+    expect(day20.reliabilityEstimate).toBe(I.scoreDailyBucket(I.sortDailyBuckets((() => {
+      const m = new Map(); I.mergeRowsIntoDailyBuckets(m, rows.slice(0, 2) as any); return m; })())[0]!));
+  });
+});

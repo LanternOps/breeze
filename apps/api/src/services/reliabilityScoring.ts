@@ -12,11 +12,12 @@ import {
   type ReliabilityTopIssue,
 } from '../db/schema';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
-import { activeBaselineIdSql, getActiveReliabilityBaseline } from './reliabilityBaselineQueries';
+import { activeBaselineIdSql, getActiveReliabilityBaseline, reliabilityProvisionalSql } from './reliabilityBaselineQueries';
 import {
   BASELINE_PROVISIONAL_REPORTED_DAYS,
   type ActiveReliabilityBaseline,
   type ReliabilityBaselineDetails,
+  readBaselineDetails,
 } from './reliabilityBaselinePolicy';
 import { captureException } from './sentry';
 
@@ -205,6 +206,10 @@ export interface ReliabilityListItem {
   // Device enrollment time (ISO). Lets the UI relabel fixed windows ("30d") to
   // the actually-observed age on young devices ("since enroll · 13d"). Issue #1907.
   enrolledAt?: string | null;
+  // #5876: true while an active baseline marker's post-marker window is still short.
+  provisional: boolean;
+  // Active baseline marker details; only populated by getDeviceReliability.
+  baseline?: ReliabilityBaselineDetails | null;
 }
 
 export interface DeviceReliabilityHistoryPoint {
@@ -216,6 +221,8 @@ export interface DeviceReliabilityHistoryPoint {
   serviceFailureCount: number;
   hardwareErrorCount: number;
   reliabilityEstimate: number;
+  // #5876: day precedes the active baseline marker (flagged, not dropped).
+  beforeBaseline: boolean;
 }
 
 // Issue #1907: per-device drill-down. A count tile ("service failure count 30d:
@@ -1868,6 +1875,7 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
         mtbfHours: deviceReliability.mtbfHours,
         topIssues: deviceReliability.topIssues,
         computedAt: deviceReliability.computedAt,
+        provisional: reliabilityProvisionalSql,
       })
       .from(deviceReliability)
       .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
@@ -1905,6 +1913,7 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
     mtbfHours: row.mtbfHours,
     topIssues: Array.isArray(row.topIssues) ? row.topIssues : [],
     computedAt: row.computedAt.toISOString(),
+    provisional: Boolean(row.provisional),
   }));
 
   return { total, rows };
@@ -1981,6 +1990,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     .limit(1);
 
   if (!row) return null;
+  const baseline = readBaselineDetails(row.details);
   return {
     deviceId: row.deviceId,
     orgId: row.orgId,
@@ -2001,6 +2011,8 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     computedAt: row.computedAt.toISOString(),
     drivers: buildReliabilityDrivers(row.details),
     enrolledAt: row.enrolledAt ? row.enrolledAt.toISOString() : null,
+    provisional: baseline?.provisional ?? false,
+    baseline,
   };
 }
 
@@ -2030,6 +2042,7 @@ export async function evaluateReliabilityScores(input: ReliabilityEvaluationInpu
       hostname: devices.hostname,
       reliabilityScore: deviceReliability.reliabilityScore,
       computedAt: deviceReliability.computedAt,
+      baselineAt: sql<string | null>`${deviceReliability.details}->'baseline'->>'baselineAt'`,
     })
     .from(deviceReliability)
     .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
@@ -2055,96 +2068,62 @@ export async function evaluateReliabilityScores(input: ReliabilityEvaluationInpu
     ));
 
   const deviceIds = new Set(deviceRows.map((row) => row.deviceId));
+  const baselineByDevice = new Map(deviceRows.map((row) => [row.deviceId, row.baselineAt ? Date.parse(row.baselineAt) : null]));
   const labels = labelRows
     .filter((row): row is typeof row & { outcome: 'failure_confirmed' | 'replaced' | 'false_alarm' } => (
       deviceIds.has(row.deviceId)
       && (row.outcome === 'failure_confirmed' || row.outcome === 'replaced' || row.outcome === 'false_alarm')
     ))
+    // #5876: a failure label recorded before the device's active marker describes
+    // the pre-fix machine; scoring it against the post-fix score would be noise.
+    .filter((row) => {
+      const cut = baselineByDevice.get(row.deviceId);
+      return cut == null || Number.isNaN(cut) || row.occurredAt.getTime() >= cut;
+    })
     .map((row) => ({
       deviceId: row.deviceId,
       outcome: row.outcome,
       occurredAt: row.occurredAt,
     }));
 
-  return computeReliabilityEvaluationSummary(deviceRows, labels, { atRiskMaxScore, labelWindowDays });
+  return computeReliabilityEvaluationSummary(
+    deviceRows.map(({ baselineAt: _baselineAt, ...rest }) => rest),
+    labels, { atRiskMaxScore, labelWindowDays },
+  );
+}
+
+function buildHistoryPoints(
+  rows: ScoringHistoryRow[],
+  baselineAt: Date | null,
+  windowEnd: Date,
+  days: number,
+): DeviceReliabilityHistoryPoint[] {
+  // #5876: same global dedupe + genuine-hardware filter + event-timestamp bucketing
+  // as the scorer (the legacy per-row .length sum re-inflated counts, #1904).
+  // Pre-marker days are flagged, not dropped, so a chart can draw the cut.
+  const map = new Map<string, DailyAggregateBucket>();
+  mergeRowsIntoDailyBuckets(map, rows);
+  const baselineDay = baselineAt ? toDayKey(baselineAt) : null;
+  return bucketsInWindow(sortDailyBuckets(map), days, windowEnd).map((bucket) => ({
+    date: bucket.date,
+    sampleCount: bucket.sampleCount,
+    uptimeSecondsMax: bucket.uptimeSecondsMax,
+    crashCount: bucket.crashCount,
+    hangCount: bucket.hangCount,
+    serviceFailureCount: bucket.serviceFailureCount,
+    hardwareErrorCount: bucket.hardwareErrorCount,
+    reliabilityEstimate: scoreDailyBucket(bucket),
+    beforeBaseline: baselineDay !== null && bucket.date < baselineDay,
+  }));
 }
 
 export async function getDeviceReliabilityHistory(deviceId: string, days: number): Promise<DeviceReliabilityHistoryPoint[]> {
-  const since = getSince(days);
-  const rows = await db
-    .select({
-      collectedAt: deviceReliabilityHistory.collectedAt,
-      uptimeSeconds: deviceReliabilityHistory.uptimeSeconds,
-      crashEvents: deviceReliabilityHistory.crashEvents,
-      appHangs: deviceReliabilityHistory.appHangs,
-      serviceFailures: deviceReliabilityHistory.serviceFailures,
-      hardwareErrors: deviceReliabilityHistory.hardwareErrors,
-    })
-    .from(deviceReliabilityHistory)
-    .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), gte(deviceReliabilityHistory.collectedAt, since)))
-    .orderBy(asc(deviceReliabilityHistory.collectedAt));
-
-  const daily = new Map<string, {
-    sampleCount: number;
-    uptimeSecondsMax: number;
-    crashCount: number;
-    hangCount: number;
-    serviceFailureCount: number;
-    hardwareErrorCount: number;
-    hwCritical: number;
-    hwError: number;
-    hwWarning: number;
-  }>();
-
-  for (const row of rows) {
-    const dayKey = row.collectedAt.toISOString().slice(0, 10);
-    const entry = daily.get(dayKey) ?? {
-      sampleCount: 0,
-      uptimeSecondsMax: 0,
-      crashCount: 0,
-      hangCount: 0,
-      serviceFailureCount: 0,
-      hardwareErrorCount: 0,
-      hwCritical: 0,
-      hwError: 0,
-      hwWarning: 0,
-    };
-
-    entry.sampleCount += 1;
-    entry.uptimeSecondsMax = Math.max(entry.uptimeSecondsMax, row.uptimeSeconds);
-    entry.crashCount += row.crashEvents.length;
-    entry.hangCount += row.appHangs.length;
-    entry.serviceFailureCount += row.serviceFailures.length;
-    entry.hardwareErrorCount += row.hardwareErrors.length;
-    entry.hwCritical += row.hardwareErrors.filter((event) => event.severity === 'critical').length;
-    entry.hwError += row.hardwareErrors.filter((event) => event.severity === 'error').length;
-    entry.hwWarning += row.hardwareErrors.filter((event) => event.severity === 'warning').length;
-    daily.set(dayKey, entry);
-  }
-
-  return Array.from(daily.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, entry]) => {
-      const reliabilityEstimate = clampScore(
-        100
-        - entry.crashCount * 20
-        - entry.hangCount * 10
-        - entry.serviceFailureCount * 12
-        - entry.hwCritical * 30
-        - entry.hwError * 15
-        - entry.hwWarning * 5
-      );
-      return {
-        date,
-        sampleCount: entry.sampleCount,
-        uptimeSecondsMax: entry.uptimeSecondsMax,
-        crashCount: entry.crashCount,
-        hangCount: entry.hangCount,
-        serviceFailureCount: entry.serviceFailureCount,
-        hardwareErrorCount: entry.hardwareErrorCount,
-        reliabilityEstimate,
-      };
-    });
+  const windowEnd = new Date();
+  const [rows, baseline] = await Promise.all([
+    getHistoryForDevice(deviceId, days, windowEnd),
+    getActiveReliabilityBaseline(deviceId),
+  ]);
+  return buildHistoryPoints(rows, baseline?.baselineAt ?? null, windowEnd, days);
 }
 
 const DEFAULT_OFFENDER_LIMIT = 5;
@@ -2287,14 +2266,17 @@ export async function getDeviceReliabilityOffenders(
   limit: number = DEFAULT_OFFENDER_LIMIT
 ): Promise<DeviceReliabilityOffenders> {
   const now = new Date();
-  const rows = await getHistoryForDevice(deviceId, days);
+  const [rows, baseline] = await Promise.all([
+    getHistoryForDevice(deviceId, days),
+    getActiveReliabilityBaseline(deviceId),
+  ]);
   // Mirror the headline tiles' event-day window (bucketsInWindow) so the
   // drill-down counts reconcile with the tile they sit under.
   const window: OffenderWindow = {
     sinceKey: toDayKey(new Date(now.getTime() - days * DAY_MS)),
     todayKey: toDayKey(now),
   };
-  return aggregateReliabilityOffenders(rows, limit, window);
+  return aggregateReliabilityOffenders(applyBaselineToRows(rows, baseline?.baselineAt ?? null), limit, window);
 }
 
 export async function getOrgReliabilitySummary(orgId: string, options: { siteIds?: string[] } = {}): Promise<{
@@ -2370,6 +2352,7 @@ export async function getOrgReliabilitySummary(orgId: string, options: { siteIds
 
 export const reliabilityScoringInternals = {
   applyBaselineToRows,
+  buildHistoryPoints,
   parseAggregateState,
   mergeRowsIntoDailyBuckets,
   sortDailyBuckets,

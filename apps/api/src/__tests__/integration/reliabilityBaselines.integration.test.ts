@@ -9,7 +9,10 @@ import { getTestDb } from './setup';
 import {
   clearReliabilityBaseline, createReliabilityBaseline, listReliabilityBaselines,
 } from '../../services/reliabilityBaselines';
-import { computeAndPersistDeviceReliability, persistDeviceReliability, scoreDeviceReliabilityAsOf } from '../../services/reliabilityScoring';
+import {
+  computeAndPersistDeviceReliability, getDeviceReliability, getDeviceReliabilityHistory, getDeviceReliabilityOffenders,
+  listReliabilityDevices, persistDeviceReliability, scoreDeviceReliabilityAsOf,
+} from '../../services/reliabilityScoring';
 
 const DAY = 86_400_000;
 const system: DbAccessContext = { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null };
@@ -176,5 +179,35 @@ describe('reliability baselines (real DB)', () => {
     expect(await asOrg(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: user.id }))).toBe('cleared');
     const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
     expect((row!.details as any).baseline).toBeUndefined();
+  });
+
+  it('detail exposes baseline + provisional; offenders, history and list respect the marker', async () => {
+    const { device, orgId } = await deviceWithCrashHistory();
+    // One service failure before the marker (15d ago) and one after it (3d ago).
+    const failureAt = (daysAgo: number) => new Date(Date.now() - daysAgo * DAY - 30 * 60_000);
+    await getTestDb().insert(deviceReliabilityHistory).values([15, 3].map((daysAgo) => ({
+      deviceId: device.id, orgId, collectedAt: new Date(failureAt(daysAgo).getTime() + 60_000), uptimeSeconds: 3600,
+      bootTime: new Date(failureAt(daysAgo).getTime() - 3_600_000),
+      serviceFailures: [{ serviceName: `svc-${daysAgo}d`, timestamp: failureAt(daysAgo).toISOString(), recovered: true }],
+    })));
+    const unmarked = await asSystem(() => getDeviceReliabilityOffenders(device.id, 30, 5));
+    expect(unmarked.services.map((o) => o.label).sort()).toEqual(['svc-15d', 'svc-3d']);
+
+    const marker = await asSystem(() => createReliabilityBaseline({ device, reason: 'reimaged',
+      baselineAt: new Date(Date.now() - 10 * DAY), note: null, source: 'manual', sourceRef: null, createdBy: null, recompute: true }));
+    const detail = await asSystem(() => getDeviceReliability(device.id));
+    expect(detail!.provisional).toBe(true);
+    expect(detail!.baseline).toMatchObject({ id: marker!.id, reason: 'reimaged' });
+    const listed = await asSystem(() => listReliabilityDevices({ orgId, limit: 10 }));
+    expect(listed.rows.find((r) => r.deviceId === device.id)!.provisional).toBe(true);
+    const offenders = await asSystem(() => getDeviceReliabilityOffenders(device.id, 30, 5));
+    expect(offenders.services.map((o) => o.label)).toEqual(['svc-3d']);
+    expect(offenders.hardware).toHaveLength(0);
+    expect(offenders.hangs).toHaveLength(0);
+
+    const history = await asSystem(() => getDeviceReliabilityHistory(device.id, 30));
+    const baselineDay = new Date(Date.now() - 10 * DAY).toISOString().slice(0, 10);
+    expect(history.some((p) => p.beforeBaseline)).toBe(true);
+    for (const p of history) expect(p.beforeBaseline).toBe(p.date < baselineDay);
   });
 });
