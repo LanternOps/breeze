@@ -9,9 +9,10 @@ type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
  * Direct extraction of the posture report's device-protection rule
  * (`securityComplianceReport.ts`). Either managed-agent table (SentinelOne or
  * Huntress) takes precedence over status-row presence and native AV state. An
- * absent `security_status` row is 'unknown' — the caller decides how to bucket
- * that (the posture report folds it into "unprotected" to preserve its
- * existing public contract). Deliberately does NOT consume `updatedAt`, `now`,
+ * absent `security_status` row, or a row whose `realTimeProtection` is null
+ * (the agent's AV collector failed, #8043/#8252), is 'unknown' — the caller
+ * decides how to bucket that (the posture report folds it into "unprotected"
+ * to preserve its existing public contract). Deliberately does NOT consume `updatedAt`, `now`,
  * or `maxSecurityStatusAgeDays`: this rule has no freshness gate.
  */
 export function classifyDeviceProtection(input: {
@@ -26,7 +27,7 @@ export function classifyDeviceProtection(input: {
     return 'protected';
   }
 
-  if (input.securityStatus === null) {
+  if (input.securityStatus === null || input.securityStatus.realTimeProtection === null) {
     return 'unknown';
   }
 

@@ -74,6 +74,7 @@
       "failed": "Compliance-Bericht {{reportId}} ist fehlgeschlagen",
       "expired": "Der Compliance-Bericht {{reportId}} ist abgelaufen. Erstellen Sie einen neuen Bericht, um ihn herunterzuladen.",
       "checkFailed": "Berichtsstatus konnte nicht geprüft werden",
+      "downloadFailed": "Compliance-Bericht {{reportId}} konnte nicht heruntergeladen werden",
       "noReportId": "Der Bericht wurde in die Warteschlange eingereiht, aber es wurde keine Berichts-ID zurückgegeben"
     },
     "summary": {

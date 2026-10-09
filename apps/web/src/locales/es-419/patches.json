@@ -74,6 +74,7 @@
       "failed": "Error en el informe de cumplimiento {{reportId}}",
       "expired": "El informe de cumplimiento {{reportId}} venció. Genera un informe nuevo para descargarlo.",
       "checkFailed": "No se pudo verificar el estado del informe",
+      "downloadFailed": "No se pudo descargar el informe de cumplimiento {{reportId}}",
       "noReportId": "El informe estaba en cola pero no se devolvió ningún informe ID"
     },
     "summary": {

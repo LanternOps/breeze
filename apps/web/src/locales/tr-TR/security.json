@@ -198,7 +198,8 @@
     "running": "Çalışıyor",
     "threatsDetectedCount": "{{count}} tehditler",
     "unknownProvider": "Bilinmeyen Sağlayıcı",
-    "unknownVendor": "Bilinmeyen satıcı"
+    "unknownVendor": "Bilinmeyen satıcı",
+    "unknown": "Bilinmiyor"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
@@ -285,7 +286,8 @@
     "totalDevices": "Toplam Cihaz Sayısı",
     "windows": "Windows",
     "statusFilterLabel": "Güvenlik duvarı durumu",
-    "osFilterLabel": "İşletim sistemi"
+    "osFilterLabel": "İşletim sistemi",
+    "unknown": "Bilinmiyor"
   },
   "securityHuntressIncidentList": {
     "actions": "Eylemler",
@@ -534,7 +536,8 @@
     "updated": "Güncellendi {{time}}",
     "viewDetails": "Ayrıntıları görüntüle",
     "vulnerabilities": "Güvenlik Açıkları",
-    "weakAdmins": "Zayıf yöneticiler"
+    "weakAdmins": "Zayıf yöneticiler",
+    "unknown": "Bilinmiyor"
   },
   "securitySecurityPageHeader": {
     "refresh": "Yenile",

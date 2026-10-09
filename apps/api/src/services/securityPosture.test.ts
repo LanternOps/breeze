@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { computeTrendPoint, scoreEncryption } from './securityPosture';
+import { computeTrendPoint, scoreAvHealth, scoreEncryption } from './securityPosture';
 
 function deviceInputWithEncryption(encryptionStatus: string | null, encryptionDetails: unknown = null) {
   return {
@@ -114,5 +114,26 @@ describe('computeTrendPoint', () => {
     expect(point.open_ports).toBe(0);
     expect(point.os_currency).toBe(0);
     expect(point.vulnerability_management).toBe(0);
+  });
+});
+
+describe('scoreAvHealth — unknown real-time protection (#8252)', () => {
+  function withRtp(realTimeProtection: boolean | null) {
+    const input = deviceInputWithEncryption('encrypted');
+    return {
+      ...input,
+      security: { ...input.security, realTimeProtection, definitionsDate: new Date() },
+    };
+  }
+
+  it('scores an unknown reading as a neutral data gap, not as protection off', () => {
+    const unknown = scoreAvHealth(withRtp(null));
+    const off = scoreAvHealth(withRtp(false));
+    const on = scoreAvHealth(withRtp(true));
+    expect(unknown.score).toBe(50);
+    expect(unknown.confidence).toBe(0.3);
+    expect(unknown.dataGap).toBe('Real-time AV status is unavailable.');
+    expect(off.score).toBe(20);
+    expect(on.score).toBe(85);
   });
 });

@@ -102,7 +102,7 @@ Together, these detect and reclaim database connections stuck at session start (
 | `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `43200` (30 days) | | Default enrollment key expiry. Every path that mints a key shares this fallback — the Add Device modal, the Partner API, and installer child keys |
 | `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | inherits `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime |
-| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `1440` | | Base TTL (minutes) for a freshly-issued installer bootstrap token when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment — see [Enrollment Keys](/agents/enrollment-keys/#installer-bootstrap-tokens) |
+| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `10080` | | Base TTL (minutes) for a freshly-issued installer bootstrap token when no explicit `ttlMinutes` is supplied. Default 7 days; maximum `43200` (30 days) — a larger value is clamped, with a warning at API startup. Tokens already issued keep their original expiry. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment — see [Enrollment Keys](/agents/enrollment-keys/#installer-bootstrap-tokens) |
 | `INSTALLER_PARENT_MIN_REMAINING_SECONDS` | `60` | | Minimum remaining lifetime (seconds) a parent enrollment key must have to be used as an installer source. Guards against building an installer from a parent that expires before the download reaches the target machine |
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
@@ -1074,7 +1074,7 @@ The warranty worker looks each physical device's serial number up against its ma
 |---|---|---|
 | `QBO_CLIENT_ID` | — | Intuit OAuth client ID for the QuickBooks Online integration |
 | `QBO_CLIENT_SECRET` | — | Intuit OAuth client secret |
-| `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/accounting/quickbooks/callback`) |
+| `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/api/v1/accounting/quickbooks/callback`) |
 | `QBO_ENVIRONMENT` | — | `sandbox` or `production` |
 | `QBO_WEBHOOK_VERIFIER_TOKEN` | — | Intuit app verifier token for `POST /api/v1/webhooks/quickbooks`. Optional. Without it the webhook endpoint answers `503` on every delivery (so Intuit keeps retrying) and payments arrive on the 15-minute reconcile sweep instead — the sweep is the guaranteed path either way, the webhook only makes it faster. Intuit allows one webhook endpoint per app, so a multi-region deployment can only point it at one region. |
 

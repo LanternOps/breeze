@@ -47,7 +47,9 @@ vi.mock('../services/ticketMailbox/connectionService', () => ({
   setConnectedMailboxStatus: vi.fn(async () => {}),
 }));
 vi.mock('../services/ticketMailbox/mailboxToken', () => ({ getMailboxToken: vi.fn(async () => 'tok') }));
-vi.mock('../services/ticketMailbox/graphMailClient', () => ({
+vi.mock('../services/ticketMailbox/graphMailClient', async (importOriginal) => ({
+  // The real classifier: these tests assert how the sweep reacts to each failure.
+  classifyGraphPollError: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).classifyGraphPollError,
   listInboxDelta: vi.fn(),
   markRead: vi.fn(async () => {}),
 }));
@@ -160,6 +162,58 @@ describe('runMailboxSweep', () => {
     }));
     expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
     expect(updateDeltaCursor).not.toHaveBeenCalled();
+  });
+
+  // #8299: one Graph or token-endpoint hiccup must not stop the mailbox. The
+  // sweep only selects 'connected' rows, so 'error' would need a manual reconnect.
+  it.each([
+    ['Graph 502', () => { const e: any = new Error('Graph delta 502: UnknownError'); e.status = 502; return e; }],
+    ['Graph 503', () => { const e: any = new Error('Graph delta 503'); e.status = 503; return e; }],
+    ['Graph 429 after the client retry', () => { const e: any = new Error('Graph delta 429'); e.status = 429; return e; }],
+    ['Graph 408 request timeout', () => { const e: any = new Error('Graph delta 408'); e.status = 408; return e; }],
+    ['a dropped connection', () => new TypeError('fetch failed')],
+  ])('stays connected and retries next sweep on %s', async (_label, makeErr) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockImplementationOnce(async () => { throw makeErr(); });
+
+    await runMailboxSweep();
+    expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
+    expect(updateDeltaCursor).not.toHaveBeenCalled();
+    expect(resetDeltaCursor).not.toHaveBeenCalled();
+  });
+
+  it('stays connected when the token endpoint is briefly unavailable', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(getMailboxToken).mockImplementationOnce(async () => {
+      const e: any = new Error('Token acquisition failed (HTTP 503)'); e.status = 503; throw e;
+    });
+
+    await runMailboxSweep();
+    expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
+    expect(listInboxDelta).not.toHaveBeenCalled();
+  });
+
+  it('still marks reauth_required when the token endpoint refuses consent (401)', async () => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(getMailboxToken).mockImplementationOnce(async () => {
+      const e: any = new Error('Authentication failed'); e.status = 401; throw e;
+    });
+
+    await runMailboxSweep();
+    expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'reauth_required', expect.any(String));
+  });
+
+  it.each([
+    ['Graph 404 (mailbox not found)', () => { const e: any = new Error('Graph delta 404'); e.status = 404; return e; }],
+    ['a configuration error with no HTTP status', () => new Error('TICKET_MAILBOX_M365_CLIENT_ID/SECRET not configured')],
+  ])('still marks error on %s', async (_label, makeErr) => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockImplementationOnce(async () => { throw makeErr(); });
+
+    await runMailboxSweep();
+    expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'error', expect.any(String));
   });
 
   it('drops a poll result when disable wins while Graph I/O is in flight', async () => {

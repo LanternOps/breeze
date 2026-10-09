@@ -369,6 +369,7 @@
       "crossesFunding": "Esse modelo de backup é pago por outra fonte. Permita primeiro o failover entre créditos do Breeze e sua própria chave de API.",
       "egress_blocked": "Esse endereço não é permitido.",
       "invalid_url": "Essa URL não é válida.",
+      "endpoint_unreachable": "Não foi possível resolver ou alcançar o host do endpoint. Verifique a URL base.",
       "managed_by_env": "Esta conexão é gerenciada pelo ambiente da instância e não pode ser alterada aqui.",
       "connection_in_use": "Um recurso ainda usa um modelo desta conexão. Escolha outro padrão primeiro.",
       "duplicate_model": "Esse ID de modelo já existe nesta conexão.",

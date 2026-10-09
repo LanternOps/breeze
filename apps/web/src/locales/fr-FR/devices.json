@@ -292,7 +292,7 @@
     "n30Days": "30 jours",
     "n90Days": "90 jours",
     "n1Year": "1 an",
-    "afterThisWindowTheDownloadedInstaller": "Après cette fenêtre, l’installateur téléchargé et le lien partagé cessent d’accepter de nouvelles inscriptions. Les appareils déjà enregistrés restent connectés.",
+    "afterThisWindowTheDownloadedInstaller": "Après cette fenêtre, l’installateur téléchargé et le lien partagé cessent d’accepter de nouvelles inscriptions. Un installateur téléchargé fonctionne au plus 30 jours, et chaque téléchargement depuis le lien partagé contient un jeton valide jusqu’à 30 jours. Les appareils déjà enregistrés restent connectés.",
     "generatingInstaller": "Génération d’installateur...",
     "downloaded": "Téléchargé",
     "generatingLink": "Génération de lien...",

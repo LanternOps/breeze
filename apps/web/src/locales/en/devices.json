@@ -292,7 +292,7 @@
     "n30Days": "30 days",
     "n90Days": "90 days",
     "n1Year": "1 year",
-    "afterThisWindowTheDownloadedInstaller": "After this window, the downloaded installer and shared link stop accepting new enrollments. Devices already enrolled stay connected.",
+    "afterThisWindowTheDownloadedInstaller": "After this window, the downloaded installer and shared link stop accepting new enrollments. A downloaded installer works for 30 days at most, and each download from the shared link carries a token that lasts up to 30 days. Devices already enrolled stay connected.",
     "generatingInstaller": "Generating installer...",
     "downloaded": "Downloaded",
     "generatingLink": "Generating link...",

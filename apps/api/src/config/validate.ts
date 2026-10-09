@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
@@ -575,6 +576,14 @@ const envObjectSchema = z
     TRUSTED_PROXY_CIDRS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
     ENROLLMENT_KEY_PEPPER: z.string().optional(),
+    // Read at issuance through positiveIntEnv (services/installerBootstrapToken.ts),
+    // which falls back on anything that is not a positive integer and clamps
+    // to 30 days. Declared so collectWarnings() may report an over-maximum
+    // value once at boot; deliberately not boot-refused.
+    INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: z
+      .string()
+      .optional()
+      .describe('Lifetime (minutes) of a newly issued installer bootstrap token when none is chosen. Default 10080 (7 days); values above 43200 (30 days) are clamped.'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
@@ -2672,6 +2681,24 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
         'TURN_TLS_HOST is set but TURN_HOST is empty. getIceServers() advertises no ' +
         'TURN server at all without TURN_HOST, so turns: will never be offered.',
     });
+  }
+
+  // INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES is clamped to the 30-day installer
+  // maximum when read (services/installerBootstrapToken.ts, via
+  // positiveIntEnv). Say so once at boot, so an operator who set a longer
+  // value learns it is not in effect. Same integer parse as positiveIntEnv:
+  // values it ignores (empty, non-integer) fall back to the default silently.
+  const bootstrapTtlRaw = (env.INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES ?? '').trim();
+  if (/^\d+$/.test(bootstrapTtlRaw)) {
+    const bootstrapTtl = Number.parseInt(bootstrapTtlRaw, 10);
+    if (bootstrapTtl > MAX_BOOTSTRAP_TOKEN_TTL_MINUTES) {
+      warnings.push({
+        key: 'INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES',
+        message:
+          `${bootstrapTtl} exceeds the maximum of ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES} minutes (30 days); ` +
+          `installer bootstrap tokens are issued with a ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES}-minute lifetime.`,
+      });
+    }
   }
 
   // Warn about optional secrets that look insecure

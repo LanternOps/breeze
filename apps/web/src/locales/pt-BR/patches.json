@@ -74,6 +74,7 @@
       "failed": "Relatório de conformidade {{reportId}} falhou",
       "expired": "O relatório de conformidade {{reportId}} expirou. Gere um novo relatório para baixá-lo.",
       "checkFailed": "Falha ao verificar o status do relatório",
+      "downloadFailed": "Falha ao baixar o relatório de conformidade {{reportId}}",
       "noReportId": "O relatório foi enfileirado, mas nenhum ID de relatório foi retornado"
     },
     "summary": {

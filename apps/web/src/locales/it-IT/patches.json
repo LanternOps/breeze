@@ -74,6 +74,7 @@
       "failed": "Report di conformità {{reportId}} non riuscito",
       "expired": "Il report di conformità {{reportId}} è scaduto. Genera un nuovo report per scaricarlo.",
       "checkFailed": "Impossibile verificare lo stato del report",
+      "downloadFailed": "Impossibile scaricare il report di conformità {{reportId}}",
       "noReportId": "Il report è stato messo in coda, ma non è stato restituito alcun ID report"
     },
     "summary": {

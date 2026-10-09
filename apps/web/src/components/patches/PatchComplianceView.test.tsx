@@ -1,10 +1,17 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
 // Mock showToast so runAction (used by handleExport) writes to the spy.
 const showToast = vi.fn();
 vi.mock('../../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+
+// The completed-report download is saved through the shared blob helper; spy on
+// it so the export tests can assert the file name without jsdom object URLs.
+const downloadBlobMock = vi.fn();
+vi.mock('@/lib/downloadBlob', () => ({
+  downloadBlob: (...a: unknown[]) => downloadBlobMock(...a),
+}));
 
 import PatchComplianceView from './PatchComplianceView';
 import { fetchWithAuth } from '../../stores/auth';
@@ -144,6 +151,141 @@ describe('PatchComplianceView', () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'error', message: 'report engine down' })
       );
+    });
+  });
+
+  describe('completed report download (#8306)', () => {
+    const originalLocation = window.location;
+    let assign: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      assign = vi.fn();
+      Object.defineProperty(window, 'location', {
+        value: { ...originalLocation, assign, href: originalLocation.href },
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    const csvBlob = new Blob(['device,status\n'], { type: 'text/csv' });
+    const makeBlobResponse = (ok = true, status = ok ? 200 : 500): Response =>
+      ({
+        ok,
+        status,
+        statusText: ok ? 'OK' : 'ERROR',
+        blob: vi.fn().mockResolvedValue(csvBlob),
+        json: vi.fn().mockResolvedValue({ error: 'download failed' }),
+      }) as unknown as Response;
+
+    const exportImpl = (download: () => Response) =>
+      emptyComplianceImpl((url) => {
+        if (url.startsWith('/patches/compliance/report?')) return makeJsonResponse({ reportId: 'rep-1' });
+        if (url === '/patches/compliance/report/rep-1') {
+          return makeJsonResponse({ data: { id: 'rep-1', status: 'completed' } });
+        }
+        if (url === '/patches/compliance/report/rep-1/download') return download();
+        return null;
+      });
+
+    it('fetches the download with the session (fetchWithAuth) and saves the CSV without navigating', async () => {
+      orgState.currentOrgId = 'org-1';
+      fetchMock.mockImplementation(exportImpl(() => makeBlobResponse()));
+
+      render(<PatchComplianceView ringId={null} />);
+      fireEvent.click(await screen.findByRole('button', { name: /Export/i }));
+      expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      await waitFor(() => {
+        expect(downloadBlobMock).toHaveBeenCalledWith(csvBlob, 'patch-compliance-rep-1.csv');
+      });
+      expect(fetchMock).toHaveBeenCalledWith('/patches/compliance/report/rep-1/download');
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('surfaces an error and saves nothing when the download request fails', async () => {
+      orgState.currentOrgId = 'org-1';
+      fetchMock.mockImplementation(exportImpl(() => makeBlobResponse(false, 500)));
+
+      render(<PatchComplianceView ringId={null} />);
+      fireEvent.click(await screen.findByRole('button', { name: /Export/i }));
+      expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(await screen.findByText(/Failed to download compliance report rep-1/i)).toBeTruthy();
+      expect(downloadBlobMock).not.toHaveBeenCalled();
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('a superseded export whose download fails does not stop the newer export poll', async () => {
+      orgState.currentOrgId = 'org-1';
+      let queued = 0;
+      let failStaleDownload: (r: Response) => void = () => {};
+      const staleDownload = new Promise<Response>((resolve) => { failStaleDownload = resolve; });
+      fetchMock.mockImplementation(async (input: unknown) => {
+        const url = String(input);
+        if (url.startsWith('/patches/compliance/report?')) {
+          queued += 1;
+          return makeJsonResponse({ reportId: queued === 1 ? 'rep-1' : 'rep-2' });
+        }
+        if (url === '/patches/compliance/report/rep-1') {
+          return makeJsonResponse({ data: { id: 'rep-1', status: 'completed' } });
+        }
+        if (url === '/patches/compliance/report/rep-1/download') return staleDownload;
+        if (url === '/patches/compliance/report/rep-2') {
+          return makeJsonResponse({ data: { id: 'rep-2', status: 'pending' } });
+        }
+        return emptyComplianceImpl(() => null)(input);
+      });
+
+      render(<PatchComplianceView ringId={null} />);
+      const exportBtn = await screen.findByRole('button', { name: /Export/i });
+      fireEvent.click(exportBtn);
+      expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
+
+      // rep-1 completes; its download is now in flight (held open).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/patches/compliance/report/rep-1/download');
+      });
+
+      // The user exports again while rep-1's download is still pending.
+      fireEvent.click(exportBtn);
+      expect(await screen.findByText(/Compliance report rep-2 queued/i)).toBeTruthy();
+
+      // The stale rep-1 download now fails.
+      await act(async () => {
+        failStaleDownload(makeBlobResponse(false, 500));
+        await Promise.resolve();
+      });
+
+      const rep2Polls = () =>
+        fetchMock.mock.calls.filter((c) => String(c[0]) === '/patches/compliance/report/rep-2').length;
+      const before = rep2Polls();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(rep2Polls()).toBeGreaterThan(before);
+      expect(screen.queryByText(/Failed to download compliance report rep-1/i)).toBeNull();
+      expect(screen.getByText(/Compliance report rep-2 queued/i)).toBeTruthy();
     });
   });
 

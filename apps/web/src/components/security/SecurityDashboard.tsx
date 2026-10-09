@@ -44,13 +44,17 @@ type AdminDevice = {
 };
 type SecurityOverview = {
   securityScore: number;
+  // `unknown` = devices whose agent collector failed or never reported (#8252);
+  // counted on their own, never folded into unprotected / disabled.
   antivirus: {
     protected: number;
     unprotected: number;
+    unknown: number;
   };
   firewall: {
     enabled: number;
     disabled: number;
+    unknown: number;
   };
   encryption: {
     bitlockerEnabled: number;
@@ -103,8 +107,8 @@ const severityStyles: Record<Priority, string> = {
 };
 const defaultOverview: SecurityOverview = {
   securityScore: 0,
-  antivirus: { protected: 0, unprotected: 0 },
-  firewall: { enabled: 0, disabled: 0 },
+  antivirus: { protected: 0, unprotected: 0, unknown: 0 },
+  firewall: { enabled: 0, disabled: 0, unknown: 0 },
   encryption: { bitlockerEnabled: 0, filevaultEnabled: 0, total: 0 },
   passwordCompliance: 0,
   adminAudit: {
@@ -352,6 +356,7 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     data.unprotectedDevices,
     data.unprotectedEndpoints,
   );
+  const antivirusUnknown = pickNumber(antivirusRecord.unknown);
   const firewallRecord = getRecord(data.firewall ?? data.firewallStatus);
   const firewallEnabled = pickNumber(
     firewallRecord.enabled,
@@ -365,6 +370,7 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     firewallRecord.off,
     data.firewallDisabled,
   );
+  const firewallUnknown = pickNumber(firewallRecord.unknown);
   const encryptionRecord = getRecord(
     data.encryption ?? data.diskEncryption ?? data.encryptionStatus,
   );
@@ -420,8 +426,13 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     antivirus: {
       protected: antivirusProtected,
       unprotected: antivirusUnprotected,
+      unknown: antivirusUnknown,
     },
-    firewall: { enabled: firewallEnabled, disabled: firewallDisabled },
+    firewall: {
+      enabled: firewallEnabled,
+      disabled: firewallDisabled,
+      unknown: firewallUnknown,
+    },
     encryption: {
       bitlockerEnabled,
       filevaultEnabled,
@@ -556,19 +567,30 @@ export default function SecurityDashboard({
   const ovData = overview ?? defaultOverview;
   const vulnData = vulnerabilities ?? defaultVulnerabilities;
   const antivirusTotal =
-    ovData.antivirus.protected + ovData.antivirus.unprotected;
+    ovData.antivirus.protected +
+    ovData.antivirus.unprotected +
+    ovData.antivirus.unknown;
   const antivirusProtectedPercent = antivirusTotal
     ? Math.round((ovData.antivirus.protected / antivirusTotal) * 100)
     : 0;
   const antivirusUnprotectedPercent = antivirusTotal
     ? Math.round((ovData.antivirus.unprotected / antivirusTotal) * 100)
     : 0;
-  const firewallTotal = ovData.firewall.enabled + ovData.firewall.disabled;
+  const antivirusUnknownPercent = antivirusTotal
+    ? Math.round((ovData.antivirus.unknown / antivirusTotal) * 100)
+    : 0;
+  const firewallTotal =
+    ovData.firewall.enabled +
+    ovData.firewall.disabled +
+    ovData.firewall.unknown;
   const firewallEnabledPercent = firewallTotal
     ? Math.round((ovData.firewall.enabled / firewallTotal) * 100)
     : 0;
   const firewallDisabledPercent = firewallTotal
     ? Math.round((ovData.firewall.disabled / firewallTotal) * 100)
+    : 0;
+  const firewallUnknownPercent = firewallTotal
+    ? Math.round((ovData.firewall.unknown / firewallTotal) * 100)
     : 0;
   const encryptionEnabledTotal =
     ovData.encryption.bitlockerEnabled + ovData.encryption.filevaultEnabled;
@@ -1008,6 +1030,20 @@ export default function SecurityDashboard({
                         {antivirusUnprotectedPercent}%)
                       </span>
                     </div>
+                    {overview.antivirus.unknown > 0 && (
+                      <div
+                        className="flex items-center justify-between text-sm"
+                        data-testid="security-av-unknown"
+                      >
+                        <span className="text-muted-foreground">
+                          {t("securitySecurityDashboard.unknown")}
+                        </span>
+                        <span className="font-medium">
+                          {formatNumber(overview.antivirus.unknown)} (
+                          {antivirusUnknownPercent}%)
+                        </span>
+                      </div>
+                    )}
                     <div className="h-2 w-full rounded-full bg-muted">
                       <div
                         className={cn(
@@ -1076,6 +1112,20 @@ export default function SecurityDashboard({
                         {firewallDisabledPercent}%)
                       </span>
                     </div>
+                    {overview.firewall.unknown > 0 && (
+                      <div
+                        className="flex items-center justify-between text-sm"
+                        data-testid="security-firewall-unknown"
+                      >
+                        <span className="text-muted-foreground">
+                          {t("securitySecurityDashboard.unknown")}
+                        </span>
+                        <span className="font-medium">
+                          {formatNumber(overview.firewall.unknown)} (
+                          {firewallUnknownPercent}%)
+                        </span>
+                      </div>
+                    )}
                     <div className="h-2 w-full rounded-full bg-muted">
                       <div
                         className={cn(

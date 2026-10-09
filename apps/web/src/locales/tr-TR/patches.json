@@ -74,6 +74,7 @@
       "failed": "Uyumluluk raporu {{reportId}} başarısız oldu",
       "expired": "{{reportId}} numaralı uyumluluk raporunun süresi doldu. İndirmek için yeni bir rapor oluşturun.",
       "checkFailed": "Rapor durumu kontrol edilemedi",
+      "downloadFailed": "{{reportId}} uyumluluk raporu indirilemedi",
       "noReportId": "Rapor sıraya alındı ancak rapor kimliği döndürülmedi"
     },
     "summary": {

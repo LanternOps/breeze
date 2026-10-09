@@ -292,7 +292,7 @@
     "n30Days": "30 dias",
     "n90Days": "90 dias",
     "n1Year": "1 ano",
-    "afterThisWindowTheDownloadedInstaller": "Após esse período, o instalador baixado e o link compartilhado deixarão de aceitar novas inscrições. Os dispositivos já inscritos permanecerão conectados.",
+    "afterThisWindowTheDownloadedInstaller": "Após esse período, o instalador baixado e o link compartilhado deixarão de aceitar novas inscrições. Um instalador baixado funciona por no máximo 30 dias, e cada download pelo link compartilhado contém um token válido por até 30 dias. Os dispositivos já inscritos permanecerão conectados.",
     "generatingInstaller": "Gerando instalador...",
     "downloaded": "Baixado",
     "generatingLink": "Gerando link...",
