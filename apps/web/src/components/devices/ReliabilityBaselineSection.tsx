@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ChevronDown, History } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { ChevronDown, History, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
@@ -7,6 +7,10 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import { createCancellableRequest } from '../../lib/cancellableRequest';
+import { ActionError, runAction } from '../../lib/runAction';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
+import ReliabilityBaselineDialog from './ReliabilityBaselineDialog';
 
 export type ReliabilityBaselineReason = 'reimaged' | 'remediated' | 'hardware_replaced';
 export type ReliabilityBaselineSource = 'manual' | 'bare_metal_recovery';
@@ -55,8 +59,9 @@ export type ReliabilityBaselineSectionProps = {
     provisional: boolean;
     baseline: ReliabilityBaselineDetails | null;
   };
-  // Consumed by the write actions (Task 12); accepted now so the mount site is final.
+  // devices:write — gates "Mark work done" and the per-marker Clear.
   canWrite: boolean;
+  // Called after a marker is created or cleared so the parent refetches the score.
   onChanged: () => void;
 };
 
@@ -97,15 +102,23 @@ function calendarDaysSince(value: string): number {
   return Math.max(0, Math.floor((Date.now() - ms) / DAY_MS));
 }
 
-export default function ReliabilityBaselineSection({ deviceId, snapshot }: ReliabilityBaselineSectionProps) {
+export default function ReliabilityBaselineSection({ deviceId, snapshot, canWrite, onChanged }: ReliabilityBaselineSectionProps) {
   const { t } = useTranslation('devices');
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Bumped after a write so the list refetches without blanking what is shown.
+  const [reloadKey, setReloadKey] = useState(0);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [clearTarget, setClearTarget] = useState<ReliabilityBaselineMarker | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    setState({ status: 'loading' });
+    setHistoryOpen(false);
+  }, [deviceId]);
 
   useEffect(() => {
     const request = createCancellableRequest();
-    setState({ status: 'loading' });
-    setHistoryOpen(false);
     (async () => {
       try {
         const response = await fetchWithAuth(`/reliability/${deviceId}/baselines`, { signal: request.signal });
@@ -124,12 +137,47 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot }: Relia
       }
     })();
     return () => request.cancel();
-  }, [deviceId]);
+  }, [deviceId, reloadKey]);
 
-  if (state.status !== 'ready') return null;
-  const { markers } = state;
-  const baseline = snapshot.baseline;
-  if (markers.length === 0 && !baseline) return null;
+  const refresh = useCallback(() => {
+    setReloadKey((key) => key + 1);
+    onChanged();
+  }, [onChanged]);
+
+  const confirmClear = async () => {
+    if (!clearTarget) return;
+    const markerId = clearTarget.id;
+    setClearing(true);
+    let stale = false;
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/reliability/${deviceId}/baselines/${markerId}`, { method: 'DELETE' }),
+        errorFallback: t('deviceReliabilityPanel.baseline.clearError'),
+        successMessage: t('deviceReliabilityPanel.baseline.clearedToast'),
+      });
+      stale = true;
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // the auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('deviceReliabilityPanel.baseline.clearError') });
+      } else if (err.status === 404 || err.status === 409) {
+        // Already cleared or gone: what this panel shows is out of date.
+        stale = true;
+      }
+    } finally {
+      setClearing(false);
+      // Close on failure as well as success: the error toast and the dialog
+      // portal share z-50 and the portal paints over it (#2429).
+      setClearTarget(null);
+    }
+    if (stale) refresh();
+  };
+
+  // A failed list read still has the snapshot's summary of the active marker:
+  // render the banner from it, without the list-only note, before/after and history.
+  const markers = state.status === 'ready' ? state.markers : [];
+  const baseline = state.status === 'loading' ? null : snapshot.baseline;
+  if (markers.length === 0 && !baseline && !canWrite) return null;
 
   // The snapshot names the marker the score was computed against; prefer it so
   // the banner and the score can't disagree mid-race.
@@ -170,7 +218,7 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot }: Relia
                     reason: reasonLabel(t, baseline.reason),
                     date: formatMarkerDate(baseline.baselineAt),
                     who: markerAuthor(t, activeMarker ?? baseline),
-                    days: calendarDaysSince(baseline.baselineAt),
+                    count: calendarDaysSince(baseline.baselineAt),
                   })}
             </p>
             {activeMarker?.note && (
@@ -205,21 +253,37 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot }: Relia
         </div>
       )}
 
-      {markers.length > 0 && (
-        <div data-testid="reliability-baseline-history">
-          <button
-            type="button"
-            data-testid="reliability-baseline-history-toggle"
-            aria-expanded={historyOpen}
-            onClick={() => setHistoryOpen((open) => !open)}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-          >
-            <ChevronDown className={`h-4 w-4 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
-            {t('deviceReliabilityPanel.baseline.history')}
-            <span className="tabular-nums">({formatNumber(markers.length)})</span>
-          </button>
-          {historyOpen && (
-            <ul className="mt-2 divide-y divide-border/60">
+      {(markers.length > 0 || canWrite) && (
+        <div data-testid={markers.length > 0 ? 'reliability-baseline-history' : undefined}>
+          <div className="flex flex-wrap items-center gap-2">
+            {markers.length > 0 && (
+              <button
+                type="button"
+                data-testid="reliability-baseline-history-toggle"
+                aria-expanded={historyOpen}
+                aria-controls="reliability-baseline-history"
+                onClick={() => setHistoryOpen((open) => !open)}
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                <ChevronDown className={`h-4 w-4 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
+                {t('deviceReliabilityPanel.baseline.history')}
+                <span className="tabular-nums">({formatNumber(markers.length)})</span>
+              </button>
+            )}
+            {canWrite && (
+              <button
+                type="button"
+                data-testid="reliability-mark-work-done"
+                onClick={() => setDialogOpen(true)}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+              >
+                <Wrench className="h-4 w-4" aria-hidden="true" />
+                {t('deviceReliabilityPanel.baseline.markWorkDone')}
+              </button>
+            )}
+          </div>
+          {historyOpen && markers.length > 0 && (
+            <ul id="reliability-baseline-history" className="mt-2 divide-y divide-border/60">
               {markers.map((marker) => (
                 <li
                   key={marker.id}
@@ -239,6 +303,16 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot }: Relia
                         {t('deviceReliabilityPanel.baseline.cleared')}
                       </span>
                     )}
+                    {canWrite && !marker.clearedAt && (
+                      <button
+                        type="button"
+                        data-testid={`reliability-baseline-clear-${marker.id}`}
+                        onClick={() => setClearTarget(marker)}
+                        className="ml-auto text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        {t('deviceReliabilityPanel.baseline.clear')}
+                      </button>
+                    )}
                   </div>
                   {marker.note && (
                     <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{marker.note}</p>
@@ -248,6 +322,28 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot }: Relia
             </ul>
           )}
         </div>
+      )}
+
+      {canWrite && (
+        <>
+          <ReliabilityBaselineDialog
+            deviceId={deviceId}
+            open={dialogOpen}
+            onClose={() => setDialogOpen(false)}
+            onSaved={refresh}
+          />
+          <ConfirmDialog
+            open={clearTarget !== null}
+            onClose={() => { if (!clearing) setClearTarget(null); }}
+            onConfirm={() => void confirmClear()}
+            title={t('deviceReliabilityPanel.baseline.clearTitle')}
+            message={t('deviceReliabilityPanel.baseline.clearMessage')}
+            confirmLabel={t('deviceReliabilityPanel.baseline.clearConfirm')}
+            variant="warning"
+            isLoading={clearing}
+            confirmTestId="reliability-baseline-clear-confirm"
+          />
+        </>
       )}
     </div>
   );

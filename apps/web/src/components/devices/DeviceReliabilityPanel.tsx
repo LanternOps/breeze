@@ -537,7 +537,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
             <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
-            {snapshot.reliabilityScore <= 70 && (
+            {/* A provisional score is not evidence either way (the fleet
+                finding excludes provisional devices too), so no at-risk pill. */}
+            {!provisional && snapshot.reliabilityScore <= 70 && (
               <span className="inline-flex items-center gap-1" data-testid="reliability-atrisk-help">
                 <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
                   <AlertTriangle className="h-3.5 w-3.5" />

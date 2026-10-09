@@ -892,8 +892,7 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     const banner = await screen.findByTestId('reliability-baseline-banner');
     expect(banner).toHaveTextContent('Alex Tech');
-    expect(banner).toHaveTextContent('4');
-    expect(banner).toHaveTextContent('14');
+    expect(banner).toHaveTextContent('4 of 14 days reported');
     expect(banner).toHaveTextContent('Replaced RAM');
     expect(screen.getByTestId('reliability-provisional-pill')).toBeInTheDocument();
   });
@@ -942,7 +941,7 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
       ? makeJsonResponse({ error: 'boom' }, false, 500)
-      : makeJsonResponse({ snapshot: baseSnapshot, history: [] }));
+      : makeJsonResponse({ snapshot: { ...baseSnapshot, provisional: false, baseline: null }, history: [] }));
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     await screen.findByTestId('reliability-trend-value');
     await waitFor(() => expect(consoleError).toHaveBeenCalled());
@@ -950,6 +949,149 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
     expect(screen.queryByTestId('reliability-baseline-banner')).toBeNull();
     expect(screen.queryByTestId('reliability-baseline-history')).toBeNull();
     consoleError.mockRestore();
+  });
+
+  it('falls back to the snapshot banner when the marker list fails to load', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ error: 'boom' }, false, 500)
+      : makeJsonResponse({ snapshot: baseSnapshot, history: [] }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const banner = await screen.findByTestId('reliability-baseline-banner');
+    await waitFor(() => expect(consoleError).toHaveBeenCalled());
+    expect(banner).toHaveTextContent('Remediated');
+    expect(banner).toHaveTextContent('4 of 14 days reported');
+    // No author row without the list: a manual marker reads "a technician".
+    expect(banner).toHaveTextContent('a technician');
+    expect(banner).not.toHaveTextContent('Replaced RAM');
+    expect(screen.queryByTestId('reliability-before-after')).toBeNull();
+    expect(screen.queryByTestId('reliability-baseline-history')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('names an automatic snapshot-only marker as Breeze when the list fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ error: 'boom' }, false, 500)
+      : makeJsonResponse({ snapshot: { ...baseSnapshot, baseline: { ...baseSnapshot.baseline, reason: 'reimaged', source: 'bare_metal_recovery' } }, history: [] }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const banner = await screen.findByTestId('reliability-baseline-banner');
+    expect(banner).toHaveTextContent('Reimaged');
+    expect(banner).toHaveTextContent('Breeze (automatic)');
+    consoleError.mockRestore();
+  });
+
+  it('suppresses the at-risk pill while the score is provisional', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ baselines: [marker] })
+      : makeJsonResponse({ snapshot: { ...baseSnapshot, reliabilityScore: 55 }, history: [] }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    await screen.findByTestId('reliability-provisional-pill');
+    expect(screen.queryByTestId('reliability-atrisk-help')).toBeNull();
+  });
+
+  it('shows the at-risk pill for the same score once mature (control)', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ baselines: [marker] })
+      : makeJsonResponse({
+          snapshot: { ...baseSnapshot, reliabilityScore: 55, provisional: false, baseline: { ...baseSnapshot.baseline, provisional: false } },
+          history: [],
+        }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(await screen.findByTestId('reliability-atrisk-help')).toBeInTheDocument();
+  });
+
+  it('pluralises a one-day mature banner and a one-day before window', async () => {
+    const baselineAt = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ baselines: [{ ...marker, baselineAt, beforeSnapshot: { ...marker.beforeSnapshot, coverageDays: 1 } }] })
+      : makeJsonResponse({
+          snapshot: { ...baseSnapshot, provisional: false, baseline: { ...baseSnapshot.baseline, baselineAt, provisional: false } },
+          history: [],
+        }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const banner = await screen.findByTestId('reliability-baseline-banner');
+    expect(banner).toHaveTextContent('(1 day)');
+    expect(banner).not.toHaveTextContent('1 days');
+    const beforeAfter = await screen.findByTestId('reliability-before-after');
+    expect(beforeAfter).toHaveTextContent('Before based on 1 day of history');
+  });
+
+  it('pluralises a multi-day mature banner', async () => {
+    const baselineAt = new Date(Date.now() - (20 * 24 + 2) * 60 * 60 * 1000).toISOString();
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ baselines: [{ ...marker, baselineAt }] })
+      : makeJsonResponse({
+          snapshot: { ...baseSnapshot, provisional: false, baseline: { ...baseSnapshot.baseline, baselineAt, provisional: false } },
+          history: [],
+        }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(await screen.findByTestId('reliability-baseline-banner')).toHaveTextContent('(20 days)');
+  });
+
+  describe('write actions', () => {
+    afterEach(() => { permState.permissions = [{ resource: '*', action: '*' }]; });
+
+    it('hides Mark work done without devices:write', async () => {
+      permState.permissions = [{ resource: 'devices', action: 'read' }];
+      fetchWithAuthMock.mockImplementation(async (url: string) => route(url));
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      await screen.findByTestId('reliability-baseline-banner');
+      expect(screen.queryByTestId('reliability-mark-work-done')).toBeNull();
+      fireEvent.click(screen.getByTestId('reliability-baseline-history-toggle'));
+      await screen.findByTestId('reliability-baseline-history-item-b1');
+      expect(screen.queryByTestId('reliability-baseline-clear-b1')).toBeNull();
+    });
+
+    it('shows Mark work done with the wildcard permission, even with no markers yet', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+        ? makeJsonResponse({ baselines: [] })
+        : makeJsonResponse({ snapshot: { ...baseSnapshot, provisional: false, baseline: null }, history: [] }));
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-mark-work-done'));
+      expect(await screen.findByTestId('baseline-reason')).toBeInTheDocument();
+    });
+
+    it('clears the active marker through a confirm and DELETE', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return makeJsonResponse({ reliability: null });
+        return route(url);
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/reliability/dev-1/baselines/b1',
+        expect.objectContaining({ method: 'DELETE' }),
+      ));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+      await waitFor(() => expect(screen.queryByTestId('reliability-baseline-clear-confirm')).toBeNull());
+    });
+
+    it('offers no Clear on a cleared marker', async () => {
+      const cleared = { ...marker, id: 'b0', active: false, clearedAt: '2026-10-06T00:00:00.000Z', clearedBy: { id: 'u2', name: 'Sam' } };
+      fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+        ? makeJsonResponse({ baselines: [cleared] })
+        : makeJsonResponse({ snapshot: { ...baseSnapshot, provisional: false, baseline: null }, history: [] }));
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      await screen.findByTestId('reliability-baseline-history-item-b0');
+      expect(screen.queryByTestId('reliability-baseline-clear-b0')).toBeNull();
+    });
+
+    it('closes the confirm when the clear fails so the error toast is visible', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return makeJsonResponse({ error: 'gone', code: 'baseline_already_cleared' }, false, 409);
+        return route(url);
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      await waitFor(() => expect(screen.queryByTestId('reliability-baseline-clear-confirm')).toBeNull());
+    });
   });
 
   it('lists cleared markers in the collapsible history and names automatic markers', async () => {
