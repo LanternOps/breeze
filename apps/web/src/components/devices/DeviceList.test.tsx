@@ -742,6 +742,16 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(badge.className).not.toContain('success');
   });
 
+  it('omits the trend glyph on a provisional score so it cannot contradict the title (#5876)', () => {
+    seedColumns('reliability');
+    const id = 'c7c7c7c7-0000-0000-0000-000000000002';
+    render(<DeviceList devices={[{ ...baseDevice, id, hostname: 'host-prov-trend', reliabilityScore: 95, reliabilityProvisional: true, reliabilityTrend: 'stable' }]} />);
+
+    const cell = screen.getByTestId(`device-${id}-reliability`);
+    expect(cell.textContent).toBe('95');
+    expect(screen.queryByLabelText('Stable')).toBeNull();
+  });
+
   it('does not render a trend glyph for a scored device with no trend (#1720)', () => {
     seedColumns('reliability');
     const device: Device = {

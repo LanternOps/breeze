@@ -78,7 +78,9 @@ type LoadState =
   | { status: 'ready'; markers: ReliabilityBaselineMarker[] };
 
 function formatMarkerDate(value: string): string {
-  return formatDateTime(value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', fallback: value });
+  // With the year: a marker can outlive the year it was set in, and the
+  // history lists markers from any date.
+  return formatDateTime(value, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', fallback: value });
 }
 
 function markerAuthor(
@@ -153,6 +155,12 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot, canWrit
       await runAction({
         request: () => fetchWithAuth(`/reliability/${deviceId}/baselines/${markerId}`, { method: 'DELETE' }),
         errorFallback: t('deviceReliabilityPanel.baseline.clearError'),
+        friendly: (code) =>
+          code === 'baseline_not_found'
+            ? t('deviceReliabilityPanel.baseline.clearNotFound')
+            : code === 'baseline_already_cleared'
+              ? t('deviceReliabilityPanel.baseline.clearAlreadyCleared')
+              : undefined,
         successMessage: t('deviceReliabilityPanel.baseline.clearedToast'),
       });
       stale = true;
@@ -295,6 +303,14 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot, canWrit
                     <span className="text-xs text-muted-foreground">
                       {formatMarkerDate(marker.baselineAt)} · {markerAuthor(t, marker)}
                     </span>
+                    {marker.active && (
+                      <span
+                        data-testid={`reliability-baseline-active-${marker.id}`}
+                        className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                      >
+                        {t('deviceReliabilityPanel.baseline.activeBadge')}
+                      </span>
+                    )}
                     {marker.clearedAt && (
                       <span
                         className="rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"

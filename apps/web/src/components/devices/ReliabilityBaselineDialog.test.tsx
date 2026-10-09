@@ -48,6 +48,38 @@ describe('ReliabilityBaselineDialog (#5876)', () => {
     expect(new Date(body.baselineAt).toString()).not.toBe('Invalid Date');
   });
 
+  it('toasts that scoring restarts when the new marker is the effective one', async () => {
+    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1' }, reliability: { baseline: { id: 'b1' } } }));
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+    fireEvent.click(screen.getByTestId('baseline-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({
+      type: 'success',
+      message: 'Marker saved — scoring restarts from this point',
+    }));
+  });
+
+  it('says the score did not change when a later marker is still in effect', async () => {
+    // Backdated before a later marker: the effective marker is still b2.
+    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1' }, reliability: { baseline: { id: 'b2' } } }));
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+    fireEvent.click(screen.getByTestId('baseline-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({
+      type: 'success',
+      message: "Marker saved. A later marker is still in effect, so the score didn't change.",
+    }));
+  });
+
+  it('names the dialog by its visible heading', () => {
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Mark work done on this device' });
+    const headingId = dialog.getAttribute('aria-labelledby');
+    expect(headingId).toBeTruthy();
+    expect(document.getElementById(headingId!)?.tagName).toBe('H3');
+    expect(dialog.hasAttribute('aria-label')).toBe(false);
+  });
+
   it('bounds the date input to the last 30 days', () => {
     render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
     const input = screen.getByTestId('baseline-at') as HTMLInputElement;

@@ -309,11 +309,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   // cannot overwrite the current one (#4513).
   const snapshotRequestRef = useRef<CancellableRequest | null>(null);
 
-  const fetchReliability = useCallback(async () => {
+  // `silent` refreshes in place: the panel keeps rendering the current
+  // snapshot instead of swapping to the spinner, so children holding their own
+  // state (the baseline marker section's open history, its dialogs and their
+  // focus-return targets) stay mounted across a refetch after a marker write.
+  const fetchReliability = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     snapshotRequestRef.current?.cancel();
     const request = createCancellableRequest();
     snapshotRequestRef.current = request;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(undefined);
     try {
       // sweep D15: no snapshot yet is an expected empty state, so the API
@@ -448,6 +452,22 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     setOffendersOpen(true);
     if (!offendersFetchedRef.current) void loadOffenders();
   }, [offendersOpen, loadOffenders]);
+
+  // A marker write moves the scoring window, and /offenders only counts events
+  // since the active marker: re-read the score in place and drop the cached
+  // offender list (refetching it now if the drill-down is open).
+  const handleBaselineChanged = useCallback(() => {
+    void fetchReliability({ silent: true });
+    offendersRequestRef.current?.cancel();
+    setOffenders(null);
+    setOffendersError(undefined);
+    offendersFetchedRef.current = false;
+    if (offendersOpen) {
+      void loadOffenders();
+    } else {
+      setOffendersLoading(false);
+    }
+  }, [fetchReliability, offendersOpen, loadOffenders]);
 
   if (loading) {
     return (
@@ -702,7 +722,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           baseline: snapshot.baseline ?? null,
         }}
         canWrite={canWriteDevices}
-        onChanged={() => void fetchReliability()}
+        onChanged={handleBaselineChanged}
       />
 
       {factorRows.length > 0 ? (

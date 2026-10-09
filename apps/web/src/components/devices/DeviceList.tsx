@@ -2395,7 +2395,9 @@ export default function DeviceList({
             </td>
           );
         }
-        const trend = device.reliabilityTrend
+        // A provisional score has no trend yet; a glyph labelled "Stable" would
+        // contradict the provisional title.
+        const trend = device.reliabilityTrend && !device.reliabilityProvisional
           ? reliabilityTrendGlyph[device.reliabilityTrend]
           : null;
         return (

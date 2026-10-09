@@ -2144,7 +2144,11 @@
       "clearMessage": "Scoring stops using this marker and falls back to the previous one, or to the device's full history. The marker stays in the history, shown as cleared.",
       "clearConfirm": "Clear marker",
       "clearError": "Could not clear the marker",
-      "clearedToast": "Marker cleared"
+      "clearedToast": "Marker cleared",
+      "activeBadge": "Active",
+      "savedNotActive": "Marker saved. A later marker is still in effect, so the score didn't change.",
+      "clearNotFound": "This marker no longer exists.",
+      "clearAlreadyCleared": "This marker was already cleared."
     }
   },
   "deviceScriptHistory": {

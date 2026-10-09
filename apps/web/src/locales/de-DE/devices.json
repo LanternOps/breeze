@@ -2144,7 +2144,11 @@
       "clearMessage": "Die Bewertung verwendet diese Markierung nicht mehr und greift auf die vorherige Markierung oder den gesamten Geräteverlauf zurück. Die Markierung bleibt als aufgehoben im Verlauf.",
       "clearConfirm": "Markierung aufheben",
       "clearError": "Die Markierung konnte nicht aufgehoben werden",
-      "clearedToast": "Markierung aufgehoben"
+      "clearedToast": "Markierung aufgehoben",
+      "activeBadge": "Aktiv",
+      "savedNotActive": "Markierung gespeichert. Eine spätere Markierung ist weiterhin wirksam, daher hat sich die Punktzahl nicht geändert.",
+      "clearNotFound": "Diese Markierung existiert nicht mehr.",
+      "clearAlreadyCleared": "Diese Markierung wurde bereits aufgehoben."
     }
   },
   "deviceScriptHistory": {

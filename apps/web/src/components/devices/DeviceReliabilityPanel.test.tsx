@@ -1092,6 +1092,145 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
       await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
       await waitFor(() => expect(screen.queryByTestId('reliability-baseline-clear-confirm')).toBeNull());
     });
+    const snapshotGets = () =>
+      fetchWithAuthMock.mock.calls.filter(([url, init]) => url === '/reliability/dev-1' && !(init as RequestInit | undefined)?.method).length;
+    const clearedMarker = { ...marker, active: false, clearedAt: '2026-10-09T00:00:00.000Z', clearedBy: { id: 'u2', name: 'Sam' } };
+    // Holds the post-write score refetch open so the test can look at the
+    // panel mid-refresh — a resolved mock would batch the loading flip away.
+    const deferredResponse = () => {
+      let resolve!: (r: Response) => void;
+      const promise = new Promise<Response>((res) => { resolve = res; });
+      return { promise, resolve };
+    };
+
+    it('refetches the score after a save without collapsing the marker history', async () => {
+      let saved = false;
+      const refetch = deferredResponse();
+      const newMarker = { ...marker, id: 'b2', baselineAt: '2026-10-08T00:00:00.000Z', reason: 'reimaged', note: null, beforeSnapshot: null };
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          saved = true;
+          return makeJsonResponse({ baseline: newMarker, reliability: { baseline: { id: 'b2' } } }, true, 201);
+        }
+        if (url.endsWith('/baselines')) {
+          return makeJsonResponse({ baselines: saved ? [newMarker, { ...marker, active: false }] : [marker] });
+        }
+        if (saved) return refetch.promise;
+        return makeJsonResponse({ snapshot: baseSnapshot, history: [] });
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      await screen.findByTestId('reliability-baseline-history-item-b1');
+      fireEvent.click(screen.getByTestId('reliability-mark-work-done'));
+      fireEvent.change(await screen.findByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+      fireEvent.click(screen.getByTestId('baseline-save'));
+
+      await waitFor(() => expect(snapshotGets()).toBe(2));
+      // Mid-refresh the section stays mounted (no spinner swap): its own list
+      // refresh runs and the history stays open.
+      expect(await screen.findByTestId('reliability-baseline-history-item-b2')).toBeInTheDocument();
+      expect(screen.getByTestId('reliability-baseline-history-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+      await act(async () => {
+        refetch.resolve(makeJsonResponse({
+          snapshot: { ...baseSnapshot, reliabilityScore: 97, baseline: { ...baseSnapshot.baseline, id: 'b2', reason: 'reimaged', reportedDaysSinceBaseline: 1 } },
+          history: [],
+        }));
+      });
+      await waitFor(() => expect(screen.getAllByText('97').length).toBeGreaterThan(0));
+      expect(screen.getByTestId('reliability-baseline-history-toggle')).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('refetches the score after a clear and keeps the history open on the cleared row', async () => {
+      let cleared = false;
+      const refetch = deferredResponse();
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') {
+          cleared = true;
+          return makeJsonResponse({ reliability: null });
+        }
+        if (url.endsWith('/baselines')) return makeJsonResponse({ baselines: [cleared ? clearedMarker : marker] });
+        if (cleared) return refetch.promise;
+        return makeJsonResponse({ snapshot: baseSnapshot, history: [] });
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
+
+      await waitFor(() => expect(snapshotGets()).toBe(2));
+      // Mid-refresh: the section is still mounted and the history still open on the cleared row.
+      await waitFor(() => expect(screen.getByTestId('reliability-baseline-history-item-b1')).toHaveTextContent('Cleared'));
+      expect(screen.getByTestId('reliability-baseline-history-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+      await act(async () => {
+        refetch.resolve(makeJsonResponse({
+          snapshot: { ...baseSnapshot, reliabilityScore: 61, provisional: false, baseline: null },
+          history: [],
+        }));
+      });
+      expect(await screen.findByText('61')).toBeInTheDocument();
+      expect(screen.getByTestId('reliability-baseline-history-item-b1')).toHaveTextContent('Cleared');
+    });
+
+    it('drops stale offenders after a clear and refetches the open drill-down', async () => {
+      let cleared = false;
+      const offender = (label: string) => ({ key: label, label, count: 3, lastOccurrence: '2026-10-08T10:00:00.000Z' });
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') {
+          cleared = true;
+          return makeJsonResponse({ reliability: null });
+        }
+        if (url.endsWith('/offenders')) {
+          return makeJsonResponse({
+            deviceId: 'dev-1', days: 30,
+            offenders: { services: [offender(cleared ? 'WSearch' : 'Spooler')], hardware: [], hangs: [] },
+          });
+        }
+        if (url.endsWith('/baselines')) return makeJsonResponse({ baselines: [cleared ? clearedMarker : marker] });
+        return makeJsonResponse({ snapshot: { ...baseSnapshot, serviceFailureCount30d: 3 }, history: [] });
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
+      expect(await screen.findByText('Spooler')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
+
+      expect(await screen.findByText('WSearch')).toBeInTheDocument();
+      expect(screen.queryByText('Spooler')).toBeNull();
+      expect(fetchWithAuthMock.mock.calls.filter(([url]) => url === '/reliability/dev-1/offenders')).toHaveLength(2);
+    });
+
+    it('explains an already-cleared marker instead of a generic failure', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return makeJsonResponse({ error: 'gone', code: 'baseline_already_cleared' }, false, 409);
+        return route(url);
+      });
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: 'This marker was already cleared.',
+      })));
+    });
+  });
+
+  it('badges the active marker in the history and dates markers with the year', async () => {
+    const cleared = { ...marker, id: 'b0', baselineAt: '2026-09-20T00:00:00.000Z', active: false, clearedAt: '2026-09-25T00:00:00.000Z', clearedBy: { id: 'u2', name: 'Sam' } };
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? makeJsonResponse({ baselines: [marker, cleared] })
+      : makeJsonResponse({ snapshot: baseSnapshot, history: [] }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(await screen.findByTestId('reliability-baseline-banner')).toHaveTextContent('2026');
+    fireEvent.click(screen.getByTestId('reliability-baseline-history-toggle'));
+    const active = await screen.findByTestId('reliability-baseline-history-item-b1');
+    expect(active).toHaveTextContent('Active');
+    expect(active).toHaveTextContent('2026');
+    expect(screen.getByTestId('reliability-baseline-history-item-b0')).not.toHaveTextContent('Active');
   });
 
   it('lists cleared markers in the collapsible history and names automatic markers', async () => {

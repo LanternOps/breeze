@@ -2144,7 +2144,11 @@
       "clearMessage": "La puntuación deja de usar este marcador y vuelve al marcador anterior o al historial completo del dispositivo. El marcador queda en el historial como anulado.",
       "clearConfirm": "Anular marcador",
       "clearError": "No se pudo anular el marcador",
-      "clearedToast": "Marcador anulado"
+      "clearedToast": "Marcador anulado",
+      "activeBadge": "Activo",
+      "savedNotActive": "Marcador guardado. Un marcador posterior sigue vigente, así que la puntuación no cambió.",
+      "clearNotFound": "Este marcador ya no existe.",
+      "clearAlreadyCleared": "Este marcador ya estaba anulado."
     }
   },
   "deviceScriptHistory": {

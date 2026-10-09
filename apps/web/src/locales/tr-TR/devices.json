@@ -2144,7 +2144,11 @@
       "clearMessage": "Puanlama artık bu işaretçiyi kullanmaz ve önceki işaretçiye ya da cihazın tüm geçmişine döner. İşaretçi geçmişte devre dışı olarak kalır.",
       "clearConfirm": "İşaretçiyi devre dışı bırak",
       "clearError": "İşaretçi devre dışı bırakılamadı",
-      "clearedToast": "İşaretçi devre dışı bırakıldı"
+      "clearedToast": "İşaretçi devre dışı bırakıldı",
+      "activeBadge": "Etkin",
+      "savedNotActive": "İşaretçi kaydedildi. Daha sonraki bir işaretçi hâlâ geçerli olduğundan puan değişmedi.",
+      "clearNotFound": "Bu işaretçi artık mevcut değil.",
+      "clearAlreadyCleared": "Bu işaretçi zaten devre dışı bırakılmış."
     }
   },
   "deviceScriptHistory": {

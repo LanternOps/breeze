@@ -2144,7 +2144,11 @@
       "clearMessage": "Il punteggio non usa più questo marcatore e torna al marcatore precedente o all’intera cronologia del dispositivo. Il marcatore resta nella cronologia come disattivato.",
       "clearConfirm": "Disattiva marcatore",
       "clearError": "Impossibile disattivare il marcatore",
-      "clearedToast": "Marcatore disattivato"
+      "clearedToast": "Marcatore disattivato",
+      "activeBadge": "Attivo",
+      "savedNotActive": "Marcatore salvato. Un marcatore successivo è ancora in vigore, quindi il punteggio non è cambiato.",
+      "clearNotFound": "Questo marcatore non esiste più.",
+      "clearAlreadyCleared": "Questo marcatore è già stato disattivato."
     }
   },
   "deviceScriptHistory": {

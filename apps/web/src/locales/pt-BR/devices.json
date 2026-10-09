@@ -2144,7 +2144,11 @@
       "clearMessage": "A pontuação deixa de usar este marcador e volta ao marcador anterior ou ao histórico completo do dispositivo. O marcador permanece no histórico como desativado.",
       "clearConfirm": "Desativar marcador",
       "clearError": "Não foi possível desativar o marcador",
-      "clearedToast": "Marcador desativado"
+      "clearedToast": "Marcador desativado",
+      "activeBadge": "Ativo",
+      "savedNotActive": "Marcador salvo. Um marcador posterior continua em vigor, então a pontuação não mudou.",
+      "clearNotFound": "Este marcador não existe mais.",
+      "clearAlreadyCleared": "Este marcador já foi desativado."
     }
   },
   "deviceScriptHistory": {

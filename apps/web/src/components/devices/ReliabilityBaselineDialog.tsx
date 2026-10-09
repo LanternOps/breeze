@@ -30,6 +30,15 @@ function toLocalInputValue(date: Date): string {
 
 type Bounds = { min: string; max: string };
 
+// `POST /reliability/:deviceId/baselines` — the new marker plus the score
+// recomputed in the same request (null when the device has no snapshot).
+type CreateBaselineResponse = {
+  baseline: { id: string } | null;
+  reliability: { baseline?: { id: string } | null } | null;
+} | null;
+
+const TITLE_ID = 'reliability-baseline-dialog-title';
+
 function computeBounds(now: Date): Bounds {
   // Round the floor UP to the next whole minute: a picker value equal to `min`
   // must still be inside the server's 30-day window when it arrives.
@@ -69,7 +78,7 @@ export default function ReliabilityBaselineDialog({ deviceId, open, onClose, onS
     setSubmitting(true);
     setError(null);
     try {
-      await runAction({
+      await runAction<CreateBaselineResponse>({
         request: () =>
           fetchWithAuth(`/reliability/${deviceId}/baselines`, {
             method: 'POST',
@@ -88,7 +97,13 @@ export default function ReliabilityBaselineDialog({ deviceId, open, onClose, onS
               : code === 'note_required'
                 ? t('deviceReliabilityPanel.baseline.noteRequired')
                 : undefined,
-        successMessage: t('deviceReliabilityPanel.baseline.saved'),
+        // A backdated marker that predates a later active one is saved but not
+        // used for scoring, so the score doesn't move: say so rather than claim
+        // a restart. No snapshot to compare against keeps the plain message.
+        successMessage: (data) =>
+          data?.reliability && data.baseline && data.reliability.baseline?.id !== data.baseline.id
+            ? t('deviceReliabilityPanel.baseline.savedNotActive')
+            : t('deviceReliabilityPanel.baseline.saved'),
       });
       onSaved();
       onClose();
@@ -110,13 +125,13 @@ export default function ReliabilityBaselineDialog({ deviceId, open, onClose, onS
   const title = t('deviceReliabilityPanel.baseline.dialogTitle');
 
   return (
-    <Dialog open={open} onClose={onClose} title={title} maxWidth="lg" className="p-6">
+    <Dialog open={open} onClose={onClose} title={title} labelledBy={TITLE_ID} maxWidth="lg" className="p-6">
       <div className="flex gap-4">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
           <Wrench className="h-5 w-5 text-primary" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold text-foreground">{title}</h3>
+          <h3 id={TITLE_ID} className="text-base font-semibold text-foreground">{title}</h3>
           <p className="mt-1 text-sm text-muted-foreground">{t('deviceReliabilityPanel.baseline.dialogDescription')}</p>
         </div>
       </div>

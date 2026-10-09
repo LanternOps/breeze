@@ -2115,7 +2115,7 @@
         "remediated": "Corrigé",
         "hardware_replaced": "Matériel remplacé"
       },
-      "bannerProvisional": "Évaluation depuis : {{reason}} le {{date}} par {{who}} — provisoire, {{days}} jours remontés sur {{required}}",
+      "bannerProvisional": "Évaluation depuis : {{reason}} le {{date}} par {{who}} — provisoire, {{days}} sur {{required}} jours remontés",
       "bannerMature_one": "Évaluation depuis : {{reason}} le {{date}} par {{who}} ({{count}} jour)",
       "bannerMature_other": "Évaluation depuis : {{reason}} le {{date}} par {{who}} ({{count}} jours)",
       "system": "Breeze (automatique)",
@@ -2144,7 +2144,11 @@
       "clearMessage": "L’évaluation n’utilise plus ce marqueur et revient au marqueur précédent ou à l’historique complet de l’appareil. Le marqueur reste dans l’historique comme désactivé.",
       "clearConfirm": "Désactiver le marqueur",
       "clearError": "Impossible de désactiver le marqueur",
-      "clearedToast": "Marqueur désactivé"
+      "clearedToast": "Marqueur désactivé",
+      "activeBadge": "Actif",
+      "savedNotActive": "Marqueur enregistré. Un marqueur plus récent reste en vigueur, donc le score de fiabilité n’a pas changé.",
+      "clearNotFound": "Ce marqueur n’existe plus.",
+      "clearAlreadyCleared": "Ce marqueur a déjà été désactivé."
     }
   },
   "deviceScriptHistory": {
