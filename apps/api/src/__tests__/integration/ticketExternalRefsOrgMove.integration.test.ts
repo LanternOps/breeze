@@ -31,7 +31,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  devices, organizations, partnerServicePrincipals, partners, sites, ticketExternalRefs, tickets, users,
+  devices, organizations, partnerApiIdempotencyKeys, partnerServicePrincipals, partners, sites, ticketExternalRefs, tickets, users,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -95,9 +95,20 @@ async function seedDeviceTicketWithRef() {
     externalId: `PSA-${unique}`,
   }).returning();
 
+  // Wave 3: an X-Idempotency-Key claim bound to the same ticket.
+  const [claim] = await adminDb.insert(partnerApiIdempotencyKeys).values({
+    partnerId: partner.id,
+    partnerServicePrincipalId: principal!.id,
+    orgId: orgA.id,
+    ticketId: ticket!.id,
+    route: 'tickets.comment',
+    idempotencyKey: `key-${unique}`,
+    requestFingerprint: 'a'.repeat(64),
+  }).returning();
+
   return {
     partner, otherPartner, orgA, orgB, foreignOrg, actor, unique,
-    device: device!, ticket: ticket!, principal: principal!, ref: ref!,
+    device: device!, ticket: ticket!, principal: principal!, ref: ref!, claim: claim!,
   };
 }
 
@@ -109,7 +120,7 @@ async function seedDeviceTicketWithRef() {
  */
 async function runDeviceAxisMove(deviceId: string, targetOrgId: string): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.execute(sql`SET CONSTRAINTS ticket_external_refs_ticket_org_fk DEFERRED`);
+    await tx.execute(sql`SET CONSTRAINTS ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED`);
     await tx.execute(sql`
       UPDATE tickets SET org_id = ${targetOrgId}::uuid,
              partner_id = (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)
@@ -124,7 +135,23 @@ async function runDeviceAxisMove(deviceId: string, targetOrgId: string): Promise
       UPDATE ticket_external_refs SET org_id = ${targetOrgId}::uuid
        WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)
     `);
+    await tx.execute(sql`
+      DELETE FROM partner_api_idempotency_keys
+       WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)
+         AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)
+    `);
+    await tx.execute(sql`
+      UPDATE partner_api_idempotency_keys SET org_id = ${targetOrgId}::uuid
+       WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)
+    `);
   });
+}
+
+async function claimRow(claimId: string): Promise<{ org_id: string; partner_id: string } | undefined> {
+  const [row] = (await getTestDb().execute(sql`
+    SELECT org_id, partner_id FROM partner_api_idempotency_keys WHERE id = ${claimId}
+  `)) as unknown as Array<{ org_id: string; partner_id: string }>;
+  return row;
 }
 
 async function refRow(refId: string): Promise<{ org_id: string; partner_id: string } | undefined> {
@@ -140,6 +167,7 @@ afterAll(async () => {
   const orgList = sql.join(seededOrgIds.map((id) => sql`${id}`), sql`, `);
   const partnerList = sql.join(seededPartnerIds.map((id) => sql`${id}`), sql`, `);
 
+  await adminDb.delete(partnerApiIdempotencyKeys).where(sql`${partnerApiIdempotencyKeys.partnerId} IN (${partnerList})`);
   await adminDb.delete(ticketExternalRefs).where(sql`${ticketExternalRefs.partnerId} IN (${partnerList})`);
   await adminDb.delete(tickets).where(sql`${tickets.orgId} IN (${orgList})`);
   await adminDb.delete(devices).where(sql`${devices.orgId} IN (${orgList})`);
@@ -152,7 +180,7 @@ afterAll(async () => {
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-describe('ticket_external_refs follows its ticket on BOTH org-move axes', () => {
+describe('ticket_external_refs and partner_api_idempotency_keys follow their ticket on BOTH org-move axes', () => {
   runDb('the TICKET axis re-stamps org_id and keeps the ref with its principal', async () => {
     const f = await seedDeviceTicketWithRef();
 
@@ -161,6 +189,7 @@ describe('ticket_external_refs follows its ticket on BOTH org-move axes', () => 
     );
 
     expect(await refRow(f.ref.id)).toEqual({ org_id: f.orgB.id, partner_id: f.partner.id });
+    expect(await claimRow(f.claim.id)).toEqual({ org_id: f.orgB.id, partner_id: f.partner.id });
   });
 
   runDb('the DEVICE axis re-stamps org_id through the tickets join inside one partner', async () => {
@@ -169,6 +198,7 @@ describe('ticket_external_refs follows its ticket on BOTH org-move axes', () => 
     await withSystemDbAccessContext(() => runDeviceAxisMove(f.device.id, f.orgB.id));
 
     expect(await refRow(f.ref.id)).toEqual({ org_id: f.orgB.id, partner_id: f.partner.id });
+    expect(await claimRow(f.claim.id)).toEqual({ org_id: f.orgB.id, partner_id: f.partner.id });
   });
 
   runDb('a CROSS-partner device move deletes the ref instead of aborting on the composite FK', async () => {
@@ -179,6 +209,7 @@ describe('ticket_external_refs follows its ticket on BOTH org-move axes', () => 
     // The integration of the old partner can never read the ticket again; the
     // ref is gone and its external id is free for that integration to reuse.
     expect(await refRow(f.ref.id)).toBeUndefined();
+    expect(await claimRow(f.claim.id)).toBeUndefined();
     const [moved] = (await getTestDb().execute(sql`
       SELECT org_id, partner_id FROM tickets WHERE id = ${f.ticket.id}
     `)) as unknown as Array<{ org_id: string; partner_id: string }>;
@@ -235,6 +266,31 @@ describe('ticket_external_refs follows its ticket on BOTH org-move axes', () => 
     `).then(() => null, (err: unknown) => err);
     expect((repointed as { cause?: { constraint_name?: string } } | null)?.cause?.constraint_name).toBe('ticket_external_refs_ticket_org_fk');
     expect(await refRow(f.ref.id)).toEqual({ org_id: f.orgA.id, partner_id: f.partner.id });
+
+    // Same rule for an X-Idempotency-Key claim bound to a ticket…
+    const driftedClaim = await adminDb.insert(partnerApiIdempotencyKeys).values({
+      partnerId: f.partner.id,
+      partnerServicePrincipalId: f.principal.id,
+      orgId: f.orgB.id,
+      ticketId: bare!.id,
+      route: 'tickets.comment',
+      idempotencyKey: `drifted-${f.unique}`,
+      requestFingerprint: 'a'.repeat(64),
+    }).then(() => null, (err: unknown) => err);
+    expect((driftedClaim as { cause?: { constraint_name?: string } } | null)?.cause?.constraint_name)
+      .toBe('partner_api_idempotency_keys_ticket_org_fk');
+    // …while a create claim, whose ticket_id is still NULL until the create
+    // links it, is not a referencing row yet (MATCH SIMPLE) and is admitted.
+    const [unlinked] = await adminDb.insert(partnerApiIdempotencyKeys).values({
+      partnerId: f.partner.id,
+      partnerServicePrincipalId: f.principal.id,
+      orgId: f.orgB.id,
+      ticketId: null,
+      route: 'tickets.create',
+      idempotencyKey: `unlinked-${f.unique}`,
+      requestFingerprint: 'a'.repeat(64),
+    }).returning({ id: partnerApiIdempotencyKeys.id });
+    expect(unlinked?.id).toBeDefined();
   });
 
   runDb('the database refuses a ref whose principal or organization belongs to another partner', async () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { reportRunOwnerColumns } from '../reportRunOwner';
 import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
 import {
@@ -560,6 +561,7 @@ export async function generatePortalReport(args: {
   const [definition] = await db.select({
     id: reports.id,
     orgId: reports.orgId,
+    partnerId: reports.partnerId,
     name: reports.name,
     type: reports.type,
     config: reports.config,
@@ -606,6 +608,7 @@ export async function generatePortalReport(args: {
     const authority = portalUserReportAuthority(args.orgId, startedAt);
     const [run] = await db.insert(reportRuns).values({
       reportId: definition.id,
+      ...reportRunOwnerColumns(definition),
       status: 'running',
       startedAt,
       requestedByKind: 'portal_user',

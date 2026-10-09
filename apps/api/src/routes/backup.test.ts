@@ -46,6 +46,13 @@ const deleteMock = vi.fn(() => chainMock([]));
 
 // Key history recording is covered by configs.test.ts and its integration suite.
 vi.mock('../services/backupStorageCredentialHistory', () => ({ recordCredentialChange: async () => undefined }));
+// Restore integrity checks are covered in backup/restoreIntegrityGate.test.ts.
+vi.mock('./backup/restoreIntegrityGate', () => ({
+  checkRestoreIntegrityRequest: async () => ({ ok: true, authorizationReason: null }),
+  gateRestoreCommand: async () => ({ ok: true }),
+  recordRequestAuthorization: async () => 'authorization-1',
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
 vi.mock('../db', () => ({
   withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   db: {
@@ -427,6 +434,20 @@ describe('backup routes', () => {
     expect(fetched.data.commandId).toBe(RESTORE_COMMAND_ID);
     expect(fetched.data.errorSummary).toBe('Restore target path is unavailable');
     expect(fetched.data.resultDetails.status).toBe('failed');
+  });
+
+  it('has no endpoint that confirms a restore without a second factor', async () => {
+    const res = await app.request(`/backup/restore-confirmations?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        commandType: 'backup_restore',
+        confirmationText: 'Front Desk PC',
+      }),
+    });
+    expect(res.status).toBe(404);
   });
 
   it('should list restore jobs with structured result details', async () => {

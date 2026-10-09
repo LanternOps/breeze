@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  restoreAccessTokenFromCookie: vi.fn(async () => true),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -73,6 +74,151 @@ describe('BareMetalRecoveryPanel', () => {
     await flush();
 
     expect(screen.getByTestId('bare-metal-recovery-code')).toHaveTextContent('ABC-DEF-GHJ');
+  });
+
+  it('asks for confirmation before creating a recovery for a backup without an integrity attestation, then resubmits', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Confirm the restore.',
+          code: 'STEP_UP_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'confirm',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+        return makeJsonResponse({
+          id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z', failureReason: null,
+          code: 'ABC-DEF-GHJ',
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    fireEvent.change(screen.getByLabelText('Snapshot'), { target: { value: SNAPSHOT_ID } });
+    fireEvent.click(screen.getByText('Create recovery code'));
+    await flush();
+
+    expect(screen.getByTestId('unattested-restore-stepup')).toBeInTheDocument();
+    expect(screen.queryByTestId('bare-metal-recovery-code')).toBeNull();
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-confirm'));
+    await flush();
+
+    expect(screen.getByTestId('bare-metal-recovery-code')).toHaveTextContent('ABC-DEF-GHJ');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => String(url).startsWith('/backup/bmr/recoveries?') && (init as RequestInit | undefined)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies).toEqual([
+      { snapshotId: SNAPSHOT_ID, identity: 'original' },
+      { snapshotId: SNAPSHOT_ID, identity: 'original', confirmUnattestedRestore: true },
+    ]);
+  });
+
+  it('sends a user without a second factor to set one up, and Retry resubmits the recovery', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: SNAPSHOT_ID, targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+        return makeJsonResponse({
+          id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z', failureReason: null,
+          code: 'ABC-DEF-GHJ',
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    fireEvent.change(screen.getByLabelText('Snapshot'), { target: { value: SNAPSHOT_ID } });
+    fireEvent.click(screen.getByText('Create recovery code'));
+    await flush();
+
+    expect(screen.getByTestId('unattested-restore-stepup-enroll')).toHaveAttribute('href', '/settings/profile');
+    expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
+    expect(screen.queryByTestId('bare-metal-recovery-create-error')).toBeNull();
+    expect(screen.queryByTestId('bare-metal-recovery-code')).toBeNull();
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await flush();
+
+    expect(screen.getByTestId('bare-metal-recovery-code')).toHaveTextContent('ABC-DEF-GHJ');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => String(url).startsWith('/backup/bmr/recoveries?') && (init as RequestInit | undefined)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies).toEqual([
+      { snapshotId: SNAPSHOT_ID, identity: 'original' },
+      { snapshotId: SNAPSHOT_ID, identity: 'original' },
+    ]);
+  });
+
+  it('a Retry that fails keeps the set-up link and Retry visible; no recovery code is shown', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: SNAPSHOT_ID, targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ error: 'A recovery is already open for this device.' }, false, 409);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    fireEvent.change(screen.getByLabelText('Snapshot'), { target: { value: SNAPSHOT_ID } });
+    fireEvent.click(screen.getByText('Create recovery code'));
+    await flush();
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await flush();
+
+    expect(posts).toBe(2);
+    expect(screen.getByTestId('unattested-restore-stepup-enroll')).toHaveAttribute('href', '/settings/profile');
+    expect(screen.getByTestId('unattested-restore-stepup-retry')).not.toBeDisabled();
+    expect(screen.getByTestId('bare-metal-recovery-create-error')).toHaveTextContent('A recovery is already open for this device.');
+    expect(screen.queryByTestId('bare-metal-recovery-code')).toBeNull();
   });
 
   it('formats the snapshot option timestamp with the app date format, not a raw US locale string (#6496)', async () => {

@@ -39,12 +39,11 @@ export type OrgMergePolicy =
   | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / report_runs have no org_id column of their own:
+// deployment_results have no org_id column of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
-// does nothing to them directly. (Exception: `report_runs` rows under a
-// DUPLICATE narrative definition are re-homed by the `mergeReports` custom
-// executor before the repoint; the rest still just travel with their parent.)
+// does nothing to them directly. (`report_runs` was here until #4247 gave it
+// its own org_id XOR partner_id; it is now a plain repoint in REPOINT_TABLES.)
 //
 // These names are NOT retyped here: they're derived below from
 // tenantCascade's ASSOCIATED_SYSTEM_SCOPED_TABLES (its FK pre-clear list for
@@ -75,7 +74,6 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   sso_sessions: 'provider-keyed',
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
-  report_runs: 'parent-keyed (reports)',
   // No org_id column: keyed by review_id / role_id / user_id, all of which
   // keep their ids through a merge (roles and users are repointed in place).
   access_review_items: 'review/role/user-keyed',
@@ -133,6 +131,13 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 }
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
+  // PAM ownership-epoch lineage (#8203, spec §4). Append-only: the devices
+  // repoint fires breeze_device_ownership_epoch_advance(), which closes each
+  // loser-org epoch and opens the survivor epoch itself. The loser's epoch and
+  // closure rows stay with the loser shell and go with its erasure. W5
+  // revisits this for evidence-held shells.
+  device_ownership_epochs: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; the loser epoch closes when the devices repoint opens a survivor epoch' },
+  device_ownership_epoch_closures: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; a loser-epoch closure belongs to the loser and goes with its erasure' },
   autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
   billing_payment_settings: { kind: 'keep-survivor' },
   org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },
@@ -631,7 +636,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
   //   reports              <- report_runs.report_id           (ON DELETE CASCADE since
   //                           2026-10-27-130100, #3198 W01 — a delete would
-  //                           silently drop runs instead of raising 23503)
+  //                           silently drop runs instead of raising 23503;
+  //                           the #4247 composite owner FKs cascade too)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
   //
@@ -668,7 +674,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Portal self-service definitions have a second pass keyed by type and
   // explicitly restricted to portal_self_service=true on both sides, so
   // ordinary reports of the same type remain independent.
-  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id, re-point service_deliverable_evidence.report_id and service_deliverables.auto_evidence_report_id (#7443 — evidence would otherwise CASCADE away with the duplicate and the auto-evidence binding SET NULL; sd_evidence_report_run_fk is DEFERRABLE since 2026-12-03-120200 so the run/evidence pair may mismatch until commit), dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed (their runs and evidence stay attached to the archived child); their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
+  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id (with its org_id, #4247 — the remaining runs follow via the report_runs repoint), re-point service_deliverable_evidence.report_id and service_deliverables.auto_evidence_report_id (#7443 — evidence would otherwise CASCADE away with the duplicate and the auto-evidence binding SET NULL; sd_evidence_report_run_fk is DEFERRABLE since 2026-12-03-120200 so the run/evidence pair may mismatch until commit), dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed (their runs and evidence stay attached to the archived child); their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -795,6 +801,8 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_provider_customers",
   "backup_provider_device_history",
   "backup_provider_devices",
+  // Restore authorizations travel with their target device and snapshot.
+  "backup_restore_authorizations",
   "backup_sla_configs",
   "backup_sla_events",
   // Snapshot attestations travel with their device and snapshot.
@@ -1022,6 +1030,7 @@ const REPOINT_TABLES: readonly string[] = [
   "organization_external_links",
   "organization_key_dates",
   "pam_rules",
+  "partner_api_idempotency_keys",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
   "patch_compliance_snapshots",
@@ -1053,6 +1062,16 @@ const REPOINT_TABLES: readonly string[] = [
   "recovery_readiness",
   "recovery_tokens",
   "remote_sessions",
+  // #4247: own org_id (XOR partner_id), pinned to the parent report by the
+  // DEFERRABLE composite FK report_runs_report_org_fk. The `reports` custom
+  // executor repoints reports.org_id (and re-homes runs of deduplicated
+  // definitions, setting their org_id with report_id); this repoint moves the
+  // remaining runs in a separate statement — legal only under the merge's
+  // SET CONSTRAINTS ALL DEFERRED. Partner-owned runs (org_id NULL) are never
+  // matched by `WHERE org_id = loser`. Execution fingerprints are NOT
+  // regenerated: a run captured for the loser org fails decode closed under
+  // the survivor, exactly as it did before this column existed.
+  "report_runs",
   "report_schedule_recipients",
   // "reports" is SPECIAL (custom) — see its note there.
   "restore_jobs",

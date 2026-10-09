@@ -744,13 +744,11 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     });
 
     // `fleet_design_applied_items.report_run_id` is ON DELETE CASCADE and
-    // `report_runs` is pre-cleared earlier in the same erasure transaction
-    // (tenantCascade.ts's clear-first list), so by the time the main
-    // alphabetical cascade loop reaches this table its own rows are already
-    // gone — its explicit DELETE legitimately reports 0 (see the
-    // `fleet_design_applied_items` comment in CORE_ORG_CASCADE_DELETE_ORDER:
-    // "either order is a no-op for the other"). The real proof is the row
-    // count below, not `stats.tablesDeleted`.
+    // `report_runs` is itself an org-cascade table (#4247), so whichever of the
+    // two the FK-ordered loop deletes first, the other's explicit DELETE may
+    // report 0 (see the `fleet_design_applied_items` comment in
+    // CORE_ORG_CASCADE_DELETE_ORDER: "either order is a no-op for the other").
+    // The real proof is the row count below, not `stats.tablesDeleted`.
     const stats = await cascadeDeleteOrg(f.envA.orgId, '00000000-0000-4000-8000-000000000001', 'erasure@test.local');
     void stats;
 

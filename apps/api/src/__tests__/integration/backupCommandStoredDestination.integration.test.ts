@@ -80,7 +80,7 @@ async function insertClaimedCommand(
   const id = randomUUID();
   await getTestDb().execute(sql`
     INSERT INTO device_commands (id, device_id, type, status, payload, executed_at)
-    VALUES (${id}, ${deviceId}, 'backup_restore', 'sent', ${JSON.stringify(payload)}::jsonb, ${claimedAt.toISOString()}::timestamp)
+    VALUES (${id}, ${deviceId}, 'backup_verify', 'sent', ${JSON.stringify(payload)}::jsonb, ${claimedAt.toISOString()}::timestamp)
   `);
   return id;
 }
@@ -228,14 +228,17 @@ describe('backup command storage destinations', () => {
     // The heartbeat claims and delivers inside its organization-scoped
     // transaction. A device id Postgres cannot parse makes the first
     // command's resolution fail with a real statement error (22P02).
+    // Verification reads the same stored destination as a restore without the
+    // restore integrity requirements (helper protocol, attested snapshot),
+    // which this fixture does not seed.
     const delivered = await runOutsideDbContext(() =>
       withDbAccessContext(
         { scope: 'organization', orgId: home.orgId, accessibleOrgIds: [home.orgId] },
         async () => {
           const out = await prepareClaimedCommandsForDelivery([
-            { id: broken, type: 'backup_restore', deviceId: 'unparseable-device-id', payload: stored, executedAt: claimedAt },
-            { id: refused, type: 'backup_restore', deviceId: foreign.deviceId, payload: stored, executedAt: claimedAt },
-            { id: healthy, type: 'backup_restore', deviceId: home.deviceId, payload: stored, executedAt: claimedAt },
+            { id: broken, type: 'backup_verify', deviceId: 'unparseable-device-id', payload: stored, executedAt: claimedAt },
+            { id: refused, type: 'backup_verify', deviceId: foreign.deviceId, payload: stored, executedAt: claimedAt },
+            { id: healthy, type: 'backup_verify', deviceId: home.deviceId, payload: stored, executedAt: claimedAt },
           ]);
           // Later statements in the same transaction still run.
           await db.execute(sql`SELECT 1`);

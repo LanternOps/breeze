@@ -1105,5 +1105,29 @@
     "restrictedDescriptorsShowPaths_other": "Mostrar {{count}} caminhos",
     "restrictedDescriptorsUnlisted_one": "Mais {{count}} item não está listado.",
     "restrictedDescriptorsUnlisted_other": "Mais {{count}} itens não estão listados."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Confirmar esta restauração",
+    "introUnattested": "Este backup não tem um atestado de integridade, portanto seu conteúdo não pode ser conferido com um registro verificado antes da restauração.",
+    "introProducerOnly": "Este backup foi armazenado onde somente o dispositivo original pode verificar sua integridade. Restaurá-lo em outro dispositivo exige sua confirmação.",
+    "twoFactor": "Confirme com a autenticação de dois fatores para continuar.",
+    "confirmOnly": "Confirme para continuar. A restauração é registrada no log de auditoria.",
+    "code": "Código de autenticação",
+    "passkey": "Será solicitado que você use sua chave de acesso.",
+    "enrollIntro": "Para confirmar esta restauração é necessário um segundo fator, e sua conta ainda não tem nenhum. Configure um aplicativo autenticador ou uma chave de acesso no seu perfil e tente novamente.",
+    "enrollIntroSmsOnly": "Para confirmar esta restauração é necessário um aplicativo autenticador ou uma chave de acesso. Sua conta tem apenas códigos por mensagem de texto; adicione um deles no seu perfil.",
+    "enrollLink": "Configurar a autenticação de dois fatores",
+    "enrollStillRequired": "Sua conta ainda não tem um segundo fator. Configure um e tente novamente.",
+    "enrollStillRequiredSmsOnly": "Sua conta ainda não tem um aplicativo autenticador nem uma chave de acesso.",
+    "confirm": "Confirmar e restaurar",
+    "cancel": "Cancelar",
+    "failed": "A verificação não foi aceita. Tente novamente.",
+    "unavailable": "Não foi possível iniciar a verificação. Tente novamente."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verificado",
+    "checking": "Verificando",
+    "unverified": "Não verificado",
+    "failed": "Falha na verificação de integridade"
   }
 }

@@ -1105,5 +1105,29 @@
     "restrictedDescriptorsShowPaths_other": "{{count}} yolu göster",
     "restrictedDescriptorsUnlisted_one": "{{count}} öğe daha listelenmedi.",
     "restrictedDescriptorsUnlisted_other": "{{count}} öğe daha listelenmedi."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Bu geri yüklemeyi onaylayın",
+    "introUnattested": "Bu yedeğin bütünlük onayı yok; bu nedenle içeriği geri yüklenmeden önce doğrulanmış bir kayıtla karşılaştırılamaz.",
+    "introProducerOnly": "Bu yedek, bütünlüğünü yalnızca özgün cihazın denetleyebileceği bir yerde saklandı. Başka bir cihaza geri yüklemek için onayınız gerekir.",
+    "twoFactor": "Devam etmek için iki faktörlü kimlik doğrulamayla onaylayın.",
+    "confirmOnly": "Devam etmek için onaylayın. Geri yükleme denetim günlüğüne kaydedilir.",
+    "code": "Kimlik doğrulama kodu",
+    "passkey": "Geçiş anahtarınızı kullanmanız istenecek.",
+    "enrollIntro": "Bu geri yüklemeyi onaylamak için ikinci bir faktör gerekir ve hesabınızda henüz yok. Profilinizde bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı ayarlayın, ardından yeniden deneyin.",
+    "enrollIntroSmsOnly": "Bu geri yüklemeyi onaylamak için bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı gerekir. Hesabınızda yalnızca kısa mesaj kodları var; profilinizde bunlardan birini ekleyin.",
+    "enrollLink": "İki faktörlü kimlik doğrulamayı ayarlayın",
+    "enrollStillRequired": "Hesabınızda hâlâ ikinci bir faktör yok. Bir tane ayarlayın, ardından yeniden deneyin.",
+    "enrollStillRequiredSmsOnly": "Hesabınızda hâlâ bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı yok.",
+    "confirm": "Onayla ve geri yükle",
+    "cancel": "İptal",
+    "failed": "Doğrulama kabul edilmedi. Yeniden deneyin.",
+    "unavailable": "Doğrulama başlatılamadı. Yeniden deneyin."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Doğrulandı",
+    "checking": "Denetleniyor",
+    "unverified": "Doğrulanmadı",
+    "failed": "Bütünlük denetimi başarısız"
   }
 }

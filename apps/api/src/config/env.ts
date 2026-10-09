@@ -356,7 +356,7 @@ export function isM365TenantSyncEnabled(): boolean {
  * a safe number rather than NaN (which would make `depth > NaN` false and
  * disable backpressure entirely).
  */
-function positiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+export function positiveIntEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
   if (!raw || !/^\d+$/.test(raw.trim())) return fallback;
   const parsed = Number.parseInt(raw.trim(), 10);

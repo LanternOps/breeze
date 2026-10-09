@@ -755,5 +755,10 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     requestedImmutabilityEnforcement: row.requestedImmutabilityEnforcement ?? null,
     immutabilityFallbackReason: row.immutabilityFallbackReason ?? null,
     retentionBlockedReason: computeRetentionBlockedReason(row),
+    // Display projection of the snapshot attestation (restores decide on the
+    // attestation itself): 'attested' | 'producer_only' | 'pending' |
+    // 'unattested' | 'unattested_legacy' | 'attestation_failed'. A row read
+    // without the column reads as written before attestations.
+    integrityStatus: row.integrityStatus ?? 'unattested_legacy',
   };
 }

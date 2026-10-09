@@ -108,6 +108,10 @@ export default function WebhookList({
     });
   }, [webhooks, query, statusFilter]);
 
+  // Write actions render only when their handler is supplied, so a read-only
+  // caller gets the list without controls that would be refused.
+  const hasRowActions = Boolean(onTest || onEdit || onDelete);
+
   const handleTest = async (webhook: Webhook) => {
     if (!onTest) return;
     setTestingId(webhook.id);
@@ -169,13 +173,13 @@ export default function WebhookList({
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookList.headers.events')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookList.headers.lastTriggered')}</th>
-              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
+              {hasRowActions && <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>}
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredWebhooks.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-12 text-center">
+                <td colSpan={hasRowActions ? 6 : 5} className="px-4 py-12 text-center">
                   <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookList.empty')}</p>
                 </td>
               </tr>
@@ -225,23 +229,34 @@ export default function WebhookList({
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm">
-                      <button
-                        type="button"
-                        onClick={event => handleToggle(webhook, event)}
-                        disabled={!onToggle || isToggling}
-                        className={cn(
-                          'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                          statusStyles[status],
-                          isToggling && 'cursor-not-allowed opacity-60'
-                        )}
-                      >
-                        {status === 'active' ? (
-                          <ToggleRight className="h-4 w-4" />
-                        ) : (
-                          <ToggleLeft className="h-4 w-4" />
-                        )}
-                        {status === 'active' ? t('common:states.active') : t('common:states.disabled')}
-                      </button>
+                      {onToggle ? (
+                        <button
+                          type="button"
+                          onClick={event => handleToggle(webhook, event)}
+                          disabled={isToggling}
+                          className={cn(
+                            'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                            statusStyles[status],
+                            isToggling && 'cursor-not-allowed opacity-60'
+                          )}
+                        >
+                          {status === 'active' ? (
+                            <ToggleRight className="h-4 w-4" />
+                          ) : (
+                            <ToggleLeft className="h-4 w-4" />
+                          )}
+                          {status === 'active' ? t('common:states.active') : t('common:states.disabled')}
+                        </button>
+                      ) : (
+                        <span
+                          className={cn(
+                            'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                            statusStyles[status]
+                          )}
+                        >
+                          {status === 'active' ? t('common:states.active') : t('common:states.disabled')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <div className="space-y-2">
@@ -258,15 +273,17 @@ export default function WebhookList({
                         )}
                       </div>
                     </td>
+                    {hasRowActions && (
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
+                        {onTest && (
                         <button
                           type="button"
                           onClick={event => {
                             event.stopPropagation();
                             handleTest(webhook);
                           }}
-                          disabled={!onTest || isTesting}
+                          disabled={isTesting}
                           className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {isTesting ? (
@@ -276,30 +293,36 @@ export default function WebhookList({
                           )}
                           {t('longTail.webhooks.WebhookList.actions.test')}
                         </button>
+                        )}
+                        {onEdit && (
                         <button
                           type="button"
                           onClick={event => {
                             event.stopPropagation();
-                            onEdit?.(webhook);
+                            onEdit(webhook);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
                           title={t('longTail.webhooks.WebhookList.actions.editWebhook')}
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
+                        )}
+                        {onDelete && (
                         <button
                           type="button"
                           onClick={event => {
                             event.stopPropagation();
-                            onDelete?.(webhook);
+                            onDelete(webhook);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive"
                           title={t('longTail.webhooks.WebhookList.actions.deleteWebhook')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
+                        )}
                       </div>
                     </td>
+                    )}
                   </tr>
                 );
               })

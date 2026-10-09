@@ -72,7 +72,9 @@
       "queued": "Relatório de conformidade {{reportId}} enfileirado. Preparando download...",
       "ready": "Relatório de conformidade {{reportId}} pronto. Iniciando download...",
       "failed": "Relatório de conformidade {{reportId}} falhou",
+      "expired": "O relatório de conformidade {{reportId}} expirou. Gere um novo relatório para baixá-lo.",
       "checkFailed": "Falha ao verificar o status do relatório",
+      "downloadFailed": "Falha ao baixar o relatório de conformidade {{reportId}}",
       "noReportId": "O relatório foi enfileirado, mas nenhum ID de relatório foi retornado"
     },
     "summary": {
@@ -301,6 +303,7 @@
       "approval": "Aprovação",
       "actions": "Ações"
     },
+    "releaseUnknown": "Desconhecida",
     "pagination": {
       "rowsPerPage": "Linhas por página",
       "pageStatus": "Página {{current}} de {{total}}"

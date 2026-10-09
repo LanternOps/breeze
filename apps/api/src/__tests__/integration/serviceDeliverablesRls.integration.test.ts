@@ -258,6 +258,8 @@ describe('service deliverables + key dates RLS — org-axis forge (breeze_app ro
       await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
       await tx.execute(sql`UPDATE service_deliverables SET org_id = ${orgB.id}::uuid WHERE id = ${deliverableId}::uuid`);
       await tx.execute(sql`UPDATE reports SET org_id = ${orgB.id}::uuid WHERE id = ${reportId}::uuid`);
+      // #4247: runs carry their report's owner (report_runs repoint in the registry).
+      await tx.execute(sql`UPDATE report_runs SET org_id = ${orgB.id}::uuid WHERE report_id = ${reportId}::uuid`);
       await tx.execute(sql`UPDATE service_deliverable_occurrences SET org_id = ${orgB.id}::uuid WHERE deliverable_id = ${deliverableId}::uuid`);
       await tx.execute(sql`UPDATE service_deliverable_evidence SET org_id = ${orgB.id}::uuid WHERE occurrence_id = ${occurrenceId}::uuid`);
     });
@@ -296,6 +298,8 @@ describe('service deliverables + key dates RLS — org-axis forge (breeze_app ro
       await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
       const out = await CUSTOM_EXECUTORS.service_deliverables!(orgA.id, orgB.id);
       await db.execute(sql`UPDATE reports SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
+      // #4247: runs carry their report's owner (report_runs repoint in the registry).
+      await db.execute(sql`UPDATE report_runs SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
       await db.execute(sql`UPDATE service_deliverable_occurrences SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
       await db.execute(sql`UPDATE service_deliverable_evidence SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
       return out;

@@ -312,6 +312,37 @@ export async function createSite(options: CreateSiteOptions) {
 }
 
 // ============================================
+// Device Utilities
+// ============================================
+
+export interface CreateDeviceOptions {
+  orgId: string;
+  siteId: string;
+  hostname?: string;
+}
+
+/**
+ * Minimal device row, inserted over the superuser test connection (so every
+ * devices trigger — including the ownership-epoch init trigger — fires as it
+ * does in production).
+ */
+export async function createDevice(options: CreateDeviceOptions): Promise<{ id: string }> {
+  const id8 = randomUUID().slice(0, 8);
+  const [device] = await getTestDb().execute<{ id: string }>(sql`
+    INSERT INTO devices (
+      org_id, site_id, agent_id, hostname, os_type, os_version,
+      architecture, agent_version
+    ) VALUES (
+      ${options.orgId}, ${options.siteId}, ${`agent-${randomUUID()}`},
+      ${options.hostname ?? `host-${id8}`}, 'windows', '11', 'amd64', '2.0.0'
+    )
+    RETURNING id
+  `);
+  if (!device) throw new Error('createDevice: insert returned no row');
+  return { id: device.id };
+}
+
+// ============================================
 // Role Utilities
 // ============================================
 

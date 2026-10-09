@@ -291,7 +291,7 @@ const EXPECTED_NAMES = [
   'm365SyncRetention', 'filesystemCleanupRunRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
-  'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
+  'quoteSendWorker', 'enrollmentKeyCleanup', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).
@@ -299,7 +299,7 @@ const EXPECTED_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   // #5291 W04 — dispatches `script` monitors' diagnostic probes.
   'monitorScriptWorker',
-  'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
+  'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker', 'patchReportRetention',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker',
   // Backup provider integration W02 (#6008 / #6010).

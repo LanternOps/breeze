@@ -17,12 +17,20 @@ async function textFingerprint(text: string): Promise<string> {
     .join('');
 }
 
-export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<void> {
+/**
+ * 'pasted'      — the paste keystroke was dispatched.
+ * 'push-failed' — the local clipboard could not be sent, so no keystroke was
+ *                 dispatched: the remote would have pasted whatever its
+ *                 clipboard held before, and the operator would not know.
+ */
+export type CtrlVPasteResult = 'pasted' | 'push-failed';
+
+export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<CtrlVPasteResult> {
   const { dc, readText, lastHash, dispatchPaste, waitForAck } = deps;
 
   if (!dc || dc.readyState !== 'open') {
     dispatchPaste();
-    return;
+    return 'pasted';
   }
 
   let text: string | null = null;
@@ -31,28 +39,30 @@ export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<void> {
   } catch (err) {
     console.warn('[clipboard] readText failed, dispatching paste without push:', err);
     dispatchPaste();
-    return;
+    return 'pasted';
   }
 
   if (!text) {
     dispatchPaste();
-    return;
+    return 'pasted';
   }
 
   if (text === lastHash.current) {
     dispatchPaste();
-    return;
+    return 'pasted';
   }
 
-  lastHash.current = text;
   const hash = await textFingerprint(text);
   try {
+    // Throws when the channel is closing, or when the payload exceeds the
+    // SCTP max message size (large text).
     dc.send(JSON.stringify({ type: 'text', text }));
   } catch (err) {
     console.warn('[clipboard] dc.send failed:', err);
-    dispatchPaste();
-    return;
+    return 'push-failed';
   }
+  // Cached only once sent, so a failed push is retried on the next Ctrl+V.
+  lastHash.current = text;
 
   await waitForAck(hash, 300);
 
@@ -61,4 +71,5 @@ export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<void> {
   }
 
   dispatchPaste();
+  return 'pasted';
 }

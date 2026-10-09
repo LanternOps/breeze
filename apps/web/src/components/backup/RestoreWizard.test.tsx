@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  restoreAccessTokenFromCookie: vi.fn(async () => true),
 }));
 const showToastMock = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToastMock(input) }));
@@ -122,6 +123,168 @@ describe('RestoreWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /View progress/i }));
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByTestId('restore-latest-job'));
+  });
+
+  it('asks for confirmation before restoring a backup without an integrity attestation, then resubmits', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', deviceName: 'RECEPTION-PC' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Confirm the restore.',
+          code: 'STEP_UP_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'confirm',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ id: 'restore-2', snapshotId: 'snap-1', status: 'pending', restoreType: 'full' });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+    const prompt = await screen.findByTestId('unattested-restore-stepup');
+    expect(prompt.textContent).toMatch(/no integrity attestation/i);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(screen.queryByTestId('restore-success-banner')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-confirm'));
+    await screen.findByTestId('restore-success-banner');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/backup/restore' && init?.method === 'POST')
+      .map(([, init]) => JSON.parse(String(init!.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).not.toHaveProperty('confirmUnattestedRestore');
+    expect(bodies[1]).toMatchObject({ snapshotId: 'snap-1', confirmUnattestedRestore: true });
+  });
+
+  it('sends a user without a second factor to set one up, and Retry resubmits the restore', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', deviceName: 'RECEPTION-PC' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snap-1', targetDeviceId: 'device-1', commandType: 'backup_restore' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ id: 'restore-2', snapshotId: 'snap-1', status: 'pending', restoreType: 'full' });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+    await screen.findByTestId('unattested-restore-stepup');
+    expect(screen.getByTestId('unattested-restore-stepup-enroll').getAttribute('href')).toBe('/settings/profile');
+    expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(screen.queryByTestId('restore-success-banner')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await screen.findByTestId('restore-success-banner');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/backup/restore' && init?.method === 'POST')
+      .map(([, init]) => JSON.parse(String(init!.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).not.toHaveProperty('stepUpGrant');
+    expect(bodies[1]).not.toHaveProperty('confirmUnattestedRestore');
+  });
+
+  it('a Retry that fails keeps the set-up link and Retry visible; nothing was restored', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', deviceName: 'RECEPTION-PC' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snap-1', targetDeviceId: 'device-1', commandType: 'backup_restore' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ error: 'Restore service unavailable' }, false, 500);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+    await screen.findByTestId('unattested-restore-stepup-enroll');
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await waitFor(() => expect(posts).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('unattested-restore-stepup-retry')).not.toBeDisabled());
+    expect(screen.getByTestId('unattested-restore-stepup-enroll')).toBeTruthy();
+    expect(screen.queryByTestId('restore-success-banner')).toBeNull();
+    expect(await screen.findByText('Restore service unavailable')).toBeTruthy();
+  });
+
+  it('shows each snapshot\'s integrity status on its card and in the review', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snap-1', label: 'Server snapshot', integrityStatus: 'unattested_legacy' },
+          { id: 'snap-2', label: 'Newer snapshot', integrityStatus: 'attested' },
+          { id: 'snap-3', label: 'Old API snapshot' },
+        ] });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ data: [] });
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    const labels = screen.getAllByTestId('snapshot-integrity-badge').map((el) => el.textContent);
+    expect(labels).toEqual(['Not verified', 'Verified']);
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('Not verified');
   });
 
   it('cancels a queued restore from the Latest restore job panel', async () => {

@@ -139,6 +139,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS: 'database pool/watchdog tuning',
   DB_CONTEXT_HELD_WARN_MS: 'database pool/watchdog tuning',
   DB_CONTEXT_TRIPWIRE_STRICT: 'database pool/watchdog tuning',
+  DB_POOL_ACQUIRE_TIMEOUT_MS: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_DISABLED: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_INTERVAL_MS: 'database pool/watchdog tuning',
@@ -344,11 +345,17 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: 'timing knob',
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: 'rate limit knob',
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: 'rate limit knob',
+  PARTNER_API_IDEMPOTENCY_RETENTION_DAYS: 'data retention window',
+  PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED: 'cleanup job toggle',
+  PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR: 'rate limit knob',
+  PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR: 'rate limit knob',
   PARTNER_MEETING_URL: 'partner onboarding copy link',
   PARTNER_TRUST_MODE: 'hosted partner trust mode',
   // PATH
   PATH: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // PATCH_*
+  PATCH_REPORT_ORPHAN_MIN_AGE_MS: 'timing knob',
+  PATCH_REPORT_RETENTION_DAYS: 'data retention window',
   PATCH_REPORT_STORAGE_PATH: 'filesystem path',
   PATCH_TOMBSTONE_PRUNE_AFTER_HOURS: 'data retention window',
   // PENDING_*

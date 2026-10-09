@@ -81,6 +81,12 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // organization-move rewrite.
   'pam_actuations',
   'pam_actuation_results',
+  // PAM ownership-epoch lineage (#8203, spec §4.1/§4.2): never re-stamped.
+  // An org change appends a new epoch (and closes the old one) through the
+  // devices trigger; each epoch row keeps the org that owned it. Excluded
+  // from breeze_device_child_orgid_tables() too — see core.ts.
+  'device_ownership_epochs',
+  'device_ownership_epoch_closures',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',
@@ -683,6 +689,10 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
       // record must retain its site snapshot too; invoice_line_devices is the
       // only such table that currently carries site_id.
       if (name === 'invoice_line_devices') continue;
+      // device_ownership_epochs.site_id is the site at epoch START (display
+      // only, spec §4.1) and the table is append-only — a site move must
+      // never rewrite it (#8203).
+      if (name === 'device_ownership_epochs') continue;
 
       const cols = getColumns(table);
       const hasDeviceId = cols.some((c) => c.name === 'device_id');

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { reportRunOwnerColumns } from '../../services/reportRunOwner';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
@@ -206,6 +207,7 @@ runsRoutes.post(
       .insert(reportRuns)
       .values({
         reportId: report.id,
+        ...reportRunOwnerColumns(report),
         status: 'pending',
         startedAt: new Date(),
         requestedByKind: 'user',

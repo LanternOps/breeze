@@ -9,6 +9,9 @@ import { executeCommand, executeCommandWithSystemPrecheck, CommandTypes } from '
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { dispatchTrackedDbRestore } from './dbRestoreJob';
+import { gateRestoreCommand, restoreIntegrityResponse } from './restoreIntegrityGate';
+import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
+
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -498,7 +501,9 @@ hypervRoutes.post(
 function mapDispatchErrorStatus(error: string): number {
   // Both are states of the target device the operator can act on, not
   // dispatch failures.
-  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
+  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) || isRestoreHelperUpdateRequiredError(error)
+    ? 409
+    : 502;
 }
 
 // ── POST /hyperv/restore — Trigger VM restore (import) ──────────────
@@ -580,7 +585,21 @@ hypervRoutes.post(
     // change.
     // #6974: track the restore in a restore_jobs row (linked by command id) so
     // the terminal result is persisted by commandResultHandlers.hyperv_restore.
+    // Integrity (routes/backup/restoreIntegrityGate.ts): decided before the
+    // restore job or command exists.
+    const integrity = await gateRestoreCommand(c, {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: payload.deviceId,
+      commandType: CommandTypes.HYPERV_RESTORE,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.deviceId,
+    });
+    if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
+
     const queued = await dispatchTrackedDbRestore({
+      ...(integrity.commandId ? { commandId: integrity.commandId } : {}),
       orgId,
       snapshotId: snapshot.id,
       deviceId: payload.deviceId,

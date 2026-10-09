@@ -369,6 +369,7 @@
       "crossesFunding": "Bu yedek model farklı bir kaynaktan ödeniyor. Önce Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin verin.",
       "egress_blocked": "Bu adrese izin verilmiyor.",
       "invalid_url": "Bu URL geçerli değil.",
+      "endpoint_unreachable": "Uç nokta ana bilgisayarı çözümlenemedi veya ona ulaşılamadı. Temel URL'yi kontrol edin.",
       "managed_by_env": "Bu bağlantı örneğin ortamı tarafından yönetiliyor ve burada değiştirilemez.",
       "connection_in_use": "Bir özellik hâlâ bu bağlantıdaki bir modeli kullanıyor. Önce başka bir varsayılan seçin.",
       "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",

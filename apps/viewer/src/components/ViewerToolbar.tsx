@@ -4,6 +4,9 @@ import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, C
 import type { TransportCapabilities } from '../lib/transports/types';
 import { transportHasQualityControls } from '../lib/transportTuning';
 import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
+import { detectViewerOs, shortcutLabel } from '../lib/inputSafety';
+
+const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 
 interface MonitorInfo {
   index: number;
@@ -42,6 +45,8 @@ interface Props {
   showRemoteCursor: boolean;
   remoteOs: string | null;
   onRemapCmdCtrlChange: (v: boolean) => void;
+  /** Sends a release for every key and mouse button held on the remote. */
+  onReleaseAllKeys?: () => void;
   onShowRemoteCursorChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
@@ -159,6 +164,7 @@ export default function ViewerToolbar({
   showRemoteCursor,
   remoteOs,
   onRemapCmdCtrlChange,
+  onReleaseAllKeys,
   onShowRemoteCursorChange,
   onConfigChange,
   onBitrateChange,
@@ -665,7 +671,7 @@ export default function ViewerToolbar({
         onClick={onPasteAsKeystrokes}
         disabled={!!pasteProgress}
         className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Paste clipboard text as keystrokes (Ctrl/Cmd+Shift+V)"
+        title={`Paste clipboard text as keystrokes (${shortcutLabel('V', VIEWER_OS)})`}
       >
         <PasteIcon className="w-3.5 h-3.5" />
         <span>Paste Text</span>
@@ -723,7 +729,7 @@ export default function ViewerToolbar({
       <button
         onClick={toggleFullscreen}
         className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
-        title={isFullscreen ? 'Exit fullscreen (Ctrl/Cmd+Shift+F)' : 'Fullscreen (Ctrl/Cmd+Shift+F)'}
+        title={`${isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} (${shortcutLabel('F', VIEWER_OS)})`}
       >
         {isFullscreen ? <MinimizeIcon className="w-4 h-4" /> : <MaximizeIcon className="w-4 h-4" />}
       </button>
@@ -774,6 +780,19 @@ export default function ViewerToolbar({
               </span>
               {remapCmdCtrl && <CheckIcon className="w-3 h-3 text-accent-soft" />}
             </button>
+
+            {/* Unstick keys: a release for everything the remote believes is held */}
+            {onReleaseAllKeys && (
+              <button
+                role="menuitem"
+                onClick={() => { onReleaseAllKeys(); setMoreOpen(false); }}
+                title={`Use if a key or mouse button seems stuck down on the remote (${shortcutLabel('R', VIEWER_OS)})`}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+              >
+                <KeyboardIcon className="w-3.5 h-3.5" />
+                Release stuck keys
+              </button>
+            )}
 
             {/* Remote cursor overlay (WebRTC only) */}
             <button

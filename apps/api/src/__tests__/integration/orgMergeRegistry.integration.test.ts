@@ -20,10 +20,8 @@ const EXTRA_REQUIRED = [
   // follows-parent).
   'device_commands', 'user_sso_identities', 'sso_sessions', 'psa_ticket_mappings',
   'deployment_results', 'software_versions',
-  // P2-3 (#4190): report_runs joined ASSOCIATED_SYSTEM_SCOPED_TABLES when the
-  // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
-  // travels with its definition's repointed org_id.
-  'report_runs',
+  // (report_runs left this list in #4247: it has its own org_id now and is
+  // in getOrgCascadeDeleteOrder(), classified as a plain repoint.)
   // Joined ASSOCIATED_SYSTEM_SCOPED_TABLES so org erasure clears items naming
   // the org's roles (role_id keeps NO ACTION). Review/role/user-keyed, so it
   // travels with its parents through a merge.
@@ -218,6 +216,13 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
     'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
+  // PAM ownership-epoch lineage (#8203, 2026-12-17-130000): unconditional
+  // append-only RAISE (42501) on UPDATE. Both tables are leave-for-erasure:
+  // the devices repoint appends survivor lineage via a trigger instead.
+  'device_ownership_epochs.device_ownership_epochs_block_update':
+    'unconditional append-only RAISE (42501) on UPDATE; leave-for-erasure',
+  'device_ownership_epoch_closures.device_ownership_epoch_closures_block_update':
+    'unconditional append-only RAISE (42501) on UPDATE; leave-for-erasure',
   // AI script proposals (2026-10-16-100100): RAISEs 42501 iff any content /
   // identity column changes, org_id included. Lifecycle columns (status,
   // decision_note, intent_id, …) stay writable — which is exactly what the
@@ -269,6 +274,13 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
+  // fires on the devices repoint and only APPENDS lineage (closes the loser
+  // epoch, opens survivor epoch +1, writes retirement markers); it never
+  // RAISEs and never reverts org_id. The write guard fires only when the
+  // UPDATE targets ownership_epoch, and passes whenever org_id changes too.
+  'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
+  'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
   // active grant into revoked and a pending request into expired. Never blocks
   // or reverts the org_id change itself; the merge fences these rows in its
@@ -315,6 +327,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // the attested/binding columns and the status transition, and deliberately
   // leaves org_id out of both, so a device move or merge repoint passes.
   'backup_snapshot_attestations.backup_snapshot_attestations_guard': 'freezes attested columns and status transitions; org_id is excluded and may change',
+  'backup_restore_authorizations.backup_restore_authorizations_guard': 'freezes every column except org_id (and a user SET NULL); org_id is excluded and may change',
   // Recipe library E2 (2026-10-26-160000): fires only on UPDATE OF
   // device_id/ticket_id/contact_id and only stamps detached_at/_reason/state
   // when the last pointer goes null. Never reads or writes org_id; the table is

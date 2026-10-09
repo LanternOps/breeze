@@ -1105,5 +1105,29 @@
     "restrictedDescriptorsShowPaths_other": "Mostra {{count}} percorsi",
     "restrictedDescriptorsUnlisted_one": "Altro {{count}} elemento non è elencato.",
     "restrictedDescriptorsUnlisted_other": "Altri {{count}} elementi non sono elencati."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Conferma questo ripristino",
+    "introUnattested": "Questo backup non ha un'attestazione di integrità, quindi il suo contenuto non può essere confrontato con un record verificato prima del ripristino.",
+    "introProducerOnly": "Questo backup è stato archiviato dove solo il dispositivo originale può verificarne l'integrità. Il ripristino su un altro dispositivo richiede la tua conferma.",
+    "twoFactor": "Conferma con l'autenticazione a due fattori per continuare.",
+    "confirmOnly": "Conferma per continuare. Il ripristino viene registrato nel registro di controllo.",
+    "code": "Codice di autenticazione",
+    "passkey": "Ti verrà chiesto di usare la tua passkey.",
+    "enrollIntro": "Per confermare questo ripristino serve un secondo fattore e il tuo account non ne ha ancora uno. Configura un'app di autenticazione o una passkey nel tuo profilo, quindi riprova.",
+    "enrollIntroSmsOnly": "Per confermare questo ripristino serve un'app di autenticazione o una passkey. Il tuo account ha solo codici via SMS; aggiungine una nel tuo profilo.",
+    "enrollLink": "Configura l'autenticazione a due fattori",
+    "enrollStillRequired": "Il tuo account non ha ancora un secondo fattore. Configurane uno, quindi riprova.",
+    "enrollStillRequiredSmsOnly": "Il tuo account non ha ancora un'app di autenticazione né una passkey.",
+    "confirm": "Conferma e ripristina",
+    "cancel": "Annulla",
+    "failed": "La verifica non è stata accettata. Riprova.",
+    "unavailable": "Impossibile avviare la verifica. Riprova."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verificato",
+    "checking": "Verifica in corso",
+    "unverified": "Non verificato",
+    "failed": "Controllo di integrità non superato"
   }
 }

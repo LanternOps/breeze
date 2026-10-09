@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePermissions } from '../../lib/permissions';
+import AccessDenied from '../shared/AccessDenied';
 import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
@@ -37,9 +38,26 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
 };
 
 
+// Reading webhooks requires webhooks:read (GET /webhooks and the delivery
+// history). Without it the page shows the permission-denied state and makes no
+// request. UX only — every route re-checks server-side.
 export default function WebhooksPage() {
+  const { permissions, can } = usePermissions();
+  if (!can('webhooks', 'read')) {
+    // Grants still loading: render nothing rather than flash the denied state.
+    if (!permissions) return null;
+    return <AccessDenied testId="webhooks-access-denied" />;
+  }
+  return <WebhooksPageContent />;
+}
+
+function WebhooksPageContent() {
   const { t } = useTranslation('common');
-  const { can } = usePermissions(); // UX gate; webhook writes require organizations.write
+  const { can } = usePermissions();
+  // UX gate: every webhook write (create, edit, delete, pause/resume, test,
+  // retry) requires organizations:write. A webhooks:read-only caller sees the
+  // list, details and delivery history with no write controls.
+  const canManage = can('organizations', 'write');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
@@ -407,7 +425,7 @@ export default function WebhooksPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t('longTail.webhooks.WebhooksPage.title')}</h1>
           <p className="text-muted-foreground">{t('longTail.webhooks.WebhooksPage.subtitle')}</p>
         </div>
-        {can('organizations', 'write') && (
+        {canManage && (
         <button
           type="button"
           onClick={handleCreate}
@@ -427,10 +445,10 @@ export default function WebhooksPage() {
 
       <WebhookList
         webhooks={webhooks}
-        onEdit={handleEdit}
-        onDelete={handleDelete}
-        onTest={handleTest}
-        onToggle={handleToggle}
+        onEdit={canManage ? handleEdit : undefined}
+        onDelete={canManage ? handleDelete : undefined}
+        onTest={canManage ? handleTest : undefined}
+        onToggle={canManage ? handleToggle : undefined}
         onSelect={webhook => setActiveWebhookId(webhook.id)}
         selectedWebhookId={activeWebhookId}
       />
@@ -443,6 +461,7 @@ export default function WebhooksPage() {
                 <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhooksPage.details.title')}</h2>
                 <p className="text-sm text-muted-foreground">{activeWebhook.name}</p>
               </div>
+              {canManage && (
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -460,6 +479,7 @@ export default function WebhooksPage() {
                   {t('longTail.webhooks.WebhooksPage.actions.testWebhook')}
                 </button>
               </div>
+              )}
             </div>
 
             <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -470,6 +490,7 @@ export default function WebhooksPage() {
                     {activeWebhook.url}
                   </div>
                 </div>
+                {canManage && (
                 <div>
                   <label htmlFor="webhook-test-event" className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
                   <select
@@ -488,6 +509,7 @@ export default function WebhooksPage() {
                     {t('longTail.webhooks.WebhooksPage.details.testEventHelp')}
                   </p>
                 </div>
+                )}
                 <div>
                   <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.authentication')}</label>
                   <div className="mt-2 space-y-1 rounded-md border bg-muted/20 px-3 py-2 text-sm">
@@ -534,7 +556,7 @@ export default function WebhooksPage() {
                 </button>
               </div>
             ) : (
-              <WebhookDeliveryHistory deliveries={deliveries} onRetry={handleRetryDelivery} />
+              <WebhookDeliveryHistory deliveries={deliveries} onRetry={canManage ? handleRetryDelivery : undefined} />
             )}
           </div>
         </div>

@@ -275,6 +275,16 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. The outcome sweeper
  * cancels in-flight rows whose device left the org.
  *
+ * device_ownership_epochs / device_ownership_epoch_closures are deliberately
+ * ABSENT too (PAM ownership epochs W1, #8203): ownership lineage is
+ * append-only (UPDATE trigger-blocked and revoked). An org change appends a
+ * new epoch through the breeze_device_ownership_epoch_advance() trigger on
+ * devices instead of re-stamping; each closed epoch keeps the org that owned
+ * it. Both are excluded from breeze_device_child_orgid_tables() by
+ * 2026-12-17-130000-device-ownership-epochs.sql and listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. pam_ledger_retirements
+ * has no org_id at all.
+ *
  * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
  * org_id and device_id, but its org_id belongs to the INVOICE, which does not
  * move. Re-stamping it would break the (invoice_line_id, org_id) and
@@ -307,7 +317,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
+  'backup_chains', 'backup_jobs', 'backup_restore_authorizations', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
   'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions',
   'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
@@ -465,6 +475,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   // IMMEDIATE, so moveDeviceOrgInTransaction.ts also names
   // ticket_external_refs_ticket_org_fk in its SET CONSTRAINTS … DEFERRED.
   'ticket_external_refs',
+  // partner_api_idempotency_keys (Partner API tickets): claim rows bound to
+  // a ticket (ticket_id) with a denormalized org_id, rewritten through the
+  // tickets join, appended last after ticket_external_refs. Its composite
+  // (ticket_id, org_id) FK is named in moveDeviceOrgInTransaction.ts's
+  // SET CONSTRAINTS … DEFERRED.
+  'partner_api_idempotency_keys',
 ] as const;
 
 /**
@@ -559,6 +575,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // its id).
   'backup_storage_session_uploads',
   'backup_storage_sessions',
+  // Restore authorizations reference the snapshot, the target device and a
+  // recovery token or recovery (all CASCADE); listed before them anyway.
+  'backup_restore_authorizations',
   // Snapshot attestations reference the snapshot, the job and the device.
   'backup_snapshot_attestations',
   'backup_snapshot_id_reservations',
@@ -633,6 +652,17 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
   'pam_actuations', 'pam_actuation_results',
+  // PAM ownership-epoch lineage (#8203). No FK to devices on the two epoch
+  // tables (spec §4.4) — this app-level DELETE is what reclaims them.
+  // deviceDeletion runs in a SYSTEM context and deletes by device_id alone,
+  // so today it removes EVERY epoch and closure of the device, earlier orgs'
+  // included. That is acceptable only while no device with PAM evidence can
+  // change org (devices_pam_history_move_guard): a multi-epoch device carries
+  // lineage but no evidence. W2 (#8202) MUST narrow both entries to the exact
+  // current epoch, (device_id, org_id, epoch) = the live device's, before any
+  // PAM-touched device may move. Closures FK -> epochs, so closures first.
+  // pam_ledger_retirements also cascades from devices by FK.
+  'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

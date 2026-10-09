@@ -24,6 +24,13 @@ import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import {
+  isUnattestedRestoreStepUp,
+  suppressUnattestedRestoreStepUpToast,
+  useUnattestedRestoreStepUp,
+  type UnattestedRestoreExtras,
+} from './useUnattestedRestoreStepUp';
+import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -47,6 +54,8 @@ type Snapshot = {
   // backup completed), so the card shows when it was captured instead (#6496).
   createdAt?: string | null;
   files?: SnapshotFile[];
+  /** Integrity status from GET /backup/snapshots (absent on an older API). */
+  integrityStatus?: string | null;
 };
 
 type RestoreResultDetails = {
@@ -353,7 +362,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     return () => window.clearInterval(timer);
   }, [activeRestore?.id, fetchRestoreHistory, fetchRestoreJob]);
 
-  const handleRestore = useCallback(async () => {
+  // A backup without an integrity attestation is restored only after the
+  // operator confirms it (two-factor when enabled); the server asks for it.
+  const unattestedStepUp = useUnattestedRestoreStepUp();
+
+  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     try {
       setRestoring(true);
       setRestoreError(undefined);
@@ -362,7 +375,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
         snapshotId,
         restoreType,
         selectedPaths: restoreType === 'selective' ? Array.from(selectedFiles) : [],
-        targetPath: destination === 'alternate' ? alternatePath : undefined
+        targetPath: destination === 'alternate' ? alternatePath : undefined,
+        ...extras,
       };
 
       // runAction (CLAUDE.md): a failed restore must toast, not just tint a
@@ -375,6 +389,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           }),
         errorFallback: 'Failed to start restore',
         parseSuccess: (data) => ((data as { data?: RestoreJob })?.data ?? data) as RestoreJob,
+        suppressErrorToast: suppressUnattestedRestoreStepUpToast,
       });
       setRestoreJob(created);
       // Name the device, not the job UUID; the Latest restore job panel
@@ -391,16 +406,26 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       }
       setRestoreSuccess(confirmation);
       await fetchRestoreHistory();
+      return true;
     } catch (err) {
       // 401 is handled by the auth redirect; every other ActionError was
       // already toasted by runAction, and the inline banner keeps the detail
       // on screen next to the wizard controls.
-      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError && err.status === 401) return false;
+      // The confirmation prompt handles a step-up request.
+      if (isUnattestedRestoreStepUp(err)) throw err;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
+      return false;
     } finally {
       setRestoring(false);
     }
   }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, selectedSnapshot, snapshotId, t]);
+
+  const { run: runWithStepUp } = unattestedStepUp;
+  const handleRestore = useCallback(() => {
+    // Every other failure was surfaced by submitRestore itself.
+    void runWithStepUp(submitRestore).catch(() => undefined);
+  }, [runWithStepUp, submitRestore]);
 
   const handleCancelRestore = useCallback(async (restoreId: string) => {
     setCancellingRestoreId(restoreId);
@@ -466,6 +491,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           {error}
         </div>
       )}
+      {unattestedStepUp.prompt}
       {restoreError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {restoreError}
@@ -540,8 +566,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                         </span>
                         {snapshot.createdAt ? <span>{formatDateTime(snapshot.createdAt)}</span> : null}
                       </div>
-                      <div className="mt-2 text-sm font-semibold text-foreground">
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
                         {snapshot.label}
+                        <SnapshotIntegrityBadge status={snapshot.integrityStatus} />
                       </div>
                       {snapshot.deviceName ? (
                         <div className="mt-1 text-xs text-muted-foreground">{snapshot.deviceName}</div>
@@ -701,8 +728,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <CheckCircle2 className="h-4 w-4 text-success" />
                     {t('restoreWizard.snapshot')} </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
+                  <p data-testid="restore-review-snapshot" className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
+                    <SnapshotIntegrityBadge status={selectedSnapshot?.integrityStatus} />
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">

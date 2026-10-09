@@ -24,6 +24,16 @@ const dispatchTrackedDbRestoreMock = vi.fn();
 vi.mock('./dbRestoreJob', () => ({
   dispatchTrackedDbRestore: (...args: unknown[]) => dispatchTrackedDbRestoreMock(...(args as [])),
 }));
+
+// The integrity check itself is covered in restoreIntegrityGate.test.ts; here
+// only how the route uses its answer.
+const integrityGate = vi.hoisted(() => ({ gate: vi.fn(), check: vi.fn(), record: vi.fn() }));
+vi.mock('./restoreIntegrityGate', () => ({
+  gateRestoreCommand: (...args: unknown[]) => integrityGate.gate(...args),
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
 const authorizeResilienceResourcesMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
 
@@ -202,6 +212,9 @@ describe('hyperv routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    integrityGate.gate.mockResolvedValue({ ok: true });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     authDbContexts.seq = 0;
     authDbContexts.stack = [];
     authDbContexts.committed = new Set();
@@ -617,6 +630,44 @@ describe('hyperv routes', () => {
   // as the command is queued, instead of blocking the HTTP request on
   // executeCommand's 10-minute waitForCommandResult poll — which terminalised
   // any longer-running restore as failed regardless of the reaper's ceiling.
+  describe('restore integrity', () => {
+    const snapshotRow = () => {
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: '55555555-5555-4555-8555-555555555555',
+        providerSnapshotId: 'hyperv-accounting-1',
+        metadata: { backupKind: 'hyperv_export' },
+        configId: 'config-1',
+      }]));
+      queueDestinationConfigSelect();
+    };
+    const post = () => app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, snapshotId: '55555555-5555-4555-8555-555555555555', vmName: 'Recovered VM' }),
+    });
+
+    it('answers an integrity refusal and queues nothing', async () => {
+      snapshotRow();
+      integrityGate.gate.mockResolvedValueOnce({ ok: false, status: 409, body: { code: 'attestation_pending', error: 'wait' } });
+      const res = await post();
+      expect(res.status).toBe(409);
+      expect(dispatchTrackedDbRestoreMock).not.toHaveBeenCalled();
+      expect(integrityGate.gate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        snapshotDbId: '55555555-5555-4555-8555-555555555555', targetDeviceId: DEVICE_ID, commandType: 'HYPERV_RESTORE',
+        executingDeviceId: DEVICE_ID,
+      }));
+    });
+
+    it('queues a confirmed restore with the command id its authorization is bound to', async () => {
+      snapshotRow();
+      integrityGate.gate.mockResolvedValueOnce({ ok: true, commandId: 'reserved-command' });
+      dispatchTrackedDbRestoreMock.mockResolvedValueOnce({ ok: true, command: { id: 'reserved-command', status: 'pending' }, restoreJobId: 'job-1' });
+      const res = await post();
+      expect(res.status).toBe(202);
+      expect(dispatchTrackedDbRestoreMock.mock.lastCall?.[0]).toMatchObject({ commandId: 'reserved-command' });
+    });
+  });
+
   it('dispatches Hyper-V restore asynchronously instead of blocking on executeCommand', async () => {
     selectMock.mockReturnValueOnce(
       chainMock([

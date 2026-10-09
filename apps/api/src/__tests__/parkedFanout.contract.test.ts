@@ -275,6 +275,7 @@ const EXEMPT: Record<string, string> = {
   'services/backupProgress.ts': 'agent self-service: agent-reported progress applied only for the calling agent\'s own device/job',
   'services/backupRecoveryCommandIntegrity.ts': 'agent self-service: delivery-time refresh reads the org of the device fetching its own queued command',
   'services/backupStorageSessionStore.ts': 'derived: loads one device already resolved by the command/session caller',
+  'services/restoreTargetReadiness.ts': 'derived: reads the one device a restore route already resolved as its target, to refuse it before a step-up grant is consumed',
   'services/brainDeviceContext.ts': 'request path: all queries gated by auth.orgCondition from the request\'s auth context',
   'services/callerVerification/gate.ts': 'request path: single id+orgId device check inside a per-request gate flow',
   'services/callerVerification/service.ts': 'request path: device/contact reads scoped via actor and reachable contacts on request paths',

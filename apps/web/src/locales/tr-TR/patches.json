@@ -72,7 +72,9 @@
       "queued": "Uyumluluk raporu {{reportId}} sıraya alındı. İndirmeye hazırlanıyor...",
       "ready": "Uyumluluk raporu {{reportId}} hazır. İndirme başlatılıyor...",
       "failed": "Uyumluluk raporu {{reportId}} başarısız oldu",
+      "expired": "{{reportId}} numaralı uyumluluk raporunun süresi doldu. İndirmek için yeni bir rapor oluşturun.",
       "checkFailed": "Rapor durumu kontrol edilemedi",
+      "downloadFailed": "{{reportId}} uyumluluk raporu indirilemedi",
       "noReportId": "Rapor sıraya alındı ancak rapor kimliği döndürülmedi"
     },
     "summary": {
@@ -301,6 +303,7 @@
       "approval": "Onay",
       "actions": "Eylemler"
     },
+    "releaseUnknown": "Bilinmiyor",
     "pagination": {
       "rowsPerPage": "Sayfa başına satır",
       "pageStatus": "Sayfa {{current}} / {{total}}"

@@ -50,11 +50,34 @@ describe('classifyDeviceProtection', () => {
       expected: 'unprotected',
     },
     {
-      name: 'RTP null is unprotected',
+      // #8252: a null reading means the agent's AV collector failed — unknown,
+      // not "protection off".
+      name: 'RTP null is unknown',
       securityStatus: status({ realTimeProtection: null }),
       hasS1Agent: false,
       hasHuntressAgent: false,
+      expected: 'unknown',
+    },
+    {
+      name: 'RTP null with provider other is unknown',
+      securityStatus: status({ provider: 'other', realTimeProtection: null }),
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+      expected: 'unknown',
+    },
+    {
+      name: 'RTP false is unprotected',
+      securityStatus: status({ realTimeProtection: false }),
+      hasS1Agent: false,
+      hasHuntressAgent: false,
       expected: 'unprotected',
+    },
+    {
+      name: 'S1 agent takes precedence over a null RTP reading',
+      securityStatus: status({ realTimeProtection: null }),
+      hasS1Agent: true,
+      hasHuntressAgent: false,
+      expected: 'protected',
     },
   ])('$name', ({ expected, securityStatus, hasS1Agent, hasHuntressAgent }) => {
     expect(classifyDeviceProtection({
@@ -89,6 +112,8 @@ describe('classifyDeviceProtection', () => {
     ['coverage dev-4 Defender', status(), false, false, 'protected', 'protected'],
     ['coverage dev-5 managed SentinelOne', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
     ['coverage dev-6 managed SentinelOne/RTP-off', status({ provider: 'sentinelone', realTimeProtection: false }), true, false, 'protected', 'protected'],
+    // #8252: the report keeps folding unknown into unprotected.
+    ['Defender RTP unknown (collector failed)', status({ realTimeProtection: null }), false, false, 'unknown', 'unprotected'],
   ] as const)(
     'matches report fixture %s and its existing report bucket',
     (_, securityStatus, hasS1Agent, hasHuntressAgent, expected, reportBucket) => {

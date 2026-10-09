@@ -11,7 +11,9 @@ const { queueDeliveryMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(()
 }));
 
 const { permissionGate, mfaGate } = vi.hoisted(() => ({
-  permissionGate: { deny: false, denied: new Set<string>() },
+  // `granted` null: every permission passes unless listed in `denied`.
+  // `granted` a set: only the listed resource:action pairs pass.
+  permissionGate: { deny: false, denied: new Set<string>(), granted: null as Set<string> | null },
   mfaGate: { deny: false }
 }));
 
@@ -88,7 +90,12 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
-    if (permissionGate.deny || permissionGate.denied.has(`${resource}:${action}`)) {
+    const key = `${resource}:${action}`;
+    if (
+      permissionGate.deny
+      || permissionGate.denied.has(key)
+      || (permissionGate.granted !== null && !permissionGate.granted.has(key))
+    ) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
@@ -162,6 +169,7 @@ describe('webhook routes', () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
     permissionGate.denied.clear();
+    permissionGate.granted = null;
     mfaGate.deny = false;
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
 
@@ -1091,18 +1099,99 @@ describe('webhook routes', () => {
     expect((valuesSpy.mock.calls as any[])[0][0].status).toBe('disabled');
     expect((await res.json()).status).toBe('paused');
   });
-  describe('read routes require organizations:read', () => {
-    it.each([
+  describe('read routes require webhooks:read', () => {
+    const readRoutes = [
       ['GET /webhooks', '/webhooks'],
       ['GET /webhooks/:id', `/webhooks/${WEBHOOK_ID_1}`],
       ['GET /webhooks/:id/deliveries', `/webhooks/${WEBHOOK_ID_1}/deliveries`]
-    ])('%s returns 403 without organizations:read and never reads the db', async (_name, path) => {
-      permissionGate.denied.add('organizations:read');
+    ] as const;
+
+    it.each(readRoutes)('%s returns 403 without webhooks:read and never reads the db', async (_name, path) => {
+      permissionGate.denied.add('webhooks:read');
 
       const res = await app.request(path, { method: 'GET', headers: { Authorization: 'Bearer token' } });
 
       expect(res.status).toBe(403);
       expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it.each(readRoutes)('%s returns 403 with only organizations:read and never reads the db', async (_name, path) => {
+      permissionGate.granted = new Set(['organizations:read']);
+
+      const res = await app.request(path, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    const storedWebhook = {
+      id: WEBHOOK_ID_1,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Hook',
+      url: 'https://example.com/hook',
+      secret: null,
+      events: ['device.created'],
+      headers: [],
+      status: 'active'
+    };
+
+    it('GET /webhooks returns 200 with only webhooks:read', async () => {
+      permissionGate.granted = new Set(['webhooks:read']);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectWhere([{ count: 1 }]) as any)
+        .mockReturnValueOnce(mockSelectList([storedWebhook]) as any);
+
+      const res = await app.request('/webhooks', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].id).toBe(WEBHOOK_ID_1);
+    });
+
+    it('GET /webhooks/:id returns 200 with only webhooks:read', async () => {
+      permissionGate.granted = new Set(['webhooks:read']);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([storedWebhook]) as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({ groupBy: vi.fn(() => Promise.resolve([{ status: 'delivered', count: 2 }])) }))
+          }))
+        } as any)
+        .mockReturnValueOnce(mockSelectOrderLimit([]) as any);
+
+      const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe(WEBHOOK_ID_1);
+      expect(body.deliveryStats.delivered).toBe(2);
+    });
+
+    it('GET /webhooks/:id/deliveries returns 200 with only webhooks:read', async () => {
+      permissionGate.granted = new Set(['webhooks:read']);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([storedWebhook]) as any)
+        .mockReturnValueOnce(mockSelectWhere([{ count: 0 }]) as any)
+        .mockReturnValueOnce(mockSelectList([]) as any);
+
+      const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/deliveries`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+    });
+
+    it('webhook writes still require organizations:write, not webhooks:read', async () => {
+      permissionGate.granted = new Set(['webhooks:read']);
+
+      const res = await app.request('/webhooks', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Hook', url: 'https://example.com/hook', events: ['device.created'] })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

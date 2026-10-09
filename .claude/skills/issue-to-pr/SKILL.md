@@ -173,7 +173,10 @@ Do not proceed to the ready comment on red tests. **REQUIRED SUB-SKILL:**
 ## 6. Commit / push / PR
 
 Use `commit-commands:commit-push-pr` (or do it by hand). The PR body must
-include `Closes #N`. PR title follows `fix(scope): summary (#N)` /
+include `Closes #N` and the template's `## Merge Danger` section
+(`.github/pull_request_template.md`): **Door** (two-way = revert fixes it;
+one-way = say what is irreversible) and **Blast radius** (who/what breaks if
+it's wrong). PR title follows `fix(scope): summary (#N)` /
 `feat(scope): summary (#N)`. Required trailers:
 
 - Commit messages end with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`

@@ -39,6 +39,8 @@ x-api-env: &api-env
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
   # #6048 — RLS GUC prologue deadline + wedged-backend detector/reclaimer.
   DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: ${DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS:-}
+  # #8229 — bound on waiting for a pooled connection, separate from the prologue.
+  DB_POOL_ACQUIRE_TIMEOUT_MS: ${DB_POOL_ACQUIRE_TIMEOUT_MS:-}
   DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
   DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
   DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
@@ -100,12 +102,17 @@ x-api-env: &api-env
   # `Number(process.env.X ?? default)` reader turns into 0 — a 0-minute TTL
   # mints tokens that are already expired.
   CHILD_ENROLLMENT_KEY_TTL_MINUTES: ${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-1440}
-  INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-1440}
+  INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-10080}
   INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
   ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
   ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
   MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+  # Days a generated patch compliance report file is kept (minimum 1).
+  PATCH_REPORT_RETENTION_DAYS: ${PATCH_REPORT_RETENTION_DAYS:-30}
+  # Minimum age (ms) of a report file no report owns before the daily job
+  # removes it. Empty = default (1 hour, never below 10 minutes).
+  PATCH_REPORT_ORPHAN_MIN_AGE_MS: ${PATCH_REPORT_ORPHAN_MIN_AGE_MS:-}
   # Scratch directory for bare-metal-recovery bundle/ISO builds (a 45-65MB
   # helper binary plus a tarball or ISO, written under mkdtemp). Both the api
   # and worker containers below mount /tmp as a 64MB tmpfs, so building

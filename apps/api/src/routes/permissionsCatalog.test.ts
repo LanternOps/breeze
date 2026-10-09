@@ -80,6 +80,8 @@ describe('permissions catalog routes', () => {
       expect(keys).toContain('agreements:write');
       expect(body.resourceLabels.agreements).toBe('Agreements');
       expect(body.actionLabels.credentials).toBe('Manage Credentials');
+      expect(keys).toContain('webhooks:read');
+      expect(body.resourceLabels.webhooks).toBe('Webhooks');
     });
 
     it('rejects unauthenticated requests', async () => {

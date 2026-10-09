@@ -70,7 +70,7 @@ The **Approval** column on a device's **Patches** tab shows what the next schedu
 |-------|---------|
 | **Approved** | A technician approved the patch, either for all rings or for this device's ring. |
 | **Auto-approved** | The device's update ring approves the patch, through a category rule or the ring's auto-approve settings. The next scheduled run installs it. |
-| **Auto-approves *date*** | The ring will approve the patch once its deferral window ends on that date. The window is measured from the patch's release date. A third-party app with no release date is measured from when the device first reported it. If neither date is usable, the badge reads **Deferred** and the patch stays held until you approve it by hand. |
+| **Auto-approves *date*** | The ring will approve the patch once its deferral window ends on that date. The window is measured from the patch's release date. A third-party app or Linux package with no release date is measured from when the device first reported it (Linux package managers never report a release date). A Windows or macOS update with no release date has no fallback. If neither date is usable, the badge reads **Deferred** and the patch stays held until you approve it by hand. |
 | **Pending Approval** | Nothing approves the patch. The ring does not cover it, or no valid ring applies to the device. Approve it by hand to install it. |
 | **Excluded by policy** | The patch policy's sources, the ring's category filter, or an app block or pin rule keeps the patch out of scheduled runs. |
 
@@ -356,12 +356,13 @@ Response fields:
 
 | Field | Description |
 |-------|-------------|
-| **`status`** | Current state: `pending`, `running`, `completed`, or `failed` |
+| **`status`** | Current state: `pending`, `running`, `completed`, `failed`, or `expired` |
 | **`rowCount`** | Number of rows in the report (available once completed) |
 | **`summary`** | High-level counts by status (available once completed) |
 | **`startedAt`** | ISO 8601 timestamp when processing began |
 | **`completedAt`** | ISO 8601 timestamp when processing finished |
 | **`errorMessage`** | Populated only if `status` is `failed` |
+| **`downloadUrl`** | Download path once `completed`; `null` before then and once the report has `expired` |
 
 ### Downloading the Report
 
@@ -372,6 +373,8 @@ GET /patches/compliance/report/:id/download
 ```
 
 This returns a file stream in CSV format. Attempting to download before the report is `completed` will return an error.
+
+Report files are kept for 30 days after the report completes (configurable with `PATCH_REPORT_RETENTION_DAYS`). After that the report's `status` is `expired`, `downloadUrl` is `null`, and the download endpoint returns `410 Gone` — generate a new report instead. Report files are also removed when their organization is erased.
 
 ### Real-Time Compliance Summary
 

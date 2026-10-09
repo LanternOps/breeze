@@ -13,6 +13,13 @@ import {
 import type { TFunction } from 'i18next';
 import { cn } from '@/lib/utils';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import {
+  isUnattestedRestoreStepUp,
+  suppressUnattestedRestoreStepUpToast,
+  useUnattestedRestoreStepUp,
+  type UnattestedRestoreExtras,
+} from './useUnattestedRestoreStepUp';
+import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import { formatNumber } from '@/lib/i18n/format';
@@ -40,6 +47,8 @@ type Snapshot = {
   deviceName?: string | null;
   createdAt?: string;
   timestamp?: string;
+  /** Integrity status from GET /backup/snapshots (absent on an older API). */
+  integrityStatus?: string | null;
   sizeBytes?: number | null;
   /** Sizing fields of the captured hardware profile, under the stored
    * (agent systemstate.HardwareProfile) names GET /backup/snapshots sends. */
@@ -315,7 +324,11 @@ export default function VMRestoreWizard() {
   // Full restore / instant boot need a VM name; the rebuild engine takes none (#7213).
   const vmNameMissing = mode !== 'rebuild' && !vmName.trim();
 
-  const handleRestore = useCallback(async () => {
+  // A backup without an integrity attestation is restored only after the
+  // operator confirms it (two-factor when enabled); the server asks for it.
+  const unattestedStepUp = useUnattestedRestoreStepUp();
+
+  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     setRestoring(true);
     setRestoreError(undefined);
     setRestoreSuccess(undefined);
@@ -377,21 +390,32 @@ export default function VMRestoreWizard() {
         request: () =>
           fetchWithAuth(endpoint, {
             method: 'POST',
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, ...extras }),
           }),
         errorFallback: 'Failed to start restore',
         successMessage,
         friendly: (code, _message, body) => friendlyRestoreError(t, code, body),
+        suppressErrorToast: suppressUnattestedRestoreStepUpToast,
       });
       setRestoreSuccess(successMessage);
+      return true;
     } catch (err) {
+      // The confirmation prompt handles a step-up request.
+      if (isUnattestedRestoreStepUp(err)) throw err;
       handleActionError(err, 'Failed to start restore');
-      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError && err.status === 401) return false;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
+      return false;
     } finally {
       setRestoring(false);
     }
   }, [cpuCount, diskGB, hypervRequested, hypervSwitchName, hypervVmName, memoryMB, mode, outputPath, rebuildHostDeviceId, snapshotId, t, targetDeviceId, virtualSwitch, vmName]);
+
+  const { run: runWithStepUp } = unattestedStepUp;
+  const handleRestore = useCallback(() => {
+    // Every other failure was surfaced by submitRestore itself.
+    void runWithStepUp(submitRestore).catch(() => undefined);
+  }, [runWithStepUp, submitRestore]);
 
   if (loading) {
     return (
@@ -418,6 +442,7 @@ export default function VMRestoreWizard() {
           {error}
         </div>
       )}
+      {unattestedStepUp.prompt}
       {restoreError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {restoreError}
@@ -475,7 +500,10 @@ export default function VMRestoreWizard() {
                           : 'border-muted bg-muted/20'
                       )}
                     >
-                      <div className="text-sm font-semibold text-foreground">{snap.label}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                        {snap.label}
+                        <SnapshotIntegrityBadge status={snap.integrityStatus} />
+                      </div>
                       {snap.deviceName ? (
                         <div className="mt-1 text-xs text-muted-foreground">{snap.deviceName}</div>
                       ) : null}

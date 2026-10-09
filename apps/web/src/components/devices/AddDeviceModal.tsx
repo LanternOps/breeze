@@ -17,6 +17,7 @@ import {
   clampTtlToOfferableOption,
   enrollmentTtlOptionsIncluding,
   ENROLLMENT_TTL_I18N_KEYS,
+  MAX_BOOTSTRAP_TOKEN_TTL_MINUTES,
   MAX_ENROLLMENT_TTL_MINUTES,
   PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT,
   PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES,
@@ -145,6 +146,15 @@ export default function AddDeviceModal({
     enrollmentDefaults?.deviceCount ?? PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
   const maxTtlMinutes =
     enrollmentDefaults?.maxTtlMinutes ?? MAX_ENROLLMENT_TTL_MINUTES;
+  // The installer tab mints a credential embedded in the downloaded installer
+  // (and sizes the shared link), which the installer routes hold to 30 days:
+  // they 400 an explicit ttlMinutes above MAX_BOOTSTRAP_TOKEN_TTL_MINUTES. So
+  // its picker is bounded by that as well as the partner cap. The CLI tab
+  // mints an enrollment key and keeps the partner cap alone.
+  const installerMaxTtlMinutes = Math.min(
+    maxTtlMinutes,
+    MAX_BOOTSTRAP_TOKEN_TTL_MINUTES,
+  );
   // ONE option set for both tabs and both settings editors, filtered to what
   // the partner cap actually permits. Offering a longer lifetime than the
   // server will mint is the silent-discard defect this work removes: the mint
@@ -182,8 +192,8 @@ export default function AddDeviceModal({
   // the server resolves it to a fresh absolute expiry measured from mint
   // time — not the transient parent key. Seeded from the partner/org resolved
   // default and bounded by the partner cap (`maxEnrollmentLinkTtlMinutes`,
-  // shipped in #2776 — see services/enrollmentDefaults.ts); the product
-  // fallback when neither is set is still 24h.
+  // shipped in #2776 — see services/enrollmentDefaults.ts) and by the 30-day
+  // installer maximum (`installerMaxTtlMinutes` above).
   //
   // "Never expires" stays deliberately unimplemented, and is NOT merely a UI
   // omission: `installer_bootstrap_tokens.expires_at` is NOT NULL with a
@@ -239,8 +249,8 @@ export default function AddDeviceModal({
   // useMemo body runs during render, so referencing `ttlMinutes` above its
   // `useState` would hit the temporal dead zone.
   const ttlOptions = useMemo(
-    () => enrollmentTtlOptionsIncluding(maxTtlMinutes, ttlMinutes),
-    [maxTtlMinutes, ttlMinutes],
+    () => enrollmentTtlOptionsIncluding(installerMaxTtlMinutes, ttlMinutes),
+    [installerMaxTtlMinutes, ttlMinutes],
   );
   const cliTtlOptions = useMemo(
     () => enrollmentTtlOptionsIncluding(maxTtlMinutes, cliTtlMinutes),
@@ -315,18 +325,18 @@ export default function AddDeviceModal({
     if (!isOpen) return;
     setDeviceCount(defaultDeviceCount);
     setCliDeviceCount(defaultDeviceCount);
-    setTtlMinutes(clampTtlToOfferableOption(defaultTtlMinutes, maxTtlMinutes));
+    setTtlMinutes(clampTtlToOfferableOption(defaultTtlMinutes, installerMaxTtlMinutes));
     setCliTtlMinutes(clampTtlToOfferableOption(defaultTtlMinutes, maxTtlMinutes));
-  }, [isOpen, defaultTtlMinutes, defaultDeviceCount, maxTtlMinutes]);
+  }, [isOpen, defaultTtlMinutes, defaultDeviceCount, maxTtlMinutes, installerMaxTtlMinutes]);
 
   // Belt-and-braces against a stale selection outliving a cap change: if the
   // cap tightens under a value the operator already picked (or a resolved
   // default lands above it), fold it down to the largest still-offerable
   // option rather than posting a ttlMinutes the mint routes will 400.
   useEffect(() => {
-    setTtlMinutes((prev) => clampTtlToOfferableOption(prev, maxTtlMinutes));
+    setTtlMinutes((prev) => clampTtlToOfferableOption(prev, installerMaxTtlMinutes));
     setCliTtlMinutes((prev) => clampTtlToOfferableOption(prev, maxTtlMinutes));
-  }, [maxTtlMinutes]);
+  }, [maxTtlMinutes, installerMaxTtlMinutes]);
 
   // Guards against overlapping CLI token fetches (a fast double-click on
   // Generate, or Generate racing the error-state Retry). A ref, not state, so

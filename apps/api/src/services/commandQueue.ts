@@ -26,6 +26,7 @@ import {
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
+import { restoreIntegrityHelperRefusal } from './backupRestoreGate';
 import { backupWriteHelperRefusal } from './backupWriteHelperGate';
 import {
   assertCommandDeliverable,
@@ -919,12 +920,19 @@ export async function queueCommandForExecution(
     offlinePolicy?: OfflinePolicy;
     /** #5022 W01 — who DECIDED this command, when an AI surface did. */
     aiOrigin?: AiOriginRef;
+    /**
+     * Reserve the command id up front: a restore confirmed with a step-up is
+     * authorized for exactly this id before the command exists
+     * (services/backupRestoreAuthorization.ts).
+     */
+    commandId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   const res = await dispatchDeviceCommand({
     deviceId,
     type,
     payload,
+    ...(options.commandId !== undefined ? { commandId: options.commandId } : {}),
     ...(options.userId !== undefined ? { userId: options.userId } : {}),
     ...(options.aiOrigin !== undefined ? { aiOrigin: options.aiOrigin } : {}),
     ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
@@ -1207,6 +1215,7 @@ async function precheckCommandExecution(
       watchdogVersion: devices.watchdogVersion,
       backupReadProtocolVersion: devices.backupReadProtocolVersion,
       backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
+      backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -1298,8 +1307,11 @@ async function precheckCommandExecution(
   // a helper that cannot use a storage session is refused before a row exists.
   // A backup to S3 storage is written only through a write-scoped storage
   // session, so a helper that cannot use one is refused the same way.
+  // A privileged restore also needs a helper that checks restored bytes
+  // against the snapshot attestation (services/backupRestoreGate.ts).
   const helperRefusal = backupReadHelperRefusal(type, payload, device.backupReadProtocolVersion)
-    ?? backupWriteHelperRefusal(type, payload, device.backupWriteProtocolVersion);
+    ?? backupWriteHelperRefusal(type, payload, device.backupWriteProtocolVersion)
+    ?? restoreIntegrityHelperRefusal(type, device.backupIntegrityProtocolVersion);
   if (helperRefusal) {
     return { ok: false, result: { status: 'failed', error: helperRefusal } };
   }

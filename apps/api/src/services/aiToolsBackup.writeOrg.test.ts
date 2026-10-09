@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The owner is now the target device's own org, and the config / snapshot must
 // belong to that same org (mirrors routes/backup/restore.ts).
 
+const actorGate = vi.hoisted(() => ({ refusal: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('./backupRestoreActorGate', () => ({
+  restoreIntegrityRefusalForActor: (...args: unknown[]) => actorGate.refusal(...(args as [])),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

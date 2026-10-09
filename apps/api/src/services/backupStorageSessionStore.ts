@@ -94,6 +94,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
         id: devices.id,
         orgId: devices.orgId,
         backupReadProtocolVersion: devices.backupReadProtocolVersion,
+        backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
         agentServerUrl: devices.agentServerUrl,
       })
       .from(devices)

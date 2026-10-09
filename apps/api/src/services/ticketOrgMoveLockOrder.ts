@@ -92,6 +92,14 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // also name ticket_external_refs_ticket_org_fk in their SET CONSTRAINTS …
   // DEFERRED statements.
   'ticket_external_refs',
+  // partner_api_idempotency_keys (Partner API tickets) binds an
+  // X-Idempotency-Key claim to the ticket it guards and denormalizes org_id,
+  // so it joins BOTH axes, appended last after ticket_external_refs on each:
+  // a claim follows its ticket across a move instead of being erased with the
+  // old org while still guarding a live ticket. Its composite
+  // (ticket_id, org_id) FK is deferred by name in both movers too
+  // (partner_api_idempotency_keys_ticket_org_fk).
+  'partner_api_idempotency_keys',
 ] as const;
 
 /**
@@ -145,6 +153,7 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_email_links',
   'ticket_checklist_items',
   'ticket_external_refs',
+  'partner_api_idempotency_keys',
 ] as const;
 
 /**

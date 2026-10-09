@@ -10,6 +10,7 @@ import { partnerContractRoutes } from './contracts';
 import { partnerAlertRoutes } from './alerts';
 import { partnerTicketRoutes } from './tickets';
 import { partnerDeviceStatusRoutes } from './deviceStatus';
+import { partnerTicketWriteRoutes } from './ticketWrites';
 import { partnerExportAuditMiddleware } from './audit';
 
 export const partnerApiRoutes = new Hono();
@@ -35,3 +36,7 @@ partnerApiRoutes.route('/', partnerTicketRoutes);
 // device-status:read (opt-in scope, #7577). Live state, outside the
 // material-change export and its watermark; see deviceStatus.ts.
 partnerApiRoutes.route('/', partnerDeviceStatusRoutes);
+// tickets:write (opt-in). Create/update/status/assign/comment through
+// ticketService; the principal acts as itself. Non-GET routes must ALSO be
+// listed in writeSurface.test.ts.
+partnerApiRoutes.route('/', partnerTicketWriteRoutes);

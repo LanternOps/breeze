@@ -791,6 +791,9 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
         requestedByKind: 'user',
         requestedByUserId: 'user-123',
         requestedByPortalUserId: null,
+        // #4247: the run carries its parent definition's owner axis.
+        orgId: ORG_ID,
+        partnerId: null,
       }),
     );
   });

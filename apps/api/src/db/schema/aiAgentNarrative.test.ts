@@ -24,8 +24,8 @@ describe('P2-3 schema', () => {
   });
 
   // The export-policy contract fires on a NEW COLUMN of an already-registered
-  // org-cascade table, not only on a new table (CLAUDE.md). `report_runs` has
-  // no org_id, so it has no policy entry and deliberately gets none here.
+  // org-cascade table, not only on a new table (CLAUDE.md). `report_runs`
+  // gained org_id in #4247, so its principal_kind column is classified too.
   // Accessor shape mirrors aiAgentSchedules.test.ts exactly (the registry's
   // index signature is optional-valued, hence the `!`).
   it('export policy classifies the new org-cascade columns', () => {
@@ -33,6 +33,6 @@ describe('P2-3 schema', () => {
     expect(CORE_TENANT_EXPORT_POLICY.ai_agent_runs!.columns.report_run_id).toBeDefined();
     expect(CORE_TENANT_EXPORT_POLICY.reports!.columns.source_ai_agent_schedule_id).toBeDefined();
     expect(CORE_TENANT_EXPORT_POLICY.reports!.columns.execution_scope_principal_kind).toBeDefined();
-    expect(CORE_TENANT_EXPORT_POLICY.report_runs).toBeUndefined();
+    expect(CORE_TENANT_EXPORT_POLICY.report_runs!.columns.execution_scope_principal_kind).toBeDefined();
   });
 });

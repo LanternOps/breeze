@@ -648,6 +648,11 @@ describe('POST /devices/:id/move-org', () => {
       expect(refDelete).toBeGreaterThan(-1);
       expect(refRestamp).toBeGreaterThan(refDelete);
       expect(statements[refDelete]).toMatch(/partner_id IS DISTINCT FROM \(SELECT partner_id FROM organizations/);
+      // Same rule for the X-Idempotency-Key claims bound to those tickets.
+      const claimDelete = statements.findIndex((s) => /DELETE FROM partner_api_idempotency_keys\b/.test(s));
+      const claimRestamp = statements.findIndex((s) => /UPDATE\s+"?partner_api_idempotency_keys"?\s+SET org_id/.test(s));
+      expect(claimDelete).toBeGreaterThan(refRestamp);
+      expect(claimRestamp).toBeGreaterThan(claimDelete);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
       // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
       // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
@@ -1437,7 +1442,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1551,7 +1556,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

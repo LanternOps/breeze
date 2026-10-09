@@ -19,6 +19,7 @@ import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { PERMISSIONS } from '../services/permissions';
 import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../services/deviceSiteAccess';
 import { writeAuditEvent } from '../services/auditEvents';
+import { DEFAULT_PATCH_REPORT_STORAGE_PATH } from '../services/patchReportFiles';
 import { PARKED_DEVICE_REFUSAL } from '../middleware/agentAuthParked';
 import {
   isParkedDevice,
@@ -35,7 +36,7 @@ import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 function resolveWorkDir(): string {
   const override = process.env.DEV_PUSH_WORK_DIR?.trim();
   if (override) return override;
-  const patchReportPath = process.env.PATCH_REPORT_STORAGE_PATH || './data/patch-reports';
+  const patchReportPath = process.env.PATCH_REPORT_STORAGE_PATH || DEFAULT_PATCH_REPORT_STORAGE_PATH;
   return join(dirname(patchReportPath), 'dev-push');
 }
 

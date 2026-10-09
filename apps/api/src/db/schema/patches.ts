@@ -100,7 +100,9 @@ export const patchComplianceReportStatusEnum = pgEnum('patch_compliance_report_s
   'pending',
   'running',
   'completed',
-  'failed'
+  'failed',
+  // The report file was removed by the retention job (jobs/patchReportRetention.ts).
+  'expired'
 ]);
 
 export const patchComplianceReportFormatEnum = pgEnum('patch_compliance_report_format', [

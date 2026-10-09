@@ -198,7 +198,8 @@
     "running": "In esecuzione",
     "threatsDetectedCount": "{{count}} minacce",
     "unknownProvider": "Provider sconosciuto",
-    "unknownVendor": "Vendor sconosciuto"
+    "unknownVendor": "Vendor sconosciuto",
+    "unknown": "Sconosciuto"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",
@@ -285,7 +286,8 @@
     "totalDevices": "Dispositivi totali",
     "windows": "Windows",
     "statusFilterLabel": "Stato del firewall",
-    "osFilterLabel": "Sistema operativo"
+    "osFilterLabel": "Sistema operativo",
+    "unknown": "Sconosciuto"
   },
   "securityHuntressIncidentList": {
     "actions": "Azioni",
@@ -534,7 +536,8 @@
     "updated": "Aggiornato {{time}}",
     "viewDetails": "Visualizza dettagli",
     "vulnerabilities": "Vulnerabilità",
-    "weakAdmins": "Admin deboli"
+    "weakAdmins": "Admin deboli",
+    "unknown": "Sconosciuto"
   },
   "securitySecurityPageHeader": {
     "refresh": "Aggiorna",

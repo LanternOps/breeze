@@ -617,8 +617,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   query_analytics: 'devices.read',
   get_executive_summary: 'devices.read',
   // Integrations
-  // Route requires organizations:read (routes/webhooks.ts GET /).
-  query_webhooks: 'organizations.read',
+  // Route requires webhooks:read (routes/webhooks.ts GET / and GET /:id/deliveries).
+  query_webhooks: 'webhooks.read',
   // Route requires organizations:read (routes/psa.ts:435).
   query_psa_status: 'organizations.read',
   test_webhook: 'organizations.write',

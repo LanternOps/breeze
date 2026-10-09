@@ -72,7 +72,9 @@
       "queued": "Compliance-Bericht {{reportId}} wurde in die Warteschlange eingereiht. Download wird vorbereitet...",
       "ready": "Compliance-Bericht {{reportId}} ist bereit. Download wird gestartet...",
       "failed": "Compliance-Bericht {{reportId}} ist fehlgeschlagen",
+      "expired": "Der Compliance-Bericht {{reportId}} ist abgelaufen. Erstellen Sie einen neuen Bericht, um ihn herunterzuladen.",
       "checkFailed": "Berichtsstatus konnte nicht geprüft werden",
+      "downloadFailed": "Compliance-Bericht {{reportId}} konnte nicht heruntergeladen werden",
       "noReportId": "Der Bericht wurde in die Warteschlange eingereiht, aber es wurde keine Berichts-ID zurückgegeben"
     },
     "summary": {
@@ -301,6 +303,7 @@
       "approval": "Freigabe",
       "actions": "Aktionen"
     },
+    "releaseUnknown": "Unbekannt",
     "pagination": {
       "rowsPerPage": "Zeilen pro Seite",
       "pageStatus": "Seite {{current}} von {{total}}"

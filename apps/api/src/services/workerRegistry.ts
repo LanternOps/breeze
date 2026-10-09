@@ -646,6 +646,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'partnerApiIdempotencyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/partnerApiIdempotencyRetention');
+      return { init: m.initializePartnerApiIdempotencyRetentionWorker, shutdown: m.shutdownPartnerApiIdempotencyRetentionWorker };
+    },
+  },
+  {
     name: 'quickSupportReaper',
     placement: 'socket-owner',
     load: async () => {
@@ -872,6 +880,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/patchComplianceReportWorker');
       return { init: m.initializePatchComplianceReportWorker, shutdown: m.shutdownPatchComplianceReportWorker };
+    },
+  },
+  {
+    name: 'patchReportRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/patchReportRetention');
+      return { init: m.initializePatchReportRetentionWorker, shutdown: m.shutdownPatchReportRetentionWorker };
     },
   },
   {

@@ -45,14 +45,30 @@ export type RebuildEngineVmRestoreInput = {
   requestUrl?: string;
   /** Create a Hyper-V VM from the rebuilt VHDX (W06d). Windows rebuild hosts only. */
   hyperv?: HypervOptions;
+  /**
+   * Integrity decision for the snapshot (services/backupRestoreGate.ts),
+   * made by the caller for its own actor: a route checks the request and its
+   * step-up, an AI tool refuses unattested snapshots. Called after every other
+   * check and before anything is created. A confirmed restore of a snapshot
+   * without a usable attestation returns `bindRecovery`, which records the
+   * authorization bound to the recovery (same transaction) before the rebuild
+   * command is queued.
+   */
+  integrity: (snapshot: { id: string; deviceId: string }) => Promise<RebuildIntegrityDecision>;
 };
+
+export type RebuildIntegrityDecision =
+  | { ok: true; bindRecovery?: (recoveryId: string) => Promise<unknown> }
+  | { ok: false; status: 403 | 409; body: Record<string, unknown> };
 
 export type RebuildEngineVmRestoreResult =
   | { ok: true; jobId: string; recoveryId: string; commandId: string; status: 'queued' }
   | {
     ok: false;
-    status: 400 | 404 | 409 | 502;
+    status: 400 | 403 | 404 | 409 | 502;
     error: string;
+    /** When present, the complete response body for the refusal (integrity decisions). */
+    body?: Record<string, unknown>;
     /** Human-readable text for refusals whose `error` is a machine code. */
     message?: string;
     details?: Record<string, unknown>;
@@ -158,6 +174,16 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
     return { ok: false, status: 409, error: `Device is ${host.status}, cannot execute command` };
   }
 
+  const integrity = await input.integrity({ id: snapshot.id, deviceId: snapshot.deviceId });
+  if (!integrity.ok) {
+    return {
+      ok: false,
+      status: integrity.status,
+      error: typeof integrity.body.code === 'string' ? integrity.body.code : 'snapshot_integrity_unavailable',
+      body: integrity.body,
+    };
+  }
+
   const target = {
     kind: 'vhdx' as const,
     path: input.outputPath,
@@ -181,6 +207,7 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
       target,
     });
     recoveryId = created.row.id;
+    if (integrity.bindRecovery) await integrity.bindRecovery(recoveryId);
     const minted = await mintRecoveryTokenForRecovery({ recoveryId, orgId, createdBy: input.userId });
     token = minted.token;
     tokenId = minted.tokenId;

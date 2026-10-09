@@ -292,7 +292,7 @@
     "n30Days": "30 gün",
     "n90Days": "90 gün",
     "n1Year": "1 yıl",
-    "afterThisWindowTheDownloadedInstaller": "Bu pencereden sonra indirilen yükleyici ve paylaşılan bağlantı yeni kayıtları kabul etmeyi bırakır. Zaten kayıtlı olan cihazlar bağlı kalır.",
+    "afterThisWindowTheDownloadedInstaller": "Bu pencereden sonra indirilen yükleyici ve paylaşılan bağlantı yeni kayıtları kabul etmeyi bırakır. İndirilen bir yükleyici en fazla 30 gün çalışır ve paylaşılan bağlantıdan yapılan her indirme en fazla 30 gün geçerli bir belirteç içerir. Zaten kayıtlı olan cihazlar bağlı kalır.",
     "generatingInstaller": "Yükleyici oluşturuluyor...",
     "downloaded": "İndirildi",
     "generatingLink": "Bağlantı oluşturuluyor...",

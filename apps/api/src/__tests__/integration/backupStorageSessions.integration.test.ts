@@ -45,6 +45,7 @@ import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
+import { attestSnapshotForTest } from './restoreIntegrityFixture';
 
 const hydration = vi.hoisted(() => ({
   calls: [] as Array<{ snapshotDbId: string; reason: string; inContext: boolean; insideDelivery: boolean }>,
@@ -83,11 +84,14 @@ afterAll(() => {
   else process.env.PUBLIC_API_URL = previousPublicUrl;
 });
 
+// A helper that checks restores against snapshot attestations (integrity
+// protocol 2), as every current helper does.
 async function seedDevice(orgId: string, siteId: string, protocol: number) {
   const id = randomUUID();
   await getTestDb().execute(sql`
-    INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, backup_read_protocol_version)
-    VALUES (${id}, ${orgId}, ${siteId}, ${`agent-${randomUUID()}`}, ${`host-${randomUUID()}`}, 'windows', '11', 'amd64', '2.0.0', ${protocol})
+    INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version,
+      backup_read_protocol_version, backup_integrity_protocol_version)
+    VALUES (${id}, ${orgId}, ${siteId}, ${`agent-${randomUUID()}`}, ${`host-${randomUUID()}`}, 'windows', '11', 'amd64', '2.0.0', ${protocol}, 2)
   `);
   return id;
 }
@@ -114,9 +118,14 @@ async function seedOrg(opts: { snapshotId?: string } = {}) {
   `);
   const snapshotDbId = randomUUID();
   await getTestDb().execute(sql`
-    INSERT INTO backup_snapshots (id, org_id, job_id, device_id, config_id, snapshot_id, storage_identity, file_index_status)
-    VALUES (${snapshotDbId}, ${org.id}, ${jobId}, ${source}, ${configId}, ${snapshotId}, ${IDENTITY}, 'complete')
+    INSERT INTO backup_snapshots (id, org_id, job_id, device_id, config_id, snapshot_id, storage_identity, file_index_status,
+      file_index_manifest_sha256)
+    VALUES (${snapshotDbId}, ${org.id}, ${jobId}, ${source}, ${configId}, ${snapshotId}, ${IDENTITY}, 'complete', ${'a'.repeat(64)})
   `);
+  // Attested by its producing helper and verified by the server, as every
+  // snapshot from a current helper is; the index above was built from the
+  // attested manifest bytes.
+  await attestSnapshotForTest(snapshotDbId);
   await getTestDb().execute(sql`
     INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path) VALUES
       (${snapshotDbId}, '/a.txt', ${`snapshots/${snapshotId}/files/a.txt`}),
@@ -385,6 +394,8 @@ describe('brokered storage sessions (real database)', () => {
       sql`SELECT storage_identity FROM backup_snapshots WHERE id = ${applied.snapshotDbId}`,
     )) as unknown as Array<{ storage_identity: string | null }>;
     expect(stamped[0]!.storage_identity).toBe(IDENTITY);
+    // The helper's attestation for it (recorded with a current helper's result).
+    await attestSnapshotForTest(applied.snapshotDbId!);
 
     const payload = {
       instance: 'SQLEXPRESS',

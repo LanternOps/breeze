@@ -73,6 +73,7 @@ import {
   createUser,
   grantRolePermissions,
 } from './db-utils';
+import { attestSnapshotForTest } from './restoreIntegrityFixture';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -117,6 +118,8 @@ async function seedDevice(orgId: string, siteId: string, osType: 'windows' | 'li
     architecture: 'x86_64',
     agentVersion: 'test',
     status: 'online',
+    // A helper that checks restores against snapshot attestations.
+    backupIntegrityProtocolVersion: 2,
   }).returning({ id: devices.id });
   return row!.id;
 }
@@ -164,8 +167,11 @@ async function seedFixture(extraPermissions: Array<{ resource: string; action: s
       deviceId: sourceA1,
       configId: config!.id,
       snapshotId: `restore-scope-${randomUUID()}`,
+      storageIdentity: `local::/restore-scope/${randomUUID()}`,
       metadata,
     }).returning({ id: backupSnapshots.id });
+    // AI agents restore attested snapshots only.
+    await attestSnapshotForTest(row!.id);
     return row!.id;
   };
 
