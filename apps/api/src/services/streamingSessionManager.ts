@@ -28,6 +28,7 @@ import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
@@ -1890,6 +1891,16 @@ export class StreamingSessionManager {
               break;
             }
 
+            // #7785: the provider failure the CLI reported as FINAL this turn,
+            // read BEFORE settleSdkTurn swaps the observation out. A
+            // non-terminal cause is an api_retry that may have recovered, so it
+            // never names a later failure (as for the cooldown, #7790). Fixed
+            // text only (providerFailureMessage); the CLI's synthetic assistant
+            // text is raw provider output and is never shown.
+            const { providerFailure, sawOutput } = session.refusalObservation;
+            const providerMessage = providerFailure?.terminal ? providerFailureMessage(providerFailure.cause, sawOutput) : null;
+            let isErrorSuccessMessage: string | null = null;
+
             if (resultMsg.subtype !== 'success') {
               const errors = 'errors' in resultMsg ? resultMsg.errors : [];
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
@@ -1901,13 +1912,19 @@ export class StreamingSessionManager {
               } else if (resultMsg.subtype === 'error_max_turns') {
                 session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
               } else {
-                session.eventBus.publish({ type: 'error', message: gatewayNote ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
+                session.eventBus.publish({
+                  type: 'error',
+                  message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
+                });
               }
-            } else if (gatewayNote && !topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
-              // The CLI gave up on the upstream after its own retries and
-              // reports that as a "success" flagged is_error: without this the
-              // technician sees an empty turn with no error (#7794).
-              session.eventBus.publish({ type: 'error', message: gatewayNote });
+            } else if (!topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
+              // The CLI gave up on the upstream after its own retries (529 /
+              // 429 / 401) or got a non-retried failure (low-credit 400), and
+              // reports that as a "success" flagged is_error. Without an error
+              // event the technician sees an empty turn with no reason (#7794,
+              // #7785). Published after settlement, unless the turn turns out
+              // to be a refusal, which explains itself.
+              isErrorSuccessMessage = gatewayNote ?? providerMessage ?? PROVIDER_FAILURE_GENERIC_MESSAGE;
             }
 
             // W03: ONE cost, from the registry rate bound to this turn, over the
@@ -1916,6 +1933,10 @@ export class StreamingSessionManager {
             // recur. The Office per-user ledger, the `done` event and the org
             // settlement all read this one number.
             const turn = await this.settleSdkTurn(session, resultMsg);
+
+            if (isErrorSuccessMessage && !turn.outcome.refused) {
+              session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage });
+            }
 
             // §9.1a: a refused final answer is explained, never a silent empty
             // turn. Topology turns never stream model text (their gate fails

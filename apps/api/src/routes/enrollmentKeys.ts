@@ -54,6 +54,8 @@ import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
+import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from "@breeze/shared";
+import { clampBootstrapTokenTtlMinutes } from "../services/installerBootstrapToken";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
 import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
 import {
@@ -205,9 +207,10 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
  * So: the token inherits the link's remaining lifetime at download time —
  * never MORE than the link has left (floored to minutes, minimum 1 so the
  * `expires_at > created_at` CHECK on installer_bootstrap_tokens always
- * holds), and clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap
- * inside issueBootstrapTokenForKey. A link with no expiry returns undefined
- * → the conservative 24h base, NOT an unbounded token.
+ * holds), and clamped to the 30-day token maximum and the partner's
+ * `maxEnrollmentLinkTtlMinutes` cap inside issueBootstrapTokenForKey. A link
+ * with no expiry returns undefined → the configured base TTL (7 days by
+ * default), NOT an unbounded token.
  */
 function installerLinkRemainingTtlMinutes(
   linkExpiresAt: Date | null,
@@ -217,6 +220,24 @@ function installerLinkRemainingTtlMinutes(
     (linkExpiresAt.getTime() - Date.now()) / 60_000,
   );
   return Math.max(1, remainingMinutes);
+}
+
+/**
+ * 400 message for an explicit ttlMinutes above the installer maximum, or null.
+ *
+ * A downloaded installer embeds a credential (a bootstrap token, or the child
+ * enrollment key in the legacy macOS zip) that lives at most
+ * MAX_BOOTSTRAP_TOKEN_TTL_MINUTES (30 days). An admin who asks for longer is
+ * told so, rather than handed an installer that silently stops enrolling
+ * sooner than they chose (the #2775 / #3038 silent-discard class). Installer
+ * LINKS are not installers and keep their own lifetime; downloads from a link
+ * are bounded at issuance instead.
+ */
+function installerTtlAboveMaxError(ttlMinutes: number | undefined): string | null {
+  if (ttlMinutes === undefined || ttlMinutes <= MAX_BOOTSTRAP_TOKEN_TTL_MINUTES) {
+    return null;
+  }
+  return `ttlMinutes exceeds the installer maximum of ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES} minutes (30 days)`;
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -751,10 +772,12 @@ const rotateEnrollmentKeySchema = z.object({
   expiresAt: z.string().datetime().optional(),
 }).strict();
 
-// ttlMinutes here sets the lifetime of the *child* key — the downloaded
-// installer / shared short-link the admin actually distributes. Measured
-// fresh from mint time (see freshChildExpiresAt). Absent → deployment
-// default. Same 365-day cap as createEnrollmentKeySchema.
+// ttlMinutes here sets the lifetime of the credential embedded in the
+// downloaded installer (bootstrap token, or the legacy macOS child key).
+// Measured fresh from mint time (see freshChildExpiresAt). Absent →
+// deployment default. The schema shares createEnrollmentKeySchema's 365-day
+// bound; the handler then rejects anything above the 30-day installer
+// maximum (installerTtlAboveMaxError) with a specific message.
 const installerQuerySchema = z.object({
   count: z.coerce.number().int().min(1).max(100000).optional(),
   ttlMinutes: z.coerce.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
@@ -1945,6 +1968,9 @@ enrollmentKeyRoutes.get(
     // Must run after the parent key load — parentKey.orgId is required.
     const capError = await assertTtlWithinCap(parentKey.orgId, childTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
+    // ...or above the 30-day maximum for a credential embedded in an installer.
+    const maxError = installerTtlAboveMaxError(childTtlMinutes);
+    if (maxError) return c.json({ error: maxError }, 400);
 
     // Verify key is still usable
     if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
@@ -2279,10 +2305,17 @@ enrollmentKeyRoutes.get(
     //
     // The child's TTL is FRESH from mint time, never the parent's remaining
     // lifetime — otherwise late-in-life parents produce DOA installers.
+    //
+    // This child key is embedded in the downloaded zip, so it is held to the
+    // same 30-day installer maximum as a bootstrap token. An explicit pick
+    // above it was already refused above; this bounds the
+    // CHILD_ENROLLMENT_KEY_TTL_MINUTES fallback, which may be set longer.
     const childExpiresAt = freshChildExpiresAt(
       await clampTtlToCap(
         parentKey.orgId,
-        childTtlMinutes ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES,
+        clampBootstrapTokenTtlMinutes(
+          childTtlMinutes ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES,
+        ),
       ),
     );
 
@@ -2421,9 +2454,12 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Enrollment key not found" }, 404);
     }
 
-    // Reject (never clamp) a caller-supplied TTL above the partner cap.
+    // Reject (never clamp) a caller-supplied TTL above the partner cap, or
+    // above the 30-day bootstrap-token maximum.
     const capError = await assertTtlWithinCap(parent.orgId, ttlMinutes);
     if (capError) return c.json({ error: capError }, 400);
+    const maxError = installerTtlAboveMaxError(ttlMinutes);
+    if (maxError) return c.json({ error: maxError }, 400);
 
     if (parentKeyTooCloseToExpiry(parent.expiresAt)) {
       return c.json(
@@ -2962,8 +2998,9 @@ async function serveInstaller(
         // the expiry when the link was generated, and the token minted into
         // the downloaded MSI must honor that choice, not silently fall back
         // to the 24h base (which killed every install after hour 24 of a
-        // 30-day link). undefined (no link expiry) keeps the 24h base;
-        // issueBootstrapTokenForKey clamps to the partner cap either way.
+        // 30-day link). undefined (no link expiry) keeps the configured base;
+        // issueBootstrapTokenForKey clamps to the 30-day token maximum and
+        // the partner cap either way.
         ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
         installerPlatform: "windows",
       });

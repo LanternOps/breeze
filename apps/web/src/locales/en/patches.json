@@ -73,6 +73,7 @@
       "ready": "Compliance report {{reportId}} is ready. Starting download...",
       "failed": "Compliance report {{reportId}} failed",
       "checkFailed": "Failed to check report status",
+      "downloadFailed": "Failed to download compliance report {{reportId}}",
       "noReportId": "Report was queued but no report ID was returned"
     },
     "summary": {

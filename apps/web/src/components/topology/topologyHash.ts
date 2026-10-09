@@ -27,7 +27,11 @@ export function parseTopologyHash(raw: string): TopologyNavigation | undefined {
   } catch { return undefined; }
 }
 export function writeTopologyHash(value: TopologyNavigation) {
-  window.location.hash = ['topology', ...(value.siteId ? ['site', value.siteId] : []), 'view', value.view,
+  window.location.hash = formatTopologyHash(value);
+}
+/** The hash for a navigation, without the leading `#`. */
+export function formatTopologyHash(value: TopologyNavigation): string {
+  return ['topology', ...(value.siteId ? ['site', value.siteId] : []), 'view', value.view,
     ...(value.selection ? [value.selection.kind, encodeURIComponent(value.selection.id)] : []),
     ...(value.runIds?.length ? ['runs', value.runIds.join(',')] : []),
     ...(value.interfaceId ? ['iface', value.interfaceId] : []),

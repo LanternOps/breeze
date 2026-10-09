@@ -97,6 +97,17 @@ it('invoice pages refuse another organization\'s invoice before provider work',a
  await expect(releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:'other'})).rejects.toMatchObject({status:404});
  expect(h.resume).not.toHaveBeenCalled();
 });
+// #8254: a draft is MSP-internal. The portal must not be able to tell it from a
+// missing invoice, so the lookup refuses it with the same error, before any provider work.
+it('invoice pages refuse a draft exactly like a missing invoice, before provider work',async()=>{
+ h.rows.set(invoices,[]);
+ const missing=await releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId}).catch((e:unknown)=>e);
+ h.rows.set(invoices,[{...invoice,status:'draft'}]);
+ const draft=await releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId}).catch((e:unknown)=>e);
+ expect(missing).toMatchObject({status:404,code:'INVOICE_NOT_FOUND',message:'Invoice not found'});
+ expect(draft).toMatchObject({status:404,code:'INVOICE_NOT_FOUND',message:'Invoice not found'});
+ expect(h.resume).not.toHaveBeenCalled();
+});
 it('invoice pages surface a cancellation that did not land',async()=>{
  h.resume.mockResolvedValue(undefined);
  h.history.mockResolvedValue({attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});

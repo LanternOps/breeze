@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { Database } from '../../db';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
+  organizations,
   partnerApiIdempotencyKeys,
   partnerServicePrincipals,
   ticketComments,
@@ -19,6 +20,7 @@ import {
   partnerTicketWriteResponseSchema,
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
+import { moveTicketOrg } from '../../services/ticketService';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
@@ -340,6 +342,98 @@ describe('partner API ticket writes', () => {
     const refs = await admin.select().from(ticketExternalRefs).where(eq(ticketExternalRefs.externalId, 'SHARED-1'));
     expect(refs).toHaveLength(2);
     expect(new Set(refs.map((r) => r.ticketId)).size).toBe(2);
+  });
+
+  // #8235 review: a claim follows its ticket, so once the ticket leaves the
+  // principal's organizations RLS hides the claim while the unique index still
+  // holds the key. A retry must get the truthful answer, never "in flight".
+  runDb('a key whose ticket left the principal\'s organizations answers 404 (create) or 409 reused (comment); an external-id 409 rolls its claim back', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const { rawKey, principalId } = await issueKey(partner.id, user.id, ['tickets:read', 'tickets:write']);
+    const app = partnerApp();
+    const admin = getTestDb();
+    const post = (path: string, body: unknown, key?: string) => app.request(path, {
+      method: 'POST',
+      headers: { ...jsonHeaders(rawKey), ...(key ? { 'X-Idempotency-Key': key } : {}) },
+      body: JSON.stringify(body),
+    });
+
+    const createBody = { orgId: orgA.id, subject: 'Moves away' };
+    const created = await post('/tickets', createBody, 'moves-1');
+    expect(created.status, await created.clone().text()).toBe(201);
+    const ticketId = partnerTicketWriteResponseSchema.parse(await created.json()).id;
+    const noteBody = { content: 'Mirrored note', isPublic: false };
+    expect((await post(`/tickets/${ticketId}/comments`, noteBody, 'moves-note-1')).status).toBe(201);
+
+    // A staff move takes the ticket, and both claims with it, to org B, which
+    // is then suspended and so leaves the principal's accessible set.
+    await withSystemDbAccessContext(() => moveTicketOrg(ticketId, orgB.id, { kind: 'user', userId: user.id }));
+    await admin.update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, orgB.id));
+    // Positive control: the claims still exist, under org B — hidden, not deleted.
+    const claims = await admin.select({ orgId: partnerApiIdempotencyKeys.orgId })
+      .from(partnerApiIdempotencyKeys)
+      .where(eq(partnerApiIdempotencyKeys.partnerServicePrincipalId, principalId));
+    expect(claims).toEqual([{ orgId: orgB.id }, { orgId: orgB.id }]);
+
+    // The create retry asks for a ticket that left the principal's reach.
+    const retry = await post('/tickets', createBody, 'moves-1');
+    expect(retry.status, await retry.clone().text()).toBe(404);
+    expect((await retry.json() as { code: string }).code).toBe('partner_ticket_not_found');
+
+    // The comment key on another, accessible ticket: the key was reused.
+    const stays = await post('/tickets', { orgId: orgA.id, subject: 'Stays' });
+    const staysId = partnerTicketWriteResponseSchema.parse(await stays.json()).id;
+    const reusedNote = await post(`/tickets/${staysId}/comments`, noteBody, 'moves-note-1');
+    expect(reusedNote.status, await reusedNote.clone().text()).toBe(409);
+    expect((await reusedNote.json() as { code: string }).code).toBe('partner_tickets_idempotency_key_reused');
+
+    // An external-id 409 rolls the claim back with the ticket and its ref…
+    expect((await post('/tickets', { orgId: orgA.id, subject: 'Holds EXT-1', externalTicketId: 'EXT-1' })).status).toBe(201);
+    const conflict = await post('/tickets', { orgId: orgA.id, subject: 'Dup', externalTicketId: 'EXT-1' }, 'conflict-1');
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json() as { code: string }).code).toBe('EXTERNAL_ID_CONFLICT');
+    expect(await admin.select().from(partnerApiIdempotencyKeys).where(and(
+      eq(partnerApiIdempotencyKeys.partnerServicePrincipalId, principalId),
+      eq(partnerApiIdempotencyKeys.idempotencyKey, 'conflict-1'),
+    ))).toEqual([]);
+    // …so the key is free: the corrected request creates, neither a replay nor a reuse.
+    const fixed = await post('/tickets', { orgId: orgA.id, subject: 'Dup', externalTicketId: 'EXT-2' }, 'conflict-1');
+    expect(fixed.status, await fixed.clone().text()).toBe(201);
+    expect(partnerTicketWriteResponseSchema.parse(await fixed.json()).idempotencyReplay).toBeUndefined();
+  });
+
+  runDb('refuses an assignee from another partner, on create and on assign (400 ASSIGNEE_WRONG_PARTNER)', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    const org = await createOrganization({ partnerId: partner.id });
+    const otherPartner = await createPartner();
+    const outsider = await createUser({ partnerId: otherPartner.id, email: `outsider-${crypto.randomUUID()}@example.test` });
+    const { rawKey } = await issueKey(partner.id, user.id, ['tickets:read', 'tickets:write']);
+    const app = partnerApp();
+    const admin = getTestDb();
+
+    const create = await app.request('/tickets', {
+      method: 'POST', headers: jsonHeaders(rawKey),
+      body: JSON.stringify({ orgId: org.id, subject: 'Cross-partner assignee', assigneeId: outsider.id }),
+    });
+    expect(create.status, await create.clone().text()).toBe(400);
+    expect((await create.json() as { code: string }).code).toBe('ASSIGNEE_WRONG_PARTNER');
+    expect(await admin.select().from(tickets).where(eq(tickets.orgId, org.id))).toHaveLength(0);
+
+    const ok = await app.request('/tickets', {
+      method: 'POST', headers: jsonHeaders(rawKey), body: JSON.stringify({ orgId: org.id, subject: 'Unassigned' }),
+    });
+    const ticketId = partnerTicketWriteResponseSchema.parse(await ok.json()).id;
+    const assign = await app.request(`/tickets/${ticketId}/assign`, {
+      method: 'POST', headers: jsonHeaders(rawKey), body: JSON.stringify({ assigneeId: outsider.id }),
+    });
+    expect(assign.status, await assign.clone().text()).toBe(400);
+    expect((await assign.json() as { code: string }).code).toBe('ASSIGNEE_WRONG_PARTNER');
+    const [row] = await admin.select({ assignedTo: tickets.assignedTo }).from(tickets).where(eq(tickets.id, ticketId));
+    expect(row?.assignedTo).toBeNull();
   });
 });
 

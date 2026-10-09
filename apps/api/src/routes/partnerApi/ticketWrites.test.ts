@@ -274,17 +274,40 @@ describe('partner tickets write surface', () => {
     expect(mocks.createTicket).toHaveBeenCalledTimes(1);
   });
 
-  it('POST /tickets maps idempotency mismatch → 409, lost race → 409, a replay whose ticket is gone → 404, bad header → 400', async () => {
+  it('POST /tickets maps idempotency mismatch → 409, a lost race → the holder\'s answer, a replay whose ticket is gone → 404, bad header → 400', async () => {
     mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'mismatch' });
     const reused = await send('/tickets', 'POST', createBody, { 'X-Idempotency-Key': 'psa-1' });
     expect(reused.status).toBe(409);
     expect((await reused.json()).code).toBe('partner_tickets_idempotency_key_reused');
 
-    mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'none' });
+    // Lost race: ON CONFLICT DO NOTHING waited for the holder, which has
+    // committed, so the second lookup answers from it — a replay...
+    mocks.findIdempotencyReplay
+      .mockResolvedValueOnce({ kind: 'none' })
+      .mockResolvedValueOnce({ kind: 'replay', resourceId: TICKET_ID });
     mocks.claimIdempotency.mockResolvedValueOnce(null);
+    selectResults = [[foundRow()]];
     const raced = await send('/tickets', 'POST', createBody, { 'X-Idempotency-Key': 'psa-1' });
-    expect(raced.status).toBe(409);
-    expect((await raced.json()).code).toBe('partner_tickets_idempotency_in_flight');
+    expect(raced.status).toBe(200);
+    expect(partnerTicketWriteResponseSchema.parse(await raced.json()).idempotencyReplay).toBe(true);
+
+    // ...or, when the holder was another request, a reuse.
+    mocks.findIdempotencyReplay
+      .mockResolvedValueOnce({ kind: 'none' })
+      .mockResolvedValueOnce({ kind: 'mismatch' });
+    mocks.claimIdempotency.mockResolvedValueOnce(null);
+    const racedReuse = await send('/tickets', 'POST', createBody, { 'X-Idempotency-Key': 'psa-1' });
+    expect(racedReuse.status).toBe(409);
+    expect((await racedReuse.json()).code).toBe('partner_tickets_idempotency_key_reused');
+
+    // A holder that stays invisible is hidden by RLS: the ticket it created
+    // has left the principal's organizations. 404, never "in flight" until
+    // retention reaps it (#8235 review).
+    mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'none' }).mockResolvedValueOnce({ kind: 'none' });
+    mocks.claimIdempotency.mockResolvedValueOnce(null);
+    const hidden = await send('/tickets', 'POST', createBody, { 'X-Idempotency-Key': 'psa-1' });
+    expect(hidden.status).toBe(404);
+    expect((await hidden.json()).code).toBe('partner_ticket_not_found');
 
     // The ticket the claim created has since been soft-deleted or moved out
     // of the principal's set: the partner-bound re-read finds nothing.
@@ -439,6 +462,16 @@ describe('partner tickets write surface', () => {
     selectResults = [[foundRow({ id: OTHER_ORG_ID, orgId: ORG_ID })]];
     await send(`/tickets/${OTHER_ORG_ID}/comments`, 'POST', { content: 'Mirrored note', isPublic: false }, { 'X-Idempotency-Key': 'c-1' });
     expect(fingerprintFor(1)).not.toBe(fingerprintFor(0));
+
+    // A hidden holder on the comment route: the path ticket was authorized as
+    // accessible, so the holder guards ANOTHER ticket that left the
+    // principal's organizations — the key was reused, never "in flight".
+    mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'none' }).mockResolvedValueOnce({ kind: 'none' });
+    mocks.claimIdempotency.mockResolvedValueOnce(null);
+    selectResults = [[foundRow()]];
+    const hiddenHolder = await send(`/tickets/${TICKET_ID}/comments`, 'POST', { content: 'Mirrored note', isPublic: false }, { 'X-Idempotency-Key': 'c-moved' });
+    expect(hiddenHolder.status).toBe(409);
+    expect((await hiddenHolder.json()).code).toBe('partner_tickets_idempotency_key_reused');
 
     // Replay re-reads the comment.
     mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'replay', resourceId: COMMENT_ID });

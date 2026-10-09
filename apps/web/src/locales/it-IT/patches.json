@@ -73,6 +73,7 @@
       "ready": "Il report di conformità {{reportId}} è pronto. Avvio del download...",
       "failed": "Report di conformità {{reportId}} non riuscito",
       "checkFailed": "Impossibile verificare lo stato del report",
+      "downloadFailed": "Impossibile scaricare il report di conformità {{reportId}}",
       "noReportId": "Il report è stato messo in coda, ma non è stato restituito alcun ID report"
     },
     "summary": {

@@ -16,7 +16,8 @@ type DeviceStatus = {
   os: string;
   status: string;
   riskLevel: string;
-  realTimeProtection: boolean;
+  // null = unknown: the agent's collector failed or never reported (#8252).
+  realTimeProtection: boolean | null;
   provider: {
     name: string;
     vendor: string;
@@ -379,7 +380,11 @@ export default function AntivirusPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {d.realTimeProtection ? (
+                        {d.realTimeProtection === null ? (
+                          <span className="text-muted-foreground">
+                            {t("securityAntivirusPage.unknown")}
+                          </span>
+                        ) : d.realTimeProtection ? (
                           <span className="text-emerald-600">
                             {t("securityAntivirusPage.active")}
                           </span>
