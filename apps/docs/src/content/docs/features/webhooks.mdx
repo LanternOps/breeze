@@ -320,7 +320,7 @@ The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used
 
 ## Delivery History
 
-Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state.
+Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
 ### Listing Deliveries
 
@@ -348,9 +348,7 @@ Response:
       "status": "delivered",
       "event": "alert.triggered",
       "eventId": "event-uuid",
-      "payload": { "alertId": "...", "severity": "critical" },
       "responseStatus": 200,
-      "responseBody": "ok",
       "attempt": 1,
       "nextAttemptAt": null,
       "createdAt": "2026-02-18T12:34:56.000Z",
@@ -517,7 +515,12 @@ Breeze validates webhook URLs at both creation time and delivery time to prevent
 | **POST** | `/webhooks/:id/test` | Send a test delivery |
 | **POST** | `/webhooks/:id/retry/:deliveryId` | Retry a failed delivery |
 
-All webhook routes require authentication via the `authMiddleware` and are scoped to `organization`, `partner`, or `system` roles.
+All webhook routes require authentication and are scoped to `organization`, `partner`, or `system` roles. They also require a permission:
+
+- **Reading** (`GET /webhooks`, `GET /webhooks/:id`, `GET /webhooks/:id/deliveries`) requires `webhooks:read`. The AI assistant's `query_webhooks` tool requires the same permission.
+- **Managing** (create, update, delete, test, retry) requires `organizations:write`.
+
+`webhooks:read` is granted by default to Org Admin, Org Technician and Partner Technician; Partner Admin holds it through `*:*`. In the dashboard, a user without `webhooks:read` does not see the Webhooks tab under Integrations, and a user without `organizations:write` sees webhooks and their delivery history without the create, edit, delete, test, pause/resume or retry controls. See [Users & Roles](/reference/users-and-roles/#permission-model) to grant either permission to a role.
 
 ---
 

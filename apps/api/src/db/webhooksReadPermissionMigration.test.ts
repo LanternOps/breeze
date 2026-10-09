@@ -51,12 +51,33 @@ describe('2026-12-18-110000-webhooks-read-permission.sql', () => {
     expect(sql).toMatch(/r\.is_system = TRUE/);
   });
 
-  it('back-fills custom roles only from an existing organizations:write grant', () => {
-    expect(sql).toMatch(/r\.is_system = FALSE/);
-    expect(sql).toMatch(/p\.resource = 'organizations'/);
-    expect(sql).toMatch(/p\.action IN \('write', '\*'\)/);
+  // Statements with comments stripped, so assertions read the SQL that runs.
+  const statements = sql.replace(/--.*$/gm, '').split(';').map((st) => st.replace(/\s+/g, ' ').trim());
+  const customBackfill = statements.filter(
+    (st) => /INSERT INTO role_permissions/.test(st) && /r\.is_system = FALSE/.test(st),
+  );
+
+  it('back-fills custom roles only from a grant that satisfies organizations:write', () => {
+    expect(customBackfill).toHaveLength(1);
+    const insert = customBackfill[0]!;
+    // Grant matching is per axis with '*' as a wildcard (permissionGrantMatches),
+    // so organizations:*, *:write and *:* all satisfy organizations:write.
+    expect(insert).toContain("p.resource IN ('organizations', '*') AND p.action IN ('write', '*')");
     // organizations:read alone is never a source grant.
-    expect(sql).not.toMatch(/action IN \([^)]*'read'/);
+    expect(insert).not.toMatch(/'read'/);
+  });
+
+  it('aborts the migration when the permission row is missing instead of returning silently', () => {
+    expect(sql).toMatch(/IF v_perm IS NULL THEN\s+RAISE EXCEPTION/);
+    expect(sql).not.toMatch(/\bRETURN\s*;/);
+  });
+
+  it('logs the custom roles left with organizations:read but no webhooks:read', () => {
+    const report = statements.find((st) => /RAISE WARNING/.test(st) && /organizations:read/.test(st) && /webhooks:read/.test(st));
+    expect(report, 'a RAISE WARNING naming the custom roles that need webhooks:read').toBeDefined();
+    // The role list is capped so a large tenant base cannot flood the log.
+    expect(sql).toMatch(/LIMIT 20/);
+    expect(sql).toMatch(/string_agg\(/);
   });
 
   it('has no inner transaction control', () => {

@@ -12,10 +12,14 @@
 -- Partner Admin holds '*:*' and needs no row. Viewer, billing and
 -- security-approver roles do not receive it.
 --
--- Custom roles (is_system = FALSE): a role that can manage webhooks
--- (organizations:write, or the organizations:* wildcard) receives
--- webhooks:read so it keeps seeing what it manages. A custom role holding only
--- organizations:read is NOT granted it; an administrator adds it explicitly.
+-- Custom roles (is_system = FALSE): a role that can manage webhooks receives
+-- webhooks:read so it keeps seeing what it manages. "Can manage" means any
+-- grant that satisfies organizations:write under the per-axis wildcard rule
+-- (services/permissionMatching.ts): organizations:write, organizations:*,
+-- *:write or *:*. A custom role holding only organizations:read is NOT granted
+-- it; an administrator adds it explicitly. The migration logs how many such
+-- roles exist, with up to 20 of their names, so the upgrade log shows the one
+-- manual follow-up.
 --
 -- permissions has NO UNIQUE(resource, action), so the catalog insert uses an
 -- explicit existence check; role_permissions is PRIMARY KEY (role_id,
@@ -36,13 +40,16 @@ DO $$
 DECLARE
   n integer;
   v_perm uuid;
+  v_names text;
 BEGIN
   SELECT id INTO v_perm FROM permissions
   WHERE resource = 'webhooks' AND action = 'read' ORDER BY id LIMIT 1;
 
+  -- The row was inserted above in this same transaction. If it is somehow
+  -- absent, abort: returning quietly would record the migration as applied
+  -- with no grants made.
   IF v_perm IS NULL THEN
-    RAISE WARNING 'webhooks-read-permission: webhooks:read row missing; no grants made';
-    RETURN;
+    RAISE EXCEPTION 'webhooks-read-permission: webhooks:read permission row missing after insert';
   END IF;
 
   -- Built-in roles.
@@ -65,9 +72,37 @@ BEGIN
   JOIN role_permissions rp ON rp.role_id = r.id
   JOIN permissions p ON p.id = rp.permission_id
   WHERE r.is_system = FALSE
-    AND p.resource = 'organizations'
-    AND p.action IN ('write', '*')
+    AND p.resource IN ('organizations', '*') AND p.action IN ('write', '*')
   ON CONFLICT (role_id, permission_id) DO NOTHING;
   GET DIAGNOSTICS n = ROW_COUNT;
   RAISE WARNING 'webhooks-read-permission: granted webhooks:read to % custom role(s) holding organizations:write', n;
+
+  -- Custom roles that could see webhooks through organizations:read and now
+  -- cannot: a grant satisfying organizations:read, none satisfying
+  -- webhooks:read. Report the count and up to 20 names.
+  WITH affected AS (
+    SELECT r.id, r.name
+    FROM roles r
+    WHERE r.is_system = FALSE
+      AND EXISTS (
+        SELECT 1 FROM role_permissions rp
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE rp.role_id = r.id
+          AND p.resource IN ('organizations', '*') AND p.action IN ('read', '*')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM role_permissions rp
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE rp.role_id = r.id
+          AND p.resource IN ('webhooks', '*') AND p.action IN ('read', '*')
+      )
+  )
+  SELECT
+    (SELECT count(*) FROM affected),
+    (SELECT string_agg(name, ', ' ORDER BY name)
+       FROM (SELECT name FROM affected ORDER BY name, id LIMIT 20) shown)
+  INTO n, v_names;
+  IF n > 0 THEN
+    RAISE WARNING 'webhooks-read-permission: % custom role(s) hold organizations:read without organizations:write and can no longer view webhooks. Add webhooks:read to restore access (first 20: %)', n, v_names;
+  END IF;
 END $$;
