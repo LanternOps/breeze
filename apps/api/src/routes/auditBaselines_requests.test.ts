@@ -67,6 +67,7 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => true),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -91,7 +92,7 @@ vi.mock('./networkShared', () => ({
 }));
 
 import { db } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
 import { auditBaselineRoutes } from './auditBaselines';
 import { resolveOrgId } from './networkShared';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -136,6 +137,7 @@ describe('auditBaselines routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
     setAuth();
     app = makeApp();
   });
@@ -306,6 +308,7 @@ describe('auditBaselines routes', () => {
               baselineId: BASELINE_ID,
               requestedBy: 'user-2',
               status: 'pending',
+              requestPayload: { baselineId: BASELINE_ID, deviceIds: [DEVICE_ID], eligibleDeviceIds: [DEVICE_ID] },
               expiresAt: futureDate,
               approvedAt: null,
               consumedAt: null,
@@ -313,6 +316,11 @@ describe('auditBaselines routes', () => {
               updatedAt: NOW,
             }]),
           }),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, siteId: null }]),
         }),
       } as any);
       vi.mocked(db.update).mockReturnValueOnce({
@@ -614,6 +622,130 @@ describe('auditBaselines routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.approval.status).toBe('rejected');
+    });
+
+    // ── MFA and target-resolution guards on the APPROVE path ───────
+    const DEVICE_ID_2 = '66666666-6666-6666-6666-666666666666';
+
+    it('refuses to approve without a satisfied MFA step, before any lookup or update', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a reject decision without a satisfied MFA step', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+
+      mockApprovalThenDevices(pendingApproval, null);
+      mockDecisionUpdate({
+        ...pendingApproval,
+        status: 'rejected',
+        approvedBy: null,
+        approvedAt: null,
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'rejected' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approval.status).toBe('rejected');
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses to approve when a target device no longer exists in the organization', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+
+      // Two devices requested; only one still resolves within the org.
+      mockApprovalThenDevices(
+        {
+          ...pendingApproval,
+          requestPayload: {
+            baselineId: BASELINE_ID,
+            deviceIds: [DEVICE_ID, DEVICE_ID_2],
+            eligibleDeviceIds: [DEVICE_ID, DEVICE_ID_2],
+          },
+        },
+        [{ id: DEVICE_ID, siteId: null }],
+      );
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain('no longer exist');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to approve a request whose payload carries no target devices', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+
+      mockApprovalThenDevices({ ...pendingApproval, requestPayload: { baselineId: BASELINE_ID } }, null);
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('approves when every target device resolves and MFA is satisfied (duplicate ids counted once)', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+
+      mockApprovalThenDevices(
+        {
+          ...pendingApproval,
+          requestPayload: {
+            baselineId: BASELINE_ID,
+            deviceIds: [DEVICE_ID, DEVICE_ID_2, DEVICE_ID],
+            eligibleDeviceIds: [DEVICE_ID, DEVICE_ID_2],
+          },
+        },
+        [
+          { id: DEVICE_ID, siteId: null },
+          { id: DEVICE_ID_2, siteId: null },
+        ],
+      );
+      mockDecisionUpdate({
+        ...pendingApproval,
+        status: 'approved',
+        approvedBy: 'user-1',
+        approvedAt: NOW,
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approval.status).toBe('approved');
+      expect(hasSatisfiedMfa).toHaveBeenCalled();
+      expect(db.update).toHaveBeenCalledTimes(1);
     });
   });
 
