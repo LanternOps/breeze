@@ -183,3 +183,34 @@ export async function markRead(token: string, mailbox: string, messageId: string
     body: JSON.stringify({ isRead: true }),
   });
 }
+
+/**
+ * How the Microsoft 365 mailbox poller should react to a failed token or delta
+ * request (#8299). The sweep selects only 'connected' mailboxes, so marking one
+ * 'error' stops it until someone reconnects it by hand. A momentary Graph or
+ * token-endpoint outage must not do that, the same rule the Gmail sweep follows
+ * (`classifyGmailError`).
+ *
+ * - 'reauth': 401/403. The consent or credential is gone; a reconnect is needed.
+ * - 'transient': 429, 5xx, or a transport failure (fetch's TypeError, or the
+ *   token request's timeout/abort). Stay connected; the next sweep retries.
+ * - 'fatal': any other status, or an error with no status that is not a
+ *   transport failure (for example the mailbox app is not configured). These do
+ *   not fix themselves, so they keep stopping the mailbox as before.
+ *
+ * 410 (expired delta token) is handled by the caller before this is consulted.
+ */
+export type GraphPollErrorKind = 'reauth' | 'transient' | 'fatal';
+
+export function classifyGraphPollError(err: unknown): GraphPollErrorKind {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === 'number') {
+    if (status === 401 || status === 403) return 'reauth';
+    if (status === 429 || status >= 500) return 'transient';
+    return 'fatal';
+  }
+  if (err instanceof TypeError) return 'transient';
+  const name = (err as { name?: unknown } | null)?.name;
+  if (name === 'TimeoutError' || name === 'AbortError') return 'transient';
+  return 'fatal';
+}

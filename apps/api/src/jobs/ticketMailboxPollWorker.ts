@@ -17,7 +17,7 @@ import {
   type GmailMailboxSnapshot,
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
-import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
+import { classifyGraphPollError, listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { normalizeGraphMessage } from '../services/ticketMailbox/normalizeGraphMessage';
 import {
   getStartHistoryId,
@@ -57,7 +57,19 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
       return;
     }
 
-    const next = status === 401 || status === 403 ? 'reauth_required' : 'error';
+    const kind = classifyGraphPollError(err);
+    if (kind === 'transient') {
+      // Leave the mailbox 'connected' so the next sweep retries. Marking it
+      // 'error' would drop it from polling until a manual reconnect (#8299).
+      console.warn('[mailboxPoll] transient Graph failure; will retry next sweep', {
+        id: c.id,
+        status,
+        err: err instanceof Error ? err.message : err,
+      });
+      return;
+    }
+
+    const next = kind === 'reauth' ? 'reauth_required' : 'error';
     // Raw, unsanitized text (do not prefix with MAILBOX_VERIFICATION_FAILED,
     // 'Mailbox verification failed' — connectionService.ts's listMailboxConnections
     // only exposes lastError to the client when it has that exact prefix, to
