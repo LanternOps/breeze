@@ -691,6 +691,11 @@ partner, Service Management must be on, and the status FSM is enforced.
 | `POST /tickets/<id>/assign` | `assigneeId` (a technician of the partner, or `null` to unassign) | Assigning a `new` ticket opens it. |
 | `POST /tickets/<id>/comments` | `content`, `isPublic` (**required**, no default) | `isPublic: true` is a customer-visible reply and emails the requester; `false` is an internal note. Supports `X-Idempotency-Key`. Returns `201` with the comment. |
 
+`submitterEmail` is not verified, the same as on the staff routes: a public
+comment emails whatever address a create or `PATCH` set. A `tickets:write` key
+can therefore send ticket mail to any address, so issue it only to systems you
+trust with that.
+
 Every write answers with `{ schemaVersion, id, orgId, data }` (comments add
 `ticketId`), where `data` is the same record shape the feed returns — or
 `null` with a `blocked` entry when the secret scanner fires on the stored
@@ -738,7 +743,6 @@ key with the same body against a different ticket is a reuse, not a replay:
 | `404` | `partner_ticket_not_found` | The ticket that request created has since been deleted or moved out of the principal's organizations |
 | `400` | `partner_tickets_invalid_idempotency_key` | Header is empty, too long, or not printable ASCII |
 | `409` | `partner_tickets_idempotency_key_reused` | Same key, different body or different ticket |
-| `409` | `partner_tickets_idempotency_in_flight` | A concurrent request holds the claim; retry |
 
 Authorization comes first: an unknown or foreign ticket is a `404` before
 any idempotency state is read, so a key cannot probe for existence. The
@@ -746,11 +750,14 @@ claim, the resource and their link commit together, so a claim is never
 visible without its result. Claims are kept for the retry window
 (`PARTNER_API_IDEMPOTENCY_RETENTION_DAYS`, default 7 days) and then reaped
 by a daily job (`PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED`); after that a
-retry with the old key is a fresh request. A claim follows its ticket: if
-the ticket moves to another organization the claim moves with it, and if
-that organization leaves the principal's accessible set the claim becomes
-unreadable — a retry then answers `409 partner_tickets_idempotency_in_flight`
-until it is reaped; use a new key.
+retry with the old key is a fresh request. Two concurrent requests with one
+key never both write: the second waits for the first to commit and then gets
+its answer, a replay or a reuse. A claim follows its ticket: if the ticket
+moves to another organization the claim moves with it, and if that
+organization leaves the principal's accessible set the claim becomes
+unreadable. A retry of the create then answers `404 partner_ticket_not_found`,
+like a replay whose ticket moved out, and the same key on a comment to another
+ticket answers `409 partner_tickets_idempotency_key_reused`.
 
 **Not offered here.** Delete and restore, moving a ticket between
 organizations, bulk actions, attachments, time entries and parts, AI drafts,
