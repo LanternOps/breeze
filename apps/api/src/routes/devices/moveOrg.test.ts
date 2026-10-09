@@ -1973,7 +1973,9 @@ describe('POST /devices/:id/move-org', () => {
         ticketId: BOUND_TICKET_ID, commentType: 'assignment', oldValue: 'tech-A', newValue: null,
       }) });
       expect(ticketWrites).toContainEqual({ table: ticketOutbox, values: expect.objectContaining({
-        orgId: OTHER_PARTNER_TARGET_ORG, ticketId: BOUND_TICKET_ID, eventType: 'ticket.assigned', payload: { assigneeId: null },
+        orgId: OTHER_PARTNER_TARGET_ORG, ticketId: BOUND_TICKET_ID, eventType: 'ticket.assigned',
+        // The actor rides the row like assignTicket's, so a webhook reads actorPrincipalId.
+        payload: expect.objectContaining({ assigneeId: null, actorUserId: 'user-1', actorPrincipalId: null }),
       }) });
       expect(ticketWrites).toContainEqual({ table: auditLogs, values: expect.objectContaining({
         orgId: OTHER_PARTNER_TARGET_ORG, actorId: 'user-1', action: 'ticket.assign', resourceId: BOUND_TICKET_ID,

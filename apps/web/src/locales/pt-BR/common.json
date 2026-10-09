@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Acionado quando um ticket é criado.",
             "label": "Ticket criado"
+          },
+          "ticketCommented": {
+            "description": "Acionado quando um comentário ou nota é adicionado a um ticket.",
+            "label": "Ticket comentado"
+          },
+          "ticketStatusChanged": {
+            "description": "Acionado quando um ticket muda de status.",
+            "label": "Status do ticket alterado"
+          },
+          "ticketUpdated": {
+            "description": "Acionado quando os campos de um ticket são editados.",
+            "label": "Ticket atualizado"
+          },
+          "ticketAssigned": {
+            "description": "Acionado quando um ticket é atribuído ou desatribuído.",
+            "label": "Ticket atribuído"
           }
         },
         "fields": {

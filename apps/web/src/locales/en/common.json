@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
+          },
+          "ticketCommented": {
+            "description": "Triggered when a comment or note is added to a ticket.",
+            "label": "Ticket Commented"
+          },
+          "ticketStatusChanged": {
+            "description": "Triggered when a ticket changes status.",
+            "label": "Ticket Status Changed"
+          },
+          "ticketUpdated": {
+            "description": "Triggered when ticket fields are edited.",
+            "label": "Ticket Updated"
+          },
+          "ticketAssigned": {
+            "description": "Triggered when a ticket is assigned or unassigned.",
+            "label": "Ticket Assigned"
           }
         },
         "fields": {

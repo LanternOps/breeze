@@ -483,7 +483,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       eq(ticketOutbox.eventType, 'ticket.status_changed')
     ));
     expect(outboxRows).toHaveLength(1);
-    expect(outboxRows[0]!.payload).toEqual({ from: 'resolved', to: 'open' });
+    expect(outboxRows[0]!.payload).toEqual({ from: 'resolved', to: 'open', statusId: null });
 
     // A public inbound comment row AND the status-change feed row were
     // appended. The feed row's user_id is NULL: the synthetic system actor is
