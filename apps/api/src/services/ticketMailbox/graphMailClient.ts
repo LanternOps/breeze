@@ -209,7 +209,7 @@ export async function markRead(token: string, mailbox: string, messageId: string
  * (`classifyGmailError`).
  *
  * - 'reauth': 401/403. The consent or credential is gone; a reconnect is needed.
- * - 'transient': 429, 5xx, or a transport failure (fetch's TypeError, or the
+ * - 'transient': 408, 429, 5xx, or a transport failure (fetch's TypeError, or the
  *   token request's timeout/abort). Stay connected; the next sweep retries.
  * - 'fatal': any other status, or an error with no status that is not a
  *   transport failure (for example the mailbox app is not configured). These do
@@ -223,7 +223,7 @@ export function classifyGraphPollError(err: unknown): GraphPollErrorKind {
   const status = (err as { status?: unknown } | null)?.status;
   if (typeof status === 'number') {
     if (status === 401 || status === 403) return 'reauth';
-    if (status === 429 || status >= 500) return 'transient';
+    if (status === 408 || status === 429 || status >= 500) return 'transient';
     return 'fatal';
   }
   if (err instanceof TypeError) return 'transient';

@@ -170,6 +170,7 @@ describe('runMailboxSweep', () => {
     ['Graph 502', () => { const e: any = new Error('Graph delta 502: UnknownError'); e.status = 502; return e; }],
     ['Graph 503', () => { const e: any = new Error('Graph delta 503'); e.status = 503; return e; }],
     ['Graph 429 after the client retry', () => { const e: any = new Error('Graph delta 429'); e.status = 429; return e; }],
+    ['Graph 408 request timeout', () => { const e: any = new Error('Graph delta 408'); e.status = 408; return e; }],
     ['a dropped connection', () => new TypeError('fetch failed')],
   ])('stays connected and retries next sweep on %s', async (_label, makeErr) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});

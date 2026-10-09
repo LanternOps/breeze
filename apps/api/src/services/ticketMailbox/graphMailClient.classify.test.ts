@@ -8,7 +8,7 @@ describe('classifyGraphPollError (#8299)', () => {
     expect(classifyGraphPollError(withStatus(s))).toBe('reauth');
   });
 
-  it.each([429, 500, 502, 503, 504])('HTTP %i is transient', (s) => {
+  it.each([408, 429, 500, 502, 503, 504])('HTTP %i is transient', (s) => {
     expect(classifyGraphPollError(withStatus(s))).toBe('transient');
   });
 
