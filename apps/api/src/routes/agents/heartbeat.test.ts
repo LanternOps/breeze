@@ -358,6 +358,17 @@ vi.mock('../../services/manifestSigning', () => ({
   },
 }));
 
+// #8317 — only the signer is replaced; the capability and needs-sync decisions
+// run for real (they are unit-tested in agentIdentityAssertion.test.ts).
+const signAgentIdentityAssertionMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/agentIdentityAssertion', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/agentIdentityAssertion')>()),
+  signAgentIdentityAssertion: (...args: unknown[]) => {
+    callOrder.push('identity:signed');
+    return signAgentIdentityAssertionMock(...args);
+  },
+}));
+
 // `routes/metrics` is mocked rather than loaded: heartbeat.ts imports
 // `recordAgentHeartbeat` from it directly (as routes/agents/helpers.ts already
 // did), and pulling the real module in would drag the whole metrics + db graph
@@ -1133,6 +1144,147 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
 // happens once, but every agent in the fleet heartbeats, so this is how a
 // prepared rotation reaches devices that were already enrolled.
 // =====================================================================
+describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
+  const DEVICE_ID = '00000000-0000-4000-8000-000000000004';
+  const ORG_B = '00000000-0000-4000-8000-0000000000b1';
+  const SITE_B = '00000000-0000-4000-8000-0000000000b2';
+  const ORG_A = '00000000-0000-4000-8000-0000000000a1';
+  const SITE_A = '00000000-0000-4000-8000-0000000000a2';
+  const assertion = {
+    v: 1,
+    agentId: 'device-1',
+    deviceId: DEVICE_ID,
+    orgId: ORG_B,
+    siteId: SITE_B,
+    issuedAt: '2026-10-09T19:00:00Z',
+    expiresAt: '2026-10-09T19:15:00Z',
+    keyId: 'deploy-2026-10-09-abcdef01',
+    signature: 'sig',
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    signAgentIdentityAssertionMock.mockResolvedValue(assertion);
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+
+    // The row the agent authenticated as now lives in org B / site B.
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: DEVICE_ID,
+          orgId: ORG_B,
+          siteId: SITE_B,
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  async function beat(extra: Record<string, unknown>) {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+    expect(resp.status).toBe(200);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  it('sends a signed assertion of the row identity to a capable agent that still holds the old org/site', async () => {
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+    });
+
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith({
+      agentId: 'device-1',
+      deviceId: DEVICE_ID,
+      orgId: ORG_B,
+      siteId: SITE_B,
+    });
+    expect(body.identityAssertion).toEqual(assertion);
+    // Signed before the keyset is read, so a key created on demand is pinned
+    // by this same response; and only after the org transaction released.
+    expect(callOrder.indexOf('identity:signed')).toBeLessThan(callOrder.indexOf('trustKeyset:fetched'));
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('identity:signed'));
+  });
+
+  it('also syncs a site-only change', async () => {
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_A },
+    });
+    expect(body.identityAssertion).toEqual(assertion);
+  });
+
+  it('sends nothing to an agent that does not declare the capability', async () => {
+    const body = await beat({
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('sends nothing when the reported identity already matches the row', async () => {
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('never re-points a different device id', async () => {
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: '00000000-0000-4000-8000-000000000099', orgId: ORG_A, siteId: SITE_A },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('drops a malformed reported identity without failing the beat', async () => {
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: 'not-a-uuid', orgId: ORG_A, siteId: SITE_A },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('keeps the heartbeat healthy when signing fails', async () => {
+    signAgentIdentityAssertionMock.mockRejectedValueOnce(new Error('no signing key'));
+    const body = await beat({
+      securityCapabilities: { identitySyncProtocolVersion: 1 },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+    });
+    expect(body).not.toHaveProperty('identityAssertion');
+    expect(body.manifestTrustKeys).toEqual([]);
+  });
+});
+
 describe('POST /agents/:id/heartbeat — manifestKeyDelegations delivery (Wave 6 Task 7)', () => {
   const delegation = {
     schemaVersion: 1 as const,

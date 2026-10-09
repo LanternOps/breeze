@@ -88,6 +88,12 @@ import {
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
+import {
+  agentIdentityNeedsSync,
+  normalizeIdentitySyncProtocolVersion,
+  signAgentIdentityAssertion,
+  type AgentIdentityAssertionV1,
+} from '../../services/agentIdentityAssertion';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -649,7 +655,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -2067,6 +2073,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // context closes (see below).
   return {
     deviceOrgId: device.orgId,
+    deviceSiteId: device.siteId,
     deviceId: device.id,
     mainResponse: {
       commands: deliverableCommands,
@@ -2158,6 +2165,36 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #8053: both this keyset and the delegations below are global, so they are
   // served from a 60 s process cache — their system context opens once per
   // process per TTL, not once per agent per beat. See MANIFEST_TRUST_CACHE_TTL_MS.
+  // #8317 — the device was moved to another org or site after enrollment; the
+  // agent still holds the old pair in agent.yaml and rejects every payload
+  // bound to the new one. Send a signed assertion of the row's identity.
+  // Signed BEFORE the trust keyset is read: when no deployment key exists yet,
+  // ensureActiveSigningKey creates one and invalidates the keyset cache, so
+  // this same response pins the key that verifies the assertion. Outside the
+  // org transaction for the same reason as the keyset (#1105). Non-fatal: a
+  // missed assertion is retried on the next beat.
+  let identityAssertion: AgentIdentityAssertionV1 | undefined;
+  if (
+    normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
+    && agentIdentityNeedsSync(data.reportedIdentity, {
+      id: scoped.deviceId,
+      orgId: scoped.deviceOrgId,
+      siteId: scoped.deviceSiteId,
+    })
+  ) {
+    try {
+      identityAssertion = await signAgentIdentityAssertion({
+        agentId,
+        deviceId: scoped.deviceId,
+        orgId: scoped.deviceOrgId,
+        siteId: scoped.deviceSiteId,
+      });
+    } catch (err) {
+      console.error(`[heartbeat] Failed to sign identity assertion for agentId=${agentId}:`, err);
+      captureException(err);
+    }
+  }
+
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
     manifestTrustKeys = await getActiveTrustKeysetCached();
@@ -2523,6 +2560,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
     acknowledgedRollbackObservationId,
+    ...(identityAssertion ? { identityAssertion } : {}),
   });
 });
 

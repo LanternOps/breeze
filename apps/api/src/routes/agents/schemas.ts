@@ -375,6 +375,10 @@ export const heartbeatSchema = z.object({
     // Consent/notification prompt capability. Same tolerant contract: a
     // malformed value drops this field alone rather than rejecting the beat.
     consentPromptProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8317 — the agent verifies a signed identity assertion and adopts the
+    // row's org/site. Same tolerant contract; anything but exactly 1 means no
+    // assertion is sent.
+    identitySyncProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),
@@ -390,6 +394,14 @@ export const heartbeatSchema = z.object({
         'received_observation_transport',
       ]).refine((value) => value.length <= 64).optional(),
     }).optional().catch(undefined),
+  }).optional().catch(undefined),
+  // #8317 — the identity the agent holds in agent.yaml. Compared with the row
+  // so a moved device can be sent a signed identity assertion. Informational:
+  // a malformed value drops the field and the beat proceeds without one.
+  reportedIdentity: z.object({
+    deviceId: z.string().uuid(),
+    orgId: z.string().uuid(),
+    siteId: z.string().uuid(),
   }).optional().catch(undefined),
   // Signed rollback progress is informational and restart-resend safe. A
   // malformed optional observation must never take the ordinary heartbeat

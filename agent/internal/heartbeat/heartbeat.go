@@ -192,6 +192,10 @@ type HeartbeatPayload struct {
 	// sends it every heartbeat until the server acks the check-in. Nil
 	// (omitted) once acked or when no marker was ever found.
 	RecoveryMarker *RecoveryMarker `json:"recoveryMarker,omitempty"`
+	// ReportedIdentity (#8317) is the device/org/site this process loaded from
+	// agent.yaml. A server that sees it disagree with the row answers with a
+	// signed IdentityAssertion; see identity_sync.go.
+	ReportedIdentity *ReportedIdentity `json:"reportedIdentity,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -277,8 +281,12 @@ type SecurityCapabilities struct {
 	// and never proceeds when a signed-in user could not be asked. An API that
 	// only knows version 1 treats 2 as 0 and refuses consent/notify starts, so
 	// the API must ship before (or with) this agent.
-	ConsentPromptProtocolVersion int                      `json:"consentPromptProtocolVersion,omitempty"`
-	PamReconciliation            *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	ConsentPromptProtocolVersion int `json:"consentPromptProtocolVersion,omitempty"`
+	// IdentitySyncProtocolVersion (#8317) declares that this build verifies a
+	// signed identity assertion and adopts the row's org/site. The API sends
+	// none to an agent reporting 0.
+	IdentitySyncProtocolVersion int                      `json:"identitySyncProtocolVersion,omitempty"`
+	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -323,6 +331,9 @@ type HeartbeatResponse struct {
 	// RecoveryMarkerAck (W04a) is true only when this beat's recoveryMarker
 	// matched — its absence means no ack yet (or no marker was sent).
 	RecoveryMarkerAck bool `json:"recoveryMarkerAck,omitempty"`
+	// IdentityAssertion (#8317) is present only when the row's org/site differ
+	// from this beat's ReportedIdentity. Verified before use; see identity_sync.go.
+	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
 }
 
 type HelperSettings struct {
@@ -661,6 +672,10 @@ type Heartbeat struct {
 	// otherwise continue against the still-pinned (legitimate) key, masking
 	// the rejection from the operator.
 	manifestTrustRotationRejected atomic.Bool
+
+	// #8317 — latch for the one restart a server-signed identity change
+	// requests, and the bounded log of an assertion this agent rejected.
+	identitySync identitySync
 
 	// Latches the last expansion-rejection reason logged, so a control plane
 	// that keeps offering a key this agent has never seen produces one
@@ -4743,6 +4758,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
+		ReportedIdentity:     h.reportedIdentity(),
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache); unknown while the probe gets
@@ -5228,6 +5244,10 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// TOFU key, and only then can a delegation naming that key as its old key
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
+
+	// #8317 — after the pin above, so a deployment key first delivered in this
+	// same response already verifies the assertion that relies on it.
+	h.applyIdentityAssertion(response.IdentityAssertion)
 
 	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
 	// Process any commands via worker pool
@@ -7998,5 +8018,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		DesktopFenceProtocolVersion:     1,
 		DesktopWsFenceProtocolVersion:   1,
 		ConsentPromptProtocolVersion:    2,
+		IdentitySyncProtocolVersion:     identitySyncProtocolVersion,
 	}
 }

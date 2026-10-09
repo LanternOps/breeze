@@ -59,6 +59,11 @@ func deferRollbackSwapToRestart() bool { return false }
 
 func RestartAfterRollback(_ string) error { return Restart() }
 
+// RestartSelf restarts the agent service from inside the service process.
+// systemd and launchd run the restart job outside this process, so Restart()
+// is safe here; Windows needs a detached helper (restart_windows.go).
+func RestartSelf() error { return Restart() }
+
 func recoverRollbackSwapPlatform(journalPath string) error {
 	return recoverRollbackSwapInline(journalPath)
 }
