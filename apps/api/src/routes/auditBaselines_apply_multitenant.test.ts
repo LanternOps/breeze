@@ -3,6 +3,11 @@ import { Hono } from 'hono';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, ne: vi.fn(actual.ne) };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -59,6 +64,8 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     hostname: 'devices.hostname',
     osType: 'devices.osType',
+    siteId: 'devices.siteId',
+    status: 'devices.status',
   },
 }));
 
@@ -90,6 +97,7 @@ vi.mock('./networkShared', () => ({
 }));
 
 import { db } from '../db';
+import { ne } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
 import { auditBaselineRoutes } from './auditBaselines';
 import { resolveOrgId } from './networkShared';
@@ -213,6 +221,70 @@ describe('auditBaselines routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('approvalRequestId is required');
+    });
+
+    it('refuses to consume an approval when an approved device no longer resolves', async () => {
+      const DEVICE_ID_2 = '66666666-6666-6666-6666-666666666666';
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: BASELINE_ID,
+              orgId: ORG_ID,
+              name: 'Baseline',
+              osType: 'windows',
+              profile: 'cis_l1',
+              settings: {},
+            }]),
+          }),
+        }),
+      } as any);
+      // Two devices were approved; one has since been removed or decommissioned.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: DEVICE_ID, osType: 'windows', hostname: 'PC-01', siteId: null },
+          ]),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: APPROVAL_ID,
+              orgId: ORG_ID,
+              baselineId: BASELINE_ID,
+              requestedBy: 'user-2',
+              status: 'approved',
+              requestPayload: { baselineId: BASELINE_ID, deviceIds: [DEVICE_ID, DEVICE_ID_2] },
+              expiresAt: new Date('2099-01-01T00:00:00Z'),
+              approvedBy: 'user-3',
+              approvedAt: NOW,
+              consumedAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/baselines/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baselineId: BASELINE_ID,
+          deviceIds: [DEVICE_ID, DEVICE_ID_2],
+          approvalRequestId: APPROVAL_ID,
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain('no longer exist');
+      expect(ne).toHaveBeenCalledWith('devices.status', 'decommissioned');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(queueCommandForExecution).not.toHaveBeenCalled();
     });
   });
 

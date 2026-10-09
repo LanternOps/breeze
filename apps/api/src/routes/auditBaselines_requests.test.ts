@@ -3,6 +3,11 @@ import { Hono } from 'hono';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, eq: vi.fn(actual.eq), ne: vi.fn(actual.ne) };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -60,6 +65,7 @@ vi.mock('../db/schema', () => ({
     hostname: 'devices.hostname',
     osType: 'devices.osType',
     siteId: 'devices.siteId',
+    status: 'devices.status',
   },
 }));
 
@@ -91,8 +97,10 @@ vi.mock('./networkShared', () => ({
   resolveOrgId: vi.fn(),
 }));
 
+import { eq, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 import { auditBaselineRoutes } from './auditBaselines';
 import { resolveOrgId } from './networkShared';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -746,6 +754,70 @@ describe('auditBaselines routes', () => {
       expect(body.approval.status).toBe('approved');
       expect(hasSatisfiedMfa).toHaveBeenCalled();
       expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses an API-key principal (no MFA claim) when MFA is enabled', async () => {
+      const actualAuth = await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth');
+      vi.mocked(hasSatisfiedMfa).mockImplementation(actualAuth.hasSatisfiedMfa);
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      setAuth({
+        principal: { kind: 'api_key' },
+        token: {},
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.code).toBe('MFA_REQUIRED');
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('excludes decommissioned devices when resolving targets, refusing approval', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+
+      // The only target is decommissioned, so the filtered lookup returns nothing.
+      mockApprovalThenDevices(pendingApproval, []);
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(ne).toHaveBeenCalledWith('devices.status', 'decommissioned');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the request was decided concurrently (conditional update matches no row)', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+
+      mockApprovalThenDevices(pendingApproval, null);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'rejected' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Apply request was already decided');
+      expect(eq).toHaveBeenCalledWith('auditBaselineApplyApprovals.status', 'pending');
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });
 
