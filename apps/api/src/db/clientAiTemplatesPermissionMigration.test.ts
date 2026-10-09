@@ -5,7 +5,7 @@ import { PERMISSION_GRANTS } from '@breeze/shared';
 import { DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2026-12-18-110000-client-ai-templates-permissions.sql',
+  __dirname, '../../migrations/2026-12-18-110100-client-ai-templates-permissions.sql',
 );
 
 const READ = 'client_ai_templates:read';
@@ -20,7 +20,7 @@ const holders = (key: string) =>
  * them from this migration. Both must land on the same built-in roles, and the
  * permission descriptions must be byte-identical in both places.
  */
-describe('2026-12-18-110000-client-ai-templates-permissions.sql', () => {
+describe('2026-12-18-110100-client-ai-templates-permissions.sql', () => {
   const sql = existsSync(FILE) ? readFileSync(FILE, 'utf8') : '';
 
   it('exists', () => {
