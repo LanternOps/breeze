@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeGraphMessage } from './normalizeGraphMessage';
+import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 import type { GraphMessage } from './graphMailClient';
 
 const msg: GraphMessage = {
@@ -69,6 +70,24 @@ describe('normalizeGraphMessage', () => {
     expect(raw.bodyText).toBe('printer down');
     expect(raw.fromName).toBe('Cust');
     expect(JSON.stringify(raw)).not.toContain('\\u0000');
+  });
+
+  it('caps the persisted body at MAX_BODY_BYTES of UTF-8, like the Gmail path', () => {
+    const big = 'é'.repeat(MAX_BODY_BYTES); // 2 bytes each: twice the limit
+    const raw = normalizeGraphMessage({ ...msg, body: { contentType: 'text', content: big } }, 'partner-9', 'support@a.com').raw;
+    const stored = raw.bodyText as string;
+    expect(Buffer.byteLength(stored, 'utf8')).toBeLessThanOrEqual(MAX_BODY_BYTES);
+    expect(stored.length).toBe(MAX_BODY_BYTES / 2);
+    expect(stored.endsWith('\uFFFD')).toBe(false);
+  });
+
+  it('cuts a multi-byte character at the limit without leaving a replacement character', () => {
+    const odd = 'a' + '€'.repeat(Math.ceil(MAX_BODY_BYTES / 3)); // 1 + 3n bytes, boundary mid-character
+    const raw = normalizeGraphMessage({ ...msg, body: { contentType: 'text', content: odd } }, 'partner-9', 'support@a.com').raw;
+    const stored = raw.bodyText as string;
+    expect(Buffer.byteLength(stored, 'utf8')).toBeLessThanOrEqual(MAX_BODY_BYTES);
+    expect(stored.includes('\uFFFD')).toBe(false);
+    expect(stored.startsWith('a€')).toBe(true);
   });
 
   it('preserves CC participants in the inbound audit metadata', () => {

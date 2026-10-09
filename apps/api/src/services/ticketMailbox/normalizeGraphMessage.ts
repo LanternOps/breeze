@@ -3,6 +3,7 @@ import type { NormalizedInboundEmail } from '../inboundEmail/types';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import { htmlToText } from '../inboundEmail/htmlToText';
 import { buildSenderAuth } from '../inboundEmail/authenticationResults';
+import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 
 function header(headers: GraphMessage['internetMessageHeaders'], name: string): string | undefined {
   return headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
@@ -41,6 +42,17 @@ function trustedAuthResults(
 /** jsonb cannot store U+0000; drop it from strings persisted in `raw`. */
 function stripNul(value: string): string {
   return value.includes('\u0000') ? value.replace(/\u0000/g, '') : value;
+}
+
+/**
+ * Bound the body persisted in `raw` to MAX_BODY_BYTES of UTF-8, the same 1 MiB
+ * limit the Gmail normalizer applies, so an oversized message cannot write an
+ * unbounded row into ticket_email_inbound. A code point cut at the boundary is
+ * dropped rather than stored as a replacement character.
+ */
+function capBodyBytes(value: string): string {
+  if (Buffer.byteLength(value, 'utf8') <= MAX_BODY_BYTES) return value;
+  return Buffer.from(value, 'utf8').subarray(0, MAX_BODY_BYTES).toString('utf8').replace(/\uFFFD$/, '');
 }
 
 /** Pure mapping: Graph message -> the pipeline's NormalizedInboundEmail. */
@@ -96,8 +108,8 @@ export function normalizeGraphMessage(
       // name from `raw` (convertEmailInbound). Without them a quarantined Microsoft
       // 365 message converted to a ticket with only its subject (#8299). U+0000 is
       // removed because Postgres jsonb rejects it, which would turn a quarantine
-      // into a failed insert.
-      bodyText: stripNul(text),
+      // into a failed insert. The stored body is capped at 1 MiB like Gmail's.
+      bodyText: capBodyBytes(stripNul(text)),
       fromName: msg.from?.emailAddress?.name ? stripNul(msg.from.emailAddress.name) : null,
     },
   };
