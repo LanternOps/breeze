@@ -1330,7 +1330,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         // marker and can never 500 the heartbeat or undo the check-in (which
         // would leave the agent resending its marker forever).
         try {
-          const marker = await withDbTransaction(() => createReliabilityBaseline({
+          const baseline = await withDbTransaction(() => createReliabilityBaseline({
             device: { id: device.id, orgId: agent.orgId, deviceRole: device.deviceRole ?? null, enrolledAt: device.enrolledAt ?? null },
             reason: 'reimaged',
             baselineAt: checkedInNow,
@@ -1340,7 +1340,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             createdBy: null,
             recompute: false,
           }));
-          if (marker) {
+          if (baseline) {
             // actorType 'system' (actorId resolves to the nil system actor) so
             // the device activity feed, which hides agent-actor rows, shows it.
             writeAuditEvent(c, {
@@ -1349,7 +1349,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               action: 'device.reliability.baseline_set',
               resourceType: 'device',
               resourceId: device.id,
-              details: { baselineId: marker.id, reason: 'reimaged', source: 'bare_metal_recovery', recoveryId: rec.id },
+              details: { baselineId: baseline.id, reason: 'reimaged', source: 'bare_metal_recovery', recoveryId: rec.id },
               result: 'success',
             });
             const deviceId = device.id;
