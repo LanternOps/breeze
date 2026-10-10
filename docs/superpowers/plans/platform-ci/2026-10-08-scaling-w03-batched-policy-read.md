@@ -135,7 +135,7 @@ Verified on this worktree's test stack (scratch test, not committed): Drizzle re
 
 | File | Change | Responsibility |
 |---|---|---|
-| `apps/api/migrations/2026-12-18-100000-hardware-monitoring-settings-partner-wide-select.sql` | Create | SELECT-only partner-wide branch for hwmon settings |
+| `apps/api/migrations/2026-12-20-210000-hardware-monitoring-settings-partner-wide-select.sql` | Create | SELECT-only partner-wide branch for hwmon settings |
 | `apps/api/src/__tests__/integration/hardwareMonitoringPartnerWideSelect.integration.test.ts` | Create | Branch grants own-partner reads, no writes, no foreign partner |
 | `apps/api/src/services/devicePolicySet.ts` (+ `.test.ts`) | Create | Types, one-statement loader, grouping, guard, applicability selectors |
 | `apps/api/src/__tests__/integration/policySetFixtures.ts` | Create | Shared real-Postgres fixture world (not a test file) |
@@ -160,7 +160,7 @@ Verified on this worktree's test stack (scratch test, not committed): Drizzle re
 ### Task 1: Partner-wide read branch for hardware-monitoring settings; drop the two widenings
 
 **Files:**
-- Create: `apps/api/migrations/2026-12-18-100000-hardware-monitoring-settings-partner-wide-select.sql`
+- Create: `apps/api/migrations/2026-12-20-210000-hardware-monitoring-settings-partner-wide-select.sql`
 - Create: `apps/api/src/__tests__/integration/hardwareMonitoringPartnerWideSelect.integration.test.ts`
 - Modify: `apps/api/src/routes/agents/helpers.ts` (`resolveHardwareMonitoring`, ~2104-2200; import at :68)
 - Modify: `apps/api/src/services/timeSync/settings.ts` (`resolveDeviceTimeSyncSettings`, ~126)
@@ -264,7 +264,7 @@ Expected: FAIL in the first test — `expected [] to deeply equal [ '<own id>' ]
 - [ ] **Step 3: Write the migration**
 
 ```sql
--- apps/api/migrations/2026-12-18-100000-hardware-monitoring-settings-partner-wide-select.sql
+-- apps/api/migrations/2026-12-20-210000-hardware-monitoring-settings-partner-wide-select.sql
 --
 -- Partner-wide READ branch for config_policy_hardware_monitoring_settings
 -- (#8142, horizontal-scaling W03 / W1a-2).
@@ -375,7 +375,7 @@ with
 
 ```ts
   // #8142: config_policy_hardware_monitoring_settings now carries the
-  // SELECT-only partner-wide branch (2026-12-18-100000), so this reads in the
+  // SELECT-only partner-wide branch (2026-12-20-210000), so this reads in the
   // caller's own context — no breeze.accessible_partner_ids widening.
   const rows = await db
       .select({
@@ -392,7 +392,7 @@ Run: `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-covera
 - [ ] **Step 9: Commit**
 
 ```bash
-git add apps/api/migrations/2026-12-18-100000-hardware-monitoring-settings-partner-wide-select.sql \
+git add apps/api/migrations/2026-12-20-210000-hardware-monitoring-settings-partner-wide-select.sql \
   apps/api/src/__tests__/integration/hardwareMonitoringPartnerWideSelect.integration.test.ts \
   apps/api/src/routes/agents/helpers.ts apps/api/src/services/timeSync/settings.ts apps/api/src/services/timeSync/settings.test.ts
 git commit -m "feat(rls): partner-wide read branch for hardware-monitoring settings; drop GUC widening (#8142)
