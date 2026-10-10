@@ -12,7 +12,7 @@ import {
   publishUserRiskScoreEvents
 } from '../services/userRiskScoring';
 import { evaluateUserRiskSignalsForOrg } from '../services/userRiskSignals';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { captureException } from '../services/sentry';
@@ -404,7 +404,7 @@ export async function shutdownUserRiskJobs(): Promise<void> {
 export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
   const queue = getUserRiskQueue();
   const slot = Math.floor(Date.now() / USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `user-risk-recompute:${orgId}:${slot}`;
+  const jobId = bullmqJobId('user-risk-recompute', orgId, slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

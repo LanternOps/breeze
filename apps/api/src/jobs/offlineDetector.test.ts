@@ -207,7 +207,7 @@ describe('triggerOfflineDetection', () => {
       'detect-offline',
       expect.objectContaining({ thresholdMinutes: 10 }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^offline-detect:10:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^offline-detect-10-[a-z0-9]+$/),
       }),
     );
   });

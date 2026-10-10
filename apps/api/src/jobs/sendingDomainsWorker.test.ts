@@ -693,8 +693,23 @@ describe('evaluate-auto-suspend', () => {
     expect(queueAdd).toHaveBeenCalledWith(
       'evaluate-auto-suspend',
       { partnerId: PARTNER_ID },
-      expect.objectContaining({ jobId: `autosuspend:${PARTNER_ID}` }),
+      expect.objectContaining({ jobId: `autosuspend-${PARTNER_ID}` }),
     );
+  });
+
+  // The old `autosuspend:<partnerId>` id was rejected by the real bullmq
+  // validator ("Custom Id cannot contain :"), so every bounce/complaint webhook
+  // failed its enqueue post-commit and auto-suspension never ran at all.
+  it('enqueues under a jobId the real bullmq validator accepts', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    const opts = queueAdd.mock.calls.at(-1)![2] as { jobId: string };
+    const { Job } = await vi.importActual<typeof import('bullmq')>('bullmq');
+    const queueStub = { opts: {}, toKey: (k: string) => k, keys: {}, client: Promise.resolve(null) } as never;
+    const job = new Job(queueStub, 'evaluate-auto-suspend', { partnerId: PARTNER_ID }, { jobId: opts.jobId });
+    expect(() =>
+      (job as unknown as { validateOptions(d: { data: string }): void }).validateOptions({ data: '{}' }),
+    ).not.toThrow();
   });
 
   it('does not enqueue on an instance with no partner lane configured', async () => {
