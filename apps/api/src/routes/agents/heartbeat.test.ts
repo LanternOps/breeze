@@ -7510,8 +7510,10 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
 
   it('still completes the check-in when placing the marker fails (#5876)', async () => {
     arrange([recoveryRow()]);
-    vi.mocked(createReliabilityBaseline).mockRejectedValue(new Error('scorer exploded'));
+    const failure = new Error('scorer exploded');
+    vi.mocked(createReliabilityBaseline).mockRejectedValue(failure);
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../../services/sentry');
 
     const res = await beatWithMarker();
 
@@ -7520,6 +7522,22 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(recoverySetCalls[0]!.status).toBe('checked_in');
     expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
     expect(afterExit).toHaveLength(0);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+    errSpy.mockRestore();
+  });
+
+  it('reports a failed post-commit recompute enqueue instead of dropping it (#5876)', async () => {
+    arrange([recoveryRow()]);
+    const failure = new Error('redis down');
+    vi.mocked(enqueueDeviceReliabilityComputation).mockRejectedValueOnce(failure);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../../services/sentry');
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    for (const work of afterExit.splice(0)) await work();
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
     errSpy.mockRestore();
   });
 

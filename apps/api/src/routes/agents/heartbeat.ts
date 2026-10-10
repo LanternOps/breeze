@@ -1354,8 +1354,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             });
             const deviceId = device.id;
             runAfterDbContextExit('reliability-baseline-recompute', () =>
-              enqueueDeviceReliabilityComputation(deviceId, { dedupeKey: `bmr-${rec.id}` }).catch((err) =>
-                console.error('[heartbeat] reliability recompute enqueue failed', { deviceId, err })));
+              enqueueDeviceReliabilityComputation(deviceId, { dedupeKey: `bmr-${rec.id}` }).catch((err) => {
+                // The marker is committed but the score stays pre-marker until the next scan.
+                console.error('[heartbeat] reliability recompute enqueue failed', { deviceId, err });
+                captureException(err);
+              }));
           }
         } catch (err) {
           console.error('[heartbeat] failed to place reliability baseline marker for recovery', { deviceId: device.id, recoveryId: rec.id, err });

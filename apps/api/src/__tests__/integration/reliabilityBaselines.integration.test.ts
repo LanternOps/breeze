@@ -77,6 +77,54 @@ describe('reliability baselines (real DB)', () => {
     expect((restored!.details as any).baseline).toBeUndefined();
   });
 
+  it("a marker cannot be cleared through another device's URL", async () => {
+    const a = await deviceWithCrashHistory();
+    const b = await deviceWithCrashHistory();
+    const markerB = await asSystem(() => createReliabilityBaseline({
+      device: b.device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: false,
+    }));
+    expect(await asSystem(() => clearReliabilityBaseline({ deviceId: a.device.id, baselineId: markerB!.id, clearedBy: null }))).toBe('not_found');
+    const listB = await asSystem(() => listReliabilityBaselines(b.device.id));
+    expect(listB.find((m) => m.id === markerB!.id)).toMatchObject({ active: true, clearedAt: null });
+  });
+
+  it('an inline recompute blocked by a long-held score row lock gives up in bounded time and the marker still commits', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+
+    // Stand-in for the nightly compute-org job: one long transaction holding the
+    // device's device_reliability row lock.
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let locked!: () => void;
+    const lockedSignal = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = asSystem(async () => {
+      await db.execute(sql`SELECT 1 FROM device_reliability WHERE device_id = ${device.id} FOR UPDATE`);
+      locked();
+      await holderGate;
+    });
+    await Promise.race([lockedSignal, holder]);
+
+    try {
+      const started = Date.now();
+      const marker = await asSystem(() => createReliabilityBaseline({
+        device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+        source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+      }));
+      // Bounded by the 2s savepoint lock_timeout, not by the holder.
+      expect(Date.now() - started).toBeLessThan(8_000);
+      // The lock timeout rolled back only the recompute savepoint: the marker
+      // and the follow-up list read in the same transaction both succeeded.
+      expect(marker).toMatchObject({ active: true });
+      const list = await asSystem(() => listReliabilityBaselines(device.id));
+      expect(list.find((m) => m.id === marker!.id)).toMatchObject({ active: true });
+    } finally {
+      releaseHolder();
+      await holder;
+    }
+  });
+
   it('a backdated marker earlier than the active one is listed but not effective, with the correct predecessor snapshot', async () => {
     const { device } = await deviceWithCrashHistory();
     const later = await asSystem(() => createReliabilityBaseline({

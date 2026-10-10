@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { db } from '../db';
+import { db, runAfterDbContextExit, withDbTransaction } from '../db';
+import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deviceReliabilityBaselines, users } from '../db/schema';
 import {
   RELIABILITY_SCORER_VERSION, reliabilityBeforeSnapshotSchema,
@@ -8,10 +9,14 @@ import {
 } from './reliabilityBaselinePolicy';
 import { getActiveReliabilityBaseline } from './reliabilityBaselineQueries';
 import { computeAndPersistDeviceReliability, scoreDeviceReliabilityAsOf } from './reliabilityScoring';
+import { enqueueDeviceReliabilityComputation } from '../jobs/reliabilityWorker';
+import { captureException } from './sentry';
+import { isTransientLockError } from '../utils/pgErrors';
 
 // #5876 reliability baseline markers: create (with a frozen before snapshot),
 // clear and list. Callers own the DB access context; every statement here runs
-// inside it, so a route's marker write and its inline recompute share one transaction.
+// inside it, so a route's marker write and its inline recompute share one
+// transaction (the recompute in its own savepoint; see recomputeInlineOrDefer).
 
 export interface CreateReliabilityBaselineInput {
   device: { id: string; orgId: string; deviceRole: string | null; enrolledAt: Date | null };
@@ -63,6 +68,35 @@ export async function computeBeforeSnapshot(
   });
 }
 
+// The nightly compute-org job scores a whole org in ONE system transaction, so it
+// holds every device_reliability row lock it has upserted until the org finishes.
+// An inline recompute on the request path must not wait that out on a pooled
+// connection: it runs in a savepoint with a bounded lock wait, and on a lost lock
+// race the recompute is handed to the worker instead. The marker itself still
+// commits; the scorer's compare-and-set guard makes the later worker write safe.
+const INLINE_RECOMPUTE_LOCK_TIMEOUT_MS = 2000;
+
+async function recomputeInlineOrDefer(deviceId: string, dedupeKey: string): Promise<void> {
+  try {
+    await withDbTransaction(async () => {
+      const priorMs = await tightenLockTimeout(db, INLINE_RECOMPUTE_LOCK_TIMEOUT_MS);
+      await computeAndPersistDeviceReliability(deviceId);
+      // SET LOCAL outlives RELEASE SAVEPOINT, so put the caller's value back.
+      if (lockTimeoutWasChanged(priorMs, INLINE_RECOMPUTE_LOCK_TIMEOUT_MS)) {
+        await db.execute(sql`SELECT set_config('lock_timeout', ${`${priorMs}ms`}, true)`);
+      }
+    });
+  } catch (err) {
+    if (!isTransientLockError(err)) throw err;
+    console.warn('[reliability] inline recompute lost a lock race; deferring to the worker', { deviceId });
+    runAfterDbContextExit('reliability-baseline-recompute', () =>
+      enqueueDeviceReliabilityComputation(deviceId, { dedupeKey }).catch((enqueueErr) => {
+        console.error('[reliability] deferred recompute enqueue failed', { deviceId, err: enqueueErr });
+        captureException(enqueueErr);
+      }));
+  }
+}
+
 /** Returns null when an automatic marker with the same source_ref already exists (idempotent no-op). */
 export async function createReliabilityBaseline(input: CreateReliabilityBaselineInput): Promise<ReliabilityBaselineDto | null> {
   const beforeSnapshot = await computeBeforeSnapshot(input.device, input.baselineAt);
@@ -85,7 +119,7 @@ export async function createReliabilityBaseline(input: CreateReliabilityBaseline
     })
     .returning({ id: deviceReliabilityBaselines.id });
   if (inserted.length === 0) return null;
-  if (input.recompute) await computeAndPersistDeviceReliability(input.device.id);
+  if (input.recompute) await recomputeInlineOrDefer(input.device.id, `baseline-${inserted[0]!.id}`);
   const list = await listReliabilityBaselines(input.device.id);
   return list.find((m) => m.id === inserted[0]!.id) ?? null;
 }
@@ -109,7 +143,7 @@ export async function clearReliabilityBaseline(input: { deviceId: string; baseli
       .limit(1);
     return existing ? 'already_cleared' : 'not_found';
   }
-  await computeAndPersistDeviceReliability(input.deviceId);
+  await recomputeInlineOrDefer(input.deviceId, `baseline-clear-${input.baselineId}`);
   return 'cleared';
 }
 
