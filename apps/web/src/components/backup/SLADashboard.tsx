@@ -23,10 +23,12 @@ import '../../lib/i18n';
 type SLAConfig = {
   id: string;
   name: string;
-  rpoMinutes: number;
-  rtoMinutes: number;
-  deviceCount?: number | null;
-  active: boolean;
+  // Field names mirror the API row (backup_sla_configs).
+  rpoTargetMinutes: number;
+  rtoTargetMinutes: number;
+  targetDevices?: string[] | null;
+  targetGroups?: string[] | null;
+  isActive: boolean;
   alertOnBreach?: boolean;
   createdAt?: string;
 };
@@ -112,7 +114,7 @@ export default function SLADashboard() {
     try {
       const response = await fetchWithAuth(`/backup/sla/configs/${config.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ active: !config.active }),
+        body: JSON.stringify({ isActive: !config.isActive }),
       });
       if (!response.ok) throw new Error('Failed to toggle SLA config');
       await fetchData();
@@ -232,22 +234,22 @@ export default function SLADashboard() {
                 {configs.map((cfg) => (
                   <tr key={cfg.id} className="border-b last:border-0">
                     <td className="py-2.5 pr-4 font-medium text-foreground">{cfg.name}</td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rpoMinutes} {t('sLADashboard.min')}</td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rtoMinutes} {t('sLADashboard.min')}</td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.deviceCount ?? 0}</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rpoTargetMinutes} {t('sLADashboard.min')}</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rtoTargetMinutes} {t('sLADashboard.min')}</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.targetDevices?.length ?? 0}</td>
                     <td className="py-2.5 pr-4">
                       <button
                         type="button"
                         onClick={() => handleToggleActive(cfg)}
                         className={cn(
                           'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                          cfg.active ? 'bg-success' : 'bg-muted'
+                          cfg.isActive ? 'bg-success' : 'bg-muted'
                         )}
                       >
                         <span
                           className={cn(
                             'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-xs transition-transform',
-                            cfg.active ? 'translate-x-4' : 'translate-x-0'
+                            cfg.isActive ? 'translate-x-4' : 'translate-x-0'
                           )}
                         />
                       </button>
