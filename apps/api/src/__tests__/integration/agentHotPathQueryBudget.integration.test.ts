@@ -168,7 +168,7 @@ const NEXT_BEAT_MS = 61_000;
 /**
  * The route-only steady-state heartbeat transaction count (#8053 test below).
  * The W0d full-chain heartbeat budget must equal it plus agent auth, so both
- * read this one constant (#8142 W03 lowers it to 2).
+ * read this one constant (#8142 W03 lowered it from 3).
  */
 const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 2;
 // #8142 — measured in Task 9 and pinned.
@@ -486,9 +486,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // The WS frame keys bypass HTTP auth (see the WS test).
   [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
   [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
-  // 31 -> 32 (#8190): workload inventory delivery's per-feature policy read
-  // (bucket workloadInventoryPolicy), the same +1 the route-only beat takes.
-  'POST /agents/:id/heartbeat': { transactions: 4, statements: 32 },
+  // #8142 W03 (2026-10-10): one policy-set read in one org-scoped post-commit
+  // context. Was 4 tx / 31 statements.
+  'POST /agents/:id/heartbeat': { transactions: 3, statements: 19 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
