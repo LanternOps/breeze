@@ -9,6 +9,8 @@ const { mockDb } = vi.hoisted(() => ({
     update: vi.fn(),
     insert: vi.fn(),
     execute: vi.fn(async (_query: unknown) => [] as unknown[]),
+    // A nested db.transaction is a savepoint; the mock hands back the same db.
+    transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockDb)),
   }
 }));
 
@@ -24,9 +26,11 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: undefined
 }));
 
-// Placement reconciliation on auto-link is covered by services/assetPlacement.test.ts.
+// Placement reconciliation itself is covered by services/assetPlacement.test.ts;
+// here only its wiring into the auto-link write is asserted.
+const { reconcileMock } = vi.hoisted(() => ({ reconcileMock: vi.fn(async (_args: unknown) => 'noop') }));
 vi.mock('../services/assetPlacement', () => ({
-  reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
+  reconcilePlacementOnLinkOrThrow: reconcileMock,
 }));
 
 vi.mock('../db/schema', () => ({
@@ -604,6 +608,30 @@ describe('processResults — type_source', () => {
     expect(where.params[Number(role) - 1]).toBe('devices.deviceRole');
     // The old deny-list let an 'auto' role through; it must be gone.
     expect(where.sql).not.toContain(`not in ('manual', 'ai')`);
+  });
+
+  it('reconciles placement in automatic mode inside the same savepoint as the auto-link write (#8134)', async () => {
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], // [6] existing
+      [{ linkedDeviceId: null }],                                          // [7] not yet linked
+      [{ deviceId: 'device-1' }],                                          // [8] auto-link match found
+    ];
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = () => chain;
+      chain.where = () => updateResult();
+      return chain;
+    });
+
+    await processResults(makeData([
+      { ip: '192.168.1.55', mac: 'aa:bb:cc:dd:ee:55', assetType: 'workstation', methods: [] },
+    ]));
+
+    expect(mockDb.transaction).toHaveBeenCalled();
+    expect(reconcileMock).toHaveBeenCalledWith(expect.objectContaining({
+      discoveredAssetId: 'asset-1', deviceId: 'device-1', mode: 'automatic', executor: mockDb,
+    }));
   });
 
   it('does not auto-link a same-MAC/private-IP device from a sibling site', async () => {

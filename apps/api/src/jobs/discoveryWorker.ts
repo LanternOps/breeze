@@ -1340,28 +1340,38 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
             // suppressed asset) already occupies. Only a row this update
             // actually touched may go on to flip approval / propagate
             // classification below.
-            const linked = await db
-              .update(discoveredAssets)
-              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
-              .where(and(
-                eq(discoveredAssets.id, upsertedAssetId),
-                sql`${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'`,
-                sql`${discoveredAssets.linkedDeviceId} IS NULL`,
-                sql`${discoveredAssets.autoLinkSuppressedAt} IS NULL`,
-              ))
-              .returning({ id: discoveredAssets.id });
+            //
+            // The link write and the placement reconcile share one savepoint
+            // (as the BMC link paths do): if the reconcile fails, the link is
+            // undone with it and the catch below logs it, instead of a failed
+            // statement aborting the scan's whole transaction.
+            const linked = await db.transaction(async (tx) => {
+              const rows = await tx
+                .update(discoveredAssets)
+                .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
+                .where(and(
+                  eq(discoveredAssets.id, upsertedAssetId),
+                  sql`${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'`,
+                  sql`${discoveredAssets.linkedDeviceId} IS NULL`,
+                  sql`${discoveredAssets.autoLinkSuppressedAt} IS NULL`,
+                ))
+                .returning({ id: discoveredAssets.id });
+              if (rows.length) {
+                // One physical box, one authoritative placement (spec §5.1): the
+                // device keeps its own; a placement held only by the asset moves
+                // to the device. An automatic link never reports a conflict.
+                await reconcilePlacementOnLinkOrThrow({
+                  discoveredAssetId: upsertedAssetId,
+                  deviceId: match.deviceId,
+                  mode: 'automatic',
+                  executor: tx,
+                });
+              }
+              return rows;
+            });
 
             if (linked.length) {
               autoLinkedDeviceId = match.deviceId;
-
-              // One physical box, one authoritative placement (spec §5.1): the
-              // device keeps its own; a placement held only by the asset moves
-              // to the device. An automatic link never reports a conflict.
-              await reconcilePlacementOnLinkOrThrow({
-                discoveredAssetId: upsertedAssetId,
-                deviceId: match.deviceId,
-                mode: 'automatic',
-              });
 
               // Mirror the asset's type onto the linked device — but only onto a
               // role discovery itself owns or that nobody has set yet; never over

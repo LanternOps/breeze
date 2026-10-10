@@ -21,6 +21,8 @@ const { mockDb } = vi.hoisted(() => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    // A nested db.transaction is a savepoint; the mock hands back the same db.
+    transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockDb)),
   },
 }));
 

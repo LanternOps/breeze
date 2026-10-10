@@ -134,6 +134,15 @@ describe('network asset reads', () => {
     expect(out.placement).toEqual({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
     expect(out.placementAuthority).toEqual({ kind: 'device', id: OTHER, linked: true });
   });
+  it("withholds a linked device's placement when that device's site is outside the caller's sites", async () => {
+    const OTHER_SITE = '55555555-5555-4555-8555-555555555555';
+    placement.authority.mockResolvedValue({ authority: { kind: 'device', id: OTHER, orgId: ORG, siteId: OTHER_SITE }, linked: true });
+    placement.read.mockResolvedValue({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
+    const out = await run('get_network_asset', { assetId: ASSET }, { allowedSiteIds: [SITE] });
+    expect(out.asset.id).toBe(ASSET);
+    expect(out.placement).toBeNull();
+    expect(placement.read).not.toHaveBeenCalled();
+  });
   it('does not read placement for a denied asset', async () => {
     page = query([]);
     await run('get_network_asset', { assetId: ASSET });

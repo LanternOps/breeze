@@ -268,9 +268,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         || deviceSiteDenied(auth, row.siteId, row.linkedDeviceId)) return jsonError('Asset not found');
       // #8134: a linked asset's placement is its managed device's (the sole authority for that box).
       const { authority, linked } = await resolvePlacementAuthority({ kind: 'discovered', id: row.id, orgId: row.orgId, siteId: row.siteId });
+      // Same rule as GET /discovery/assets/:id/placement: a linked device's
+      // placement is withheld when that device's site is outside the caller's.
+      const placementDenied = linked && deviceSiteDenied(auth, authority.siteId, authority.id);
       return JSON.stringify({
         asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) },
-        placement: await readPlacement(authority.kind, authority.id),
+        placement: placementDenied ? null : await readPlacement(authority.kind, authority.id),
         placementAuthority: { kind: authority.kind, id: authority.id, linked },
       });
     },
