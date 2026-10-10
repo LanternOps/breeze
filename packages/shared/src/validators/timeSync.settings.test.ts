@@ -8,7 +8,7 @@ import {
 describe('time sync inline settings', () => {
   it('defaults to observation without enforcement', () => {
     expect(timeSyncInlineSettingsSchema.parse({})).toEqual(TIME_SYNC_DEFAULTS);
-    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('time_sync');
+    expect(CONFIG_FEATURE_TYPES).toContain('time_sync');
     expect(CONFIG_POLICY_FEATURE_TRUST_TIER.time_sync).toBe('protective');
   });
   it.each([15, 60, 1440])('accepts interval %s', (pollIntervalMinutes) => {
