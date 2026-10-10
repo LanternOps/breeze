@@ -227,6 +227,16 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
     vi.restoreAllMocks();
   });
 
+  it('#5876: reliabilityWorst entries carry provisional', async () => {
+    const { listReliabilityDevices } = await import('../reliabilityScoring');
+    vi.mocked(listReliabilityDevices).mockResolvedValueOnce({
+      total: 1,
+      rows: [{ deviceId: uuid(1), reliabilityScore: 60, trendDirection: 'stable', provisional: true }],
+    } as never);
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+    expect(evidence.health.reliabilityWorst).toEqual([{ deviceId: uuid(1), score: 60, trend: 'stable', provisional: true }]);
+  });
+
   it('excludes retired legacy watches and rules from configuration evidence', async () => {
     rowsFor.push({ match: 'FROM configuration_policies cp', rows: [{ id: uuid(9), name: 'Policy', status: 'active', org_id: ORG, partner_id: null }] });
     await loadDesignEvidence(ORG, { siteId: null });

@@ -173,6 +173,7 @@ describe('GET /devices — response shape', () => {
         diskTotalGb: null,
         reliabilityScore: 42,
         reliabilityTrend: 'degrading',
+        reliabilityProvisional: true,
         helperLifecycleMode: 'on-demand',
         possibleReplacementOfDeviceId: '55555555-5555-4555-8555-555555555555',
         purchaseDate: '2025-03-01',
@@ -207,6 +208,8 @@ describe('GET /devices — response shape', () => {
     // #1720 — reliability score + trend surfaced for the list column.
     expect(row).toHaveProperty('reliabilityScore', 42);
     expect(row).toHaveProperty('reliabilityTrend', 'degrading');
+    // #5876 — provisional flag passes through.
+    expect(row).toHaveProperty('reliabilityProvisional', true);
     // #2138/#2308 — link-group scalars must survive the mapper: the web list
     // groups multiboot rows by linkGroupId and nests vm_host guests by
     // linkGroupRole; dropping either silently un-groups every linked device.
@@ -301,6 +304,7 @@ describe('GET /devices — response shape', () => {
         diskTotalGb: null,
         reliabilityScore: null,
         reliabilityTrend: null,
+        reliabilityProvisional: null,
         helperLifecycleMode: null,
         purchaseDate: null,
         purchaseDateSource: null,
@@ -328,6 +332,8 @@ describe('GET /devices — response shape', () => {
     expect(Object.prototype.hasOwnProperty.call(row, 'reliabilityTrend')).toBe(true);
     expect(row.reliabilityScore).toBeNull();
     expect(row.reliabilityTrend).toBeNull();
+    // #5876 — null/undefined provisional coerces to false.
+    expect(row.reliabilityProvisional).toBe(false);
 
     // Keys must exist on the shape even when null — UI distinguishes
     // "field absent" (older API) from "field present, value null"

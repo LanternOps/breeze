@@ -6,6 +6,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
+import { reliabilityProvisionalSql } from '../../services/reliabilityBaselineQueries';
 import {
   devices,
   deviceHardware,
@@ -336,7 +337,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'agent_rollback_events', 'agent_rollback_directives',
-  'device_reliability', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
+  'device_reliability', 'device_reliability_baselines', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities', 'device_warranty',
@@ -692,7 +693,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // consistent on the next rebuild.
   'fix_outcomes',
   // Analytics & reliability
-  'device_reliability_history', 'device_reliability',
+  'device_reliability_history', 'device_reliability_baselines', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
   'device_process_samples', 'remediation_suggestions',
   // metric_anomaly_episodes: device_id + denormalized org_id (episodes W01). Its
@@ -1216,6 +1217,8 @@ coreRoutes.get(
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
         reliabilityTrend: deviceReliability.trendDirection,
+        // #5876: coalesce(...) is false when the leftJoin finds no score row.
+        reliabilityProvisional: reliabilityProvisionalSql,
         // Hardware & RAID rollup (#6854 W04) — null when no report yet.
         hardwareHealth: deviceHardwareHealth.health,
         hardwareHealthSummary: deviceHardwareHealth.summary,
@@ -1435,6 +1438,7 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        reliabilityProvisional: d.reliabilityProvisional === true,
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,

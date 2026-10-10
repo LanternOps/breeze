@@ -16,6 +16,13 @@ const callOrder: string[] = [];
 // #4673 W02 — org contexts opened by the heartbeat's self-managed wrap.
 const orgDbContexts: Array<Record<string, unknown>> = [];
 
+// #5876 — work the heartbeat defers until its DB context exits. Runs inline by
+// default; the recovery-marker suite captures it instead so it can assert the
+// enqueue happens only after the context is gone.
+const afterExit: Array<() => unknown> = [];
+const runAfterDbContextExitDefault = (_label: string, work: () => unknown) => { work(); };
+const runAfterDbContextExitMock = vi.fn(runAfterDbContextExitDefault);
+
 const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
   observationId: 'health-observation-1',
   becameLatest: true,
@@ -49,7 +56,7 @@ vi.mock('../../db', () => ({
   // shared policy context is system-scoped; no ambient context at flush time.
   hasDbAccessContext: () => false,
   getCurrentDbAccessContext: () => ({ scope: 'system' }),
-  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  runAfterDbContextExit: (label: string, work: () => unknown) => runAfterDbContextExitMock(label, work),
   // Pass-through that records when the org-scoped context opens and when its
   // callback resolves — in production the org transaction is released at the
   // latter point.
@@ -377,10 +384,15 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
   requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
 }));
 
+vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaseline: vi.fn() }));
+vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
+
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
+import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
+import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorker';
 import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 
 // Otherwise a probe/helper value cached by one test is served to the next for the same org.
@@ -7283,6 +7295,7 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     agentVersion: '0.65.10',
     deviceRole: 'server',
     deviceRoleSource: 'auto',
+    enrolledAt: new Date('2026-01-01T00:00:00.000Z'),
     agentTokenHash: 'hash',
     tokenIssuedAt: new Date(),
     status: 'online',
@@ -7293,12 +7306,25 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
 
   let recoverySetCalls: Record<string, unknown>[];
   let deviceSetCalls: Record<string, unknown>[];
+  // Rows the guarded checked_in transition returns: one row = this heartbeat
+  // won it; [] = a concurrent heartbeat already did.
+  let transitionRows: unknown[];
+
+  afterEach(() => {
+    runAfterDbContextExitMock.mockImplementation(runAfterDbContextExitDefault);
+    afterExit.length = 0;
+  });
 
   function arrange(recoveryRows: unknown[]) {
     vi.clearAllMocks();
     getActiveTrustKeysetMock.mockResolvedValue([]);
     recoverySetCalls = [];
     deviceSetCalls = [];
+    transitionRows = [{ id: RECOVERY_ID }];
+    afterExit.length = 0;
+    runAfterDbContextExitMock.mockImplementation((_label: string, work: () => unknown) => { afterExit.push(work); });
+    vi.mocked(createReliabilityBaseline).mockResolvedValue({ id: 'baseline-1' } as Awaited<ReturnType<typeof createReliabilityBaseline>>);
+    vi.mocked(enqueueDeviceReliabilityComputation).mockResolvedValue('job-1');
 
     selectMock
       .mockReturnValueOnce(selectChainResolving([baselineDevice])) // device lookup
@@ -7310,7 +7336,7 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
         return {
           set: vi.fn((values: Record<string, unknown>) => {
             recoverySetCalls.push(values);
-            return { where: vi.fn(() => Promise.resolve(undefined)) };
+            return { where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(transitionRows)) })) };
           }),
         };
       }
@@ -7332,16 +7358,25 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     });
   }
 
-  it('completes a rebooted recovery when the nonce matches and acks', async () => {
-    arrange([{
+  function recoveryRow(overrides: Record<string, unknown> = {}) {
+    return {
       id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
       identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
-    }]);
+      ...overrides,
+    };
+  }
 
-    const res = await beat({
+  async function beatWithMarker() {
+    return beat({
       ...minimalHeartbeatBody,
       recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
     });
+  }
+
+  it('completes a rebooted recovery when the nonce matches and acks', async () => {
+    arrange([recoveryRow()]);
+
+    const res = await beatWithMarker();
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -7354,15 +7389,9 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
   });
 
   it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
-    arrange([{
-      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
-      identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce('b'.repeat(64)), rebootedAt: null,
-    }]);
+    arrange([recoveryRow({ nonceHash: hashRecoveryNonce('b'.repeat(64)) })]);
 
-    const res = await beat({
-      ...minimalHeartbeatBody,
-      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
-    });
+    const res = await beatWithMarker();
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -7376,15 +7405,9 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
   });
 
   it('ignores a marker for a recovery in a terminal failed state', async () => {
-    arrange([{
-      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
-      identity: 'original', status: 'failed', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
-    }]);
+    arrange([recoveryRow({ status: 'failed' })]);
 
-    const res = await beat({
-      ...minimalHeartbeatBody,
-      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
-    });
+    const res = await beatWithMarker();
 
     expect(res.status).toBe(200);
     expect((await res.json()).recoveryMarkerAck).toBeUndefined();
@@ -7392,15 +7415,9 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
   });
 
   it('re-acks an already checked_in recovery without writing again', async () => {
-    arrange([{
-      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
-      identity: 'original', status: 'checked_in', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: new Date(),
-    }]);
+    arrange([recoveryRow({ status: 'checked_in', rebootedAt: new Date() })]);
 
-    const res = await beat({
-      ...minimalHeartbeatBody,
-      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
-    });
+    const res = await beatWithMarker();
 
     expect(res.status).toBe(200);
     expect((await res.json()).recoveryMarkerAck).toBe(true);
@@ -7413,14 +7430,125 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     // recovery scoped to a different device would never match this device's row.
     arrange([]);
 
-    const res = await beat({
-      ...minimalHeartbeatBody,
-      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
-    });
+    const res = await beatWithMarker();
 
     expect(res.status).toBe(200);
     expect((await res.json()).recoveryMarkerAck).toBeUndefined();
     expect(recoverySetCalls).toHaveLength(0);
+  });
+
+  it('creates a reimaged marker exactly when it wins the transition and enqueues after exit (#5876)', async () => {
+    arrange([recoveryRow()]);
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    expect(createReliabilityBaseline).toHaveBeenCalledTimes(1);
+    expect(createReliabilityBaseline).toHaveBeenCalledWith(expect.objectContaining({
+      device: { id: 'device-1', orgId: 'org-1', deviceRole: 'server', enrolledAt: baselineDevice.enrolledAt },
+      reason: 'reimaged', note: null, source: 'bare_metal_recovery', sourceRef: RECOVERY_ID,
+      createdBy: null, recompute: false,
+    }));
+    // The marker's baselineAt is the check-in instant written on the recovery.
+    const markerInput = vi.mocked(createReliabilityBaseline).mock.calls[0]![0];
+    expect(markerInput.baselineAt).toBe(recoverySetCalls[0]!.checkedInAt);
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    const markerAudit = vi.mocked(writeAuditEvent).mock.calls.find(
+      (c) => (c[1] as { action?: string })?.action === 'device.reliability.baseline_set',
+    );
+    expect(markerAudit?.[1]).toMatchObject({
+      orgId: 'org-1', actorType: 'system', resourceType: 'device', resourceId: 'device-1', result: 'success',
+      details: { baselineId: 'baseline-1', reason: 'reimaged', source: 'bare_metal_recovery', recoveryId: RECOVERY_ID },
+    });
+    expect(enqueueDeviceReliabilityComputation).not.toHaveBeenCalled();
+    for (const work of afterExit.splice(0)) await work();
+    expect(enqueueDeviceReliabilityComputation).toHaveBeenCalledWith('device-1', { dedupeKey: `bmr-${RECOVERY_ID}` });
+  });
+
+  it('creates no marker when a concurrent heartbeat already won the transition (#5876)', async () => {
+    arrange([recoveryRow()]);
+    transitionRows = [];
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    // Losing the race still acks: the recovery IS checked in.
+    expect((await res.json()).recoveryMarkerAck).toBe(true);
+    expect(createReliabilityBaseline).not.toHaveBeenCalled();
+    expect(deviceSetCalls[0]?.recoveredAt).toBeUndefined();
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    expect(vi.mocked(writeAuditEvent).mock.calls.some(
+      (c) => (c[1] as { action?: string })?.action === 'bmr.recovery.checked_in',
+    )).toBe(false);
+    expect(afterExit).toHaveLength(0);
+  });
+
+  it('creates no marker on an idempotent re-ack of a checked_in recovery (#5876)', async () => {
+    arrange([recoveryRow({ status: 'checked_in', rebootedAt: new Date() })]);
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    expect(createReliabilityBaseline).not.toHaveBeenCalled();
+    expect(afterExit).toHaveLength(0);
+  });
+
+  it('writes no marker audit and enqueues nothing when the marker already exists (#5876)', async () => {
+    arrange([recoveryRow()]);
+    vi.mocked(createReliabilityBaseline).mockResolvedValue(null);
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    expect(createReliabilityBaseline).toHaveBeenCalledTimes(1);
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    expect(vi.mocked(writeAuditEvent).mock.calls.some(
+      (c) => (c[1] as { action?: string })?.action === 'device.reliability.baseline_set',
+    )).toBe(false);
+    expect(afterExit).toHaveLength(0);
+  });
+
+  it('still completes the check-in when placing the marker fails (#5876)', async () => {
+    arrange([recoveryRow()]);
+    const failure = new Error('scorer exploded');
+    vi.mocked(createReliabilityBaseline).mockRejectedValue(failure);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../../services/sentry');
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBe(true);
+    expect(recoverySetCalls[0]!.status).toBe('checked_in');
+    expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
+    expect(afterExit).toHaveLength(0);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+    errSpy.mockRestore();
+  });
+
+  it('reports a failed post-commit recompute enqueue instead of dropping it (#5876)', async () => {
+    arrange([recoveryRow()]);
+    const failure = new Error('redis down');
+    vi.mocked(enqueueDeviceReliabilityComputation).mockRejectedValueOnce(failure);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../../services/sentry');
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    for (const work of afterExit.splice(0)) await work();
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+    errSpy.mockRestore();
+  });
+
+  it('does not create a marker for a new-identity recovery (#5876)', async () => {
+    arrange([recoveryRow({ identity: 'new' })]);
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(200);
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(createReliabilityBaseline).not.toHaveBeenCalled();
   });
 });
 

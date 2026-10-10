@@ -167,7 +167,7 @@ export interface DesignEvidence {
   };
   posture: { category: string; product: string; managedCount: number; staleCount: number }[];
   health: {
-    reliabilityWorst: { deviceId: string; score: number; trend: string | null }[];
+    reliabilityWorst: { deviceId: string; score: number; trend: string | null; provisional: boolean }[];
     fleetFindings: { kind: string; title: string; deviceCount: number }[];
     vulnerability: { critical: number; high: number; devicesAffected: number } | null;
     patching: { patchScore: number | null; devicesPending: number; pendingPatches: number } | null;
@@ -706,7 +706,7 @@ async function loadHealth(orgId: string, siteId: string | null | undefined): Pro
   const siteJoinFilter = siteId ? sql`AND d.site_id = ${siteId}` : sql``;
 
   const reliability = await listReliabilityDevices({ orgId, siteId: siteId ?? undefined, limit: DESIGN_EVIDENCE_BOUNDS.reliabilityWorst });
-  const reliabilityWorst = reliability.rows.map((r) => ({ deviceId: r.deviceId, score: r.reliabilityScore, trend: r.trendDirection }));
+  const reliabilityWorst = reliability.rows.map((r) => ({ deviceId: r.deviceId, score: r.reliabilityScore, trend: r.trendDirection, provisional: r.provisional }));
 
   const findingRows = await query<{ kind: string; title: string; device_count: number | string | null }>(sql`
     SELECT kind, MIN(title) AS title, SUM(device_count)::int AS device_count

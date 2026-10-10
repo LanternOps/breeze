@@ -215,6 +215,7 @@ vi.mock('../services/deviceUninstallDrain', () => ({
 }));
 
 vi.mock('../db/schema', async (importOriginal) => ({
+  deviceReliabilityBaselines: { id: 'id', deviceId: 'deviceId', baselineAt: 'baselineAt', createdAt: 'createdAt', clearedAt: 'clearedAt', reason: 'reason', source: 'source' },
   // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
   patches: { severity: 'patches.severity', category: 'patches.category' },
   devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
@@ -225,7 +226,7 @@ vi.mock('../db/schema', async (importOriginal) => ({
   auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
   deviceHardware: { deviceId: 'deviceId' },
-  deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
+  deviceReliability: { deviceId: 'deviceId', details: 'details', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
   deviceHardwareHealth: { deviceId: 'hardwareDeviceId', health: 'hardwareHealth', summary: 'hardwareHealthSummary' },
   deviceNetwork: { deviceId: 'deviceId' },
   deviceMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },

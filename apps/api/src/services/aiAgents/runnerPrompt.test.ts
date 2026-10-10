@@ -1284,6 +1284,21 @@ describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
     expect(out).toContain('Not measured: counts, precursors');
   });
 
+  it('#5876: flags provisional reliability scores in the health section', () => {
+    const base = designEvidence();
+    const out = buildFleetDesignTaskPrompt(designCtx({
+      design: {
+        trigger: 'manual', occurrenceKey: null,
+        evidence: designEvidence({ health: { ...base.health, reliabilityWorst: [
+          { deviceId: 'dev-p', score: 90, trend: null, provisional: true },
+          { deviceId: 'dev-q', score: 80, trend: null, provisional: false },
+        ] } }),
+      },
+    }));
+    expect(out).toContain('reliability dev-p: 90 (provisional — recent fix/reimage)');
+    expect(out).toContain('reliability dev-q: 80\n');
+  });
+
   it('states a manual trigger by default', () => {
     const text = buildFleetDesignTaskPrompt(designCtx());
     expect(text).toContain('Trigger: manual fleet design');

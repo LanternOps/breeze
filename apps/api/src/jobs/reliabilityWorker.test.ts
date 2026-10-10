@@ -144,6 +144,31 @@ describe('enqueueDeviceReliabilityComputation', () => {
     expect(secondJobId).toBe(firstJobId);
   });
 
+  it('uses a caller-supplied dedupe key instead of the 10-minute slot, as a bullmq-valid custom id (#5876)', async () => {
+    await enqueueDeviceReliabilityComputation('dev-1', { dedupeKey: 'bmr:abc' });
+
+    const expectedJobId = 'reliability-device-dev-1-k-bmr-abc';
+    expect(getJobMock).toHaveBeenCalledWith(expectedJobId);
+    expect(addMock).toHaveBeenCalledWith(
+      'compute-device',
+      expect.anything(),
+      expect.objectContaining({ jobId: expectedJobId }),
+    );
+
+    // bullmq rejects a custom id containing ':' unless it splits into exactly
+    // 3 parts ("Custom Id cannot contain :"). Run the REAL validator against
+    // the id we produced so a 4-part id can never pass this test again.
+    const jobId = (addMock.mock.calls[0]![2] as { jobId: string }).jobId;
+    const { Job: RealJob } = await vi.importActual<typeof import('bullmq')>('bullmq');
+    const validate = (RealJob.prototype as unknown as {
+      validateOptions: (this: { name: string; opts: { jobId: string } }, jobData: { data: string }) => void;
+    }).validateOptions;
+    expect(() => validate.call({ name: 'compute-device', opts: { jobId } }, { data: '{}' })).not.toThrow();
+    // control: the validator is live (a 4-part id is rejected)
+    expect(() => validate.call({ name: 'compute-device', opts: { jobId: 'a:b:k:c' } }, { data: '{}' }))
+      .toThrow('Custom Id cannot contain :');
+  });
+
   it('creates the reliability worker with concurrency 2 (event-loop hardening)', () => {
     createReliabilityWorker();
 

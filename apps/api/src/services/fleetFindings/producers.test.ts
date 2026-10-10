@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const drizzleSpies = vi.hoisted(() => ({
   eq: vi.fn((column: unknown, value: unknown) => ({ __op: 'eq', column, value })),
@@ -13,12 +14,15 @@ vi.mock('drizzle-orm', async (importActual) => {
 });
 
 const dbMocks = vi.hoisted(() => {
-  const state: { queue: unknown[][] } = { queue: [] };
+  const state: { queue: unknown[][]; innerJoinWhere: unknown[] } = { queue: [], innerJoinWhere: [] };
   const select = vi.fn(() => ({
     from: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve(state.queue.shift() ?? [])),
       innerJoin: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve(state.queue.shift() ?? [])),
+        where: vi.fn((clause: unknown) => {
+          state.innerJoinWhere.push(clause);
+          return Promise.resolve(state.queue.shift() ?? []);
+        }),
       })),
     })),
   }));
@@ -48,6 +52,7 @@ function eligibleDevices(...ids: string[]) {
 
 beforeEach(() => {
   dbMocks.state.queue = [];
+  dbMocks.state.innerJoinWhere = [];
   dbMocks.select.mockClear();
   drizzleSpies.eq.mockClear();
   drizzleSpies.and.mockClear();
@@ -339,5 +344,16 @@ describe('produceReliabilityOffenders', () => {
     expect(drizzleSpies.eq).toHaveBeenCalledWith(devices.isEphemeral, false);
     expect(drizzleSpies.ne).toHaveBeenCalledWith(devices.status, 'decommissioned');
     expect(drizzleSpies.lt).toHaveBeenCalledWith(deviceReliability.reliabilityScore, 50);
+  });
+
+  it('excludes provisional scores (#5876): a NOT over details->baseline->provisional is in the where', async () => {
+    dbMocks.state.queue = [[reliabilityRow()]];
+    await produceReliabilityOffenders(ORG_ID);
+    const where = dbMocks.state.innerJoinWhere[0] as { clauses: unknown[] };
+    const dialect = new PgDialect();
+    const rendered = where.clauses
+      .filter((c) => c && typeof c === 'object' && 'queryChunks' in (c as object))
+      .map((c) => dialect.sqlToQuery(c as never).sql);
+    expect(rendered.some((t) => /not\b/i.test(t) && t.includes("->'baseline'->>'provisional'"))).toBe(true);
   });
 });
