@@ -1,6 +1,8 @@
+import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { ticketComments } from '../../db/schema';
+import { ticketComments, tickets } from '../../db/schema';
 import { emitTicketEvent } from '../ticketEvents';
+import { writeTicketCommentedOutbox } from '../ticketService';
 
 export interface EmailCommentInput {
   ticketId: string;
@@ -11,7 +13,8 @@ export interface EmailCommentInput {
   /**
    * Default true. False only for a comment written in the same pipeline step
    * that already emitted `ticket.created` (the carrier comment for a new
-   * ticket's email attachments, #6688) — a second event would re-notify.
+   * ticket's email attachments, #6688) — a second event would re-notify, and
+   * a second outbox row would announce the carrier note as a reply.
    */
   emitEvent?: boolean;
 }
@@ -53,6 +56,29 @@ export async function insertEmailAuthoredComment(input: EmailCommentInput): Prom
     partnerId: null,
     actorUserId: null,
     payload: { commentId: comment.id, isPublic: true, inbound: true }
+  });
+
+  // #8326 — the `ticket.commented` outbox row every other comment writer leaves,
+  // so webhooks and automations see a customer's emailed reply (and a public
+  // email linked from the Outlook add-in) like any other comment. It runs on the
+  // ambient `db`, so it commits or rolls back with the comment — and with the
+  // reopen's `ticket.status_changed` row, which the inbound pipeline writes in
+  // the same transaction. The org comes from the ticket row, not `orgId`, which
+  // the inbound pipeline passes as ''. The origin is the stored row's (`user`,
+  // no principal), the same value the Partner API feed returns for it.
+  const [ticket] = await db
+    .select({ orgId: tickets.orgId })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+    .limit(1);
+  if (!ticket) throw new Error('failed to resolve the ticket of an inbound comment');
+  await writeTicketCommentedOutbox({
+    orgId: ticket.orgId,
+    ticketId,
+    commentId: comment.id,
+    isPublic: true,
+    originPrincipalKind: comment.originPrincipalKind,
+    originPrincipalId: comment.originPrincipalId,
   });
 
   return { commentId: comment.id };
