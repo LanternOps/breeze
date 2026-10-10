@@ -1872,12 +1872,41 @@ it('planning keeps an invoice within the accepted cap eligible',async()=>{
  const f=await capFixture({enabled:true,amount:'100.00',currency:'USD'});
  expect(await withSystemDbAccessContext(()=>planAutopayForInvoice(db,f.invoice.id,true))).toMatchObject({eligible:true,ineligibleReason:null});
 });
-it('confirm refuses an already-scheduled invoice once the accepted cap no longer covers it',async()=>{
- const f=await capFixture({enabled:true,amount:'50.00',currency:'USD'});
- await attemptCollection(inputFor(f));
- expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).toHaveBeenCalledOnce();
- expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
- expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
+// The cap is checked when the charge is reserved, before any PaymentIntent exists: an
+// over-cap invoice is refused with nothing created at Stripe, for every caller.
+it.each([
+ ['scheduler','the accepted cap no longer covers it',{enabled:true,amount:'50.00',currency:'USD'},undefined,'above_authorized_cap'],
+ ['msp_charge_now','the accepted cap no longer covers it',{enabled:true,amount:'50.00',currency:'USD'},undefined,'above_authorized_cap'],
+ ['scheduler','the MSP lowered its cap below it',{enabled:true,amount:'500.00',currency:'USD'},'50.00','over_cap'],
+ ['msp_charge_now','the MSP lowered its cap below it',{enabled:true,amount:'500.00',currency:'USD'},'50.00','over_cap'],
+] as const)('%s refuses an already-scheduled invoice before creating a PaymentIntent once %s',async(initiatedBy,_case,accepted,current,reason)=>{
+ const f=await capFixture(accepted,current);
+ expect(await attemptCollection({...inputFor(f),initiatedBy})).toMatchObject({attemptId:null,outcome:'refused',reason});
+ expect(provider.create).not.toHaveBeenCalled();expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).not.toHaveBeenCalled();
+ expect(await attempts(f.invoice.id)).toEqual([]);
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:reason,nextAttemptAt:null});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder').map(n=>n.dedupeKey))
+  .toEqual([`invoice:${f.invoice.id}:not_charged:1`]);
+});
+it('the scheduled run refuses an over-cap invoice without creating a PaymentIntent and tells the client once',async()=>{
+ const f=await capFixture({enabled:true,amount:'500.00',currency:'USD'},'50.00');
+ await runAutopayCollection();
+ await runAutopayCollection(new Date(Date.now()+86_400_000));
+ expect(provider.create).not.toHaveBeenCalled();expect(provider.confirm).not.toHaveBeenCalled();
+ expect(await attempts(f.invoice.id)).toEqual([]);
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'over_cap'});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toHaveLength(1);
+});
+it('the confirm-time cap check still cancels a charge whose cap was lowered after it was reserved',async()=>{
+ const f=await capFixture({enabled:true,amount:'500.00',currency:'USD'});
+ const reserved=await reserveCollection(inputFor(f));
+ if(!('attempt' in reserved))throw new Error(`expected a reservation, got ${JSON.stringify(reserved)}`);
+ await withSystemDbAccessContext(()=>db.insert(billingPaymentSettings).values({partnerId:f.partner.id,orgId:null,
+  autopayCapEnabled:true,autopayCapAmount:'50.00',autopayCapCurrency:'USD'}));
+ await resumeCollectionAttempt(reserved.attempt.id);
+ expect(provider.create).toHaveBeenCalledOnce();expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).toHaveBeenCalledOnce();
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'over_cap'});
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'over_cap'});
 });
 
 it.each(['expired','revoked'] as const)('a %s bank authority is a structured, restartable outcome with nothing reserved',async mode=>{
@@ -2098,7 +2127,7 @@ it('a failed method-unusable schedule with no billing contact still tells staff,
  expect(attention.find(n=>n.link===`/billing/invoices/${f.invoice.id}`)?.message).toMatch(/no billing contact/i);
 });
 
-it('a cap cancellation before confirm records its reason and tells the client and staff (R3)',async()=>{
+it('a cap refusal before any PaymentIntent records its reason and tells the client and staff (R3)',async()=>{
  const f=await capFixture({enabled:true,amount:'50.00',currency:'USD'}); await withStaffEmail(f);
  const info=vi.spyOn(console,'info').mockImplementation(()=>{});
  const mail=captureMail();
@@ -2108,8 +2137,9 @@ it('a cap cancellation before confirm records its reason and tells the client an
   await vi.waitFor(()=>expect(mail.staff()).toHaveLength(1));
   expect(info).toHaveBeenCalledWith(expect.stringContaining('not charged automatically'),expect.objectContaining({invoiceId:f.invoice.id,reason:'above_authorized_cap'}));
  } finally { mail.restore(); info.mockRestore(); }
- expect(result).toMatchObject({outcome:'canceled',reason:'above_authorized_cap'});
- expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'above_authorized_cap'});
+ expect(result).toMatchObject({outcome:'refused',reason:'above_authorized_cap'});
+ expect(provider.create).not.toHaveBeenCalled();
+ expect(await attempts(f.invoice.id)).toEqual([]);
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
  const notices=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
  expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'pending'})]);

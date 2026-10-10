@@ -2642,6 +2642,22 @@
       "schedule_inactive": "Esta fatura não está mais agendada para pagamento automático.",
       "generic": "Não foi possível iniciar o pagamento automático. Atualize a fatura para ver o status atual.",
       "excluded_contract": "O contrato desta fatura está excluído dos pagamentos automáticos, então nada foi cobrado. Se o cliente tinha sido avisado deste pagamento, recebeu um e-mail informando que ele não acontecerá."
+    },
+    "stepUp": {
+      "heading": "Confirme que é você",
+      "intro": {
+        "autopay_charge_now": "Cobrar esta fatura agora exige uma nova verificação de segundo fator.",
+        "partner_payment_settings_update": "Alterar as configurações de pagamento exige uma nova verificação de segundo fator para estes valores exatos.",
+        "autopay_request_recipient": "Enviar a solicitação de autorização para um endereço diferente do contato de cobrança exige uma nova verificação de segundo fator."
+      },
+      "code": "Código do autenticador",
+      "passkey": "Você confirmará com sua passkey.",
+      "noFactor": "Primeiro adicione um aplicativo autenticador ou uma passkey à sua conta.",
+      "noFactorSmsOnly": "Códigos por mensagem de texto não podem confirmar esta ação. Primeiro adicione um aplicativo autenticador ou uma passkey à sua conta.",
+      "enrollLink": "Configurar um segundo fator",
+      "confirm": "Confirmar",
+      "failed": "Falha na verificação. Tente novamente.",
+      "unavailable": "Não foi possível iniciar a verificação"
     }
   },
   "reminders": {

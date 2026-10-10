@@ -263,6 +263,11 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // mint dispatch that swapped the two digest functions fails below.
   scriptLanePolicyResourceDigest: vi.fn(() => 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'),
   partnerScriptCeilingResourceDigest: vi.fn(() => 'sha256:9a7c3111n9000000000000000000000000000000000000000000000000000005'),
+  // Autopay charge now / partner payment settings / redirected authorization
+  // request: three more distinct constants, same reason.
+  autopayChargeNowResourceDigest: vi.fn(() => 'sha256:c4a79e0000000000000000000000000000000000000000000000000000000006'),
+  partnerPaymentSettingsResourceDigest: vi.fn(() => 'sha256:9a75e77000000000000000000000000000000000000000000000000000000007'),
+  autopayRequestRecipientResourceDigest: vi.fn(() => 'sha256:7ec191e000000000000000000000000000000000000000000000000000000008'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -485,7 +490,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5139,6 +5144,44 @@ describe('auth routes', () => {
 				operation: 'device_move_org',
 				resourceDigest: 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000',
 			}));
+		});
+
+		it.each([
+			['autopay_charge_now', { invoiceId: '00000000-0000-4000-8000-000000000010' },
+				() => autopayChargeNowResourceDigest, 'sha256:c4a79e0000000000000000000000000000000000000000000000000000000006'],
+			['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020',
+				settings: { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' } },
+				() => partnerPaymentSettingsResourceDigest, 'sha256:9a75e77000000000000000000000000000000000000000000000000000000007'],
+			['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test' },
+				() => autopayRequestRecipientResourceDigest, 'sha256:7ec191e000000000000000000000000000000000000000000000000000000008'],
+		] as const)('mints a %s grant bound to its resource digest', async (operation, resource, digestFn, digest) => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce(`grant-${operation}`);
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation, resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(digestFn()).toHaveBeenCalledWith(resource);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({ operation, resourceDigest: digest }));
+		});
+
+		it.each([
+			['autopay_charge_now', undefined],
+			['autopay_charge_now', { invoiceId: 'not-a-uuid' }],
+			['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020', settings: { bogus: 1 } }],
+			['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020', settings: { autopayCapEnabled: true } }],
+			['autopay_request_recipient', { orgIds: [], recipientOverride: 'accounts@example.test' }],
+			['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'not-an-email' }],
+		] as const)('refuses to mint %s without a valid resource (%j)', async (operation, resource) => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation, ...(resource ? { resource } : {}) }),
+			});
+			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('mints a backup_unattested_restore grant bound to the snapshot, target device and command type', async () => {

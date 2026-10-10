@@ -37,10 +37,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest } from '../../services/mfaStepUpGrant';
+import { maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -1258,6 +1258,9 @@ const RESOURCE_BOUND_OPERATIONS = {
   ai_partner_script_ceiling_grant: partnerScriptCeilingStepUpResource,
   topology_arm: topologyArmStepUpResource,
   backup_unattested_restore: unattestedRestoreStepUpResource,
+  autopay_charge_now: autopayChargeNowStepUpResource,
+  partner_payment_settings_update: partnerPaymentSettingsStepUpResource,
+  autopay_request_recipient: autopayRequestRecipientStepUpResource,
 } as const;
 
 mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
@@ -1268,7 +1271,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   const auth = c.get('auth');
   const body = c.req.valid('json');
   const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
-  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | undefined;
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | undefined;
   if (resourceSchema) {
     const parsedResource = resourceSchema.safeParse(body.resource);
     if (!parsedResource.success) {
@@ -1418,6 +1421,12 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
                       commandType: r.commandType,
                     });
                   })()
+              : body.operation === 'autopay_charge_now'
+                ? autopayChargeNowResourceDigest(boundResource as z.infer<typeof autopayChargeNowStepUpResource>)
+              : body.operation === 'partner_payment_settings_update'
+                ? partnerPaymentSettingsResourceDigest(boundResource as z.infer<typeof partnerPaymentSettingsStepUpResource>)
+              : body.operation === 'autopay_request_recipient'
+                ? autopayRequestRecipientResourceDigest(boundResource as z.infer<typeof autopayRequestRecipientStepUpResource>)
               : body.operation === 'delete_passkey'
                 ? passkeyRemovalResourceDigest(body.passkeyId!)
                 : '',

@@ -2642,6 +2642,22 @@
       "schedule_inactive": "Questa fattura non è più programmata per il pagamento automatico.",
       "generic": "Impossibile avviare il pagamento automatico. Aggiorna la fattura per vederne lo stato attuale.",
       "excluded_contract": "Il contratto di questa fattura è escluso dai pagamenti automatici, quindi non è stato addebitato nulla. Se il cliente era stato avvisato di questo pagamento, ha ricevuto un'email che non avverrà."
+    },
+    "stepUp": {
+      "heading": "Conferma che sei tu",
+      "intro": {
+        "autopay_charge_now": "Addebitare ora questa fattura richiede una nuova verifica a due fattori.",
+        "partner_payment_settings_update": "Modificare le impostazioni di pagamento richiede una nuova verifica a due fattori per questi valori specifici.",
+        "autopay_request_recipient": "Inviare la richiesta di autorizzazione a un indirizzo diverso dal contatto di fatturazione richiede una nuova verifica a due fattori."
+      },
+      "code": "Codice dell'autenticatore",
+      "passkey": "Confermerai con la tua passkey.",
+      "noFactor": "Aggiungi prima un'app di autenticazione o una passkey al tuo account.",
+      "noFactorSmsOnly": "I codici via SMS non possono confermare questa azione. Aggiungi prima un'app di autenticazione o una passkey al tuo account.",
+      "enrollLink": "Configura un secondo fattore",
+      "confirm": "Conferma",
+      "failed": "Verifica non riuscita. Riprova.",
+      "unavailable": "Impossibile avviare la verifica"
     }
   },
   "reminders": {

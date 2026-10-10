@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { PERMISSION_GRANTS as PERMISSIONS } from '@breeze/shared';
 import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
 import { authMiddleware,requirePermission } from '../../middleware/auth';
+import { autopayRequestRecipientResourceDigest } from '../../services/mfaStepUpGrant';
+import { requireBillingStepUp } from '../billingStepUp';
 import { zValidator } from '../../lib/validation';
 import { invoiceActorFrom } from '../invoices/invoices';
 import { autopayErrorHandler } from './errors';
@@ -24,10 +26,20 @@ autopayRoutes.get('/billing/autopay',async c=>{
 });
 autopayRoutes.post('/billing/autopay/requests',zValidator('json',z.object({
   orgIds:z.array(z.string().uuid()).min(1).max(500),mode:z.enum(['request','reauthorize']).optional(),recipientOverride:z.string().email().max(255).optional(),
+  stepUpGrant:z.string().uuid().optional(),
 }).strict()),async c=>{
-  const actor=invoiceActorFrom(c),input=c.req.valid('json');
+  const actor=invoiceActorFrom(c),{stepUpGrant,...input}=c.req.valid('json');
   if(!allowed(actor,input.orgIds))return c.json({error:'Organization not found'},404);
-  return c.json(await runOutsideDbContext(()=>withSystemDbAccessContext(()=>requestAutopay(db,actor,{...input,orgIds:[...new Set(input.orgIds)]}))));
+  const orgIds=[...new Set(input.orgIds)];
+  // Sending the authorization link anywhere but the billing contact needs a
+  // second-factor confirmation bound to the exact orgs, recipient and mode.
+  if(input.recipientOverride!==undefined){
+    const resource={orgIds,recipientOverride:input.recipientOverride,...(input.mode?{mode:input.mode}:{})};
+    const refusal=await requireBillingStepUp(c,{operation:'autopay_request_recipient',resource,
+      resourceDigest:autopayRequestRecipientResourceDigest(resource),grant:stepUpGrant});
+    if(refusal)return refusal;
+  }
+  return c.json(await runOutsideDbContext(()=>withSystemDbAccessContext(()=>requestAutopay(db,actor,{...input,orgIds}))));
 });
 autopayRoutes.get('/orgs/:orgId/autopay',zValidator('param',orgParam),async c=>{
   const actor=invoiceActorFrom(c),{orgId}=c.req.valid('param');

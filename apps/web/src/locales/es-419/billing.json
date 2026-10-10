@@ -2642,6 +2642,22 @@
       "schedule_inactive": "Esta factura ya no está programada para pago automático.",
       "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual.",
       "excluded_contract": "El contrato de esta factura está excluido de los pagos automáticos, así que no se cobró. Si al cliente se le había avisado de este pago, se le envió un correo indicando que no se realizará."
+    },
+    "stepUp": {
+      "heading": "Confirme que es usted",
+      "intro": {
+        "autopay_charge_now": "Cobrar esta factura ahora requiere una verificación reciente de segundo factor.",
+        "partner_payment_settings_update": "Cambiar la configuración de pagos requiere una verificación reciente de segundo factor para estos valores exactos.",
+        "autopay_request_recipient": "Enviar la solicitud de autorización a una dirección distinta del contacto de facturación requiere una verificación reciente de segundo factor."
+      },
+      "code": "Código de autenticación",
+      "passkey": "Confirmará con su clave de acceso.",
+      "noFactor": "Primero agregue una aplicación de autenticación o una clave de acceso a su cuenta.",
+      "noFactorSmsOnly": "Los códigos por mensaje de texto no pueden confirmar esta acción. Primero agregue una aplicación de autenticación o una clave de acceso a su cuenta.",
+      "enrollLink": "Configurar un segundo factor",
+      "confirm": "Confirmar",
+      "failed": "Verificación fallida. Inténtelo de nuevo.",
+      "unavailable": "No se pudo iniciar la verificación"
     }
   },
   "reminders": {

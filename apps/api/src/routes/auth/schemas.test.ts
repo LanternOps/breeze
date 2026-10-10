@@ -196,6 +196,17 @@ describe('mfaStepUpSchema operation field', () => {
     }).success).toBe(false);
   });
 
+  it.each([
+    ['autopay_charge_now', { invoiceId: '00000000-0000-4000-8000-000000000010' }],
+    ['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020',
+      settings: { remindersEnabled: true, feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true } } }],
+    ['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test', mode: 'reauthorize' }],
+  ] as const)('accepts %s with its resource binding, unchanged', (operation, resource) => {
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
+    expect(parsed.operation).toBe(operation);
+    expect(parsed.resource).toEqual(resource);
+  });
+
   it('accepts device_move_org with a move-org resource binding', () => {
     const parsed = mfaStepUpSchema.parse({
       method: 'totp',

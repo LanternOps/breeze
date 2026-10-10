@@ -7,7 +7,9 @@ import { attemptCollection } from '../../services/autopay/collectionEngine';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { authMiddleware, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
+import { authMiddleware, requireInteractiveSession, requireMfa, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
+import { autopayChargeNowResourceDigest } from '../../services/mfaStepUpGrant';
+import { requireBillingStepUp } from '../billingStepUp';
 import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
 import { requireAutopayEnabled } from '../../services/autopay/autopayGate';
@@ -26,10 +28,28 @@ invoiceAutopayRoutes.patch('/:id/autopay',
     } catch (error) { return handleServiceError(c, error); }
   });
 
+// The body is optional: the first request carries none, the resubmit after a
+// second-factor confirmation carries the grant.
+const chargeNowBody = z.object({ stepUpGrant: z.string().uuid().optional() }).strict();
+/**
+ * Charge now: starts and confirms an off-session payment for one invoice.
+ * A person in an interactive session with a satisfied second factor only, and
+ * (two-factor authentication enabled) a fresh `autopay_charge_now` step-up
+ * bound to this invoice, consumed after the read-only checks below and before
+ * any provider call.
+ */
 invoiceAutopayRoutes.post('/:id/autopay/charge-now',
+  requireInteractiveSession(), requireMfa(),
   requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action),
   requireAutopayEnabled(), zValidator('param', z.object({ id: z.string().uuid() })), async c => {
     try {
+      const raw = await c.req.text();
+      let parsedBody: unknown = {};
+      if (raw.trim() !== '') {
+        try { parsedBody = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      }
+      const body = chargeNowBody.safeParse(parsedBody);
+      if (!body.success) return c.json({ error: 'Invalid request body' }, 400);
       const actor = invoiceActorFrom(c);
       const invoiceId = c.req.valid('param').id;
       const scheduleId = await withAuthDbAccessContext(c.get('auth'), async () => {
@@ -48,6 +68,9 @@ invoiceAutopayRoutes.post('/:id/autopay/charge-now',
         }
         return schedule.id;
       });
+      const refusal = await requireBillingStepUp(c, { operation: 'autopay_charge_now', resource: { invoiceId },
+        resourceDigest: autopayChargeNowResourceDigest({ invoiceId }), grant: body.data.stepUpGrant });
+      if (refusal) return refusal;
       const result = await attemptCollection({ invoiceId, scheduleId, initiatedBy: 'msp_charge_now' });
       // outcome tells staff whether a payment was attempted (failed / requires_action)
       // or never started (deferred / refused); reason alone cannot.

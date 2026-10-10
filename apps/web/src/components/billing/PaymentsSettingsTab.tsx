@@ -8,6 +8,7 @@ import RemindersSettingsSection, { reminderDraft, reminderPatch, reminderDraftIn
 import InheritedField from '../shared/InheritedField';
 import { formatDateTime } from '../../lib/dateTimeFormat';
 import { autopayButton } from './autopayUi';
+import { useBillingStepUp, suppressBillingStepUpToast } from './useBillingStepUp';
 import type {FeeAuthorizationGap,PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type FeeAffirmations = { notified: boolean; cost: boolean };
@@ -115,6 +116,8 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
 export function usePaymentSettings(orgId?: string) {
   const { t } = useTranslation('billing');
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';
+  // Saving partner payment settings asks for a second-factor confirmation bound to the saved values.
+  const stepUp = useBillingStepUp();
   // Each identity owns its requests, including save-triggered reloads.
   const scope = useMemo(() => ({ path, active: false, request: 0 }), [path]);
   const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null, reminders: null as ReminderDraft | null,
@@ -166,8 +169,13 @@ export function usePaymentSettings(orgId?: string) {
       } : {}) };
     setState(current => ({ ...current, saving: true }));
     try {
-      await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-        errorFallback: t('reminders.saveFailed'), successMessage: t('reminders.saved') });
+      const outcome = await stepUp.run(stepUpGrant => runAction({
+        request: () => fetchWithAuth(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(stepUpGrant ? { ...body, stepUpGrant } : body) }),
+        errorFallback: t('reminders.saveFailed'), successMessage: t('reminders.saved'),
+        suppressErrorToast: suppressBillingStepUpToast }));
+      // Closed at the confirmation: nothing was saved, and the draft stays as it is.
+      if (!outcome.confirmed) return;
       if (scope.active) setState(current => current.scope === scope
         ? { ...current, affirmations: { notified: false, cost: false } } : current);
       await load();
@@ -175,7 +183,7 @@ export function usePaymentSettings(orgId?: string) {
       if (scope.active) setState(current => ({ ...current, saving: false }));
     }
   };
-  return { view, reminders, affirmations, loading, saving, invalid, error, load, save,
+  return { view, reminders, affirmations, loading, saving, invalid, error, load, save, stepUpPrompt: stepUp.prompt,
     setAffirmations: (value: FeeAffirmations) => setState(current =>
       scope.active && current.scope === scope ? { ...current, affirmations: value } : current),
     setReminders: (value: ReminderDraft) => setState(current =>
@@ -244,6 +252,7 @@ export default function PaymentsSettingsTab({ orgId }: { orgId?: string }) {
         affirmations={orgId ? undefined : model.affirmations} setAffirmations={orgId ? undefined : model.setAffirmations} />
     </section>}
     {model.invalid && <p role="alert" className="text-sm text-destructive">{t('autopay.invalid')}</p>}
+    {model.stepUpPrompt}
     {canManage && <div className="flex justify-end"><button type="button" data-testid="autopay-settings-save" disabled={model.invalid || model.saving}
       className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
       onClick={() => void model.save().catch(e => handleActionError(e, t('reminders.saveFailed')))}>
