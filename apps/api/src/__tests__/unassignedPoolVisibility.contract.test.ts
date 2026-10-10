@@ -147,6 +147,7 @@ const EPHEMERAL_ONLY: Record<string, string> = {
   'services/portal/deviceReadModel.ts': 'portal users belong to one customer org, never a holding org',
   'services/portal/hardwareHealthReadModel.ts': 'portal users belong to one customer org, never a holding org',
   'services/portal/hardwareInventoryReadModel.ts': 'portal users belong to one customer org, never a holding org',
+  'services/portal/performanceReadModel.ts': 'portal users belong to one customer org, never a holding org',
   'services/portal/securityReadModel.ts': 'portal users belong to one customer org, never a holding org',
   'services/portal/backupReadModel.ts': 'portal users belong to one customer org, never a holding org',
   'services/quickSupportOrg.ts': 'the Quick Support helpers themselves',
@@ -165,7 +166,7 @@ const EPHEMERAL_ONLY: Record<string, string> = {
 };
 
 /** Pinned: every file with an ephemeral-device filter, all buckets together. */
-const EPHEMERAL_DISCOVERED_FILES = 71;
+const EPHEMERAL_DISCOVERED_FILES = 72;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

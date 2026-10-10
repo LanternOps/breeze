@@ -5,11 +5,7 @@ import {
   hardwareInventoryDeviceDetail,
   hardwareInventoryDevicesPage,
 } from '../../services/portal/hardwareInventoryReadModel';
-import {
-  applyPortalCacheHeaders,
-  buildWeakEtag,
-  isEtagFresh,
-} from './helpers';
+import { respondWithPortalPrivateCache } from './helpers';
 
 // Route hub for the customer-portal hardware inventory surface (Portal
 // Advanced Visibility W02, #7732), gated by the `enableHardwareInventory`
@@ -27,31 +23,12 @@ const deviceParam = z.object({
   deviceId: z.string().uuid(),
 });
 
-function cached(c: Parameters<typeof applyPortalCacheHeaders>[0], payload: unknown) {
-  applyPortalCacheHeaders(c, {
-    scope: 'private',
-    browserMaxAgeSeconds: 30,
-    staleWhileRevalidateSeconds: 0,
-    vary: ['Authorization', 'Cookie'],
-  });
-  // asOf changes on every request; leave it out so unchanged data revalidates.
-  const etagPayload = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
-    ? { ...(payload as Record<string, unknown>), asOf: undefined }
-    : payload;
-  const etag = buildWeakEtag(etagPayload);
-  c.header('ETag', etag);
-  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
-    return new Response(null, { status: 304, headers: c.res.headers });
-  }
-  return c.json(payload);
-}
-
 portalHardwareInventoryRoutes.get(
   '/hardware-inventory/devices',
   zValidator('query', deviceListQuery),
   async (c) => {
     const auth = c.get('portalAuth');
-    return cached(
+    return respondWithPortalPrivateCache(
       c,
       await hardwareInventoryDevicesPage(auth.user.orgId, {
         ...c.req.valid('query'),
@@ -70,6 +47,6 @@ portalHardwareInventoryRoutes.get(
     const detail = await hardwareInventoryDeviceDetail(auth.user.orgId, deviceId, new Date());
     // A device from another organization is indistinguishable from a missing one.
     if (!detail) return c.json({ error: 'Device not found' }, 404);
-    return cached(c, detail);
+    return respondWithPortalPrivateCache(c, detail);
   },
 );

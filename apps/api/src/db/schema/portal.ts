@@ -64,6 +64,9 @@ export const portalBranding = pgTable('portal_branding', {
   // the read-only hardware inventory surface (make, model, processor, memory,
   // network adapters, connection counts). Inside "Enable all" (low sensitivity).
   enableHardwareInventory: boolean('enable_hardware_inventory').notNull().default(false),
+  // Portal Advanced Visibility W03 (#7733): read-only CPU, memory, disk and
+  // network performance trends. Inside "Enable all" (low sensitivity).
+  enablePerformanceMetrics: boolean('enable_performance_metrics').notNull().default(false),
   // Customer Portal Network Visibility (#5861): independent, fail-closed
   // visibility gate for the read-only networking surface.
   enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),

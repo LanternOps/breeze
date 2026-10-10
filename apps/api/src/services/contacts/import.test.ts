@@ -11,6 +11,10 @@ const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(()
 }));
 
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
+const responsibilityMocks = vi.hoisted(() => ({
+  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./responsibilities', () => responsibilityMocks);
 vi.mock('../callerVerification/subjects', () => ({ upsertDirectorySyncBinding: vi.fn(), attestBinding: vi.fn(), bindingsForContact: vi.fn() }));
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
@@ -526,6 +530,24 @@ describe('commitContactImport', () => {
     expect(recordDestinationChangeWithExecutor).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ orgId: ORG, kind: 'email', value: 'jane@acme.example', source: 'import' }),
+    );
+  });
+
+  it('imports siteId + admin as a Site-scoped legacy-derived responsibility', async () => {
+    stubState({ sites: [{ id: SITE, orgId: ORG, name: 'HQ' }] });
+    const summary = await commitContactImport([
+      { organizationId: ORG, site: 'HQ', name: 'Site Admin', roles: ['admin'] },
+    ], CTX, ACTOR);
+
+    expect(summary.imported).toHaveLength(1);
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        contactId: 'new-contact-1',
+        orgId: ORG,
+        siteId: SITE,
+        roles: ['admin'],
+      }),
     );
   });
 

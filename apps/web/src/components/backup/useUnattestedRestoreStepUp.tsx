@@ -2,74 +2,53 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ActionError } from '../../lib/runAction';
 import { mintStepUpGrant } from '../../lib/mfaStepUp';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, restoreAccessTokenFromCookie } from '../../stores/auth';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 
 /** Extra body fields a restore request carries once the operator confirmed it. */
 export type UnattestedRestoreExtras = { stepUpGrant?: string; confirmUnattestedRestore?: boolean };
 
+/**
+ * Sends the restore request. Resolves true when the server accepted it (the
+ * restore started), false when it failed and the caller already surfaced the
+ * failure. Throws only the step-up answers this hook handles.
+ */
+export type UnattestedRestoreSubmit = (extras: UnattestedRestoreExtras) => Promise<boolean>;
+
 type StepUpDetails = {
-  method: 'mfa' | 'confirm' | 'typed';
+  /** `enroll`: the user has no second factor and must set one up first. */
+  method: 'mfa' | 'confirm' | 'enroll';
   reason: string;
   /** Exactly the resource the server digests for the grant; sent back verbatim. */
   resource: unknown;
-  /** For `typed`: the device name to type, and the org the restore belongs to. */
-  confirmation?: { phrase: string; orgId: string };
 };
 
-function typedConfirmation(stepUp: Record<string, unknown>): StepUpDetails['confirmation'] {
-  const raw = stepUp.confirmation && typeof stepUp.confirmation === 'object' ? stepUp.confirmation as Record<string, unknown> : null;
-  if (!raw || typeof raw.phrase !== 'string' || !raw.phrase || typeof raw.orgId !== 'string' || !raw.orgId) return undefined;
-  return { phrase: raw.phrase, orgId: raw.orgId };
-}
-
-/** Same comparison as the server: case-insensitive, surrounding whitespace ignored. */
-function phraseMatches(phrase: string, typed: string): boolean {
-  return typed.trim().toLowerCase() === phrase.trim().toLowerCase();
-}
-
-/**
- * Mints the typed-confirmation grant (POST /backup/restore-confirmations) for
- * the resource the server named, in the restore's own org. Throws with the
- * server's message on refusal.
- */
-async function mintTypedConfirmation(details: StepUpDetails, typed: string): Promise<string> {
-  const response = await fetchWithAuth('/backup/restore-confirmations', {
-    method: 'POST',
-    body: JSON.stringify({ ...(details.resource as Record<string, unknown>), confirmationText: typed }),
-    orgIdOverride: details.confirmation!.orgId,
-  });
-  const data = await response.json().catch(() => null) as { stepUpGrant?: unknown; error?: unknown } | null;
-  if (!response.ok || typeof data?.stepUpGrant !== 'string') {
-    throw new Error(typeof data?.error === 'string' ? data.error : '');
-  }
-  return data.stepUpGrant;
-}
-
 const OPERATION = 'backup_unattested_restore';
+const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
+const MFA_ENROLLMENT_REQUIRED = 'MFA_ENROLLMENT_REQUIRED';
+/** Where a user sets up an authenticator app or a passkey. */
+const ENROLL_HREF = '/settings/profile';
 
 function stepUpDetails(err: unknown): StepUpDetails | null {
-  if (!(err instanceof ActionError) || err.status !== 403 || err.code !== 'STEP_UP_REQUIRED') return null;
+  if (!(err instanceof ActionError) || err.status !== 403) return null;
+  if (err.code !== STEP_UP_REQUIRED && err.code !== MFA_ENROLLMENT_REQUIRED) return null;
   const body = err.body && typeof err.body === 'object' ? err.body as Record<string, unknown> : {};
   const stepUp = body.stepUp && typeof body.stepUp === 'object' ? body.stepUp as Record<string, unknown> : null;
   if (!stepUp || stepUp.operation !== OPERATION) return null;
-  const confirmation = stepUp.method === 'typed' ? typedConfirmation(stepUp) : undefined;
   return {
-    // A typed confirmation without a usable phrase falls back to two-factor;
-    // the server then refuses the grant and asks again.
-    method: stepUp.method === 'confirm' ? 'confirm' : confirmation ? 'typed' : 'mfa',
+    method: err.code === MFA_ENROLLMENT_REQUIRED ? 'enroll' : stepUp.method === 'confirm' ? 'confirm' : 'mfa',
     reason: typeof stepUp.reason === 'string' ? stepUp.reason : 'unattested',
     resource: stepUp.resource,
-    ...(confirmation ? { confirmation } : {}),
   };
 }
 
 /**
  * For runAction's `suppressErrorToast`: a restore answered with a step-up
- * request is not a failure — it opens the confirmation prompt instead.
+ * request (or a request to enroll a second factor first) is not a failure —
+ * it opens the confirmation prompt instead.
  */
 export function suppressUnattestedRestoreStepUpToast(status: number, code: string | undefined): boolean {
-  return status === 403 && code === 'STEP_UP_REQUIRED';
+  return status === 403 && (code === STEP_UP_REQUIRED || code === MFA_ENROLLMENT_REQUIRED);
 }
 
 /** True for the step-up request this hook handles; callers rethrow it instead of showing it as an error. */
@@ -77,20 +56,42 @@ export function isUnattestedRestoreStepUp(err: unknown): boolean {
   return stepUpDetails(err) !== null;
 }
 
-async function discoverTier(): Promise<ReauthTier> {
+/**
+ * The factor this prompt can confirm with. `smsOnly`: the account's only
+ * factor is text-message codes, which this prompt cannot use.
+ */
+async function discoverFactors(): Promise<{ tier: ReauthTier; smsOnly: boolean }> {
   const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
   if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = await user.json() as { mfaMethod?: string | null } | null;
+  const me = await user.json() as { mfaEnabled?: boolean | null; mfaMethod?: string | null } | null;
   const keys = await passkeys.json() as unknown;
   const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
   if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
-  return pickReauthTier(list.length, me.mfaMethod ?? null);
+  return {
+    tier: pickReauthTier(list.length, me.mfaMethod ?? null),
+    smsOnly: list.length === 0 && me.mfaEnabled === true && me.mfaMethod === 'sms',
+  };
+}
+
+/**
+ * What the prompt asks for: set up a second factor first (the server said so,
+ * or the account has no factor this prompt can use), a TOTP code, a passkey,
+ * or an explicit confirmation (two-factor authentication disabled).
+ */
+type PromptMode = 'enroll' | 'code' | 'passkey' | 'confirm';
+
+function modeForTier(tier: ReauthTier): PromptMode {
+  if (tier === 'passkey') return 'passkey';
+  if (tier === 'totp') return 'code';
+  return 'enroll';
 }
 
 type Pending = {
-  submit: (extras: UnattestedRestoreExtras) => Promise<void>;
+  submit: UnattestedRestoreSubmit;
   details: StepUpDetails;
-  tier: ReauthTier | null;
+  mode: PromptMode;
+  /** With mode `enroll`: the account has text-message codes but no factor this prompt can use. */
+  smsOnly: boolean;
 };
 
 /**
@@ -100,21 +101,23 @@ type Pending = {
  * `403 STEP_UP_REQUIRED` for operation `backup_unattested_restore` reveals the
  * prompt. With two-factor authentication on, a grant is minted for the exact
  * resource the server named and the request is resubmitted with
- * `stepUpGrant`. A user without a second factor restoring a backup taken
- * before attestations existed is asked (`method: 'typed'`) to type the device
- * name instead; POST /backup/restore-confirmations mints the grant and the
- * request is resubmitted with it the same way. On a deployment without
- * two-factor authentication, an explicit confirmation resubmits with
- * `confirmUnattestedRestore: true`. The server stays the only
- * enforcer.
+ * `stepUpGrant`. A user without a second factor gets
+ * `403 MFA_ENROLLMENT_REQUIRED` instead: the prompt links to the profile page
+ * to set one up, and Retry refreshes the session (setting up a factor ends
+ * the old one) and resubmits the request, which then asks for the two-factor
+ * step-up. On a deployment without two-factor authentication, an explicit
+ * confirmation resubmits with `confirmUnattestedRestore: true`. The server
+ * stays the only enforcer.
  *
- * `submit` must call runAction with `suppressErrorToast:
- * suppressUnattestedRestoreStepUpToast` and let the step-up ActionError reach
- * `run` (rethrow it from its own catch). Any other failure is the caller's to
- * surface; `run` rethrows it.
+ * `submit` (UnattestedRestoreSubmit) must call runAction with
+ * `suppressErrorToast: suppressUnattestedRestoreStepUpToast`, let the step-up
+ * ActionError reach the hook (rethrow it from its own catch), surface any
+ * other failure itself and resolve false for it, and resolve true only when
+ * the restore was accepted. The prompt stays open until a resubmit resolves
+ * true.
  */
 export function useUnattestedRestoreStepUp(): {
-  run: (submit: (extras: UnattestedRestoreExtras) => Promise<void>) => Promise<void>;
+  run: (submit: UnattestedRestoreSubmit) => Promise<void>;
   prompt: ReactNode;
 } {
   const { t } = useTranslation('backup');
@@ -125,49 +128,87 @@ export function useUnattestedRestoreStepUp(): {
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
 
-  const run = useCallback(async (submit: (extras: UnattestedRestoreExtras) => Promise<void>) => {
+  /** Shows the prompt for a step-up answer; null when the factor discovery failed. */
+  const present = useCallback(async (
+    submit: UnattestedRestoreSubmit,
+    details: StepUpDetails,
+  ): Promise<Pending | null> => {
+    let mode: PromptMode;
+    let smsOnly = false;
+    if (details.method === 'mfa') {
+      try {
+        const factors = await discoverFactors();
+        mode = modeForTier(factors.tier);
+        smsOnly = factors.smsOnly;
+      } catch {
+        if (live.current) setError(t('unattestedRestoreStepUp.unavailable'));
+        return null;
+      }
+    } else {
+      mode = details.method;
+    }
+    if (!live.current) return null;
+    const next: Pending = { submit, details, mode, smsOnly };
+    setCode('');
+    setError(undefined);
+    setPending(next);
+    return next;
+  }, [t]);
+
+  const run = useCallback(async (submit: UnattestedRestoreSubmit) => {
     try {
       await submit({});
     } catch (cause) {
       const details = stepUpDetails(cause);
       if (!details) throw cause;
-      let tier: ReauthTier | null = null;
-      if (details.method === 'mfa') {
-        try {
-          tier = await discoverTier();
-        } catch {
-          if (live.current) setError(t('unattestedRestoreStepUp.unavailable'));
-          return;
-        }
-      }
-      if (!live.current) return;
-      setCode('');
-      setError(undefined);
-      setPending({ submit, details, tier });
+      await present(submit, details);
     }
-  }, [t]);
+  }, [present]);
+
+  // After the user set up a factor (in another tab), resubmit the restore as
+  // it was first sent: the server now asks for the two-factor step-up. The
+  // prompt stays open unless the caller reports the restore started (a
+  // failure was already surfaced by the caller).
+  const retry = async () => {
+    if (!pending || busy) return;
+    const { submit } = pending;
+    setBusy(true);
+    setError(undefined);
+    try {
+      // Setting up a factor ends this tab's session tokens: refresh first so
+      // the resubmit carries a current token. If the refresh fails, the
+      // request's own unauthorized handling decides.
+      await restoreAccessTokenFromCookie();
+      if (await submit({}) && live.current) setPending(null);
+    } catch (cause) {
+      // submit throws only the step-up answers.
+      const details = stepUpDetails(cause);
+      if (!details || !live.current) return;
+      const next = await present(submit, details);
+      if (next?.mode === 'enroll' && live.current) {
+        setError(next.smsOnly
+          ? t('unattestedRestoreStepUp.enrollStillRequiredSmsOnly')
+          : t('unattestedRestoreStepUp.enrollStillRequired'));
+      }
+    } finally {
+      if (live.current) setBusy(false);
+    }
+  };
 
   const confirm = async () => {
-    if (!pending || busy) return;
+    if (!pending || busy || pending.mode === 'enroll') return;
     setBusy(true);
     setError(undefined);
     try {
       let extras: UnattestedRestoreExtras;
-      if (pending.details.method === 'confirm') {
+      if (pending.mode === 'confirm') {
         extras = { confirmUnattestedRestore: true };
-      } else if (pending.details.method === 'typed') {
-        try {
-          extras = { stepUpGrant: await mintTypedConfirmation(pending.details, code) };
-        } catch (cause) {
-          if (live.current) setError(cause instanceof Error && cause.message ? cause.message : t('unattestedRestoreStepUp.failed'));
-          return;
-        }
       } else {
         try {
           const stepUpGrant = await mintStepUpGrant({
             operation: OPERATION,
             resource: pending.details.resource,
-            reauth: pending.tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code },
+            reauth: pending.mode === 'passkey' ? { method: 'passkey' } : { method: 'totp', code },
           });
           extras = { stepUpGrant };
         } catch (cause) {
@@ -177,14 +218,10 @@ export function useUnattestedRestoreStepUp(): {
       }
       if (!live.current) return;
       try {
-        await pending.submit(extras);
-        if (live.current) setPending(null);
-      } catch (cause) {
-        // A refused grant comes back as another step-up request; anything
-        // else was already surfaced by the caller's own handling.
-        if (live.current) {
-          setError(stepUpDetails(cause) ? t('unattestedRestoreStepUp.failed') : (cause instanceof Error ? cause.message : t('unattestedRestoreStepUp.failed')));
-        }
+        if (await pending.submit(extras) && live.current) setPending(null);
+      } catch {
+        // submit throws only the step-up answers: the grant was refused.
+        if (live.current) setError(t('unattestedRestoreStepUp.failed'));
       }
     } finally {
       if (live.current) setBusy(false);
@@ -195,10 +232,7 @@ export function useUnattestedRestoreStepUp(): {
     return { run, prompt: error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null };
   }
 
-  const { details, tier } = pending;
-  const needsCode = details.method === 'mfa' && tier === 'totp';
-  const typed = details.method === 'typed' ? details.confirmation! : null;
-  const noFactor = details.method === 'mfa' && tier === 'password';
+  const { details, mode, smsOnly } = pending;
   const prompt = (
     <div
       data-testid="unattested-restore-stepup"
@@ -212,53 +246,66 @@ export function useUnattestedRestoreStepUp(): {
           ? t('unattestedRestoreStepUp.introProducerOnly')
           : t('unattestedRestoreStepUp.introUnattested')}
       </p>
-      <p className="text-xs text-muted-foreground">
-        {details.method === 'confirm'
-          ? t('unattestedRestoreStepUp.confirmOnly')
-          : typed
-            ? t('unattestedRestoreStepUp.typedIntro')
+      {mode === 'enroll' ? (
+        <>
+          <p className="text-xs text-muted-foreground">
+            {smsOnly ? t('unattestedRestoreStepUp.enrollIntroSmsOnly') : t('unattestedRestoreStepUp.enrollIntro')}
+          </p>
+          <a
+            data-testid="unattested-restore-stepup-enroll"
+            href={ENROLL_HREF}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block text-sm font-medium underline underline-offset-4"
+          >
+            {t('unattestedRestoreStepUp.enrollLink')}
+          </a>
+        </>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          {mode === 'confirm'
+            ? t('unattestedRestoreStepUp.confirmOnly')
             : t('unattestedRestoreStepUp.twoFactor')}
-      </p>
-      {typed ? (
-        <label className="block text-sm">
-          {t('unattestedRestoreStepUp.typedLabel', { phrase: typed.phrase })}
+        </p>
+      )}
+      {mode === 'code' && (
+        <label className="block text-sm">{t('unattestedRestoreStepUp.code')}
           <input
-            data-testid="unattested-restore-stepup-phrase"
+            data-testid="unattested-restore-stepup-code"
             className="mt-1 h-10 w-full rounded border bg-background px-3"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={255}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
             value={code}
-            onChange={(event) => setCode(event.target.value)}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
             disabled={busy}
           />
         </label>
-      ) : noFactor ? <p role="alert" className="text-sm text-destructive">{t('unattestedRestoreStepUp.noFactor')}</p>
-        : needsCode ? (
-          <label className="block text-sm">{t('unattestedRestoreStepUp.code')}
-            <input
-              data-testid="unattested-restore-stepup-code"
-              className="mt-1 h-10 w-full rounded border bg-background px-3"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={code}
-              onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
-              disabled={busy}
-            />
-          </label>
-        ) : details.method === 'mfa' ? <p className="text-xs text-muted-foreground">{t('unattestedRestoreStepUp.passkey')}</p> : null}
+      )}
+      {mode === 'passkey' && <p className="text-xs text-muted-foreground">{t('unattestedRestoreStepUp.passkey')}</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">
-        <button
-          type="button"
-          data-testid="unattested-restore-stepup-confirm"
-          className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
-          disabled={busy || noFactor || (needsCode && code.length !== 6) || (typed !== null && !phraseMatches(typed.phrase, code))}
-          onClick={() => void confirm()}
-        >
-          {t('unattestedRestoreStepUp.confirm')}
-        </button>
+        {mode === 'enroll' ? (
+          <button
+            type="button"
+            data-testid="unattested-restore-stepup-retry"
+            className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+            disabled={busy}
+            onClick={() => void retry()}
+          >
+            {t('common:actions.retry')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-testid="unattested-restore-stepup-confirm"
+            className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+            disabled={busy || (mode === 'code' && code.length !== 6)}
+            onClick={() => void confirm()}
+          >
+            {t('unattestedRestoreStepUp.confirm')}
+          </button>
+        )}
         <button
           type="button"
           data-testid="unattested-restore-stepup-cancel"

@@ -484,6 +484,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // the '_' in 'contact_' ahead of the 's' in 'contacts' (the same
   // prefix-extension trap noted below for custom_field_definitions).
   'contact_external_links',
+  // contact_roles is a child of contacts/sites/device_groups and must be
+  // deleted before any of those parents during tenant erasure.
+  'contact_roles',
   'contacts',
   // localeCompare puts the '_' in 'contract_billing_period_outcomes' ahead of
   // the 's' in 'contract_billing_periods' — the same prefix-extension trap

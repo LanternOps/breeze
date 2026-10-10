@@ -436,6 +436,20 @@ describe('backup routes', () => {
     expect(fetched.data.resultDetails.status).toBe('failed');
   });
 
+  it('has no endpoint that confirms a restore without a second factor', async () => {
+    const res = await app.request(`/backup/restore-confirmations?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        commandType: 'backup_restore',
+        confirmationText: 'Front Desk PC',
+      }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('should list restore jobs with structured result details', async () => {
     const now = new Date();
     selectMock.mockReturnValueOnce(

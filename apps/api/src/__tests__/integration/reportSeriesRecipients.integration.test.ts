@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { reportSeries } from '../../db/schema';
+import { contactRoles, reportSeries } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { resolveSeriesTargetOrgIds } from '../../services/reportSeries/targets';
 import {
@@ -30,6 +30,11 @@ async function contact(orgId: string, email: string, opts: { primary?: boolean; 
     INSERT INTO contacts (id, org_id, site_id, name, email, is_primary, roles)
     VALUES (${id}, ${orgId}, ${siteId}, ${email}, ${email}, ${opts.primary ?? false},
             ${`{${(opts.roles ?? []).join(',')}}`}::text[])`);
+  if ((opts.roles ?? []).length > 0) {
+    await db.insert(contactRoles).values((opts.roles ?? []).map((role) => ({
+      contactId: id, orgId, role, siteId, deviceGroupId: null,
+    })));
+  }
   return id;
 }
 

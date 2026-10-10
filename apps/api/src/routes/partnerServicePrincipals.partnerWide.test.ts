@@ -17,6 +17,7 @@ const {
       partnerId: 'p-1' as string | null,
       partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null | undefined,
       user: { id: 'u-1', email: 'admin@example.com' },
+      token: { aep: 1, mep: 1 },
     },
   },
   selectRowsRef: { current: [] as unknown[][] },
@@ -31,6 +32,7 @@ const {
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     c.set('auth', authRef.current);
+    c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
     await next();
   }),
   requireScope: () => async (_c: any, next: any) => next(),
@@ -81,6 +83,8 @@ vi.mock('../services/permissions', () => ({
     ORGS_READ: { resource: 'organizations', action: 'read' },
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
   },
+  hasPermission: (perms: { permissions: Array<{ resource: string; action: string }> }, resource: string, action: string) =>
+    perms.permissions.some((p) => (p.resource === '*' || p.resource === resource) && (p.action === '*' || p.action === action)),
 }));
 
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
@@ -96,6 +100,7 @@ function setPartnerOrgAccess(value: 'all' | 'selected' | 'none' | undefined) {
     partnerId: 'p-1',
     partnerOrgAccess: value,
     user: { id: 'u-1', email: 'admin@example.com' },
+    token: { aep: 1, mep: 1 },
   };
 }
 
@@ -154,7 +159,10 @@ describe('partner service principal partner-wide capability gate', () => {
     dbSelectMock.mockImplementation(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(async () => selectRowsRef.current.shift() ?? []),
+          limit: vi.fn(() => {
+            const rows = selectRowsRef.current.shift() ?? [];
+            return Object.assign(Promise.resolve(rows), { for: vi.fn(async () => rows) });
+          }),
           orderBy: vi.fn(async () => selectRowsRef.current.shift() ?? []),
         })),
       })),
@@ -222,7 +230,7 @@ describe('partner service principal partner-wide capability gate', () => {
   it('PATCH /:id succeeds with all access and updates the principal', async () => {
     // Primes the existing-principal lookup PATCH runs before evaluating
     // enrollment-keys:write restrictions.
-    queueSelectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }]);
+    queueSelectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null, status: 'active', createdBy: 'u-1' }]);
     const res = await requestPatch(makeApp());
 
     expect(res.status).toBe(200);
@@ -231,6 +239,7 @@ describe('partner service principal partner-wide capability gate', () => {
   });
 
   it('POST /:id/keys succeeds with all access and issues a key', async () => {
+    queueSelectRows([{ scopes: ['devices:read'], createdBy: 'u-1' }]);
     const res = await requestIssue(makeApp());
 
     expect(res.status).toBe(201);
@@ -239,6 +248,7 @@ describe('partner service principal partner-wide capability gate', () => {
   });
 
   it('POST /:id/keys/:keyId/rotate succeeds with all access and rotates the key', async () => {
+    queueSelectRows([{ scopes: ['devices:read'], createdBy: 'u-1' }]);
     const res = await requestRotate(makeApp());
 
     expect(res.status).toBe(200);

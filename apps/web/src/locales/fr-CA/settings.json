@@ -1909,6 +1909,10 @@
           "label": "Inventaire matériel",
           "description": "Affiche le fabricant, le modèle, le processeur, la mémoire, les cartes réseau et le nombre de connexions des machines de votre client."
         },
+        "enablePerformanceMetrics": {
+          "label": "Mesures de performance",
+          "description": "Affiche en lecture seule les tendances de performance du processeur, de la mémoire, des disques et du réseau des machines de votre client."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",
           "description": "Affiche dans le portail client l’état du réseau et les actifs découverts en lecture seule."

@@ -108,7 +108,7 @@ it('reads the feature switch in a short context and releases it before the handl
   let held = false;
   const select = vi.fn(() => {
     expect(held).toBe(true);
-    return { from: () => ({ where: () => ({ limit: async () => [{ enabled: true }] }) }) };
+    return { from: () => ({ where: () => ({ limit: async () => [{ autopayEnabled: true, status: 'active', deletedAt: null }] }) }) };
   });
   Object.assign(db, { select });
   vi.mocked(withSystemDbAccessContext).mockImplementationOnce(async fn => {

@@ -158,6 +158,9 @@ it('refuses subject_unmatched when the requester binding was revoked and request
   m.results.length = 0;
   const other = { ...binding, id: '88888888-8888-4888-8888-888888888888' };
   const cross = candidate({ requesterBindingId: other.id, actionScope: 'disable_user' });
-  m.results.push([cross], [], [], [], [cross], [], [other], [{ id: binding.contactId, siteId: 'site', roles: ['admin'] }]);
+  // The contact's legacy roles[] projection is not authoritative. The final
+  // empty result is the canonical Organization-scoped `admin` lookup; a
+  // site-scoped manager therefore cannot authorize this org-level action.
+  m.results.push([cross], [], [], [], [cross], [], [other], [{ id: binding.contactId, siteId: 'site', roles: ['admin'] }], []);
   await expect(requireCallerVerification({ ...ok, action: 'disable_user' })).rejects.toMatchObject({ payload: { reason: 'requester_not_authorized' } });
 });

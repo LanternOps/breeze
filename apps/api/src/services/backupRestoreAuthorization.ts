@@ -33,6 +33,14 @@ export type RestoreTuple = { snapshotDbId: string; targetDeviceId: string; comma
 /** Canonical step-up resource digest for one unattested restore (shared with the step-up mint route). */
 export { unattestedRestoreResourceDigest };
 
+/**
+ * How a technician confirmed a restore: a two-factor step-up (`mfa`), or an
+ * explicit confirmation on a deployment running with two-factor
+ * authentication disabled (`confirm`). Nothing else confirms one.
+ */
+export const RESTORE_CONFIRMATION_METHODS = ['mfa', 'confirm'] as const;
+export type RestoreConfirmationMethod = (typeof RESTORE_CONFIRMATION_METHODS)[number];
+
 export type RestoreAuthorizationBinding =
   | { commandId: string }
   | { recoveryTokenId: string }
@@ -44,8 +52,8 @@ export type RecordRestoreAuthorizationInput = RestoreTuple & {
   userId: string;
   userEmail?: string | null;
   binding: RestoreAuthorizationBinding;
-  /** How the technician confirmed it: two-factor step-up, typed device name, or explicit confirmation (2FA disabled). */
-  confirmationMethod?: 'mfa' | 'typed' | 'confirm';
+  /** How the technician confirmed it (RESTORE_CONFIRMATION_METHODS). */
+  confirmationMethod?: RestoreConfirmationMethod;
   ipAddress?: string | null;
   userAgent?: string | null;
 };
@@ -78,6 +86,12 @@ export async function recordRestoreAuthorization(
   input: RecordRestoreAuthorizationInput,
   writer: RestoreAuthorizationWriter = drizzleWriter,
 ): Promise<string> {
+  if (
+    input.confirmationMethod !== undefined
+    && !(RESTORE_CONFIRMATION_METHODS as readonly string[]).includes(input.confirmationMethod)
+  ) {
+    throw new Error(`Unknown restore confirmation method: ${String(input.confirmationMethod)}`);
+  }
   const id = randomUUID();
   const resourceDigest = unattestedRestoreResourceDigest(input);
   const binding = input.binding;

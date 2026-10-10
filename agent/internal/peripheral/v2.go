@@ -17,7 +17,12 @@ var applyPeripheralPolicyV2Mu sync.Mutex
 // key-sorted canonical JSON contract. Marshal through generic JSON values so
 // encoding/json sorts every object key, including policies and exceptions.
 func DigestPeripheralPolicyEnvelopeV2(envelope PeripheralPolicyEnvelopeV2) (string, error) {
-	groupIDs := append([]string(nil), envelope.Identity.GroupIDs...)
+	// A non-nil slice even when the device is in no group: append onto a nil
+	// slice returns nil for zero elements, which json.Marshal writes as
+	// "groupIds":null — but the controller hashes [], so every ungrouped
+	// device rejected every envelope as malformed_digest.
+	groupIDs := make([]string, 0, len(envelope.Identity.GroupIDs))
+	groupIDs = append(groupIDs, envelope.Identity.GroupIDs...)
 	slices.Sort(groupIDs)
 	digestFields := map[string]any{
 		"schemaVersion": envelope.SchemaVersion,

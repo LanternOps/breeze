@@ -7,16 +7,10 @@ const mocks = vi.hoisted(() => ({
   recordRestoreAuthorization: vi.fn(),
   targetRefusal: vi.fn(),
   userIsMfaProtected: vi.fn(),
-  devicePhraseRows: [] as Array<{ displayName: string | null; hostname: string }>,
   enable2fa: { value: true },
 }));
 
 vi.mock('../../db', () => ({
-  db: {
-    select: () => ({
-      from: () => ({ where: () => ({ limit: async () => mocks.devicePhraseRows }) }),
-    }),
-  },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => fn(),
 }));
@@ -81,7 +75,6 @@ beforeEach(() => {
   mocks.getUserEpochs.mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
   mocks.targetRefusal.mockResolvedValue(null);
   mocks.userIsMfaProtected.mockResolvedValue(true);
-  mocks.devicePhraseRows = [{ displayName: 'Front Desk PC', hostname: 'FD-PC-01' }];
 });
 
 describe('checkRestoreIntegrityRequest', () => {
@@ -281,93 +274,84 @@ describe('gateRestoreCommand', () => {
   });
 });
 
-describe('typed confirmation (user without a second factor, snapshot taken before attestations existed)', () => {
+describe('a user without a second factor', () => {
   beforeEach(() => {
     mocks.userIsMfaProtected.mockResolvedValue(false);
   });
 
-  it('asks the user to type the target device name, bound to the exact restore', async () => {
-    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    const out = await checkRestoreIntegrityRequest(ctx(), request());
-    expect(out).toEqual({
-      ok: false,
-      status: 403,
-      body: {
-        error: RESTORE_INTEGRITY_MESSAGES.typed_confirmation_required,
-        code: 'STEP_UP_REQUIRED',
-        stepUp: {
-          operation: 'backup_unattested_restore',
-          method: 'typed',
-          reason: 'unattested_legacy',
-          resource: { snapshotId: SNAPSHOT, targetDeviceId: SOURCE, commandType: 'backup_restore' },
-          confirmation: { phrase: 'Front Desk PC', orgId: ORG },
-        },
+  const enrollmentRequired = (reason: string, target = SOURCE) => ({
+    ok: false,
+    status: 403,
+    body: {
+      error: RESTORE_INTEGRITY_MESSAGES.mfa_enrollment_required,
+      code: 'MFA_ENROLLMENT_REQUIRED',
+      stepUp: {
+        operation: 'backup_unattested_restore',
+        method: 'enroll',
+        reason,
+        resource: { snapshotId: SNAPSHOT, targetDeviceId: target, commandType: 'backup_restore' },
       },
-    });
-    expect(mocks.userIsMfaProtected).toHaveBeenCalledWith(USER);
-  });
-
-  it('falls back to the hostname when the device has no display name', async () => {
-    mocks.devicePhraseRows = [{ displayName: '  ', hostname: 'FD-PC-01' }];
-    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    const out = await checkRestoreIntegrityRequest(ctx(), request());
-    expect(out).toMatchObject({ body: { stepUp: { method: 'typed', confirmation: { phrase: 'FD-PC-01' } } } });
-  });
-
-  it('consumes only a typed-confirmation grant for the same restore and records the method', async () => {
-    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    mocks.consumeStepUpGrant.mockResolvedValue(true);
-    const out = await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT }));
-    expect(out).toEqual({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
-    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, {
-      userId: USER,
-      operation: 'backup_unattested_restore_typed',
-      authEpoch: 3,
-      mfaEpoch: 5,
-      sid: 'sid-1',
-      resourceDigest: `sha256:${SNAPSHOT}:${SOURCE}:backup_restore`,
-    });
-  });
-
-  it('a user with a second factor keeps the two-factor step-up and cannot spend a typed grant', async () => {
-    mocks.userIsMfaProtected.mockResolvedValue(true);
-    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    mocks.consumeStepUpGrant.mockResolvedValue(true);
-    expect(await checkRestoreIntegrityRequest(ctx(), request())).toMatchObject({ body: { stepUp: { method: 'mfa' } } });
-    await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT }));
-    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'backup_unattested_restore' }));
+    },
   });
 
   it.each([
-    ['a snapshot that lost or never got an attestation after attestations existed', unattested('unattested'), SOURCE],
-    ['a device-local snapshot restored onto another device', attested('producer_only'), OTHER],
-  ])('%s still needs the two-factor step-up', async (_name, integrity, target) => {
+    ['a snapshot taken before attestations existed', unattested('unattested_legacy'), 'unattested_legacy', SOURCE],
+    ['a snapshot without an attestation for another reason', unattested('unattested'), 'unattested', SOURCE],
+    ['a device-local snapshot restored onto another device', attested('producer_only'), 'producer_only_other_target', OTHER],
+  ])('%s: asked to enroll a second factor, with the step-up resource to resume with', async (_name, integrity, reason, target) => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(integrity);
     const out = await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target }));
-    expect(out).toMatchObject({ status: 403, body: { stepUp: { method: 'mfa' } } });
-    expect((out as unknown as { body: { stepUp: Record<string, unknown> } }).body.stepUp.confirmation).toBeUndefined();
-    // Even a presented grant is only ever consumed as the two-factor operation.
+    expect(out).toEqual(enrollmentRequired(reason, target));
+    expect(mocks.userIsMfaProtected).toHaveBeenCalledWith(USER);
+  });
+
+  it('a presented grant is never consumed, and nothing is recorded', async () => {
+    // A grant is bound to the MFA epoch, so one held by a user without a
+    // factor is never valid: the consume finds nothing to spend.
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     mocks.consumeStepUpGrant.mockResolvedValue(false);
-    await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target, stepUpGrant: GRANT }));
-    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'backup_unattested_restore' }));
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrollmentRequired('unattested_legacy'));
+    expect(await gateRestoreCommand(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrollmentRequired('unattested_legacy'));
+    expect(mocks.recordRestoreAuthorization).not.toHaveBeenCalled();
+    expect(mocks.userIsMfaProtected).toHaveBeenCalledTimes(2);
   });
 
-  it('when the factor lookup fails, it asks for the two-factor step-up', async () => {
-    mocks.userIsMfaProtected.mockRejectedValue(new Error('db down'));
+  it('a confirmation flag is not accepted in place of a second factor', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    expect(await checkRestoreIntegrityRequest(ctx(), request())).toMatchObject({ body: { stepUp: { method: 'mfa' } } });
-  });
-
-  it('when the target device name cannot be read, it asks for the two-factor step-up', async () => {
-    mocks.devicePhraseRows = [];
-    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    expect(await checkRestoreIntegrityRequest(ctx(), request())).toMatchObject({ body: { stepUp: { method: 'mfa' } } });
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ confirmUnattestedRestore: true })))
+      .toEqual(enrollmentRequired('unattested_legacy'));
   });
 
   it('uses the factor state the caller read in the request context', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     const out = await checkRestoreIntegrityRequest(ctx(), request({ userMfaProtected: false }));
-    expect(out).toMatchObject({ body: { stepUp: { method: 'typed' } } });
+    expect(out).toEqual(enrollmentRequired('unattested_legacy'));
+    expect(mocks.userIsMfaProtected).not.toHaveBeenCalled();
+  });
+
+  it('when the factor lookup fails, it asks for the two-factor step-up', async () => {
+    mocks.userIsMfaProtected.mockRejectedValue(new Error('db down'));
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    expect(await checkRestoreIntegrityRequest(ctx(), request())).toMatchObject({
+      ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', stepUp: { method: 'mfa' } },
+    });
+  });
+
+  it('a device the restore cannot run on is reported first', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.targetRefusal.mockResolvedValueOnce({ code: 'device_offline', message: 'Device is offline, cannot execute command' });
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ executingDeviceId: SOURCE })))
+      .toEqual({ ok: false, status: 409, body: { error: 'Device is offline, cannot execute command', code: 'device_offline' } });
+  });
+
+  it('with two-factor authentication disabled on the deployment, the explicit confirmation still applies', async () => {
+    mocks.enable2fa.value = false;
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    expect(await checkRestoreIntegrityRequest(ctx(), request())).toMatchObject({
+      ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', stepUp: { method: 'confirm' } },
+    });
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ confirmUnattestedRestore: true })))
+      .toEqual({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'confirm' });
     expect(mocks.userIsMfaProtected).not.toHaveBeenCalled();
   });
 
@@ -384,20 +368,56 @@ describe('typed confirmation (user without a second factor, snapshot taken befor
       .toMatchObject({ ok: false, status: 409, body: { code: 'snapshot_integrity_failed' } });
     expect(mocks.consumeStepUpGrant).not.toHaveBeenCalled();
   });
+});
 
-  it('gateRestoreCommand records the typed confirmation as the method', async () => {
+describe('a user with a second factor', () => {
+  it('a valid grant restores without looking up the user\'s factors', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT })))
+      .toEqual({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledTimes(1);
+    expect(mocks.userIsMfaProtected).not.toHaveBeenCalled();
+  });
+
+  it('an invalid grant looks up the factors to answer with the step-up', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(false);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT })))
+      .toMatchObject({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', stepUp: { method: 'mfa' } } });
+    expect(mocks.userIsMfaProtected).toHaveBeenCalledWith(USER);
+  });
+
+  it.each([
+    ['a snapshot taken before attestations existed', unattested('unattested_legacy'), SOURCE],
+    ['a snapshot without an attestation for another reason', unattested('unattested'), SOURCE],
+    ['a device-local snapshot restored onto another device', attested('producer_only'), OTHER],
+  ])('%s: confirms with the two-factor step-up, the only grant operation ever consumed', async (_name, integrity, target) => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(integrity);
+    const asked = await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target }));
+    expect(asked).toMatchObject({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', stepUp: { method: 'mfa' } } });
+    expect(Object.keys((asked as unknown as { body: { stepUp: Record<string, unknown> } }).body.stepUp).sort())
+      .toEqual(['method', 'operation', 'reason', 'resource']);
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target, stepUpGrant: GRANT })))
+      .toMatchObject({ ok: true, confirmationMethod: 'mfa' });
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledTimes(1);
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'backup_unattested_restore' }));
+  });
+
+  it('gateRestoreCommand records the two-factor confirmation as the method', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     mocks.consumeStepUpGrant.mockResolvedValue(true);
     mocks.recordRestoreAuthorization.mockResolvedValue('auth-1');
     await gateRestoreCommand(ctx(), request({ stepUpGrant: GRANT }));
-    expect(mocks.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({ confirmationMethod: 'typed' }));
+    expect(mocks.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({ confirmationMethod: 'mfa' }));
   });
 });
 
 describe('recordRequestAuthorization confirmation method', () => {
-  it('passes the confirmation method through to the authorization record', async () => {
+  it.each(['mfa', 'confirm'] as const)('passes %s through to the authorization record', async (method) => {
     mocks.recordRestoreAuthorization.mockResolvedValue('auth-1');
-    await recordRequestAuthorization(ctx(), request(), 'unattested_legacy', { commandId: 'cmd-1' }, { confirmationMethod: 'typed' });
-    expect(mocks.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({ confirmationMethod: 'typed' }));
+    await recordRequestAuthorization(ctx(), request(), 'unattested_legacy', { commandId: 'cmd-1' }, { confirmationMethod: method });
+    expect(mocks.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({ confirmationMethod: method }));
   });
 });

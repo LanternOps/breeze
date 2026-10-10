@@ -355,9 +355,10 @@ export async function addCallerVerificationSystemComment(input: {
     originPrincipalKind: 'system',
     content: `Caller verification ${input.event} (${input.verificationId})`,
     isPublic: false,
-  }).returning({ id: ticketComments.id });
+  }).returning({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId });
+  // The row's STORED origin, so the webhook says what the feed says.
   await writeTicketOutbox(input.orgId, ticket.id, 'ticket.commented', {
-    commentId: comment!.id, isPublic: false, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
+    commentId: comment!.id, isPublic: false, originPrincipalKind: comment!.originPrincipalKind, originPrincipalId: comment!.originPrincipalId, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
   });
 }
 
@@ -483,8 +484,12 @@ export async function revalidateTicketAssignee(
     oldValue: ticket.assignedTo,
     newValue: null,
   });
+  // Same shape as assignTicket's row: the actor and partner ride it, so a
+  // webhook consumer reads actorPrincipalId here too. assigneeId is null, so
+  // ticketOutboxPublisher queues no notification for it.
   await connection.insert(ticketOutbox).values({
-    orgId: ticket.orgId, ticketId, eventType: 'ticket.assigned', payload: { assigneeId: null },
+    orgId: ticket.orgId, ticketId, eventType: 'ticket.assigned',
+    payload: { assigneeId: null, ...actorEventIdentity(actor), partnerId: partnerId ?? null },
   });
   // Keep the audit in the mutation transaction: org merge holds an org row
   // lock, so a separate audit connection's FK check would wait on this writer.
@@ -910,11 +915,11 @@ export type CreateTicketInput =
   | (BaseCreateTicketInput & { source: 'email'; submitterEmail: string; submitterName?: string; submittedBy?: string })
   | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal' | 'email'>; submittedBy?: string; submitterEmail?: string; submitterName?: string });
 
-// NOTE: emitTicketEvent and createAuditLogAsync below are called while the
-// surrounding request transaction is still open. If the transaction later rolls
-// back, a phantom event/audit row survives — this is an accepted codebase pattern
-// (see auditService.ts). Ticket-event consumers MUST therefore treat
-// ticket-not-found as retryable, not terminal.
+// NOTE: createAuditLogAsync below is called while the surrounding request
+// transaction is still open. If the transaction later rolls back, a phantom
+// audit row survives — this is an accepted codebase pattern (see
+// auditService.ts). The `ticket.created` job is NOT queued here any more: it is
+// queued from the committed outbox row (see the note at writeTicketOutbox).
 export async function createTicket(input: CreateTicketInput, actor: TicketActor) {
   const orgRows = await db
     .select({ id: organizations.id, partnerId: organizations.partnerId })
@@ -1120,15 +1125,24 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const ticket = inserted[0];
   if (!ticket) throw new TicketServiceError('Failed to create ticket', 500);
 
-  await emitTicketEvent({
-    type: 'ticket.created',
-    ticketId: ticket.id,
-    orgId: input.orgId,
-    partnerId: org.partnerId ?? null,
+  // No emitTicketEvent here (#7963's rule, applied to creates). A job queued
+  // now survives a rollback of this transaction — a Partner API create that
+  // answers 409 EXTERNAL_ID_CONFLICT, or any later failure in the request —
+  // and would notify the assignee of a ticket that never existed. The outbox
+  // row commits (or rolls back) with the ticket, and ticketOutboxPublisher
+  // queues the `ticket.created` job from it; the actor and partner ride the
+  // row so the worker can still skip a self-assign.
+  //
+  // Ids and enum labels only (never subject/description). No external id:
+  // that key is namespaced per Partner API principal (ticket_external_refs)
+  // and an org webhook has no single principal to answer for.
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
+    internalNumber,
+    source: input.source,
+    assigneeId: input.assigneeId ?? null,
     ...actorEventIdentity(actor),
-    payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
+    partnerId: org.partnerId ?? null,
   });
-  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created');
   await createAuditLogAsync({
     orgId: input.orgId,
     ...actorAuditIdentity(actor),
@@ -1482,6 +1496,8 @@ export async function changeTicketStatus(
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
     from: fromStatus,
     to: toStatus,
+    // The partner's custom status row the core status was set through, if any.
+    statusId: resolvedStatusId ?? null,
     // #4177: the consumed AI resolution draft, for the time-entry proposal.
     ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
   });
@@ -1858,7 +1874,8 @@ export async function updateTicketFields(
     ...actorEventIdentity(actor),
     payload: { changed: changedForLog }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated');
+  // Field NAMES only — never the values.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated', { changed: changedForLog });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
@@ -2064,7 +2081,16 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     ...actorEventIdentity(actor),
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: input.isPublic });
+  // originPrincipalKind + originPrincipalId let a mirroring consumer skip
+  // exactly the comments it authored itself (loop guard for PSA/ITSM syncs,
+  // even when several integrations share one partner). Read off the stored
+  // row, so the webhook always says what the feed says for this comment.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+    commentId: comment.id,
+    isPublic: input.isPublic,
+    originPrincipalKind: comment.originPrincipalKind,
+    originPrincipalId: comment.originPrincipalId,
+  });
   // Record the comment id + visibility only — the comment body can carry
   // sensitive/large content, so it stays out of the audit details (matching the
   // sibling pattern of keeping details lean).
@@ -2149,7 +2175,7 @@ export async function addAiTriageNote(
       originPrincipalKind: 'ai_agent',
       originPrincipalId: agentId,
       agentRunId: runId
-    }).returning({ id: ticketComments.id }));
+    }).returning({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId }));
     const comment = inserted[0];
     if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
 
@@ -2193,13 +2219,13 @@ export async function addAiTriageNote(
       actorUserId: null,
       payload: { commentId: comment.id, isPublic: false }
     });
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false, originPrincipalKind: comment.originPrincipalKind, originPrincipalId: comment.originPrincipalId });
 
     return { comment };
   } catch (err) {
     if (isUniqueViolation(err)) {
       const existing = await db
-        .select({ id: ticketComments.id })
+        .select({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId })
         .from(ticketComments)
         .where(and(eq(ticketComments.agentRunId, runId), eq(ticketComments.originPrincipalKind, 'ai_agent')))
         .limit(1);
@@ -2263,7 +2289,7 @@ export async function postProposalNote(
   // savepoint was added, an unguarded version of this catch block does NOT
   // actually recover. `addAiTriageNote` above predates this discovery and
   // shares the same unguarded shape; out of scope to fix here.
-  let comment: { id: string };
+  let comment: { id: string; originPrincipalKind: string; originPrincipalId: string | null };
   let recoveredFromDuplicate = false;
   try {
     const inserted = await db.transaction((tx) =>
@@ -2278,7 +2304,7 @@ export async function postProposalNote(
         originPrincipalKind: 'user',
         agentRunId: null,
         proposedByRunId: runId
-      }).returning({ id: ticketComments.id })
+      }).returning({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId })
     );
     const row = inserted[0];
     if (!row) throw new TicketServiceError('Failed to post proposal note', 500);
@@ -2286,7 +2312,7 @@ export async function postProposalNote(
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await db
-      .select({ id: ticketComments.id })
+      .select({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId })
       .from(ticketComments)
       .where(and(eq(ticketComments.proposedByRunId, runId), eq(ticketComments.originPrincipalKind, 'user')))
       .limit(1);
@@ -2307,7 +2333,7 @@ export async function postProposalNote(
       ...actorEventIdentity(actor),
       payload: { commentId: comment.id, isPublic: false }
     });
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false, originPrincipalKind: comment.originPrincipalKind, originPrincipalId: comment.originPrincipalId });
     await createAuditLogAsync({
       orgId: ticket.orgId,
       actorId: humanUserId(actor, 'Posting a proposal note'),
@@ -2601,7 +2627,7 @@ export async function sendTicketDraft(
     content: body,
     isPublic: true,
     originPrincipalKind: 'user'
-  }).returning({ id: ticketComments.id });
+  }).returning({ id: ticketComments.id, originPrincipalKind: ticketComments.originPrincipalKind, originPrincipalId: ticketComments.originPrincipalId });
   const comment = inserted[0];
   if (!comment) throw new TicketServiceError('Failed to send draft', 500);
 
@@ -2634,6 +2660,8 @@ export async function sendTicketDraft(
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
     commentId: comment.id,
     isPublic: true,
+    originPrincipalKind: comment.originPrincipalKind,
+    originPrincipalId: comment.originPrincipalId,
     // #4177: the consumed AI reply draft, for the time-entry proposal.
     ...aiDraftOutboxClaim({ id: draft.id, runId: draft.runId ?? null }, 'draft_sent'),
   });

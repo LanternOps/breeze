@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -143,6 +143,42 @@ vi.mock('./restoreIntegrityGate', () => ({
   checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
   recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
   restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
+// What the real integrity gate reads, for the tests that run it end to end
+// ("confirming a restore through the real integrity gate" below).
+const gateDeps = vi.hoisted(() => ({
+  resolveRestoreIntegrity: vi.fn(),
+  userIsMfaProtected: vi.fn(),
+  consumeStepUpGrant: vi.fn(),
+  getUserEpochs: vi.fn(),
+  recordRestoreAuthorization: vi.fn(),
+  restoreTargetRefusal: vi.fn(),
+  enable2fa: { value: true },
+}));
+vi.mock('../../services/backupRestoreIntegrity', () => ({
+  resolveRestoreIntegrity: (...args: unknown[]) => gateDeps.resolveRestoreIntegrity(...args),
+}));
+vi.mock('../auth/helpers', () => ({
+  userIsMfaProtected: (...args: unknown[]) => gateDeps.userIsMfaProtected(...args),
+}));
+vi.mock('../auth/schemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../auth/schemas')>()),
+  get ENABLE_2FA() {
+    return gateDeps.enable2fa.value;
+  },
+}));
+vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/mfaStepUpGrant')>()),
+  consumeStepUpGrant: (...args: unknown[]) => gateDeps.consumeStepUpGrant(...args),
+}));
+vi.mock('../../services/authEpochs', () => ({
+  getUserEpochs: (...args: unknown[]) => gateDeps.getUserEpochs(...args),
+}));
+vi.mock('../../services/backupRestoreAuthorization', () => ({
+  recordRestoreAuthorization: (...args: unknown[]) => gateDeps.recordRestoreAuthorization(...args),
+}));
+vi.mock('../../services/restoreTargetReadiness', () => ({
+  restoreTargetRefusal: (...args: unknown[]) => gateDeps.restoreTargetRefusal(...args),
 }));
 
 // Device-name enrichment is covered in deviceNames.test.ts; keep these list
@@ -985,14 +1021,14 @@ describe('restore routes', () => {
 
     it('a confirmed restore records the authorization bound to the command id it then queues', async () => {
       snapshotRows();
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
       insertMock.mockReturnValueOnce(chainMock([jobRow]));
       queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'reserved', status: 'pending' } });
       const res = await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
       expect(res.status).toBe(201);
       expect(integrityGate.record).toHaveBeenCalledTimes(1);
       const [, request, reason, binding, options] = integrityGate.record.mock.calls[0]!;
-      expect(options).toEqual({ confirmationMethod: 'typed' });
+      expect(options).toEqual({ confirmationMethod: 'mfa' });
       expect(request).toMatchObject({ snapshotDbId: 'snap-db-1', targetDeviceId: 'device-2', commandType: 'backup_restore' });
       expect(reason).toBe('unattested_legacy');
       expect(binding.commandId).toMatch(/^[0-9a-f-]{36}$/);
@@ -1013,6 +1049,111 @@ describe('restore routes', () => {
       const res = await post({});
       expect(res.status).toBe(409);
       expect((await res.json()).error).toBe(RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE);
+    });
+
+    describe('confirming a restore through the real integrity gate', () => {
+      const GRANT = '66666666-6666-4666-8666-666666666666';
+      const RESOURCE = { snapshotId: 'snap-db-1', targetDeviceId: 'device-2', commandType: 'backup_restore' };
+      let realApp: Hono;
+
+      afterEach(() => {
+        // Module-level state shared with every other test in this file.
+        gateDeps.enable2fa.value = true;
+      });
+
+      beforeEach(async () => {
+        const actual = await vi.importActual<typeof import('./restoreIntegrityGate')>('./restoreIntegrityGate');
+        integrityGate.check.mockImplementation(actual.checkRestoreIntegrityRequest as any);
+        integrityGate.record.mockImplementation(actual.recordRequestAuthorization as any);
+        gateDeps.enable2fa.value = true;
+        gateDeps.resolveRestoreIntegrity.mockResolvedValue({ mode: 'unattested', snapshotId: 'provider-snap-1', reason: 'unattested_legacy' });
+        gateDeps.restoreTargetRefusal.mockResolvedValue(null);
+        gateDeps.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
+        gateDeps.recordRestoreAuthorization.mockResolvedValue('authorization-1');
+        // An interactive session: only a user with a session id can confirm.
+        realApp = new Hono();
+        realApp.use('*', async (c, next) => {
+          c.set('auth', {
+            principal: { kind: 'user_session' },
+            user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
+            scope: 'organization',
+            orgId: 'org-1',
+            partnerId: null,
+            accessibleOrgIds: ['org-1'],
+            canAccessOrg: (candidateOrgId: string) => candidateOrgId === 'org-1',
+            orgCondition: () => undefined,
+            token: { sub: 'user-1', scope: 'organization', sid: 'sid-1' } as any,
+          });
+          await next();
+        });
+        realApp.route('/', restoreRoutes);
+      });
+
+      const postReal = (body: Record<string, unknown>) => realApp.request('/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full', deviceId: 'device-2', ...body }),
+      });
+
+      it('a user without a second factor is asked to enroll one; nothing is queued and no authorization is recorded', async () => {
+        gateDeps.userIsMfaProtected.mockResolvedValue(false);
+        // A grant is bound to the MFA epoch: one held by a user without a factor is never valid.
+        gateDeps.consumeStepUpGrant.mockResolvedValueOnce(false);
+        snapshotRows();
+        const res = await postReal({ stepUpGrant: GRANT, confirmUnattestedRestore: true });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: { operation: 'backup_unattested_restore', method: 'enroll', reason: 'unattested_legacy', resource: RESOURCE },
+        });
+        expect(gateDeps.recordRestoreAuthorization).not.toHaveBeenCalled();
+        expect(insertMock).not.toHaveBeenCalled();
+        expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+      });
+
+      it('a user with a second factor gets the two-factor step-up, then restores with the grant', async () => {
+        gateDeps.userIsMfaProtected.mockResolvedValue(true);
+        snapshotRows();
+        const asked = await postReal({});
+        expect(asked.status).toBe(403);
+        expect(await asked.json()).toMatchObject({
+          code: 'STEP_UP_REQUIRED',
+          stepUp: { operation: 'backup_unattested_restore', method: 'mfa', reason: 'unattested_legacy', resource: RESOURCE },
+        });
+        expect(insertMock).not.toHaveBeenCalled();
+
+        snapshotRows();
+        gateDeps.consumeStepUpGrant.mockResolvedValueOnce(true);
+        insertMock.mockReturnValueOnce(chainMock([jobRow]));
+        queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'reserved', status: 'pending' } });
+        const res = await postReal({ stepUpGrant: GRANT });
+        expect(res.status).toBe(201);
+        expect(gateDeps.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({
+          operation: 'backup_unattested_restore', userId: 'user-1', sid: 'sid-1',
+        }));
+        expect(gateDeps.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+          reason: 'unattested_legacy', confirmationMethod: 'mfa',
+        }));
+        expect(queueCommandForExecutionMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('with two-factor authentication disabled on the deployment, the explicit confirmation restores', async () => {
+        gateDeps.enable2fa.value = false;
+        snapshotRows();
+        const asked = await postReal({});
+        expect(asked.status).toBe(403);
+        expect(await asked.json()).toMatchObject({ code: 'STEP_UP_REQUIRED', stepUp: { method: 'confirm', resource: RESOURCE } });
+
+        snapshotRows();
+        insertMock.mockReturnValueOnce(chainMock([jobRow]));
+        queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'reserved', status: 'pending' } });
+        const res = await postReal({ confirmUnattestedRestore: true });
+        expect(res.status).toBe(201);
+        expect(gateDeps.userIsMfaProtected).not.toHaveBeenCalled();
+        expect(gateDeps.consumeStepUpGrant).not.toHaveBeenCalled();
+        expect(gateDeps.recordRestoreAuthorization).toHaveBeenCalledWith(expect.objectContaining({ confirmationMethod: 'confirm' }));
+      });
     });
   });
 

@@ -561,6 +561,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
+  contact_roles: { kind: 'repoint' }, // exact assignment uniqueness includes contact/scope ids; V1 has no per-scope primary unique
   // deliverable_template_sets_org_name_uq (org_id, name) WHERE org_id IS NOT NULL
   // (2026-10-16-100500) — a plain repoint raises 23505 when both orgs own a set
   // with the same name. Partner-wide sets (org_id NULL) are never merge
