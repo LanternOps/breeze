@@ -172,6 +172,16 @@ describe('gates', () => {
       expect(svc.updateOrgTicketApprovalSettings).not.toHaveBeenCalled();
       expect(auditSpy).not.toHaveBeenCalled();
     });
+    // RLS lets an org-scoped session write its own override, so the scope gate
+    // is the only thing keeping a customer from changing its approval policy.
+    it(`${r.name} PATCH refuses an organization-scope token and writes nothing`, async () => {
+      authRef.current = partnerAuth({ scope: 'organization', orgId: ORG_ID });
+      const res = await app().request(r.path, json(r.write, { enabled: false }));
+      expect(res.status).toBe(403);
+      expect(svc.updatePartnerTicketApprovalSettings).not.toHaveBeenCalled();
+      expect(svc.updateOrgTicketApprovalSettings).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
   }
 
   it('org routes refuse an organization-scope token', async () => {

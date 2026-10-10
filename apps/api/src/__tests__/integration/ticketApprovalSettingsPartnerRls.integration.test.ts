@@ -171,6 +171,45 @@ describe('ticket_approval_settings RLS (#4617)', () => {
     expect(seen).toHaveLength(0);
   });
 
+  it("(e) neither a sibling org nor another partner can write an org's override (42501)", async () => {
+    const { orgA1, orgA2, partnerA, partnerB } = await setup();
+    // Fresh insert: org A1's context forges A2's override through the service upsert.
+    await expectSqlState(
+      () => withDbAccessContext(orgContext(orgA1.id, partnerA.id), () =>
+        updateOrgTicketApprovalSettings(db, orgA2.id, { enabled: false })),
+      '42501',
+    );
+    // Existing row: the upsert's conflict path is no way around the WITH CHECK.
+    const id = await seedRow({ orgId: orgA2.id, enabled: true });
+    await expectSqlState(
+      () => withDbAccessContext(orgContext(orgA1.id, partnerA.id), () =>
+        updateOrgTicketApprovalSettings(db, orgA2.id, { enabled: false })),
+      '42501',
+    );
+    await expectSqlState(
+      () => withDbAccessContext(partnerContext(partnerB.id, []), () =>
+        updateOrgTicketApprovalSettings(db, orgA2.id, { enabled: false })),
+      '42501',
+    );
+    const updated = await withDbAccessContext(orgContext(orgA1.id, partnerA.id), () =>
+      db.update(ticketApprovalSettings).set({ enabled: false })
+        .where(eq(ticketApprovalSettings.id, id)).returning());
+    expect(updated).toHaveLength(0);
+    const [row] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ enabled: ticketApprovalSettings.enabled }).from(ticketApprovalSettings)
+        .where(eq(ticketApprovalSettings.id, id)));
+    expect(row!.enabled).toBe(true);
+  });
+
+  it('(f) an org context cannot create its partner-default row (42501)', async () => {
+    const { partnerA, orgA1 } = await setup();
+    await expectSqlState(
+      () => withDbAccessContext(orgContext(orgA1.id, partnerA.id), () =>
+        db.insert(ticketApprovalSettings).values({ partnerId: partnerA.id, enabled: false }).returning()),
+      '42501',
+    );
+  });
+
   it('enforces one partner-default row and one override per org (23505)', async () => {
     const { partnerA, orgA1 } = await setup();
     await seedRow({ partnerId: partnerA.id });
