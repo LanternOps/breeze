@@ -96,6 +96,9 @@ export function cloudflareDecisionToAction(decision: number | undefined): DnsEve
   return 'allowed';
 }
 
+/** Cloudflare answered, with GraphQL `errors` (as opposed to a transport failure). */
+class CloudflareGraphqlError extends Error {}
+
 export class CloudflareGatewayProvider implements DnsProvider {
   constructor(
     private readonly apiToken: string,
@@ -145,7 +148,7 @@ export class CloudflareGatewayProvider implements DnsProvider {
 
     const errors = (response.errors ?? []).map((item) => item.message).filter(Boolean);
     if (errors.length > 0) {
-      throw new Error(`Cloudflare GraphQL error: ${errors.join('; ')}`);
+      throw new CloudflareGraphqlError(`Cloudflare GraphQL error: ${errors.join('; ')}`);
     }
     return response.data;
   }
@@ -225,21 +228,27 @@ export class CloudflareGatewayProvider implements DnsProvider {
     }
   }
 
-  /** The dataset's query horizon for this account, or the Free-plan minimum if it cannot be read. */
+  /**
+   * The dataset's query horizon for this account. When Cloudflare ANSWERS but
+   * the answer carries no usable horizon (a GraphQL-level error, or no
+   * `notOlderThan`), assume the Free-plan minimum. A transport failure (timeout,
+   * 5xx) is rethrown instead: clamping on a blip would checkpoint past a
+   * backlog the account still holds, and the next run would never fetch it.
+   */
   private async retentionMs(accountTag: string): Promise<number> {
+    let data: unknown;
     try {
-      const data = await this.graphql(DNS_SETTINGS_GQL, { accountTag });
-      const account = asRecord(asArray(asRecord(asRecord(data)?.viewer)?.accounts)[0]);
-      const dataset = asRecord(asRecord(account?.settings)?.gatewayResolverQueriesAdaptiveGroups);
-      const seconds = asNumber(dataset?.notOlderThan);
-      if (seconds !== undefined && seconds > 0) return seconds * 1000;
-      console.warn('[CloudflareGatewayProvider] dataset settings carried no notOlderThan; assuming 24h retention.');
+      data = await this.graphql(DNS_SETTINGS_GQL, { accountTag });
     } catch (error) {
-      console.warn(
-        `[CloudflareGatewayProvider] could not read dataset retention (${error instanceof Error ? error.message : String(error)}); ` +
-        'assuming 24h retention.'
-      );
+      if (!(error instanceof CloudflareGraphqlError)) throw error;
+      console.warn(`[CloudflareGatewayProvider] could not read dataset retention (${error.message}); assuming 24h retention.`);
+      return FALLBACK_RETENTION_MS;
     }
+    const account = asRecord(asArray(asRecord(asRecord(data)?.viewer)?.accounts)[0]);
+    const dataset = asRecord(asRecord(account?.settings)?.gatewayResolverQueriesAdaptiveGroups);
+    const seconds = asNumber(dataset?.notOlderThan);
+    if (seconds !== undefined && seconds > 0) return seconds * 1000;
+    console.warn('[CloudflareGatewayProvider] dataset settings carried no notOlderThan; assuming 24h retention.');
     return FALLBACK_RETENTION_MS;
   }
 

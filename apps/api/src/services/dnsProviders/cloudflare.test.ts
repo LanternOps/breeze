@@ -233,6 +233,16 @@ describe('CloudflareGatewayProvider.syncEventSlices (checkpointed slices)', () =
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('unknown field settings'));
   });
 
+  it('fails the run (no clamp, no checkpoint) when the settings lookup itself fails to reach Cloudflare', async () => {
+    requestJsonMock.mockRejectedValueOnce(new Error('Cloudflare request failed: 503'));
+
+    await expect(
+      collectSlices(makeProvider(), new Date('2026-09-20T00:00:00Z'), new Date('2026-09-29T14:00:00Z'))
+    ).rejects.toThrow('503');
+    // A transient failure must not clamp away a backlog the account still holds.
+    expect(datasetCalls()).toHaveLength(0);
+  });
+
   it('checkpoints a full page at its last timestamp and re-reads from there, without duplicating', async () => {
     const full = Array.from({ length: 1000 }, (_, i) =>
       group(`2026-09-30T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`, `d${i}.example`, 5)
