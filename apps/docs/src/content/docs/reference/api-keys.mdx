@@ -247,10 +247,12 @@ Every mutation is recorded in the audit log (`service_principal.create`, `servic
 | `custom-fields:read` | Export custom field definitions and values |
 | `alerts:read` | Read the alerts feed across accessible organizations (opt-in, never a default scope) |
 | `device-status:read` | Read live device status, last-seen time and agent version across accessible organizations (opt-in, never a default scope, not implied by `devices:read`) |
+| `tickets:read` | Read the tickets feed, single tickets and ticket comments across accessible organizations, including every internal note (opt-in, never a default scope) |
 | `organizations:write` | Create organizations (bounded by the partner's organization cap) |
 | `sites:write` | Create sites in the principal's accessible organizations |
 | `enrollment-keys:write` | Create enrollment keys (raw key returned once) |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
+| `tickets:write` | Create, update, change status, assign and comment on tickets in accessible organizations. Does not grant delete, restore, moving a ticket between organizations, bulk actions, attachments, time entries, AI drafts or the ticket mailbox; the principal acts as itself, never as a person |
 
 The `:write` scopes exist for unattended provisioning and integrations -- migration scripts, scheduled syncs, and partner-built tools. They are **opt-in at principal creation and never part of the default scope set**: a default-scoped principal stays read-only. Grant them only to credentials that genuinely need them, and prefer a dedicated principal so rotation and revocation stay surgical. Tenancy writes are create-only -- deleting organizations, sites, or enrollment keys remains a human, MFA-gated action.
 

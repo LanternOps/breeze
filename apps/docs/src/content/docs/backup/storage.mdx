@@ -94,6 +94,16 @@ From v0.121.0, the credentials in a storage configuration (access keys, secret k
   Once that sweep has run, do not roll back to a release older than v0.121.0. Older releases would hand the encrypted values to agents as storage credentials and S3 backups would fail. If you rotate `APP_ENCRYPTION_KEY`, follow [Secret Rotation](/security/secrets/#rotating-app-encryption-key); the re-encryption script covers these credentials.
 </Aside>
 
+### Recommended bucket settings for S3-compatible storage
+
+When backups go to a bucket you or your customer own on an S3-compatible service (AWS S3, Wasabi, Backblaze B2, iDrive e2 and similar), set the bucket up so that backup data cannot be silently removed with the same key Breeze uses to write it:
+
+- **Turn on Object Lock, or at least versioning.** Object Lock (often called immutable or WORM storage) keeps each object version for a retention period you choose, even if a delete request arrives. Most providers only let you enable it when the bucket is created, so decide before the first backup. If your provider or plan has no Object Lock, enable bucket versioning instead, so a deleted or overwritten object leaves a recoverable previous version.
+- **Add a lifecycle rule for old versions.** With Object Lock or versioning on, Breeze's retention sweep still sends deletes for expired restore points, but on a versioned bucket a delete only hides the object and the data is kept as a noncurrent version. Add a lifecycle rule that expires noncurrent versions after the number of days you want to keep them (no shorter than your Object Lock retention), or storage use keeps growing.
+- **Use a key scoped to that one bucket.** Create a dedicated access key for Breeze that can only reach the backup bucket (and, if you set one, its base path), with the object permissions listed above and nothing else: no access to other buckets, no permission to change bucket settings, Object Lock configuration or lifecycle rules, and no permission to bypass retention. If you use provider-enforced immutability on individual snapshots, the key also needs to read the bucket's Object Lock configuration and set object retention (`s3:GetBucketObjectLockConfiguration` and `s3:PutObjectRetention` on AWS).
+
+Breeze does not create buckets or manage these settings: it does not turn on Object Lock or versioning, write lifecycle rules, or create or scope access keys. Configure them in your storage provider's console. When Object Lock is already enabled on the bucket and a snapshot is made immutable with provider enforcement, by its backup policy or by hand (`POST /backup/snapshots/:id/immutability` with `"enforcement": "provider"`), Breeze places a Governance-mode retention date on that snapshot's objects. If the bucket does not have Object Lock enabled, the manual request is refused with `409`, and a policy-driven snapshot falls back to Breeze's own application-level immutability and records the reason on the snapshot (`immutabilityFallbackReason`).
+
 ---
 
 ## Testing Connectivity
