@@ -400,8 +400,11 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 		// The rest of a transfer that already failed is dropped quietly: the
 		// failure was reported once, and every later frame would only report
 		// "unknown transfer" again.
-		if f.Seq != 0 && f.ID != "" && f.ID == c.rxFailedID {
-			return nil
+		if f.ID != "" && f.ID == c.rxFailedID {
+			if f.Seq != 0 {
+				return nil
+			}
+			c.rxFailedID = "" // a restart under the same id is a new attempt
 		}
 		inner, done, err := c.rx.add(f)
 		if err != nil {

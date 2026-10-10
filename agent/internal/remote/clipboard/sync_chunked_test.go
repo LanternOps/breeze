@@ -252,6 +252,15 @@ func TestReceiveReportsAFailedTransferOnce(t *testing.T) {
 	if errs != 1 {
 		t.Fatalf("%d errors for one failed transfer, want 1", errs)
 	}
+	// A restart under the same id (seq 0) is a new attempt, assembled in full.
+	for seq := 0; seq < 5; seq++ {
+		if err := c.Receive(frame("t1", seq, 5)); err != nil && seq < 4 {
+			t.Fatalf("restarted transfer frame %d rejected: %v", seq, err)
+		}
+	}
+	if c.rx.next != 0 || c.rx.id != "" {
+		t.Fatalf("restarted transfer was not assembled to completion (next=%d id=%q)", c.rx.next, c.rx.id)
+	}
 	// The next transfer is still assembled and judged on its own.
 	if err := c.Receive(frame("t2", 0, 2)); err != nil {
 		t.Fatalf("next transfer rejected: %v", err)
