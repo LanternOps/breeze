@@ -19,6 +19,9 @@ export const workTypes = pgTable('work_types', {
   name: text('name').notNull(),
   sortOrder: integer('sort_order').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
+  // #4617 spec §4.5: time logged under this label raises a customer approval
+  // request when the partner's approval policy has after_hours_trigger on.
+  isAfterHours: boolean('is_after_hours').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

@@ -230,6 +230,22 @@ export const INTEGRATION_CONNECTION_TABLES: readonly string[] = [
   'delegant_m365_connections',
 ];
 
+/**
+ * Dual-axis (org XOR partner) settings tables registered `keep-survivor`. Their
+ * org-override row is unique per org only through a PARTIAL index
+ * (`WHERE org_id IS NOT NULL`), so the generic keep-survivor executor does not
+ * apply. The loser's override is always DROPPED in the resolve phase — never
+ * adopted by the survivor — so a merge never silently changes the survivor
+ * org's effective policy; the survivor keeps its own override, or inherits
+ * its partner default as before. Partner-default rows (org_id NULL) are never
+ * touched.
+ */
+const DROP_LOSER_OVERRIDE_SETTINGS_TABLES: ReadonlySet<string> = new Set([
+  'billing_payment_settings',
+  // #4617 customer work approval policy.
+  'ticket_approval_settings',
+]);
+
 /** Policy kinds that issue DML. Everything else is a documented no-op. */
 const DML_POLICY_KINDS: ReadonlySet<OrgMergePolicy['kind']> = new Set([
   'repoint',
@@ -738,9 +754,9 @@ export async function runPolicy(
         : noOpOutcome();
 
     case 'keep-survivor': {
-      if (table === 'billing_payment_settings') {
+      if (DROP_LOSER_OVERRIDE_SETTINGS_TABLES.has(table)) {
         return phase === 'resolve'
-          ? { moved: 0, dropped: await exec(sql`DELETE FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`), notes: [] }
+          ? { moved: 0, dropped: await exec(sql`DELETE FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`), notes: [] }
           : noOpOutcome();
       }
 
@@ -1483,8 +1499,8 @@ async function countWouldDrop(
   loserOrgId: string,
   survivorOrgId: string,
 ): Promise<number> {
-  if (table === 'billing_payment_settings') {
-    return scalarCount(sql`SELECT count(*)::int AS n FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`);
+  if (DROP_LOSER_OVERRIDE_SETTINGS_TABLES.has(table)) {
+    return scalarCount(sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`);
   }
   switch (policy.kind) {
     case 'keep-survivor':

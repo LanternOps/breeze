@@ -4114,7 +4114,7 @@ describe('moveTicketOrg', () => {
 
     const texts = executedSqlTexts();
     expect(texts[0]).toBe(
-      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED'
+      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk DEFERRED'
     );
     // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
     // constraints this path relies on failing fast.
@@ -4124,15 +4124,16 @@ describe('moveTicketOrg', () => {
     // statement, is visible here — executedTableNames() only counts
     // statements with a table identifier chunk and would not catch either.
     // 1 SET CONSTRAINTS + 1 ai_operator_task_targets ticket detach (#6167,
-    // recipe library E2) + 9 child-table rewrites (time_entries, ticket_parts,
+    // recipe library E2) + 10 child-table rewrites (time_entries, ticket_parts,
     // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links,
-    // ticket_checklist_items, ticket_external_refs, partner_api_idempotency_keys
-    // — same 9 tables as the 'moves ticket to a same-partner org' test below).
-    expect(texts).toHaveLength(11);
+    // ticket_checklist_items, ticket_external_refs, partner_api_idempotency_keys,
+    // ticket_approval_requests — same 10 tables as the 'moves ticket to a
+    // same-partner org' test below).
+    expect(texts).toHaveLength(12);
     // The Operator target detach severs the plain ticket_id FK and stamps the
     // detach in the same statement (one_pointer_chk).
     expect(texts.filter((t) => /UPDATE ai_operator_task_targets\s+SET ticket_id = NULL/.test(t))).toHaveLength(1);
-    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED')).toHaveLength(1);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk DEFERRED')).toHaveLength(1);
   });
 
   it('#5573 W02: refuses to move a ticket pinned to a deliverable occurrence, before the ticket UPDATE', async () => {
@@ -4306,9 +4307,11 @@ describe('moveTicketOrg', () => {
     // ticket-linked tables in the same relative order. The shared order lives
     // in ticketOrgMoveLockOrder.ts.
     // ticket_external_refs and partner_api_idempotency_keys (Partner API
-    // tickets) are appended last after it, in that order.
-    expect(tables[tables.length - 1]).toBe('partner_api_idempotency_keys');
+    // tickets) follow it, in that order, and ticket_approval_requests (#4617)
+    // is appended last after them.
+    expect(tables[tables.length - 1]).toBe('ticket_approval_requests');
     expect(tables.indexOf('ticket_external_refs')).toBeLessThan(tables.indexOf('partner_api_idempotency_keys'));
+    expect(tables.indexOf('partner_api_idempotency_keys')).toBeLessThan(tables.indexOf('ticket_approval_requests'));
     expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
     expect(tables.indexOf('ticket_email_links')).toBeLessThan(tables.indexOf('ticket_checklist_items'));
     expect(tables.indexOf('ticket_checklist_items')).toBeLessThan(tables.indexOf('ticket_external_refs'));
@@ -4409,7 +4412,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(executedTableNames()).toHaveLength(9); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(10); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys, #4617 added ticket_approval_requests; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -4448,7 +4451,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(executedTableNames()).toHaveLength(9); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(10); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys, #4617 added ticket_approval_requests; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');

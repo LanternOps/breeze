@@ -140,6 +140,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   device_ownership_epoch_closures: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; a loser-epoch closure belongs to the loser and goes with its erasure' },
   autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
   billing_payment_settings: { kind: 'keep-survivor' },
+  ticket_approval_settings: { kind: 'keep-survivor' }, // verified: ticket_approval_settings_org_uq partial UNIQUE (org_id) — #4617; the survivor's override wins, like billing_payment_settings
   org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },
   org_autopay_consents: { kind: 'leave-for-erasure', note: 'Append-only authorization evidence belongs to the loser.' },
   org_payment_methods: { kind: 'custom', note: 'Remove and retain on loser; detach from original Stripe account after commit.' },
@@ -1122,6 +1123,13 @@ const REPOINT_TABLES: readonly string[] = [
   "storage_encryption_keys",
   "support_sessions",
   "ticket_alert_links",
+  // #4617. Own org_id (shape 1), plain repoint. Its only unique keys are the
+  // pkey, (id, ticket_id) and the pending partial UNIQUE (ticket_id, trigger)
+  // — ticket ids never collide across orgs, so no dedupe. The (ticket_id,
+  // org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so SET CONSTRAINTS ALL
+  // DEFERRED covers tickets and this table repointing in separate statements;
+  // the decided-row immutability trigger exempts org_id.
+  "ticket_approval_requests",
   // W08 #3902. Own org_id (shape 1), so plain repoint like its siblings — the
   // only unique index is the pkey on `id`, which cannot collide across orgs,
   // so no dedupe key is needed. Pending rows (comment_id NULL) repoint too:

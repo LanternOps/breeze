@@ -61,6 +61,8 @@ export const PERMISSION_GRANTS = {
   TICKETS_READ: { resource: 'tickets', action: 'read' },
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
   TICKETS_MANAGE: { resource: 'tickets', action: 'manage' },
+  // #4617: record a customer's approval/denial of held work on their behalf.
+  TICKETS_RECORD_APPROVAL: { resource: 'tickets', action: 'record_approval' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   TICKET_MAILBOX_READ: { resource: 'ticket_mailbox', action: 'read' },

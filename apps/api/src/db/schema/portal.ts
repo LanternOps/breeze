@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
@@ -216,6 +216,12 @@ export const tickets = pgTable('tickets', {
   // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
   // before every real transaction id, so a first full sync covers them.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
+  // #4617 spec §4.2: per-ticket labour ceiling (a document value, no default).
+  // CHECK tickets_budget_chk (SQL-only, 2026-12-20-200300): each > 0 when set,
+  // budget_currency_code set iff budget_amount is, and ^[A-Z]{3}$.
+  budgetMinutes: integer('budget_minutes'),
+  budgetAmount: numeric('budget_amount', { precision: 12, scale: 2 }),
+  budgetCurrencyCode: char('budget_currency_code', { length: 3 }),
 });
 
 export const ticketComments = pgTable('ticket_comments', {

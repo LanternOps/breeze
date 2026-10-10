@@ -481,6 +481,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   // (ticket_id, org_id) FK is named in moveDeviceOrgInTransaction.ts's
   // SET CONSTRAINTS … DEFERRED.
   'partner_api_idempotency_keys',
+  // ticket_approval_requests (#4617): rewritten through the tickets join,
+  // appended last to extend — not reorder — the shared lock order. Its
+  // composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // moveDeviceOrgInTransaction.ts also names
+  // ticket_approval_requests_ticket_org_fk in its SET CONSTRAINTS … DEFERRED.
+  'ticket_approval_requests',
 ] as const;
 
 /**

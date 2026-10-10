@@ -279,6 +279,22 @@ function assertRoutineBillingStatus(status: BillingStatus | undefined): void {
   }
 }
 
+type StoredBillingStatus = typeof timeEntries.$inferSelect['billingStatus'];
+
+/**
+ * #4617 W01: the DB enum gained 'awaiting_approval' (held from billing until
+ * the customer approves), but nothing writes it until the W02 gate lands. These
+ * readers have no defined behaviour for a held entry yet, so they fail LOUDLY
+ * rather than map it onto another status; W02's billing_status reader audit
+ * (plan Task 6) replaces every call site of this function.
+ */
+function settledBillingStatus(status: StoredBillingStatus): BillingStatus {
+  if (status === 'awaiting_approval') {
+    throw new Error('awaiting_approval not handled (W02)');
+  }
+  return status;
+}
+
 interface TicketForTimeTracking {
   id: string;
   partnerId: string | null;
@@ -344,7 +360,7 @@ function billingStampFromEntry(entry: typeof timeEntries.$inferSelect): BillingS
     coverage: entry.coverage ?? (entry.isBillable ? 'billable' : 'non_billable'),
     hourlyRate: entry.hourlyRate, minimumMinutes: entry.minimumMinutes,
     roundingIncrementMinutes: entry.roundingIncrementMinutes,
-    isBillable: entry.isBillable, billingStatus: entry.billingStatus,
+    isBillable: entry.isBillable, billingStatus: settledBillingStatus(entry.billingStatus),
   };
 }
 
@@ -1847,7 +1863,7 @@ export async function listBillables(
     // null rate is an intentional zero — includes `billed` rows: a
     // previously-billed entry that has since lost its rate (or never had a
     // resolvable one) still has no amount to report or sum.
-    const missingRate = isMissingRateGap(rate, r.billingStatus);
+    const missingRate = isMissingRateGap(rate, settledBillingStatus(r.billingStatus));
     rows.push({
       kind: 'time',
       date: r.date,
@@ -1869,7 +1885,7 @@ export async function listBillables(
           : '0.00',
       missingRate,
       currencyCode: r.currencyCode,
-      billingStatus: r.billingStatus,
+      billingStatus: settledBillingStatus(r.billingStatus),
       isApproved: r.isApproved,
       workTypeName: r.workTypeName ?? null,
       coverage: r.coverage ?? null,
@@ -1896,7 +1912,7 @@ export async function listBillables(
         : '0.00',
       missingRate: false,
       currencyCode: r.currencyCode,
-      billingStatus: r.billingStatus,
+      billingStatus: settledBillingStatus(r.billingStatus),
       isApproved: null,
       // A part has no labour dimension.
       workTypeName: null,
