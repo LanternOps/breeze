@@ -283,6 +283,35 @@ func readIdentityRestartMarker(path string) (identityRestartMarker, bool) {
 	return m, true
 }
 
+// writeIdentityRestartMarker writes the marker atomically (temp file and
+// rename), so a crash mid-write cannot leave a marker that fails to parse and
+// silently resets the attempt count.
+func writeIdentityRestartMarker(path string, m identityRestartMarker) error {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), identityRestartMarkerFile+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 // applyIdentityAssertion verifies a server identity assertion and, when it
 // names a different org or site, persists it and schedules one restart. It
 // reports whether a restart is pending, so the caller can hold back work this
@@ -355,10 +384,16 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		h.logIdentitySyncFailure("error", "failed to persist the server-assigned identity; keeping the enrolled one", err.Error())
 		return false
 	}
-	if raw, err := json.Marshal(identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, Attempts: attempts}); err == nil {
-		if err := os.WriteFile(markerPath, raw, 0600); err != nil {
-			log.Warn("failed to record the identity restart marker", "error", err.Error())
-		}
+	if err := writeIdentityRestartMarker(markerPath, identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, Attempts: attempts}); err != nil {
+		// The marker is the only thing bounding these restarts across
+		// processes: without it a new process counts attempt 1 again, so an
+		// identity that never takes effect would restart the agent forever.
+		// The identity is already on disk and applies on the next start.
+		h.identitySync.gaveUpOn.Store(&target)
+		h.identitySync.restartRequested.Store(false)
+		log.Error("failed to record the identity restart marker; not restarting, the new identity applies on the next start",
+			"error", err.Error())
+		return false
 	}
 	log.Info("device was reassigned by the server; restarting to load the new identity",
 		"fromOrgId", fromOrg, "toOrgId", a.OrgID, "fromSiteId", fromSite, "toSiteId", a.SiteID)
