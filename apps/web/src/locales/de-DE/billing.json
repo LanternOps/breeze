@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Präfix der Rechnungsnummer",
       "markupHelp": "Standardaufschlag auf die Vertriebskosten, der zum Vorabfüllen des Verkaufspreises beim Importieren von Katalogartikeln verwendet wird. Die resultierende Bruttomarge wird beim Import angezeigt.",
       "paymentTermsDays": "Zahlungsbedingungen (Tage)",
+      "prefixInvalid": "Geben Sie ein Präfix mit 1 bis 12 Zeichen ein.",
+      "taxRateInvalid": "Geben Sie einen Steuersatz von 0 bis 100 ein.",
+      "termsDaysInvalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
       "title": "Abrechnungsvorgaben"
     },
     "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",

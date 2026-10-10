@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
+import { validateBillingDefaults, extractBillingDefaultsFieldErrors, type BillingDefaultsErrors } from './billingDefaultsValidation';
 import { pctFromFraction } from './invoiceTypes';
 import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
@@ -91,7 +93,7 @@ export default function PartnerBillingSettingsPage() {
       if (!res.ok) throw new Error('load failed');
       const p = (await res.json()) as PartnerBilling;
       setCurrencyCode(p.currencyCode ?? 'USD');
-      setTaxPercent(pctFromFraction(p.defaultTaxRate));
+      setTaxPercent(pctFromFraction(p.defaultTaxRate ?? null));
       setPrefix(p.invoiceNumberPrefix ?? 'INV');
       setTermsDays(String(p.invoiceTermsDays ?? 30));
       setAutoEmailInvoice(p.autoEmailInvoiceOnQuoteAccept !== false);
@@ -126,11 +128,23 @@ export default function PartnerBillingSettingsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const [serverErrors, setServerErrors] = useState<BillingDefaultsErrors>({});
+  // A server flag describes the value that was submitted; editing it supersedes the flag.
+  useEffect(() => { setServerErrors({}); }, [taxPercent, termsDays, prefix]);
+  const defaultsInvalid = Object.keys(validateBillingDefaults({ taxPercent, termsDays, prefix })).length > 0;
+
   const websiteTrimmed = website.trim();
   const websiteInvalid = websiteTrimmed !== '' && !isHttpUrl(websiteTrimmed);
 
   const save = useCallback(async () => {
     if (saving || websiteInvalid || !canWrite) return;
+    // Out-of-range values are flagged inline on the Defaults tab (BillingDefaultsTab
+    // runs the same validator live); never send them to the API.
+    if (defaultsInvalid) {
+      setActiveTab('defaults');
+      return;
+    }
+    setServerErrors({});
     setSaving(true);
     try {
       const pct = taxPercent.trim();
@@ -164,15 +178,27 @@ export default function PartnerBillingSettingsPage() {
         errorFallback: t('partnerBillingSettings.saveError'),
         successMessage: t('partnerBillingSettings.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
+        // A field-level 400 is rendered inline below; other failures keep the toast.
+        suppressErrorToast: (status) => status === 400,
       });
       resetPartnerCurrencyCache();
       void load();
     } catch (err) {
-      handleActionError(err, t('partnerBillingSettings.saveError'));
+      if (err instanceof ActionError && err.status === 400) {
+        const mapped = extractBillingDefaultsFieldErrors(err.body);
+        if (mapped) {
+          setServerErrors(mapped);
+          setActiveTab('defaults');
+        } else {
+          showToast({ message: err.message, type: 'error' });
+        }
+      } else {
+        handleActionError(err, t('partnerBillingSettings.saveError'));
+      }
     } finally {
       setSaving(false);
     }
-  }, [saving, websiteInvalid, canWrite, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
+  }, [saving, websiteInvalid, defaultsInvalid, setActiveTab, canWrite, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
       footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
@@ -235,6 +261,7 @@ export default function PartnerBillingSettingsPage() {
           taxPercent={taxPercent} setTaxPercent={setTaxPercent}
           prefix={prefix} setPrefix={setPrefix}
           termsDays={termsDays} setTermsDays={setTermsDays}
+          serverErrors={serverErrors}
         />
         </fieldset>
       )}

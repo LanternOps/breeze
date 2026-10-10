@@ -37,4 +37,18 @@ describe('BillingDefaultsTab', () => {
     fireEvent.change(screen.getByTestId('partner-billing-prefix'), { target: { value: 'ACME' } });
     expect(props.setPrefix).toHaveBeenCalledWith('ACME');
   });
+
+  it('shows inline errors for out-of-range tax, fractional terms, and a blank prefix', () => {
+    renderTab({ taxPercent: '150', termsDays: '2.5', prefix: '' });
+    expect(screen.getByTestId('partner-billing-tax-error')).toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-terms-days-error')).toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-prefix-error')).toBeInTheDocument();
+  });
+
+  it('shows no errors for valid values, including blank tax', () => {
+    renderTab({ taxPercent: '', termsDays: '30', prefix: 'INV' });
+    expect(screen.queryByTestId('partner-billing-tax-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-terms-days-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-prefix-error')).not.toBeInTheDocument();
+  });
 });
