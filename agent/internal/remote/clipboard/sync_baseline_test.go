@@ -111,6 +111,17 @@ func TestWatchSendsFirstCopyAfterEmptyStartingClipboard(t *testing.T) {
 	}
 }
 
+func TestNoContentErrorOnlyReportsEmptyWhenNothingFailed(t *testing.T) {
+	// A provider that found no content says "empty" only when no read failed:
+	// a failed read says nothing about what the clipboard holds.
+	if err := noContentError(nil); !errors.Is(err, ErrNoSupportedFormat) {
+		t.Fatalf("no failures: %v, want ErrNoSupportedFormat", err)
+	}
+	if err := noContentError(errors.New("X unreachable")); errors.Is(err, ErrNoSupportedFormat) {
+		t.Fatal("a read failure was reported as an empty clipboard")
+	}
+}
+
 func TestProxyHelperErrorKeepsNoSupportedFormat(t *testing.T) {
 	// The helper's error crosses IPC as a string; the proxy maps it back so
 	// the daemon-side watcher can tell an empty clipboard from a locked one.

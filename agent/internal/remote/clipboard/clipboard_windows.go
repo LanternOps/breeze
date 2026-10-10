@@ -124,11 +124,16 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 	}
 	defer closeClipboard()
 
+	// failure is a format that was present but could not be read (e.g. an
+	// app that renders on demand is hung): the clipboard is then unknown, not
+	// empty.
+	var failure error
 	if formatPNG != 0 && isClipboardFormatAvailable(formatPNG) {
 		data, err := readClipboardBytes(formatPNG)
 		if err == nil {
 			return Content{Type: ContentTypeImage, Image: data, ImageFormat: "png"}, nil
 		}
+		failure = err
 	}
 
 	if formatJPEG != 0 && isClipboardFormatAvailable(formatJPEG) {
@@ -136,12 +141,18 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		if err == nil {
 			return Content{Type: ContentTypeImage, Image: data, ImageFormat: "jpeg"}, nil
 		}
+		if failure == nil {
+			failure = err
+		}
 	}
 
 	if formatRTF != 0 && isClipboardFormatAvailable(formatRTF) {
 		data, err := readClipboardBytes(formatRTF)
 		if err == nil {
 			return Content{Type: ContentTypeRTF, RTF: data}, nil
+		}
+		if failure == nil {
+			failure = err
 		}
 	}
 
@@ -153,7 +164,7 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		return Content{Type: ContentTypeText, Text: text}, nil
 	}
 
-	return Content{}, ErrNoSupportedFormat
+	return Content{}, noContentError(failure)
 }
 
 func (s *SystemClipboard) SetContent(content Content) error {

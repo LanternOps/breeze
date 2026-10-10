@@ -15,20 +15,34 @@ func NewSystemClipboard() *SystemClipboard {
 }
 
 func (s *SystemClipboard) GetContent() (Content, error) {
-	if data, err := readClipboardTarget("image/png"); err == nil && len(data) > 0 {
+	// failure is a read that failed for another reason than the target being
+	// absent (X unreachable, xclip missing): the clipboard is then unknown,
+	// not empty.
+	var failure error
+	read := func(target string) []byte {
+		data, err := readClipboardTarget(target)
+		if err != nil {
+			if !errors.Is(err, errTargetUnavailable) && failure == nil {
+				failure = err
+			}
+			return nil
+		}
+		return data
+	}
+	if data := read("image/png"); len(data) > 0 {
 		return Content{Type: ContentTypeImage, Image: data, ImageFormat: "png"}, nil
 	}
-	if data, err := readClipboardTarget("image/jpeg"); err == nil && len(data) > 0 {
+	if data := read("image/jpeg"); len(data) > 0 {
 		return Content{Type: ContentTypeImage, Image: data, ImageFormat: "jpeg"}, nil
 	}
-	if data, err := readClipboardTarget("text/rtf"); err == nil && len(data) > 0 {
+	if data := read("text/rtf"); len(data) > 0 {
 		return Content{Type: ContentTypeRTF, RTF: data}, nil
 	}
-	if data, err := readClipboardTarget("text/plain;charset=utf-8"); err == nil && len(data) > 0 {
+	if data := read("text/plain;charset=utf-8"); len(data) > 0 {
 		return Content{Type: ContentTypeText, Text: string(data)}, nil
 	}
 
-	return Content{}, ErrNoSupportedFormat
+	return Content{}, noContentError(failure)
 }
 
 func (s *SystemClipboard) SetContent(content Content) error {
@@ -54,13 +68,32 @@ func (s *SystemClipboard) SetContent(content Content) error {
 func readClipboardTarget(target string) ([]byte, error) {
 	if path, err := exec.LookPath("xclip"); err == nil {
 		cmd := exec.Command(path, "-selection", "clipboard", "-t", target, "-o")
-		return cmd.Output()
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, xclipReadError(err)
+		}
+		return out, nil
 	}
 	if path, err := exec.LookPath("xsel"); err == nil {
 		cmd := exec.Command(path, "-b", "-o", "-t", target)
 		return cmd.Output()
 	}
 	return nil, errors.New("clipboard: xclip or xsel required for X11 clipboard access")
+}
+
+// errTargetUnavailable: X answered, and the clipboard holds no data for the
+// requested target.
+var errTargetUnavailable = errors.New("clipboard: target not available")
+
+// xclipReadError tells "no data for this target" (xclip: "Error: target X
+// not available") from a real failure such as an unreachable display. Only
+// the first means the clipboard is empty.
+func xclipReadError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && bytes.Contains(exitErr.Stderr, []byte("not available")) {
+		return errTargetUnavailable
+	}
+	return err
 }
 
 func writeClipboardTarget(target string, data []byte) error {
