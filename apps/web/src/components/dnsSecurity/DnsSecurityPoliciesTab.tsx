@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Plus, Trash2, ListChecks } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { surfaceSyncWarning } from './syncWarning';
 import { navigateTo } from '@/lib/navigation';
 import AddDnsPolicyModal from './AddDnsPolicyModal';
 
@@ -80,7 +81,7 @@ export default function DnsSecurityPoliciesTab() {
   ): Promise<void> => {
     setBusy(true);
     try {
-      await runAction({
+      const result = await runAction({
         request: () => fetchWithAuth(`/dns-security/policies/${policyId}/domains`, {
           method: 'PATCH',
           body: JSON.stringify(delta),
@@ -89,6 +90,7 @@ export default function DnsSecurityPoliciesTab() {
         successMessage: t('dnsSecurityDnsSecurityPoliciesTab.messages.domainsUpdated'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
+      surfaceSyncWarning(result);
       await fetchPolicies();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

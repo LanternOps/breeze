@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { surfaceSyncWarning } from './syncWarning';
 import { navigateTo } from '@/lib/navigation';
 
 type PolicyType = 'blocklist' | 'allowlist';
@@ -100,7 +101,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
       .map((domain) => ({ domain }));
 
     try {
-      await runAction({
+      const result = await runAction({
         request: () => fetchWithAuth('/dns-security/policies', {
           method: 'POST',
           body: JSON.stringify({
@@ -116,6 +117,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
         successMessage: t('dnsSecurityAddDnsPolicyModal.messages.createSuccess', { name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
+      surfaceSyncWarning(result);
       onCreated();
       onClose();
     } catch (err) {
