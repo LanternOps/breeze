@@ -51,6 +51,23 @@ describe('DiscoveryProfileForm', () => {
     expect(screen.queryByTestId('discovery-snmp-settings')).not.toBeInTheDocument();
   });
 
+  it('rejects a subnet the agent would skip (> 65,536 hosts) inline and does not submit', () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<DiscoveryProfileForm initialValues={baseProfile} sites={[]} onSubmit={onSubmit} />);
+    const textarea = screen.getByDisplayValue('192.0.2.0/24');
+
+    fireEvent.change(textarea, { target: { value: '192.0.2.0/24\n0.0.0.0/0' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    expect(screen.getByText(/"0\.0\.0\.0\/0": subnet is too large.*65,536/)).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // A /16 is exactly at the limit and is accepted.
+    fireEvent.change(textarea, { target: { value: '10.1.0.0/16' } });
+    fireEvent.submit(container.querySelector('form')!);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
   describe('site move (edit mode)', () => {
     const sites = [{ id: 'site-1', name: 'HQ' }, { id: 'site-2', name: 'Branch' }];
     const siteSelect = () => screen.getByTestId('discovery-profile-site-select');
