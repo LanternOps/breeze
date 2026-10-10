@@ -198,6 +198,17 @@ export async function signBytesWithActiveKey(
   };
 }
 
+/**
+ * The active deployment key's id, or null when this deployment has never
+ * generated one. Unlike ensureActiveSigningKey this never creates a key: an
+ * automatic caller must not be what introduces one, because every agent
+ * TOFU-pins the first deployment key it is sent and then also trusts it for
+ * update manifests (docs/deploy/agent-update-trust-bootstrap.md).
+ */
+export async function getActiveSigningKeyId(): Promise<string | null> {
+  return (await loadActive())?.keyId ?? null;
+}
+
 export async function getActivePublicKeys(): Promise<string[]> {
   const rows = await loadAllActive();
   return rows.map((r) => r.publicKeyB64);

@@ -90,6 +90,12 @@ import {
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
+import {
+  agentIdentityNeedsSync,
+  normalizeIdentitySyncProtocolVersion,
+  signAgentIdentityAssertion,
+  type AgentIdentityAssertionV1,
+} from '../../services/agentIdentityAssertion';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -251,6 +257,37 @@ export function markWatchdogRestartActivityLogged(
 
 export function resetWatchdogRestartLogCacheForTests(): void {
   watchdogRestartLogCache.clear();
+}
+
+// #8317 — bounded logging for the identity sync. A deployment with no signing
+// key would otherwise warn once per moved agent per beat, and a signing fault
+// (an APP_ENCRYPTION_KEY that no longer decrypts the key, say) would log and
+// send a Sentry event once per moved agent per beat.
+const IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
+let identitySyncNoSigningKeyWarned = false;
+let identityAssertionFailureReportedAt = 0;
+
+function warnIdentitySyncWithoutSigningKey(): void {
+  if (identitySyncNoSigningKeyWarned) return;
+  identitySyncNoSigningKeyWarned = true;
+  console.warn(
+    '[heartbeat] A moved device needs a signed identity assertion (#8317), but this deployment has no '
+    + 'deployment signing key and the heartbeat does not create one. Moved agents keep their enrolled '
+    + 'org/site until a key exists.',
+  );
+}
+
+function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
+  const now = Date.now();
+  if (now - identityAssertionFailureReportedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return;
+  identityAssertionFailureReportedAt = now;
+  console.error(`[heartbeat] Failed to sign identity assertion for agentId=${agentId}:`, err);
+  captureException(err);
+}
+
+export function resetIdentitySyncLogStateForTests(): void {
+  identitySyncNoSigningKeyWarned = false;
+  identityAssertionFailureReportedAt = 0;
 }
 
 export function watchdogRestartLogCacheSizeForTests(): number {
@@ -651,7 +688,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -2119,6 +2156,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // context closes (see below).
   return {
     deviceOrgId: device.orgId,
+    deviceSiteId: device.siteId,
     deviceId: device.id,
     mainResponse: {
       commands: deliverableCommands,
@@ -2210,6 +2248,40 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #8053: both this keyset and the delegations below are global, so they are
   // served from a 60 s process cache — their system context opens once per
   // process per TTL, not once per agent per beat. See MANIFEST_TRUST_CACHE_TTL_MS.
+  // #8317 — the device was moved to another org or site after enrollment; the
+  // agent still holds the old pair in agent.yaml and rejects every payload
+  // bound to the new one. Send a signed assertion of the row's identity that
+  // echoes this beat's nonce. Outside the org transaction for the same reason
+  // as the keyset (#1105). Never creates the deployment key: without one, no
+  // assertion is sent. Non-fatal: a missed assertion is retried next beat.
+  let identityAssertion: AgentIdentityAssertionV1 | undefined;
+  if (
+    data.reportedIdentity
+    && normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
+    && agentIdentityNeedsSync(data.reportedIdentity, {
+      id: scoped.deviceId,
+      orgId: scoped.deviceOrgId,
+      siteId: scoped.deviceSiteId,
+    })
+  ) {
+    try {
+      const signed = await signAgentIdentityAssertion({
+        agentId,
+        deviceId: scoped.deviceId,
+        orgId: scoped.deviceOrgId,
+        siteId: scoped.deviceSiteId,
+        nonce: data.reportedIdentity.nonce,
+      });
+      if (signed) {
+        identityAssertion = signed;
+      } else {
+        warnIdentitySyncWithoutSigningKey();
+      }
+    } catch (err) {
+      reportIdentityAssertionFailure(agentId, err);
+    }
+  }
+
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
     manifestTrustKeys = await getActiveTrustKeysetCached();
@@ -2575,6 +2647,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
     acknowledgedRollbackObservationId,
+    ...(identityAssertion ? { identityAssertion } : {}),
   });
 });
 

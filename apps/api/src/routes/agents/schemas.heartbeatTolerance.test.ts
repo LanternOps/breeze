@@ -828,3 +828,45 @@ describe('heartbeatSchema — rebootStatus (#3207 W5)', () => {
     expect(data.rebootStatus?.deadline).toBeUndefined();
   });
 });
+
+// #8317 — the identity-sync fields are informational: a malformed value drops
+// that field and the beat still parses (heartbeat.test.ts mocks zValidator out,
+// so these cases live here).
+describe('heartbeatSchema — identity sync tolerance (#8317)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const identity = {
+    deviceId: '00000000-0000-4000-8000-000000000004',
+    orgId: '00000000-0000-4000-8000-0000000000a1',
+    siteId: '00000000-0000-4000-8000-0000000000a2',
+    nonce: '0123456789abcdef0123456789abcdef',
+  };
+
+  function parse(extra: Record<string, unknown>) {
+    const result = heartbeatSchema.safeParse({ ...minimal, ...extra });
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('unreachable');
+    return result.data;
+  }
+
+  it('keeps a well-formed reported identity and capability', () => {
+    const data = parse({ reportedIdentity: identity, securityCapabilities: { identitySyncProtocolVersion: 1 } });
+    expect(data.reportedIdentity).toEqual(identity);
+    expect(data.securityCapabilities?.identitySyncProtocolVersion).toBe(1);
+  });
+
+  it.each([
+    ['a device id that is not a UUID', { deviceId: 'not-a-uuid' }],
+    ['an org id that is not a UUID', { orgId: 'org-a' }],
+    ['a short nonce', { nonce: 'short' }],
+    ['an upper-case nonce', { nonce: '0123456789ABCDEF0123456789ABCDEF' }],
+    ['a missing nonce', { nonce: undefined }],
+  ])('drops the reported identity with %s', (_label, override) => {
+    expect(parse({ reportedIdentity: { ...identity, ...override } }).reportedIdentity).toBeUndefined();
+  });
+
+  it('drops a malformed capability alone', () => {
+    const data = parse({ securityCapabilities: { identitySyncProtocolVersion: 'one', outboundNetworkPolicyVersion: 1 } });
+    expect(data.securityCapabilities?.identitySyncProtocolVersion).toBeUndefined();
+    expect(data.securityCapabilities?.outboundNetworkPolicyVersion).toBe(1);
+  });
+});

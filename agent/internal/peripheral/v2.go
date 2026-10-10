@@ -131,7 +131,14 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 			Digest:            current.Digest,
 			EffectivePolicies: current.EffectivePolicies,
 		}
-		if validateEnvelopeV2(persisted, local) != "" {
+		// The last-known-good state must be this device's, intact (its digest
+		// still matches), but it may predate a move to another org or site
+		// (#8317): validated against the org/site it was applied under, it
+		// would otherwise refuse every envelope after the agent adopted its
+		// new identity. Revision ordering below still applies across the move.
+		persistedLocal := local
+		persistedLocal.OrgID, persistedLocal.SiteID = current.Identity.OrgID, current.Identity.SiteID
+		if current.Identity.DeviceID != local.DeviceID || validateEnvelopeV2(persisted, persistedLocal) != "" {
 			return rejectV2(envelope, "invalid_payload")
 		}
 		if envelope.Revision < current.Revision {

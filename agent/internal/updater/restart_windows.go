@@ -383,8 +383,19 @@ func RestartAfterRollback(journalPath string) error {
 			return err
 		}
 	}
+	return startDetachedServiceRestart("breeze-rollback-restart-*.ps1")
+}
 
-	scriptFile, err := os.CreateTemp("", "breeze-rollback-restart-*.ps1")
+// RestartSelf restarts the agent service from inside the service process.
+// Restart() cannot be used for that on Windows: it stops the service it runs
+// in and dies before it can start it again. A detached helper outlives the
+// stop and starts the service once it has stopped.
+func RestartSelf() error {
+	return startDetachedServiceRestart("breeze-restart-*.ps1")
+}
+
+func startDetachedServiceRestart(tempPattern string) error {
+	scriptFile, err := os.CreateTemp("", tempPattern)
 	if err != nil {
 		return err
 	}
