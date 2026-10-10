@@ -132,7 +132,12 @@ export const timeEntries = pgTable('time_entries', {
   // Partial, built CONCURRENTLY in SQL (2026-12-20-200300).
   index('time_entries_approval_request_idx')
     .on(t.approvalRequestId)
-    .where(sql`${t.approvalRequestId} IS NOT NULL`)
+    .where(sql`${t.approvalRequestId} IS NOT NULL`),
+  // Partial index (WHERE site_id IS NOT NULL), built CONCURRENTLY in SQL
+  // (2026-12-20-220000-site-location-columns).
+  index('time_entries_site_id_idx')
+    .on(t.siteId)
+    .where(sql`${t.siteId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {

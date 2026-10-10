@@ -74,6 +74,11 @@ END $$;
 ALTER TABLE public.sites VALIDATE CONSTRAINT sites_location_set_by_fkey;
 ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_site_id_fkey;
 
+-- RESET before the concurrent build: CREATE INDEX CONCURRENTLY waits for every
+-- older transaction in the database, and a lock_timeout cut-short would leave
+-- an INVALID index that the guard below then refuses on every boot.
+RESET lock_timeout;
+
 CREATE INDEX CONCURRENTLY IF NOT EXISTS time_entries_site_id_idx
   ON public.time_entries (site_id) WHERE site_id IS NOT NULL;
 
@@ -92,5 +97,3 @@ BEGIN
     RAISE EXCEPTION 'time_entries site index build left INVALID index: % — DROP INDEX CONCURRENTLY it and re-apply this migration', bad;
   END IF;
 END $$;
-
-RESET lock_timeout;
