@@ -33,8 +33,11 @@ export function publicInvoiceCheckoutUrls(): Required<Pick<InvoiceCheckoutUrls, 
  * normally returns in well under a second; 5s absorbs a slow one without making
  * the signer wait noticeably. A mint still in flight when this fires keeps
  * running: it writes its pending mapping as usual, and because it used the
- * public-link request key, the invoice page's Pay (same key, same hour) gets
- * that very session back from Stripe — the late session is harmless.
+ * public-link request key, a Pay on the invoice page after it lands (same key,
+ * same hour) gets that very session back from Stripe. A Pay while it is still
+ * in flight is refused by Stripe (key in use) and succeeds on retry; a Pay in
+ * a later hour mints a second session, exactly as two Pay clicks across an
+ * hour already can — the late mint adds no new way to reach a second session.
  */
 export const ACCEPT_CHECKOUT_TIMEOUT_MS = 5_000;
 
