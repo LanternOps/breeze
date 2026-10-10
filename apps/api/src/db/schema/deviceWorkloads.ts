@@ -24,7 +24,7 @@ import { organizations } from './orgs';
 
 // One row per workload (container / VM / LXC) on a workload host (#3834).
 // Typed columns only — no jsonb/bytea (D1). Reconciled per runtime by
-// services/workloads/ingest.ts. Migration 2026-12-17-120000-device-workloads.sql
+// services/workloads/ingest.ts. Migration 2026-12-20-230000-device-workloads.sql
 // declares the composite FK DEFERRABLE INITIALLY IMMEDIATE (drizzle's
 // foreignKey() builder has no deferrable option) and has NO partner-export
 // triggers (D12).

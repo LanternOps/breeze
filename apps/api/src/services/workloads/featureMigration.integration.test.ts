@@ -8,7 +8,7 @@ import { getTestDb } from '../../__tests__/integration/setup';
 import { replayMigration } from '../../__tests__/integration/replayMigration';
 import { pgErrorCode } from '../../utils/pgErrors';
 
-const MIGRATION = '2026-12-17-120100-workload-inventory-config-feature.sql';
+const MIGRATION = '2026-12-20-230100-workload-inventory-config-feature.sql';
 
 async function fixture() {
   const p = (await createPartner())!;

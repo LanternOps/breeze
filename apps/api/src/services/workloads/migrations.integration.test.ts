@@ -13,7 +13,7 @@ import {
 import { getTestDb } from '../../__tests__/integration/setup';
 import { replayMigration } from '../../__tests__/integration/replayMigration';
 
-const MIGRATION = '2026-12-17-120000-device-workloads.sql';
+const MIGRATION = '2026-12-20-230000-device-workloads.sql';
 const system: DbAccessContext = {
   scope: 'system',
   orgId: null,
