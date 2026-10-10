@@ -1663,7 +1663,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
 		}
-		h.consumeEndedDesktopOwner(notice.SessionID)
+		h.consumeEndedDesktopOwner(notice.SessionID, session.SessionID)
 		go forwardDesktopClipboardSummary(h, notice.SessionID, notice.Clipboard)
 	case backupipc.TypeBackupResult:
 		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no

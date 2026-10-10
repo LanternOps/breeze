@@ -1,6 +1,10 @@
 package heartbeat
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -25,44 +29,68 @@ var forwardDesktopClipboardSummary = (*Heartbeat).sendDesktopClipboardSummary
 var (
 	clipboardSummaryDirections = map[string]bool{"host_to_viewer": true, "viewer_to_host": true}
 	clipboardSummaryTypes      = map[string]bool{"text": true, "rtf": true, "image": true}
+	// clipboardSegmentIDPattern matches the API schema's segmentId.
+	clipboardSegmentIDPattern = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 )
+
+func newClipboardSegmentID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // desktopOwnerTombstoneTTL is how long an ended desktop session still accepts
 // its former helper's teardown report. A var so tests can shorten it.
 var desktopOwnerTombstoneTTL = 2 * time.Minute
 
 type desktopOwnerTombstone struct {
-	helperSessionID string
-	endedAt         time.Time
+	endedAt time.Time
+}
+
+// desktopOwnerKey keys a tombstone by session and helper: after a session
+// switch the session has a new owner while the previous helper's teardown
+// report is still on its way.
+func desktopOwnerKey(desktopSessionID, helperSessionID string) string {
+	return desktopSessionID + "\x00" + helperSessionID
+}
+
+func (h *Heartbeat) tombstoneDesktopOwner(desktopSessionID string, owner any) {
+	if helper, ok := owner.(string); ok && helper != "" {
+		h.endedDesktopOwners.Store(desktopOwnerKey(desktopSessionID, helper), desktopOwnerTombstone{endedAt: time.Now()})
+	}
 }
 
 // desktopOwnerMatches reports whether helperSessionID owns desktopSessionID,
-// or owned it until it ended within desktopOwnerTombstoneTTL. Stops and peer
-// disconnects forget the owner as soon as they happen, but the helper's
-// clipboard summary is sent from session teardown and can arrive after that.
+// or owned it until it ended (or was handed to another helper) within
+// desktopOwnerTombstoneTTL. Stops and peer disconnects forget the owner as
+// soon as they happen, but the helper's clipboard summary is sent from
+// session teardown and can arrive after that.
 func (h *Heartbeat) desktopOwnerMatches(desktopSessionID, helperSessionID string) bool {
 	if desktopSessionID == "" || helperSessionID == "" {
 		return false
 	}
-	if owner, ok := h.desktopOwners.Load(desktopSessionID); ok {
-		return owner == helperSessionID
+	if owner, ok := h.desktopOwners.Load(desktopSessionID); ok && owner == helperSessionID {
+		return true
 	}
-	v, ok := h.endedDesktopOwners.Load(desktopSessionID)
+	key := desktopOwnerKey(desktopSessionID, helperSessionID)
+	v, ok := h.endedDesktopOwners.Load(key)
 	if !ok {
 		return false
 	}
 	ts, ok := v.(desktopOwnerTombstone)
 	if !ok || time.Since(ts.endedAt) > desktopOwnerTombstoneTTL {
-		h.endedDesktopOwners.Delete(desktopSessionID)
+		h.endedDesktopOwners.Delete(key)
 		return false
 	}
-	return ts.helperSessionID == helperSessionID
+	return true
 }
 
-// consumeEndedDesktopOwner drops a session's tombstone once its teardown
-// report has been accepted: a session sends exactly one.
-func (h *Heartbeat) consumeEndedDesktopOwner(desktopSessionID string) {
-	h.endedDesktopOwners.Delete(desktopSessionID)
+// consumeEndedDesktopOwner drops a helper's tombstone for a session once its
+// teardown report has been accepted: a helper's Session sends exactly one.
+func (h *Heartbeat) consumeEndedDesktopOwner(desktopSessionID, helperSessionID string) {
+	h.endedDesktopOwners.Delete(desktopOwnerKey(desktopSessionID, helperSessionID))
 }
 
 // sweepEndedDesktopOwners drops expired tombstones. Most sessions never send a
@@ -84,6 +112,12 @@ func desktopClipboardSummaryPayload(sessionID string, in ipc.ClipboardSummary) m
 	out := ipc.ClipboardSummary{
 		Transfers: make([]ipc.ClipboardTransferCount, 0, len(in.Transfers)),
 		Blocked:   min(max(in.Blocked, 0), maxClipboardSummaryCount),
+		SegmentID: in.SegmentID,
+	}
+	// The API records one row per segment and rejects a malformed id; a
+	// report without a usable one is still its own segment.
+	if !clipboardSegmentIDPattern.MatchString(out.SegmentID) {
+		out.SegmentID = newClipboardSegmentID()
 	}
 	for _, t := range in.Transfers {
 		if len(out.Transfers) == maxClipboardSummaryEntries {

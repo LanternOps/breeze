@@ -2,9 +2,16 @@
 # W4c — Clipboard summary to central audit (#8261)
 
 **Goal:** each remote-desktop session that moved clipboard data, or had a transfer blocked by policy,
-leaves exactly one `audit_logs` row: `resourceType remote_session`, action
-`session_clipboard_summary`. The row holds direction × type → count and bytes, plus the blocked
-count. Never any content. This closes `TODO(#1012)` for clipboard.
+leaves one `audit_logs` row per agent Session that served it: `resourceType remote_session`,
+action `session_clipboard_summary`. The row holds direction × type → count and bytes, plus the
+blocked count. Never any content. This closes `TODO(#1012)` for clipboard.
+
+**Amendment (release-cut review, 2026-10-10):** one `remote_sessions` row can span several agent
+Sessions — a WebRTC reconnect, Retry or session switch re-offers on the same row, and each agent
+Session reports at its own teardown. Deduping on the session id alone dropped every segment after
+the first. Each report now carries `clipboard.segmentId` (32 hex chars, minted per agent Session),
+the API dedupes on (session, segment), and the agent tombstones a helper per (session, helper) so
+a session switch to another helper does not reject the first helper's report.
 
 **Contract decision — a separate message, not an extension of `desk-disconnect`:**
 - `desktopCommandResultSchema.result` is `.strict()`. An API that predates this change drops any

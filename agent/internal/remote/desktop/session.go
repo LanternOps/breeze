@@ -598,7 +598,6 @@ func (s *Session) doCleanup() {
 		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
-			s.reportClipboardSummary()
 		}
 		if s.cursorDC != nil {
 			s.cursorDC.Close()
@@ -631,6 +630,10 @@ func (s *Session) doCleanup() {
 				slog.Warn("Failed to release local-input block", "session", s.id, "error", err.Error())
 			}
 		}
+
+		// Last: in helper mode this is an IPC write that can block, and
+		// nothing above may wait on it.
+		s.reportClipboardSummary()
 	})
 }
 

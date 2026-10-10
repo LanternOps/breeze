@@ -31,6 +31,17 @@ describe('recordDesktopClipboardSummary', () => {
     });
   });
 
+  it('names the segment, so each agent Session of one server session gets its own row', async () => {
+    // A WebRTC reconnect, Retry or session switch reuses the remote_sessions
+    // row with a new agent Session, which reports at its own teardown. The
+    // writer dedupes per (session, segment): a resend is dropped, a second
+    // segment is not.
+    const d = deps();
+    const segmentId = 'ab'.repeat(16);
+    await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: { ...summary, segmentId } }, d);
+    expect(d.writeAuditOnce).toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ sessionId: SESSION, segmentId }));
+  });
+
   it('writes nothing for a session that is not on the reporting device', async () => {
     const d = deps({ findSession: vi.fn(async () => null) });
     expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-2', clipboard: summary }, d)).toBe('unknown_session');

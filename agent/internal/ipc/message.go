@@ -515,6 +515,10 @@ type DesktopPeerDisconnectedNotice struct {
 type ClipboardSummary struct {
 	Transfers []ClipboardTransferCount `json:"transfers"`
 	Blocked   int                      `json:"blocked"`
+	// SegmentID names the agent Session that counted this. One server session
+	// can span several (reconnect, Retry, session switch), each reporting
+	// once; the API keeps one row per segment.
+	SegmentID string `json:"segmentId,omitempty"`
 }
 
 type ClipboardTransferCount struct {

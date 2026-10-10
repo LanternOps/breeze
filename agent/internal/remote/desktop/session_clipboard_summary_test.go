@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -64,5 +65,20 @@ func TestClipboardSummaryForIPCCopiesCounters(t *testing.T) {
 	out := clipboardSummaryForIPC(in)
 	if out.Blocked != 3 || len(out.Transfers) != 1 || out.Transfers[0] != (ipc.ClipboardTransferCount{Direction: "host_to_viewer", Type: "image", Count: 2, Bytes: 900}) {
 		t.Fatalf("out = %+v", out)
+	}
+}
+
+func TestClipboardSummaryNamesItsSegment(t *testing.T) {
+	// One server session can span several agent Sessions (WebRTC reconnect,
+	// Retry, session switch), each reporting at its own teardown. The API
+	// records one row per segment, so every report carries its own id.
+	a := clipboardSummaryForIPC(clipboard.Summary{Blocked: 1})
+	b := clipboardSummaryForIPC(clipboard.Summary{Blocked: 1})
+	hex32 := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	if !hex32.MatchString(a.SegmentID) || !hex32.MatchString(b.SegmentID) {
+		t.Fatalf("segment ids %q, %q are not 32 hex chars", a.SegmentID, b.SegmentID)
+	}
+	if a.SegmentID == b.SegmentID {
+		t.Fatal("two segments share an id; the API would drop the second as a duplicate")
 	}
 }

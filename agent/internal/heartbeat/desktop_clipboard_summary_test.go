@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,7 +114,7 @@ func TestForgetDesktopOwnerSweepsExpiredTombstones(t *testing.T) {
 	h.rememberDesktopOwner("d2", "helperA")
 	h.forgetDesktopOwner("d2")
 
-	if _, ok := h.endedDesktopOwners.Load("d1"); ok {
+	if _, ok := h.endedDesktopOwners.Load(desktopOwnerKey("d1", "helperA")); ok {
 		t.Fatal("an expired tombstone was never swept")
 	}
 }
@@ -122,9 +123,46 @@ func TestRememberDesktopOwnerClearsTombstone(t *testing.T) {
 	h := &Heartbeat{}
 	h.rememberDesktopOwner("d1", "helperA")
 	h.forgetDesktopOwner("d1")
-	h.rememberDesktopOwner("d1", "helperB")
-	if _, ok := h.endedDesktopOwners.Load("d1"); ok {
+	h.rememberDesktopOwner("d1", "helperA")
+	if _, ok := h.endedDesktopOwners.Load(desktopOwnerKey("d1", "helperA")); ok {
 		t.Fatal("a re-owned session kept its old tombstone")
+	}
+}
+
+func TestDesktopOwnerTombstoneSurvivesReownByAnotherHelper(t *testing.T) {
+	// Session switch: the same desktop session restarts on another helper.
+	// The first helper's Session is torn down by that switch, and its
+	// teardown report lands after the new owner is recorded.
+	h := &Heartbeat{}
+	h.rememberDesktopOwner("d1", "helperA")
+	h.rememberDesktopOwner("d1", "helperB")
+	if !h.desktopOwnerMatches("d1", "helperA") {
+		t.Fatal("the previous owner's teardown report was rejected after a re-own")
+	}
+	if !h.desktopOwnerMatches("d1", "helperB") {
+		t.Fatal("the new owner was rejected")
+	}
+	h.consumeEndedDesktopOwner("d1", "helperA")
+	if h.desktopOwnerMatches("d1", "helperA") {
+		t.Fatal("a consumed tombstone was accepted again")
+	}
+	if !h.desktopOwnerMatches("d1", "helperB") {
+		t.Fatal("consuming the old owner's tombstone dropped the new owner")
+	}
+}
+
+func TestDesktopClipboardSummaryPayloadKeepsOrMintsSegment(t *testing.T) {
+	seg := strings.Repeat("ab", 16)
+	clip := desktopClipboardSummaryPayload("s", ipc.ClipboardSummary{SegmentID: seg, Blocked: 1})["clipboard"].(ipc.ClipboardSummary)
+	if clip.SegmentID != seg {
+		t.Fatalf("segment = %q, want the helper's %q", clip.SegmentID, seg)
+	}
+	// The API rejects a malformed id, which would lose the whole summary.
+	for _, bad := range []string{"", "NOT-HEX!", strings.Repeat("a", 65)} {
+		clip := desktopClipboardSummaryPayload("s", ipc.ClipboardSummary{SegmentID: bad, Blocked: 1})["clipboard"].(ipc.ClipboardSummary)
+		if clip.SegmentID == bad || !clipboardSegmentIDPattern.MatchString(clip.SegmentID) {
+			t.Fatalf("segment %q became %q", bad, clip.SegmentID)
+		}
 	}
 }
 

@@ -3463,8 +3463,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 sessionId: expectedSessionId,
                 deviceId: authenticatedAgent.deviceId,
                 clipboard: fastResult.clipboard as DesktopClipboardSummary,
+              }).then((outcome) => {
+                if (outcome === 'unknown_session') {
+                  console.warn(`[AgentWs] Clipboard summary for session ${expectedSessionId} names no session on this device; not recorded`);
+                }
               }).catch((err) => {
+                // The audit row is lost: report it, not just to stdout.
                 console.error('[AgentWs] Failed to record desktop clipboard summary:', err);
+                captureException(err);
               });
             }
           }
@@ -4478,6 +4484,9 @@ export const desktopCommandResultSchema = z.object({
         bytes: z.number().int().nonnegative().max(1_000_000_000_000),
       }).strict()).max(6),
       blocked: z.number().int().nonnegative().max(1_000_000),
+      // The agent Session that counted this; one server session can span
+      // several (reconnect, Retry, session switch), one audit row each.
+      segmentId: z.string().regex(/^[0-9a-f]{16,64}$/).optional(),
     }).strict().optional(),
   }).strict().optional(),
 }).passthrough();

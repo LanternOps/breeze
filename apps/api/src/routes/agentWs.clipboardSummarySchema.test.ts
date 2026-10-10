@@ -25,6 +25,12 @@ describe('desktopCommandResultSchema accepts a clipboard summary', () => {
     })).toBe(true);
   });
 
+  it('accepts a hex segment id and rejects anything else', () => {
+    expect(parses({ transfers: [], blocked: 1, segmentId: 'ab'.repeat(16) })).toBe(true);
+    expect(parses({ transfers: [], blocked: 1, segmentId: 'not hex at all!!' })).toBe(false);
+    expect(parses({ transfers: [], blocked: 1, segmentId: 'a'.repeat(65) })).toBe(false);
+  });
+
   it('accepts a summary that is only blocked attempts', () => {
     expect(parses({ transfers: [], blocked: 1 })).toBe(true);
   });

@@ -181,8 +181,14 @@ func (h *Heartbeat) rememberDesktopOwner(desktopSessionID, helperSessionID strin
 	if desktopSessionID == "" || helperSessionID == "" {
 		return
 	}
+	// A session switch re-owns the session on another helper; the previous
+	// one's Session is torn down by the switch and still sends its teardown
+	// report. Tombstone it before handing the session over.
+	if prev, ok := h.desktopOwners.Load(desktopSessionID); ok && prev != helperSessionID {
+		h.tombstoneDesktopOwner(desktopSessionID, prev)
+	}
 	h.desktopOwners.Store(desktopSessionID, helperSessionID)
-	h.endedDesktopOwners.Delete(desktopSessionID)
+	h.endedDesktopOwners.Delete(desktopOwnerKey(desktopSessionID, helperSessionID))
 }
 
 func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
@@ -196,9 +202,7 @@ func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
 	}
 	// Tombstone first, then remove the owner: a teardown report checked in
 	// between must see one or the other.
-	if helper, ok := owner.(string); ok && helper != "" {
-		h.endedDesktopOwners.Store(desktopSessionID, desktopOwnerTombstone{helperSessionID: helper, endedAt: time.Now()})
-	}
+	h.tombstoneDesktopOwner(desktopSessionID, owner)
 	h.desktopOwners.CompareAndDelete(desktopSessionID, owner)
 }
 

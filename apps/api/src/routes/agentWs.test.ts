@@ -2413,6 +2413,29 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  it('reports a clipboard audit write that failed instead of only logging it', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    const failure = new Error('audit insert failed');
+    recordDesktopClipboardSummaryMock.mockClear();
+    recordDesktopClipboardSummaryMock.mockRejectedValueOnce(failure);
+    vi.mocked(captureException).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-clipsum-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'clipboard_summary', clipboard: { transfers: [], blocked: 1 } },
+      }),
+    } as any, ws as any);
+
+    // The audit row is lost; that must reach error tracking, not just stdout.
+    expect(captureException).toHaveBeenCalledWith(failure);
+  });
+
   it('ignores a desk-clipsum summary whose session id does not match its command id', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);

@@ -16,6 +16,11 @@ export interface DesktopClipboardSummary {
     bytes: number;
   }>;
   blocked: number;
+  /**
+   * The agent Session that counted this. One server session can span several
+   * (WebRTC reconnect, Retry, session switch), each reporting once.
+   */
+  segmentId?: string;
 }
 
 export const DESKTOP_CLIPBOARD_SUMMARY_ACTION = 'session_clipboard_summary';
@@ -24,20 +29,21 @@ export interface DesktopClipboardAuditDeps {
   /** The session, only if it ran on this device. */
   findSession(sessionId: string, deviceId: string): Promise<{ orgId: string; userId: string } | null>;
   /**
-   * Inserts the summary row unless the session already has one, atomically.
+   * Inserts the summary row unless one already exists for this session and
+   * segment (`details.segmentId`; the session alone when absent), atomically.
    * Returns false when one existed. Two copies of the same report can be in
    * flight at once (WS messages are not processed one at a time), so the
    * check and the insert must not be separate transactions.
    */
-  writeAuditOnce(actorId: string, orgId: string, details: Record<string, unknown> & { sessionId: string }): Promise<boolean>;
+  writeAuditOnce(actorId: string, orgId: string, details: Record<string, unknown> & { sessionId: string; segmentId?: string }): Promise<boolean>;
 }
 
 export type DesktopClipboardAuditOutcome = 'recorded' | 'empty' | 'unknown_session' | 'duplicate';
 
 /**
- * Writes the one audit row for a session's clipboard activity (#1012). The
- * agent sends it once, at session teardown; the duplicate check covers a
- * resend from the agent's undelivered-result outbox.
+ * Writes the audit row for one segment of a session's clipboard activity
+ * (#1012). Each agent Session sends it once, at teardown; the duplicate check
+ * covers a resend of that same report.
  */
 export async function recordDesktopClipboardSummary(
   input: { sessionId: string; deviceId: string; clipboard: DesktopClipboardSummary },
@@ -58,6 +64,7 @@ export async function recordDesktopClipboardSummary(
     sessionOwnerId: session.userId,
     deviceId,
     reportedBy: 'authenticated_agent',
+    ...(clipboard.segmentId ? { segmentId: clipboard.segmentId } : {}),
   });
   return written ? 'recorded' : 'duplicate';
 }
@@ -90,6 +97,9 @@ const defaultDeps: DesktopClipboardAuditDeps = {
                 eq(auditLogs.resourceType, 'remote_session'),
                 eq(auditLogs.resourceId, details.sessionId),
                 eq(auditLogs.action, DESKTOP_CLIPBOARD_SUMMARY_ACTION),
+                details.segmentId
+                  ? sql`${auditLogs.details}->>'segmentId' = ${details.segmentId}`
+                  : undefined,
               ),
             )
             .limit(1);
