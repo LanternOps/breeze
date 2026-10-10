@@ -229,7 +229,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enableHardwareHealth: true,
     enableHardwareInventory: true,
     enablePerformanceMetrics: true,
-    enableSoftwareInventory: true,
+    // Opt in individually until the customer-facing software page ships.
     enableNetworkVisibility: true,
   });
 

@@ -29,7 +29,7 @@ async function seed(orgId: string, siteId: string, marker: string) {
 }
 describe('W04 software inventory real PostgreSQL isolation', () => {
   it('replays the DDL idempotently and defaults existing and new rows to false', async () => {
-    const migration = readFileSync(new URL('../../../migrations/2026-12-18-120200-portal-software-inventory-flag.sql', import.meta.url), 'utf8');
+    const migration = readFileSync(new URL('../../../migrations/2026-12-20-230200-portal-software-inventory-flag.sql', import.meta.url), 'utf8');
     await getTestDb().transaction(async (tx) => {
       // Transaction-local shadow: never changes the real portal_branding table.
       await tx.execute(sql.raw('CREATE TEMP TABLE portal_branding (id integer PRIMARY KEY) ON COMMIT DROP'));
