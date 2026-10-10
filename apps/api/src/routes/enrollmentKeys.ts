@@ -755,12 +755,18 @@ const MAX_TTL_MINUTES = 525_600;
 // the canonical field is `maxUsage` — without strict mode the request
 // returned 201 with `maxUsage: 1` (the default), masking the typo.
 // Closes #945.
+// An explicit expiry must lie in the future: a past value would mint a key
+// that is born expired and can never enroll a device. Evaluated at request
+// time (inside the refinement), not at module load.
+const FUTURE_EXPIRY_MESSAGE = 'Expiry must be in the future';
+const isFutureIso = (value: string) => new Date(value).getTime() > Date.now();
+
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100000).optional(),
-  expiresAt: z.string().datetime().optional(),
+  expiresAt: z.string().datetime().refine(isFutureIso, FUTURE_EXPIRY_MESSAGE).optional(),
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict().refine(
   (data) => !(data.expiresAt !== undefined && data.ttlMinutes !== undefined),
@@ -769,7 +775,7 @@ const createEnrollmentKeySchema = z.object({
 
 const rotateEnrollmentKeySchema = z.object({
   maxUsage: z.number().int().min(1).max(100000).nullable().optional(),
-  expiresAt: z.string().datetime().optional(),
+  expiresAt: z.string().datetime().refine(isFutureIso, FUTURE_EXPIRY_MESSAGE).optional(),
 }).strict();
 
 // ttlMinutes here sets the lifetime of the credential embedded in the

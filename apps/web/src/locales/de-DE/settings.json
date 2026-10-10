@@ -1238,6 +1238,7 @@
     "fetchFailed": "Registrierungsschlüssel konnten nicht abgerufen werden",
     "genericError": "Es ist ein Fehler aufgetreten",
     "createFailed": "Der Registrierungsschlüssel konnte nicht erstellt werden",
+    "expiresAtPast": "Das Ablaufdatum muss in der Zukunft liegen.",
     "deleteFailed": "Der Registrierungsschlüssel konnte nicht gelöscht werden",
     "deleted": "Registrierungsschlüssel „{{name}}“ gelöscht",
     "rotateFailed": "Der Registrierungsschlüssel konnte nicht rotiert werden",
