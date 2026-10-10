@@ -24,6 +24,11 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: undefined
 }));
 
+// Placement reconciliation on auto-link is covered by services/assetPlacement.test.ts.
+vi.mock('../services/assetPlacement', () => ({
+  reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
+}));
+
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id' },
   discoveryJobs: { id: 'discoveryJobs.id', status: 'discoveryJobs.status' },

@@ -32,6 +32,11 @@ import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { DiscoveredAssetSiteMoveError, moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import {
+  findLinkPlacementConflict,
+  PlacementLinkConflictError,
+  reconcilePlacementOnLinkOrThrow,
+} from '../services/assetPlacement';
 import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
 import { reachabilityToListStatus } from '../services/assetReachability';
 import { loadReachability } from '../services/assetReachabilityLoader';
@@ -1759,18 +1764,67 @@ discoveryRoutes.post(
       return c.json({ error: 'Device does not belong to the same site as this asset' }, 403);
     }
 
-    const [updated] = await db.update(discoveredAssets)
-      .set({
-        approvalStatus: 'approved',
-        linkedDeviceId: body.deviceId,
-        linkSource: 'manual',
-        // An explicit human link outranks a past unlink — resume auto-linking
-        // eligibility (spec §A2/A4).
-        autoLinkSuppressedAt: null,
-        updatedAt: new Date()
-      })
-      .where(eq(discoveredAssets.id, assetId))
-      .returning();
+    // One physical box has one authoritative placement (spec §5.1). When both the
+    // asset and the device already hold DIFFERENT placements, the operator must
+    // pick which values survive before the link can be made.
+    const placementConflict = await findLinkPlacementConflict(assetId, body.deviceId);
+    if (placementConflict) {
+      return c.json(
+        {
+          error: 'The asset and the device have different physical placements; resolve them before linking.',
+          code: 'PLACEMENT_CONFLICT',
+          conflict: placementConflict,
+        },
+        409,
+      );
+    }
+
+    // The link write and the placement reconciliation are one unit: a savepoint
+    // under the request transaction. A request handler that returns an error
+    // response still commits the ambient transaction, so a placement conflict
+    // that appears after the pre-check above (a concurrent placement edit) must
+    // throw out of THIS callback to roll the link back instead of committing it.
+    let linkResult: {
+      updated: typeof discoveredAssets.$inferSelect | undefined;
+      placementOutcome: Awaited<ReturnType<typeof reconcilePlacementOnLinkOrThrow>> | null;
+    };
+    try {
+      linkResult = await db.transaction(async (tx) => {
+        const [row] = await tx.update(discoveredAssets)
+          .set({
+            approvalStatus: 'approved',
+            linkedDeviceId: body.deviceId,
+            linkSource: 'manual',
+            // An explicit human link outranks a past unlink — resume auto-linking
+            // eligibility (spec §A2/A4).
+            autoLinkSuppressedAt: null,
+            updatedAt: new Date()
+          })
+          .where(eq(discoveredAssets.id, assetId))
+          .returning();
+        if (!row) return { updated: undefined, placementOutcome: null };
+        const outcome = await reconcilePlacementOnLinkOrThrow({
+          discoveredAssetId: assetId,
+          deviceId: body.deviceId,
+          mode: 'manual',
+          executor: tx,
+        });
+        return { updated: row, placementOutcome: outcome };
+      });
+    } catch (err) {
+      if (err instanceof PlacementLinkConflictError) {
+        return c.json(
+          {
+            error: 'The asset and the device have different physical placements; resolve them before linking.',
+            code: 'PLACEMENT_CONFLICT',
+            conflict: err.conflict,
+          },
+          409,
+        );
+      }
+      throw err;
+    }
+    const { updated, placementOutcome } = linkResult;
 
     // 0-row write despite the prior access-checked SELECT => RLS rejection or a
     // race. Surface it rather than returning 200 + null (a silent failure).
@@ -1784,7 +1838,7 @@ discoveryRoutes.post(
       resourceType: 'discovered_asset',
       resourceId: updated.id,
       resourceName: updated.hostname ?? updated.ipAddress ?? undefined,
-      details: { linkedDeviceId: body.deviceId }
+      details: { linkedDeviceId: body.deviceId, placement: placementOutcome }
     });
 
     return c.json(updated);

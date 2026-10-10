@@ -39,6 +39,7 @@ import type { discoveredAssetTypeEnum } from '../db/schema';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { buildEventFingerprint, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { linkBmcAssetFromAgentReport, normalizeBmcMac } from '../services/discovery/agentReportedBmcLink';
+import { reconcilePlacementOnLinkOrThrow } from '../services/assetPlacement';
 import { captureException } from '../services/sentry';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -1352,6 +1353,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
             if (linked.length) {
               autoLinkedDeviceId = match.deviceId;
+
+              // One physical box, one authoritative placement (spec §5.1): the
+              // device keeps its own; a placement held only by the asset moves
+              // to the device. An automatic link never reports a conflict.
+              await reconcilePlacementOnLinkOrThrow({
+                discoveredAssetId: upsertedAssetId,
+                deviceId: match.deviceId,
+                mode: 'automatic',
+              });
 
               // Mirror the asset's type onto the linked device — but only onto a
               // role discovery itself owns or that nobody has set yet; never over

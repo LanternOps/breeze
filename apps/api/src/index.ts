@@ -116,6 +116,7 @@ import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { discoveryAssetPlacementRoutes } from './routes/discoveryAssetPlacement';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { topologyRoutes } from './routes/topology';
 import { networkBaselineRoutes } from './routes/networkBaselines';
@@ -927,6 +928,9 @@ api.route('/discovery', discoveryRoutes);
 // probe lives in its own module so routes/discovery.ts does not grow past 2,247
 // lines; no path overlaps, so mount order is immaterial.
 api.route('/discovery', discoveryAssetProbeRoutes);
+// GET/PUT/DELETE /discovery/assets/:id/placement — physical placement, #8134.
+// Another sub-router at the same prefix; no path overlap, so order is immaterial.
+api.route('/discovery', discoveryAssetPlacementRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);

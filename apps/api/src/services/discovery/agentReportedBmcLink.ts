@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, discoveredAssets, sites } from '../../db/schema';
+import { reconcilePlacementOnLinkOrThrow } from '../assetPlacement';
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -10,6 +11,13 @@ type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * this module never opens a transaction or escalates scope itself.
  */
 export type BmcLinkTx = Pick<DbTx, 'select' | 'update'>;
+
+/**
+ * What {@link linkBmcAssetFromAgentReport} needs from its caller: BmcLinkTx plus
+ * `delete`, used only to drop a duplicate asset placement when the link is made
+ * (spec §5.1). The ambient `db` proxy and a real Drizzle transaction both have it.
+ */
+export type BmcLinkExecutor = BmcLinkTx & Pick<DbTx, 'delete'>;
 
 export type BmcLinkStatus = 'linked' | 'already_linked' | 'suppressed' | 'no_asset' | 'other_site';
 
@@ -108,7 +116,7 @@ export async function readBmcCandidates(tx: Pick<typeof db, 'select'>, orgId: st
  * (RLS) context; this function never elevates scope.
  */
 export async function linkBmcAssetFromAgentReport(
-  tx: BmcLinkTx,
+  tx: BmcLinkExecutor,
   report: BmcReport,
 ): Promise<BmcLinkStatus> {
   const normalized = normalizeBmcMac(report.mac);
@@ -150,6 +158,15 @@ export async function linkBmcAssetFromAgentReport(
     )
     .returning({ id: discoveredAssets.id });
   if (!updated.length) throw new Error('BMC link changed while locked');
+  // Same transaction as the link write: the device keeps its placement, and one
+  // held only by the asset moves to it (spec §5.1). An automatic link has no
+  // conflict outcome.
+  await reconcilePlacementOnLinkOrThrow({
+    discoveredAssetId: choice.asset.id,
+    deviceId: report.deviceId,
+    mode: 'automatic',
+    executor: tx,
+  });
   return 'linked';
 }
 

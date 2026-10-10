@@ -5,6 +5,7 @@ import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { hardwareRoutes } from './hardware';
+import { placementRoutes } from './placement';
 import { alertsRoutes } from './alerts';
 import { deviceMonitorsRoutes } from './monitors';
 import { anomaliesRoutes } from './anomalies';
@@ -147,6 +148,8 @@ deviceRoutes.route('/', softwareActionsRoutes);
 deviceRoutes.route('/', softwareRoutes);
 deviceRoutes.route('/', commandsRoutes);
 deviceRoutes.route('/', hardwareRoutes);
+// GET/PUT/DELETE /:id/placement — physical placement (room/rack/U), #8134.
+deviceRoutes.route('/', placementRoutes);
 deviceRoutes.route('/', alertsRoutes);
 // #6371 W05c2: GET /:id/monitors — effective monitors for the device page.
 deviceRoutes.route('/', deviceMonitorsRoutes);

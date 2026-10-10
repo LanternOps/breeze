@@ -314,7 +314,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   // org never authorizes anything in the new one.
   'diagnostic_access_grants',
   'topology_node_bindings',
-  'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_restore_authorizations', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
@@ -695,7 +695,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_episodes', 'metric_anomaly_incidents', 'metric_rollups',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
-  'psa_ticket_mappings', 'asset_checkouts',
+  'psa_ticket_mappings', 'asset_checkouts', 'asset_physical_placements',
   // Filesystem
   'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   // Backup verification

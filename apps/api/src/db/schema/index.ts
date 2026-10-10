@@ -206,3 +206,4 @@ export * from './aiUsageCharges';
 export * from './autopay';
 export * from './autopaySetupAttempts';
 export * from './deviceOwnershipEpochs';
+export * from './assetPhysicalPlacements';
