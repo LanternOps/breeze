@@ -118,9 +118,11 @@ function findColonJobIds(): string[] {
 }
 
 describe('BullMQ custom job ids never contain ":"', () => {
+  // Reads every source file under apps/api/src; ~7 s on a loaded machine, so
+  // the 5 s default would flake. Same budget as the other repo-scan guards.
   it('finds no colon-spelled job id in apps/api/src', () => {
     expect(findColonJobIds()).toEqual([]);
-  });
+  }, 30_000);
 
   it('control: the scanner sees the job-id shapes it claims to check', () => {
     // Guards against a vacuous pass (e.g. SRC_ROOT pointing at nothing).
@@ -152,5 +154,5 @@ describe('BullMQ custom job ids never contain ":"', () => {
       '`discover:${id}`',
       'join',
     ]);
-  });
+  }, 30_000);
 });
