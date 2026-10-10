@@ -39,6 +39,7 @@ import {
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
   WarrantyConsentError,
+  BackupDestinationNotInOrgError,
 } from '../../services/configurationPolicy';
 import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
 import { getMonitorDefinition } from '../../services/monitors/monitorService';
@@ -431,6 +432,9 @@ featureLinkRoutes.post(
       if (error instanceof WarrantyConsentError) {
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
+      if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
@@ -689,6 +693,9 @@ featureLinkRoutes.patch(
       }
       if (error instanceof WarrantyConsentError) {
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
+      }
+      if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
