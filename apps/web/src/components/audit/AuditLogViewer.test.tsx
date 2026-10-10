@@ -48,4 +48,25 @@ describe('AuditLogViewer', () => {
       expect((exportCall![1] as { orgIdOverride?: string })?.orgIdOverride).toBe('org-record-1');
     });
   });
+
+  it('renders /audit-logs/search entries (object resource, object details) without crashing', async () => {
+    const searchEntry = {
+      id: 'log-1',
+      timestamp: '2026-10-01T12:00:00.000Z',
+      user: { id: 'u1', name: 'Dana Admin', email: 'dana@example.com', role: 'user' },
+      action: 'device.update',
+      resource: { type: 'device', id: 'dev-1', name: 'WS-FRONTDESK-01' },
+      category: 'device',
+      result: 'success',
+      ipAddress: '10.0.0.1',
+      userAgent: 'test',
+      initiatedBy: null,
+      details: { reason: 'rename' },
+    };
+    fetchMock.mockResolvedValue(jsonResponse({ data: [searchEntry], pagination: { total: 1, totalPages: 1 } }));
+    render(<AuditLogViewer />);
+
+    expect(await screen.findByText('WS-FRONTDESK-01')).toBeTruthy();
+    expect(screen.getByText('Dana Admin')).toBeTruthy();
+  });
 });

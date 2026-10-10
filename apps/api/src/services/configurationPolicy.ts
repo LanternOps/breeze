@@ -982,7 +982,7 @@ async function decomposeInlineSettings(
           .where(and(eq(backupConfigs.id, destinationConfigId), eq(backupConfigs.orgId, policyRow.orgId)))
           .limit(1);
         if (!destination) {
-          throw new Error('Backup destination not found in this organization');
+          throw new BackupDestinationNotInOrgError();
         }
       }
 
@@ -1583,6 +1583,22 @@ async function authorizeConfigPolicyAutomationSettings(
   if (!policy) throw new Error('Configuration policy not found');
   const { resolveAutomationReferencesForOwner } = await import('./automationRuntime');
   await resolveAutomationReferencesForOwner(tx, policy, actions);
+}
+
+/**
+ * A backup feature link names a destination that is not owned by the policy's
+ * own org. Its own class so the feature-link routes can answer 400 instead of
+ * letting a bare Error reach the global onError handler as a 500. The message
+ * is deliberately identical for "missing" and "other org's" (no existence
+ * oracle).
+ */
+export class BackupDestinationNotInOrgError extends Error {
+  readonly code = 'backup_destination_not_in_org' as const;
+
+  constructor() {
+    super('Backup destination not found in this organization');
+    this.name = 'BackupDestinationNotInOrgError';
+  }
 }
 
 /**

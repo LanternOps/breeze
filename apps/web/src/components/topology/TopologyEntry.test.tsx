@@ -236,4 +236,45 @@ describe('an org switch after a site link has been applied (#8113)', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_A));
   });
+
+  it('dropping a stale link keeps the Astro router\'s history.state (moveToLocation reads state.index)', async () => {
+    window.history.replaceState({ index: 7 }, '');
+    window.location.hash = `#topology/site/${OTHER}/view/logical`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    window.history.replaceState({ index: 7 }, '', window.location.href);
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_C, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/logical'));
+    expect(window.history.state).toEqual({ index: 7 });
+  });
+
+  it('after switching away and back, a hash link to a site in another organization still resolves and keeps the site', async () => {
+    window.location.hash = `#topology/site/${SITE}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    // away (user switch drops the site) ...
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/overview'));
+    view.rerender(<TopologyEntry sites={[{ id: 'bbbbbbbb-0000-4000-8000-000000000001', name: 'Other' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    // ... and back
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    // now a link to a site owned by ORG_B
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(selectOrganization).toHaveBeenLastCalledWith(ORG_B));
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
+  });
 });
