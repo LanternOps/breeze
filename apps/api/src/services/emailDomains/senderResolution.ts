@@ -58,7 +58,7 @@ export interface ResolveSenderInput {
 /**
  * The default sender with a custom display name — keeps the envelope address
  * (so SPF/DKIM alignment is untouched) while showing e.g.
- * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
+ * `"Acme MSP" <no-reply@2breeze.app>` in the customer's inbox.
  * The display name is stripped of header-breaking characters; falls back to
  * the plain default sender when nothing usable survives.
  *
@@ -72,16 +72,20 @@ export function fromWithDisplayName(defaultFrom: string, displayName: string): s
   return `"${safe}" <${address}>`;
 }
 
+/** True when a From header carries a display name (`Name <addr>`), not a bare address. */
+function hasDisplayName(from: string): boolean {
+  const lt = from.indexOf('<');
+  return lt > 0 && from.slice(0, lt).replace(/"/g, '').trim().length > 0;
+}
+
 /**
- * The From a purpose uses when no partner identity applies — i.e. exactly what
- * that send site produced BEFORE this feature. This is what makes W01
- * byte-identical, and it matters most on self-hosted: an operator whose
- * EMAIL_FROM is already `"Acme Support" <support@acme.com>` must not see
- * ticket mail relabelled "Acme MSP via Breeze" by an upgrade (spec §8.3).
- *
- * The falsy-name check is deliberately NOT a trim: the old call sites read
- * `partnerName ? fromWithDisplayName(...) : undefined`, so an all-whitespace
- * name produced a branded From and must keep doing so.
+ * The From a customer purpose uses when no partner sending identity applies
+ * (spec §8.3). The display name is the company name and the address stays
+ * EMAIL_FROM, so SPF/DKIM still match. An operator who already set their own
+ * display name on EMAIL_FROM (`"Acme Support" <support@acme.com>`) keeps it
+ * unchanged: an upgrade must not relabel a self-hoster's customer mail. Only a
+ * bare EMAIL_FROM address picks up the company name. A blank name keeps the
+ * plain platform sender. Staff and security purposes never reach this branch.
  */
 export function platformFallbackFrom(
   purpose: MailPurpose,
@@ -90,8 +94,10 @@ export function platformFallbackFrom(
 ): string {
   const policy = mailPurposePolicy(purpose);
   if (policy.lane !== 'partner' || policy.fallbackFrom !== 'partner_display_name') return defaultFrom;
-  if (!partnerName) return defaultFrom;
-  return fromWithDisplayName(defaultFrom, `${partnerName} via Breeze`);
+  if (hasDisplayName(defaultFrom)) return defaultFrom;
+  const name = partnerName?.trim();
+  if (!name) return defaultFrom;
+  return fromWithDisplayName(defaultFrom, name);
 }
 
 export async function resolveSender(input: ResolveSenderInput): Promise<ResolvedSender> {

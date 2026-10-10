@@ -34,7 +34,9 @@ vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: vi.fn(asy
 vi.mock('../opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true), isOpsAlertingConfigured: () => false }));
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
-const DEFAULT_FROM = '"Acme IT" <helpdesk@acme.test>';
+// A bare address picks up the company name on fallback; a named EMAIL_FROM is
+// kept as-is (pinned below, spec §8.3).
+const DEFAULT_FROM = 'helpdesk@acme.test';
 const PARTNER_FROM = '"Acme Billing" <billing@acme.test>';
 
 const IDENTITY = {
@@ -121,8 +123,18 @@ describe('static + EMAIL_PROVIDER=resend', () => {
     await sendInvoice();
     expect(resendSendMock).toHaveBeenCalledTimes(2);
     const fallback = resendSendMock.mock.calls[1]![0];
-    expect(fallback.from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    // Bare EMAIL_FROM address: the fallback shows the company name.
+    expect(fallback.from).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(fallback.headers?.['X-Breeze-Outbound']).toBeUndefined();
+  });
+
+  it("keeps the operator's own EMAIL_FROM display name on fallback (spec §8.3)", async () => {
+    process.env.EMAIL_FROM = '"Acme IT" <helpdesk@acme.test>';
+    resendSendMock
+      .mockResolvedValueOnce({ error: { name: 'validation_error', statusCode: 403, message: 'The acme.test domain is not verified.' } })
+      .mockResolvedValueOnce({ error: null });
+    await sendInvoice();
+    expect(resendSendMock.mock.calls[1]![0].from).toBe('"Acme IT" <helpdesk@acme.test>');
   });
 });
 
@@ -151,7 +163,7 @@ describe('static + EMAIL_PROVIDER=smtp', () => {
     await sendInvoice();
     expect(smtpSendMailMock).toHaveBeenCalledTimes(2);
     const fallback = smtpSendMailMock.mock.calls[1]![0];
-    expect(fallback.from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(fallback.from).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(fallback.headers?.['X-Breeze-Outbound']).toBeUndefined();
   });
 
@@ -198,7 +210,7 @@ describe('static + EMAIL_PROVIDER=mailgun', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, text: vi.fn().mockResolvedValue('ok') });
     await sendInvoice();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(bodyOf(1).get('from')).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(bodyOf(1).get('from')).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(bodyOf(1).get('h:X-Breeze-Outbound')).toBeNull();
   });
 });
@@ -213,6 +225,6 @@ describe('static with the domain delisted', () => {
     lookupMock.mockResolvedValue({ ok: false, reason: 'domain_not_sendable' });
     await sendInvoice();
     expect(resendSendMock).toHaveBeenCalledTimes(1);
-    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP" <helpdesk@acme.test>');
   });
 });
