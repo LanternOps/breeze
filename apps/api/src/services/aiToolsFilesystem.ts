@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
  * - file_operations (list Tier 2, other actions Tier 3): Perform file operations
  *   on a device. Reads/writes run as root/LocalSystem on the endpoint, so read
  *   is privileged (requires devices.execute + approval), same as write/delete
- *   (SR5-01). list is recon-only and auto-executes with audit.
+ *   (privileged-read rule). list is recon-only and auto-executes with audit.
  * - analyze_disk_usage (Tier 1): Analyze filesystem usage for a device
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
  * - system_cleanup (Tier 1 list/status, Tier 3 run): OS-native maintenance
@@ -131,7 +131,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // file_operations - list Tier 2, other actions Tier 3 (SR5-01)
+  // file_operations - list Tier 2, other actions Tier 3 (privileged-read rule)
   // ============================================
 
   registerTool({

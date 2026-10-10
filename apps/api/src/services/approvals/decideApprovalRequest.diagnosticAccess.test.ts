@@ -136,12 +136,14 @@ vi.mock('../diagnosticAccess/grants', () => ({
   resolveEligibleApprovers: vi.fn(async () => []),
   decideDiagnosticGrantInTx: vi.fn(async () => null),
   auditDiagnosticDecision: vi.fn(async () => undefined),
+  auditDiagnosticSelfApproval: vi.fn(async () => undefined),
 }));
 
 import { db } from '../../db';
 import { assertApprovalAssurance } from '../authenticatorAssurance';
 import {
   auditDiagnosticDecision,
+  auditDiagnosticSelfApproval,
   decideDiagnosticGrantInTx,
   isEligibleApprover,
   resolveEligibleApprovers,
@@ -212,6 +214,7 @@ function queueGrantTarget(row: Record<string, unknown> | null) {
 function pendingTarget(overrides: Record<string, unknown> = {}) {
   return {
     orgId: 'org-9',
+    deviceId: 'dev-1',
     status: 'pending_approval',
     deviceOrgId: 'org-9',
     siteId: 'site-1',
@@ -254,6 +257,7 @@ beforeEach(() => {
   vi.mocked(resolveEligibleApprovers).mockResolvedValue([]);
   vi.mocked(decideDiagnosticGrantInTx).mockResolvedValue(null);
   vi.mocked(auditDiagnosticDecision).mockResolvedValue(undefined);
+  vi.mocked(auditDiagnosticSelfApproval).mockResolvedValue(undefined);
   vi.mocked(assertApprovalAssurance).mockResolvedValue({
     requiredLevel: 2,
     decidedAssuranceLevel: 2,
@@ -322,8 +326,10 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
         decidedVia: 'session_tap',
       }),
     );
-    expect(auditDiagnosticDecision).toHaveBeenCalledWith(activated, USER_ID, APPROVAL_ID);
+    expect(auditDiagnosticDecision).toHaveBeenCalledWith(activated, USER_ID, APPROVAL_ID, { selfApproved: false });
     expect(order).toEqual(['decideInTx', 'commit', 'audit']);
+    // An approval by someone other than the requester is not a self-approval.
+    expect(auditDiagnosticSelfApproval).not.toHaveBeenCalled();
   });
 
   it('deny path records a deny on the grant and audits it', async () => {
@@ -341,7 +347,7 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
       expect.anything(),
       expect.objectContaining({ grantId: GRANT_ID, status: 'denied', reason: 'not needed', deciderUserId: USER_ID }),
     );
-    expect(auditDiagnosticDecision).toHaveBeenCalledWith(denied, USER_ID, APPROVAL_ID);
+    expect(auditDiagnosticDecision).toHaveBeenCalledWith(denied, USER_ID, APPROVAL_ID, { selfApproved: false });
   });
 
   it('404s diagnostic_access_grant_not_found when the grant (or its device/org) is gone', async () => {
@@ -474,7 +480,7 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
-  it('lets a genuine sole operator approve their own grant at L3', async () => {
+  function soleOperatorAt(assurance: Record<string, unknown>) {
     queueApprovalPrefetch(approvalRow({ riskTier: 'critical' }));
     queueGrantTarget(pendingTarget({ requestedByUserId: USER_ID }));
     vi.mocked(resolveEligibleApprovers).mockResolvedValue([USER_ID]);
@@ -483,9 +489,30 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
       decidedAssuranceLevel: 3,
       decidedVia: 'webauthn_platform',
       authenticatorDeviceId: 'auth-1',
+      ...assurance,
     } as any);
-    mockDecideTx('approved');
-    vi.mocked(decideDiagnosticGrantInTx).mockResolvedValue(grantRow('active'));
+  }
+
+  it('lets a genuine sole operator approve their own grant with a fresh second factor, recorded before activation', async () => {
+    soleOperatorAt({});
+    const { tx } = mockDecideTx('approved');
+    const order: string[] = [];
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const out = await fn(tx);
+      order.push('commit');
+      return out;
+    });
+    const activated = grantRow('active');
+    vi.mocked(auditDiagnosticSelfApproval).mockImplementation(async () => {
+      order.push('selfApprovalRecord');
+    });
+    vi.mocked(decideDiagnosticGrantInTx).mockImplementation(async () => {
+      order.push('decideInTx');
+      return activated;
+    });
+    vi.mocked(auditDiagnosticDecision).mockImplementation(async () => {
+      order.push('audit');
+    });
 
     const res = await decideApprovalRequest({ auth: AUTH, id: APPROVAL_ID, status: 'approved' });
 
@@ -494,6 +521,46 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
       expect.anything(),
       expect.objectContaining({ grantId: GRANT_ID, status: 'approved', deciderUserId: USER_ID }),
     );
+    expect(auditDiagnosticSelfApproval).toHaveBeenCalledWith({
+      grantId: GRANT_ID,
+      orgId: 'org-9',
+      deviceId: 'dev-1',
+      deciderUserId: USER_ID,
+      approvalRequestId: APPROVAL_ID,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'auth-1',
+    });
+    expect(auditDiagnosticDecision).toHaveBeenCalledWith(activated, USER_ID, APPROVAL_ID, { selfApproved: true });
+    expect(order).toEqual(['selfApprovalRecord', 'decideInTx', 'commit', 'audit']);
+  });
+
+  it.each([
+    ['a session tap reported at L3', { decidedVia: 'session_tap' }],
+    ['a reused step-up grant', { stepUpGrantReuse: true }],
+  ])('refuses a sole operator self-approve backed by %s', async (_label, assurance) => {
+    soleOperatorAt(assurance);
+
+    const res = await decideApprovalRequest({ auth: AUTH, id: APPROVAL_ID, status: 'approved' });
+
+    expect(res).toEqual({ httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } });
+    expect(auditDiagnosticSelfApproval).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses the self-approval when its audit record cannot be written', async () => {
+    soleOperatorAt({});
+    mockDecideTx('approved');
+    vi.mocked(auditDiagnosticSelfApproval).mockRejectedValue(new Error('audit down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await decideApprovalRequest({ auth: AUTH, id: APPROVAL_ID, status: 'approved' });
+
+    expect(res).toEqual({ httpStatus: 503, body: { error: 'audit_unavailable', retryable: true } });
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(decideDiagnosticGrantInTx).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 
   it('always lets the requester deny their own request, without resolving other approvers', async () => {

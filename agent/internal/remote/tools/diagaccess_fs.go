@@ -33,8 +33,9 @@ import (
 //     be the root as approved, and the target's final path must lie under the
 //     root's final path with exact case, which keeps distinct case-sensitive
 //     siblings apart on Windows directories that have case sensitivity on;
-//  5. it must not be hard-denied, and every sensitive class it falls in must
-//     have been approved explicitly;
+//  5. it must not be hard-denied, and it must not fall in any credential-
+//     material class (browser secrets, credential stores, private keys,
+//     session tokens): those are never readable through a grant;
 //  6. a regular file with more than one hard link is refused, since its path
 //     names only one of its locations; special files are refused;
 //  7. the read or listing is served from that same handle, and the result is
@@ -306,10 +307,6 @@ func openDiagTarget(a *DiagnosticAuthorization, requestPath, operation string) (
 		}
 	}
 
-	approved := map[string]bool{}
-	for _, c := range a.SensitiveClasses {
-		approved[c] = true
-	}
 	for _, candidate := range []string{requestPath, final} {
 		if isDiagHardDeniedPrefix(candidate) {
 			return fail(diagErr(DiagErrHardDenied, "virtual and device filesystems are never readable through a grant"))
@@ -318,21 +315,15 @@ func openDiagTarget(a *DiagnosticAuthorization, requestPath, operation string) (
 		if hard {
 			return fail(diagErr(DiagErrHardDenied, "the agent's own configuration is never readable through a grant"))
 		}
-		for _, c := range classes {
-			if !approved[c] {
-				return fail(diagErr(DiagErrSensitive, "%s is a %s location and that class was not approved", final, c))
-			}
+		if len(classes) > 0 {
+			return fail(diagErr(DiagErrCredentialMaterial,
+				"%s holds credential material (%s) and is never readable through a grant", final, strings.Join(classes, ", ")))
 		}
 	}
-	// Safety net: anything the pre-existing SR5-01 deny-list treats as a
-	// secret must have been classified above. If the two lists ever drift,
-	// refuse rather than serve it under a grant that never named it.
+	// Safety net: anything the existing sensitive-path deny-list protects is
+	// refused too, so a drift between the two lists can only ever refuse more.
 	if isSensitiveReadPath(final) || isSensitiveReadPath(requestPath) {
-		_, c1 := ClassifyDiagnosticPath(final)
-		_, c2 := ClassifyDiagnosticPath(requestPath)
-		if len(c1) == 0 && len(c2) == 0 {
-			return fail(diagErr(DiagErrSensitive, "%s is a protected location with no approvable class", final))
-		}
+		return fail(diagErr(DiagErrCredentialMaterial, "%s is a protected location and is never readable through a grant", final))
 	}
 
 	if info.Mode().IsRegular() {
@@ -402,8 +393,8 @@ type DiagnosticListResponse struct {
 	NextOffset      int64       `json:"nextOffset"`
 	Truncated       bool        `json:"truncated"`
 	ScanCapped      bool        `json:"scanCapped"`
-	// HiddenSensitive counts children withheld because they are sensitive
-	// stores the grant did not name.
+	// HiddenSensitive counts children withheld because they hold credential
+	// material or are otherwise never readable through a grant.
 	HiddenSensitive int `json:"hiddenSensitive"`
 }
 
@@ -519,25 +510,16 @@ func DiagnosticListFiles(commandID string, payload map[string]any, env DiagGrant
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
-	// Children that are sensitive stores the grant did not name (or that are
-	// never readable) are left out of the listing entirely: even their names,
-	// sizes and times are not part of an ordinary diagnostic grant. Filtered
-	// before paging so offsets stay stable.
-	approved := map[string]bool{}
-	for _, c := range a.SensitiveClasses {
-		approved[c] = true
-	}
+	// Children that hold credential material (or that are never readable) are
+	// left out of the listing entirely: even their names, sizes and times are
+	// not part of a diagnostic grant. Filtered before paging so offsets stay
+	// stable.
 	hidden := 0
 	visible := entries[:0]
 	for _, entry := range entries {
-		hard, classes := ClassifyDiagnosticPath(filepath.Join(final, entry.Name()))
-		withheld := hard || isDiagHardDeniedPrefix(filepath.Join(final, entry.Name()))
-		for _, c := range classes {
-			if !approved[c] {
-				withheld = true
-			}
-		}
-		if withheld {
+		child := filepath.Join(final, entry.Name())
+		hard, classes := ClassifyDiagnosticPath(child)
+		if hard || len(classes) > 0 || isDiagHardDeniedPrefix(child) || isSensitiveReadPath(child) {
 			hidden++
 			continue
 		}

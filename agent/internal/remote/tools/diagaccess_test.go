@@ -52,9 +52,9 @@ func TestClassifyDiagnosticPathSharedFixture(t *testing.T) {
 	}
 }
 
-// Every path the pre-existing SR5-01 deny-list protects must fall in some
-// approvable class or be hard-denied, otherwise grant mode would have to
-// choose between serving it unannounced and refusing it for no stated reason.
+// Every path the existing sensitive-path deny-list protects must fall in a
+// credential-material class or be hard-denied, so grant mode refuses it with a
+// stated reason rather than through the safety net alone.
 func TestSensitiveReadPathsAreAllClassified(t *testing.T) {
 	for _, p := range []string{
 		"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/ssl/private/k",
@@ -65,11 +65,11 @@ func TestSensitiveReadPathsAreAllClassified(t *testing.T) {
 		"/home/a/.kube/config", "/home/a/.git-credentials", "/srv/app/.env",
 	} {
 		if !isSensitiveReadPath(p) {
-			t.Fatalf("test premise: %s should be SR5-01 sensitive", p)
+			t.Fatalf("test premise: %s should be on the sensitive-path deny-list", p)
 		}
 		hard, classes := ClassifyDiagnosticPath(p)
 		if !hard && len(classes) == 0 {
-			t.Errorf("%s is SR5-01 sensitive but has no diagnostic class", p)
+			t.Errorf("%s is on the sensitive-path deny-list but has no diagnostic class", p)
 		}
 	}
 }
@@ -437,17 +437,69 @@ func TestDiagnosticHardLinkRefused(t *testing.T) {
 	}
 }
 
-func TestDiagnosticSensitiveClassMustBeExplicit(t *testing.T) {
+// Credential material is never readable through a grant, whatever the grant
+// covers and whatever the authorization names. Each class is exercised with a
+// location that falls in it.
+func TestDiagnosticCredentialMaterialIsNeverReadable(t *testing.T) {
 	skipIfNoGrantPlatform(t)
 	s := newDiagSigner(t)
 	env := s.env("dev-1", "org-1")
 	root, _ := diagTree(t)
-	cookies := filepath.Join(root, "Chrome", "Cookies")
-	if got := diagCode(s.run(s.build(t, "read", cookies, rec(root), nil, nil, nil), "read", env)); got != DiagErrSensitive {
-		t.Fatalf("broad grant reached the cookie jar: %s", got)
+	write := func(rel ...string) string {
+		p := filepath.Join(append([]string{root}, rel...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("material"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	if got := diagCode(s.run(s.build(t, "read", cookies, rec(root), []string{DiagClassBrowserSecrets}, nil, nil), "read", env)); got != "OK" {
-		t.Fatalf("explicit browser_secrets grant refused: %s", got)
+	cases := []struct {
+		name  string
+		path  string
+		class string
+	}{
+		{"browser cookie jar", filepath.Join(root, "Chrome", "Cookies"), DiagClassBrowserSecrets},
+		{"ssh private key", write("profile", ".ssh", "id_ed25519"), DiagClassPrivateKeys},
+		{"cloud credentials", write("profile", ".aws", "credentials"), DiagClassSessionTokens},
+		{"setup answer file", write("Setup", "unattend.xml"), DiagClassCredentialStore},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, classes := ClassifyDiagnosticPath(c.path); len(classes) == 0 || classes[0] != c.class {
+				t.Fatalf("test premise: %s classified as %v, want %s", c.path, classes, c.class)
+			}
+			if got := diagCode(s.run(s.build(t, "read", c.path, rec(root), nil, nil, nil), "read", env)); got != DiagErrCredentialMaterial {
+				t.Errorf("broad grant: got %s, want %s", got, DiagErrCredentialMaterial)
+			}
+			// Naming the class on a correctly signed authorization does not help.
+			if got := diagCode(s.run(s.build(t, "read", c.path, rec(root), []string{c.class}, nil, nil), "read", env)); got != DiagErrCredentialMaterial {
+				t.Errorf("authorization naming %s: got %s, want %s", c.class, got, DiagErrCredentialMaterial)
+			}
+		})
+	}
+}
+
+// A correctly signed authorization that names any sensitive class is refused
+// before anything is opened, even for an ordinary file.
+func TestDiagnosticAuthorizationNamingAClassIsRefused(t *testing.T) {
+	skipIfNoGrantPlatform(t)
+	s := newDiagSigner(t)
+	env := s.env("dev-1", "org-1")
+	root, _ := diagTree(t)
+	logPath := filepath.Join(root, "Logs", "app.log")
+	for _, class := range []string{DiagClassBrowserSecrets, DiagClassCredentialStore, DiagClassPrivateKeys, DiagClassSessionTokens} {
+		if got := diagCode(s.run(s.build(t, "read", logPath, rec(root), []string{class}, nil, nil), "read", env)); got != DiagErrCredentialMaterial {
+			t.Errorf("%s: got %s, want %s", class, got, DiagErrCredentialMaterial)
+		}
+		if got := diagCode(s.run(s.build(t, "list", filepath.Join(root, "Logs"), rec(root), []string{class}, nil, nil), "list", env)); got != DiagErrCredentialMaterial {
+			t.Errorf("list %s: got %s, want %s", class, got, DiagErrCredentialMaterial)
+		}
+	}
+	// The same file is readable under an authorization that names none.
+	if got := diagCode(s.run(s.build(t, "read", logPath, rec(root), nil, nil, nil), "read", env)); got != "OK" {
+		t.Fatalf("ordinary read refused: %s", got)
 	}
 }
 
@@ -615,37 +667,30 @@ func TestDiagnosticHardDeniedEvenIfNamed(t *testing.T) {
 	orig := agentConfigDirFunc
 	agentConfigDirFunc = func() string { return cfg }
 	t.Cleanup(func() { agentConfigDirFunc = orig })
-	all := []string{DiagClassBrowserSecrets, DiagClassCredentialStore, DiagClassPrivateKeys, DiagClassSessionTokens}
-	if got := diagCode(s.run(s.build(t, "read", filepath.Join(cfg, "secrets.yaml"), rec(base), all, nil, nil), "read", env)); got != DiagErrHardDenied {
+	if got := diagCode(s.run(s.build(t, "read", filepath.Join(cfg, "secrets.yaml"), rec(base), nil, nil, nil), "read", env)); got != DiagErrHardDenied {
 		t.Fatalf("agent config served under a grant: %s", got)
 	}
 }
 
-func TestDiagnosticListWithholdsUnapprovedSensitiveChildren(t *testing.T) {
+func TestDiagnosticListWithholdsCredentialMaterial(t *testing.T) {
 	skipIfNoGrantPlatform(t)
 	s := newDiagSigner(t)
 	env := s.env("dev-1", "org-1")
 	root, _ := diagTree(t)
 	chrome := filepath.Join(root, "Chrome")
+	if err := os.WriteFile(filepath.Join(chrome, "debug.log"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	r := s.run(s.build(t, "list", chrome, rec(root), nil, nil, nil), "list", env)
 	if diagCode(r) != "OK" {
 		t.Fatalf("list failed: %s", r.Error)
 	}
 	var lr DiagnosticListResponse
 	s.open(t, r, &lr)
-	for _, e := range lr.Entries {
-		if strings.EqualFold(e.Name, "Cookies") {
-			t.Fatal("unapproved cookie store listed")
-		}
+	if len(lr.Entries) != 1 || lr.Entries[0].Name != "debug.log" {
+		t.Fatalf("entries = %+v, want only debug.log", lr.Entries)
 	}
 	if lr.HiddenSensitive != 1 {
 		t.Fatalf("hiddenSensitive = %d, want 1", lr.HiddenSensitive)
-	}
-	// Named explicitly, it is listed.
-	r = s.run(s.build(t, "list", chrome, rec(root), []string{DiagClassBrowserSecrets}, nil, nil), "list", env)
-	var lr2 DiagnosticListResponse
-	s.open(t, r, &lr2)
-	if len(lr2.Entries) != 1 || lr2.HiddenSensitive != 0 {
-		t.Fatalf("approved listing: %d entries, %d hidden", len(lr2.Entries), lr2.HiddenSensitive)
 	}
 }

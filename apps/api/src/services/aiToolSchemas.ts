@@ -117,7 +117,7 @@ export const executeCommandPayloadSchema = z.object({
 /**
  * Administrator-approved read-only diagnostic access (aiToolsDiagnosticAccess.ts).
  * Shared by toolInputSchemas and the chat SDK tool() shapes. Paths are plain
- * strings here: form, OS match, sensitive classes and grant coverage are
+ * strings here: form, OS match, credential-material refusal and grant coverage are
  * decided by services/diagnosticAccess — the default path restriction is
  * exactly what an approved grant lifts, so it must not be applied here.
  */
@@ -128,7 +128,6 @@ export const diagnosticAccessShapes = {
     operations: z.array(z.enum(['list', 'read'])).min(1).max(2).optional(),
     purpose: z.string().trim().min(3).max(500),
     durationMinutes: z.number().int().min(5).max(1440).optional(),
-    sensitiveClasses: z.array(z.enum(['browser_secrets', 'credential_store', 'private_keys', 'session_tokens'])).max(4).optional(),
   },
   list_diagnostic_access_grants: {
     deviceId: uuid.optional(),

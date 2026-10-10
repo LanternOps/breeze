@@ -13,6 +13,10 @@
  *   the signed per-command authorization is minted at delivery
  *   (services/diagnosticAccess/delivery.ts) and results come back sealed to a
  *   key only this process holds.
+ *
+ * Credential material (browser secrets, credential stores, private keys,
+ * stored tokens) is never grantable, and file content is passed through secret
+ * redaction (diagnosticAccess/contentRedaction.ts) before it is returned.
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
@@ -34,7 +38,11 @@ import {
   type DiagnosticOperation,
   type GrantRow,
 } from './diagnosticAccess/grants';
-import { SENSITIVE_CLASS_LABELS, type SensitiveClass } from './diagnosticAccess/classification';
+import {
+  DIAGNOSTIC_REDACTION_CONTEXT_BYTES,
+  diagnosticReadWindow,
+  redactDiagnosticWindow,
+} from './diagnosticAccess/contentRedaction';
 import { generateResultKeyPair, isSealedDiagnosticResult, openSealedDiagnosticResult } from './diagnosticAccess/seal';
 import { describeAgentDiagnosticError, splitResolvedTarget } from './diagnosticAccess/errors';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
@@ -43,7 +51,9 @@ import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 type AiToolTier = 1 | 2 | 3 | 4;
 
 const READ_DEFAULT_BYTES = 256 * 1024;
-const READ_MAX_BYTES = 1024 * 1024;
+// The device reads at most 1 MiB per command; the redaction context on each
+// side of the caller's range comes out of that.
+const READ_MAX_BYTES = 1024 * 1024 - 2 * DIAGNOSTIC_REDACTION_CONTEXT_BYTES;
 const LIST_DEFAULT_LIMIT = 500;
 const LIST_MAX_LIMIT = 5000;
 
@@ -68,7 +78,6 @@ function grantView(g: GrantRow) {
     status: g.status,
     operations: g.operations,
     paths: g.scopes,
-    sensitiveClasses: g.sensitiveClasses,
     purpose: g.purpose,
     durationMinutes: g.durationMinutes,
     requestedAt: g.requestedAt.toISOString(),
@@ -88,7 +97,7 @@ const COVERAGE_MESSAGES: Record<CoverageDenial, string> = {
   grant_revoked: 'Your diagnostic access grant was revoked. Request a new one if access is still needed.',
   operation_not_granted: 'Your grant does not include this operation (list vs read).',
   out_of_scope: 'This path is outside every location in your approved grant. Request access to it explicitly.',
-  sensitive_not_granted: 'This path is a sensitive store (credentials, browser secrets, private keys or tokens) that your grant did not explicitly include.',
+  credential_material: 'This path holds credential material (browser secrets, credential stores, private keys or stored tokens), which is never available through diagnostic access.',
   hard_denied: 'This location is never available through diagnostic access.',
   invalid_path: 'The path is not an acceptable absolute path.',
 };
@@ -175,15 +184,18 @@ async function runDiagnosticCommand(
   }
 
   const keys = generateResultKeyPair();
+  // A read asks the device for a wider window, as raw bytes, so secrets that
+  // straddle the caller's range are still found (diagnosticAccess/contentRedaction.ts).
+  const window = operation === 'read' ? diagnosticReadWindow(paging.offset, paging.maxBytes ?? READ_DEFAULT_BYTES) : null;
   const payload: Record<string, unknown> = {
     grantId: grant.id,
     path,
-    offset: paging.offset,
+    offset: window ? window.offset : paging.offset,
     resultPublicKey: keys.publicKeyB64,
   };
-  if (operation === 'read') {
-    payload.maxBytes = paging.maxBytes;
-    payload.encoding = paging.encoding;
+  if (window) {
+    payload.maxBytes = window.maxBytes;
+    payload.encoding = 'base64';
   } else {
     payload.limit = paging.limit;
   }
@@ -203,11 +215,13 @@ async function runDiagnosticCommand(
     const sealed = JSON.parse(result.stdout ?? '');
     if (!isSealedDiagnosticResult(sealed)) throw new Error('result is not sealed');
     body = openSealedDiagnosticResult(keys.privateKey, sealed, sealed.authorizationId) as Record<string, unknown>;
+    if (window) body = redactReadWindow(body, window.offset, paging);
   } catch {
     await recordDiagnosticAccess(grant, auth, { operation, path, resolvedPath: null, commandId, outcome: 'result_unreadable' });
     return out({ error: 'The device answered, but its sealed result could not be opened.', condition: 'result_unreadable', commandId });
   }
 
+  const contentRedacted = typeof body.contentRedacted === 'boolean' ? body.contentRedacted : undefined;
   const resolvedPath = typeof body.resolvedPath === 'string' ? body.resolvedPath : null;
   await recordDiagnosticAccess(grant, auth, {
     operation,
@@ -217,8 +231,42 @@ async function runDiagnosticCommand(
     outcome: 'ok',
     bytesRead: typeof body.bytesRead === 'number' ? body.bytesRead : undefined,
     entries: Array.isArray(body.entries) ? body.entries.length : undefined,
+    contentRedacted,
   });
   return out({ ...body, grantExpiresAt: grant.expiresAt?.toISOString() ?? null, commandId });
+}
+
+/**
+ * Cuts the caller's range out of the window the device returned, with every
+ * secret that overlaps it redacted, and re-states paging for that range. The
+ * window must come back as base64; anything else is treated as unreadable.
+ */
+function redactReadWindow(
+  body: Record<string, unknown>,
+  windowOffset: number,
+  paging: { offset: number; maxBytes?: number; encoding?: 'text' | 'base64' },
+): Record<string, unknown> {
+  const raw = body.content;
+  if (typeof raw !== 'string' || Buffer.from(raw, 'base64').toString('base64') !== raw) {
+    throw new Error('diagnostic read window is not base64');
+  }
+  const windowBytes = Buffer.from(raw, 'base64');
+  const requested = paging.maxBytes ?? READ_DEFAULT_BYTES;
+  const { bytes, redacted } = redactDiagnosticWindow(windowBytes, paging.offset - windowOffset, requested);
+  const bytesRead = Math.max(0, Math.min(windowBytes.length - (paging.offset - windowOffset), requested));
+  const nextOffset = paging.offset + bytesRead;
+  const size = typeof body.size === 'number' ? body.size : undefined;
+  const encoding = paging.encoding === 'base64' ? 'base64' : 'text';
+  return {
+    ...body,
+    offset: paging.offset,
+    bytesRead,
+    nextOffset,
+    eof: size !== undefined ? nextOffset >= size : body.eof,
+    encoding,
+    content: encoding === 'base64' ? bytes.toString('base64') : bytes.toString('utf8'),
+    contentRedacted: redacted,
+  };
 }
 
 export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): void {
@@ -234,7 +282,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
     definition: {
       name: 'request_diagnostic_access',
       description:
-        'Ask an administrator to approve READ-ONLY listing/reading of specific paths on one device, including locations the default path restriction blocks (e.g. AppData logs). Creates a pending approval; grants nothing until approved.',
+        'Ask an administrator to approve READ-ONLY list/read of specific paths on one device, incl. locations the default restriction blocks (e.g. AppData logs). Grants nothing until approved. Credential stores, browser secrets, keys and tokens are never available.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -258,11 +306,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
           },
           purpose: { type: 'string', description: 'Why the access is needed; shown to the approver' },
           durationMinutes: { type: 'number', description: `How long the grant lasts after approval (default ${DEFAULT_GRANT_MINUTES}, 5-1440)` },
-          sensitiveClasses: {
-            type: 'array',
-            items: { type: 'string', enum: ['browser_secrets', 'credential_store', 'private_keys', 'session_tokens'] },
-            description: 'Only when the task truly needs a sensitive store; each is shown to the approver as sensitive',
-          },
         },
         required: ['deviceId', 'paths', 'purpose'],
       },
@@ -280,7 +323,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
           operations: ((input.operations as DiagnosticOperation[] | undefined) ?? ['list', 'read']),
           purpose: input.purpose as string,
           durationMinutes: input.durationMinutes as number | undefined,
-          sensitiveClasses: input.sensitiveClasses as SensitiveClass[] | undefined,
         });
         if (!result.reused) {
           await pushDiagnosticApprovals(result.approvals, `Read-only diagnostic access on ${device.hostname}`);
@@ -299,9 +341,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
               : result.approverCount === 0 && !result.reused
                 ? 'Request recorded, but no administrator is eligible to approve it (needs devices:execute and approvals:decide with access to this device).'
                 : `Waiting for administrator approval in Breeze (Approvals, or the Breeze mobile app): ${approvalsUrl()}. Check with list_diagnostic_access_grants.`,
-          sensitiveClassesExplained: g.sensitiveClasses.length
-            ? g.sensitiveClasses.map((c) => SENSITIVE_CLASS_LABELS[c as SensitiveClass] ?? c)
-            : undefined,
         });
       } catch (err) {
         if (err instanceof DiagnosticAccessError) return out({ error: err.message, condition: err.code });
@@ -401,7 +440,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
     deviceArgs: ['deviceId'],
     definition: {
       name: 'diagnostic_read_file',
-      description: 'Read a bounded chunk of a file under your ACTIVE diagnostic access grant (read-only). Page large logs with offset/nextOffset.',
+      description: 'Read a bounded chunk of a file under your ACTIVE diagnostic access grant (read-only). Page large logs with offset/nextOffset. Secrets in the content are redacted (contentRedacted: true when any were).',
       input_schema: {
         type: 'object' as const,
         properties: {

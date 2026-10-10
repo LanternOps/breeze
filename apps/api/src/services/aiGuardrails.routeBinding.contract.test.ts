@@ -330,7 +330,7 @@ const BINDINGS: readonly Binding[] = [
   // §2.5 — the per-action extra-permission map.
   { tool: 'manage_tickets', action: 'move_org', routeFile: 'tickets/moveOrg.ts', method: 'post', path: '/:id/move-org' },
 
-  // §2.4 — a registry read is an agent EXECUTION (SR5-01 precedent).
+  // §2.4 — a registry read is an agent EXECUTION (privileged-read precedent).
   { tool: 'registry_operations', action: 'read_key', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands' },
 
   // Live device inspection: every /system-tools route dispatches to the agent,

@@ -15,9 +15,9 @@ const AGENT_CODES: Record<string, { condition: string; message: string }> = {
     condition: 'link_refused',
     message: 'The path goes through a link, junction, alternate name or hard link, so the device refused it. Request the real location directly.',
   },
-  E_DIAG_SENSITIVE_NOT_GRANTED: {
-    condition: 'sensitive_not_granted',
-    message: 'The device classified this as a sensitive store that the grant did not explicitly include.',
+  E_DIAG_CREDENTIAL_MATERIAL: {
+    condition: 'credential_material',
+    message: 'The device classified this as credential material (browser secrets, credential stores, private keys or stored tokens), which is never available through diagnostic access.',
   },
   E_DIAG_HARD_DENIED: { condition: 'hard_denied', message: 'This location is never available through diagnostic access.' },
   E_DIAG_NOT_A_FILE: { condition: 'not_a_file', message: 'That path is a folder or special file; use diagnostic_list_directory.' },
@@ -64,7 +64,7 @@ export function describeAgentDiagnosticError(
       message: 'This device runs a Breeze agent that predates diagnostic access. Update the agent, then retry.',
     };
   }
-  if (/diagnostic access (grant_\w+|out_of_scope|sensitive_not_granted|operation_not_granted|hard_denied|no_grant)/.test(text)) {
+  if (/diagnostic access (grant_\w+|out_of_scope|credential_material|operation_not_granted|hard_denied|no_grant)/.test(text)) {
     const reason = /diagnostic access (\w+)/.exec(text)?.[1] ?? 'refused';
     return { condition: reason, message: `Delivery was refused because the grant no longer allows it (${reason}).` };
   }

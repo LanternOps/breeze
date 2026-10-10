@@ -13,11 +13,13 @@ import "strings"
 //
 // Classes are about CONTENT, not location: a broad grant over a user's
 // AppData\Local tree must not incidentally reach the browser cookie jar or
-// the DPAPI master keys inside it. Each class has to be selected explicitly
-// on the grant; the approval screen shows it by name.
+// the DPAPI master keys inside it. Every class is credential material and is
+// never readable through a grant: a location in any class is refused, and a
+// listing leaves it out.
 
 // Sensitive classes. The string values are part of the signed authorization
-// wire format and the API schema; they never change meaning.
+// wire format; they never change meaning. An authorization that names one is
+// refused (VerifyDiagnosticAuthorization).
 const (
 	DiagClassCredentialStore = "credential_store"
 	DiagClassBrowserSecrets  = "browser_secrets"
@@ -25,7 +27,8 @@ const (
 	DiagClassSessionTokens   = "session_tokens"
 )
 
-// diagKnownClasses is the closed set a signed authorization may name.
+// diagKnownClasses is the closed set the authorization parser recognises; an
+// unknown name is malformed, a known one is refused after verification.
 var diagKnownClasses = map[string]bool{
 	DiagClassCredentialStore: true,
 	DiagClassBrowserSecrets:  true,

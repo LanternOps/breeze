@@ -157,6 +157,7 @@ export default defineConfig({
                 { slug: 'features/ml-insights' },
                 { slug: 'features/fleet-hygiene' },
                 { slug: 'features/ai-computer-control' },
+                { slug: 'features/diagnostic-file-access' },
                 { slug: 'features/ai-for-office' },
                 { slug: 'features/mcp-server' },
               ],

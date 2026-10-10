@@ -17,6 +17,11 @@
  *
  * Eligible approver = live `devices:execute` + `approvals:decide` for the
  * device's org, access to the device's site, active account.
+ *
+ * Credential material (browser secrets, credential stores, private keys,
+ * stored session tokens; see ./classification.ts) is never grantable: a
+ * request naming such a location is refused, a grant never covers one, and
+ * the agent refuses it on its own as well.
  */
 import { and, eq, gt, inArray, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -31,7 +36,7 @@ import type { DiagnosticAccessScope } from '../../db/schema/diagnosticAccess';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessOrg, canAccessSite, getUserPermissions, hasPermission, PERMISSIONS } from '../permissions';
 import { resolveUsersWithPermissionForOrg } from '../usersWithPermission';
-import { createAuditLog } from '../auditService';
+import { createAuditLog, createAuditLogAsync } from '../auditService';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import {
   classifyDiagnosticPath,
@@ -41,8 +46,6 @@ import {
   diagnosticPathWithin,
   MIN_DIAGNOSTIC_SCOPE_DEPTH,
   SENSITIVE_CLASS_LABELS,
-  SENSITIVE_CLASSES,
-  type SensitiveClass,
 } from './classification';
 
 export const DIAGNOSTIC_OPERATIONS = ['list', 'read'] as const;
@@ -108,14 +111,12 @@ export type DiagnosticRequestInput = {
   operations: DiagnosticOperation[];
   purpose: string;
   durationMinutes?: number;
-  sensitiveClasses?: SensitiveClass[];
 };
 
 /** Validates one requested scope; returns an error message or null. */
 export function validateRequestedScope(
   scope: DiagnosticAccessScope,
   device: Pick<DeviceRow, 'osType'>,
-  requestedClasses: ReadonlySet<string>,
 ): string | null {
   const formErr = diagnosticPathFormError(scope.path);
   if (formErr) return `${scope.path}: ${formErr}`;
@@ -130,9 +131,8 @@ export function validateRequestedScope(
   if (diagnosticPathDepth(scope.path) < MIN_DIAGNOSTIC_SCOPE_DEPTH) {
     return `${scope.path}: too broad; name a folder at least ${MIN_DIAGNOSTIC_SCOPE_DEPTH} levels below the drive or filesystem root (for example ${isWindowsPath ? 'C:\\ProgramData\\Vendor' : '/var/log'})`;
   }
-  const missing = c.classes.filter((cls) => !requestedClasses.has(cls));
-  if (missing.length > 0) {
-    return `${scope.path}: this location holds ${missing.map((m) => SENSITIVE_CLASS_LABELS[m]).join('; ')}. Request it only by naming sensitiveClasses [${missing.join(', ')}] explicitly.`;
+  if (c.classes.length > 0) {
+    return `${scope.path}: this location holds credential material (${c.classes.map((m) => SENSITIVE_CLASS_LABELS[m]).join('; ')}); credential material is never available through diagnostic access`;
   }
   return null;
 }
@@ -145,7 +145,6 @@ export function describeRequest(input: {
   operations: string[];
   purpose: string;
   durationMinutes: number;
-  sensitiveClasses: string[];
   requestedBy: string;
   principal: string;
 }) {
@@ -162,14 +161,10 @@ export function describeRequest(input: {
     'Paths:',
     ...input.paths.map((p) => `  - ${p.path}${p.recursive ? '  [recursive: whole subtree]' : '  [this folder only]'}`),
   ];
-  if (input.sensitiveClasses.length > 0) {
-    lines.push('SENSITIVE — explicitly requested:');
-    for (const c of input.sensitiveClasses) lines.push(`  ! ${SENSITIVE_CLASS_LABELS[c as SensitiveClass] ?? c}`);
-  } else {
-    lines.push(
-      'Withheld even inside these paths: known locations of browser passwords/cookies, credential stores, private keys and stored tokens (a fixed list; anything else inside these paths is readable).',
-    );
-  }
+  lines.push(
+    'Never available, even inside these paths: known locations of browser passwords/cookies, credential stores, private keys and stored tokens (a fixed list; anything else inside these paths is readable).',
+    'File contents are passed through secret redaction before the AI assistant sees them.',
+  );
   return lines.join('\n');
 }
 
@@ -228,33 +223,17 @@ export async function createDiagnosticAccessRequest(
       'Diagnostic access can be requested from an interactive Breeze session or an MCP API key / OAuth connection only.',
     );
   }
-  const classes = [...new Set(input.sensitiveClasses ?? [])].filter((c): c is SensitiveClass =>
-    (SENSITIVE_CLASSES as readonly string[]).includes(c),
-  );
-  const classSet = new Set<string>(classes);
   const ops = [...new Set(input.operations)];
   if (ops.length === 0) throw new DiagnosticAccessError('invalid_request', 'operations must include list and/or read');
   const duration = Math.round(input.durationMinutes ?? DEFAULT_GRANT_MINUTES);
   if (duration < MIN_GRANT_MINUTES || duration > MAX_GRANT_MINUTES) {
     throw new DiagnosticAccessError('invalid_request', `durationMinutes must be ${MIN_GRANT_MINUTES}-${MAX_GRANT_MINUTES}`);
   }
-  const errors = input.paths.map((p) => validateRequestedScope(p, device, classSet)).filter((e): e is string => e !== null);
+  const errors = input.paths.map((p) => validateRequestedScope(p, device)).filter((e): e is string => e !== null);
   if (errors.length > 0) throw new DiagnosticAccessError('invalid_scope', errors.join('\n'));
 
-  // Every requested class must be reached by at least one requested path, so a
-  // class is never granted "just in case" alongside unrelated paths.
-  const reached = new Set<string>();
-  for (const p of input.paths) for (const c of classifyDiagnosticPath(p.path).classes) reached.add(c);
-  const unreached = classes.filter((c) => !reached.has(c) && !input.paths.some((p) => p.recursive));
-  if (unreached.length > 0) {
-    throw new DiagnosticAccessError(
-      'invalid_scope',
-      `sensitiveClasses [${unreached.join(', ')}] do not apply to any requested path; remove them`,
-    );
-  }
-
   const ci = caseInsensitiveFor(device.osType);
-  const wantKey = scopeKey(input.paths, ops, classes, ci);
+  const wantKey = scopeKey(input.paths, ops, [], ci);
   const now = new Date();
 
   // Resolved before the write transaction: approver eligibility opens its own
@@ -343,7 +322,7 @@ export async function createDiagnosticAccessRequest(
           purpose: input.purpose,
           operations: ops,
           scopes: input.paths.map((p) => ({ path: p.path, recursive: p.recursive })),
-          sensitiveClasses: classes,
+          sensitiveClasses: [],
           durationMinutes: duration,
         })
         .returning();
@@ -356,7 +335,6 @@ export async function createDiagnosticAccessRequest(
         operations: grant.operations,
         purpose: grant.purpose,
         durationMinutes: grant.durationMinutes,
-        sensitiveClasses: grant.sensitiveClasses,
         requestedBy: requester?.name || requester?.email || auth.user!.id,
         principal: beneficiary.kind === 'user' ? 'Breeze AI chat' : `MCP ${beneficiary.kind === 'api_key' ? 'API key' : 'OAuth connection'}`,
       });
@@ -385,10 +363,11 @@ export async function createDiagnosticAccessRequest(
               requestedBy: requester?.email ?? null,
               principal: beneficiary.kind,
             },
-            // Sensitive classes need the strongest ceremony the approvals
-            // ladder has (critical = fresh re-authentication).
-            // A sole operator approving their own request gets the same.
-            riskTier: soleOperator || grant.sensitiveClasses.length > 0 ? 'critical' : 'high',
+            // A sole operator approving their own request gets the strongest
+            // ceremony the approvals ladder has (critical = fresh
+            // re-authentication); the decide path also demands a fresh
+            // second factor and records the self-approval.
+            riskTier: soleOperator ? 'critical' : 'high',
             riskSummary: summary,
             status: 'pending',
             isRecursive: false,
@@ -430,7 +409,7 @@ export type CoverageDenial =
   | 'grant_revoked'
   | 'operation_not_granted'
   | 'out_of_scope'
-  | 'sensitive_not_granted'
+  | 'credential_material'
   | 'hard_denied'
   | 'invalid_path';
 
@@ -481,12 +460,16 @@ export function evaluateGrantCoverage(
   if (c.hardDenied || /^\/(proc|sys|dev)(\/|$)/.test(path)) {
     return { ok: false, reason: 'hard_denied', detail: 'never available through diagnostic access' };
   }
+  // Whatever the grant row says: credential material is never covered.
+  if (c.classes.length > 0) {
+    return {
+      ok: false,
+      reason: 'credential_material',
+      detail: `path holds credential material (${c.classes.join(', ')}), which is never available through diagnostic access`,
+    };
+  }
   if (!scopesCover(grant.scopes, path, op, caseInsensitiveFor(device.osType))) {
     return { ok: false, reason: 'out_of_scope', detail: 'path is outside the approved locations' };
-  }
-  const missing = c.classes.filter((cls) => !grant.sensitiveClasses.includes(cls));
-  if (missing.length > 0) {
-    return { ok: false, reason: 'sensitive_not_granted', detail: `path is a ${missing.join(', ')} location that was not approved` };
   }
   return { ok: true, grant };
 }
@@ -525,7 +508,7 @@ export async function findCoveringGrant(
   // Most informative denial wins when nothing covers.
   const rank: Record<CoverageDenial, number> = {
     no_grant: 0, invalid_path: 1, grant_pending: 2, grant_revoked: 3, grant_expired: 4,
-    out_of_scope: 5, operation_not_granted: 6, sensitive_not_granted: 7, hard_denied: 8,
+    out_of_scope: 5, operation_not_granted: 6, credential_material: 7, hard_denied: 8,
   };
   for (const g of rows) {
     const r = evaluateGrantCoverage(g, device, path, op, now);
@@ -793,9 +776,59 @@ export async function decideDiagnosticGrantInTx(
   return row;
 }
 
-/** Audit a decision (called after the decision transaction commits). */
-export async function auditDiagnosticDecision(grant: GrantRow, deciderUserId: string, approvalRequestId: string): Promise<void> {
+/**
+ * Durable record of a sole operator approving their own grant. Written BEFORE
+ * the decision transaction and required: when it cannot be written, the
+ * self-approval is refused (decideApprovalRequest), so no self-approved grant
+ * can become active without this record. It records that the self-approval
+ * passed its checks (`stage: 'before_activation'`); the decision record that
+ * follows after commit (`diagnostic_access.approved`, `selfApproved: true`)
+ * confirms the activation. A self-approval record with no matching decision
+ * record marks an approval that did not complete (e.g. the request lapsed).
+ */
+export async function auditDiagnosticSelfApproval(input: {
+  grantId: string;
+  orgId: string;
+  deviceId: string;
+  deciderUserId: string;
+  approvalRequestId: string;
+  decidedAssuranceLevel: number | null;
+  decidedVia: string | null;
+  authenticatorDeviceId: string | null;
+}): Promise<void> {
   await createAuditLog({
+    orgId: input.orgId,
+    actorType: 'user',
+    actorId: input.deciderUserId,
+    action: 'diagnostic_access.self_approval',
+    resourceType: 'diagnostic_access_grant',
+    resourceId: input.grantId,
+    details: {
+      deviceId: input.deviceId,
+      approvalRequestId: input.approvalRequestId,
+      stage: 'before_activation',
+      soleOperator: true,
+      decidedAssuranceLevel: input.decidedAssuranceLevel,
+      decidedVia: input.decidedVia,
+      authenticatorDeviceId: input.authenticatorDeviceId,
+    },
+    result: 'success',
+  });
+}
+
+/**
+ * Audit a decision (called after the decision transaction commits). Uses the
+ * retrying writer: the decision has already committed, so a transient audit
+ * failure is queued for retry (and reported if it keeps failing) rather than
+ * lost.
+ */
+export async function auditDiagnosticDecision(
+  grant: GrantRow,
+  deciderUserId: string,
+  approvalRequestId: string,
+  opts: { selfApproved: boolean },
+): Promise<void> {
+  await createAuditLogAsync({
     orgId: grant.orgId,
     actorType: 'user',
     actorId: deciderUserId,
@@ -812,6 +845,7 @@ export async function auditDiagnosticDecision(grant: GrantRow, deciderUserId: st
       decidedAssuranceLevel: grant.decidedAssuranceLevel,
       decidedVia: grant.decidedVia,
       beneficiaryKind: grant.beneficiaryKind,
+      selfApproved: opts.selfApproved,
     },
     result: 'success',
   });
@@ -829,6 +863,7 @@ export async function recordDiagnosticAccess(
     outcome: string;
     bytesRead?: number;
     entries?: number;
+    contentRedacted?: boolean;
   },
 ): Promise<void> {
   const now = new Date();
@@ -858,6 +893,7 @@ export async function recordDiagnosticAccess(
       outcome: event.outcome,
       bytesRead: event.bytesRead ?? null,
       entries: event.entries ?? null,
+      contentRedacted: event.contentRedacted ?? null,
     },
     result: event.outcome === 'ok' ? 'success' : 'failure',
   });

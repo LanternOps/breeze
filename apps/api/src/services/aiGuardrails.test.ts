@@ -30,7 +30,7 @@ vi.mock('./aiTools', () => ({
       query_devices: 1,
       query_change_log: 1,
       // file_operations base tier 1; guardrails escalate read/write/delete/mkdir/rename to
-      // Tier 3 (SR5-01) and downgrade list to Tier 2 (recon only)
+      // Tier 3 (privileged-read rule) and downgrade list to Tier 2 (recon only)
       file_operations: 1,
       // Mirror the real registry entries (aiToolsScripts.ts registerTool
       // tier: 1); their list actions resolve to Tier 2 via TIER2_ACTIONS.
@@ -317,7 +317,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       'start_service',
       'stop_service',
       'restart_service',
-      // file_read is a read but stays Tier 3 deliberately (SR5-01: arbitrary
+      // file_read is a read but stays Tier 3 deliberately (privileged-read rule: arbitrary
       // file contents off a root/LocalSystem agent are exfiltratable).
       'file_read',
       // list_services and event_logs_query are reads but stay Tier 3: both
@@ -1250,13 +1250,13 @@ describe('checkToolPermission — action-multiplexed tools require action arg', 
   });
 });
 
-// ─── SR5-01: filesystem read/write are privileged (execute + Tier 3) ────
+// ─── Privileged-read rule: filesystem read/write are privileged (execute + Tier 3) ────
 
-// SR5-01 (agent runs as root / LocalSystem) plus this branch's partial
+// The privileged-read rule (agent runs as root / LocalSystem) plus this branch's partial
 // relaxation, asserted once: `list` is recon-only and was deliberately
 // downgraded to Tier 2, everything that touches file CONTENT — `read`
 // included — stays Tier 3.
-describe('file_operations tier boundary (SR5-01 + partial relaxation)', () => {
+describe('file_operations tier boundary (privileged-read rule + partial relaxation)', () => {
   it('list is Tier 2 (auto-execute + audit) — recon only, deliberate downgrade', () => {
     const result = checkGuardrails('file_operations', { action: 'list', deviceId: 'd1', path: '/tmp' });
     expect(result.tier).toBe(2);
@@ -1275,7 +1275,7 @@ describe('file_operations tier boundary (SR5-01 + partial relaxation)', () => {
   );
 });
 
-describe('checkToolPermission — file_operations requires devices.execute (SR5-01)', () => {
+describe('checkToolPermission — file_operations requires devices.execute (privileged-read rule)', () => {
   const auth = {
     user: { id: 'user-1' },
     token: { roleId: 'viewer', scope: 'organization' },
