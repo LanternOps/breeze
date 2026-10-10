@@ -2237,6 +2237,7 @@
       "saveSettings": "No se pudo guardar la configuración"
     },
     "hostname": "Nombre de host: {{hostname}}",
+    "saved": "Configuración del dispositivo guardada",
     "permanentlyDelete": "Eliminar permanentemente",
     "restoreDevice": "Restaurar dispositivo",
     "saveChanges": "Guardar cambios",

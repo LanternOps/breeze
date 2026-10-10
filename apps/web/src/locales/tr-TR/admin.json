@@ -891,6 +891,7 @@
       "empty": "Denetim günlüğü bulunamadı.",
       "viewDetails": "Ayrıntıları görüntüle",
       "errors": {
+        "export": "Denetim günlükleri dışa aktarılamadı",
         "fetch": "Denetim günlükleri getirilemedi",
         "load": "Denetim günlükleri yüklenemedi"
       },

@@ -2237,6 +2237,7 @@
       "saveSettings": "Falha ao salvar as configurações"
     },
     "hostname": "Nome do host: {{hostname}}",
+    "saved": "Configurações do dispositivo salvas",
     "permanentlyDelete": "Excluir permanentemente",
     "restoreDevice": "Restaurar dispositivo",
     "saveChanges": "Salvar alterações",
