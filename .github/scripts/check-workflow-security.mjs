@@ -59,10 +59,12 @@ const PROTECTED_SIGNING_SECRET_RE = new RegExp(
     'SSLCOM_[A-Za-z0-9_]+',
   ].join('|')
   + ')\\b',
-  'gu',
+  // GitHub resolves secret names case-insensitively.
+  'giu',
 );
-// Access that can reach any secret, including the protected ones.
-const WHOLE_SECRET_CONTEXT_RE = /\btojson\(secrets\)|\bsecrets\[/iu;
+// Access that can reach any secret, including the protected ones: the whole
+// context, an object filter over it, or a computed index.
+const WHOLE_SECRET_CONTEXT_RE = /\btojson\(secrets\)|\bsecrets\.\*|\bsecrets\[/iu;
 const SIGNING_ENVIRONMENTS = new Set(['signing-production', 'signing-prerelease']);
 // The release workflow's selector: prerelease tags (with a '-') sign in
 // signing-prerelease, every other tag in signing-production.
@@ -1429,7 +1431,7 @@ function protectedSigningReferences(lines, index) {
       : `${line.content} ${blockScalarValue(lines, index)}`,
   );
   const found = new Set(
-    [...scalar.matchAll(PROTECTED_SIGNING_SECRET_RE)].map((match) => match[1]),
+    [...scalar.matchAll(PROTECTED_SIGNING_SECRET_RE)].map((match) => match[1].toUpperCase()),
   );
   if (WHOLE_SECRET_CONTEXT_RE.test(scalar)) {
     found.add('the whole secrets context');

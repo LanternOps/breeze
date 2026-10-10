@@ -45,18 +45,27 @@ environments under the same name.
 | `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` | yes | yes | `create-release` |
 | `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY` | yes | yes | `create-release` |
 | `TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one) | yes | yes | `build-viewer`, `build-viewer-macos`, `package-windows-updater` |
-| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_INSTALLER_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | yes | yes | `build-macos-agent`, `build-macos-installer-app`, `build-viewer-macos`, `build-helper-macos` |
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | yes | yes | `build-macos-agent`, `build-macos-installer-app`, `build-viewer-macos`, `build-helper-macos` |
+| `APPLE_INSTALLER_IDENTITY` | yes | yes | `build-macos-agent` |
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME` | yes | yes | `sign-windows-tauri-azure` |
 | `AZURE_CERT_PROFILE_PROD` | yes | — | `sign-windows-tauri-azure` (stable tags) |
 | `AZURE_CERT_PROFILE_PRERELEASE` | — | yes | `sign-windows-tauri-azure` (prerelease tags) |
 | `SSLCOM_*` (six secrets, `SSLCOM_ENVIRONMENT_LABEL` set to the environment's own name) | yes | yes | `sign-windows-tauri-sslcom` |
 
 The release-manifest **public** keys (`RELEASE_MANIFEST_ED25519_PUBLIC_KEY`,
-`RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY`) stay repository secrets: release
-promotion (`release-promotion.yml`, `promote-release-images.yml`) and the
-verification steps in `classify-release`, `carry-forward-binaries` and
-`promote-signed-release-images` read them outside the signing environments.
-They are public values, also committed under `internal/release-keys/`.
+`RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY`) stay repository secrets. The Ed25519
+public key is read outside the signing environments by release promotion
+(`release-promotion.yml`, `promote-release-images.yml`) and by the verification
+steps in `classify-release`, `carry-forward-binaries` and
+`promote-signed-release-images`. The minisign public key is read only by
+`create-release`, but it is a public value too (both are committed under
+`internal/release-keys/`), so it needs no environment scope.
+
+Jobs that declare a signing environment also see that environment's
+**variables**, which override repository variables of the same name in step
+expressions but not in job-level `if:` conditions. Keep release-control
+variables (`ENABLE_MACOS_SIGNING`, `ENABLE_WINDOWS_SIGNING`,
+`WINDOWS_SIGNING_PROVIDER`, `RELEASE_DRAFT_FIRST`) at repository level only.
 
 Azure Trusted Signing authenticates through OIDC, so the secret scope above is
 only half of the control: the Entra app's federated credentials should name the

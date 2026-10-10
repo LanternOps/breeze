@@ -1600,9 +1600,29 @@ jobs:
   assert.equal(signingEnvironmentViolations('run.yml', runScript).length, 1);
 });
 
+test('signing environment rule matches secret names case-insensitively, as GitHub does', () => {
+  for (const [secretLine, name] of [
+    ['VALUE: ${{ secrets.apple_id }}', 'APPLE_ID'],
+    ['VALUE: ${{ secrets.Tauri_Signing_Private_Key }}', 'TAURI_SIGNING_PRIVATE_KEY'],
+    ["VALUE: ${{ secrets['release_manifest_ed25519_private_key'] }}", 'RELEASE_MANIFEST_ED25519_PRIVATE_KEY'],
+  ]) {
+    const violations = signingEnvironmentViolations('case.yml', signingJobWorkflow({ secretLine }));
+    assert.equal(violations.length, 1, secretLine);
+    assert.match(violations[0].message, new RegExp(`\\b${name}\\b`, 'u'), secretLine);
+  }
+  assert.deepEqual(
+    signingEnvironmentViolations('case.yml', signingJobWorkflow({
+      secretLine: 'VALUE: ${{ secrets.release_manifest_ed25519_public_key }}',
+    })),
+    [],
+  );
+});
+
 test('signing environment rule rejects whole-context and dynamic secret access outside the environment', () => {
   for (const secretLine of [
     'VALUE: ${{ toJSON(secrets) }}',
+    'VALUE: ${{ secrets.* }}',
+    "VALUE: ${{ join(secrets.*, ',') }}",
     "VALUE: ${{ secrets[format('{0}_KEY', 'TAURI_SIGNING_PRIVATE')] }}",
     'VALUE: ${{ secrets[env.NAME] }}',
   ]) {
