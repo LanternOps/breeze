@@ -10,6 +10,10 @@ const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const PRINCIPAL_ID = '22222222-2222-4222-8222-222222222222';
 const KEY_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
+const OTHER_USER_ID = '66666666-6666-4666-8666-666666666666';
+const SESSION = { authEpoch: 4, mfaEpoch: 2 };
+const OWNER_EPOCHS = { credentialEpoch: 7, mfaEpoch: 2 };
+const ACTIVE_PRINCIPAL = { id: PRINCIPAL_ID, status: 'active', expiresAt: null, createdBy: USER_ID };
 
 function makeTx(selectRows: unknown[][]) {
   const inserted: Record<string, unknown>[] = [];
@@ -42,15 +46,14 @@ function makeTx(selectRows: unknown[][]) {
 
 describe('service principal key lifecycle', () => {
   it('returns plaintext once while persisting only its SHA-256 hash and masked prefix', async () => {
-    const { tx, inserted } = makeTx([[
-      { id: PRINCIPAL_ID, status: 'active', expiresAt: null },
-    ]]);
+    const { tx, inserted } = makeTx([[ACTIVE_PRINCIPAL], [OWNER_EPOCHS]]);
 
     const issued = await issuePartnerServicePrincipalKey(tx, {
       partnerServicePrincipalId: PRINCIPAL_ID,
       partnerId: PARTNER_ID,
       name: 'Production',
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
     });
 
     expect(issued.rawKey).toMatch(/^brz_sp_[A-Za-z0-9_-]{43}$/);
@@ -68,33 +71,71 @@ describe('service principal key lifecycle', () => {
     expect(JSON.stringify(inserted[0])).not.toContain(issued.rawKey);
   });
 
-  it.each([
-    ['disabled', { status: 'disabled', expiresAt: null }, 'disabled'],
-    ['expired', { status: 'active', expiresAt: new Date('2020-01-01') }, 'expired'],
-  ])('rejects issuance for a %s principal', async (_name, principal, code) => {
-    const { tx } = makeTx([[{ id: PRINCIPAL_ID, ...principal }]]);
+  it('binds the key to the owner\'s credential and MFA epochs at issue', async () => {
+    const { tx, inserted } = makeTx([[ACTIVE_PRINCIPAL], [OWNER_EPOCHS]]);
+    await issuePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      partnerId: PARTNER_ID,
+      name: 'Production',
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    });
+    expect(inserted[0]).toMatchObject({ ownerCredentialEpoch: 7, ownerMfaEpoch: 2 });
+  });
+
+  it('refuses to issue when the session no longer matches the owner\'s live row', async () => {
+    const { tx, inserted } = makeTx([[ACTIVE_PRINCIPAL], []]);
     await expect(issuePartnerServicePrincipalKey(tx, {
       partnerServicePrincipalId: PRINCIPAL_ID,
       partnerId: PARTNER_ID,
       name: 'Production',
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    })).rejects.toMatchObject({ code: 'session_stale', status: 401 });
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('refuses to issue a key for someone other than the principal\'s owner', async () => {
+    const { tx, inserted } = makeTx([[{ ...ACTIVE_PRINCIPAL, createdBy: OTHER_USER_ID }], [OWNER_EPOCHS]]);
+    await expect(issuePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      partnerId: PARTNER_ID,
+      name: 'Production',
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    })).rejects.toMatchObject({ code: 'not_owner', status: 403 });
+    expect(inserted).toHaveLength(0);
+  });
+
+  it.each([
+    ['disabled', { status: 'disabled', expiresAt: null, createdBy: USER_ID }, 'disabled'],
+    ['expired', { status: 'active', expiresAt: new Date('2020-01-01'), createdBy: USER_ID }, 'expired'],
+  ])('rejects issuance for a %s principal', async (_name, principal, code) => {
+    const { tx } = makeTx([[{ id: PRINCIPAL_ID, ...principal }], [OWNER_EPOCHS]]);
+    await expect(issuePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      partnerId: PARTNER_ID,
+      name: 'Production',
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
     })).rejects.toMatchObject({ code });
   });
 
   it('rejects a key expiry in the past', async () => {
-    const { tx } = makeTx([[{ id: PRINCIPAL_ID, status: 'active', expiresAt: null }]]);
+    const { tx } = makeTx([[ACTIVE_PRINCIPAL], [OWNER_EPOCHS]]);
     await expect(issuePartnerServicePrincipalKey(tx, {
       partnerServicePrincipalId: PRINCIPAL_ID,
       partnerId: PARTNER_ID,
       name: 'Expired',
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
       expiresAt: new Date('2020-01-01'),
     })).rejects.toBeInstanceOf(PartnerServicePrincipalKeyError);
   });
 
   it('rotates by inserting a successor and revoking the predecessor in the same transaction', async () => {
     const { tx, inserted, updated } = makeTx([
-      [{ id: PRINCIPAL_ID, status: 'active', expiresAt: null }],
+      [ACTIVE_PRINCIPAL],
       [{
         id: KEY_ID,
         name: 'Production',
@@ -102,6 +143,7 @@ describe('service principal key lifecycle', () => {
         expiresAt: null,
         rateLimit: 600,
       }],
+      [OWNER_EPOCHS],
     ]);
 
     const rotated = await rotatePartnerServicePrincipalKey(tx, {
@@ -109,17 +151,40 @@ describe('service principal key lifecycle', () => {
       keyId: KEY_ID,
       partnerId: PARTNER_ID,
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
     });
 
     expect(rotated.rawKey).toMatch(/^brz_sp_/);
-    expect(inserted[0]).toMatchObject({ rotatedFromId: KEY_ID, name: 'Production' });
+    expect(inserted[0]).toMatchObject({
+      rotatedFromId: KEY_ID,
+      name: 'Production',
+      ownerCredentialEpoch: 7,
+      ownerMfaEpoch: 2,
+    });
     expect(updated[0]).toMatchObject({ status: 'revoked' });
     expect(updated[0]?.revokedAt).toBeInstanceOf(Date);
   });
 
+  it('refuses to rotate a key for someone other than the principal\'s owner', async () => {
+    const { tx, inserted, updated } = makeTx([
+      [{ ...ACTIVE_PRINCIPAL, createdBy: OTHER_USER_ID }],
+      [{ id: KEY_ID, name: 'Production', status: 'active', expiresAt: null, rateLimit: 600 }],
+      [OWNER_EPOCHS],
+    ]);
+    await expect(rotatePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      keyId: KEY_ID,
+      partnerId: PARTNER_ID,
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    })).rejects.toMatchObject({ code: 'not_owner' });
+    expect(inserted).toHaveLength(0);
+    expect(updated).toHaveLength(0);
+  });
+
   it('does not rotate a key owned by another partner', async () => {
     const { tx, inserted } = makeTx([
-      [{ id: PRINCIPAL_ID, status: 'active', expiresAt: null }],
+      [ACTIVE_PRINCIPAL],
       [],
     ]);
     await expect(rotatePartnerServicePrincipalKey(tx, {
@@ -127,6 +192,7 @@ describe('service principal key lifecycle', () => {
       keyId: KEY_ID,
       partnerId: PARTNER_ID,
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
     })).rejects.toMatchObject({ code: 'not_found' });
     expect(inserted).toHaveLength(0);
   });
@@ -137,8 +203,9 @@ describe('service principal key lifecycle', () => {
     const transaction = async <T>(callback: (tx: any) => Promise<T>): Promise<T> => {
       const staged: Record<string, unknown>[] = [];
       const selectRows = [
-        [{ id: PRINCIPAL_ID, status: 'active', expiresAt: null }],
+        [ACTIVE_PRINCIPAL],
         [{ id: KEY_ID, name: 'Production', status: 'active', expiresAt: null, rateLimit: 600 }],
+        [OWNER_EPOCHS],
       ];
       const tx = {
         select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => selectRows.shift() ?? []) })) })) })),
@@ -161,6 +228,7 @@ describe('service principal key lifecycle', () => {
       keyId: KEY_ID,
       partnerId: PARTNER_ID,
       actorId: USER_ID,
+      actorSessionEpochs: SESSION,
     }))).rejects.toMatchObject({ code: 'conflict' });
     expect(attempted).toHaveLength(1);
     expect(committed).toEqual([]);
