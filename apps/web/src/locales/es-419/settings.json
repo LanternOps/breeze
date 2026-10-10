@@ -6243,9 +6243,14 @@
     "mergeGapLabel": "Intervalo de fusión (minutos)",
     "save": "Guardar",
     "saved": "Configuración de seguimiento de tiempo guardada",
+    "loadFailed": "No se pudo cargar la configuración guardada. Guardar está deshabilitado hasta que se cargue; actualice la página para reintentar.",
     "saveFailed": "No se pudo guardar la configuración de seguimiento de tiempo",
     "minSessionRange": "La duración mínima de la sesión debe estar entre {{min}} y {{max}} segundos",
-    "mergeGapRange": "El intervalo de fusión debe estar entre {{min}} y {{max}} minutos"
+    "mergeGapRange": "El intervalo de fusión debe estar entre {{min}} y {{max}} minutos",
+    "locationEnabledLabel": "Sugerir un temporizador cuando un técnico llega al sitio de un cliente",
+    "locationHelp": "Cada técnico también debe permitir la ubicación en su teléfono. La ubicación se verifica en el teléfono y nunca se envía a Breeze.",
+    "radiusLabel": "Radio de llegada predeterminado (m)",
+    "radiusRange": "El radio de llegada debe estar entre {{min}} y {{max}} metros"
   },
   "contactsCard": {
     "title": "Contactos",

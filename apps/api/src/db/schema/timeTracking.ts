@@ -3,7 +3,7 @@ import {
   pgTable, uuid, text, varchar, integer, boolean, timestamp, numeric, char,
   pgEnum, uniqueIndex, index
 } from 'drizzle-orm/pg-core';
-import { partners, organizations } from './orgs';
+import { partners, organizations, sites } from './orgs';
 import { users } from './users';
 import { tickets } from './portal';
 import { catalogItems } from './catalog';
@@ -98,11 +98,18 @@ export const timeEntries = pgTable('time_entries', {
   // invariant is service-enforced, not a CHECK: a hard ticket delete nulls the
   // link and a CHECK would abort the delete.
   approvalRequestId: uuid('approval_request_id'),
-  // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
+  // W06 (#3900) provenance. Server-stamped except client-supplied values
+  // (#4186, zod-restricted): /start accepts 'timer'|'location'; POST / accepts
+  // only 'location'.
   // Values enforced by CHECK time_entries_source_chk in SQL:
   // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |
   // 'ai_suggested' (#4177 — stamped by the intent release path only).
   source: varchar('source', { length: 24 }).notNull().default('manual'),
+  // #4186 OD-5: informational only; FK time_entries_site_id_fkey ON DELETE SET
+  // NULL. Org moves rewrite time_entries.org_id but NOT site_id, so any reader
+  // that resolves a site from time_entries.site_id must also require
+  // sites.org_id = time_entries.org_id before trusting it.
+  siteId: uuid('site_id').references(() => sites.id, { onDelete: 'set null' }),
   isApproved: boolean('is_approved').notNull().default(false),
   approvedBy: uuid('approved_by').references(() => users.id),
   approvedAt: timestamp('approved_at'),
@@ -125,7 +132,12 @@ export const timeEntries = pgTable('time_entries', {
   // Partial, built CONCURRENTLY in SQL (2026-12-20-200300).
   index('time_entries_approval_request_idx')
     .on(t.approvalRequestId)
-    .where(sql`${t.approvalRequestId} IS NOT NULL`)
+    .where(sql`${t.approvalRequestId} IS NOT NULL`),
+  // Partial index (WHERE site_id IS NOT NULL), built CONCURRENTLY in SQL
+  // (2026-12-20-220000-site-location-columns).
+  index('time_entries_site_id_idx')
+    .on(t.siteId)
+    .where(sql`${t.siteId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {

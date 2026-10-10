@@ -57,8 +57,80 @@ describe('TimeTrackingSettingsCard', () => {
     await waitFor(() => expect(lastPatchBody()).not.toBeNull());
     // Sending only { enabled } would destroy both thresholds.
     expect(lastPatchBody()).toEqual({
-      settings: { timeTracking: { sessionSuggestions: { enabled: true, minSessionSeconds: 120, mergeGapMinutes: 10 } } },
+      settings: {
+        timeTracking: {
+          sessionSuggestions: { enabled: true, minSessionSeconds: 120, mergeGapMinutes: 10 },
+          locationSuggestions: { enabled: false, defaultRadiusM: 150 },
+        },
+      },
     });
+  });
+
+  describe('location suggestions', () => {
+    it('renders OFF with no radius input when the partner has no locationSuggestions block', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      const toggle = await screen.findByTestId('location-suggestions-enabled');
+      expect((toggle as HTMLInputElement).checked).toBe(false);
+      expect(screen.queryByTestId('location-suggestions-radius')).toBeNull();
+      expect(screen.getByText('Suggest a timer when a technician arrives at a client site')).toBeTruthy();
+      expect(screen.getByText(/never sent to Breeze/)).toBeTruthy();
+    });
+
+    it('a stored enabled:false stays off; a stored enabled:true shows the stored radius', async () => {
+      mockPartner({ timeTracking: { locationSuggestions: { enabled: true, defaultRadiusM: 300 } } });
+      render(<TimeTrackingSettingsCard />);
+      await waitFor(() =>
+        expect((screen.getByTestId('location-suggestions-enabled') as HTMLInputElement).checked).toBe(true));
+      expect((screen.getByTestId('location-suggestions-radius') as HTMLInputElement).value).toBe('300');
+    });
+
+    it('toggling on reveals the radius and Save sends the COMPLETE locationSuggestions object alongside sessionSuggestions', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      fireEvent.click(await screen.findByTestId('location-suggestions-enabled'));
+      const radius = screen.getByTestId('location-suggestions-radius') as HTMLInputElement;
+      expect(radius.value).toBe('150');
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(lastPatchBody()).not.toBeNull());
+      expect(lastPatchBody().settings.timeTracking.locationSuggestions).toEqual({ enabled: true, defaultRadiusM: 150 });
+    });
+
+    it('rejects a radius of 20 inline and never submits', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      fireEvent.click(await screen.findByTestId('location-suggestions-enabled'));
+      fireEvent.change(screen.getByTestId('location-suggestions-radius'), { target: { value: '20' } });
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(screen.getByTestId('location-suggestions-error')).toBeTruthy());
+      expect(lastPatchBody()).toBeNull();
+      fireEvent.change(screen.getByTestId('location-suggestions-radius'), { target: { value: '1001' } });
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(screen.getByTestId('location-suggestions-error')).toBeTruthy());
+      expect(lastPatchBody()).toBeNull();
+    });
+  });
+
+  it.each([
+    ['non-OK response', () => fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response)],
+    ['thrown request', () => fetchWithAuth.mockRejectedValue(new Error('network'))],
+  ])('initial load failure (%s): error shown, Save disabled, no PATCH', async (_n, arrange) => {
+    arrange();
+    render(<TimeTrackingSettingsCard />);
+    expect(await screen.findByTestId('time-suggestions-load-error')).toBeTruthy();
+    const save = screen.getByTestId('time-suggestions-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(lastPatchBody()).toBeNull();
+  });
+
+  it('feature off with a stored radius of 300: Save still sends defaultRadiusM 300', async () => {
+    mockPartner({ timeTracking: { locationSuggestions: { enabled: false, defaultRadiusM: 300 } } });
+    render(<TimeTrackingSettingsCard />);
+    await waitFor(() => expect((screen.getByTestId('time-suggestions-save') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('time-suggestions-save'));
+    await waitFor(() => expect(lastPatchBody()).not.toBeNull());
+    expect(lastPatchBody().settings.timeTracking.locationSuggestions).toEqual({ enabled: false, defaultRadiusM: 300 });
   });
 
   it('a failed save surfaces an error, never a silent no-op', async () => {

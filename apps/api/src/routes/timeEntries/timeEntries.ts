@@ -18,6 +18,7 @@ import {
 import { canManageTimeEntryBilling } from '../../services/timeEntryBillingPermission';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { timeSuggestionRoutes } from './suggestions';
+import { locationSitesRoutes } from './locationSites';
 
 export const timeEntriesApiRoutes = new Hono();
 
@@ -44,6 +45,9 @@ export function timeActorFrom(
     // system-context ticket read is re-gated against the caller's granted orgs —
     // closes a cross-org ticket write for orgAccess='selected' partner users.
     accessibleOrgIds: auth.accessibleOrgIds,
+    // #4186: site allowlist of a site-confined user (defence-in-depth; only
+    // organization-scope users carry it today).
+    allowedSiteIds: auth.allowedSiteIds,
     // v1 admin proxy (plan decision): wildcard-permission roles approve + manage others
     manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false),
     manageBilling: canManageTimeEntryBilling(auth, perms),
@@ -146,6 +150,9 @@ export function handleServiceError(c: { json: (b: unknown, s: number) => Respons
 // `/:id` can match it) — it becomes load-bearing the moment a one-segment
 // GET/POST `/:id` is added. Keep the mount here rather than relying on that.
 timeEntriesApiRoutes.route('/suggestions', timeSuggestionRoutes);
+
+// #4186: literal path, mounted before any /:id route.
+timeEntriesApiRoutes.route('/location-sites', locationSitesRoutes);
 
 timeEntriesApiRoutes.get('/running', scopes, readPerm, async (c) => {
   const auth = c.get('auth');

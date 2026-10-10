@@ -375,6 +375,35 @@ POST /api/v1/orgs/sites
 
 Only `orgId` and `name` are required. `timezone`, `address`, `contact`, and `settings` are all optional and can be filled in or changed later via `PATCH`; the minimal valid payload is just `{ "orgId": "...", "name": "..." }`. Returns the created site object with a `201` status. If `timezone` is omitted, it defaults to `UTC`.
 
+### Site location
+
+A site can carry a map location -- a pinned coordinate and an optional geofence radius -- used by location-based time suggestions. Only the **site's own coordinate** is stored. A technician's position is never recorded.
+
+| Field | Type | Range |
+|---|---|---|
+| `latitude` | `number` | -90 to 90, rounded to 6 decimals |
+| `longitude` | `number` | -180 to 180, rounded to 6 decimals |
+| `geofenceRadiusM` | `integer` | 50 to 1000 metres; optional per-site override of the partner default |
+
+Alongside the coordinate, Breeze records how it was set (`locationSource`: `technician` or `manual`), who set it (`locationSetBy`), and when (`locationSetAt`).
+
+**Pin from the field.** `POST /api/v1/orgs/sites/:id/location` sets the coordinate in one call and stamps the source as `technician`. It requires the `sites:set_location` permission (granted to the Partner Technician, Org Technician, and Org Admin roles; Partner Admin holds it through `*:*`) and does **not** require MFA, so a technician can pin a site from a phone. It is audited as `site.location_set`.
+
+```json
+POST /api/v1/orgs/sites/<site-uuid>/location
+
+{ "latitude": 39.7392, "longitude": -104.9903, "geofenceRadiusM": 200 }
+```
+
+`geofenceRadiusM` is optional; omit it to keep the site's current value. The response is `{ "data": { "id", "latitude", "longitude", "geofenceRadiusM", "locationSource", "locationSetBy", "locationSetAt" } }`. Error responses:
+
+- `400` -- unknown keys or out-of-range values.
+- `403` -- the caller's organisation allowlist or site allowlist does not include the site.
+- `404` -- the site does not exist, or its organisation is soft-deleted.
+- `409` -- the site belongs to a holding or hidden organisation (the unassigned-device holding organisation, Quick Support).
+
+**Edit from the site form.** `PATCH /api/v1/orgs/sites/:id` also accepts `latitude`, `longitude`, and `geofenceRadiusM` (it keeps its `sites:write` and MFA requirements). `latitude` and `longitude` must be sent together; send both as `null` to clear the pin. Setting a coordinate this way stamps the source as `manual`; clearing it also clears the source, setter, and timestamp. `POST /api/v1/orgs/sites` (create) does not accept location fields.
+
 ---
 
 ## Contacts

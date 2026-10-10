@@ -6243,9 +6243,14 @@
     "mergeGapLabel": "Birleştirme aralığı (dakika)",
     "save": "Kaydet",
     "saved": "Zaman takibi ayarları kaydedildi",
+    "loadFailed": "Kayıtlı ayarlar yüklenemedi. Yüklenene kadar kaydetme devre dışıdır; yeniden denemek için sayfayı yenileyin.",
     "saveFailed": "Zaman takibi ayarları kaydedilemedi",
     "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
-    "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır"
+    "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır",
+    "locationEnabledLabel": "Bir teknisyen müşteri sahasına vardığında zamanlayıcı öner",
+    "locationHelp": "Her teknisyenin ayrıca telefonunda konum erişimine izin vermesi gerekir. Konum telefonda denetlenir ve asla Breeze’e gönderilmez.",
+    "radiusLabel": "Varsayılan varış yarıçapı (m)",
+    "radiusRange": "Varış yarıçapı {{min}} ile {{max}} metre arasında olmalıdır"
   },
   "contactsCard": {
     "title": "Kişiler",

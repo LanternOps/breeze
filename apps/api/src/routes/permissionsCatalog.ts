@@ -59,6 +59,7 @@ const ACTION_LABELS: Record<string, string> = {
   premium: 'Use Premium Models',
   cross_site_restore: 'Cross-Site Restore',
   record_approval: 'Record Customer Approval',
+  set_location: 'Set Location',
   delete: 'Delete',
   execute: 'Execute',
   acknowledge: 'Acknowledge',

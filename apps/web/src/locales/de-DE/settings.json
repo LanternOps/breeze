@@ -6243,9 +6243,14 @@
     "mergeGapLabel": "Zusammenführungsintervall (Minuten)",
     "save": "Speichern",
     "saved": "Zeiterfassungseinstellungen gespeichert",
+    "loadFailed": "Die gespeicherten Einstellungen konnten nicht geladen werden. Speichern ist deaktiviert, bis sie geladen sind; Seite neu laden und erneut versuchen.",
     "saveFailed": "Zeiterfassungseinstellungen konnten nicht gespeichert werden",
     "minSessionRange": "Die Mindestdauer der Sitzung muss zwischen {{min}} und {{max}} Sekunden liegen",
-    "mergeGapRange": "Das Zusammenführungsintervall muss zwischen {{min}} und {{max}} Minuten liegen"
+    "mergeGapRange": "Das Zusammenführungsintervall muss zwischen {{min}} und {{max}} Minuten liegen",
+    "locationEnabledLabel": "Einen Timer vorschlagen, wenn ein Techniker am Kundenstandort ankommt",
+    "locationHelp": "Jeder Techniker muss außerdem den Standortzugriff auf seinem Smartphone erlauben. Der Standort wird auf dem Smartphone geprüft und niemals an Breeze gesendet.",
+    "radiusLabel": "Standard-Ankunftsradius (m)",
+    "radiusRange": "Der Ankunftsradius muss zwischen {{min}} und {{max}} Metern liegen"
   },
   "contactsCard": {
     "title": "Kontakte",

@@ -154,6 +154,7 @@ export const PERMISSION_GRANTS = {
   SITES_READ: { resource: 'sites', action: 'read' },
   SITES_WRITE: { resource: 'sites', action: 'write' },
   SITES_DELETE: { resource: 'sites', action: 'delete' },
+  SITES_SET_LOCATION: { resource: 'sites', action: 'set_location' },
 
   // Automations
   AUTOMATIONS_READ: { resource: 'automations', action: 'read' },

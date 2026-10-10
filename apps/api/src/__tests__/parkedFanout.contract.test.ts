@@ -114,6 +114,7 @@ function discovered(): string[] {
 const VISIBILITY_MODULES: Record<string, string> = {
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
+  'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
   'services/backupHealthReadModel.ts': 'read model: backup health',
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
@@ -182,6 +183,7 @@ function exemptByPattern(file: string): boolean {
 const EXEMPT: Record<string, string> = {
   'services/assetPlacement.ts': 'resolves placement authority by joining the ONE device already linked to a discovered asset (by id, within the asset org); selects no targets',
   'services/autopay/enrollmentLifecycle.ts': 'org payment lifecycle rejects hidden orgs; never reads devices or dispatches device work',
+  'services/timeEntryService.ts': 'request path: rejects a hidden org a caller names on a time entry (#4186); never reads devices or dispatches device work',
   'jobs/alertCorrelation.ts': 'acts only on alerts that already exist; alert creation leaves parked devices out',
   'jobs/backupRetention.ts': 'retention of existing snapshots, not target selection',
   'jobs/backupSlaWorker.ts': 'evaluates org-owned SLA configurations; the holding org owns none',

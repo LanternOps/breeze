@@ -246,8 +246,8 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   TicketActor: 'write provenance; ticket site scope lives in routes/tickets/siteScope.ts',
   // `time_entries` carry no site column; they hang off a ticket, whose own site
   // scope is enforced on the ticket query.
-  TimeEntryActor: 'time entries are ticket-keyed — no site_id',
-  SuggestionActor: 'extends TimeEntryActor — same reason',
+  // TimeEntryActor carries allowedSiteIds since #4186 (time_entries.site_id).
+  SuggestionActor: 'extends TimeEntryActor, which declares the site axis; the interface body itself adds none',
   // Recipe library E2 (#6167). Not an authorization actor at all: it is the
   // `actor_kind` (+ user id for a human) recorded on an append-only AI
   // Operator task event. Every writer runs under the coordinator's system
