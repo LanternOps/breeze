@@ -224,6 +224,15 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_usage_snapshot_regressed',
   /**
+   * #7773: the pricing decision for an unbound BYOK refusal-fallback key could
+   * not be read or attested while SETTLING against a reservation (lock
+   * timeout, connection error). The key billed the bound rate instead; if the
+   * turn had already attested an offering rate, the ledger now disagrees with
+   * that attestation (or a retry hits a fingerprint conflict). Tags carry
+   * org_id + ai_reservation_id.
+   */
+  'ai_unbound_byok_rate_lookup_failed',
+  /**
    * Execution plane W04 (#5715): the sandbox backend's create circuit opened
    * after 5 consecutive failures — no analysis run can start in this region
    * until it closes.
