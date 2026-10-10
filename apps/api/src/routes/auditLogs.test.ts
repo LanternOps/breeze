@@ -120,6 +120,32 @@ describe('audit log routes', () => {
       expect(body.data).toEqual([]);
     });
 
+    it('joins users on the count query too when filtering by user (users.name is in the WHERE)', async () => {
+      // Each db.select() chain records whether it joined before filtering. The
+      // user filter references users.name, so a count that reads audit_logs
+      // alone fails in Postgres with "missing FROM-clause entry for table users".
+      const chains: Array<{ joined: boolean; filtered: boolean }> = [];
+      vi.mocked(db.select).mockImplementation((() => {
+        const rec = { joined: false, filtered: false };
+        chains.push(rec);
+        const base = createDbChain();
+        const from = base.from();
+        return {
+          from: vi.fn(() => ({
+            leftJoin: vi.fn((...args: unknown[]) => { rec.joined = true; return (from.leftJoin as any)(...args); }),
+            where: vi.fn((...args: unknown[]) => { rec.filtered = true; return (from.where as any)(...args); }),
+          })),
+        };
+      }) as any);
+
+      const res = await app.request('/audit-logs/logs?user=riley');
+
+      expect(res.status).toBe(200);
+      expect(chains.length).toBeGreaterThanOrEqual(2);
+      expect(chains.filter((c) => c.filtered && !c.joined)).toEqual([]);
+      vi.mocked(db.select).mockImplementation((() => createDbChain()) as any);
+    });
+
     it('filters logs by action', async () => {
       const res = await app.request('/audit-logs/logs?action=device');
 

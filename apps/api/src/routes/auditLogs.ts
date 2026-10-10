@@ -498,9 +498,13 @@ async function queryLatestPerOrg(
 }
 
 async function countRows(where: SQL | undefined): Promise<number> {
+  // Same users join as queryRows: the user filter matches users.name, so a
+  // count over audit_logs alone fails with "missing FROM-clause entry for
+  // table users". A left join on the users PK cannot change the count.
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(auditLogsTable)
+    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
     .where(where);
   return row?.count ?? 0;
 }
