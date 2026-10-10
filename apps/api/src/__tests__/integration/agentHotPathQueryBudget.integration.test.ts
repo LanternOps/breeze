@@ -429,7 +429,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // The WS frame keys bypass HTTP auth (see the WS test).
   [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
   [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
-  'POST /agents/:id/heartbeat': { transactions: 4, statements: 31 },
+  // 31 -> 32 (#8190): workload inventory delivery's per-feature policy read
+  // (bucket workloadInventoryPolicy), the same +1 the route-only beat takes.
+  'POST /agents/:id/heartbeat': { transactions: 4, statements: 32 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
