@@ -116,7 +116,11 @@ export type ContractServiceErrorCode =
   // #4547 W01: an hour_block row reached a billing/estimate path before the
   // engine that understands it shipped. 500: only a hand-forged row gets here,
   // because no validator accepts the type until W03.
-  | 'HOUR_BLOCK_NOT_ENABLED';
+  | 'HOUR_BLOCK_NOT_ENABLED'
+  // #8181: a block period close locked N time entries but marked a different
+  // number, or found its ledger row already written under the contract lock.
+  // The caller's transaction aborts — fee, claim and drawdown roll back together.
+  | 'HOUR_BLOCK_CLOSE_MISMATCH';
 
 export class ContractServiceError extends Error {
   constructor(

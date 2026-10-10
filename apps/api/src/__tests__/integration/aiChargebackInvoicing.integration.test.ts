@@ -254,7 +254,7 @@ describe.runIf(RUN)('AI usage charges on invoices (#7608)', () => {
     const mine = await withDbAccessContext(ctx(f), () => gatherOrgAiUsageCharges(f.orgId, through, 'USD'));
     expect(mine.included.map((s) => s.sourceId)).toEqual([id]);
     const theirs = await withDbAccessContext(ctx(other), () => gatherOrgAiUsageCharges(f.orgId, through, 'USD'));
-    expect(theirs).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
+    expect(theirs).toEqual({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
   });
 
   describe('the monthly close vs an issue in flight', () => {

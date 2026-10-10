@@ -12,6 +12,9 @@ const { generateDueInvoiceMock, issueInvoiceMock, sendInvoiceEmailMock, captureE
 }));
 vi.mock('../services/contractService', () => ({ generateDueInvoice: generateDueInvoiceMock }));
 vi.mock('../services/contractRenewal', () => ({ runContractRenewalSweep: vi.fn() }));
+vi.mock('../services/contractHourBlockClose', () => ({
+  runHourBlockCloseOutSweep: vi.fn().mockResolvedValue({ contracts: 0, closes: 0, errors: 0 }),
+}));
 vi.mock('../services/invoiceService', () => ({ issueInvoice: issueInvoiceMock }));
 vi.mock('../services/invoicePdf', () => ({ sendInvoiceEmail: sendInvoiceEmailMock }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
@@ -35,7 +38,9 @@ import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
 import { db } from '../db';
-import { runContractBillingSweep } from './contractWorker';
+import { runBillingSweepJob, runContractBillingSweep } from './contractWorker';
+import { runContractRenewalSweep } from '../services/contractRenewal';
+import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
 
 const ACTOR = { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] } as const;
 
@@ -51,7 +56,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
         { contractLineId: 'cl-2', catalogItemId: 'cat-2', itemName: 'Backup', currencyCode: 'EUR' },
       ],
       uncoveredDevices: null,
-      overages: [],
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -68,7 +73,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
 
   it('logs nothing when there are no gaps', async () => {
     dueRows.push({ id: 'c1' });
-    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
@@ -81,7 +86,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
   it('logs one structured warning when generated billing leaves devices uncovered', async () => {
     dueRows.push({ id: 'c1' });
     const uncovered = { total: 3, byRole: { unknown: 2, printer: 1 } };
-    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: uncovered, overages: [] });
+    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: uncovered, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
@@ -99,7 +104,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       generated: true, invoiceId: 'inv1', autoIssue: false,
       priceBookGaps: [{ contractLineId: 'cl-1', catalogItemId: 'cat-1', itemName: 'Managed endpoint', currencyCode: 'EUR' }],
       uncoveredDevices: uncovered,
-      overages: [],
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -117,7 +122,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     generateDueInvoiceMock.mockResolvedValue({
       generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [],
       uncoveredDevices: { total: 0, byRole: {} },
-      overages: [],
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -132,7 +137,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     dueRows.push({ id: 'c1' }, { id: 'c2' });
     generateDueInvoiceMock
       .mockRejectedValueOnce(Object.assign(new Error('group failed'), { code: 'GROUP_EVALUATION_FAILED' }))
-      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false });
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const summary = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
@@ -149,7 +154,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     const siteDeleted = Object.assign(new Error('site deleted'), { code: 'SITE_DELETED' });
     generateDueInvoiceMock
       .mockRejectedValueOnce(siteDeleted)
-      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false });
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const summary = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
@@ -162,6 +167,30 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     }
   });
 
+  it('warns on a capped block-hours backlog and on foreign-currency hours, not on a clean close (#8181)', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    const close = {
+      contractLineId: 'cl-hb', description: 'Support hours', periodStart: '2026-06-01', periodEnd: '2026-07-01',
+      includedHours: 10, carriedInHours: 0, consumedHours: 4, overageHours: 0, carriedOutHours: 0,
+      foreignCurrencyHours: 0, entryCount: 2, overageInvoiceLineId: null, closeSource: 'billing_run' as const,
+    };
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: false,
+      actor: { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] },
+      priceBookGaps: [], uncoveredDevices: null, overages: [],
+      hourBlockCloses: [close, { ...close, periodStart: '2026-05-01', foreignCurrencyHours: 1.5 }],
+      hourBlockCloseTruncated: true,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(res).toEqual({ billed: 1, failed: 0 });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('close backlog capped'), 'c1');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('foreign-currency'), 'c1', 'cl-hb', '2026-05-01', 1.5);
+    } finally { warn.mockRestore(); }
+  });
+
   it('warns once per FLAGGED overage and never for a billed one (#3205 W04)', async () => {
     dueRows.push({ id: 'c1', orgId: 'org1' });
     generateDueInvoiceMock.mockResolvedValue({
@@ -172,6 +201,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
         { contractLineId: 'cl-1', invoiceLineId: null, description: 'SECRET-TOKEN-123', counted: 30, included: 25, overage: 5, mode: 'flag' },
         { contractLineId: 'cl-2', description: 'Servers', counted: 12, included: 10, overage: 2, mode: 'bill' },
       ],
+      hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -191,7 +221,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     generateDueInvoiceMock.mockResolvedValue({
       generated: true, invoiceId: 'inv1', autoIssue: false,
       actor: { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] },
-      priceBookGaps: [], uncoveredDevices: { total: 2, byRole: { unknown: 2 } }, overages: [],
+      priceBookGaps: [], uncoveredDevices: { total: 2, byRole: { unknown: 2 } }, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -205,7 +235,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     dueRows.push({ id: 'c1' }, { id: 'c2' });
     generateDueInvoiceMock
       .mockRejectedValueOnce(new Error('evidence insert failed'))
-      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv-2', autoIssue: false, actor: ACTOR, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv-2', autoIssue: false, actor: ACTOR, priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false });
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const res = await runContractBillingSweep(new Date('2026-07-01T00:00:00Z'));
@@ -230,7 +260,7 @@ describe('runContractBillingSweep auto-issue delegates to issueInvoice (#6229)',
     dueRows.push({ id: 'c1' });
     generateDueInvoiceMock.mockResolvedValue({
       generated: true, invoiceId: 'inv1', autoIssue: true, actor: ACTOR,
-      priceBookGaps: [], uncoveredDevices: null, overages: [],
+      priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     issueInvoiceMock.mockResolvedValue({ id: 'inv1', status: 'sent' });
     await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
@@ -245,7 +275,7 @@ describe('runContractBillingSweep auto-issue delegates to issueInvoice (#6229)',
     dueRows.push({ id: 'c1' });
     generateDueInvoiceMock.mockResolvedValue({
       generated: true, invoiceId: 'inv1', autoIssue: false, actor: ACTOR,
-      priceBookGaps: [], uncoveredDevices: null, overages: [],
+      priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
     expect(issueInvoiceMock).not.toHaveBeenCalled();
@@ -272,5 +302,26 @@ describe('runContractBillingSweep tenant scope', () => {
     expect(params).not.toContain('merging');
     // Pre-existing predicates survive alongside it.
     expect(sql).toContain('"contracts"."next_billing_at" <=');
+  });
+});
+
+describe('billing-sweep job ordering (#8181)', () => {
+  beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
+
+  it('runs renewal, then billing, then the block-hours close-out, with the same asOf', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const asOf = new Date('2026-08-02T06:00:00Z');
+    const res = await runBillingSweepJob(asOf);
+    expect(res).toEqual({ billed: 0, failed: 0 });
+    const renewal = (runContractRenewalSweep as Mock).mock.invocationCallOrder[0]!;
+    const billing = generateDueInvoiceMock.mock.invocationCallOrder[0]!;
+    const closeOut = (runHourBlockCloseOutSweep as Mock).mock.invocationCallOrder[0]!;
+    expect(renewal).toBeLessThan(billing);
+    expect(billing).toBeLessThan(closeOut);
+    expect(runHourBlockCloseOutSweep).toHaveBeenCalledWith(asOf);
   });
 });

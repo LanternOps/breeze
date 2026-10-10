@@ -155,7 +155,7 @@ describe('partitionByCurrency', () => {
 
   it('returns empty buckets for no rows and never creates keys for empty buckets', () => {
     const result = partitionByCurrency([], 'USD', toSpec);
-    expect(result).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
+    expect(result).toEqual({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     const onlyIncluded = partitionByCurrency([{ id: 'a', currencyCode: 'USD' }], 'USD', toSpec);
     expect(onlyIncluded.blockedByCurrency).toEqual({});
   });
@@ -206,9 +206,9 @@ describe('mergeAssembly', () => {
   it('concatenates included and merges blocked keys across parts', () => {
     const gap = (id: string) => ({ sourceType: 'time_entry' as const, sourceId: id, ticketId: null, description: id, quantity: '1.00', currencyCode: 'USD' });
     const merged = mergeAssembly(
-      { included: [spec('a')], blockedByCurrency: { USD: [spec('b')], GBP: [spec('c')] }, missingRate: [gap('m1')] },
-      { included: [spec('d')], blockedByCurrency: { USD: [spec('e')] }, missingRate: [] },
-      { included: [], blockedByCurrency: {}, missingRate: [gap('m2')] }
+      { included: [spec('a')], blockedByCurrency: { USD: [spec('b')], GBP: [spec('c')] }, missingRate: [gap('m1')], heldForHourBlock: { count: 0, hours: 0 } },
+      { included: [spec('d')], blockedByCurrency: { USD: [spec('e')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } },
+      { included: [], blockedByCurrency: {}, missingRate: [gap('m2')], heldForHourBlock: { count: 0, hours: 0 } }
     );
     expect(merged.included.map((s) => s.sourceId)).toEqual(['a', 'd']);
     expect(merged.missingRate.map((m) => m.sourceId)).toEqual(['m1', 'm2']);
@@ -218,13 +218,26 @@ describe('mergeAssembly', () => {
   });
 
   it('returns empty result with no parts and does not mutate inputs', () => {
-    expect(mergeAssembly()).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
-    const part = { included: [spec('a')], blockedByCurrency: { USD: [spec('b')] }, missingRate: [] };
+    expect(mergeAssembly()).toEqual({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
+    const part = { included: [spec('a')], blockedByCurrency: { USD: [spec('b')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } };
     const merged = mergeAssembly(part, part);
     expect(merged.included).toHaveLength(2);
     expect(merged.blockedByCurrency.USD).toHaveLength(2);
     expect(part.included).toHaveLength(1);
     expect(part.blockedByCurrency.USD).toHaveLength(1);
+  });
+  it('sums heldForHourBlock across parts in exact hundredths (#8181)', () => {
+    const merged = mergeAssembly(
+      { included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 1, hours: 0.33 } },
+      { included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 2, hours: 0.67 } },
+      { included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } },
+    );
+    expect(merged.heldForHourBlock).toEqual({ count: 3, hours: 1 });
+  });
+
+  it('partitionTimeEntries and partitionByCurrency start with nothing held (#8181)', () => {
+    expect(partitionTimeEntries([], 'USD').heldForHourBlock).toEqual({ count: 0, hours: 0 });
+    expect(partitionByCurrency([], 'USD', () => spec('x')).heldForHourBlock).toEqual({ count: 0, hours: 0 });
   });
 });
 

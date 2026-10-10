@@ -1,5 +1,5 @@
 import { isAutopayEnabledForPartner } from './autopay/autopayGate';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
@@ -41,6 +41,7 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 }
 
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
+import { closeHourBlockPeriods, type HourBlockCloseSummary } from './contractHourBlockClose';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
 import { countContractSeats, type DeviceSnapshotRow } from './contractQuantities';
@@ -1893,9 +1894,14 @@ export async function cancelContract(contractId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   await requireWholeContractSiteAccess(actor, contractId);
   if (c.status === 'cancelled') return c;
+  // #8181: lock BEFORE retiring the block line. A billing run that claims a
+  // period while this request is in flight must commit first, so its claim's
+  // generated_at precedes the retirement instant below.
+  await lockContractRow(db, contractId);
   const [row] = await db.update(contracts)
     .set({ status: 'cancelled', nextBillingAt: null, updatedAt: new Date() })
     .where(eq(contracts.id, contractId)).returning();
+  await retireLiveHourBlocks(contractId);
   await emitContractEvent({ type: 'contract.cancelled', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
   return row!;
 }
@@ -1978,6 +1984,38 @@ export interface GenerateResult {
    *  `mode: 'flag'` entries were NOT invoiced — the worker warns and the
    *  generate UI toasts on exactly those. */
   overages: OverageSummary[];
+  /** Block-hour periods closed on this run (#8181). Always present (`[]`). Never
+   *  folded into `overages`, whose counts are whole devices/seats. */
+  hourBlockCloses: HourBlockCloseSummary[];
+  /** True when a block line's close backlog hit HOUR_BLOCK_CLOSE_CAP this run. */
+  hourBlockCloseTruncated: boolean;
+}
+
+/** Every non-generating GenerateResult carries the block-hours fields too. */
+const NO_HOUR_BLOCK_CLOSES = { hourBlockCloses: [], hourBlockCloseTruncated: false } as const satisfies
+  Pick<GenerateResult, 'hourBlockCloses' | 'hourBlockCloseTruncated'>;
+
+/** The block FEE bills like flat: no allowance reaches the device materializer. */
+const NO_ALLOWANCE = { includedQuantity: null, overageMode: null, overageUnitPrice: null } as const;
+
+/**
+ * Expire/cancel end the block (#8181, plan-time amendment 5): stamp the live
+ * line retired so the one-live-block-per-org index frees for a successor.
+ * Pre-retirement claimed periods still close via runHourBlockCloseOutSweep —
+ * entitlement is generated_at <= retired_at. CALLER MUST HOLD THE CONTRACT ROW
+ * LOCK. clock_timestamp(), not now(): now() is the transaction START, which for
+ * a request that waited on the lock predates a claim committed while it waited.
+ * After the lock, clock_timestamp() is >= every committed claim's generated_at
+ * (DEFAULT now(), the claiming transaction's start) — including a final period
+ * claimed earlier in this same transaction. Never pass asOf here.
+ */
+async function retireLiveHourBlocks(contractId: string): Promise<void> {
+  await db.update(contractLines).set({ hourBlockRetiredAt: sql`clock_timestamp()` })
+    .where(and(
+      eq(contractLines.contractId, contractId),
+      eq(contractLines.lineType, 'hour_block'),
+      isNull(contractLines.hourBlockRetiredAt),
+    ));
 }
 
 /**
@@ -2037,9 +2075,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -2051,8 +2089,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Expiry at due-check: if this period starts on/after the end date, expire (do not bill).
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -2066,11 +2105,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     .where(eq(contractLines.contractId, contractId))
     .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
 
+  // #8181: a RETIRED block line bills no fee (its pre-retirement periods close
+  // via the close-out sweep). `lines` stays whole for the structural checks below.
+  const billable = lines.filter((l) => !(l.lineType === 'hour_block' && l.hourBlockRetiredAt !== null));
+
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
   // This generation-side guard remains the backstop for an active contract whose
   // final line was removed before the billing run.
-  if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+  if (billable.length === 0) {
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
 
   // #4693: refusing before invoice creation makes the whole run a no-write
@@ -2083,13 +2126,6 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },
       );
     }
-  }
-
-  // #4547 W01: same no-write rule as the site check above. Refuse before the
-  // draft invoice exists, so a forged hour_block row can neither bill nor leave
-  // a half-built invoice for the caller's transaction to roll back.
-  for (const l of lines) {
-    if (l.lineType === 'hour_block') throw hourBlockNotEnabled();
   }
 
   const hasDeviceLine = lines.some(isDeviceLine);
@@ -2123,7 +2159,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   const priceBookGaps: PriceBookGap[] = [];
   const overages: OverageSummary[] = [];
   const pendingEvidence: PendingEvidence[] = [];
-  for (const l of lines) {
+  for (const l of billable) {
     let quantity: string;
     // The ONE device source for this line. `quantity` IS its length, so there is
     // no second walk to disagree with. W06's parity test pins quantityFor to the
@@ -2147,9 +2183,12 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         quantity = String(await countContractSeats(c.orgId));
         break;
       case 'hour_block':
-        // Unreachable: the pre-flight above refuses first. Kept so the switch
-        // stays exhaustive; W02 replaces it with the fee-only arm.
-        throw hourBlockNotEnabled();
+        // The block FEE bills like flat (qty 1, unit_price = the whole block).
+        // Hours settle in closeHourBlockPeriods after the claim below; the
+        // allowance columns are deliberately NOT passed to applyAllowance, or
+        // the materializer would treat included hours as a unit allowance.
+        quantity = '1';
+        break;
       default: {
         // Exhaustiveness: adding a 5th line type becomes a compile error here
         // (instead of silently billing qty 1).
@@ -2159,7 +2198,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     }
 
     // The ONE definition of the split, shared with resolveLineQty.
-    const r = applyAllowance(Number(quantity), l, 'included_units');
+    const r = l.lineType === 'hour_block'
+      ? applyAllowance(1, NO_ALLOWANCE, 'single_block')
+      : applyAllowance(Number(quantity), l, 'included_units');
     // The materializer owns the base quantity, including allowance formatting.
 
     const materialized = await materializeContractLineOntoInvoice(actor, {
@@ -2191,7 +2232,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
 
   // 3b. Billing evidence (#3205 W07). The period id does not exist until the
@@ -2199,6 +2240,19 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //     written before this point. Everything here shares the caller-supplied
   //     transaction with the draft, lines and claim.
   const periodId = claimed[0]!.id;
+
+  // 3a. Block hours (#8181): close every closable claimed period of each LIVE
+  //     block line onto this run's own draft. Same transaction as the claim, so
+  //     a failure rolls back fee, claim and drawdown together. Runs after the
+  //     claim so a period claimed on THIS run is visible to the selector.
+  const hourBlockCloses: HourBlockCloseSummary[] = [];
+  let hourBlockCloseTruncated = false;
+  for (const l of billable) {
+    if (l.lineType !== 'hour_block') continue;
+    const hb = await closeHourBlockPeriods({ contract: c, line: l, overageInvoice: { id: inv.id, actor }, closeSource: 'billing_run', asOf });
+    hourBlockCloses.push(...hb.closes);
+    hourBlockCloseTruncated ||= hb.truncated;
+  }
   for (const chunk of chunksOf(pendingEvidence, EVIDENCE_INSERT_CHUNK)) {
     await db.insert(invoiceLineDevices).values(
       chunk.map((p) => ({ ...p, invoiceId: inv.id, orgId: c.orgId })),
@@ -2227,6 +2281,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
   if (isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
   } else {
     const nextAt = c.billingTiming === 'advance' ? nextPeriod.periodStart : nextPeriod.periodEnd;
@@ -2236,7 +2291,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices, overages };
+  return {
+    generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices, overages,
+    hourBlockCloses, hourBlockCloseTruncated,
+  };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.

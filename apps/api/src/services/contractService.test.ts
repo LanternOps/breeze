@@ -541,7 +541,7 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res).toEqual({
       generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
   });
 
@@ -610,11 +610,19 @@ describe('hour_block fails closed until its engine ships (#4547 W01)', () => {
     hourBlockFirstPeriodStart: '2026-07-01', hourBlockRetiredAt: null,
   };
 
-  it('generateDueInvoice refuses a forged hour_block line before any invoice exists', async () => {
-    queueResult([contract]);                 // locked contract
-    queueResult([flatLine, blockLine]);      // lines — the flat line must not be billed either
-    await expect(svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z')))
-      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
+  // #8181 (W02) replaced generateDueInvoice's fail-closed arm with the fee-only
+  // arm + period close (proven against real Postgres in
+  // contractHourBlockBilling.integration.test.ts). What stays unit-pinned: a
+  // RETIRED block bills no fee, so a contract left with only that line is a
+  // no-write not_due that still carries the always-present block fields.
+  it('generateDueInvoice: a contract whose only line is a retired block writes nothing', async () => {
+    queueResult([contract]);                                                       // locked contract
+    queueResult([{ ...blockLine, hourBlockRetiredAt: new Date('2026-06-30T00:00:00Z') }]); // lines
+    const res = await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
+    expect(res).toEqual({
+      generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [],
+      uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
     expect(createManualInvoice).not.toHaveBeenCalled();
     expect(addContractLine).not.toHaveBeenCalled();
   });

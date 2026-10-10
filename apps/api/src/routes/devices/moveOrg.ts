@@ -27,6 +27,7 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
@@ -272,6 +273,10 @@ moveOrgRoutes.post(
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
       if (err instanceof TicketMoveCurrencyBlockedError) {
+        return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
+      // #8181: block-drawn time cannot change org — same rolled-back refusal.
+      if (err instanceof TicketMoveHourBlockError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       // #5573 W02 — same shape: the transaction rolled back untouched, so this

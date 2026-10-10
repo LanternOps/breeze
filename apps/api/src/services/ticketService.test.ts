@@ -83,6 +83,13 @@ vi.mock('./ticketMoveCurrencyGuard', async () => {
   const actual = await vi.importActual<typeof import('./ticketMoveCurrencyGuard')>('./ticketMoveCurrencyGuard');
   return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
 });
+// #8181: the block-drawn guard runs real Postgres in hourBlockOrgMove.integration.test.ts;
+// here it is a mock so its placement relative to the currency guard can be pinned.
+const { hourBlockGuardMock } = vi.hoisted(() => ({ hourBlockGuardMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./ticketMoveHourBlockGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
+  return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
+});
 vi.mock('./ticketConfigService', () => ({
   getOrgSlaOverride: (...args: unknown[]) => configMocks.getOrgSlaOverride(...args),
   getPartnerPrioritySla: (...args: unknown[]) => configMocks.getPartnerPrioritySla(...args),
@@ -4468,6 +4475,28 @@ describe('moveTicketOrg', () => {
     expect(updateOrder).toBeLessThan(guardOrder);
     expect(guardOrder).toBeLessThan(firstRewriteOrder);
   });
+
+  it('(e) #8181: the block-drawn guard runs on the moving ticket after tx.update(tickets), BEFORE the currency guard', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+    await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
+    expect(hourBlockGuardMock).toHaveBeenCalledWith(expect.anything(), { ticketIds: ['t1'] });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const blockOrder = hourBlockGuardMock.mock.invocationCallOrder.at(-1)!;
+    const guardOrder = guardMock.mock.invocationCallOrder[0]!;
+    expect(updateOrder).toBeLessThan(blockOrder);
+    expect(blockOrder).toBeLessThan(guardOrder);
+  });
+
+  it('(f) #8181: a block-drawn refusal aborts before the currency guard and any child rewrite', async () => {
+    const { TicketMoveHourBlockError } = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
+    seedCrossCurrencyMove();
+    hourBlockGuardMock.mockRejectedValueOnce(new TicketMoveHourBlockError({ drawnTimeEntries: 2 }));
+    await expect(moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'HOUR_BLOCK_DRAWN_TIME', details: { drawnTimeEntries: 2 } });
+    expect(guardMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('listOrgTicketsForAddin', () => {
@@ -5063,3 +5092,4 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
     expect('initiatedBy' in audit).toBe(false);
   });
 });
+

@@ -14,6 +14,7 @@ import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
+import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
@@ -3498,6 +3499,9 @@ export async function moveTicketOrg(
         eq(ticketComments.ticketId, ticketId),
         or(isNotNull(ticketComments.agentRunId), isNotNull(ticketComments.proposedByRunId)),
       ));
+    // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME). Same
+    // lock order as the currency guard, which re-locks a subset of these rows.
+    await assertNoHourBlockDrawnTime(tx, { ticketIds: [ticketId] });
     guard = await assertTicketMoveCurrencyCompatible(tx, {
       ticketIds: [ticketId],
       sourceCurrency: sourceOrg.currencyCode,

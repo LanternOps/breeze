@@ -65,6 +65,7 @@ vi.mock('./catalogService', async (importOriginal) => {
 import { PgDialect } from 'drizzle-orm/pg-core';
 import * as svc from './contractService';
 import { db } from '../db';
+import { contractLines } from '../db/schema';
 
 /** Compiled text of the nth `.where(...)` predicate the service handed Drizzle.
  *  Proves a filter lives in SQL rather than in a post-fetch `.filter()`. */
@@ -244,11 +245,15 @@ describe('contractService site-axis guard', () => {
 
   // ---- no extra work for unrestricted callers ----------------------------
   it('an unrestricted actor triggers NO extra site scan (same query count as before the guard)', async () => {
-    queueResult([contractRow({ status: 'active' })]);               // contract row only
+    queueResult([contractRow({ status: 'active' })]);               // getOwnedContractOr404
+    queueResult([contractRow({ status: 'active' })]);               // lockContractRow FOR UPDATE (#8181)
     queueResult([{ id: 'c1', status: 'cancelled' }]);               // update ... returning
     await svc.cancelContract('c1', unrestricted);
-    // getOwnedContractOr404 is the ONLY select; the guard returns before querying.
-    expect(selectCalls()).toBe(1);
+    // The two selects are the ownership read and the #8181 contract row lock;
+    // the guard returns before querying, so contract_lines is never SELECTed.
+    expect(selectCalls()).toBe(2);
+    const fromTables = (db as unknown as { from: { mock: { calls: unknown[][] } } }).from.mock.calls.map((c) => c[0]);
+    expect(fromTables).not.toContain(contractLines);
   });
 
   // ---- READ: listContracts narrows in SQL, not after the limit (#6110 finding 2)

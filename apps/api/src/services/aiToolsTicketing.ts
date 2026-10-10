@@ -51,6 +51,7 @@ import {
 } from './timeEntryService';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { TicketMoveHourBlockError } from './ticketMoveHourBlockGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import {
@@ -164,6 +165,10 @@ function serviceErrorToJson(err: unknown): string | null {
   // Cross-currency move block (#3776). The AI never passes
   // acceptCurrencyMismatch — a human accepts a mismatch, with invoices:write.
   if (err instanceof TicketMoveCurrencyBlockedError) {
+    return JSON.stringify({ error: err.message, code: err.code, details: err.details });
+  }
+  // #8181: block-drawn time cannot change org; nothing the AI can override.
+  if (err instanceof TicketMoveHourBlockError) {
     return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   return null;

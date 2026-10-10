@@ -133,6 +133,14 @@ vi.mock('../../services/ticketMoveCurrencyGuard', async () => {
   );
   return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
 });
+// #8181: the block-drawn guard runs real Postgres in hourBlockOrgMove.integration.test.ts.
+const { hourBlockGuardMock } = vi.hoisted(() => ({ hourBlockGuardMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../services/ticketMoveHourBlockGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveHourBlockGuard')>(
+    '../../services/ticketMoveHourBlockGuard',
+  );
+  return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
+});
 
 vi.mock('../../services/pamDeviceMoveGuard', async () => {
   const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
@@ -156,6 +164,7 @@ import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups
 import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
+import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
@@ -1752,6 +1761,25 @@ describe('POST /devices/:id/move-org', () => {
         code: 'TICKET_MOVE_CURRENCY_BLOCKED',
         details,
       });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('409s with code + details when block-drawn time blocks the move (#8181) — no Sentry, no failed-move audit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      hourBlockGuardMock.mockRejectedValueOnce(new TicketMoveHourBlockError({ drawnTimeEntries: 3 }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: '3 time entries were drawn from a block of prepaid hours and cannot move to another organization',
+        code: 'HOUR_BLOCK_DRAWN_TIME',
+        details: { drawnTimeEntries: 3 },
+      });
+      expect(guardMock).not.toHaveBeenCalled();
       expect(captureExceptionMock).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();

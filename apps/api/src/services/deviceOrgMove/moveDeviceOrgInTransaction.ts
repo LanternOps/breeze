@@ -35,6 +35,7 @@ import {
   assertTicketMoveCurrencyCompatible,
   type MoveCurrencyGuardDetails,
 } from '../ticketMoveCurrencyGuard';
+import { assertNoHourBlockDrawnTime } from '../ticketMoveHourBlockGuard';
 import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
 import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
@@ -922,6 +923,8 @@ export async function moveDeviceOrgInTransaction(
   const ticketIds = (
     await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))
   ).map((r) => r.id);
+  // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME).
+  await assertNoHourBlockDrawnTime(tx, { ticketIds });
   currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
     ticketIds,
     sourceCurrency: lockedSourceCurrency,
