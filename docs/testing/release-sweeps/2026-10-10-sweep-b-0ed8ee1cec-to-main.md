@@ -72,9 +72,152 @@ Status ∈ `TODO | PASS | PARTIAL | FAIL | BLOCKED | N/A`. Click-paths read from
 |---|---|---|
 | 2 | Login + every sidebar destination renders, primary data call status, console errors | PASS — 134 routes, none broken |
 | 3 | Everyday workflows (devices, device actions, alerts, scripts, patches, remote, search, filters/tags/custom fields, reports/audit, theme/profile) | PARTIAL — audit export fails silently; Cmd+K settings search; tags no feedback |
-| 4 | Setup tasks (org/site, users/roles, enrollment, notification channels, config policies, partner settings, monitoring/discovery, backup/DR, integrations) | TODO |
+| 4 | Setup tasks (org/site, users/roles, enrollment, notification channels, config policies, partner settings, monitoring/discovery, backup/DR, integrations) | PARTIAL — backup SLA create broken; server validation shown raw app-wide; 6 more FAILs |
 
 ## Sweep log (append as you go)
+
+### Phase 4 setup checklist — opus agent, headless Playwright, 2026-10-10
+
+#### [P4 / Org create] — PASS
+- ✅ /organizations → `org-board-add` dialog. Empty submit → "Organization name is required", "Slug is required"; bad slug → "Use lowercase letters, numbers, and hyphens only"; end<start → "Contract end must be on or after start date" (all client-side, no POST).
+- ✅ Valid create "QA P4 Org" → POST /orgs/organizations 201, toast "QA P4 Org added. Its row shows what to set up next.", row highlighted (hash = new id) with setup chips (No site → /organizations/<id>#sites, No policy → /configuration-policies, No backup → /backup, contacts, billing).
+- ⚠️ UI/UX: POST /orgs/organizations carries `?orgId=<current org>` (harmless; the scoping param is irrelevant for creating a sibling org).
+
+#### [P4 / Guided "add first site"] — PARTIAL
+- ✅ Org row "No site" chip → /organizations/<id>#sites; Sites tab empty state "No sites found. Add a site to get started." + "Add site" → dialog "Add Site / Add a new site to QA P4 Org.".
+- ⚠️ UI/UX: the guided first-site dialog (`siteModal.firstTitle` / "Skip" / `createFirst` copy in SiteModals.tsx) is unreachable — `setGuidingFirstSite(true)` is never called anywhere in apps/web (only `false` in useSiteCrud.ts:161). Org create intentionally relies on the row chips instead (OrganizationsBoardPage.tsx:461 comment), so the guided copy is dead code.
+- ⚠️ (tester error, not a bug) `[data-testid="org-board-chip-noSite"]` is not row-unique; my first unscoped click created site "QA P4 HQ" in QA Org B.
+
+#### [P4 / Site create · rename · delete] — PARTIAL
+- ✅ Add Site dialog: empty → "Site name is required"; contact email "not-an-email" → "Enter a valid email address"; valid → POST /orgs/sites 201, list "1 of 1 sites" updates in place.
+- ✅ Delete → ConfirmDialog "Delete Site — Delete QA P4 Branch Renamed? This removes the site permanently and cannot be undone." [Cancel][Delete] → DELETE 200 {"success":true}, list back to empty state.
+- ✅ Rename: list "Edit" navigates to /settings/sites/<id>; rename → PATCH 200, toast "Saved", breadcrumb/h1 update; org Sites tab shows new name.
+- ❌ BUG (validation readability): /settings/sites/<id> with Site name cleared → "Save changes" stays enabled, no client validation; PATCH /orgs/sites/<id> → 400 `{"error":"name: Too small: expected string to have >=1 characters","details":{"fieldErrors":{"name":[...]}}}`; toast shows the raw zod text "name: Too small: expected string to have >=1 characters / Check the highlighted fields" but NO field is highlighted (no inline error under Site name). Suspected: apps/web/src/components/settings/SiteDetailPage.tsx handleSave (~l.256) — no required-name guard, fieldErrors not mapped to inputs.
+- ⚠️ UI/UX: site create (dialog) and site delete show no toast (useSiteCrud.ts submit/confirmDelete have no successMessage) while org create, site rename and org rename do — inconsistent. List change is the only confirmation.
+
+#### [P4 / Org rename · archive · switcher sync] — PARTIAL
+- ✅ /settings/organizations/<id>: Save disabled while name empty; rename → PATCH 200, toast "Organization name saved"; board row shows "QA P4 Org Renamed".
+- ✅ Row menu → "Archive organization" → modal names the org ("Archiving QA P4 Temp hides it…"), lists consequences, retention presets; Custom days 0/"abc" → "Enter a number of days between 1 and 3650." and submit disabled. Archive → POST …/archive 202 {"status":"offboarding","purgeAt":…}; done panel "Archiving started … Scheduled to be permanently deleted on 11/9/2026." Row leaves the board; Archived filter shows it ("Archiving… Purges in 30 days").
+- ✅ Header switcher picks up a newly created org without reload ("Fleet view · 4 organizations … QA P4 Temp").
+- ❌ (sync) Header org switcher does NOT update after rename or archive in the same page session: after rename it still lists "QA P4 Org"; after archive it still lists "QA P4 Temp | Active" (4 orgs). Both correct only after a full reload. Suspected: OrgSettingsPage.tsx rename handler and OrganizationsBoardPage.tsx handleArchiveComplete don't refresh the org store used by layout/OrgSwitcher.tsx (create path does call refreshOrgs()).
+
+#### [P4 / Invite user] — PASS
+- ✅ /settings/users → Invite user: empty → "Name is required", "Enter a valid email address"; "bad@" → "Enter a valid email address". Role list = 6 partner roles; org-access radio (All / Specific / None).
+- ✅ Valid invite qa-p4-invitee@example.com (Partner Technician) → POST /users/invite 201 `{"status":"invited","inviteEmailSent":false,"inviteUrl":"https://…/accept-invite?token=…"}`; warning toast "Invite created for qa-p4-invitee@example.com but the email could not be sent. Copy the invite link to share manually." + readonly link + Copy link button. Row appears: "QA P4 Invitee … Partner Technician · Invited · Resend invite".
+- ✅ DB: users row 9d1b12b9-… status=invited, partner_id set, org_id null.
+- ⚠️ (stack config, not code) invite link host is the prod domain because the wt-stack API env carries PUBLIC_APP_URL/DASHBOARD_URL from the root .env — a local self-host would get a link to the wrong host. Note only.
+
+#### [P4 / Custom role create · edit · assign] — PARTIAL
+- ✅ /settings/roles → Create Role: submit disabled until name entered; create "QA P4 Helpdesk" → POST /roles 201, toast `Role "QA P4 Helpdesk" created`, row "Custom · 0 users". Edit → name prefilled; add Devices/Alerts Read + rename → PATCH 200 permissions saved, toast `Role "QA P4 Helpdesk v2" updated`.
+- ✅ In fleet view ("All organizations"): create "QA P4 Partner Helpdesk" inheriting Partner Viewer → POST /roles 201 scope=partner; Users → Edit qa-p4-invitee → role list now includes it → POST /users/<id>/role 200 {"success":true}, toast "Role updated", row shows "QA P4 Partner Helpdesk".
+- ❌ BUG (hidden mode / dead-end): with an org selected in the header switcher (the default after login), Create Role silently mints an ORGANIZATION-scoped role bound to that org (POST /roles?orgId=0662… → 201 `"scope":"organization"`; DB roles.org_id = Default Organization). The modal says nothing about scope or which org. That role never appears in the Users page role pickers (GET /users/roles for a partner caller returns only scope='partner' roles — apps/api/src/routes/users.ts:1407), so a partner admin has no UI path to assign it; it sits at "0 users". Suspected: apps/web/src/components/settings/RolesPage.tsx handleCreateSubmit (~l.191, `getOrgScope()` → orgId) + RoleManager.tsx create modal (no scope indicator/selector).
+- ⚠️ UI/UX: a role with no parent and zero permissions saves without any warning.
+
+#### [P4 / Enrollment keys: create · install command · revoke] — PARTIAL
+- ✅ /settings/enrollment-keys empty state "No enrollment keys found. Create one to get started."; Create dialog (Name, Organization, Site, Max Usage, Expires At): submit disabled until name+site; Max Usage -5 blocked by native "Value must be greater than or equal to 1.".
+- ✅ Valid create "QA P4 Key ok" (max 3, exp 2027-06-01) → POST /enrollment-keys 201; panel "Save this enrollment key now. It will not be shown again. <64-hex key> [Copy key]"; row Active 0/3 with Download/Rotate/Delete.
+- ✅ Install command: /devices#add-device → CLI Commands → "Generate token" → POST /devices/onboarding-token 200; Step 2 renders the Linux/macOS `curl … install.sh … sudo bash "$f" --server … --token enroll_… --enrollment-secret …` command + Copy; the token also appears on the keys page as "Onboarding token (2026-10-10) · 0/50".
+- ✅ Revoke = Delete: confirm "Delete Enrollment Key — Are you sure you want to delete QA P4 Key past2? … Agents will no longer be able to enroll using this key." → DELETE 200, toast `Enrollment key "QA P4 Key past2" deleted`, row gone. Rotate: confirm "Rotate "QA P4 Key ok" now? …" → POST …/rotate 200, new-key panel shown. "Delete expired" has its own confirm.
+- ❌ BUG: Expires At accepts a past date. Create with Expires At 2021-06-01 → POST /enrollment-keys 201 `{"name":"QA P4 Key past2",…,"expiresAt":"2021-06-01T16:00:00.000Z"}`; dialog closes with no warning, and the key lands in the list already "Expired" (dead on arrival — same for 2020-01-01). No `min` on the datetime-local input and no server-side `expiresAt > now` check. Suspected: apps/web/src/components/settings/EnrollmentKeyManager.tsx (create form, ~l.255/expires input) + apps/api/src/routes/enrollmentKeys*.ts create schema.
+- ⚠️ UI/UX: key create/rotate show no toast (the "Save this key now" panel is the confirmation — acceptable); delete does toast. Short code column is "—" for every key.
+- ⚠️ (stack config) install command `--server "http://localhost"` (no port) on this stack — env-derived, note only.
+
+#### [P4 / Monitoring: configure a monitor] — PARTIAL
+- ✅ /alerts/monitors/new: 21 kinds; Value (%) native-bounded 0–100 ("Value must be less than or equal to 100." / "…greater than or equal to 0."); partner-wide owner → POST /monitor-definitions 201 (orgId null, partnerId set), toast "Monitor saved", lands on /alerts/monitors/<id> "Edit monitor · Partner-wide". Org-owned "QA P4 CPU High" also created (monitor_definitions 4da3bfe0-…).
+- ❌ BUG (unreadable validation): Save with Name blank → inline error under Name reads the raw zod text "Too small: expected string to have >=1 characters". Suspected: apps/web/src/components/monitoring/MonitorEditor.tsx form schema (name `z.string().min(1)` with no message).
+- ⚠️ UI/UX: owner defaults to "This organization only" (partner-wide-first doctrine would default to "All organizations").
+
+#### [P4 / Configuration policies: create · link 2 features · assign org+site · effective preview] — PARTIAL
+- ✅ /configuration-policies/new → "Configure New" → Name/Description/Status/Scope; Create disabled ("Select an organization for this policy.") until an org or Partner library is chosen. Partner-library "QA P4 Policy" → POST 201 (orgId null), toast "Policy created", lands on detail.
+- ✅ Patches tab Save → POST …/features 201 featureType=patch, toasts, header flips "Not configured"→"Configured". Monitors tab attach "QA P4 Disk Partner" + Save → POST …/features 201 featureType=monitors, toast "Saved".
+- ✅ Assignments (partner library): org checkboxes → Default Organization assigned (POST/DELETE assignment 2xx). Org-owned "QA P4 Org Policy" (Default Organization): Assign at Organization level → toast "Assignment added"; Site level → target picker "Default Site" → toast "Assignment added", rows "Organization · Default Organization" / "Site · Default Site".
+- ✅ Effective config: /devices/<e2e-windows>#effective-config → "Patch Management — From: QA P4 Org Policy (Site) · Reboot Policy: never" overriding the org-level partner policy (if_required); "Monitors — From: QA P4 Policy (Organization)"; inheritance chain lists Site → Organization rows. Closest-wins works.
+- ❌ BUG (unreadable error + picker offers un-attachable items): Monitors tab of a PARTNER-library policy lists org-owned monitors in "Attach a monitor" (e.g. "QA P4 CPU High (cpu)", owned by Default Organization). Attaching one and Save → PATCH /configuration-policies/<id>/features/<fid> 400 `{"error":"MONITOR_NOT_ATTACHABLE"}`; the toast shows the bare code "MONITOR_NOT_ATTACHABLE", and the item stays in the editor list as if attached. Suspected: apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx (attach-select doesn't filter by owner for partner policies; error code not mapped to copy) + API route returning a code-only error.
+- ⚠️ UI/UX: partner-library org checkboxes (OrganizationScopePanel.tsx) assign/unassign immediately with no toast (settings rule 7: immediate-effect switches autosave WITH a toast); only the checkbox state changes.
+- ⚠️ UI/UX: AssignmentsTab.tsx:238 name-resolver maps organization→`/organizations/:id` and site→`/sites/:id` (API lives under /orgs/…) → stray 404 `GET /api/v1/organizations/<id>` on the partner policy's Assignments tab. Names still render via the list payload, so it's console/network noise only.
+- ⚠️ UI/UX: patch Save fires two toasts ("Saved" + "Patch settings saved"); new-policy Scope defaults to "A specific organization" with no org preselected (even though the header has one selected); effective-config header "Resolved configuration from 3 assigned policies" counts assignments (2 distinct policies).
+
+#### [P4 / Partner settings — systemic: server validation surfaces as raw zod paths] — FAIL
+- ❌ BUG (cross-cutting): every partner-settings 400 is shown as `"<json.path>: <raw zod text>\nCheck the highlighted fields"` with NO field highlighted (inline=[] in every case). The "Check the highlighted fields" suffix is `errors.VALIDATION_FAILED` appended by apps/web/src/lib/runAction.ts for any zod-shaped 400, regardless of whether the caller maps fieldErrors to inputs (none of these do). Instances (PATCH /orgs/partners/me 400 bodies):
+  - Company contact email "not-an-email" → `settings.contact.email: Invalid email address`
+  - Security Minimum Password Length -4 / 2 → `settings.security.minLength: Too small: expected number to be >=6`
+  - Security IP allowlist "not-an-ip" → `settings.security.ipAllowlist: Each IP allowlist entry must be a valid IP address or CIDR range`
+  - Defaults enrollment device count -3 → `settings.defaults.defaultEnrollmentDeviceCount: Too small: expected number to be >=1`
+  - AI Budgets Monthly Budget ($) -50 → `settings.aiBudgets.monthlyBudgetCents: Too small: expected number to be >=0` (UI field is dollars, error names cents)
+  - Notifications Slack webhook `javascript:alert(1)` / `data:text/html,hi` → `settings.notifications.slackWebhookUrl: Invalid string: must match pattern /^\*+(?::[0-9a-f]+)?$/; Slack webhook URL must be a full http:// or https:// URL` — leaks the masked-secret regex from the `keptSecretOrHttpUrl` union (apps/api/src/routes/orgs.ts ~l.806).
+  - Login Branding logo `javascript:alert(1)` → PUT /partners/me/login-branding 400 `logoUrl: logoUrl must be an https:// URL or a base64 data:image/png, jpeg, or webp URI`; accent "red!!" → `accentColor: accentColor must be a #rrggbb hex color`
+  - Remote-tool provider: `settings.remoteAccessProviders.providers.0.urlTemplate: …; settings.remoteAccessProviders.providers.0.customFieldKey: Too small: expected string to have >=1 characters`
+  - (same pattern outside partner settings: site rename empty name — see Site row.)
+  Suspected: apps/web/src/components/settings/PartnerSettingsPage.tsx handleSave / runPartnerSave (no fieldErrors→input mapping, no client checks for these fields) + runAction.ts suffix.
+
+#### [P4 / Partner settings — per tab] — PARTIAL
+- Tab list (real): Company, Modules, Regional, Defaults, Security, Remote Access, Event Logs, Notifications, Ticketing (link), Email templates, Sender Addresses, AI Budgets, AI Approval Timeout, AI Providers & Models, AI Features, Branding, Login Branding — all 17 render with controls, no console errors beyond the 400s above.
+- ✅ Company: Website `javascript:alert(1)` and `data:text/html,…` blocked client-side with banner + inline "Website must be a full http:// or https:// URL" (no request). Valid save → 200, toast "Partner settings saved", values persist after reload.
+- ⚠️ Company: clearing Company name → toast "Partner settings saved" but the name is silently not sent (`if (trimmedName) payload.name`), field stays blank until reload restores "Default Partner". Phone "abc" accepted.
+- ✅ Regional: date format change → 200 + toast; Known Guests bad MAC → banner "Invalid MAC format (XX:XX:XX:XX:XX:XX)". (Custom business-hours radio is `sr-only` behind its card; not exercised.)
+- ✅ Defaults: maintenance window "whenever" → inline "Use a UTC window like Sun 02:00-04:00 …" + banner, no request; valid → 200.
+- ✅ Security valid save 200. ⚠️ IP allowlist "not-an-ip" first raises the lockout confirm "Your current IP is not in this allowlist. Saving may lock you out…" before any format check.
+- ✅ Branding: logo URL `javascript:alert(1)` / `data:image/svg+xml,…` / `ftp:` → inline "URL not supported. Use an https:// URL or upload a file." and Save disabled. ⚠️ copy says https:// but `http://insecure.example.com/l.png` is accepted; ❌(minor) primary color text "zzz" saves 200 and persists (`settings.branding.primaryColor = "zzz"` in DB) — no hex validation client or server (restored to #1d4ed8).
+- ✅ Login Branding: valid logo/accent/headline → PUT 200 toast "Login branding saved"; /login/default-partner shows "Sign in to QA P4 IT" + the logo. `data:image/png;base64,…` accepted by design. Rejections readable-ish but raw (see systemic row).
+- ✅ Notifications valid save 200. ❌(minor) From Address "not-an-email" saves 200 — `fromAddress`/`replyTo` are bare `z.string()` (apps/api/src/routes/orgs.ts:799). Slack `http://hooks.example.com/x` (non-https, non-Slack host) accepted.
+- ✅ Remote Access: provider URL template `javascript:`/`data:` → readable inline "That URL scheme is not permitted — javascript:, data:, … are blocked."; missing {id} → inline "URL template must include the {id} placeholder…"; valid `rustdesk://{id}` + key → 200. ⚠️ Save stays enabled while the inline error shows, so the PATCH still goes out and returns the raw multi-error toast; missing Custom field key has no inline error.
+- ✅ AI Budgets enable + valid → 200; AI Approval Timeout select → 200 + toast. ⚠️ budget -50 shows no inline error despite min=0.
+
+#### [P4 / Discovery: profile · scan · results/topology] — PARTIAL
+- ✅ /discovery#profiles empty state "No discovery profiles yet. Create your first profile to start scanning." → New Profile: empty subnets → "At least one subnet or IP address is required."; `10.0.0.0/33, banana` → per-entry messages `"10.0.0.0/33": prefix length must be 0–32`, `"banana": not a valid CIDR range or IP address`. Create → POST /discovery/profiles 201, toast `Discovery profile "QA P4 Scan" created`.
+- ✅ Edit subnets without re-entering SNMP → PATCH 400, readable inline+toast "Adding or changing subnets requires re-entering the SNMP credentials, or clearing them"; re-enter → 200, toast "…updated".
+- ✅ Run now (offline fixtures) → POST /discovery/scan 201, toast `Discovery scan queued for "QA P4 Scan"`, jumps to Jobs filtered by profile: job "Failed — No online agent available for this site" (graceful). Assets / Topology / Changes / Baselines tabs render clean empty states ("No assets discovered yet — Run a network discovery scan to populate the topology map.", Changes explains Alerting must be enabled).
+- ❌ BUG (validation gap): subnet `0.0.0.0/0` is accepted (POST 201, profile shows "0.0.0.0/0 · Daily at 02:00 · Active"). The agent silently skips any range > 65,536 hosts unless DeepScan (agent/internal/discovery/scanner.go:281 logs "Subnet too large…" only in the agent log), so this profile will run daily and find nothing with no UI explanation. Suspected: apps/web/src/components/discovery/DiscoveryProfileForm.tsx subnet validator + apps/api/src/routes/discovery.ts:349 (`subnets: z.array(z.string().min(1))`, no size cap). (Fixed the fixture to 192.168.50.0/24.)
+
+#### [P4 / Backup SLA config] — FAIL
+- ✅ /backup#sla (ALPHA banner) renders KPIs, "No SLA configurations defined." → Add SLA Config dialog: empty → "Name is required"; RTO -5 → "RTO target must be at least 1 minute".
+- ❌ BUG (create always fails): valid "QA P4 SLA", RPO 60, RTO 240, device scope → POST /backup/sla/configs 400 `{"error":"rpoTargetMinutes: Invalid input: expected number, received undefined; rtoTargetMinutes: Invalid input: expected number, received undefined","details":{"fieldErrors":{"rpoTargetMinutes":[…],"rtoTargetMinutes":[…]}}}`; dialog shows that raw string in its banner. The dialog sends `rpoMinutes`/`rtoMinutes` (apps/web/src/components/backup/SLAConfigDialog.tsx:42/104/17 type) but the API schema requires `rpoTargetMinutes`/`rtoTargetMinutes` (apps/api/src/routes/backup/schemas.ts:622, routes/backup/sla.ts:53). No SLA config can be created from the UI; edit of an existing one would also read the wrong keys.
+- ⚠️ RPO field `onChange={… Number(v) || 60}` silently turns 0 into 60, so the "RPO target must be at least 1 minute" guard is unreachable; dialog error strings are hard-coded English (no i18n).
+
+#### [P4 / DR plan create] — PARTIAL
+- ✅ /dr (ALPHA banner) empty state → Create Plan editor: sequential readable validation "Plan name is required." → "Each recovery group needs a name." → "Each recovery group must include at least one device." → "Choose a step type for each recovery group."; valid (VM restore from backup, e2e-windows) → POST /dr/plans 201 + POST …/groups 201, toast "Recovery plan created.", list row "QA P4 DR Plan · draft · 60m / 240m · 1 · Edit · Execute".
+- ❌ (systemic, see partner row) RPO -10 / RTO 0 → no client check despite `min=1`; PATCH /dr/plans/<id> 400 → banner+toast "rpoTargetMinutes: Too small: expected number to be >=1; rtoTargetMinutes: Too small: … / Check the highlighted fields", nothing highlighted. Suspected apps/web/src/components/dr/DRPlanEditor.tsx validation block (~l.258).
+
+<details><summary>Phase 4 paper cuts (25)</summary>
+
+| Where | Observation | Severity |
+|---|---|---|
+| Site/Org/DR/partner settings (runAction.ts) | zod 400s render as "<json.path>: <raw zod text> / Check the highlighted fields" with nothing highlighted | high (systemic) |
+| /settings/roles Create Role | org selected in header ⇒ silent org-scoped role, unassignable from Users | med |
+| Header OrgSwitcher | stale after org rename / archive until full reload | med |
+| Config policy Monitors tab (partner policy) | offers org-owned monitors; Save → bare "MONITOR_NOT_ATTACHABLE" toast | med |
+| Enrollment key create | past Expires At accepted → key born "Expired" | med |
+| Discovery profile | 0.0.0.0/0 accepted; agent silently skips >65k-host ranges | med |
+| Backup SLA dialog | create always 400 (rpoMinutes vs rpoTargetMinutes) | high |
+| Monitor editor | blank name → "Too small: expected string to have >=1 characters" | low |
+| Partner Notifications | From/Reply-To accept non-emails; Slack accepts http non-Slack URL | low |
+| Partner Branding | primary color "zzz" persisted; logo copy says https:// but http:// accepted | low |
+| Partner Company | clearing name shows "saved" but name silently unchanged; phone "abc" accepted | low |
+| Partner Security | IP-allowlist lockout confirm fires before format validation | low |
+| Partner Remote Access | Save enabled while inline URL-template error shown | low |
+| Partner AI Budgets | error names monthlyBudgetCents for a $ field; no inline error for -50 | low |
+| useSiteCrud | site create/delete no toast (org create/site rename do) | low |
+| SiteModals | guided "first site" dialog unreachable (setGuidingFirstSite(true) never called) | low |
+| OrganizationScopePanel | immediate assign/unassign with no toast (settings rule 7) | low |
+| AssignmentsTab.tsx:238 | name resolver hits /organizations/:id, /sites/:id → stray 404 | low |
+| Config policy patch Save | double toast "Saved" + "Patch settings saved" | low |
+| New config policy | scope defaults to "A specific organization" with none preselected | low |
+| Effective config header | "3 assigned policies" counts assignments, not policies | low |
+| Monitor editor | owner defaults to org-only (partner-wide-first) | low |
+| Role create | zero-permission, no-parent role saves without warning | low |
+| SLAConfigDialog | RPO 0→60 coercion; English-only errors | low |
+| Enrollment keys | short code "—" for every key | low |
+
+</details>
+
+**Fixtures left (via UI)**
+- Orgs: "QA P4 Org Renamed" 54485480-… (active, 0 sites); "QA P4 Temp" 042fdfc5-… (archived/offboarding, purge 2026-11-09). Site "QA P4 HQ" d4089504-… in QA Org B.
+- User qa-p4-invitee@example.com 9d1b12b9-… (invited, role QA P4 Partner Helpdesk). Roles: "QA P4 Helpdesk v2" b1fc0641-… (org-scoped Default Org), "QA P4 Partner Helpdesk" 87238795-… (partner, parent Partner Viewer).
+- Enrollment keys (Default Org/Default Site): "QA P4 Key" (expired 2020), "QA P4 Key ok" (rotated, exp 2027-06-01), "Onboarding token (2026-10-10)" (50 devices).
+- Monitors: "QA P4 CPU High" 4da3bfe0-… (org), "QA P4 Disk Partner" 8e88b1fe-… (partner).
+- Config policies: "QA P4 Policy" e53be466-… (partner library; patch + monitors[QA P4 Disk Partner]; assigned to Default Organization); "QA P4 Org Policy" cf32c5fc-… (Default Org; patch reboot=never; assigned org + Default Site) — both now shape e2e-windows/e2e-macos effective config.
+- Discovery profile "QA P4 Scan" 13edaeb8-… (192.168.50.0/24, daily 02:00) + 1 failed and 1 scheduled job. DR plan "QA P4 DR Plan" a485f27b-… (draft).
+- Partner settings changed: contact (ops@qa-p4.example.com, https://qa-p4.example.com, +1 555 123 4567, Austin), date format, maintenance window "Sun 02:00-06:00", default enrollment device count 25, notifications fromAddress + Slack webhook (sealed), remote provider "QA P4 RustDesk" rustdesk://{id}, AI budgets disabled (monthlyBudgetCents 10000 stored), AI approval timeout 10 min, branding primaryColor #1d4ed8 (logo/CSS cleared), login-branding accent #0f766e (logo/headline cleared).
 
 ### Groups A + D (+ Phase 4 notification channels, billing tab) — opus agent, headless Playwright, 2026-10-10
 
@@ -502,6 +645,14 @@ Crawl notes:
 
 | # | Where | Observation | Severity | Disposition |
 |---|---|---|---|---|
+| P1 | app-wide (partner settings, site, DR, monitors, login branding…) | Field-level 400s render as "<json.path>: <raw zod text>" + "Check the highlighted fields" with nothing highlighted; Slack webhook message exposes an internal regex (`keptSecretOrHttpUrl`, `routes/orgs.ts:806`) | high | issue pending |
+| P2 | `/backup` → SLA → New | Every create 400s: dialog sends `rpoMinutes`/`rtoMinutes`, API requires `rpoTargetMinutes`/`rtoTargetMinutes` (`SLAConfigDialog.tsx` vs `routes/backup/schemas.ts:622`) | high | fix pending |
+| P3 | `/settings/roles` | Role scope silently follows the header org; an org-scoped role can't be assigned by a partner caller (`/users/roles` lists partner roles only) | med | issue pending |
+| P4 | header org switcher | Not refreshed after org rename/archive until reload (archived org still "Active") | med | issue pending |
+| P5 | partner-library policy → Monitors tab | Offers org-owned monitors; save 400 `MONITOR_NOT_ATTACHABLE` shown as the bare code; item stays listed | med | issue pending |
+| P6 | Enrollment keys | Expiry in the past accepted (201, key born "Expired") — no `min` on the input, no server check | med | fix pending |
+| P7 | Discovery profile | `0.0.0.0/0` accepted (201); agent silently skips ranges > 65,536 hosts (`scanner.go:281`) so the profile finds nothing forever | med | fix pending |
+| P8 | Phase 4 misc (25 in log) | From/Reply-To accept non-emails; branding colour "zzz" persists; clearing company name says saved but no change; site create/delete + library org assign have no toast; guided first-site dialog unreachable (dead code); `AssignmentsTab.tsx:238` 404 request; patch settings double toast; IP-allowlist lockout warning before format check | low | noted |
 | A1 | `/ai-for-office#templates` | Partner-wide templates never listed: web sends `?orgId=<header org>`, `clientAi/adminTemplates.ts:96` keeps only that org's rows (create returns 201 + toast, list unchanged) | med | fix pending |
 | A2 | `/settings/billing` defaults | Out-of-range tax (150, -5) and terms (400, 2.5) submit; server 400 shown as raw "defaultTaxRate: Too big: expected number to be <=1" + "Check the highlighted fields" with nothing highlighted; tax entered as percent but message says <=1 | med | fix pending |
 | A3 | ticket assign | Assigning a `new` ticket moves it to open without `ticket.status_changed` (`ticketService.ts:1953`) | med | issue pending |
