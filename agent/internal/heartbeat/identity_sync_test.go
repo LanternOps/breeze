@@ -175,6 +175,8 @@ type identitySeams struct {
 	restarted  chan struct{}
 	org, site  string
 	markerPath string
+	now        time.Time
+	restartErr error
 }
 
 func withIdentitySeams(t *testing.T, persistErr error) *identitySeams {
@@ -189,9 +191,10 @@ func withIdentitySeams(t *testing.T, persistErr error) *identitySeams {
 	}
 	restartForIdentityFn = func() error {
 		s.restarted <- struct{}{}
-		return nil
+		return s.restartErr
 	}
-	identitySyncNow = func() time.Time { return time.Date(2026, 10, 9, 19, 5, 0, 0, time.UTC) }
+	s.now = time.Date(2026, 10, 9, 19, 5, 0, 0, time.UTC)
+	identitySyncNow = func() time.Time { return s.now }
 	identityRestartMarkerPath = func() string { return s.markerPath }
 	identityRestartJitter = func() time.Duration { return 0 }
 	identityRestartPollInterval = 5 * time.Millisecond
@@ -297,28 +300,141 @@ func TestApplyIdentityAssertionDoesNotRestartWhenPersistFails(t *testing.T) {
 	}
 }
 
-// An identity that does not take effect after the restart (an environment
-// override, say) must not restart the agent on every beat.
+func writeIdentityTestMarker(t *testing.T, path string, m identityRestartMarker) {
+	t.Helper()
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An identity that does not take effect after the restart (a BREEZE_ORG_ID /
+// BREEZE_SITE_ID override, say) must not restart the agent on every beat: one
+// more attempt after the cooldown, then never again for the life of the process.
 func TestApplyIdentityAssertionRefusesARestartLoop(t *testing.T) {
 	s := withIdentitySeams(t, nil)
-	recent, _ := json.Marshal(identityRestartMarker{RestartedAt: identitySyncNow().Add(-10 * time.Minute), OrgID: identityTestOrgB, SiteID: identityTestSiteB})
-	if err := os.WriteFile(s.markerPath, recent, 0600); err != nil {
-		t.Fatal(err)
-	}
 	h := identityTestHeartbeat()
+
+	writeIdentityTestMarker(t, s.markerPath, identityRestartMarker{RestartedAt: s.now.Add(-10 * time.Minute), OrgID: identityTestOrgB, SiteID: identityTestSiteB, Attempts: 1})
 	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 0 {
-		t.Fatal("restarted again for the identity the last restart was for")
+		t.Fatal("restarted again inside the cooldown")
 	}
 
-	// Once the cooldown has passed (or for a different identity) it proceeds.
-	stale, _ := json.Marshal(identityRestartMarker{RestartedAt: identitySyncNow().Add(-identityRestartCooldown - time.Minute), OrgID: identityTestOrgB, SiteID: identityTestSiteB})
-	if err := os.WriteFile(s.markerPath, stale, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// After the cooldown: the second and last attempt.
+	writeIdentityTestMarker(t, s.markerPath, identityRestartMarker{RestartedAt: s.now.Add(-identityRestartCooldown - time.Minute), OrgID: identityTestOrgB, SiteID: identityTestSiteB, Attempts: 1})
 	if !h.applyIdentityAssertion(goldenAssertion()) {
-		t.Fatal("refused after the cooldown")
+		t.Fatal("refused the second attempt after the cooldown")
 	}
 	waitForRestart(t, s)
+	if m, ok := readIdentityRestartMarker(s.markerPath); !ok || m.Attempts != 2 {
+		t.Fatalf("second attempt not counted: %+v", m)
+	}
+
+	// The identity still did not take effect: a new process gives up on it
+	// for good, however long it waits.
+	s.restarted = make(chan struct{}, 4)
+	next := identityTestHeartbeat()
+	s.now = s.now.Add(24 * time.Hour)
+	for i := 0; i < 3; i++ {
+		if next.applyIdentityAssertion(goldenAssertion()) {
+			t.Fatal("kept restarting for an identity that never takes effect")
+		}
+	}
+	if s.persisted.Load() != 1 {
+		t.Fatalf("persisted again after giving up: %d", s.persisted.Load())
+	}
+	expectNoRestart(t, s, 50*time.Millisecond)
+
+	// A different identity is still applied.
+	other := goldenAssertion()
+	other.SiteID = identityTestSiteA
+	other.OrgID = "00000000-0000-4000-8000-0000000000c1"
+	if !next.applyIdentityAssertion(signIdentityTestAssertion(t, other)) {
+		t.Fatal("giving up on one identity blocked a different one")
+	}
+	waitForRestart(t, s)
+}
+
+// Todd's review on #8320: a restart that fails must not keep the upgrades,
+// credential rotation and cert renewal it gates held back forever.
+func TestFailedIdentityRestartLetsTheNextBeatRotateCredentials(t *testing.T) {
+	srv := newRotationServer(t)
+	h, _ := newRotationTestHeartbeat(t, srv.URL)
+	h.tunnelMgr = &tunnel.Manager{}
+	h.config.AgentID = identityTestAgentID
+	h.config.DeviceID = identityTestDeviceID
+	h.config.OrgID, h.config.SiteID = identityTestOrgA, identityTestSiteA
+	h.config.PinnedManifestPubKeys = identityTestPinned()
+
+	s := withIdentitySeams(t, nil)
+	s.restartErr = errors.New("powershell.exe could not start")
+	nonce := identityTestNonce
+	h.identitySync.nonce.Store(&nonce)
+
+	if !h.applyIdentityAssertion(goldenAssertion()) {
+		t.Fatal("assertion not accepted")
+	}
+	waitForRestart(t, s) // the failing restart
+	for deadline := time.Now().Add(2 * time.Second); h.identitySync.restartRequested.Load() && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if h.identitySync.restartRequested.Load() {
+		t.Fatal("a failed restart left the gate closed")
+	}
+
+	// The next beat repeats the assertion (the agent still reports the old
+	// identity) and asks for a rotation: the cooldown refuses another restart
+	// and the rotation runs.
+	h.processHeartbeatResponse(&HeartbeatResponse{IdentityAssertion: goldenAssertion(), RotateToken: true})
+	// Wait for the rotation to finish (confirm + promote), not just start: the
+	// tokenRotating atomic is what orders its config writes before cleanup.
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if _, confirm := srv.counts(); confirm > 0 && !h.tokenRotating.Load() {
+			break
+		}
+	}
+	if rotate, _ := srv.counts(); rotate != 1 || h.tokenRotating.Load() {
+		t.Fatalf("token rotation after the failed restart: calls=%d still running=%v, want 1 finished", rotate, h.tokenRotating.Load())
+	}
+	expectNoRestart(t, s, 50*time.Millisecond)
+}
+
+// A restart that was requested but never came releases the gate on its own.
+func TestPendingIdentityRestartExpires(t *testing.T) {
+	s := withIdentitySeams(t, nil)
+	h := identityTestHeartbeat()
+	h.identitySync.restartRequested.Store(true)
+	h.identitySync.restartRequestedAt.Store(s.now.UnixNano())
+
+	if !h.applyIdentityAssertion(nil) {
+		t.Fatal("a fresh pending restart was not reported")
+	}
+	s.now = s.now.Add(identityRestartPendingMax + time.Second)
+	if h.applyIdentityAssertion(nil) || h.identitySync.restartRequested.Load() {
+		t.Fatal("a restart that never came still gates work")
+	}
+}
+
+// Once the identity took effect the marker goes, so a later move back to the
+// same identity starts with a clean attempt count.
+func TestIdentityRestartMarkerIsClearedOnceTheIdentityApplies(t *testing.T) {
+	s := withIdentitySeams(t, nil)
+	h := identityTestHeartbeat()
+	writeIdentityTestMarker(t, s.markerPath, identityRestartMarker{RestartedAt: s.now, OrgID: identityTestOrgA, SiteID: identityTestSiteA, Attempts: 2})
+	h.reportIdentityForBeat()
+	if _, ok := readIdentityRestartMarker(s.markerPath); ok {
+		t.Fatal("marker for the identity now in effect was kept")
+	}
+
+	other := identityTestHeartbeat()
+	writeIdentityTestMarker(t, s.markerPath, identityRestartMarker{RestartedAt: s.now, OrgID: identityTestOrgB, SiteID: identityTestSiteB, Attempts: 1})
+	other.reportIdentityForBeat()
+	if _, ok := readIdentityRestartMarker(s.markerPath); !ok {
+		t.Fatal("marker for an identity that has not taken effect was removed")
+	}
 }
 
 // The restart waits for commands already running (they came in the same

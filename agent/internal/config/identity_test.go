@@ -70,3 +70,63 @@ func TestPersistServerIdentityRefusesAnIncompleteIdentity(t *testing.T) {
 		t.Fatal("refused identity still rewrote agent.yaml")
 	}
 }
+
+// #8317 review — the token-rotation and mTLS paths save the heartbeat's
+// startup *Config. Between a server reassignment and the restart that applies
+// it, that copy still holds the old org/site and must not write it back.
+func TestSaveToKeepsAServerAssignedIdentity(t *testing.T) {
+	cfgPath := writeBaseConfig(t, t.TempDir())
+	stale, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	stale.OrgID = "00000000-0000-4000-8000-0000000000a1"
+	stale.SiteID = "00000000-0000-4000-8000-0000000000a2"
+	if err := SaveTo(stale, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"); err != nil {
+		t.Fatalf("PersistServerIdentity: %v", err)
+	}
+	// An in-flight cert renewal saves its stale copy, with another change.
+	stale.LogLevel = "debug"
+	if err := SaveTo(stale, cfgPath); err != nil {
+		t.Fatalf("stale SaveTo: %v", err)
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.OrgID != "00000000-0000-4000-8000-0000000000b1" || loaded.SiteID != "00000000-0000-4000-8000-0000000000b2" {
+		t.Fatalf("stale save reverted the identity: org=%q site=%q", loaded.OrgID, loaded.SiteID)
+	}
+	if loaded.LogLevel != "debug" {
+		t.Fatalf("the save's own change was lost: log_level=%q", loaded.LogLevel)
+	}
+}
+
+// Enrollment stays authoritative for the identity it was just issued.
+func TestSaveEnrollmentStillWritesItsIdentity(t *testing.T) {
+	cfgPath := writeBaseConfig(t, t.TempDir())
+	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"); err != nil {
+		t.Fatalf("PersistServerIdentity: %v", err)
+	}
+	enrolled, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	enrolled.OrgID = "00000000-0000-4000-8000-0000000000c1"
+	enrolled.SiteID = "00000000-0000-4000-8000-0000000000c2"
+	if err := SaveEnrollment(enrolled, cfgPath); err != nil {
+		t.Fatalf("SaveEnrollment: %v", err)
+	}
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.OrgID != "00000000-0000-4000-8000-0000000000c1" || loaded.SiteID != "00000000-0000-4000-8000-0000000000c2" {
+		t.Fatalf("enrollment identity not written: org=%q site=%q", loaded.OrgID, loaded.SiteID)
+	}
+}
