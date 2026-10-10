@@ -241,7 +241,7 @@ export async function seedParityWorld(): Promise<ParityWorld> {
   const P = { orgId: null, partnerId: partner.id };
   const O = { orgId: org.id, partnerId: null };
 
-  await seedPolicy({ owner: O, links: [{ featureType: 'helper', inlineSettings: { enabled: true, showTrayIcon: false } }],
+  await seedPolicy({ owner: O, links: [{ featureType: 'helper', inlineSettings: { enabled: true, showDeviceInfo: false } }],
     assignments: [{ level: 'device_group', targetId: groupIds[1] }] });
   await seedPolicy({ owner: P, links: [{ featureType: 'helper', inlineSettings: { enabled: false } }],
     assignments: [{ level: 'partner', targetId: partner.id }] });

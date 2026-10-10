@@ -89,11 +89,11 @@ async function threeWay(
 /** name → [resolver, non-trivial expectation on the answer, answer with an EMPTY set]. */
 const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: any) => void]> = [
   ['resolveDeviceHelperSettings', (id, o) => resolveDeviceHelperSettings(id, o),
-    (a) => expect(a).toMatchObject({ enabled: true, showTrayIcon: false }),
+    (a) => expect(a).toMatchObject({ enabled: true, showDeviceInfo: false }),
     (e) => expect(e).toBeNull()],
   ['buildHelperConfigUpdate', (id, o) => buildHelperConfigUpdate(id, w.orgId, o),
-    (a) => expect(a).toMatchObject({ enabled: true, showTrayIcon: false }),
-    (e) => expect(e).toMatchObject({ enabled: false, showTrayIcon: true })],
+    (a) => expect(a).toMatchObject({ enabled: true, showDeviceInfo: false }),
+    (e) => expect(e).toMatchObject({ enabled: false, showDeviceInfo: true })],
   ['buildPamConfigUpdate', (id, o) => buildPamConfigUpdate(id, o),
     (a) => expect(a).toEqual({ uacInterceptionEnabled: true }),
     (e) => expect(e).toEqual({ uacInterceptionEnabled: false })],
