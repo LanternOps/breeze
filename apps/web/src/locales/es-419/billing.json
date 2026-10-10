@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Prefijo del número de factura",
       "markupHelp": "Margen predeterminado sobre el costo del distribuidor, utilizado para completar previamente el precio de venta al importar artículos del catálogo. El margen bruto resultante se muestra a medida que importa.",
       "paymentTermsDays": "Condiciones de pago (días)",
+      "prefixInvalid": "Ingresa un prefijo de 1 a 12 caracteres.",
+      "taxRateInvalid": "Ingresa una tasa de impuesto de 0 a 100.",
+      "termsDaysInvalid": "Ingresa un número entero de días de 0 a 365.",
       "title": "Valores predeterminados de facturación"
     },
     "loadError": "No se pudo cargar la configuración de facturación.",

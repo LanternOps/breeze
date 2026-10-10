@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, sql, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
+import { findOversizedDiscoverySubnet, discoverySubnetTooLargeMessage } from '@breeze/shared';
 import type { SQL } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
@@ -577,6 +578,8 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const permissions = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
+    const oversizedSubnet = body.deepScan ? null : findOversizedDiscoverySubnet(body.subnets);
+    if (oversizedSubnet) return c.json({ error: discoverySubnetTooLargeMessage(oversizedSubnet) }, 400);
     const orgResult = resolveOrgId(auth, body.orgId, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const siteAuthorization = await authorizeRequestedSite(
@@ -707,11 +710,22 @@ discoveryRoutes.patch(
       excludeIps: discoveryProfiles.excludeIps,
       snmpCommunities: discoveryProfiles.snmpCommunities,
       snmpCredentials: discoveryProfiles.snmpCredentials,
+      deepScan: discoveryProfiles.deepScan,
     }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
     if (!canAccessRecordSite(permissions, existing.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // The agent skips subnets over the host limit unless DeepScan is on.
+    // Re-check whenever the update touches either input to that rule.
+    if (updates.subnets !== undefined || updates.deepScan !== undefined) {
+      const effectiveDeepScan = updates.deepScan ?? existing.deepScan ?? false;
+      const oversizedSubnet = effectiveDeepScan
+        ? null
+        : findOversizedDiscoverySubnet(updates.subnets ?? existing.subnets ?? []);
+      if (oversizedSubnet) return c.json({ error: discoverySubnetTooLargeMessage(oversizedSubnet) }, 400);
     }
 
     const siteChanged = updates.siteId !== undefined && updates.siteId !== existing.siteId;

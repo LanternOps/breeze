@@ -891,6 +891,7 @@
       "empty": "Keine Auditprotokolle gefunden.",
       "viewDetails": "Details anzeigen",
       "errors": {
+        "export": "Audit-Protokolle konnten nicht exportiert werden",
         "fetch": "Auditprotokolle konnten nicht abgerufen werden",
         "load": "Auditprotokolle konnten nicht geladen werden"
       },

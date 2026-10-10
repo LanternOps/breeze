@@ -1238,6 +1238,7 @@
     "fetchFailed": "Failed to fetch enrollment keys",
     "genericError": "An error occurred",
     "createFailed": "Failed to create enrollment key",
+    "expiresAtPast": "Expiry must be in the future.",
     "deleteFailed": "Failed to delete enrollment key",
     "deleted": "Enrollment key \"{{name}}\" deleted",
     "rotateFailed": "Failed to rotate enrollment key",

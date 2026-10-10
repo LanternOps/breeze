@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
+import { MAX_DISCOVERY_SUBNET_HOSTS, findOversizedDiscoverySubnet } from '@breeze/shared';
 
 export type DiscoverySchedule = {
   cadence: 'hourly' | 'interval' | 'daily' | 'weekly' | 'monthly';
@@ -102,6 +103,13 @@ function validateSubnets(text: string, t: TFunction): string[] {
         errors.push(t('discoveryProfileForm.validation.octet', { value: line }));
       } else if (prefixNum > 32) {
         errors.push(t('discoveryProfileForm.validation.prefix', { value: line }));
+      } else if (findOversizedDiscoverySubnet([line])) {
+        // Same limit the API enforces and the agent applies (see
+        // @breeze/shared discoverySubnetLimit).
+        errors.push(t('discoveryProfileForm.validation.subnetTooLarge', {
+          value: line,
+          limit: MAX_DISCOVERY_SUBNET_HOSTS.toLocaleString(),
+        }));
       }
     } else if (IP_REGEX.test(line)) {
       const octets = line.split('.').map(Number);

@@ -2237,6 +2237,7 @@
       "saveSettings": "Impossible d’enregistrer les paramètres"
     },
     "hostname": "Nom d’hôte : {{hostname}}",
+    "saved": "Paramètres de l’appareil enregistrés",
     "permanentlyDelete": "Supprimer définitivement",
     "restoreDevice": "Restaurer l’appareil",
     "saveChanges": "Enregistrer les modifications",

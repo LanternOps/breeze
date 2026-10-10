@@ -1238,6 +1238,7 @@
     "fetchFailed": "Falha ao buscar chaves de registro",
     "genericError": "Ocorreu um erro",
     "createFailed": "Falha ao criar a chave de registro",
+    "expiresAtPast": "A expiração deve estar no futuro.",
     "deleteFailed": "Falha ao excluir a chave de registro",
     "deleted": "Chave de registro \"{{name}}\" excluída",
     "rotateFailed": "Falha ao rotacionar a chave de registro",

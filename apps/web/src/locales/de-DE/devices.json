@@ -2237,6 +2237,7 @@
       "saveSettings": "Einstellungen konnten nicht gespeichert werden"
     },
     "hostname": "Hostname: {{hostname}}",
+    "saved": "Geräteeinstellungen gespeichert",
     "permanentlyDelete": "Endgültig löschen",
     "restoreDevice": "Gerät wiederherstellen",
     "saveChanges": "Änderungen speichern",

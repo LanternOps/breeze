@@ -296,7 +296,8 @@
       "invalidCidr": "\"{{value}}\": geçerli bir CIDR aralığı veya IP adresi değil",
       "octet": "\"{{value}}\": sekizli değeri 255'i aşıyor",
       "prefix": "\"{{value}}\": önek uzunluğu 0–32 olmalıdır",
-      "subnetRequired": "En az bir alt ağ veya IP adresi gerekli."
+      "subnetRequired": "En az bir alt ağ veya IP adresi gerekli.",
+      "subnetTooLarge": "\"{{value}}\": alt ağ çok büyük. Aracı, {{limit}} adresten büyük alt ağları (/16'dan büyük) atlar; daha küçük aralıklara bölün"
     },
     "actions": {
       "saveProfile": "Profili Kaydet"

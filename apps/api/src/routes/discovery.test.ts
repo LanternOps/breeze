@@ -1475,6 +1475,47 @@ describe('discovery routes', () => {
       expect(body.schedule.intervalMinutes).toBe(30);
     });
 
+    it.each(['0.0.0.0/0', '10.0.0.0/15'])('rejects subnet %s that the agent would skip (> 65,536 hosts)', async (subnet) => {
+      const res = await app.request('/discovery/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Too big',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          subnets: ['192.168.1.0/24', subnet],
+          methods: ['ping'],
+          schedule: { type: 'interval', intervalMinutes: 30 },
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('65,536');
+      expect(body.error).toContain(subnet);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('accepts a /16 (exactly 65,536 hosts) and an oversized subnet when deepScan is on', async () => {
+      for (const body of [
+        { subnets: ['10.1.0.0/16'] },
+        { subnets: ['10.0.0.0/8'], deepScan: true },
+      ]) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+            }),
+          }),
+        } as any);
+        const res = await app.request('/discovery/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Big ok', siteId: '00000000-0000-0000-0000-000000000001', methods: ['ping'], schedule: { type: 'interval', intervalMinutes: 30 }, ...body })
+        });
+        expect(res.status).toBe(201);
+      }
+    });
+
     it('encrypts and masks SNMP profile secrets', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -2920,6 +2961,19 @@ describe('discovery routes', () => {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify(body),
+    });
+
+    it('rejects widening subnets past the agent limit without DeepScan, but allows it with DeepScan on the profile', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, subnets: ['10.0.0.0/24'], deepScan: false }]));
+      const res = await patch({ subnets: ['10.0.0.0/8'] });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('65,536');
+      expect(db.update).not.toHaveBeenCalled();
+
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, subnets: ['10.0.0.0/24'], deepScan: true }]));
+      mockProfileUpdate({ ...existingProfile, subnets: ['10.0.0.0/8'], deepScan: true });
+      const ok = await patch({ subnets: ['10.0.0.0/8'] });
+      expect(ok.status).toBe(200);
     });
 
     it('rejects a target site that belongs to another org without writing', async () => {

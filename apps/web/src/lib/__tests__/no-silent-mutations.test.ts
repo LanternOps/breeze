@@ -34,6 +34,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
   'src/components/settings/TicketPushoverSettings.tsx',
+  'src/components/devices/DeviceSettingsModal.tsx', // device tags/name/site PATCH via runAction (success toast)
   'src/components/billing/PaymentsSettingsTab.tsx',
   'src/components/billing/autopayClient.ts',
   'src/components/monitoring/conversion/ConversionLedger.tsx',
@@ -909,7 +910,8 @@ describe('no silent mutations in targeted set', () => {
     // two Customer Graph cards that host it: 216 → 219.
     // Ticket-assignment Pushover adds settings/TicketPushoverSettings.tsx: 219 → 220.
     // Reliability baselines (#5876) add devices/ReliabilityBaseline{Dialog,Section}.tsx: 220 → 222.
-    expect(absoluteFiles.length).toBe(222);
+    // DeviceSettingsModal.tsx (tag/name/site save moved to runAction) makes 223.
+    expect(absoluteFiles.length).toBe(223);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -111,6 +111,16 @@ describe('GET /client-ai/admin/templates', () => {
     expect(body.data[0]).toMatchObject({ id: TEMPLATE_ID, partnerId: PARTNER_ID, orgId: null });
   });
 
+  it('keeps partner-wide rows when narrowed to an org (they apply to every org)', async () => {
+    const orgRow = { ...PARTNER_ROW, id: 'a0a0a0a0-1111-4222-8333-444455556666', partnerId: null, orgId: ORG_ID };
+    const otherOrgRow = { ...PARTNER_ROW, id: 'b0b0b0b0-1111-4222-8333-444455556666', partnerId: null, orgId: OTHER_ORG_ID };
+    dbSelectMock.mockImplementation(() => chain([PARTNER_ROW, orgRow, otherOrgRow]));
+    const res = await buildApp().request(`/client-ai/admin/templates?orgId=${ORG_ID}`, { headers: AUTHED });
+    expect(res.status).toBe(200);
+    const ids = (await res.json()).data.map((r: { id: string }) => r.id);
+    expect(ids).toEqual([TEMPLATE_ID, orgRow.id]);
+  });
+
   it('404s an orgId filter outside the caller scope', async () => {
     const res = await buildApp().request(
       `/client-ai/admin/templates?orgId=${OTHER_ORG_ID}`,

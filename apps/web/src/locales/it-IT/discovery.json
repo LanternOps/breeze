@@ -296,7 +296,8 @@
       "invalidCidr": "\"{{value}}\": intervallo CIDR o indirizzo IP non valido",
       "octet": "\"{{value}}\": il valore dell'ottetto supera 255",
       "prefix": "\"{{value}}\": la lunghezza del prefisso deve essere compresa tra 0 e 32",
-      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP."
+      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP.",
+      "subnetTooLarge": "\"{{value}}\": la subnet è troppo grande. L’agente ignora le subnet con più di {{limit}} indirizzi (più grandi di una /16); suddividila in intervalli più piccoli"
     },
     "actions": {
       "saveProfile": "Salva profilo"

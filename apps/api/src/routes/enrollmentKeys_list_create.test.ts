@@ -960,6 +960,18 @@ describe('enrollment key routes — list & create', () => {
       expect(inserted.expiresAt.getTime()).toBe(explicit.getTime());
     });
 
+    it('rejects an explicit expiresAt that is already in the past (key would be born expired)', async () => {
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Past', expiresAt: new Date(Date.now() - 60_000).toISOString() }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('Expiry must be in the future');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('falls back to DEFAULT_ENROLLMENT_KEY_TTL_MINUTES when neither ttlMinutes nor expiresAt is sent', async () => {
       const getInserted = mockInsertCapture([makeEnrollmentKey()]);
       const before = Date.now();

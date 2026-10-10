@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Préfixe de numéro de facture",
       "markupHelp": "Marge par défaut sur le coût distributeur, utilisée pour préremplir le prix de vente lors de l'import d'articles du catalogue. La marge brute résultante est affichée pendant l'import.",
       "paymentTermsDays": "Délai de paiement (jours)",
+      "prefixInvalid": "Saisissez un préfixe de 1 à 12 caractères.",
+      "taxRateInvalid": "Saisissez un taux de taxe de 0 à 100.",
+      "termsDaysInvalid": "Saisissez un nombre entier de jours de 0 à 365.",
       "title": "Valeurs par défaut de facturation"
     },
     "loadError": "Échec du chargement des paramètres de facturation.",

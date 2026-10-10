@@ -19,6 +19,9 @@ import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
 import { navigateTo } from '@/lib/navigation';
 import { formatAuditDetails, useAuditActionFormatter } from '@/lib/auditFormat';
+import { downloadBlob } from '@/lib/downloadBlob';
+import { extractApiError } from '@/lib/apiError';
+import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -296,25 +299,35 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
   };
 
   const handleExportLogs = async () => {
+    // The export route (GET /audit-logs/export) only accepts `userId`; the
+    // date range, action, resource and search filters are not supported by
+    // the API, so they cannot be forwarded.
+    const params = new URLSearchParams();
+    if (activeFilters?.userId) params.set('userId', activeFilters.userId);
+    const query = params.toString();
+
     try {
-      const response = await fetchWithAuth('/audit-logs/export', { orgIdOverride: orgId });
+      const response = await fetchWithAuth(`/audit-logs/export${query ? `?${query}` : ''}`, {
+        orgIdOverride: orgId
+      });
 
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
         return;
       }
 
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
-        a.click();
-        window.URL.revokeObjectURL(url);
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        showToast({
+          type: 'error',
+          message: extractApiError(data, stableT('audit.auditLogViewer.errors.export'))
+        });
+        return;
       }
+
+      downloadBlob(await response.blob(), `audit-logs-${new Date().toISOString().split('T')[0]}.csv`);
     } catch {
-      // Handle error silently or show notification
+      showToast({ type: 'error', message: stableT('audit.auditLogViewer.errors.export') });
     }
   };
 

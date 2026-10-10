@@ -1238,6 +1238,7 @@
     "fetchFailed": "Recupero chiavi di registrazione non riuscito",
     "genericError": "Si è verificato un errore",
     "createFailed": "Creazione chiave di registrazione non riuscita",
+    "expiresAtPast": "La scadenza deve essere nel futuro.",
     "deleteFailed": "Eliminazione chiave di registrazione non riuscita",
     "deleted": "Chiave di registrazione \"{{name}}\" eliminata",
     "rotateFailed": "Rotazione chiave di registrazione non riuscita",

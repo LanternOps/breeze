@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Prefisso numero fattura",
       "markupHelp": "Ricarico predefinito sul costo del distributore, usato per precompilare il prezzo di vendita quando importi elementi di catalogo. Il margine lordo risultante viene mostrato durante l'importazione.",
       "paymentTermsDays": "Termini di pagamento (giorni)",
+      "prefixInvalid": "Inserisci un prefisso da 1 a 12 caratteri.",
+      "taxRateInvalid": "Inserisci un'aliquota fiscale da 0 a 100.",
+      "termsDaysInvalid": "Inserisci un numero intero di giorni da 0 a 365.",
       "title": "Valori predefiniti di fatturazione"
     },
     "loadError": "Impossibile caricare le impostazioni di fatturazione.",

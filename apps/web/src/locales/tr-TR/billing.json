@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Fatura numarası öneki",
       "markupHelp": "Katalog ürünlerini içe aktarırken satış fiyatını önceden doldurmak için kullanılan, distribütör maliyeti üzerinden varsayılan kar marjı. Ortaya çıkan brüt kar marjı siz içe aktardıkça gösterilir.",
       "paymentTermsDays": "Ödeme koşulları (gün)",
+      "prefixInvalid": "1 ile 12 karakter arasında bir ön ek girin.",
+      "taxRateInvalid": "0 ile 100 arasında bir vergi oranı girin.",
+      "termsDaysInvalid": "0 ile 365 arasında tam sayı olarak gün girin.",
       "title": "Faturalandırma varsayılanları"
     },
     "loadError": "Faturalandırma ayarları yüklenemedi.",

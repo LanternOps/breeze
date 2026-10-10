@@ -1238,6 +1238,7 @@
     "fetchFailed": "No se pudieron recuperar las claves de inscripción",
     "genericError": "Se produjo un error",
     "createFailed": "No se pudo crear la clave de inscripción",
+    "expiresAtPast": "La fecha de vencimiento debe estar en el futuro.",
     "deleteFailed": "No se pudo eliminar la clave de inscripción",
     "deleted": "Clave de inscripción \"{{name}}\" eliminada",
     "rotateFailed": "No se pudo rotar la clave de inscripción",

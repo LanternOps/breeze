@@ -1238,6 +1238,7 @@
     "fetchFailed": "Impossible de récupérer les clés d’inscription",
     "genericError": "Une erreur s’est produite",
     "createFailed": "Impossible de créer une clé d’inscription",
+    "expiresAtPast": "La date d’expiration doit être dans le futur.",
     "deleteFailed": "Impossible de supprimer la clé d’inscription",
     "deleted": "Clé d’inscription « {{name}} » supprimée",
     "rotateFailed": "Impossible de faire tourner la clé d’inscription",

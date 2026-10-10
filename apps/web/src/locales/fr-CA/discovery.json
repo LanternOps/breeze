@@ -296,7 +296,8 @@
       "invalidCidr": "« {{value}} » : pas une portée CIDR valide ni une adresse IP",
       "octet": "« {{value}} » : la valeur de l’octet dépasse 255",
       "prefix": "« {{value}} » : longueur de préfixe doit être de 0 à 32",
-      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise."
+      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise.",
+      "subnetTooLarge": "\"{{value}}\" : le sous-réseau est trop grand. L’agent ignore les sous-réseaux de plus de {{limit}} adresses (plus grands qu’un /16); divisez-le en plages plus petites"
     },
     "actions": {
       "saveProfile": "Enregistrer le profil"

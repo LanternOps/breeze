@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Prefixo do número da fatura",
       "markupHelp": "Margem padrão sobre o custo do distribuidor, usada para preencher o preço de venda ao importar itens do catálogo. A margem bruta resultante é exibida durante a importação.",
       "paymentTermsDays": "Prazo de pagamento (dias)",
+      "prefixInvalid": "Informe um prefixo de 1 a 12 caracteres.",
+      "taxRateInvalid": "Informe uma alíquota de imposto de 0 a 100.",
+      "termsDaysInvalid": "Informe um número inteiro de dias de 0 a 365.",
       "title": "Padrões de cobrança"
     },
     "loadError": "Falha ao carregar as configurações de cobrança.",

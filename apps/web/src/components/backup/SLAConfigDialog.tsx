@@ -14,12 +14,13 @@ import '../../lib/i18n';
 type SLAConfig = {
   id: string;
   name: string;
-  rpoMinutes: number;
-  rtoMinutes: number;
-  active: boolean;
+  // Field names mirror the API row (backup_sla_configs) and slaConfigCreateSchema.
+  rpoTargetMinutes: number;
+  rtoTargetMinutes: number;
+  isActive: boolean;
   alertOnBreach?: boolean;
-  targetDeviceIds?: string[];
-  targetDeviceGroupIds?: string[];
+  targetDevices?: string[] | null;
+  targetGroups?: string[] | null;
   [key: string]: unknown;
 };
 
@@ -39,18 +40,18 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
   const isEdit = !!config;
 
   const [name, setName] = useState(config?.name ?? '');
-  const [rpoMinutes, setRpoMinutes] = useState(config?.rpoMinutes ?? 60);
-  const [rtoMinutes, setRtoMinutes] = useState(config?.rtoMinutes ?? 120);
+  const [rpoMinutes, setRpoMinutes] = useState(config?.rpoTargetMinutes ?? 60);
+  const [rtoMinutes, setRtoMinutes] = useState(config?.rtoTargetMinutes ?? 120);
   const [alertOnBreach, setAlertOnBreach] = useState(config?.alertOnBreach ?? true);
-  const [active, setActive] = useState(config?.active ?? true);
+  const [active, setActive] = useState(config?.isActive ?? true);
   const [scopeMode, setScopeMode] = useState<ScopeMode>(
-    config?.targetDeviceGroupIds?.length ? 'groups' : 'devices'
+    config?.targetGroups?.length ? 'groups' : 'devices'
   );
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>(
-    config?.targetDeviceIds ?? []
+    config?.targetDevices ?? []
   );
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(
-    config?.targetDeviceGroupIds ?? []
+    config?.targetGroups ?? []
   );
   const [deviceSearch, setDeviceSearch] = useState('');
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
@@ -101,12 +102,12 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
     try {
       const body = {
         name,
-        rpoMinutes,
-        rtoMinutes,
+        rpoTargetMinutes: rpoMinutes,
+        rtoTargetMinutes: rtoMinutes,
         alertOnBreach,
-        active,
-        targetDeviceIds: scopeMode === 'devices' ? selectedDeviceIds : [],
-        targetDeviceGroupIds: scopeMode === 'groups' ? selectedGroupIds : [],
+        isActive: active,
+        targetDevices: scopeMode === 'devices' ? selectedDeviceIds : [],
+        targetGroups: scopeMode === 'groups' ? selectedGroupIds : [],
       };
 
       const url = isEdit ? `/backup/sla/configs/${config.id}` : '/backup/sla/configs';

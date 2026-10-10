@@ -296,7 +296,8 @@
       "invalidCidr": "\"{{value}}\": no es un rango CIDR ni una dirección IP válidos",
       "octet": "\"{{value}}\": el valor del octeto supera 255",
       "prefix": "\"{{value}}\": la longitud del prefijo debe ser de 0 a 32",
-      "subnetRequired": "Se requiere al menos una subred o dirección IP."
+      "subnetRequired": "Se requiere al menos una subred o dirección IP.",
+      "subnetTooLarge": "\"{{value}}\": la subred es demasiado grande. El agente omite las subredes de más de {{limit}} direcciones (mayores que un /16); divídala en rangos más pequeños"
     },
     "actions": {
       "saveProfile": "Guardar perfil"

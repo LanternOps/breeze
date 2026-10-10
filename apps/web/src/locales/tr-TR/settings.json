@@ -1238,6 +1238,7 @@
     "fetchFailed": "Kayıt anahtarları alınamadı",
     "genericError": "Bir hata oluştu",
     "createFailed": "Kayıt anahtarı oluşturulamadı",
+    "expiresAtPast": "Son kullanma tarihi gelecekte olmalıdır.",
     "deleteFailed": "Kayıt anahtarı silinemedi",
     "deleted": "Kayıt anahtarı \"{{name}}\" silindi",
     "rotateFailed": "Kayıt anahtarı döndürülemedi",

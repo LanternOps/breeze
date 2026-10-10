@@ -2292,6 +2292,9 @@
       "invoiceNumberPrefix": "Invoice number prefix",
       "markupHelp": "Default markup over distributor cost, used to pre-fill the sell price when importing catalog items. The resulting gross margin is shown as you import.",
       "paymentTermsDays": "Payment terms (days)",
+      "prefixInvalid": "Enter a prefix of 1 to 12 characters.",
+      "taxRateInvalid": "Enter a tax rate from 0 to 100.",
+      "termsDaysInvalid": "Enter a whole number of days from 0 to 365.",
       "title": "Billing defaults"
     },
     "loadError": "Billing settings failed to load.",
