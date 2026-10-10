@@ -85,8 +85,15 @@ const approvalConfig: Record<PatchApprovalStatus, { labelKey: string; color: str
   deferred: { labelKey: 'patchList.approval.deferred', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock }
 };
 
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 function formatDate(dateString: string): string {
-  const date = new Date(dateString);
+  // A bare YYYY-MM-DD parses as UTC midnight, which renders a day early in
+  // zones west of UTC. Build it as a local calendar date instead.
+  const dateOnly = DATE_ONLY_RE.exec(dateString);
+  const date = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   return date.toLocaleDateString();
 }
