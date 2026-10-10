@@ -136,7 +136,10 @@ test('malformed patterns fail closed', () => {
 });
 
 test('every agent-facing pattern names at least one tracked file', () => {
-  const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  // 64 MiB, like binary-affecting-paths.coverage: the -z listing passed spawnSync's
+  // 1 MiB default maxBuffer on 2026-10-10 and the run died with ENOBUFS (status null).
+  const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.ifError(tracked.error); // macOS reports status 0 on ENOBUFS, Linux null
   assert.equal(tracked.status, 0, tracked.stderr);
   const files = tracked.stdout.split('\0').filter(Boolean);
   for (const rule of agentFacingPolicy) {
