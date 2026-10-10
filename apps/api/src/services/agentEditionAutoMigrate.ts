@@ -485,6 +485,11 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
       triggerType: 'policy',
       createdBy: null,
       triggeredBy: null,
+      // The canary release and the reaper exclusion both measure their 2h
+      // window from this claim, so the command must not sit queued past it
+      // (the default script class queues for 168h). 15 min + the 1800s script
+      // budget + stage-2 waits stays inside the window.
+      offlinePolicy: { kind: 'queue', deliverWithinMs: 15 * 60_000 },
       // #7103 — sent by the caller after this context commits.
       deferDelivery: true,
     });

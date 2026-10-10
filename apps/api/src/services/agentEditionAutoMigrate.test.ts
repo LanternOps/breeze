@@ -147,6 +147,9 @@ describe('maybeDispatchEditionMigration', () => {
       target_edition: 'hosted',
     });
     expect(input.triggerType).toBe('policy');
+    // The canary and reaper windows are measured from the claim, so a command
+    // that sits queued for the 168h default could run long after both closed.
+    expect(input.offlinePolicy).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60_000 });
     expect(input.device.id).toBe('device-1');
     // Informational success signal goes through captureMessage (BREEZE-18),
     // never a fabricated Error.
@@ -367,7 +370,8 @@ describe('maybeDispatchEditionMigration', () => {
       const claimOrder = claim.returning.mock.invocationCallOrder[0]!;
       expect(lockOrder).toBeLessThan(claimOrder);
       // The lock is taken inside the system context whose commit publishes the claim.
-      expect(vi.mocked(db.execute).mock.calls[0]![0]).toBeDefined();
+      const lockSql = JSON.stringify(vi.mocked(db.execute).mock.calls[0]![0]);
+      expect(lockSql).toContain('pg_advisory_xact_lock');
     });
   });
 
