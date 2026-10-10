@@ -23,6 +23,7 @@ function makePolicyLocal(overrides: {
       categories: [],
       excludeCategories: [],
       autoApprove: { security: true },
+      appRules: [],
       ...overrides.ring,
     },
   };
@@ -60,11 +61,28 @@ describe('buildPatchesSnapshot', () => {
         { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
         { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
       ],
+      ringAppRules: [],
       ringValidation: {
         classification: 'valid_ring',
         valid: true,
       },
     });
+  });
+
+  // #8184 W01: ring rules ride in their own key; the legacy `apps` key keeps
+  // carrying only the policy's rules in this wave.
+  it('snapshots the ring app rules under ringAppRules, leaving apps as the policy list', () => {
+    const snapshot = buildPatchesSnapshot(makePolicyLocal({
+      settings: { apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }] },
+      ring: {
+        appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'pin', pinnedVersion: '120' }],
+      },
+    }));
+
+    expect(snapshot.ringAppRules).toEqual([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'pin', pinnedVersion: '120' },
+    ]);
+    expect(snapshot.apps).toEqual([{ source: 'custom', packageId: 'corp-tool', action: 'block' }]);
   });
 
   it('maps policyAutoApprove from settings.autoApprove/autoApproveSeverities/autoApproveDeferralDays', () => {

@@ -716,3 +716,112 @@ describe('resolvePatchPolicyReference — connection discipline (#7647)', () => 
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 });
+
+// #8184 W01: the resolver carries the ring's per-app block/pin rules.
+describe('resolvePatchPolicyReference — ring appRules (#8184)', () => {
+  const ringRow = (appRules: unknown) => ({
+    id: 'ring-1', kind: 'ring', name: 'Pilot', categoryRules: [],
+    categories: [], excludeCategories: [], autoApprove: {}, appRules,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCurrentDbAccessContext).mockReset();
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [], currentPartnerId: 'partner-1',
+    } as any);
+  });
+
+  it('valid_ring returns the ring rules, stripped of display-only fields', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([ringRow([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' },
+      { source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2.3' },
+    ])]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.classification).toBe('valid_ring');
+    expect(result.appRules).toEqual([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2.3' },
+    ]);
+  });
+
+  it('valid_ring coerces an identifiable malformed rule (pin without version) to block, with a warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([ringRow([
+      { source: 'third_party', packageId: 'x', action: 'pin' },
+    ])]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.appRules).toEqual([{ source: 'third_party', packageId: 'x', action: 'block' }]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('coercing malformed app rule to block (fail-closed)'),
+      expect.any(String)
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('valid_ring drops a rule with no usable identity, loudly', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([ringRow([
+      { action: 'block' },
+      { source: 'third_party', packageId: 'keep.me', action: 'block' },
+    ])]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.appRules).toEqual([{ source: 'third_party', packageId: 'keep.me', action: 'block' }]);
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('dropping malformed app rule with unusable identity'),
+    }));
+    warnSpy.mockRestore();
+  });
+
+  it('valid_ring with a non-array app_rules value yields no ring rules and reports it', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([ringRow({ nope: true })]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.appRules).toEqual([]);
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('malformed app_rules'),
+    }));
+    warnSpy.mockRestore();
+  });
+
+  it('null classification returns no ring rules', async () => {
+    expect((await resolvePatchPolicyReference('partner-1', null)).appRules).toEqual([]);
+    expect((await resolvePatchPolicyReference(null, 'ring-1')).appRules).toEqual([]);
+  });
+
+  it('legacy_patch_policy returns no ring rules even if the row carries some', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
+      ...ringRow([{ source: 'third_party', packageId: 'x', action: 'block' }]), kind: 'legacy',
+    }]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.classification).toBe('legacy_patch_policy');
+    expect(result.appRules).toEqual([]);
+  });
+
+  it('config_policy_uuid and missing_target return no ring rules', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectJoinLimitRows([]) as any)
+      .mockReturnValueOnce(selectJoinLimitRows([{ id: 'ring-1' }]) as any);
+    const cfg = await resolvePatchPolicyReference('partner-1', 'ring-1');
+    expect(cfg.classification).toBe('config_policy_uuid');
+    expect(cfg.appRules).toEqual([]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectJoinLimitRows([]) as any)
+      .mockReturnValueOnce(selectJoinLimitRows([]) as any);
+    const missing = await resolvePatchPolicyReference('partner-1', 'ring-1');
+    expect(missing.classification).toBe('missing_target');
+    expect(missing.appRules).toEqual([]);
+  });
+});

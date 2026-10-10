@@ -4,6 +4,8 @@ import {
   patchInlineSettingsSchema,
   policyAppRuleSchema,
   ringAutoApproveSchema,
+  ringAppRulesSchema,
+  canonicalAppRuleKey,
   mergeRingAutoApproveWrite,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
@@ -558,5 +560,57 @@ describe('deviceLifecycleInlineSettingsSchema', () => {
 describe('retired inline settings validators', () => {
   it.each(['alertRuleInlineSettingsSchema', 'monitoringInlineSettingsSchema'])('does not export %s', (name) => {
     expect(validators).not.toHaveProperty(name);
+  });
+});
+
+// ============================================
+// Ring App Rules (#8184 W01)
+// ============================================
+
+describe('ringAppRulesSchema', () => {
+  it('accepts block and pin rules', () => {
+    const r = ringAppRulesSchema.safeParse([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2.3' },
+    ]);
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts an empty list', () => {
+    expect(ringAppRulesSchema.safeParse([]).success).toBe(true);
+  });
+
+  it('rejects a pin without a version', () => {
+    expect(ringAppRulesSchema.safeParse([{ source: 'third_party', packageId: 'x', action: 'pin' }]).success).toBe(false);
+  });
+
+  it('rejects duplicates by canonical key (custom/third_party bucket, case-insensitive id)', () => {
+    const r = ringAppRulesSchema.safeParse([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'mozilla.firefox', action: 'block' },
+    ]);
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0]?.path).toEqual([1, 'packageId']);
+  });
+
+  it('accepts 200 rules and rejects 201', () => {
+    const rules = (n: number) => Array.from({ length: n }, (_, i) => ({ source: 'third_party', packageId: `p${i}`, action: 'block' }));
+    expect(ringAppRulesSchema.safeParse(rules(200)).success).toBe(true);
+    expect(ringAppRulesSchema.safeParse(rules(201)).success).toBe(false);
+  });
+
+  it('rejects a non-array', () => {
+    expect(ringAppRulesSchema.safeParse({ source: 'third_party', packageId: 'x', action: 'block' }).success).toBe(false);
+  });
+});
+
+describe('canonicalAppRuleKey', () => {
+  it('collapses custom into third_party and lowercases', () => {
+    expect(canonicalAppRuleKey('custom', 'A.B')).toBe('third_party|a.b');
+    expect(canonicalAppRuleKey('third_party', 'A.B')).toBe('third_party|a.b');
+  });
+
+  it('keeps other sources in their own bucket', () => {
+    expect(canonicalAppRuleKey('microsoft', 'KB123')).toBe('microsoft|kb123');
   });
 });

@@ -208,6 +208,41 @@ describe('updateRings routes', () => {
       expect(body.recentJobs).toBeDefined();
     });
 
+    it('returns the ring appRules (#8184) — the lookup reads every column', async () => {
+      const rules = [{ source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2' }];
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeRing({ appRules: rules })])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      // No explicit projection: a future one must remember app_rules.
+      expect(vi.mocked(db.select).mock.calls[0]).toEqual([]);
+      const body = await res.json();
+      expect(body.appRules).toEqual(rules);
+    });
+
     it('should return 404 for non-existent ring', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -667,6 +702,36 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(200);
       const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
       expect(updateFields).not.toHaveProperty('sources');
+    });
+
+    it('PATCH does not write appRules yet (#8184 W01: read-only) — the DB update never sees it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+          })
+        })
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeRing()])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Renamed',
+          appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(updateFields.name).toBe('Renamed');
+      expect(updateFields).not.toHaveProperty('appRules');
     });
   });
 

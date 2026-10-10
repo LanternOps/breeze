@@ -617,6 +617,38 @@ export const policyAppRuleSchema = z.object({
 
 export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 
+/** Patch sources the app-rule UI presents as one bucket (manual entries hardcode 'third_party'). */
+const APP_RULE_THIRD_PARTY_BUCKET: readonly string[] = ['third_party', 'custom'];
+
+/**
+ * Canonical app-rule identity: 'third_party' and 'custom' collapse to one
+ * 'third_party' bucket, packageId is lowercased. The single implementation —
+ * apps/api patchApprovalEvaluator.appRuleKey delegates here so the validator's
+ * uniqueness check and the evaluator's lookup cannot disagree.
+ */
+export function canonicalAppRuleKey(source: string, packageId: string): string {
+  const bucket = APP_RULE_THIRD_PARTY_BUCKET.includes(source) ? 'third_party' : source;
+  return `${bucket}|${packageId.toLowerCase()}`;
+}
+
+/**
+ * Update Ring per-app block/pin rules — `patch_policies.app_rules` (#8184).
+ * Same element type as the policy-level `apps` list, max 200, unique by
+ * `canonicalAppRuleKey`.
+ */
+export const ringAppRulesSchema = z.array(policyAppRuleSchema).max(200).superRefine((rules, ctx) => {
+  const seen = new Set<string>();
+  rules.forEach((rule, i) => {
+    const key = canonicalAppRuleKey(rule.source, rule.packageId);
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i, 'packageId'], message: 'Duplicate application rule.' });
+    }
+    seen.add(key);
+  });
+});
+
+export type RingAppRules = z.infer<typeof ringAppRulesSchema>;
+
 /**
  * Typed shape for an Update Ring's `patch_policies.autoApprove` JSONB column.
  *

@@ -204,6 +204,8 @@ updateRingRoutes.get(
         excludeCategories: patchPolicies.excludeCategories,
         autoApprove: patchPolicies.autoApprove,
         categoryRules: patchPolicies.categoryRules,
+        // Read-only until W02 adds a writer (#8184).
+        appRules: patchPolicies.appRules,
         targets: patchPolicies.targets,
         createdAt: patchPolicies.createdAt,
         updatedAt: patchPolicies.updatedAt,

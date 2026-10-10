@@ -160,6 +160,8 @@ function makePolicyLocal(overrides: Record<string, unknown> = {}): any {
   };
 }
 
+const RING_ID_FOR_SNAPSHOT = '99999999-9999-4999-8999-999999999999';
+
 function makeResolvedPatchConfig(overrides: Record<string, unknown> = {}): any {
   return {
     settings: {
@@ -307,6 +309,17 @@ describe('configurationPolicies patchJob routes', () => {
           scheduleDayOfMonth: 1,
           rebootPolicy: 'if_required',
         },
+        ring: {
+          classification: 'valid_ring',
+          valid: true,
+          ringId: RING_ID_FOR_SNAPSHOT,
+          ringName: 'Pilot',
+          categoryRules: [],
+          categories: [],
+          excludeCategories: [],
+          autoApprove: {},
+          appRules: [{ source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' }],
+        },
       }));
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -334,9 +347,12 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.success).toBe(true);
       expect(json.totalDevices).toBe(1);
       expect(insertValuesMock.mock.calls[0]?.[0]?.patches).toMatchObject({
+        ringId: RING_ID_FOR_SNAPSHOT,
         sources: ['third_party'],
         policyAutoApprove: { enabled: true, severities: ['critical'], deferralDays: 5 },
         apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+        // #8184: the manual route snapshots ring rules under their own key.
+        ringAppRules: [{ source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' }],
       });
       expect(writeRouteAudit).toHaveBeenCalled();
       expect(json.enqueueFailures).toEqual([]);

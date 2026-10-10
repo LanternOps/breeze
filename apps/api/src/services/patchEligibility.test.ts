@@ -52,6 +52,7 @@ import type { ApprovalEvaluationConfig } from './patchApprovalEvaluator';
 import {
   evaluatePatchInstallEligibility,
   resolveApprovedPatchesForDevice,
+  resolveDevicePatchEvaluationConfig,
   resolvePatchInstallEligibility,
 } from './patchEligibility';
 
@@ -199,6 +200,64 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
     expect(res.eligible.map((e) => e.patchId)).toEqual([P3]);
   });
 
+  // #8184 W01 dual read: ring app rules and policy app rules both apply; the
+  // stricter verdict wins, and either overrides a manual approval.
+  it('a RING app rule denies a manually approved patch (policy has no rules)', async () => {
+    const config = ringConfig({
+      ringAppRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      apps: [],
+    });
+    mockEvaluatorReads(
+      [row({ patchId: P1, source: 'third_party', packageId: 'mozilla.firefox', version: '130.0' }), row({ patchId: P2 })],
+      [{ patchId: P1, status: 'approved', ringId: RING }, { patchId: P2, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_app_rule' }]);
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P2]);
+  });
+
+  it('a POLICY app rule still denies a manually approved patch when the ring has no rules', async () => {
+    const config = ringConfig({
+      ringAppRules: [],
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    });
+    mockEvaluatorReads(
+      [row({ patchId: P1, source: 'third_party', packageId: 'mozilla.firefox', version: '130.0' })],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_app_rule' }]);
+    expect(res.eligible).toEqual([]);
+  });
+
+  it('a pin that allows on one side does not override a pin that holds on the other', async () => {
+    const config = ringConfig({
+      ringAppRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'pin', pinnedVersion: '200' }],
+      apps: [{ source: 'custom', packageId: 'MOZILLA.FIREFOX', action: 'pin', pinnedVersion: '120' }],
+    });
+    mockEvaluatorReads(
+      [row({ patchId: P1, source: 'third_party', packageId: 'mozilla.firefox', version: '130.0' })],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_app_rule' }]);
+  });
+
+  it('an unidentified third-party patch is still allowed with a warning when only the ring has rules', async () => {
+    const config = ringConfig({
+      ringAppRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockEvaluatorReads(
+      [row({ patchId: P1, source: 'third_party', packageId: null })],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot be matched against app rules'));
+    warn.mockRestore();
+  });
+
   it('reports blocked_by_source when the policy sources exclude the patch', async () => {
     mockEvaluatorReads([row({ patchId: P1, source: 'third_party' })], [{ patchId: P1, status: 'approved', ringId: null }]);
     const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig({ sources: ['os'] }) });
@@ -292,6 +351,24 @@ describe('resolveApprovedPatchesForDevice — golden-fixture parity with the pre
       // superseded is NOT excluded on the executor path (parity).
       { patchId: P3, devicePatchId: 'dp-3', externalId: 'KB3', title: 'Three', category: 'security', severity: 'important', requiresReboot: false, approvalReason: 'ring_auto_approve' },
     ]);
+  });
+
+  // #8184: the executor's entry point, not just the config-injected core, must
+  // deny on a ring app rule (the executor tests mock this function).
+  it('drops a manually approved patch blocked by a RING app rule', async () => {
+    mockEvaluatorReads(
+      [
+        row({ patchId: P1, source: 'third_party', packageId: 'Mozilla.Firefox', version: '130.0' }),
+        row({ patchId: P2 }),
+      ],
+      [{ patchId: P1, status: 'approved', ringId: RING }, { patchId: P2, status: 'approved', ringId: RING }],
+    );
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig({
+      sources: ['os', 'third_party'],
+      ringAppRules: [{ source: 'third_party', packageId: 'mozilla.firefox', action: 'block' }],
+      apps: [],
+    }));
+    expect(approved.map((p) => p.patchId)).toEqual([P2]);
   });
 
   it('ignores a ring owned by another partner (cross-partner ring guard) exactly as before', async () => {
@@ -389,5 +466,93 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
     expect(res.ringId).toBeNull();
     expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_source' }]);
+  });
+
+  it("threads the resolved ring's app rules into the live evaluation (#8184)", async () => {
+    mockDevice(true);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
+      settings: {
+        sources: ['os', 'third_party'], autoApprove: false, autoApproveSeverities: [], autoApproveDeferralDays: 0,
+        apps: [{ source: 'custom', packageId: 'acme.tool', action: 'block' }],
+      },
+      ring: {
+        classification: 'valid_ring', valid: true, ringId: RING, ringName: 'Ring A',
+        categoryRules: [], categories: [], excludeCategories: [], autoApprove: {},
+        appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      },
+    }) as never);
+    mockRingRow(0);
+    mockEvaluatorReads(
+      [
+        row({ patchId: P1, source: 'third_party', packageId: 'mozilla.firefox', version: '130.0' }),
+        row({ patchId: P2, source: 'third_party', packageId: 'acme.tool', version: '2.0' }),
+        row({ patchId: P3, source: 'third_party', packageId: 'zoom.zoom', version: '6.0' }),
+      ],
+      [P1, P2, P3].map((patchId) => ({ patchId, status: 'approved', ringId: null })),
+    );
+    const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
+    expect(res.ringId).toBe(RING);
+    // Ring rule (P1) and policy rule (P2) both enforced; the unruled app passes.
+    expect(res.ineligible).toEqual([
+      { patchId: P1, reason: 'blocked_by_app_rule' },
+      { patchId: P2, reason: 'blocked_by_app_rule' },
+    ]);
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P3]);
+  });
+});
+
+describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => {
+  const ringResolution = (o: Record<string, unknown> = {}) => ({
+    classification: 'valid_ring', valid: true, ringId: RING, ringName: 'Ring A',
+    categoryRules: [], categories: [], excludeCategories: [], autoApprove: {},
+    appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    ...o,
+  });
+  const local = (ring: Record<string, unknown>) => ({
+    configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
+    featurePolicyId: RING, sourcePolicyId: 'cp-1', inherited: false,
+    settings: {
+      sources: ['os'], autoApprove: false, autoApproveSeverities: [], autoApproveDeferralDays: 0,
+      apps: [{ source: 'custom', packageId: 'acme.tool', action: 'block' }],
+    },
+    ring,
+  });
+
+  beforeEach(() => {
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+  });
+
+  it('carries ring rules as ringAppRules and policy rules as apps, side by side', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER }]) as never);
+    const config = await resolveDevicePatchEvaluationConfig(DEV);
+    expect(config.ringAppRules).toEqual([{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]);
+    expect(config.apps).toEqual([{ source: 'custom', packageId: 'acme.tool', action: 'block' }]);
+  });
+
+  it('an invalid ring reference carries no ring rules but keeps the policy rules', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+      classification: 'missing_target', valid: false, ringId: null, ringName: null, appRules: [],
+    })) as never);
+    const config = await resolveDevicePatchEvaluationConfig(DEV);
+    expect(config.ringId).toBeNull();
+    expect(config.ringAppRules).toEqual([]);
+    expect(config.apps).toHaveLength(1);
+  });
+
+  it('a ring that vanishes mid-resolution fails closed: no ring rules, policy rules kept', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', []) as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = await resolveDevicePatchEvaluationConfig(DEV);
+    // It took the vanished-ring fail-closed branch, not the happy path.
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('vanished between resolution and read'),
+    }));
+    expect(config.ringId).toBeNull();
+    expect(config.ringAppRules).toEqual([]);
+    expect(config.apps).toHaveLength(1);
+    warn.mockRestore();
   });
 });

@@ -450,6 +450,35 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(parsed.ring).not.toHaveProperty('sources');
     expect(parsed.ring.id).toBe(RING_ID);
   });
+
+  it('manage_update_rings get returns the ring appRules (#8184) — full-row read', async () => {
+    const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring', appRules: rules });
+    const tool = getTool();
+    const output = await tool.handler({ action: 'get', ringId: RING_ID }, makeAuth());
+
+    // No explicit projection: a future one must remember app_rules.
+    expect(selectMock.mock.calls[0]).toEqual([]);
+    expect(JSON.parse(output).ring.appRules).toEqual(rules);
+  });
+
+  it('manage_update_rings create/update do not write appRules yet (#8184 W01: read-only)', async () => {
+    const appRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+    mockInsertReturns({ id: RING_ID, name: 'Ring A' });
+    const tool = getTool();
+    const createOutput = await tool.handler({ action: 'create', name: 'Ring A', appRules }, makeAuth());
+    expect(JSON.parse(createOutput).success).toBe(true);
+    const createdValues = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(createdValues).not.toHaveProperty('appRules');
+
+    vi.clearAllMocks();
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    mockUpdate();
+    const updateOutput = await tool.handler({ action: 'update', ringId: RING_ID, name: 'Ring B', appRules }, makeAuth());
+    expect(JSON.parse(updateOutput).success).toBe(true);
+    const updatedValues = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(updatedValues).not.toHaveProperty('appRules');
+  });
 });
 
 // manage_backup_configs used to write `providerConfig` straight to the DB,

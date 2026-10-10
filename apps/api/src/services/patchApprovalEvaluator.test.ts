@@ -30,6 +30,7 @@ import {
   buildAllowedPatchSources,
   comparePatchVersions,
   evaluateAppRule,
+  evaluateAppRuleSets,
   isCategoryAllowed,
   parseRingAutoApprove,
   decidePatchApproval,
@@ -39,6 +40,7 @@ import {
   type RingConfig,
 } from './patchApprovalEvaluator';
 import { resolveApprovedPatchesForDevice } from './patchEligibility';
+import { canonicalAppRuleKey } from '@breeze/shared';
 
 // Compile-time checks: deprecated alias and exported source list stay usable.
 const _aliasCheck: RingConfig = { ringId: null, categoryRules: [], autoApprove: {}, deferralDays: 0 };
@@ -73,6 +75,41 @@ describe('appRuleKey', () => {
 
   it('keeps non-third-party sources as their own bucket', () => {
     expect(appRuleKey('microsoft', 'SomeId')).toBe('microsoft|someid');
+  });
+});
+
+describe('appRuleKey parity with the shared validator (#8184)', () => {
+  it.each([...THIRD_PARTY_PATCH_SOURCES, 'microsoft', 'apple', 'linux'])('%s keys identically', (source) => {
+    expect(appRuleKey(source, 'Mixed.Case.Id')).toBe(canonicalAppRuleKey(source, 'Mixed.Case.Id'));
+  });
+});
+
+describe('evaluateAppRuleSets (#8184 W01 dual read)', () => {
+  const p = { source: 'third_party', packageId: 'Mozilla.Firefox', version: '130.0' };
+
+  it('blocked in either set wins, regardless of order', () => {
+    const ring = buildAppRuleMap([{ source: 'third_party', packageId: 'mozilla.firefox', action: 'block' }]);
+    const policy = buildAppRuleMap([]);
+    expect(evaluateAppRuleSets(p, [ring, policy])).toBe('blocked');
+    expect(evaluateAppRuleSets(p, [policy, ring])).toBe('blocked');
+  });
+
+  it('blocked beats held, regardless of order', () => {
+    const pin = buildAppRuleMap([{ source: 'third_party', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120' }]);
+    const block = buildAppRuleMap([{ source: 'custom', packageId: 'MOZILLA.FIREFOX', action: 'block' }]);
+    expect(evaluateAppRuleSets(p, [pin, block])).toBe('blocked');
+    expect(evaluateAppRuleSets(p, [block, pin])).toBe('blocked');
+  });
+
+  it('held beats allowed', () => {
+    const pin = buildAppRuleMap([{ source: 'third_party', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120' }]);
+    const roomyPin = buildAppRuleMap([{ source: 'third_party', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '200' }]);
+    expect(evaluateAppRuleSets(p, [roomyPin, pin])).toBe('held');
+  });
+
+  it('allowed only when every set allows (and for no sets at all)', () => {
+    expect(evaluateAppRuleSets(p, [buildAppRuleMap([]), buildAppRuleMap([])])).toBe('allowed');
+    expect(evaluateAppRuleSets(p, [])).toBe('allowed');
   });
 });
 

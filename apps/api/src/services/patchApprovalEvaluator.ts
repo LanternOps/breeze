@@ -21,6 +21,7 @@
  */
 
 import type { PatchIneligibleReason } from '@breeze/shared';
+import { canonicalAppRuleKey, policyAppRuleSchema } from '@breeze/shared/validators';
 import { captureException } from './sentry';
 
 // ============================================
@@ -98,6 +99,13 @@ export interface ApprovalEvaluationConfig {
    * manual per-device installs do not pass through this evaluator.
    */
   apps?: PolicyAppRule[];
+  /**
+   * Update Ring per-app block/pin rules (`patch_policies.app_rules`, #8184).
+   * Evaluated alongside `apps` with the stricter verdict winning
+   * (`evaluateAppRuleSets`); same position in the pipeline and the same
+   * "overrides a manual approval" semantics.
+   */
+  ringAppRules?: PolicyAppRule[];
 }
 
 /** @deprecated Use ApprovalEvaluationConfig — kept for existing importers. */
@@ -288,11 +296,11 @@ export function comparePatchVersions(
  * Canonical lookup key for app rules. The UI presents 'third_party' and
  * 'custom' patch sources as one bucket (manual UI entries hardcode
  * 'third_party'), so both collapse to a canonical 'third_party' key; other
- * sources keep their own key.
+ * sources keep their own key. Delegates to the shared implementation so the
+ * ring app-rule validator's uniqueness check uses the same identity.
  */
 export function appRuleKey(source: string, packageId: string): string {
-  const bucket = isThirdPartyPatchSource(source) ? 'third_party' : source;
-  return `${bucket}|${packageId.toLowerCase()}`;
+  return canonicalAppRuleKey(source, packageId);
 }
 
 /**
@@ -326,6 +334,72 @@ export function evaluateAppRule(
   const cmp = comparePatchVersions(patch.version, rule.pinnedVersion);
   if (cmp === null) return 'held';
   return cmp > 0 ? 'held' : 'allowed';
+}
+
+const APP_RULE_VERDICT_RANK: Record<AppRuleVerdict, number> = { allowed: 0, held: 1, blocked: 2 };
+
+/**
+ * Worst verdict across several rule sets (`blocked` > `held` > `allowed`).
+ * Used while app rules are read from both the Update Ring and the policy link
+ * (#8184): a candidate is denied if either set denies it.
+ */
+export function evaluateAppRuleSets(
+  patch: { source: string; packageId: string | null; version: string | null },
+  maps: AppRuleMap[]
+): AppRuleVerdict {
+  let worst: AppRuleVerdict = 'allowed';
+  for (const m of maps) {
+    const v = evaluateAppRule(patch, m);
+    if (APP_RULE_VERDICT_RANK[v] > APP_RULE_VERDICT_RANK[worst]) worst = v;
+  }
+  return worst;
+}
+
+/**
+ * Normalise a stored app-rule list (a job snapshot key, or a ring's
+ * `app_rules` column) into evaluator rules. Returns null when `raw` is not an
+ * array — the caller decides how to report that.
+ *
+ * Valid entries lose their display-only fields. A malformed entry whose
+ * identity is usable (non-empty `source` + `packageId`) is coerced to `block`:
+ * dropping a restriction would silently widen install scope, so the admin's
+ * intent to restrict that app wins. An entry with no usable identity is
+ * dropped, loudly. `context` prefixes every log line.
+ */
+export function coerceAppRuleList(raw: unknown, context: string): PolicyAppRule[] | null {
+  if (!Array.isArray(raw)) return null;
+  const rules: PolicyAppRule[] = [];
+  for (const entry of raw) {
+    const parsed = policyAppRuleSchema.safeParse(entry);
+    if (parsed.success) {
+      const { source, packageId, action, pinnedVersion } = parsed.data;
+      if (action === 'pin' && pinnedVersion) {
+        rules.push({ source, packageId, action: 'pin', pinnedVersion });
+      } else {
+        // action === 'block' (pin without pinnedVersion is rejected by the schema).
+        rules.push({ source, packageId, action: 'block' });
+      }
+      continue;
+    }
+
+    const e = entry as { source?: unknown; packageId?: unknown } | null;
+    if (
+      e !== null &&
+      typeof e === 'object' &&
+      typeof e.source === 'string' &&
+      e.source.length > 0 &&
+      typeof e.packageId === 'string' &&
+      e.packageId.length > 0
+    ) {
+      console.warn(`${context} coercing malformed app rule to block (fail-closed):`, JSON.stringify(entry));
+      rules.push({ source: e.source, packageId: e.packageId, action: 'block' });
+    } else {
+      const message = `${context} dropping malformed app rule with unusable identity`;
+      console.warn(`${message}:`, JSON.stringify(entry));
+      captureException(new Error(message));
+    }
+  }
+  return rules;
 }
 
 // ============================================

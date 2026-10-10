@@ -48,6 +48,7 @@ vi.mock('../db/schema', () => ({
     excludeCategories: 'excludeCategories',
     autoApprove: 'autoApprove',
     categoryRules: 'categoryRules',
+    appRules: 'appRules',
     targets: 'targets',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
@@ -271,6 +272,28 @@ describe('updateRings routes', () => {
       const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
       expect(projection).not.toHaveProperty('sources');
     });
+
+    it('returns each ring\'s appRules (#8184)', async () => {
+      const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([makeRing({ appRules: rules })])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      expect(projection.appRules).toBe('appRules');
+      const body = await res.json();
+      expect(body.data[0].appRules).toEqual(rules);
+    });
   });
 
   // ----------------------------------------------------------------
@@ -298,6 +321,26 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.name).toBe('Test Ring');
+    });
+
+    it('does not accept appRules on create yet (#8184 W01: read-only) — the insert never sees it', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Ring With Rules',
+          appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const inserted = valuesMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).not.toHaveProperty('appRules');
     });
 
     it('stamps explicit third-party defaults when an old-shape autoApprove omits them on create', async () => {
