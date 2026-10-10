@@ -334,6 +334,8 @@ export const SENTRY_EVENT_CODES = [
   'device_deletion_parent_lock_missing',
   /** Auto edition migration (#4072) dispatched its script to at least one stranded device this process lifetime. */
   'agent_edition_auto_migration_dispatched',
+  /** Auto edition migration (#5016): an org's canary device was dispatched and has not come back on the target edition, so the rest of the org is held. */
+  'agent_edition_auto_migration_canary_unresolved',
 
   // --- mcp transport ----------------------------------------------------
   /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */
