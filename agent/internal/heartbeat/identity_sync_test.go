@@ -300,6 +300,28 @@ func TestApplyIdentityAssertionDoesNotRestartWhenPersistFails(t *testing.T) {
 	}
 }
 
+// Without a marker nothing bounds the restarts: a new process would see no
+// marker, count attempt 1 and restart again, forever, for an identity that an
+// environment override keeps from taking effect. So no marker, no restart.
+func TestApplyIdentityAssertionDoesNotRestartWithoutARestartMarker(t *testing.T) {
+	s := withIdentitySeams(t, nil)
+	s.markerPath = filepath.Join(t.TempDir(), "missing-dir", identityRestartMarkerFile)
+	h := identityTestHeartbeat()
+
+	if h.applyIdentityAssertion(goldenAssertion()) {
+		t.Fatal("reported a pending restart although the restart marker could not be recorded")
+	}
+	expectNoRestart(t, s, 50*time.Millisecond)
+	if s.persisted.Load() != 1 {
+		t.Fatalf("the new identity should still be persisted for the next start: %d", s.persisted.Load())
+	}
+	// The gate is released and the same identity is not retried in this process.
+	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 1 {
+		t.Fatalf("retried an identity whose restart cannot be bounded: persisted=%d", s.persisted.Load())
+	}
+	expectNoRestart(t, s, 50*time.Millisecond)
+}
+
 func writeIdentityTestMarker(t *testing.T, path string, m identityRestartMarker) {
 	t.Helper()
 	raw, err := json.Marshal(m)
