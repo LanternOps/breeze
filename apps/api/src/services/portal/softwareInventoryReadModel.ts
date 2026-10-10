@@ -32,6 +32,14 @@ const orgCondition = (orgId: string) => and(
   eq(devices.isEphemeral, false),
 );
 
+// The complete GROUP BY tuple is the unique key of each summary row.
+// Keep this named ordering summary-only: device rows still need their own id.
+const SUMMARY_GROUP_ORDER = [
+  asc(softwareInventory.name),
+  asc(softwareInventory.version),
+  asc(softwareInventory.vendor),
+];
+
 export async function softwareInventorySummary(orgId: string, args: PageArgs) {
   const [totals, rows] = await Promise.all([
     db.select({ total: sql<number>`count(distinct (${softwareInventory.name}, ${softwareInventory.version}, ${softwareInventory.vendor}))::int` })
@@ -49,7 +57,7 @@ export async function softwareInventorySummary(orgId: string, args: PageArgs) {
       .innerJoin(devices, eq(devices.id, softwareInventory.deviceId))
       .where(orgCondition(orgId))
       .groupBy(softwareInventory.name, softwareInventory.version, softwareInventory.vendor)
-      .orderBy(asc(softwareInventory.name), asc(softwareInventory.version), asc(softwareInventory.vendor))
+      .orderBy(...SUMMARY_GROUP_ORDER)
       .limit(args.limit).offset((args.page - 1) * args.limit),
   ]);
   const total = totals[0]?.total ?? 0;

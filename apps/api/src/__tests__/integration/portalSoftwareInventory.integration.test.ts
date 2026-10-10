@@ -73,6 +73,48 @@ describe('W04 software inventory real PostgreSQL isolation', () => {
     const emptyPage = await withDbAccessContext(ca, () => softwareInventoryDevicePage(a.id, da, { ...args, page: 3, limit: 1 }));
     expect(emptyPage!.data).toEqual([]); expect(emptyPage!.dataStatus).toBe('ok');
   });
+  it('walks grouped summary pages without repeats or omissions across tied names and nullable keys', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const firstDevice = await seed(org.id, site.id, 'Example');
+    const secondDevice = await seed(org.id, site.id, 'Example');
+    // Every name ties; version and vendor (including NULLS LAST) distinguish
+    // the groups. Duplicate each tuple across devices to guard deduplication.
+    const groups = [
+      { name: 'Example', version: '1', vendor: 'A' },
+      { name: 'Example', version: '1', vendor: 'Vendor' },
+      { name: 'Example', version: '1', vendor: null },
+      { name: 'Example', version: '2', vendor: 'Vendor' },
+      { name: 'Example', version: null, vendor: 'Vendor' },
+      { name: 'Example', version: null, vendor: null },
+    ];
+    const latest = new Date('2026-10-11T04:00:00Z');
+    await getTestDb().insert(softwareInventory).values([...groups].reverse().flatMap((group) => [
+      { ...group, orgId: org.id, deviceId: firstDevice, installDate: '2026-09-30', lastSeen: NOW },
+      { ...group, orgId: org.id, deviceId: secondDevice, installDate: '2026-10-02', lastSeen: latest },
+    ]));
+    const expected = groups.map((group) => ({
+      ...group, installDate: '2026-09-30', lastSeen: latest.toISOString(),
+    }));
+    const orgContext = context(org.id, partner.id);
+    for (const limit of [1, 2]) {
+      const walked = [];
+      for (let page = 1; page <= Math.ceil(groups.length / limit); page++) {
+        const result = await withDbAccessContext(orgContext, () =>
+          softwareInventorySummary(org.id, { ...args, page, limit }));
+        expect(result.pagination).toEqual({ page, limit, total: groups.length });
+        expect(result.data).toEqual(expected.slice((page - 1) * limit, page * limit));
+        walked.push(...result.data);
+      }
+      expect(walked).toEqual(expected);
+      const beyond = await withDbAccessContext(orgContext, () =>
+        softwareInventorySummary(org.id, { ...args, page: Math.ceil(groups.length / limit) + 1, limit }));
+      expect(beyond.data).toEqual([]);
+      expect(beyond.pagination.total).toBe(groups.length);
+      expect(beyond.dataStatus).toBe('ok');
+    }
+  });
   it('defaults the visibility flag to false for new portal settings', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
