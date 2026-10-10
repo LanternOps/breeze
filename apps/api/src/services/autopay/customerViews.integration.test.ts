@@ -92,6 +92,9 @@ describe('customer token and return ownership against PostgreSQL', () => {
       // The failure page names nobody for a partner that is not active.
       await system(() => db.update(billingLinkTokens).set({ expiresAt: new Date(0) }).where(eq(billingLinkTokens.id, f.link.id)));
       expect(await describeAutopayLinkFailure(f.link.token, 'enroll')).toEqual({ error: expect.any(String), code: 'link_invalid' });
+      // A stop link's page still says why it cannot be used.
+      await system(() => db.update(billingLinkTokens).set({ expiresAt: new Date(0) }).where(eq(billingLinkTokens.id, stop.id)));
+      expect(await describeAutopayLinkFailure(stop.token, 'stop_autopay')).toMatchObject({ code: 'link_expired' });
     },
   );
 

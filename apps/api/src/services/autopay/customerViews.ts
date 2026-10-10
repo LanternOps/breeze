@@ -102,7 +102,8 @@ export async function describeAutopayLinkFailure(token:string,purpose:BillingLin
     const {row,failure}=await inspectBillingLinkToken(db,token,purpose);
     if(!row)return invalid;
     const [org]=await db.select().from(organizations).where(and(eq(organizations.id,row.orgId),isNull(organizations.deletedAt),
-      inArray(organizations.status,['active','trial']),autopayPartnerLiveCondition(organizations.partnerId))).limit(1);
+      inArray(organizations.status,['active','trial']),
+      CHARGE_REDUCING_PURPOSES.includes(purpose)?undefined:autopayPartnerLiveCondition(organizations.partnerId))).limit(1);
     if(!org||org.id!==row.orgId||org.deletedAt||!['active','trial'].includes(org.status))return invalid;
     const [enrollment]=row.enrollmentId?await db.select().from(orgAutopayEnrollments).where(and(
       eq(orgAutopayEnrollments.id,row.enrollmentId),eq(orgAutopayEnrollments.orgId,org.id))).limit(1):[];

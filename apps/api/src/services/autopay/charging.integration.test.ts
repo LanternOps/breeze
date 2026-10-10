@@ -2445,6 +2445,16 @@ it.each(['suspended','deleted'] as const)('reconcile does not create a payment f
  expect(provider.create).not.toHaveBeenCalled();expect(provider.confirm).not.toHaveBeenCalled();
  expect((await attempts(f.invoice.id))[0]?.state).toBe('reserved');
 });
+it('a client or MSP control releases a reservation of a suspended partner without creating a payment',async()=>{
+ const f=await fixture();
+ const reserved=await reserveCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
+ if(!('attempt' in reserved))throw new Error('expected a reservation');
+ await makePartnerInactive(f,'suspended');
+ provider.search.mockResolvedValue({data:[],has_more:false});
+ await resumeCollectionAttempt(reserved.attempt.id,true);
+ expect(provider.create).not.toHaveBeenCalled();expect(provider.search).toHaveBeenCalledOnce();
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'provider_create_not_found'});
+});
 it('reconcile cancels, never confirms, a created payment once the partner is suspended',async()=>{
  const f=await fixture();
  provider.confirm.mockRejectedValueOnce(new Error('connection reset'));

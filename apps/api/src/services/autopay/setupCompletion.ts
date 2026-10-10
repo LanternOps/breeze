@@ -71,6 +71,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const wasPending=attempt.outcome==='pending_verification';
   // A partner that is no longer active saves no method and activates nothing (same as an org that is not live).
   const partnerLive=await hasLiveAutopayPartner(db,attempt.partnerId);
+  if(!partnerLive)console.warn('[autopay] Setup not saved: partner is not active',{attemptId:attempt.id,orgId:attempt.orgId,partnerId:attempt.partnerId});
   // A newly accepted update may finish while paused; a capture started before the pause cannot.
   const pausedUpdate=enrollment?.status==='paused'&&!!enrollment.pausedAt&&!!attempt.tokenId&&
    attempt.source==='setup_page'&&attempt.createdAt>enrollment.pausedAt;
