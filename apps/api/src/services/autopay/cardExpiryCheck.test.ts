@@ -1,5 +1,5 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
-const h=vi.hoisted(()=>({rows:[] as unknown[][],mint:vi.fn(),enqueue:vi.fn(),render:vi.fn(),disclosure:vi.fn()}));
+const h=vi.hoisted(()=>({rows:[] as unknown[][],mint:vi.fn(),enqueue:vi.fn(),render:vi.fn(),disclosure:vi.fn(),chargeable:vi.fn(async()=>true)}));
 vi.mock('../../db',()=>({runOutsideDbContext:(fn:()=>unknown)=>fn(),withSystemDbAccessContext:(fn:()=>unknown)=>fn(),db:{
   select:()=>{const q:any={};for(const key of ['from','innerJoin','where','limit','for'])q[key]=()=>q;
     q.then=(f:(x:unknown)=>unknown)=>Promise.resolve(h.rows.shift()??[]).then(f);return q;},
@@ -8,6 +8,7 @@ vi.mock('./linkTokens',()=>({mintBillingLinkToken:h.mint,buildBillingLinkUrl:(_p
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:h.enqueue}));
 vi.mock('./renderBillingNotice',()=>({renderBillingNotice:h.render}));
 vi.mock('./consentText',()=>({buildAutopayDisclosure:h.disclosure}));
+vi.mock('./autopayGate',async importOriginal=>({...await importOriginal<typeof import('./autopayGate')>(),isAutopayEnabledForPartner:h.chargeable}));
 import {checkExpiringAutopayCards,isCardExpiring} from './cardExpiryCheck';
 const methodId='11111111-1111-4111-8111-111111111111';
 const row={method:{id:methodId,orgId:'22222222-2222-4222-8222-222222222222',enrollmentId:'33333333-3333-4333-8333-333333333333',type:'card',cardBrand:'visa',cardLast4:'1234',cardExpYear:2026,cardExpMonth:10},
@@ -30,6 +31,13 @@ describe('autopay card expiry',()=>{
   it('does not mint another token or send another message on a repeated daily run',async()=>{
     h.rows.push([row],[row.org],[row.enrollment],[row.method],[{id:'66666666-6666-4666-8666-666666666666'}]);
     expect(await checkExpiringAutopayCards(new Date('2026-10-03T06:28:00Z'))).toEqual({enqueued:0});
+    expect(h.mint).not.toHaveBeenCalled();expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it('skips a partner that stopped being active after the candidate read',async()=>{
+    h.chargeable.mockResolvedValueOnce(false);
+    h.rows.push([row],[row.org]);
+    expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:0});
+    expect(h.chargeable).toHaveBeenCalledWith(expect.anything(),row.org.partnerId);
     expect(h.mint).not.toHaveBeenCalled();expect(h.enqueue).not.toHaveBeenCalled();
   });
   it('skips a method removed after the candidate read',async()=>{

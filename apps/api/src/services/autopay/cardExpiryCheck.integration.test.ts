@@ -29,13 +29,16 @@ describe('concurrent card expiry checks',()=>{
     expect(await checkExpiringAutopayCards(new Date('2026-10-03T06:28:00Z'))).toEqual({enqueued:0});
   });
 });
-it.each(['disabled partner','paused enrollment','bank method','suspended org','deleted org'])('excludes %s while retaining a happy-path control',async excluded=>{
+it.each(['disabled partner','suspended partner','churned partner','deleted partner','paused enrollment','bank method','suspended org','deleted org'])('excludes %s while retaining a happy-path control',async excluded=>{
  const testDb=getTestDb();
  const ids:string[]=[];
  for(const skip of [false,true]){
   const partner=await createPartner(),org=await createOrganization({partnerId:partner.id});ids.push(org.id);
   await testDb.update(partners).set({autopayEnabled:!(skip&&excluded==='disabled partner')}).where(eq(partners.id,partner.id));
   const {organizations}=await import('../../db/schema');
+  if(skip&&excluded==='suspended partner')await testDb.update(partners).set({status:'suspended'}).where(eq(partners.id,partner.id));
+  if(skip&&excluded==='churned partner')await testDb.update(partners).set({status:'churned'}).where(eq(partners.id,partner.id));
+  if(skip&&excluded==='deleted partner')await testDb.update(partners).set({deletedAt:new Date()}).where(eq(partners.id,partner.id));
   if(skip&&excluded==='suspended org')await testDb.update(organizations).set({status:'suspended'}).where(eq(organizations.id,org.id));
   if(skip&&excluded==='deleted org')await testDb.update(organizations).set({deletedAt:new Date()}).where(eq(organizations.id,org.id));
   const [connection]=await testDb.insert(stripeConnectAccounts).values({partnerId:partner.id,stripeAccountId:`acct_${randomUUID()}`,apiKey:'enc:synthetic',keyLast4:'test'}).returning();
