@@ -171,11 +171,14 @@ const NEXT_BEAT_MS = 61_000;
  * read this one constant (#8142 W03 lowered it from 3).
  */
 const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 2;
-// #8142 — measured in Task 9 and pinned.
+// #8142 — measured in Task 9 and pinned. Each statement figure below that
+// misses the workload settings cache includes #8190's one workload-inventory
+// policy read (bucket workloadInventoryPolicy), re-measured after the rebase
+// onto #8221: cold 47 -> 48, caches-miss 20 -> 21, configured 21 -> 22.
 const COLD_TX = 7;
-const COLD_STATEMENTS = 47;
-const CACHES_MISS_STATEMENTS = 20;
-const CONFIGURED_STEADY_STATEMENTS = 21;
+const COLD_STATEMENTS = 48;
+const CACHES_MISS_STATEMENTS = 21;
+const CONFIGURED_STEADY_STATEMENTS = 22;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
 // so a regression names itself instead of showing up as "statements 31 > 26".
@@ -199,7 +202,9 @@ const BUCKET_MATCHERS = {
   automationPolicies: (s: string) => s.includes('from "automation_policies"'),
   // #8190: the workload-inventory resolver's single policy read. It rides the
   // passed hierarchy (no device/org/group reads of its own) and runs only on a
-  // workload settings-cache miss.
+  // workload settings-cache miss. Not yet folded into the #8142 policy set, so
+  // it reads config_policy_assignments itself; it sits ABOVE
+  // perFeatureAssignmentRead (first match wins) so it is counted here, by name.
   workloadInventoryPolicy: (s: string) => s.includes('"config_policy_workload_inventory_settings"'),
   // #8142: the one-statement policy set, and anything that still reads
   // assignments per feature (must be 0 on every beat shape with a set).
@@ -487,8 +492,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
   [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
   // #8142 W03 (2026-10-10): one policy-set read in one org-scoped post-commit
-  // context. Was 4 tx / 31 statements.
-  'POST /agents/:id/heartbeat': { transactions: 3, statements: 19 },
+  // context. Was 4 tx / 31 statements. 19 -> 20: #8190's workload-inventory
+  // policy read (bucket workloadInventoryPolicy) on a workload cache miss.
+  'POST /agents/:id/heartbeat': { transactions: 3, statements: 20 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
@@ -807,8 +813,13 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     //   steady 14 statements / 2 tx (was 26 / 3), warm 14 / 2 (was 20 / 3),
     //   cold 47 / 7 (was 57 / 8).
     // Pinned at the measured value, not "plus one": a new statement reds this.
+    // Rebased onto #8221: steady 14 -> 15 and cold 47 -> 48 for #8190's
+    // workload-inventory policy read (bucket workloadInventoryPolicy), which
+    // runs on a workload settings-cache miss; warm is a Redis hit and stays 14.
     expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
-    expect(steady.statements).toBeLessThanOrEqual(14);
+    expect(steady.statements).toBeLessThanOrEqual(15);
+    expect(steady.buckets.workloadInventoryPolicy).toBe(1);
+    expect(warm.buckets.workloadInventoryPolicy).toBe(0);
     expect(warm.transactions).toBe(2);
     expect(warm.statements).toBeLessThanOrEqual(14);
     expect(cold.transactions).toBeLessThanOrEqual(COLD_TX);
@@ -987,7 +998,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);
     expect(steady.buckets.perFeatureAssignmentRead).toBe(0);
-    expect(steady.statements).toBeLessThanOrEqual(16);
+    // 16 -> 17: #8190's workload-inventory policy read (workload cache miss).
+    expect(steady.statements).toBeLessThanOrEqual(17);
   });
 
   // Both guards assert the same invariant from two directions: a REAL SQL error
@@ -1258,7 +1270,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.monitoring_settings).toEqual({ check_interval_seconds: 60, watches: [] });
     expect(steady.buckets.monitoringSecondary).toBe(0);
     expect(steady.transactions).toBe(2);
-    expect(steady.statements).toBeLessThanOrEqual(14);
+    // 14 -> 15: #8190's workload-inventory policy read (workload cache miss).
+    expect(steady.statements).toBeLessThanOrEqual(15);
   });
 
   runDb('cross-tenant assignments forged onto this device never reach its heartbeat (#8142)', async () => {

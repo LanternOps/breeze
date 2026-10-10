@@ -15,7 +15,7 @@ import {
   devices,
   organizations,
 } from '../../db/schema';
-import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../configPolicyOwnership';
+import { policyOwnershipCondition } from '../configPolicyOwnership';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { buildRoleOsFilterConditions, matchesRoleOsFilter } from '../featureConfigResolver';
 import { getRedis } from '../redis';
@@ -45,10 +45,12 @@ const cacheSchema = z
  * lowest priority number, then oldest assignment. No applicable policy yields
  * the defaults — enabled: false — so removing a policy turns enumeration off.
  *
- * Runs under BOTH the heartbeat's system context and an agent's org-scoped
- * ingest context. An org-scoped caller cannot see partner-wide policy rows
- * unless visibility is widened to the device's own partner; partnerId comes
- * from the org row read here under the caller's RLS context, never from input.
+ * Runs under the heartbeat's org-scoped policy context, an agent's
+ * org-scoped ingest context, and user contexts (device view). It reads in the
+ * caller's own context (#8142): config_policy_workload_inventory_settings
+ * carries the SELECT-only partner-wide branch, so a context with
+ * currentPartnerId sees its own partner's partner-wide rows without widening
+ * accessible_partner_ids.
  *
  * The heartbeat passes the device hierarchy it already loaded once per beat
  * (#8053 W1a-1, services/deviceHierarchy.ts); with it this is one statement.
@@ -107,43 +109,41 @@ export async function resolveDeviceWorkloadInventorySettings(
       ),
     );
   }
-  const rows = await withDevicePartnerPolicyVisibility(db, org?.partnerId ?? null, (executor) =>
-    executor
-      .select({
-        level: configPolicyAssignments.level,
-        assignmentPriority: configPolicyAssignments.priority,
-        assignmentCreatedAt: configPolicyAssignments.createdAt,
-        roleFilter: configPolicyAssignments.roleFilter,
-        osFilter: configPolicyAssignments.osFilter,
-        enabled: configPolicyWorkloadInventorySettings.enabled,
-        dockerEnabled: configPolicyWorkloadInventorySettings.dockerEnabled,
-        podmanEnabled: configPolicyWorkloadInventorySettings.podmanEnabled,
-        hypervEnabled: configPolicyWorkloadInventorySettings.hypervEnabled,
-        proxmoxEnabled: configPolicyWorkloadInventorySettings.proxmoxEnabled,
-        intervalMinutes: configPolicyWorkloadInventorySettings.intervalMinutes,
-      })
-      .from(configPolicyAssignments)
-      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-      .innerJoin(
-        configPolicyEffectiveFeatureLinks,
-        and(
-          eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-          eq(configPolicyEffectiveFeatureLinks.featureType, 'workload_inventory'),
-        ),
-      )
-      .innerJoin(
-        configPolicyWorkloadInventorySettings,
-        eq(configPolicyWorkloadInventorySettings.featureLinkId, configPolicyEffectiveFeatureLinks.id),
-      )
-      .where(
-        and(
-          eq(configurationPolicies.status, 'active'),
-          policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
-          or(...targets),
-          ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-        ),
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+      enabled: configPolicyWorkloadInventorySettings.enabled,
+      dockerEnabled: configPolicyWorkloadInventorySettings.dockerEnabled,
+      podmanEnabled: configPolicyWorkloadInventorySettings.podmanEnabled,
+      hypervEnabled: configPolicyWorkloadInventorySettings.hypervEnabled,
+      proxmoxEnabled: configPolicyWorkloadInventorySettings.proxmoxEnabled,
+      intervalMinutes: configPolicyWorkloadInventorySettings.intervalMinutes,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'workload_inventory'),
       ),
-  );
+    )
+    .innerJoin(
+      configPolicyWorkloadInventorySettings,
+      eq(configPolicyWorkloadInventorySettings.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+    )
+    .where(
+      and(
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+        or(...targets),
+        ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
+      ),
+    );
   const eligible = rows.filter((row) => matchesRoleOsFilter(row, device));
   eligible.sort(
     (a, b) =>

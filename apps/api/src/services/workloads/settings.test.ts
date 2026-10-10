@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
   rows: [] as unknown[][],
   statements: 0,
   redis: null as null | { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> },
+  widenedTo: [] as unknown[],
 }));
 vi.mock('../../db', () => {
   // A query takes its canned rows (and counts as a statement) when awaited.
@@ -24,7 +25,10 @@ vi.mock('../configPolicyOwnership', async () => {
   const { db } = await import('../../db');
   return {
     policyOwnershipCondition: () => undefined,
-    withDevicePartnerPolicyVisibility: async (_db: unknown, _partnerId: unknown, fn: (executor: unknown) => unknown) => fn(db),
+    withDevicePartnerPolicyVisibility: async (_db: unknown, partnerId: unknown, fn: (executor: unknown) => unknown) => {
+      m.widenedTo.push(partnerId);
+      return fn(db);
+    },
   };
 });
 vi.mock('../featureConfigResolver', () => ({
@@ -70,6 +74,7 @@ const missRows = (policies: unknown[]) => [
 beforeEach(() => {
   m.rows = [];
   m.statements = 0;
+  m.widenedTo = [];
   m.redis = { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue('OK') };
 });
 
@@ -123,6 +128,12 @@ it('maps the winning policy row onto the settings', async () => {
     proxmoxEnabled: true,
     intervalMinutes: 30,
   });
+});
+
+it('reads in the caller\'s own context: no accessible_partner_ids widening (#8142)', async () => {
+  m.rows = missRows([policyRow({ level: 'partner' })]);
+  expect((await getDeviceWorkloadInventorySettings(DEVICE)).settings.enabled).toBe(true);
+  expect(m.widenedTo).toEqual([]);
 });
 
 it('the nearer level wins over a partner-wide policy even when the partner-wide one is enabled', async () => {
