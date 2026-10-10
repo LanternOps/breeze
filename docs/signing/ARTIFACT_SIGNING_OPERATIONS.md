@@ -20,19 +20,57 @@ Maintain trusted publisher reputation for public customer distribution.
 4. Sign all public Windows artifacts (EXE and MSI) and timestamp signatures.
 5. Keep prerelease/test signing separate from production signing.
 
-### Current repo wiring (Windows)
+### Where signing secrets live
 
-Release pipeline already expects this model in `.github/workflows/release.yml`:
-- GitHub environments:
-  - `signing-production`
-  - `signing-prerelease`
-- Secrets:
-  - `AZURE_CLIENT_ID`
-  - `AZURE_TENANT_ID`
-  - `AZURE_SIGNING_ENDPOINT`
-  - `AZURE_SIGNING_ACCOUNT_NAME`
-  - `AZURE_CERT_PROFILE_PROD`
-  - `AZURE_CERT_PROFILE_PRERELEASE`
+Every secret that signs a released artifact, or lets a job sign one, is a
+GitHub **environment secret** in `signing-production` and/or
+`signing-prerelease`. None of them is a repository secret. Both environments
+restrict deployments to `v*` tags, so only a tag release job can read them.
+
+Each `release.yml` job that reads one declares the environment with the same
+selector the Windows signing jobs use:
+
+```yaml
+environment:
+  name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+```
+
+A prerelease tag (`vX.Y.Z-rc.N`, anything with a `-`) runs in
+`signing-prerelease`; every other `v*` tag runs in `signing-production`. A
+secret both kinds of release need must therefore be set in **both**
+environments under the same name.
+
+| Secret | `signing-production` | `signing-prerelease` | Read by (`release.yml` jobs) |
+|---|---|---|---|
+| `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` | yes | yes | `create-release` |
+| `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY` | yes | yes | `create-release` |
+| `TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one) | yes | yes | `build-viewer`, `build-viewer-macos`, `package-windows-updater` |
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_INSTALLER_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | yes | yes | `build-macos-agent`, `build-macos-installer-app`, `build-viewer-macos`, `build-helper-macos` |
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME` | yes | yes | `sign-windows-tauri-azure` |
+| `AZURE_CERT_PROFILE_PROD` | yes | — | `sign-windows-tauri-azure` (stable tags) |
+| `AZURE_CERT_PROFILE_PRERELEASE` | — | yes | `sign-windows-tauri-azure` (prerelease tags) |
+| `SSLCOM_*` (six secrets, `SSLCOM_ENVIRONMENT_LABEL` set to the environment's own name) | yes | yes | `sign-windows-tauri-sslcom` |
+
+The release-manifest **public** keys (`RELEASE_MANIFEST_ED25519_PUBLIC_KEY`,
+`RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY`) stay repository secrets: release
+promotion (`release-promotion.yml`, `promote-release-images.yml`) and the
+verification steps in `classify-release`, `carry-forward-binaries` and
+`promote-signed-release-images` read them outside the signing environments.
+They are public values, also committed under `internal/release-keys/`.
+
+Azure Trusted Signing authenticates through OIDC, so the secret scope above is
+only half of the control: the Entra app's federated credentials should name the
+environments (`repo:LanternOps/breeze:environment:signing-production` and
+`...:environment:signing-prerelease`), not a branch or a bare repository.
+
+Developer builds (`dev-build-agent.yml`) are unsigned. A signed macOS build
+for testing comes from a prerelease tag through `release.yml`.
+
+`.github/scripts/check-workflow-security.mjs` (rule
+`signing-secrets-must-use-signing-environment`, run by CI through
+`pnpm test:workflow-security`) fails any workflow job that names one of these
+secrets — or reads the whole secrets context, a dynamic `secrets[...]` index,
+or `secrets: inherit` — without declaring one of the two signing environments.
 
 Windows signing references:
 - Workflow: `.github/workflows/release.yml`
@@ -67,10 +105,10 @@ operator tooling and with a raw Ed25519 signature that the API can verify in
 Node.js before wrapping release assets. The tag release job fails closed unless
 these GitHub secrets are configured:
 
-- `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY`
-- `RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY`
-- `RELEASE_MANIFEST_ED25519_PRIVATE_KEY`
-- `RELEASE_MANIFEST_ED25519_PUBLIC_KEY`
+- `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY` (environment secret, both signing environments)
+- `RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY` (repository secret)
+- `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` (environment secret, both signing environments)
+- `RELEASE_MANIFEST_ED25519_PUBLIC_KEY` (repository secret)
 
 The Ed25519 private key secret must be a base64 PKCS#8 DER private key or PEM
 private key. The Ed25519 public key secret should be the base64 raw 32-byte
@@ -97,9 +135,9 @@ The manifest covers every released artifact with:
    Developer ID notarization.
 
 The manifest key must be separate from platform signing keys and usable by
-non-interactive CI signing. If the private key is stored as a GitHub secret,
-restrict it to the protected tag release environment and plan migration to an
-external/HSM-backed signer.
+non-interactive CI signing. The private keys are stored only as environment
+secrets of the tag-restricted signing environments (see "Where signing secrets
+live" above); plan migration to an external/HSM-backed signer.
 
 API fallback wrapping enforces the signed manifest when one of these API
 environment variables is configured with one or more comma-separated Ed25519

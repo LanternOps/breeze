@@ -85,17 +85,17 @@ go-winres make → go build (with .syso) → sign .exe → wix build → sign .m
     timestamp-digest: SHA256
 ```
 
-Recommended environment setup in GitHub:
-- `signing-production` environment: holds production profile secret(s), requires reviewer approval.
-- `signing-prerelease` environment: holds prerelease profile secret(s), lower-friction approvals.
+GitHub environments (both restricted to `v*` tag deployments):
+- `signing-production` environment: stable tags; holds the production profile secret.
+- `signing-prerelease` environment: prerelease tags (`vX.Y.Z-rc.N`); holds the prerelease profile secret.
 
-Secrets used by the current release workflow:
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-- `AZURE_SIGNING_ENDPOINT`
-- `AZURE_SIGNING_ACCOUNT_NAME`
-- `AZURE_CERT_PROFILE_PROD`
-- `AZURE_CERT_PROFILE_PRERELEASE`
+Secrets used by the current release workflow — all **environment** secrets,
+none at repository level (full table: `ARTIFACT_SIGNING_OPERATIONS.md` →
+"Where signing secrets live"):
+- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME` — both environments
+- `AZURE_CERT_PROFILE_PROD` — `signing-production`
+- `AZURE_CERT_PROFILE_PRERELEASE` — `signing-prerelease`
+- `SSLCOM_*` — both environments, each with its own values
 
 **For traditional OV/EV certs:**
 - Use `signtool.exe` (Windows SDK) or `osslsigncode` (cross-platform)

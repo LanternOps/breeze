@@ -5,8 +5,17 @@ These are the keys the GitHub release workflow uses to sign every release's
 
 | Algorithm | Public key file | Private key | Verifier |
 |---|---|---|---|
-| Ed25519 (raw) | `release-manifest.ed25519.pub` | GitHub secret `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` | The Breeze agent (embedded) and the API |
-| Minisign | `release-manifest.minisign.pub` | GitHub secret `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY` | Minisign verifiers (humans, CI checks) |
+| Ed25519 (raw) | `release-manifest.ed25519.pub` | Environment secret `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` (`signing-production` + `signing-prerelease`) | The Breeze agent (embedded) and the API |
+| Minisign | `release-manifest.minisign.pub` | Environment secret `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY` (`signing-production` + `signing-prerelease`) | Minisign verifiers (humans, CI checks) |
+
+The private keys are GitHub **environment** secrets, set in both the
+`signing-production` and `signing-prerelease` environments — not repository
+secrets. Only the `create-release` job in `release.yml` reads them, and it
+declares one of those environments, whose deployment policy admits `v*` tags
+alone. The public keys
+(`RELEASE_MANIFEST_*_PUBLIC_KEY`) stay repository secrets because promotion and
+verification jobs outside the signing environments read them. See
+`docs/signing/ARTIFACT_SIGNING_OPERATIONS.md` → "Where signing secrets live".
 
 The local `.key` files are gitignored copies of the GitHub secrets used for
 local signing experiments — never commit them.

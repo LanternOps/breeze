@@ -18,6 +18,7 @@ const WINDOWS_SIGNING_PUBLISHER_RULE = 'windows-signing-must-assert-publisher';
 const WINDOWS_SIGNING_RELEASE_GATE_RULE = 'windows-signing-gate-must-block-release';
 const WINDOWS_SIGNING_ARTIFACT_PARITY_RULE = 'windows-signing-providers-must-cover-same-artifacts';
 const SSLCOM_SIGNING_TOOLCHAIN_RULE = 'sslcom-signing-must-pin-toolchain';
+const SIGNING_ENVIRONMENT_RULE = 'signing-secrets-must-use-signing-environment';
 const TAURI_SIGNED_ARTIFACT_MARKER = 'breeze-viewer-windows.msi';
 const TAURI_SIGNED_ARTIFACT_RE = /breeze-[a-z0-9-]+-windows\.msi/gu;
 const PROVIDER_RESOLVER_SCRIPT = '.github/scripts/resolve-windows-signing-provider.mjs';
@@ -42,6 +43,30 @@ const SSLCOM_SECRETS = [
   'SSLCOM_CERT_SHA256',
   'SSLCOM_ENVIRONMENT_LABEL',
 ];
+// Secrets that sign, or let a job sign, a released artifact. They live only in
+// the signing-production / signing-prerelease environments, whose deployment
+// policy admits v* tags alone, so every job that names one must declare one of
+// those environments. Public keys are deliberately absent: verification jobs on
+// branches and in promotion workflows read them.
+const PROTECTED_SIGNING_SECRET_RE = new RegExp(
+  '\\bsecrets\\.('
+  + [
+    'RELEASE_MANIFEST_ED25519_PRIVATE_KEY',
+    'RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY',
+    'TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?',
+    'APPLE_[A-Za-z0-9_]+',
+    'AZURE_(?:CLIENT_ID|TENANT_ID|SIGNING_[A-Za-z0-9_]+|CERT_PROFILE_[A-Za-z0-9_]+)',
+    'SSLCOM_[A-Za-z0-9_]+',
+  ].join('|')
+  + ')\\b',
+  'gu',
+);
+// Access that can reach any secret, including the protected ones.
+const WHOLE_SECRET_CONTEXT_RE = /\btojson\(secrets\)|\bsecrets\[/iu;
+const SIGNING_ENVIRONMENTS = new Set(['signing-production', 'signing-prerelease']);
+// The release workflow's selector: prerelease tags (with a '-') sign in
+// signing-prerelease, every other tag in signing-production.
+const SIGNING_ENVIRONMENT_SELECTOR = "${{contains(github.ref_name,'-')&&'signing-prerelease'||'signing-production'}}";
 
 function stripInlineComment(line) {
   let quote = null;
@@ -1343,6 +1368,140 @@ function publicReleaseSigningViolations(file, lines) {
   return violations;
 }
 
+// The job-level `environment:` name, in any of its three spellings: a scalar,
+// a block mapping with `name:`, or a flow mapping. A `url:`-only mapping has no
+// name and returns null.
+function jobEnvironmentName(job) {
+  const { lines } = job;
+  for (const [index, line] of lines.entries()) {
+    if (line.isBlockScalarContent || parentLineIndex(lines, index) !== 0) {
+      continue;
+    }
+    const entry = mappingEntry(line.trimmed);
+    if (entry?.key !== 'environment') {
+      continue;
+    }
+    if (entry.value.startsWith('{')) {
+      const name = flowMappingEntries(entry.value).find(({ key }) => key === 'name');
+      return name ? unquote(name.value) : null;
+    }
+    if (entry.value !== '') {
+      return unquote(entry.value);
+    }
+    for (let nestedIndex = index + 1; nestedIndex < lines.length; nestedIndex += 1) {
+      const nested = lines[nestedIndex];
+      if (nested.indent <= line.indent) {
+        break;
+      }
+      if (nested.isBlockScalarContent || parentLineIndex(lines, nestedIndex) !== index) {
+        continue;
+      }
+      const child = mappingEntry(nested.trimmed);
+      if (child?.key === 'name') {
+        return /^[>|][0-9+-]*$/u.test(child.value)
+          ? blockScalarValue(lines, nestedIndex)
+          : unquote(child.value);
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+function isSigningEnvironment(name) {
+  if (name === null) {
+    return false;
+  }
+  return (
+    SIGNING_ENVIRONMENTS.has(name.trim())
+    || name.replace(/\s+/gu, '') === SIGNING_ENVIRONMENT_SELECTOR
+  );
+}
+
+// Protected secret names (or a whole-context marker) referenced on one line,
+// folding a block scalar into its opening line so a reference split across
+// folded lines is still seen.
+function protectedSigningReferences(lines, index) {
+  const line = lines[index];
+  const scalar = normalizePropertyAccess(
+    line.isBlockScalarContent
+      ? line.content
+      : `${line.content} ${blockScalarValue(lines, index)}`,
+  );
+  const found = new Set(
+    [...scalar.matchAll(PROTECTED_SIGNING_SECRET_RE)].map((match) => match[1]),
+  );
+  if (WHOLE_SECRET_CONTEXT_RE.test(scalar)) {
+    found.add('the whole secrets context');
+  }
+  return found;
+}
+
+function signingEnvironmentViolations(file, lines) {
+  const violations = [];
+  const jobLineNumbers = new Set();
+
+  for (const job of workflowJobs(lines)) {
+    for (const line of job.lines) {
+      jobLineNumbers.add(line.line);
+    }
+    if (isSigningEnvironment(jobEnvironmentName(job))) {
+      continue;
+    }
+
+    const names = new Set();
+    let firstLine = null;
+    for (const [index, line] of job.lines.entries()) {
+      const found = protectedSigningReferences(job.lines, index);
+      const entry = line.isBlockScalarContent ? null : mappingEntry(line.trimmed);
+      // A reusable-workflow call cannot declare an environment, and `inherit`
+      // hands it every repository secret.
+      if (
+        entry?.key === 'secrets'
+        && unquote(entry.value) === 'inherit'
+        && parentLineIndex(job.lines, index) === 0
+      ) {
+        found.add('the whole secrets context');
+      }
+      if (found.size === 0) {
+        continue;
+      }
+      firstLine ??= line.line;
+      for (const name of found) {
+        names.add(name);
+      }
+    }
+    if (firstLine === null) {
+      continue;
+    }
+    violations.push({
+      file,
+      line: firstLine,
+      rule: SIGNING_ENVIRONMENT_RULE,
+      message: `job "${job.name}" reads ${[...names].sort(codePointCompare).join(', ')} but does not declare environment signing-production or signing-prerelease`,
+    });
+  }
+
+  // Workflow-level env (or anything else outside a job) reaches every job.
+  for (const [index, line] of lines.entries()) {
+    if (jobLineNumbers.has(line.line)) {
+      continue;
+    }
+    const found = protectedSigningReferences(lines, index);
+    if (found.size === 0) {
+      continue;
+    }
+    violations.push({
+      file,
+      line: line.line,
+      rule: SIGNING_ENVIRONMENT_RULE,
+      message: `${[...found].sort(codePointCompare).join(', ')} must be read inside a job that declares environment signing-production or signing-prerelease, not at workflow level`,
+    });
+  }
+
+  return violations;
+}
+
 function compareViolations(left, right) {
   return codePointCompare(left.file, right.file)
     || left.line - right.line
@@ -1406,6 +1565,7 @@ export function inspectWorkflowText(file, text) {
 
   violations.push(...developerSigningViolations(file, lines));
   violations.push(...publicReleaseSigningViolations(file, lines));
+  violations.push(...signingEnvironmentViolations(file, lines));
 
   return violations.sort(compareViolations);
 }
