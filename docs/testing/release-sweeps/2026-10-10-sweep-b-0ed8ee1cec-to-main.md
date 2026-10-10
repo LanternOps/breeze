@@ -641,26 +641,43 @@ Crawl notes:
 </details>
 
 
+### Fix re-verification — opus agent, headless Playwright, 2026-10-10
+
+| Fix | Result | Evidence |
+|---|---|---|
+| Audit export failure + user filter | PASS | forced 500 → toast "boom"; export carries `userId`; CSV 193 rows all actor=admin |
+| Device settings toast | PASS | tag add → "Device settings saved"; forced 500 → error toast, modal open |
+| AI templates partner-wide | PASS | org-narrowed list shows org + partner-wide rows; new partner-wide template appears immediately; other-org template hidden |
+| Billing defaults validation | PASS | 150/-5 and 400/2.5 → inline errors, no request; 7.5/45 saves |
+| Backup SLA | PASS | create 201 "30 min / 90 min / 1 device"; edit pre-fills; active toggle persists |
+| Enrollment past expiry | PASS | inline + disabled submit; API create/rotate → 400 "Expiry must be in the future" |
+| Discovery subnet limit | PASS | /0, /8, /15 rejected inline naming the /16 limit; /16 accepted; API rejects on POST/PATCH |
+
+The re-check found R1 (audit user filter 500), fixed in `774057280a` (unit red→green; the old/new count SQL checked directly in Postgres: old → `missing FROM-clause entry for table "users"`, new → 661).
+
 ## UI/UX paper cuts
 
 | # | Where | Observation | Severity | Disposition |
 |---|---|---|---|---|
-| P1 | app-wide (partner settings, site, DR, monitors, login branding…) | Field-level 400s render as "<json.path>: <raw zod text>" + "Check the highlighted fields" with nothing highlighted; Slack webhook message exposes an internal regex (`keptSecretOrHttpUrl`, `routes/orgs.ts:806`) | high | issue pending |
-| P2 | `/backup` → SLA → New | Every create 400s: dialog sends `rpoMinutes`/`rtoMinutes`, API requires `rpoTargetMinutes`/`rtoTargetMinutes` (`SLAConfigDialog.tsx` vs `routes/backup/schemas.ts:622`) | high | fix pending |
-| P3 | `/settings/roles` | Role scope silently follows the header org; an org-scoped role can't be assigned by a partner caller (`/users/roles` lists partner roles only) | med | issue pending |
-| P4 | header org switcher | Not refreshed after org rename/archive until reload (archived org still "Active") | med | issue pending |
-| P5 | partner-library policy → Monitors tab | Offers org-owned monitors; save 400 `MONITOR_NOT_ATTACHABLE` shown as the bare code; item stays listed | med | issue pending |
-| P6 | Enrollment keys | Expiry in the past accepted (201, key born "Expired") — no `min` on the input, no server check | med | fix pending |
-| P7 | Discovery profile | `0.0.0.0/0` accepted (201); agent silently skips ranges > 65,536 hosts (`scanner.go:281`) so the profile finds nothing forever | med | fix pending |
+| P1 | app-wide (partner settings, site, DR, monitors, login branding…) | Field-level 400s render as "<json.path>: <raw zod text>" + "Check the highlighted fields" with nothing highlighted; Slack webhook message exposes an internal regex (`keptSecretOrHttpUrl`, `routes/orgs.ts:806`) | high | #8369 |
+| P2 | `/backup` → SLA → New | Every create 400s: dialog sends `rpoMinutes`/`rtoMinutes`, API requires `rpoTargetMinutes`/`rtoTargetMinutes` (`SLAConfigDialog.tsx` vs `routes/backup/schemas.ts:622`) | high | fixed `6dfd9da3c3` (also edit pre-fill, list RPO/RTO, active toggle) |
+| P3 | `/settings/roles` | Role scope silently follows the header org; an org-scoped role can't be assigned by a partner caller (`/users/roles` lists partner roles only) | med | #8370 |
+| P4 | header org switcher | Not refreshed after org rename/archive until reload (archived org still "Active") | med | #8371 |
+| P5 | partner-library policy → Monitors tab | Offers org-owned monitors; save 400 `MONITOR_NOT_ATTACHABLE` shown as the bare code; item stays listed | med | #8372 |
+| P6 | Enrollment keys | Expiry in the past accepted (201, key born "Expired") — no `min` on the input, no server check | med | fixed `e75fdbbd69` |
+| P7 | Discovery profile | `0.0.0.0/0` accepted (201); agent silently skips ranges > 65,536 hosts (`scanner.go:281`) so the profile finds nothing forever | med | fixed `07833d2d1f` |
 | P8 | Phase 4 misc (25 in log) | From/Reply-To accept non-emails; branding colour "zzz" persists; clearing company name says saved but no change; site create/delete + library org assign have no toast; guided first-site dialog unreachable (dead code); `AssignmentsTab.tsx:238` 404 request; patch settings double toast; IP-allowlist lockout warning before format check | low | noted |
-| A1 | `/ai-for-office#templates` | Partner-wide templates never listed: web sends `?orgId=<header org>`, `clientAi/adminTemplates.ts:96` keeps only that org's rows (create returns 201 + toast, list unchanged) | med | fix pending |
-| A2 | `/settings/billing` defaults | Out-of-range tax (150, -5) and terms (400, 2.5) submit; server 400 shown as raw "defaultTaxRate: Too big: expected number to be <=1" + "Check the highlighted fields" with nothing highlighted; tax entered as percent but message says <=1 | med | fix pending |
-| A3 | ticket assign | Assigning a `new` ticket moves it to open without `ticket.status_changed` (`ticketService.ts:1953`) | med | issue pending |
-| A4 | `/settings/partner-service-principals` | No owner shown; Issue key / Rotate / Edit offered to non-owners who always get 403; non-owner Issue-key refusal toasted twice | med | issue pending |
+| R1 | `/audit` user filter | `GET /audit-logs/logs?user=` → 500 "missing FROM-clause entry for table users" (count query lacked the users join); viewer shows "Failed to fetch audit logs" and hides Export | high | fixed `774057280a` |
+| R2 | `packages/shared` | `timeSync.settings.test.ts` red on main since #8221 (`.at(-1)` pinned list position); CI never runs the shared vitest suite | med | test fixed `b44f8393aa`; CI gap #8373 |
+| R3 | re-verify misc | billing Save stays enabled while invalid (click no-ops); backup SLA create/update/toggle have no toast (not runAction-covered); discovery form has no deepScan control | low | noted |
+| A1 | `/ai-for-office#templates` | Partner-wide templates never listed: web sends `?orgId=<header org>`, `clientAi/adminTemplates.ts:96` keeps only that org's rows (create returns 201 + toast, list unchanged) | med | fixed `f8cde6e647` |
+| A2 | `/settings/billing` defaults | Out-of-range tax (150, -5) and terms (400, 2.5) submit; server 400 shown as raw "defaultTaxRate: Too big: expected number to be <=1" + "Check the highlighted fields" with nothing highlighted; tax entered as percent but message says <=1 | med | fixed `3e6bfbc104` |
+| A3 | ticket assign | Assigning a `new` ticket moves it to open without `ticket.status_changed` (`ticketService.ts:1953`) | med | #8367 |
+| A4 | `/settings/partner-service-principals` | No owner shown; Issue key / Rotate / Edit offered to non-owners who always get 403; non-owner Issue-key refusal toasted twice | med | #8368 |
 | A5 | misc | org Billing save double success toast; step-up wrong code says only "Invalid credentials"; deferred charge toast "Stripe unavailable" with no next step; assignee list includes never-activated invitees and billing-only users; rotate dialog title "API Key Created"; Templates tab "Failed to load templates" when AI for Office is off; channel form doesn't validate the webhook URL client-side | low | noted |
-| B1 | `/audit` → Export Logs | Export failure is silent (500 → no toast; `handleExportLogs` swallows non-OK + `catch {}`); export ignores active filters (request carries only orgId) | med | fix pending |
-| B2 | Cmd+K | Settings index is 3 hard-coded entries (`routes/search.ts:18-22`) though the placeholder promises settings | med | issue pending |
-| B3 | Device Settings → tags | PATCH 200, modal closes, no toast; tags not shown on Overview (`DeviceSettingsModal.tsx`, on runActionAllowlist) | low | fix pending |
+| B1 | `/audit` → Export Logs | Export failure is silent (500 → no toast; `handleExportLogs` swallows non-OK + `catch {}`); export ignores active filters (request carries only orgId) | med | failure toast + userId filter fixed `e345657753`; other filters need API → #8366 |
+| B2 | Cmd+K | Settings index is 3 hard-coded entries (`routes/search.ts:18-22`) though the placeholder promises settings | med | #8365 |
+| B3 | Device Settings → tags | PATCH 200, modal closes, no toast; tags not shown on Overview (`DeviceSettingsModal.tsx`, on runActionAllowlist) | low | fixed `071835c7d2` |
 | B4 | nav | `/admin/trust-queue`, `/admin/sending-domains`, `/integrations/webhooks` reachable only by URL; "Alert templates" card points at a legacy redirect | low | noted |
 | B5 | `/security/*`, `/backup` + ~13 more | no `<h1>` | low | noted |
 | B6 | misc | patch-scan toast silent about offline devices; no patch-source filter; alert "Resolve" opens a drawer (+2 clicks); offline reason only in a tooltip; device search doesn't match tags; saved-view delete has no confirm; Cmd+K Recent shows a renamed script's old name; audit pager total missing on page 1; deprecations page uses a query-param tab | low | noted |
@@ -669,10 +686,55 @@ Crawl notes:
 
 | Commit | Area | What | Test |
 |---|---|---|---|
+| `e345657753` | B1 audit | export failure toast; passes the user filter | `AuditLogViewer.test.tsx` |
+| `071835c7d2` | B3 devices | Device Settings save via runAction with toast; removed from allowlist | `DeviceSettingsModal.test.tsx` |
+| `aac5581bd5` | i18n | translate the two new toasts in all locales | `localeParity.test.ts` |
+| `f8cde6e647` | A1 AI templates | org-narrowed list keeps partner-wide rows | `adminTemplates.test.ts` |
+| `3e6bfbc104` | A2 billing | inline validation for tax/terms/prefix; server field 400s mapped | `BillingDefaultsTab.test.tsx`, `PartnerBillingSettingsPage.test.tsx` |
+| `6dfd9da3c3` | P2 backup SLA | web uses the API field names for create/update/toggle/read | `SLAConfigDialog.test.tsx`, `SLADashboard.test.tsx` |
+| `e75fdbbd69` | P6 enrollment | past expiry rejected (API create + rotate; web min + inline) | `enrollmentKeys_*.test.ts`, `EnrollmentKeyManager.test.tsx` |
+| `07833d2d1f` | P7 discovery | subnets > 65,536 hosts rejected unless deepScan (shared constant) | `discovery.test.ts`, `DiscoveryProfileForm.test.tsx`, shared util |
+| `b44f8393aa` | R2 shared | time-sync test pins membership | shared suite 4628/4628 |
+| `774057280a` | R1 audit | count query joins users | `auditLogs.test.ts` |
 
 ## Issues filed
 
 | Issue | Title | From row |
 |---|---|---|
+| #8365 | Cmd+K settings search only knows 3 hard-coded pages | B2 |
+| #8366 | Audit log export ignores the viewer's date/action/resource/search filters | B1 |
+| #8367 | Assigning a 'new' ticket moves it to open without ticket.status_changed | A3 |
+| #8368 | Service principals page offers owner-only actions to non-owners | A4 |
+| #8369 | Field-level API validation errors render as raw zod text app-wide | P1 |
+| #8370 | Create Role silently takes its scope from the header org | P3 |
+| #8371 | Header org switcher goes stale after rename/archive | P4 |
+| #8372 | Partner-library policy Monitors tab offers org monitors | P5 |
+| #8373 | packages/shared vitest suite never runs in CI | R2 |
 
 ## Summary
+
+| Group | PASS | PARTIAL | FAIL | BLOCKED | N/A |
+|---|---|---|---|---|---|
+| A — billing / quotes | 2 (#8363, #8248) | 2 (#8358, #8249 — Stripe paths) | 0 | 0 | — |
+| B — devices / policies | 1 (#8323) | 1 (#8213 — helper app needs a live device) | 0 | 0 | — |
+| C — settings | 2 (#8175, #8223) | 0 | 0 | 0 | — |
+| D — integrations / access | 3 (#8286, #8303, #8332) | 0 | 0 | 0 | — |
+| no web surface (api/agent/viewer/docs) | — | — | — | — | 38 |
+| Phase 2 crawl (134 routes) | PASS | | | | |
+| Phase 3 workflows | | PARTIAL | | | |
+| Phase 4 setup | | PARTIAL | 2 areas | | |
+
+No PR in the release cut failed in the browser. The defects below were all pre-existing; 10 fixed on this branch, 9 filed.
+
+**Top findings:**
+1. **Backup SLA configs could not be created or edited at all** — the dialog and API disagreed on five field names; fixed.
+2. **Validation errors are developer text app-wide** (#8369) — every field-level 400 shows `<json.path>: <zod message>` + "Check the highlighted fields" with nothing highlighted; one leaks an internal regex. Biggest UX debt found.
+3. **Header-org leakage again** — partner-wide AI templates hidden by `?orgId=` narrowing (fixed), role scope silently following the header org (#8370), switcher stale after rename (#8371). Same class as sweep A's ticket time entries and policy Backup tab.
+4. **Audit trail**: filtering by user 500'd (fixed); export failures were silent (fixed); export ignores most filters (#8366).
+5. **CI gaps**: `packages/shared` tests never run in CI (#8373) — a red test sat on main unnoticed; plus the 1 MiB `git ls-files` buffer (#8362, fixed during the cut).
+
+**Before the release cut:**
+- Lab: clipboard v2 set (#8251/#8262/#8263/#8266 — Windows + macOS checks listed in the release-cut notes), Assist start-hidden (#8213), macOS permissions (#8154), Storage Spaces (#8150), edition-migration canary (#7336), diagnostics self-approval (#8327) with a live agent.
+- Stripe: real charge-now + cap-before-charge (#8358) and the quote checkout redirect (#8249).
+- Deploy: #8337 turns on sending-domain auto-suspension for hosted partners for the first time — check partner bounce/complaint stats on US + EU; check whether hosted `EMAIL_FROM` is bare or named before #6574 lands.
+- Todd: dismiss-or-hold the CHANGES_REQUESTED reviews on #6574 and #8320.
