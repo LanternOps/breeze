@@ -213,8 +213,12 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       error: 'Request body too large',
     };
   }
-  // Workload inventory report (#3834): bounded at 2 MiB by the schema caps
-  // (max 1000 workloads per runtime, max 5 runtimes) and the route's own gate.
+  // Workload inventory report (#3834): capped at 2 MiB. The schema caps (max
+  // 1000 workloads per runtime, max 5 runtimes, per-field widths) do NOT fit
+  // inside this at their maximums (~14 MB worst case); a typical item is
+  // ~750 B. The agent must keep its report under this byte budget itself
+  // (truncate and send `complete: false`) rather than rely on the schema caps,
+  // or the whole report — detection included — is refused with 413.
   // Matched before the broader agent-ingest branch so it keeps its own label.
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/workloads$/)) {
     return {
