@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 )
 
@@ -26,6 +27,10 @@ type Content struct {
 	Image       []byte
 	ImageFormat string
 }
+
+// ErrNoSupportedFormat: the clipboard is empty or holds only formats the agent
+// cannot read. Unlike a failure to open it, this is a lasting state.
+var ErrNoSupportedFormat = errors.New("clipboard: no supported format")
 
 type Provider interface {
 	GetContent() (Content, error)

@@ -1,6 +1,7 @@
 package clipboard
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ type seqProvider struct {
 	mu    sync.Mutex
 	items []Content
 	errs  int
+	err   error // what the first errs calls return; errClipboardSyncUnconfigured when nil
 	gets  int
 }
 
@@ -27,6 +29,9 @@ func (p *seqProvider) GetContent() (Content, error) {
 	p.gets++
 	if p.errs > 0 {
 		p.errs--
+		if p.err != nil {
+			return Content{}, p.err
+		}
 		return Content{}, errClipboardSyncUnconfigured
 	}
 	c := p.items[0]
@@ -93,5 +98,26 @@ func TestWatchBaselineSurvivesInitialProviderError(t *testing.T) {
 	p := &seqProvider{errs: 2, items: []Content{{Type: ContentTypeText, Text: "pre-existing"}}}
 	if n := watchFor(t, p, p.errs+3).n(); n != 0 {
 		t.Fatalf("sent %d message(s); the first readable clipboard is the baseline", n)
+	}
+}
+
+func TestWatchSendsFirstCopyAfterEmptyStartingClipboard(t *testing.T) {
+	// An empty clipboard (or one holding only formats the agent cannot read)
+	// is a lasting state, not a lock. It is the baseline: the technician's
+	// first copy on the host must reach the viewer.
+	p := &seqProvider{errs: 2, err: ErrNoSupportedFormat, items: []Content{{Type: ContentTypeText, Text: "copied during session"}}}
+	if n := watchFor(t, p, p.errs+3).n(); n != 1 {
+		t.Fatalf("sent %d message(s); the first copy after an empty starting clipboard must be sent", n)
+	}
+}
+
+func TestProxyHelperErrorKeepsNoSupportedFormat(t *testing.T) {
+	// The helper's error crosses IPC as a string; the proxy maps it back so
+	// the daemon-side watcher can tell an empty clipboard from a locked one.
+	if err := proxyHelperError(ErrNoSupportedFormat.Error()); !errors.Is(err, ErrNoSupportedFormat) {
+		t.Fatalf("proxied error %v does not match ErrNoSupportedFormat", err)
+	}
+	if errors.Is(proxyHelperError("clipboard: OpenClipboard failed"), ErrNoSupportedFormat) {
+		t.Fatal("an unrelated helper error matched ErrNoSupportedFormat")
 	}
 }

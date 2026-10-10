@@ -28,7 +28,7 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		return Content{Type: ContentTypeText, Text: string(data)}, nil
 	}
 
-	return Content{}, errors.New("clipboard: no supported format")
+	return Content{}, ErrNoSupportedFormat
 }
 
 func (s *SystemClipboard) SetContent(content Content) error {

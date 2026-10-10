@@ -231,3 +231,35 @@ func TestBlockedChunkWithoutIDIsCounted(t *testing.T) {
 		t.Fatal("a blocked chunk with no id went uncounted")
 	}
 }
+
+func TestReceiveReportsAFailedTransferOnce(t *testing.T) {
+	// After one bad frame the rest of that transfer is dropped quietly: an
+	// 8 MiB image must not log ~250 "unknown transfer" errors.
+	c := newClipboardSyncWithSender(&mockSender{}, &stubProvider{}, Policy{HostToViewer: true, ViewerToHost: true})
+	frame := func(id string, seq, total int) webrtc.DataChannelMessage {
+		raw, _ := json.Marshal(chunkFrame{Type: "chunk", ID: id, Seq: seq, Total: total, Data: "AA=="})
+		return textMsg(string(raw))
+	}
+	if err := c.Receive(frame("t1", 0, 5)); err != nil {
+		t.Fatal(err)
+	}
+	errs := 0
+	for _, seq := range []int{2, 3, 4} { // seq 1 lost: out of sequence
+		if err := c.Receive(frame("t1", seq, 5)); err != nil {
+			errs++
+		}
+	}
+	if errs != 1 {
+		t.Fatalf("%d errors for one failed transfer, want 1", errs)
+	}
+	// The next transfer is still assembled and judged on its own.
+	if err := c.Receive(frame("t2", 0, 2)); err != nil {
+		t.Fatalf("next transfer rejected: %v", err)
+	}
+	if err := c.Receive(frame("t2", 0, 2)); err != nil {
+		t.Fatalf("restarted transfer rejected: %v", err)
+	}
+	if err := c.Receive(frame("t3", 1, 2)); err == nil {
+		t.Fatal("a frame for an unknown transfer was accepted silently")
+	}
+}

@@ -13,7 +13,9 @@ type clipboardOpener interface {
 // visible here.
 func onClipboardChannelOpen(cs clipboardOpener, hostToViewer bool) {
 	if err := cs.SendStatus(); err != nil {
-		slog.Debug("Failed to send clipboard status", "error", err.Error())
+		// Without it the viewer treats this agent as one that predates
+		// status: no chunked paste and no policy indicator.
+		slog.Warn("Failed to send clipboard status", "error", err.Error())
 	}
 	if hostToViewer {
 		cs.Watch()

@@ -51,6 +51,7 @@ type ClipboardSync struct {
 	bufferWaitTimeout time.Duration // how long a chunked send waits for the SCTP buffer
 	rx                chunkAssembler
 	rxBlockedID       string // transfer already counted as blocked (once per transfer)
+	rxFailedID        string // transfer whose reassembly failed; its later frames are dropped
 
 	statsMu sync.Mutex
 	stats   map[string]*TransferCount // key "direction/type"
@@ -137,6 +138,13 @@ func (c *ClipboardSync) Watch() {
 			select {
 			case <-ticker.C:
 				content, err := c.provider.GetContent()
+				if err != nil && !baselined && errors.Is(err, ErrNoSupportedFormat) {
+					// Empty (or unreadable formats only) at session start: that
+					// is the baseline, so the first copy after it is sent. A
+					// failure to open the clipboard says nothing about what it
+					// holds; it leaves the baseline to the next readable poll.
+					baselined = true
+				}
 				if err != nil {
 					// Only log when the error message changes to avoid spam
 					msg := err.Error()
@@ -389,9 +397,21 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 			}
 			return nil
 		}
+		// The rest of a transfer that already failed is dropped quietly: the
+		// failure was reported once, and every later frame would only report
+		// "unknown transfer" again.
+		if f.Seq != 0 && f.ID != "" && f.ID == c.rxFailedID {
+			return nil
+		}
 		inner, done, err := c.rx.add(f)
-		if err != nil || !done {
+		if err != nil {
+			if len(f.ID) <= maxTransferIDBytes {
+				c.rxFailedID = f.ID
+			}
 			return err
+		}
+		if !done {
+			return nil
 		}
 		return c.applyInbound(inner, f.ID)
 	}
