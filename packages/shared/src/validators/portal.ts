@@ -121,6 +121,8 @@ export const updatePortalSettingsSchema = z.object({
   enableHardwareInventory: z.boolean().optional(),
   // Portal advanced visibility W03 (#7733): performance metrics, fail closed.
   enablePerformanceMetrics: z.boolean().optional(),
+  // Portal advanced visibility W04 (#7734): software inventory, fail closed.
+  enableSoftwareInventory: z.boolean().optional(),
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
   enableNetworkAlerts: z.boolean().optional(),

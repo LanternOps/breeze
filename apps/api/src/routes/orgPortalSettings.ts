@@ -53,6 +53,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableHardwareHealth: false,
   enableHardwareInventory: false,
   enablePerformanceMetrics: false,
+  enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   enableNetworkAlerts: false,
   chromeAccent: null,
@@ -80,6 +81,7 @@ type PortalSettingsRow = {
   enableHardwareHealth: boolean;
   enableHardwareInventory: boolean;
   enablePerformanceMetrics: boolean;
+  enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
   enableNetworkAlerts: boolean;
   chromeAccent: string | null;
@@ -115,6 +117,7 @@ const portalSettingsColumns = () => ({
   enableHardwareHealth: portalBranding.enableHardwareHealth,
   enableHardwareInventory: portalBranding.enableHardwareInventory,
   enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
+  enableSoftwareInventory: portalBranding.enableSoftwareInventory,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
   chromeAccent: portalBranding.chromeAccent,
@@ -145,6 +148,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableHardwareHealth: row.enableHardwareHealth,
     enableHardwareInventory: row.enableHardwareInventory,
     enablePerformanceMetrics: row.enablePerformanceMetrics,
+    enableSoftwareInventory: row.enableSoftwareInventory,
     enableNetworkVisibility: row.enableNetworkVisibility,
     enableNetworkAlerts: row.enableNetworkAlerts,
     chromeAccent: row.chromeAccent,
@@ -256,6 +260,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableHardwareHealth: row.enableHardwareHealth,
             enableHardwareInventory: row.enableHardwareInventory,
             enablePerformanceMetrics: row.enablePerformanceMetrics,
+            enableSoftwareInventory: row.enableSoftwareInventory,
             enableNetworkVisibility: row.enableNetworkVisibility
           }
         });

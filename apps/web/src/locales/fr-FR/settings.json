@@ -1913,6 +1913,10 @@
           "label": "Mesures de performance",
           "description": "Affiche en lecture seule les tendances de performance du processeur, de la mémoire, des disques et du réseau des machines de votre client."
         },
+        "enableSoftwareInventory": {
+          "label": "Inventaire logiciel",
+          "description": "Affiche le nom, la version, le fournisseur, la date d'installation et la dernière observation des logiciels sur les appareils du client."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",
           "description": "Affiche dans le portail client l’état du réseau et les actifs découverts en lecture seule."

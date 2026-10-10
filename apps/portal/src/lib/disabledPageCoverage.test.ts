@@ -43,6 +43,8 @@ const GATED_API_METHODS: Record<string, string> = {
   getService: 'PORTAL_SERVICE_DISABLED',
   getServiceOccurrences: 'PORTAL_SERVICE_DISABLED',
   getDocuments: 'PORTAL_DOCUMENTS_DISABLED',
+  getSoftwareSummary: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  getDeviceSoftware: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
   getHardwareLifecycleLatest: 'PORTAL_LIFECYCLE_DISABLED',
 };
 

@@ -1913,6 +1913,10 @@
           "label": "Métricas de rendimiento",
           "description": "Muestra tendencias de rendimiento de CPU, memoria, disco y red de solo lectura para los equipos de su cliente."
         },
+        "enableSoftwareInventory": {
+          "label": "Inventario de software",
+          "description": "Muestra nombre, versión, proveedor, fecha de instalación y última observación del software en los dispositivos de su cliente."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilidad de red",
           "description": "Muestra en el portal del cliente el estado de la red y los activos detectados en modo de solo lectura."
