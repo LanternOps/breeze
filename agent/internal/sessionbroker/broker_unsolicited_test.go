@@ -20,6 +20,7 @@ func TestShouldForwardUnsolicitedHelperMessage(t *testing.T) {
 		{ipc.TypeTrayAction, true},
 		{ipc.TypeSASRequest, true},
 		{ipc.TypeDesktopPeerDisconnected, true},
+		{ipc.TypeDesktopClipboardSummary, true},
 		{ipc.TypeNotifyResult, false},
 		{ipc.TypeClipboardData, false},
 		{ipc.TypeCommandResult, false},
@@ -86,5 +87,13 @@ func TestSanitizeTCCStatusForSessionScopes(t *testing.T) {
 	}
 	if !got.ScreenRecording || !got.Accessibility || !got.FullDiskAccess {
 		t.Fatalf("unexpected sanitized TCC status: %+v", got)
+	}
+}
+
+func TestClipboardSummaryNeedsDesktopScope(t *testing.T) {
+	t.Parallel()
+	session := &Session{AllowedScopes: []string{"tray"}}
+	if shouldForwardUnsolicitedHelperMessage(session, &ipc.Envelope{Type: ipc.TypeDesktopClipboardSummary}) {
+		t.Fatal("a helper without the desktop scope must not report desktop clipboard summaries")
 	}
 }

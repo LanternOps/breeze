@@ -3245,7 +3245,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 			b.onMessage(s, env)
 		}
 	case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
-		ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
+		ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
 		if !shouldForwardUnsolicitedHelperMessage(s, env) {
 			log.Warn("dropping unsolicited or unauthorized helper message",
 				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
@@ -3441,7 +3441,7 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope("backup")
 	case ipc.TypeTrayAction:
 		return session.HasScope("tray")
-	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected, ipc.TypeDesktopLeaseRenew:
+	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected, ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew:
 		return session.HasScope("desktop")
 	case ipc.TypeWatchdogCommandResult:
 		return session.HasScope("watchdog")

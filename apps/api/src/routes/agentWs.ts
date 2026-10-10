@@ -88,6 +88,7 @@ import {
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
+import { recordDesktopClipboardSummary, type DesktopClipboardSummary } from '../services/desktopClipboardAudit';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
 import {
@@ -190,7 +191,7 @@ async function updateTunnelSessionForAuthenticatedDevice(
   return row ?? null;
 }
 
-function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-'): string | null {
+function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-' | 'desk-clipsum-'): string | null {
   if (!commandId.startsWith(prefix)) return null;
   const sessionId = commandId.slice(prefix.length);
   if (!sessionId || sessionId.length > MAX_DESKTOP_SESSION_ID_BYTES) {
@@ -3450,6 +3451,30 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             }
           }
 
+          // The session's clipboard transfer counters, sent once at teardown
+          // as their own result (#1012). Audit-only: never touches the row.
+          if (fastCommandId.startsWith('desk-clipsum-') &&
+              fastStatus === 'completed' &&
+              fastResult?.event === 'clipboard_summary' &&
+              fastResult.clipboard) {
+            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-clipsum-');
+            if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
+              await recordDesktopClipboardSummary({
+                sessionId: expectedSessionId,
+                deviceId: authenticatedAgent.deviceId,
+                clipboard: fastResult.clipboard as DesktopClipboardSummary,
+              }).then((outcome) => {
+                if (outcome === 'unknown_session') {
+                  console.warn(`[AgentWs] Clipboard summary for session ${expectedSessionId} names no session on this device; not recorded`);
+                }
+              }).catch((err) => {
+                // The audit row is lost: report it, not just to stdout.
+                console.error('[AgentWs] Failed to record desktop clipboard summary:', err);
+                captureException(err);
+              });
+            }
+          }
+
           // The agent acknowledged a generation-bound stop. Move
           // the row's teardown phase pending → confirmed — but only when the
           // result's identity names the exact terminal generation the row is
@@ -4404,7 +4429,7 @@ export const desktopCommandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'cancelled']),
   error: z.string().max(8192).optional(),
   result: z.object({
-    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied']).optional(),
+    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied', 'clipboard_summary']).optional(),
     sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX).optional(),
     answer: z.string().max(65536).optional(),
     error: z.string().max(8192).optional(),
@@ -4447,6 +4472,22 @@ export const desktopCommandResultSchema = z.object({
     // session and releases the relay (settleDesktopStreamStart).
     screenWidth: z.number().int().nonnegative().max(100_000).optional(),
     screenHeight: z.number().int().nonnegative().max(100_000).optional(),
+    // `desk-clipsum-<id>`: the session's clipboard transfer counters, sent once
+    // at teardown as their own result rather than on desk-disconnect (a field
+    // an older API does not declare would drop the disconnect itself). Counts
+    // only; the .strict() objects refuse anything that could carry content.
+    clipboard: z.object({
+      transfers: z.array(z.object({
+        direction: z.enum(['host_to_viewer', 'viewer_to_host']),
+        type: z.enum(['text', 'rtf', 'image']),
+        count: z.number().int().nonnegative().max(1_000_000),
+        bytes: z.number().int().nonnegative().max(1_000_000_000_000),
+      }).strict()).max(6),
+      blocked: z.number().int().nonnegative().max(1_000_000),
+      // The agent Session that counted this; one server session can span
+      // several (reconnect, Retry, session switch), one audit row each.
+      segmentId: z.string().regex(/^[0-9a-f]{16,64}$/).optional(),
+    }).strict().optional(),
   }).strict().optional(),
 }).passthrough();
 

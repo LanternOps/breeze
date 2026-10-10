@@ -49,6 +49,13 @@ vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
+const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
+  recordDesktopClipboardSummaryMock: vi.fn(async () => 'recorded'),
+}));
+vi.mock('../services/desktopClipboardAudit', () => ({
+  recordDesktopClipboardSummary: recordDesktopClipboardSummaryMock,
+}));
+
 vi.mock('../db/schema', () => ({
   snmpDevices: { id: 'snmpDevices.id', orgId: 'snmpDevices.orgId' },
   // #4673 W02 — validateAgentToken innerJoins organizations to resolve the
@@ -2373,6 +2380,79 @@ describe('agent websocket command results', () => {
 
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('hands a desk-clipsum summary to the clipboard audit, bound to the reporting device', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    recordDesktopClipboardSummaryMock.mockClear();
+
+    const clipboard = {
+      transfers: [{ direction: 'viewer_to_host', type: 'text', count: 1, bytes: 12 }],
+      blocked: 0,
+    };
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-clipsum-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'clipboard_summary', clipboard },
+      }),
+    } as any, ws as any);
+
+    expect(recordDesktopClipboardSummaryMock).toHaveBeenCalledTimes(1);
+    expect(recordDesktopClipboardSummaryMock).toHaveBeenCalledWith({
+      sessionId: 'session-123',
+      deviceId: 'device-123',
+      clipboard,
+    });
+    // A summary never touches the session row.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('reports a clipboard audit write that failed instead of only logging it', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    const failure = new Error('audit insert failed');
+    recordDesktopClipboardSummaryMock.mockClear();
+    recordDesktopClipboardSummaryMock.mockRejectedValueOnce(failure);
+    vi.mocked(captureException).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-clipsum-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'clipboard_summary', clipboard: { transfers: [], blocked: 1 } },
+      }),
+    } as any, ws as any);
+
+    // The audit row is lost; that must reach error tracking, not just stdout.
+    expect(captureException).toHaveBeenCalledWith(failure);
+  });
+
+  it('ignores a desk-clipsum summary whose session id does not match its command id', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    recordDesktopClipboardSummaryMock.mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-clipsum-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-other', event: 'clipboard_summary', clipboard: { transfers: [], blocked: 1 } },
+      }),
+    } as any, ws as any);
+
+    expect(recordDesktopClipboardSummaryMock).not.toHaveBeenCalled();
   });
 
   // #5300: the no-video watchdog records the swallowed capture error via
