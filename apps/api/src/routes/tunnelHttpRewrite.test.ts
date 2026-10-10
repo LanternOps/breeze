@@ -130,9 +130,9 @@ describe('rewriteTunnelHtml', () => {
     const script = html.match(/<script data-breeze-tunnel-rewrite>([\s\S]*?)<\/script>/)![1]!;
     runInNewContext(script, context);
     expect(await context.fetch('/api/status', { method: 'POST' })).toBe('response');
-    expect(fetch).toHaveBeenLastCalledWith(`${base}api/status`, { method: 'POST' });
+    expect(fetch).toHaveBeenLastCalledWith(`${base}api/status`, { method: 'POST', credentials: 'include' });
     await context.fetch(new URL('http://printer.example/url'));
-    expect(fetch).toHaveBeenLastCalledWith(`${base}url`, undefined);
+    expect(fetch).toHaveBeenLastCalledWith(`${base}url`, { credentials: 'include' });
     await context.fetch('https://other.example/x');
     expect(fetch).toHaveBeenLastCalledWith('https://other.example/x', undefined);
     const request = new Request('http://printer.example/api', { method: 'POST', body: 'payload' });
@@ -148,11 +148,21 @@ describe('rewriteTunnelHtml', () => {
     const forwarded = fetch.mock.calls.at(-1)![0] as Request;
     expect(forwarded.url).toBe(`https://breeze.example${base}api`);
     expect(forwarded.method).toBe('POST');
+    expect(forwarded.credentials).toBe('include');
     expect(await forwarded.text()).toBe('payload');
     await context.fetch(new BrowserRequest('/request-path'));
     expect((fetch.mock.calls.at(-1)![0] as Request).url).toBe(`https://breeze.example${base}request-path`);
-    context.XMLHttpRequest.prototype.open.call({}, 'POST', '/xhr', false, 'user', 'password');
+    const xhr: { withCredentials?: boolean } = {};
+    context.XMLHttpRequest.prototype.open.call(xhr, 'POST', '/xhr', false, 'user', 'password');
     expect(open).toHaveBeenCalledWith('POST', `${base}xhr`, false, 'user', 'password');
+    // Sandboxed (opaque-origin) requests are cross-origin: without credentials
+    // the device's session cookies never round-trip.
+    expect(xhr.withCredentials).toBe(true);
+    const foreignXhr: { withCredentials?: boolean } = {};
+    context.XMLHttpRequest.prototype.open.call(foreignXhr, 'GET', 'https://other.example/x');
+    expect(foreignXhr.withCredentials).toBeUndefined();
+    await context.fetch('/explicit', { credentials: 'omit' });
+    expect(fetch).toHaveBeenLastCalledWith(`${base}explicit`, { credentials: 'omit' });
     context.Element.prototype.setAttribute.call({}, 'SRC', '/dynamic');
     expect(setAttribute).toHaveBeenLastCalledWith('SRC', `${base}dynamic`);
     context.Element.prototype.setAttribute.call({}, 'data-src', '/untouched');

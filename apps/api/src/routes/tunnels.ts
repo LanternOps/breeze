@@ -17,7 +17,7 @@ import {
   REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE,
   REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE,
 } from './remote/consentGate';
-import { HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
+import { HTTP_TUNNEL_MAX_SESSION_HOURS, markTunnelViewerPresent } from './tunnelHttp';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import {
   createViewerAccessToken,
@@ -1124,6 +1124,18 @@ tunnelRoutes.get(
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (await isTunnelDeviceSiteDenied(session.deviceId, perms)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // ProxyTunnelPage polls this every 5s while the proxied page is open; the
+    // owner's poll is the only thing that keeps cookie-less path-token auth
+    // alive in tunnelHttp.ts (subresources from the sandboxed iframe often
+    // arrive without the tunnel cookie).
+    if (
+      session.type === 'proxy' &&
+      session.userId === auth.user.id &&
+      ['pending', 'connecting', 'active'].includes(session.status)
+    ) {
+      await markTunnelViewerPresent(session.id);
     }
 
     // Server-computed idle time, never raw timestamps (same rule as GET

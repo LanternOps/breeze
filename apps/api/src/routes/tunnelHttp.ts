@@ -20,6 +20,8 @@ import { PERMISSIONS } from '../services/permissions';
 import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 import { createCorsOriginResolver } from '../services/corsOrigins';
 import { isSameOriginRequest } from '../services/requestTransport';
+import { UUID_REGEX } from '../utils/uuid';
+import { getRedis } from '../services/redis';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -55,6 +57,11 @@ export const HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS = 0;
 // here (before forwarding to the agent) AND in POST /tunnels/:id/http-ticket
 // (tunnels.ts) so an already-capped session can't even mint a fresh ticket.
 export const HTTP_TUNNEL_MAX_SESSION_HOURS = 12;
+// Cookie-less path-token auth is only honoured while the owner's own Breeze
+// proxy page is open: its authenticated 5s poll of GET /tunnels/:id refreshes
+// this marker (see markTunnelViewerPresent). Generous enough to survive
+// background-tab timer throttling (Chrome clamps hidden tabs to ~1/min).
+export const TUNNEL_VIEWER_PRESENCE_TTL_SECONDS = 90;
 const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
 // Throttle for the lastActivityAt bump — avoid a write on every single
 // sub-resource request while a page is actively loading.
@@ -286,14 +293,9 @@ interface UsableTunnel {
   lastActivityAt: Date | null;
 }
 
-/**
- * Load a tunnel session and confirm the cookie/ticket user owns it and it's in
- * a connectable state. Runs in system DB context because this route mounts
- * before auth middleware (no request-scoped RLS context); ownership is enforced
- * in app code by the `session.userId === userId` check. Returns null (→ 404)
- * when the session is missing, owned by someone else, or in a terminal state.
- */
-async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise<UsableTunnel | null> {
+// System DB context: this route mounts before auth middleware (no
+// request-scoped RLS context); every caller enforces ownership in app code.
+async function loadTunnelRow(tunnelId: string) {
   return withSystemDbAccessContext(async () => {
     const [row] = await db
       .select({ session: tunnelSessions, device: devices })
@@ -301,33 +303,112 @@ async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise
       .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
       .where(eq(tunnelSessions.id, tunnelId))
       .limit(1);
-
-    if (!row) return null;
-    const { session, device } = row;
-    if (session.userId !== userId) return null;
-    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status)) return null;
-
-    return {
-      agentId: device.agentId ?? null,
-      deviceId: device.id,
-      deviceStatus: device.status,
-      deviceSiteId: device.siteId ?? null,
-      targetHost: session.targetHost,
-      targetPort: session.targetPort,
-      scheme: session.scheme ?? null,
-      skipTlsVerify: session.skipTlsVerify ?? false,
-      orgId: session.orgId,
-      type: session.type,
-      createdAt: session.createdAt,
-      startedAt: session.startedAt ?? null,
-      lastActivityAt: session.lastActivityAt ?? null,
-    };
+    return row ?? null;
   });
+}
+
+/**
+ * Cookie-less authentication by path token alone. Subresource requests from
+ * the sandboxed (opaque-origin) proxied document do not reliably carry the
+ * SameSite=None tunnel cookie — Firefox's Total Cookie Protection (its
+ * default) puts the sandbox in a separate cookie partition, and every browser
+ * omits it on `crossorigin` loads — so the device page's own CSS/JS would 401. The token is a 128-bit HMAC delivered only to the browser
+ * that completed the ticket exchange (redirect Location + rewritten URLs);
+ * it never leaves via Referer (`Referrer-Policy: no-referrer` on every
+ * response). The sliding cookie's idle expiry is reproduced from the row's
+ * activity timestamp, so a token stops working after the same idle window a
+ * cookie would — and it stops within TUNNEL_VIEWER_PRESENCE_TTL_SECONDS of the
+ * owner closing their Breeze proxy page, whatever traffic the token carries.
+ * It is never exchanged for a cookie (no sliding refresh on these responses).
+ * Every later gate (live authority, ownership, 12h cap, device
+ * online, policy) still runs for the returned user.
+ */
+function tunnelViewerPresenceKey(tunnelId: string): string {
+  return `tunnel-http:viewer:${tunnelId}`;
+}
+
+/**
+ * Called ONLY from the owner's JWT-authenticated poll of GET /tunnels/:id —
+ * never from proxied traffic, so a leaked path token cannot keep itself alive.
+ */
+export async function markTunnelViewerPresent(tunnelId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(tunnelViewerPresenceKey(tunnelId), '1', 'EX', TUNNEL_VIEWER_PRESENCE_TTL_SECONDS);
+  } catch (err) {
+    console.warn('[tunnel-http] failed to mark viewer presence:', err);
+  }
+}
+
+// Fails closed: without Redis, cookie-less requests are refused exactly as
+// they were before path-token auth existed.
+async function isTunnelViewerPresent(tunnelId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return (await redis.exists(tunnelViewerPresenceKey(tunnelId))) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function authenticateByPathToken(
+  candidateToken: string,
+  tunnelId: string,
+): Promise<string | null> {
+  if (!UUID_REGEX.test(tunnelId) || !/^[0-9a-f]+$/.test(candidateToken)) return null;
+  if (candidateToken.length !== TUNNEL_PATH_TOKEN_HEX_LENGTH) return null;
+  // Cheap Redis check first, so unauthenticated floods never reach the DB.
+  if (!(await isTunnelViewerPresent(tunnelId))) return null;
+  const row = await loadTunnelRow(tunnelId);
+  if (!row) return null;
+  const { session } = row;
+  if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status)) return null;
+  const lastSeen = session.lastActivityAt ?? session.startedAt;
+  if (!lastSeen || Date.now() - lastSeen.getTime() > HTTP_TUNNEL_COOKIE_TTL_SECONDS * 1000) return null;
+  return tunnelPathTokenMatches(candidateToken, tunnelId, session.userId) ? session.userId : null;
+}
+
+/**
+ * Load a tunnel session and confirm the cookie/ticket user owns it and it's in
+ * a connectable state (`session.userId === userId`). Returns null (→ 404)
+ * when the session is missing, owned by someone else, or in a terminal state.
+ */
+async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise<UsableTunnel | null> {
+  const row = await loadTunnelRow(tunnelId);
+  if (!row) return null;
+  const { session, device } = row;
+  if (session.userId !== userId) return null;
+  if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status)) return null;
+
+  return {
+    agentId: device.agentId ?? null,
+    deviceId: device.id,
+    deviceStatus: device.status,
+    deviceSiteId: device.siteId ?? null,
+    targetHost: session.targetHost,
+    targetPort: session.targetPort,
+    scheme: session.scheme ?? null,
+    skipTlsVerify: session.skipTlsVerify ?? false,
+    orgId: session.orgId,
+    type: session.type,
+    createdAt: session.createdAt,
+    startedAt: session.startedAt ?? null,
+    lastActivityAt: session.lastActivityAt ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Response-rewriting helpers.
 // ---------------------------------------------------------------------------
+
+function upstreamHeaderValue(headers: Record<string, string[]> | undefined, name: string): string | null {
+  for (const [k, values] of Object.entries(headers ?? {})) {
+    if (k.toLowerCase() === name) return values.join(', ');
+  }
+  return null;
+}
 
 /** Rewrite an upstream Location (3xx) so the browser stays inside the proxy. */
 function rewriteLocation(loc: string, basePath: string): string {
@@ -357,7 +438,38 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
   } else {
     out = `${out}; Path=${basePath}`;
   }
-  return out;
+  // The device page runs in an opaque origin, so every request it makes is
+  // cross-site: a Lax/Strict (or browser-default Lax) device session cookie
+  // would never be sent back. The path scope above keeps it to this tunnel.
+  out = out.replace(/;\s*(samesite=[^;]*|secure)(?=;|$)/gi, '');
+  return `${out}; SameSite=None; Secure`;
+}
+
+/**
+ * The sandboxed device document has an opaque origin, so its CORS-mode loads
+ * (`crossorigin` tags, fetch, XHR) arrive with `Origin: null` and are only
+ * readable if the response admits that origin. Admitting it is safe here only
+ * because every request already had to present this tunnel's path token — a
+ * foreign sandboxed page cannot name a URL this route will serve.
+ */
+function isSandboxOrigin(c: Context): boolean {
+  return c.req.header('origin') === 'null';
+}
+
+function sandboxCorsHeaders(): Record<string, string> {
+  return {
+    'access-control-allow-origin': 'null',
+    'access-control-allow-credentials': 'true',
+  };
+}
+
+/** Never let a device response be stored by a shared cache (CDN): its URL carries the path token. */
+function privateCacheControl(value: string | null): string {
+  const kept = (value ?? '')
+    .split(',')
+    .map((directive) => directive.trim())
+    .filter((directive) => directive && !/^(public|private|s-maxage\s*=.*)$/i.test(directive));
+  return ['private', ...kept].join(', ');
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +490,9 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
 tunnelHttpRoutes.use('*', async (c, next) => {
   await next();
   c.res.headers.set('content-security-policy', PROXY_RESPONSE_CSP);
+  // The path token is a credential (see authenticateByPathToken) and every
+  // proxied URL carries it — never let it ride out in a Referer header.
+  c.res.headers.set('referrer-policy', 'no-referrer');
 });
 
 // ---------------------------------------------------------------------------
@@ -421,10 +536,22 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     return c.text('Not found', 404);
   }
 
-  // 1. Authn: cookie first; else one-time ticket → set cookie → redirect.
+  // The first path segment after the tunnel id is the per-(tunnel,user) path
+  // token (see the path-token block above the route).
+  const afterRoot = c.req.path.slice(tunnelRootPath.length);
+  const tokenBoundary = afterRoot.indexOf('/');
+  const candidateToken = tokenBoundary === -1 ? afterRoot : afterRoot.slice(0, tokenBoundary);
+
+  // 1. Authn: cookie first; else path token alone (cookie-less opaque-origin
+  // subresources); else one-time ticket → set cookie → redirect.
+  const ticket = c.req.query('__bzt');
   let userId = await verifyTunnelCookie(getCookie(c, authCookieName), tunnelId);
+  let pathTokenOnly = false;
+  if (!userId && !ticket) {
+    userId = await authenticateByPathToken(candidateToken, tunnelId);
+    pathTokenOnly = userId !== null;
+  }
   if (!userId) {
-    const ticket = c.req.query('__bzt');
     if (!ticket) {
       return c.text('Unauthorized', 401);
     }
@@ -492,9 +619,6 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // treated as unauthenticated — see the path-token block above the route for
   // why the cookie alone (Origin:null accepted, SameSite:None required) isn't
   // sufficient on its own for a state-changing request.
-  const afterRoot = c.req.path.slice(tunnelRootPath.length);
-  const tokenBoundary = afterRoot.indexOf('/');
-  const candidateToken = tokenBoundary === -1 ? afterRoot : afterRoot.slice(0, tokenBoundary);
   if (!tunnelPathTokenMatches(candidateToken, tunnelId, userId)) {
     return c.text('Not found', 404);
   }
@@ -532,6 +656,22 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     return c.text(policy.reason ?? 'Proxy access disabled by policy', 403);
   }
 
+  // CORS preflight from the sandboxed document: answered here, never sent to
+  // the device (it has no idea about our origin). Preflights carry no
+  // cookies, so this is reached via path-token auth.
+  if (c.req.method === 'OPTIONS' && isSandboxOrigin(c) && c.req.header('access-control-request-method')) {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...sandboxCorsHeaders(),
+        'access-control-allow-methods': 'GET, HEAD, POST, PUT, PATCH, DELETE',
+        'access-control-allow-headers': c.req.header('access-control-request-headers') ?? '',
+        'access-control-max-age': '600',
+        vary: 'Origin',
+      },
+    });
+  }
+
   // All gates passed — ONE code point for the sliding cookie refresh and the
   // throttled lastActivityAt bump. A request rejected by any gate above must
   // NOT reach here: bumping activity (or refreshing the cookie) over a
@@ -547,7 +687,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   }
   // Built here (not via setCookie(c, …), which no-ops against the hand-built
   // Response returned below) and appended to respHeaders once it exists.
-  const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
+  const refreshedCookie = pathTokenOnly ? null : generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
     sameSite: 'None',
@@ -660,7 +800,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       lk === 'content-length' ||
       lk === 'content-security-policy' ||
       lk === 'content-security-policy-report-only' ||
-      lk === 'x-frame-options'
+      lk === 'x-frame-options' ||
+      // Origin admission and caching are decided by this route, not the device.
+      lk.startsWith('access-control-') ||
+      lk === 'cache-control'
     ) {
       continue;
     }
@@ -683,10 +826,17 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Sandbox the proxied (untrusted) device content so its scripts run in a null
   // origin and cannot read app cookies/storage or reach the parent frame.
   respHeaders.set('content-security-policy', PROXY_RESPONSE_CSP);
+  respHeaders.set('cache-control', privateCacheControl(upstreamHeaderValue(upstream.headers, 'cache-control')));
+  if (isSandboxOrigin(c)) {
+    for (const [name, value] of Object.entries(sandboxCorsHeaders())) respHeaders.set(name, value);
+  }
+  respHeaders.append('vary', 'Origin');
 
   // Sliding refresh: append (not set) so this doesn't clobber any device
-  // Set-Cookie headers already appended above.
-  respHeaders.append('set-cookie', refreshedCookie);
+  // Set-Cookie headers already appended above. Never on a path-token-only
+  // request — that would convert a URL token into a cookie that outlives the
+  // owner's viewer presence.
+  if (refreshedCookie) respHeaders.append('set-cookie', refreshedCookie);
 
   const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
     ? `[${session.targetHost}]` : session.targetHost;
