@@ -106,6 +106,7 @@ export async function loadPartnerServicePrincipalCredential(
         sourceCidrs: partnerServicePrincipals.sourceCidrs,
         partnerStatus: partners.status,
         partnerDeletedAt: partners.deletedAt,
+        ownerStatus: users.status,
         ownerCredentialEpoch: users.credentialEpoch,
         ownerMfaEpoch: users.mfaEpoch,
       })
@@ -136,6 +137,9 @@ export async function loadPartnerServicePrincipalCredential(
       // acceptance or admin status change (credential_epoch), or an MFA factor
       // change (mfa_epoch), ends every key issued before it. Ordinary logout
       // advances only auth_epoch and does not (services/authLifecycle.ts).
+      // A disabled owner also ends them directly, independent of which
+      // epochs the disabling path advanced.
+      || credential.ownerStatus !== 'active'
       || typeof credential.keyOwnerCredentialEpoch !== 'number'
       || typeof credential.keyOwnerMfaEpoch !== 'number'
       || credential.keyOwnerCredentialEpoch !== credential.ownerCredentialEpoch

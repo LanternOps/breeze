@@ -41,6 +41,7 @@ function liveRow(overrides: Record<string, unknown> = {}) {
     sourceCidrs: [],
     partnerStatus: 'active',
     partnerDeletedAt: null,
+    ownerStatus: 'active',
     ownerCredentialEpoch: 3,
     ownerMfaEpoch: 5,
     ...overrides,
@@ -65,6 +66,11 @@ describe('partner service principal key: owner credential binding', () => {
 
   it('stops authenticating after the owner\'s MFA factors change', async () => {
     rowRef.current = liveRow({ ownerMfaEpoch: 6 });
+    await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('stops authenticating while the owner\'s account is not active', async () => {
+    rowRef.current = liveRow({ ownerStatus: 'disabled' });
     await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
   });
 

@@ -186,6 +186,7 @@ function credential(overrides: Record<string, unknown> = {}) {
     sourceCidrs: [],
     partnerStatus: 'active',
     partnerDeletedAt: null,
+    ownerStatus: 'active',
     keyOwnerCredentialEpoch: 2,
     keyOwnerMfaEpoch: 3,
     ownerCredentialEpoch: 2,
@@ -361,6 +362,7 @@ describe('partnerApiAuthMiddleware', () => {
     ['deleted partner', { partnerDeletedAt: new Date() }],
     ['owner whose password changed', { ownerCredentialEpoch: 3 }],
     ['owner whose MFA factors changed', { ownerMfaEpoch: 4 }],
+    ['owner whose account is disabled', { ownerStatus: 'disabled' }],
   ])('sanitizes authentication failure for a %s', async (_label, overrides) => {
     mockBootstrap(credential(overrides));
 

@@ -749,11 +749,13 @@ apiKeyRoutes.post(
     }
 
     // Rotation re-mints the secret but keeps `created_by`, the identity whose
-    // live permissions the key acts with (buildAuthFromApiKey / apiKeyAuth).
-    // So only that creator may rotate it; anyone else with access to the org
-    // can still revoke it. A service principal's key is rotated from the
-    // service principal itself (/service-principals/:id/rotate), which issues
-    // the new key under the rotating admin.
+    // live permissions the key acts with (apiKeyAuth for human keys; over MCP,
+    // buildAuthFromApiKey resolves per-tool permissions from `created_by` for
+    // service-principal keys too). So only that creator may rotate it; anyone
+    // else with access to the org can still revoke it. A service principal's
+    // key is rotated from the service principal itself
+    // (/service-principals/:id/rotate), which issues the new key under the
+    // rotating admin.
     if (existingKey.createdBy !== auth.user.id) {
       return c.json({
         error: 'Only the API key\'s creator can rotate it. Revoke it and create a new key instead.',
