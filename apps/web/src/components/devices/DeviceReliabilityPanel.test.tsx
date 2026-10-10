@@ -969,6 +969,29 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
     consoleError.mockRestore();
   });
 
+  it('says the marker history failed to load and retries it on request', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let listFails = true;
+    fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')
+      ? (listFails
+        ? makeJsonResponse({ error: 'boom' }, false, 500)
+        : makeJsonResponse({ baselines: [{
+          id: 'b1', baselineAt: baseSnapshot.baseline.baselineAt, reason: 'remediated', source: 'manual',
+          note: 'Replaced RAM', beforeSnapshot: null, createdBy: { id: 'u1', name: 'Pat' },
+          createdAt: baseSnapshot.baseline.baselineAt, clearedAt: null, clearedBy: null, active: true,
+        }] }))
+      : makeJsonResponse({ snapshot: baseSnapshot, history: [] }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const notice = await screen.findByTestId('reliability-baseline-list-error');
+    expect(notice).toHaveTextContent("Couldn't load marker history");
+    expect(screen.queryByTestId('reliability-baseline-history-toggle')).toBeNull();
+    listFails = false;
+    fireEvent.click(screen.getByTestId('reliability-baseline-list-retry'));
+    expect(await screen.findByTestId('reliability-baseline-history-toggle')).toBeInTheDocument();
+    expect(screen.queryByTestId('reliability-baseline-list-error')).toBeNull();
+    consoleError.mockRestore();
+  });
+
   it('names an automatic snapshot-only marker as Breeze when the list fails', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuthMock.mockImplementation(async (url: string) => url.endsWith('/baselines')

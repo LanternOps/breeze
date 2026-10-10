@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Önceki değer {{count}} günlük geçmişe dayanıyor",
       "basedOnDays_other": "Önceki değer {{count}} günlük geçmişe dayanıyor",
       "history": "İşaretçi geçmişi",
+      "historyLoadError": "İşaretçi geçmişi yüklenemedi.",
+      "retry": "Yeniden dene",
       "cleared": "Devre dışı",
       "markWorkDone": "Yapılan işi işaretle",
       "dialogTitle": "Bu cihazda yapılan işi işaretle",

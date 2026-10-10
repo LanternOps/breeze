@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Before based on {{count}} day of history",
       "basedOnDays_other": "Before based on {{count}} days of history",
       "history": "Marker history",
+      "historyLoadError": "Couldn't load marker history.",
+      "retry": "Retry",
       "cleared": "Cleared",
       "markWorkDone": "Mark work done",
       "dialogTitle": "Mark work done on this device",

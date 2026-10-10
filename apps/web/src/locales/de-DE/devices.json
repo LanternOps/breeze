@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Vorher-Wert basiert auf {{count}} Tag Verlauf",
       "basedOnDays_other": "Vorher-Wert basiert auf {{count}} Tagen Verlauf",
       "history": "Markierungsverlauf",
+      "historyLoadError": "Der Markierungsverlauf konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
       "cleared": "Aufgehoben",
       "markWorkDone": "Arbeit als erledigt markieren",
       "dialogTitle": "Arbeit an diesem Gerät als erledigt markieren",

@@ -30,11 +30,13 @@ function toLocalInputValue(date: Date): string {
 
 type Bounds = { min: string; max: string };
 
-// `POST /reliability/:deviceId/baselines` — the new marker plus the score
-// recomputed in the same request (null when the device has no snapshot).
+// `POST /reliability/:deviceId/baselines` — the new marker plus the device's
+// score (null when the device has no snapshot). The score can still be the
+// pre-marker one when the API deferred its recompute to the worker, so whether
+// the marker is in effect comes from the marker's own `active` flag.
 type CreateBaselineResponse = {
-  baseline: { id: string } | null;
-  reliability: { baseline?: { id: string } | null } | null;
+  baseline: { id: string; active: boolean } | null;
+  reliability: unknown;
 } | null;
 
 const TITLE_ID = 'reliability-baseline-dialog-title';
@@ -99,9 +101,9 @@ export default function ReliabilityBaselineDialog({ deviceId, open, onClose, onS
                 : undefined,
         // A backdated marker that predates a later active one is saved but not
         // used for scoring, so the score doesn't move: say so rather than claim
-        // a restart. No snapshot to compare against keeps the plain message.
+        // a restart.
         successMessage: (data) =>
-          data?.reliability && data.baseline && data.reliability.baseline?.id !== data.baseline.id
+          data?.baseline && !data.baseline.active
             ? t('deviceReliabilityPanel.baseline.savedNotActive')
             : t('deviceReliabilityPanel.baseline.saved'),
       });
@@ -125,7 +127,7 @@ export default function ReliabilityBaselineDialog({ deviceId, open, onClose, onS
   const title = t('deviceReliabilityPanel.baseline.dialogTitle');
 
   return (
-    <Dialog open={open} onClose={onClose} title={title} labelledBy={TITLE_ID} maxWidth="lg" className="p-6">
+    <Dialog open={open} onClose={() => { if (!submitting) onClose(); }} title={title} labelledBy={TITLE_ID} maxWidth="lg" className="p-6">
       <div className="flex gap-4">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
           <Wrench className="h-5 w-5 text-primary" aria-hidden="true" />

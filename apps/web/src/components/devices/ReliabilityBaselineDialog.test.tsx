@@ -49,7 +49,7 @@ describe('ReliabilityBaselineDialog (#5876)', () => {
   });
 
   it('toasts that scoring restarts when the new marker is the effective one', async () => {
-    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1' }, reliability: { baseline: { id: 'b1' } } }));
+    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1', active: true }, reliability: { baseline: { id: 'b1' } } }));
     render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
     fireEvent.click(screen.getByTestId('baseline-save'));
@@ -61,7 +61,7 @@ describe('ReliabilityBaselineDialog (#5876)', () => {
 
   it('says the score did not change when a later marker is still in effect', async () => {
     // Backdated before a later marker: the effective marker is still b2.
-    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1' }, reliability: { baseline: { id: 'b2' } } }));
+    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1', active: false }, reliability: { baseline: { id: 'b2' } } }));
     render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
     fireEvent.click(screen.getByTestId('baseline-save'));
@@ -114,6 +114,47 @@ describe('ReliabilityBaselineDialog (#5876)', () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByTestId('baseline-save')).not.toBeDisabled();
+  });
+
+  it('trusts the marker\'s own active flag when the returned score is still pre-marker', async () => {
+    // The API deferred the recompute to the worker (it lost a lock race), so the
+    // snapshot in the response still names no marker; the new marker IS in effect.
+    fetchMock.mockResolvedValue(ok({ baseline: { id: 'b1', active: true }, reliability: { baseline: null } }));
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+    fireEvent.click(screen.getByTestId('baseline-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({
+      type: 'success',
+      message: 'Marker saved — scoring restarts from this point',
+    }));
+  });
+
+  it('cannot be dismissed with Escape while a save is in flight', async () => {
+    let resolve!: (r: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((r) => { resolve = r; }));
+    const onClose = vi.fn();
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+    fireEvent.click(screen.getByTestId('baseline-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.keyDown(screen.getByTestId('baseline-note'), { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    resolve(fail({ error: 'boom' }, 500));
+    await waitFor(() => expect(screen.getByTestId('baseline-error')).toBeInTheDocument());
+    fireEvent.keyDown(screen.getByTestId('baseline-note'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('toasts and stays open when the request itself throws', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    render(<ReliabilityBaselineDialog deviceId="dev-1" open onClose={onClose} onSaved={onSaved} />);
+    fireEvent.change(screen.getByTestId('baseline-reason'), { target: { value: 'reimaged' } });
+    fireEvent.click(screen.getByTestId('baseline-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('stays quiet on a 401 (the auth redirect owns it)', async () => {

@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Valor anterior basado en {{count}} día de historial",
       "basedOnDays_other": "Valor anterior basado en {{count}} días de historial",
       "history": "Historial de marcadores",
+      "historyLoadError": "No se pudo cargar el historial de marcadores.",
+      "retry": "Reintentar",
       "cleared": "Anulado",
       "markWorkDone": "Marcar trabajo realizado",
       "dialogTitle": "Marcar trabajo realizado en este dispositivo",

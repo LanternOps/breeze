@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Valore precedente basato su {{count}} giorno di cronologia",
       "basedOnDays_other": "Valore precedente basato su {{count}} giorni di cronologia",
       "history": "Cronologia dei marcatori",
+      "historyLoadError": "Impossibile caricare la cronologia dei marcatori.",
+      "retry": "Riprova",
       "cleared": "Disattivato",
       "markWorkDone": "Segna intervento completato",
       "dialogTitle": "Segna intervento completato su questo dispositivo",

@@ -2125,6 +2125,8 @@
       "basedOnDays_one": "Valeur antérieure basée sur {{count}} jour d’historique",
       "basedOnDays_other": "Valeur antérieure basée sur {{count}} jours d’historique",
       "history": "Historique des marqueurs",
+      "historyLoadError": "Impossible de charger l'historique des marqueurs.",
+      "retry": "Réessayer",
       "cleared": "Désactivé",
       "markWorkDone": "Marquer le travail effectué",
       "dialogTitle": "Marquer le travail effectué sur cet appareil",

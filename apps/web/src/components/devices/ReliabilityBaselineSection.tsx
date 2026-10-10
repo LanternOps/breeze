@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronDown, History, Wrench } from 'lucide-react';
+import { AlertTriangle, ChevronDown, History, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
@@ -131,7 +131,7 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot, canWrit
       } catch (err) {
         if (request.cancelled) return;
         // A read: the marker section is supplementary, so a failure must not
-        // take the score panel down with it — log and render nothing.
+        // take the score panel down with it — log it and show a retryable notice.
         console.error('[ReliabilityBaselineSection] failed to load baseline markers', err);
         setState({ status: 'error' });
       } finally {
@@ -258,6 +258,25 @@ export default function ReliabilityBaselineSection({ deviceId, snapshot, canWrit
               {t('deviceReliabilityPanel.baseline.basedOnDays', { count: before.coverageDays })}
             </p>
           )}
+        </div>
+      )}
+
+      {state.status === 'error' && (
+        <div
+          data-testid="reliability-baseline-list-error"
+          role="status"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>{t('deviceReliabilityPanel.baseline.historyLoadError')}</span>
+          <button
+            type="button"
+            data-testid="reliability-baseline-list-retry"
+            onClick={() => setReloadKey((key) => key + 1)}
+            className="font-medium underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {t('deviceReliabilityPanel.baseline.retry')}
+          </button>
         </div>
       )}
 
