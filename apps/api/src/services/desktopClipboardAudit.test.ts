@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { recordDesktopClipboardSummary, type DesktopClipboardAuditDeps } from './desktopClipboardAudit';
+import {
+  MAX_CLIPBOARD_SEGMENTS_PER_SESSION,
+  recordDesktopClipboardSummary,
+  shouldWriteClipboardSegment,
+  type DesktopClipboardAuditDeps,
+} from './desktopClipboardAudit';
 
 const SESSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const summary = {
@@ -40,6 +45,20 @@ describe('recordDesktopClipboardSummary', () => {
     const segmentId = 'ab'.repeat(16);
     await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: { ...summary, segmentId } }, d);
     expect(d.writeAuditOnce).toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ sessionId: SESSION, segmentId }));
+  });
+
+  it('decides per segment, and caps the rows one session can produce', () => {
+    // The helper runs as the logged-in user; a new segment id per report must
+    // not let it write audit rows without bound.
+    const seg = (n: number) => n.toString(16).padStart(32, '0');
+    expect(shouldWriteClipboardSegment([], seg(1))).toBe(true);
+    expect(shouldWriteClipboardSegment([seg(1)], seg(1))).toBe(false); // resend
+    expect(shouldWriteClipboardSegment([seg(1)], seg(2))).toBe(true); // reconnect
+    const full = Array.from({ length: MAX_CLIPBOARD_SEGMENTS_PER_SESSION }, (_, i) => seg(i));
+    expect(shouldWriteClipboardSegment(full, seg(999))).toBe(false);
+    // A report without a segment id is the session's only row.
+    expect(shouldWriteClipboardSegment([], undefined)).toBe(true);
+    expect(shouldWriteClipboardSegment([seg(1)], undefined)).toBe(false);
   });
 
   it('writes nothing for a session that is not on the reporting device', async () => {

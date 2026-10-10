@@ -554,9 +554,10 @@ type Heartbeat struct {
 	// plane; nil means sendDesktopDisconnectNotification (tests override it).
 	wsStreamStopNotify func(sessionID, reason string)
 	desktopOwners      sync.Map // desktop session ID -> helper session ID
-	// endedDesktopOwners: desktop session ID -> desktopOwnerTombstone, so a
-	// helper's teardown report that lands just after the owner was forgotten
-	// is still attributed (see desktopOwnerMatches).
+	// endedDesktopOwners: desktopOwnerKey(desktop session ID, helper session
+	// ID) -> desktopOwnerTombstone, so a helper's teardown report that lands
+	// just after it stopped owning the session is still attributed (see
+	// desktopOwnerMatches).
 	endedDesktopOwners sync.Map
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the

@@ -25,13 +25,31 @@ export interface DesktopClipboardSummary {
 
 export const DESKTOP_CLIPBOARD_SUMMARY_ACTION = 'session_clipboard_summary';
 
+/**
+ * Most rows one remote session can produce. Each agent Session (reconnect,
+ * Retry, session switch) is a segment with its own row; the cap stops a
+ * reporter minting a new segment id per report from writing without bound.
+ */
+export const MAX_CLIPBOARD_SEGMENTS_PER_SESSION = 32;
+
+/**
+ * Whether a report for `segmentId` gets a row, given the segment ids of the
+ * session's existing rows (null for a row without one). A report without a
+ * segment id is the session's only row.
+ */
+export function shouldWriteClipboardSegment(existing: Array<string | null>, segmentId: string | undefined): boolean {
+  if (existing.length >= MAX_CLIPBOARD_SEGMENTS_PER_SESSION) return false;
+  if (!segmentId) return existing.length === 0;
+  return !existing.includes(segmentId);
+}
+
 export interface DesktopClipboardAuditDeps {
   /** The session, only if it ran on this device. */
   findSession(sessionId: string, deviceId: string): Promise<{ orgId: string; userId: string } | null>;
   /**
-   * Inserts the summary row unless one already exists for this session and
-   * segment (`details.segmentId`; the session alone when absent), atomically.
-   * Returns false when one existed. Two copies of the same report can be in
+   * Inserts the summary row unless shouldWriteClipboardSegment refuses it
+   * (same segment already recorded, or the session's cap reached),
+   * atomically. Returns false when refused. Two copies of the same report can be in
    * flight at once (WS messages are not processed one at a time), so the
    * check and the insert must not be separate transactions.
    */
@@ -90,20 +108,17 @@ const defaultDeps: DesktopClipboardAuditDeps = {
         db.transaction(async (tx) => {
           await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'clipboard-summary:' + details.sessionId}, 0))`);
           const existing = await tx
-            .select({ id: auditLogs.id })
+            .select({ segmentId: sql<string | null>`${auditLogs.details}->>'segmentId'` })
             .from(auditLogs)
             .where(
               and(
                 eq(auditLogs.resourceType, 'remote_session'),
                 eq(auditLogs.resourceId, details.sessionId),
                 eq(auditLogs.action, DESKTOP_CLIPBOARD_SUMMARY_ACTION),
-                details.segmentId
-                  ? sql`${auditLogs.details}->>'segmentId' = ${details.segmentId}`
-                  : undefined,
               ),
             )
-            .limit(1);
-          if (existing.length > 0) return false;
+            .limit(MAX_CLIPBOARD_SEGMENTS_PER_SESSION);
+          if (!shouldWriteClipboardSegment(existing.map((r) => r.segmentId), details.segmentId)) return false;
           await tx.insert(auditLogs).values({
             orgId,
             actorType: 'agent',
