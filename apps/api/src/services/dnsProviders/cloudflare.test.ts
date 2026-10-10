@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudflareGatewayProvider, cloudflareDecisionToAction } from './cloudflare';
 import { requestJson } from './http';
 
@@ -40,6 +40,14 @@ function gqlPage(groups: unknown[]) {
   return { data: { viewer: { accounts: [{ gatewayResolverQueriesAdaptiveGroups: groups }] } }, errors: null };
 }
 
+// Dataset settings answer: how far back the account may query, in seconds.
+function settingsPage(notOlderThan: number) {
+  return {
+    data: { viewer: { accounts: [{ settings: { gatewayResolverQueriesAdaptiveGroups: { notOlderThan } } }] } },
+    errors: null
+  };
+}
+
 function group(datetime: string, queryName: string, resolverDecision: number, extra: Record<string, unknown> = {}) {
   return {
     count: 2,
@@ -56,24 +64,55 @@ function group(datetime: string, queryName: string, resolverDecision: number, ex
   };
 }
 
+const DAY_S = 24 * 60 * 60;
+const NOW = new Date('2026-09-30T12:00:00Z');
+
+/** Dataset calls only (the first call of a sync is the settings lookup). */
+function datasetCalls() {
+  return requestJsonMock.mock.calls.filter((c) => String(bodyOf(c).query).includes('gatewayResolverQueriesAdaptiveGroups('));
+}
+function windowsOf(calls: unknown[][]) {
+  return calls.map((c) => {
+    const v = bodyOf(c).variables;
+    return [v.since, v.until];
+  });
+}
+
+async function collectSlices(provider: CloudflareGatewayProvider, since: Date, until: Date) {
+  const slices: Array<{ until: string; domains: string[] }> = [];
+  for await (const slice of provider.syncEventSlices(since, until)) {
+    slices.push({ until: slice.until.toISOString(), domains: slice.events.map((e) => e.domain) });
+  }
+  return slices;
+}
+
 beforeEach(() => {
-  vi.clearAllMocks();
+  requestJsonMock.mockReset();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('CloudflareGatewayProvider.syncEvents (GraphQL, #7617)', () => {
   it('queries the GraphQL analytics dataset instead of the non-existent /gateway/logs', async () => {
-    requestJsonMock.mockResolvedValueOnce(gqlPage([]) as never);
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce(gqlPage([]) as never);
 
     await makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'));
 
-    expect(requestJsonMock).toHaveBeenCalledTimes(1);
-    const call = requestJsonMock.mock.calls[0]!;
-    expect(urlOf(call)).toBe(GRAPHQL_URL);
-    expect(urlOf(call)).not.toContain('/gateway/logs');
-    const init = initOf(call);
-    expect(init.method).toBe('POST');
-    expect(init.headers?.Authorization).toBe('Bearer cf-token');
-    const body = bodyOf(call);
+    expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    for (const call of requestJsonMock.mock.calls) {
+      expect(urlOf(call)).toBe(GRAPHQL_URL);
+      expect(initOf(call).method).toBe('POST');
+      expect(initOf(call).headers?.Authorization).toBe('Bearer cf-token');
+    }
+    expect(bodyOf(requestJsonMock.mock.calls[0]!).query).toContain('notOlderThan');
+    const body = bodyOf(requestJsonMock.mock.calls[1]!);
     expect(body.query).toContain('gatewayResolverQueriesAdaptiveGroups');
     expect(body.variables).toEqual({
       accountTag: ACCOUNT_ID,
@@ -84,14 +123,16 @@ describe('CloudflareGatewayProvider.syncEvents (GraphQL, #7617)', () => {
   });
 
   it('maps groups to DnsEvents with action from resolverDecision', async () => {
-    requestJsonMock.mockResolvedValueOnce(gqlPage([
-      group('2026-09-30T00:10:00Z', 'malware.testcategory.com', 9, {
-        categoryNames: ['Malware'],
-        policyName: 'block security threats'
-      }),
-      group('2026-09-30T00:11:00Z', 'example.org', 5),
-      group('2026-09-30T00:12:00Z', 'search.example', 7)
-    ]) as never);
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce(gqlPage([
+        group('2026-09-30T00:10:00Z', 'malware.testcategory.com', 9, {
+          categoryNames: ['Malware'],
+          policyName: 'block security threats'
+        }),
+        group('2026-09-30T00:11:00Z', 'example.org', 5),
+        group('2026-09-30T00:12:00Z', 'search.example', 7)
+      ]) as never);
 
     const events = await makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'));
 
@@ -110,45 +151,138 @@ describe('CloudflareGatewayProvider.syncEvents (GraphQL, #7617)', () => {
     expect(events[2]!.action).toBe('redirected');
   });
 
-  it('pages forward from the last timestamp when a page is full, without duplicating', async () => {
-    const full = Array.from({ length: 1000 }, (_, i) =>
-      group(`2026-09-30T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`, `d${i}.example`, 5)
-    );
-    const last = full[full.length - 1]!;
-    requestJsonMock
-      .mockResolvedValueOnce(gqlPage(full) as never)
-      .mockResolvedValueOnce(gqlPage([last, group('2026-09-30T00:59:59Z', 'tail.example', 5)]) as never);
-
-    const events = await makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'));
-
-    expect(requestJsonMock).toHaveBeenCalledTimes(2);
-    expect(bodyOf(requestJsonMock.mock.calls[1]!).variables.since).toBe(new Date(last.dimensions.datetime).toISOString());
-    expect(events).toHaveLength(1001);
-    expect(events[events.length - 1]!.domain).toBe('tail.example');
-  });
-
-  it('splits a long window into one-hour slices (wide windows return no groups)', async () => {
-    requestJsonMock.mockResolvedValue(gqlPage([]) as never);
-
-    await makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T02:30:00Z'));
-
-    const windows = requestJsonMock.mock.calls.map((c) => {
-      const v = bodyOf(c).variables;
-      return [v.since, v.until];
-    });
-    expect(windows).toEqual([
-      ['2026-09-30T00:00:00.000Z', '2026-09-30T01:00:00.000Z'],
-      ['2026-09-30T01:00:00.000Z', '2026-09-30T02:00:00.000Z'],
-      ['2026-09-30T02:00:00.000Z', '2026-09-30T02:30:00.000Z']
-    ]);
-  });
-
   it('surfaces GraphQL errors', async () => {
-    requestJsonMock.mockResolvedValueOnce({ data: null, errors: [{ message: 'not authorized for that account' }] } as never);
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce({ data: null, errors: [{ message: 'not authorized for that account' }] } as never);
 
     await expect(
       makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'))
     ).rejects.toThrow('Cloudflare GraphQL error: not authorized for that account');
+  });
+
+  it('fails clearly when the account is not visible to the token, instead of returning no events', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce({ data: { viewer: { accounts: [] } }, errors: null } as never);
+
+    await expect(
+      makeProvider().syncEvents(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'))
+    ).rejects.toThrow(/account acct-123 not found.*Account Analytics: Read/);
+  });
+});
+
+describe('CloudflareGatewayProvider.syncEventSlices (checkpointed slices)', () => {
+  it('yields one checkpointable slice per hour, including an empty hour between hours with data', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce(gqlPage([group('2026-09-30T00:10:00Z', 'first.example', 5)]) as never)
+      .mockResolvedValueOnce(gqlPage([]) as never)
+      .mockResolvedValueOnce(gqlPage([group('2026-09-30T02:05:00Z', 'third.example', 5)]) as never);
+
+    const slices = await collectSlices(makeProvider(), new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T02:30:00Z'));
+
+    expect(windowsOf(datasetCalls())).toEqual([
+      ['2026-09-30T00:00:00.000Z', '2026-09-30T01:00:00.000Z'],
+      ['2026-09-30T01:00:00.000Z', '2026-09-30T02:00:00.000Z'],
+      ['2026-09-30T02:00:00.000Z', '2026-09-30T02:30:00.000Z']
+    ]);
+    expect(slices).toEqual([
+      { until: '2026-09-30T01:00:00.000Z', domains: ['first.example'] },
+      { until: '2026-09-30T02:00:00.000Z', domains: [] },
+      { until: '2026-09-30T02:30:00.000Z', domains: ['third.example'] }
+    ]);
+  });
+
+  it('stops short of now so late-arriving analytics are not checkpointed as partial counts', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValue(gqlPage([]) as never);
+
+    const slices = await collectSlices(makeProvider(), new Date('2026-09-30T11:30:00Z'), NOW);
+
+    expect(windowsOf(datasetCalls())).toEqual([['2026-09-30T11:30:00.000Z', '2026-09-30T11:55:00.000Z']]);
+    expect(slices.map((s) => s.until)).toEqual(['2026-09-30T11:55:00.000Z']);
+  });
+
+  it('clamps since to the dataset retention edge and warns about the unrecoverable gap', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValue(gqlPage([]) as never);
+
+    await collectSlices(makeProvider(), new Date('2026-09-27T00:00:00Z'), new Date('2026-09-29T14:00:00Z'));
+
+    const first = new Date(bodyOf(datasetCalls()[0]!).variables.since).getTime();
+    // 24h retention back from NOW (12:00), plus a small safety margin — never older than the data.
+    expect(first).toBeGreaterThanOrEqual(new Date('2026-09-29T12:00:00Z').getTime());
+    expect(first).toBeLessThan(new Date('2026-09-29T12:10:00Z').getTime());
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/retention.*2026-09-27T00:00:00\.000Z/));
+  });
+
+  it('falls back to a conservative retention when the settings lookup fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    requestJsonMock
+      .mockResolvedValueOnce({ data: null, errors: [{ message: 'unknown field settings' }] } as never)
+      .mockResolvedValue(gqlPage([]) as never);
+
+    await collectSlices(makeProvider(), new Date('2026-09-20T00:00:00Z'), new Date('2026-09-29T14:00:00Z'));
+
+    const first = new Date(bodyOf(datasetCalls()[0]!).variables.since).getTime();
+    expect(first).toBeGreaterThanOrEqual(new Date('2026-09-29T12:00:00Z').getTime());
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unknown field settings'));
+  });
+
+  it('checkpoints a full page at its last timestamp and re-reads from there, without duplicating', async () => {
+    const full = Array.from({ length: 1000 }, (_, i) =>
+      group(`2026-09-30T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`, `d${i}.example`, 5)
+    );
+    const last = full[full.length - 1]!;
+    const lastIso = new Date(last.dimensions.datetime).toISOString();
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce(gqlPage(full) as never)
+      .mockResolvedValueOnce(gqlPage([last, group('2026-09-30T00:59:59Z', 'tail.example', 5)]) as never);
+
+    const slices = await collectSlices(makeProvider(), new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T01:00:00Z'));
+
+    expect(windowsOf(datasetCalls())).toEqual([
+      ['2026-09-30T00:00:00.000Z', '2026-09-30T01:00:00.000Z'],
+      [lastIso, '2026-09-30T01:00:00.000Z']
+    ]);
+    expect(slices.map((s) => s.until)).toEqual([lastIso, '2026-09-30T01:00:00.000Z']);
+    expect(slices[0]!.domains).toHaveLength(1000);
+    expect(slices[1]!.domains).toEqual(['tail.example']);
+  });
+
+  it('fails the slice instead of silently dropping rows when a full page cannot advance', async () => {
+    const stuck = Array.from({ length: 1000 }, (_, i) => group('2026-09-30T01:00:00Z', `d${i}.example`, 5));
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(DAY_S) as never)
+      .mockResolvedValueOnce(gqlPage([group('2026-09-30T00:10:00Z', 'kept.example', 5)]) as never)
+      .mockResolvedValueOnce(gqlPage(stuck) as never);
+
+    const seen: string[] = [];
+    await expect((async () => {
+      for await (const slice of makeProvider().syncEventSlices(new Date('2026-09-30T00:00:00Z'), new Date('2026-09-30T02:00:00Z'))) {
+        seen.push(slice.until.toISOString());
+      }
+    })()).rejects.toThrow(/1000 or more groups at 2026-09-30T01:00:00\.000Z/);
+    // The complete earlier slice was still handed over for checkpointing.
+    expect(seen).toEqual(['2026-09-30T01:00:00.000Z']);
+  });
+
+  it('stops at the per-run request budget and leaves the rest for the next run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    requestJsonMock
+      .mockResolvedValueOnce(settingsPage(31 * DAY_S) as never)
+      .mockResolvedValue(gqlPage([]) as never);
+
+    const slices = await collectSlices(makeProvider(), new Date('2026-09-20T00:00:00Z'), new Date('2026-09-30T00:00:00Z'));
+
+    expect(slices).toHaveLength(100);
+    expect(slices[99]!.until).toBe('2026-09-24T04:00:00.000Z');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('request budget'));
   });
 });
 
