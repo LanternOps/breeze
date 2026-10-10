@@ -45,12 +45,13 @@ const cacheSchema = z
  * lowest priority number, then oldest assignment. No applicable policy yields
  * the defaults — enabled: false — so removing a policy turns enumeration off.
  *
- * Runs under the heartbeat's org-scoped policy context, an agent's
- * org-scoped ingest context, and user contexts (device view). It reads in the
+ * Runs under the heartbeat's org-scoped policy context and an agent's
+ * org-scoped ingest context, both carrying currentPartnerId. It reads in the
  * caller's own context (#8142): config_policy_workload_inventory_settings
  * carries the SELECT-only partner-wide branch, so a context with
  * currentPartnerId sees its own partner's partner-wide rows without widening
- * accessible_partner_ids.
+ * accessible_partner_ids. A new caller without currentPartnerId (or partner
+ * access) would not see partner-wide policies.
  *
  * The heartbeat passes the device hierarchy it already loaded once per beat
  * (#8053 W1a-1, services/deviceHierarchy.ts); with it this is one statement.
