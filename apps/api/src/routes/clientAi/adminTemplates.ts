@@ -93,7 +93,10 @@ clientAiAdminTemplateRoutes.get(
       .leftJoin(organizations, eq(clientAiPromptTemplates.orgId, organizations.id))
       .orderBy(asc(clientAiPromptTemplates.name));
 
-    if (q.orgId) rows = rows.filter((r) => r.orgId === q.orgId);
+    // A partner-wide row (orgId null) applies to every org, so narrowing to an
+    // org keeps it. fetchWithAuth injects the header org as ?orgId= on every
+    // call, so an exact match here hid every partner-wide template.
+    if (q.orgId) rows = rows.filter((r) => r.orgId === q.orgId || r.orgId === null);
     if (q.scope === 'partner') rows = rows.filter((r) => r.orgId === null);
     if (q.scope === 'org') rows = rows.filter((r) => r.orgId !== null);
 
