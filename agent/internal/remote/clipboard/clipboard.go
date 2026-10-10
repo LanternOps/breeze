@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 )
 
@@ -25,6 +26,20 @@ type Content struct {
 	RTF         []byte
 	Image       []byte
 	ImageFormat string
+}
+
+// ErrNoSupportedFormat: the clipboard is empty or holds only formats the agent
+// cannot read. Unlike a failure to open it, this is a lasting state.
+var ErrNoSupportedFormat = errors.New("clipboard: no supported format")
+
+// noContentError is what a provider returns when no format yielded content.
+// failure is the first read that failed for another reason than the format
+// being absent; it means the clipboard's contents are unknown, not empty.
+func noContentError(failure error) error {
+	if failure != nil {
+		return fmt.Errorf("clipboard: read failed: %w", failure)
+	}
+	return ErrNoSupportedFormat
 }
 
 type Provider interface {
