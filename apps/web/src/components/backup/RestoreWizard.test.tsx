@@ -956,4 +956,54 @@ describe('RestoreWizard', () => {
       expect(screen.queryByText('1 files selected')).toBeNull();
     });
   });
+
+  it('browses selective-restore files one directory at a time and keeps selections across directories (#8230)', async () => {
+    const browseCalls: string[] = [];
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url.startsWith('/backup/snapshots/snap-1/browse')) {
+        browseCalls.push(url);
+        if (url === '/backup/snapshots/snap-1/browse') {
+          return makeJsonResponse({
+            data: [
+              { name: 'C:', path: '/C:', type: 'directory' },
+              { name: 'root.txt', path: 'root.txt', type: 'file', sizeBytes: 1 },
+            ],
+            nextCursor: null,
+          });
+        }
+        if (url === '/backup/snapshots/snap-1/browse?dir=%2FC%3A') {
+          return makeJsonResponse({
+            data: [{ name: 'a.txt', path: 'C:/a.txt', type: 'file', sizeBytes: 2 }],
+            nextCursor: null,
+          });
+        }
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard initialSnapshotId="snap-1" initialSelectedPaths={['root.txt']} />);
+    await screen.findByText('Restore Wizard');
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
+    expect(browseCalls).toEqual(['/backup/snapshots/snap-1/browse']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'C:/' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /a\.txt/i }));
+    expect(browseCalls).toEqual([
+      '/backup/snapshots/snap-1/browse',
+      '/backup/snapshots/snap-1/browse?dir=%2FC%3A',
+    ]);
+
+    // Back at the root, the earlier selection is still checked.
+    fireEvent.click(screen.getByRole('button', { name: 'Up' }));
+    expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/2 files? selected|2/)).toBeTruthy();
+  });
 });

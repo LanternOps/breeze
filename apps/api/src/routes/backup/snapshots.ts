@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupConfigs, backupSnapshotFiles, backupSnapshots, organizations } from '../../db/schema';
+import { backupConfigs, backupSnapshots, organizations } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -19,9 +19,14 @@ import {
   snapshotListSchema,
   snapshotProtectionReasonSchema,
 } from './schemas';
-import type { SnapshotTreeItem } from './types';
 import { attachDeviceNames } from './deviceNames';
-import { normalizeSnapshotPath } from '../../services/backupSelectedPaths';
+import {
+  BROWSE_DEFAULT_LIMIT,
+  BROWSE_MAX_LIMIT,
+  decodeBrowseCursor,
+  dirSegments,
+  listSnapshotDirectory,
+} from '../../services/backupSnapshotBrowse';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -30,6 +35,15 @@ import {
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().guid() });
+
+// #8230: browse is one directory level per request. `dir` is a tree path as
+// returned in a previous page's directory entries (or a raw Windows path);
+// omitted = the snapshot root.
+const snapshotBrowseQuerySchema = z.object({
+  dir: z.string().max(4096).optional(),
+  limit: z.coerce.number().int().min(1).max(BROWSE_MAX_LIMIT).default(BROWSE_DEFAULT_LIMIT),
+  cursor: z.string().max(2048).optional(),
+});
 
 /**
  * True once this org's erasure cascade has been handed to the worker
@@ -62,69 +76,6 @@ type SnapshotProtectionState = {
   immutabilityFallbackReason: string | null;
   retentionBlockedReason: 'legal_hold' | 'immutable_until' | null;
 };
-
-type SnapshotFileRow = {
-  sourcePath: string;
-  size: number | null;
-  modifiedAt: Date | null;
-};
-
-function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
-  const root: SnapshotTreeItem[] = [];
-
-  const ensureDirectory = (container: SnapshotTreeItem[], name: string, path: string): SnapshotTreeItem => {
-    const existing = container.find((entry) => entry.type === 'directory' && entry.path === path);
-    if (existing) return existing;
-    const next: SnapshotTreeItem = { name, path, type: 'directory', children: [] };
-    container.push(next);
-    return next;
-  };
-
-  for (const file of files) {
-    const normalizedPath = normalizeSnapshotPath(file.sourcePath);
-    const parts = normalizedPath.split('/').filter(Boolean);
-    if (parts.length === 0) continue;
-
-    let currentLevel = root;
-    let currentPath = '';
-    for (let index = 0; index < parts.length; index += 1) {
-      const part = parts[index]!;
-      currentPath = `${currentPath}/${part}`.replace('//', '/');
-      const isLeaf = index === parts.length - 1;
-
-      if (isLeaf) {
-        const existingLeafIndex = currentLevel.findIndex((entry) => entry.type === 'file' && entry.path === normalizedPath);
-        const nextLeaf: SnapshotTreeItem = {
-          name: part,
-          path: normalizedPath,
-          type: 'file',
-          sizeBytes: file.size ?? undefined,
-          modifiedAt: file.modifiedAt?.toISOString(),
-        };
-        if (existingLeafIndex >= 0) currentLevel[existingLeafIndex] = nextLeaf;
-        else currentLevel.push(nextLeaf);
-        continue;
-      }
-
-      const directory = ensureDirectory(currentLevel, part, currentPath);
-      directory.children = directory.children ?? [];
-      currentLevel = directory.children;
-    }
-  }
-
-  const sortNodes = (nodes: SnapshotTreeItem[]): SnapshotTreeItem[] =>
-    nodes
-      .map((node) => ({
-        ...node,
-        children: node.children ? sortNodes(node.children) : undefined,
-      }))
-      .sort((left, right) => {
-        if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
-        return left.name.localeCompare(right.name);
-      });
-
-  return sortNodes(root);
-}
 
 function computeImmutableUntilFromNow(immutableDays: number): Date {
   const immutableUntil = new Date();
@@ -290,7 +241,7 @@ snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.BACKUP_READ.
   return c.json(toSnapshotResponse(row));
 });
 
-snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
+snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', snapshotIdParamSchema), zValidator('query', snapshotBrowseQuerySchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
@@ -298,6 +249,7 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
   }
 
   const { id: snapshotId } = c.req.valid('param');
+  const query = c.req.valid('query');
   const authorization = await authorizeRouteResilienceResources(c, orgId, [
     { kind: 'snapshot', id: snapshotId, role: 'source' },
   ], 'read');
@@ -318,22 +270,30 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
     return c.json({ error: 'Snapshot not found' }, 404);
   }
 
-  const files = await db
-    .select({
-      sourcePath: backupSnapshotFiles.sourcePath,
-      size: backupSnapshotFiles.size,
-      modifiedAt: backupSnapshotFiles.modifiedAt,
-    })
-    .from(backupSnapshotFiles)
-    .where(eq(backupSnapshotFiles.snapshotDbId, row.id))
-    .orderBy(backupSnapshotFiles.sourcePath);
+  const cursor = query.cursor ? decodeBrowseCursor(query.cursor) : null;
+  if (query.cursor && !cursor) {
+    return c.json({ error: 'Invalid cursor' }, 400);
+  }
 
-  const tree = buildSnapshotTree(files);
-  const manifestUnavailable = files.length === 0 && (row.fileCount ?? 0) > 0;
+  // Bounded, SQL-side one-level listing: only `limit + 1` grouped entries
+  // leave Postgres, so the request's DB context is held for one cheap query
+  // instead of materialising and serialising the whole file index (#8230).
+  const segments = dirSegments(query.dir);
+  const page = await listSnapshotDirectory({
+    snapshotDbId: row.id,
+    segments,
+    limit: query.limit,
+    cursor,
+  });
+
+  const manifestUnavailable =
+    segments.length === 0 && !cursor && page.entries.length === 0 && (row.fileCount ?? 0) > 0;
   return c.json({
     snapshotId: row.id,
     manifestUnavailable,
-    data: tree,
+    dir: segments.length > 0 ? `/${segments.join('/')}` : '',
+    data: page.entries,
+    nextCursor: page.nextCursor,
   });
 });
 
