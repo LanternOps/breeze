@@ -911,7 +911,8 @@
         "skuHelp": "Ihre Katalog- oder Distributor-Lagernummer für diesen Artikel.",
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Mit KI überarbeiten",
-        "unitCost": "Stückkosten"
+        "unitCost": "Stückkosten",
+        "partNumberRequiredHint": "Fügen Sie eine Teilenummer hinzu, um diese Position in die Teilebestellung aufzunehmen."
       },
       "liveTotals": {
         "annualRecurring": "Jährlich wiederkehrend",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
         "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
         "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>.",
-        "revisionWarning": "Durch das Senden wird {{number}} ersetzt und der bereits vorhandene Kundenlink deaktiviert."
+        "revisionWarning": "Durch das Senden wird {{number}} ersetzt und der bereits vorhandene Kundenlink deaktiviert.",
+        "noPartNumberWarning_one": "{{count}} Produktposition hat keine Teilenummer und wird nicht in die Teilebestellung aufgenommen.",
+        "noPartNumberWarning_other": "{{count}} Produktpositionen haben keine Teilenummer und werden nicht in die Teilebestellung aufgenommen.",
+        "sendAnyway": "Trotzdem senden"
       },
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu und senden Sie dann erneut.",
@@ -1321,7 +1325,9 @@
           "vendor": "Anbieter"
         },
         "title": "Zu bestellen",
-        "unknownVendor": "Sonstige / unbekannter Anbieter"
+        "unknownVendor": "Sonstige / unbekannter Anbieter",
+        "excluded": "Nicht in dieser Bestellung (keine Teilenummer): {{names}}",
+        "untitledLine": "Unbenannte Position"
       },
       "pax8Order": {
         "message_one": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Position) bereitgestellt, für den noch Bereitstellungsdetails fehlen",

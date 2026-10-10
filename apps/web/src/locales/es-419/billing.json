@@ -911,7 +911,8 @@
         "skuHelp": "Su número de stock de catálogo o distribuidor para este artículo.",
         "skuOptional": "SKU (opcional)",
         "tidyWithAi": "Pulir con IA",
-        "unitCost": "Costo unitario"
+        "unitCost": "Costo unitario",
+        "partNumberRequiredHint": "Agrega un número de parte para incluir esto en el pedido de piezas."
       },
       "liveTotals": {
         "annualRecurring": "Recurrente anual",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
         "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>.",
-        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene."
+        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene.",
+        "noPartNumberWarning_one": "{{count}} línea de producto no tiene número de parte y no se agregará al pedido de piezas.",
+        "noPartNumberWarning_other": "{{count}} líneas de producto no tienen número de parte y no se agregarán al pedido de piezas.",
+        "sendAnyway": "Enviar de todos modos"
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
@@ -1321,7 +1325,9 @@
           "vendor": "Proveedor"
         },
         "title": "Por ordenar",
-        "unknownVendor": "Otro / proveedor desconocido"
+        "unknownVendor": "Otro / proveedor desconocido",
+        "excluded": "No incluido en este pedido (sin número de parte): {{names}}",
+        "untitledLine": "Línea sin título"
       },
       "pax8Order": {
         "message_one": "Esta cotización preparó un pedido de Pax8 ({{count}} artículo) pendiente de los detalles de aprovisionamiento",

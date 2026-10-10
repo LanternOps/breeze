@@ -20,7 +20,7 @@ import DeclineOnBehalfDialog from './DeclineOnBehalfDialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
 import { useReviseQuote, isRevisable } from './useReviseQuote';
-import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
+import { computeQuoteProfit, isUnorderableProductLine, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -365,6 +365,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }))),
     [lines],
   );
+
+  // #8232: product-like lines with no part number/SKU won't reach the parts
+  // order once the quote is accepted. Warn before the first send (lines are
+  // only editable on a draft) but never block — stock on hand is a legitimate
+  // reason. Not margin data, so it isn't gated on margin visibility.
+  const noPartNumberCount = useMemo(() => lines.filter(isUnorderableProductLine).length, [lines]);
 
   const orgName = useMemo(() => {
     const billTo = quote.billToName?.trim();
@@ -1298,6 +1304,13 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           </p>
         )}
 
+        {!resendMode && noPartNumberCount > 0 && (
+          <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-no-part-number-warning">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{t('quotes.actions.sendConfirm.noPartNumberWarning', { count: noPartNumberCount })}</span>
+          </p>
+        )}
+
         {/* Envelope fields: label-left rows in one bordered box, like a mail client. */}
         <div className="mt-4 divide-y rounded-md border">
           <div className="flex items-center gap-2 px-3">
@@ -1521,7 +1534,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           >
             {sending
               ? t('quotes.actions.sending')
-              : resendMode ? t('quotes.actions.resend') : t('quotes.actions.sendProposal')}
+              : resendMode
+                ? t('quotes.actions.resend')
+                : noPartNumberCount > 0 ? t('quotes.actions.sendConfirm.sendAnyway') : t('quotes.actions.sendProposal')}
           </button>
         </div>
       </Dialog>

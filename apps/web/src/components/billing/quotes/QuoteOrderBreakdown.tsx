@@ -11,6 +11,8 @@ import {
   computeLineTotal,
   deriveLineFulfillment,
   fromCents,
+  isOrderableQuoteLine,
+  isUnorderableProductLine,
   markupPct,
   toCents,
   type QuoteLineFulfillmentStatus,
@@ -77,14 +79,38 @@ const PAX8_BADGE_ROLE: Record<'staged' | 'ordered' | 'failed' | 'reconcile', Sta
   reconcile: 'warning',
 };
 
-/** Lines the MSP actually has to procure once the quote is won: anything
- *  carrying a distributor identifier (SKU / part number), plus hardware-typed
- *  lines even without one. Service/labor and identifier-less manual lines
- *  stay out — there is nothing to order for them. */
+const byQuoteOrder = (a: QuoteLine, b: QuoteLine) =>
+  a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt);
+
+/** Lines the MSP actually has to procure once the quote is won: only lines
+ *  carrying a distributor identifier (SKU / part number). The rule lives in
+ *  @breeze/shared (`isOrderableQuoteLine`) so every surface agrees on it —
+ *  a hardware line with no identifier is deliberately left out (#8232). */
 export function orderableLines(lines: QuoteLine[]): QuoteLine[] {
-  return lines
-    .filter((l) => Boolean(l.sku || l.partNumber || l.itemType === 'hardware'))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
+  return lines.filter(isOrderableQuoteLine).sort(byQuoteOrder);
+}
+
+/** Product-like lines that will NOT be in the parts order because they have
+ *  no SKU or part number — surfaced so they never drop out silently. */
+export function unorderableProductLines(lines: QuoteLine[]): QuoteLine[] {
+  return lines.filter(isUnorderableProductLine).sort(byQuoteOrder);
+}
+
+/** "Not in this order (no part number): …" — lists the product-like lines the
+ *  parts order left out. Renders nothing when there are none. */
+export function QuoteOrderExcludedNote({ lines, className = '' }: { lines: QuoteLine[]; className?: string }) {
+  const { t } = useTranslation('billing');
+  if (lines.length === 0) return null;
+  const names = lines.map((l) => lineTitle(l) || t('quotes.detail.orderBreakdown.untitledLine')).join(', ');
+  return (
+    <p
+      className={`flex items-start gap-1 px-3 py-2 text-xs text-muted-foreground ${className}`}
+      data-testid="quote-order-breakdown-excluded"
+    >
+      <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" aria-hidden="true" />
+      <span>{t('quotes.detail.orderBreakdown.excluded', { names })}</span>
+    </p>
+  );
 }
 
 /** Bucket key for a line's distributor; identifier-less lines share 'unknown'. */
@@ -168,8 +194,11 @@ export function exportRows(
 // `showCost` rides the same persisted "Show cost & margin" toggle as the rest
 // of the billing UI, so "no margin on screen" holds here too: with it off the
 // table still lists what to order (item/SKU/qty) but drops the economics.
-export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteId, quoteNumber, pax8Order, orders, onChanged }: {
+export default function QuoteOrderBreakdown({ lines, excludedLines = [], currency, showCost, quoteId, quoteNumber, pax8Order, orders, onChanged }: {
   lines: QuoteLine[];
+  /** Product-like lines left out of the order for lack of a part number/SKU;
+   *  listed in a footer so the gap is visible (#8232). */
+  excludedLines?: QuoteLine[];
   currency: string;
   showCost: boolean;
   /** The quote these lines belong to — the fulfillment routes are nested under
@@ -503,6 +532,7 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteId
           {t('quotes.detail.orderBreakdown.missingCost', { count: missingCostCount })}
         </p>
       )}
+      <QuoteOrderExcludedNote lines={excludedLines} className="border-t" />
       {/* Mounted only while open so every attempt gets fresh state — including a
           fresh idempotency key. */}
       {dialogOpen && (

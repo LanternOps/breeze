@@ -919,7 +919,8 @@
         "skuHelp": "Bu ürüne ait katalog veya distribütör stok numaranız.",
         "skuOptional": "SKU (isteğe bağlı)",
         "tidyWithAi": "AI ile düzenli",
-        "unitCost": "Birim maliyeti"
+        "unitCost": "Birim maliyeti",
+        "partNumberRequiredHint": "Parça siparişine dahil etmek için bir parça numarası ekleyin."
       },
       "liveTotals": {
         "annualRecurring": "Yıllık yinelenen",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
         "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
         "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin.",
-        "revisionWarning": "Bunu göndermek {{number}} teklifinin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır."
+        "revisionWarning": "Bunu göndermek {{number}} teklifinin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır.",
+        "noPartNumberWarning_one": "{{count}} ürün satırında parça numarası yok ve parça siparişine eklenmeyecek.",
+        "noPartNumberWarning_other": "{{count}} ürün satırında parça numarası yok ve parça siparişine eklenmeyecek.",
+        "sendAnyway": "Yine de gönder"
       },
       "sendEmailWarning": {
         "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin ve yeniden gönderin.",
@@ -1321,7 +1325,9 @@
           "vendor": "Satıcı"
         },
         "title": "Sipariş edilecek",
-        "unknownVendor": "Diğer / bilinmeyen satıcı"
+        "unknownVendor": "Diğer / bilinmeyen satıcı",
+        "excluded": "Bu siparişte yok (parça numarası yok): {{names}}",
+        "untitledLine": "Başlıksız satır"
       },
       "pax8Order": {
         "message_one": "Bu alıntı, ön hazırlık ayrıntılarını bekleyen bir Pax8 siparişini ({{count}} öğesi) sahneledi",

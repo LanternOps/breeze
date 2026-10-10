@@ -11,7 +11,7 @@ import { runAction, handleActionError } from '../../../lib/runAction';
 import { formatPercent } from '@/lib/i18n/format';
 import { uploadQuoteImage, addQuoteImageFromUrl, quoteImageUrl } from '../../../lib/api/quotes';
 import { catalogItemImagePath } from '../../../lib/api/catalog';
-import { computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath } from '@breeze/shared';
+import { computeLineTotal, isUnorderableProductLine, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath } from '@breeze/shared';
 import PolishButton from '../../catalog/PolishButton';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { useAuthedImage } from './useQuoteImage';
@@ -1010,6 +1010,11 @@ export function EditableLineRow({
   const costDisplay = costFocused || fieldErrors.cost ? cost : (cost.trim() === '' ? '' : formatMoney(cost, currency));
   const skuDirty = sku.trim() !== (line.sku ?? '');
   const partDirty = partNumber.trim() !== (line.partNumber ?? '');
+  // #8232: product-like lines need a SKU or part number to reach the parts
+  // order. Evaluated against the LIVE field values so the hint clears as the
+  // tech types, not after the save round-trip.
+  const missingPartNumber = isUnorderableProductLine({ itemType: line.itemType, sku, partNumber, unitCost: cost });
+  const partNumberHintId = `quote-line-partnumber-hint-${line.id}`;
 
   // Per-line internal-band disclosure: collapsed (summary-only) by default,
   // component-local, never persisted. An unsaved cost/SKU/PN edit (or an inline
@@ -1674,7 +1679,11 @@ export function EditableLineRow({
               onBlur={commitPartNumber}
               disabled={fieldBusy('pn')}
               title={t('quotes.editor.line.partNumberHelp')}
-              aria-describedby={describedByIds(`quote-line-partnumber-help-${line.id}`, partDirty && unsavedHintId(line.id, 'pn'))}
+              aria-describedby={describedByIds(
+                `quote-line-partnumber-help-${line.id}`,
+                missingPartNumber && partNumberHintId,
+                partDirty && unsavedHintId(line.id, 'pn'),
+              )}
               data-testid={`quote-line-partnumber-${line.id}`}
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-colors ${fieldRing(partDirty, saved)}`}
             />
@@ -1761,6 +1770,14 @@ export function EditableLineRow({
           </span>
           </div>
           </InternalBandCollapse>
+          {/* Outside the collapse so it shows on the summary too — a line that
+              won't reach the parts order shouldn't need a click to find out. */}
+          {missingPartNumber && (
+            <p id={partNumberHintId} className="flex items-center gap-1 pt-1 text-warning-foreground dark:text-warning" data-testid={partNumberHintId}>
+              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+              {t('quotes.editor.line.partNumberRequiredHint')}
+            </p>
+          )}
         </div>
       </td>
     </tr>
