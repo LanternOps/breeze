@@ -1,6 +1,6 @@
 /**
  * #4186 W1 — site pin columns + time_entries.site_id (migration
- * 2026-12-18-140000-site-location-columns.sql) against a real Postgres.
+ * 2026-12-20-220000-site-location-columns.sql) against a real Postgres.
  * Error-shape precedent: actionIntentsImmutabilityTrigger.integration.test.ts.
  */
 import './setup';
@@ -87,7 +87,7 @@ describe('site location columns migration', () => {
   });
 
   it('re-running the @no-transaction migration file is a no-op', async () => {
-    const file = '2026-12-18-140000-site-location-columns.sql';
+    const file = '2026-12-20-220000-site-location-columns.sql';
     const content = await readFile(new URL(`../../../migrations/${file}`, import.meta.url), 'utf8');
     const snapshot = () => withSystemDbAccessContext(() => db.execute(sql`
       SELECT 'con' AS k, conname AS n, convalidated::text AS v FROM pg_constraint

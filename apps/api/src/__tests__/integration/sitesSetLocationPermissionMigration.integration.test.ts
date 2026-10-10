@@ -1,5 +1,5 @@
 /**
- * Live-DB replay test for 2026-12-18-140100-sites-set-location-permission.sql
+ * Live-DB replay test for 2026-12-20-220100-sites-set-location-permission.sql
  * (#4186 W1, Gate A Q2). Pattern: aiSessionsUsePermissionMigration.integration.test.ts.
  * OD-4: Partner Technician + Org Technician + Org Admin; never Org Viewer or a
  * custom role merely named "Org Admin".
@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 
 const RUN = !!process.env.DATABASE_URL;
-const MIGRATION = '2026-12-18-140100-sites-set-location-permission.sql';
+const MIGRATION = '2026-12-20-220100-sites-set-location-permission.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 
 const notices: string[] = [];
@@ -50,7 +50,7 @@ async function grantedIds(roleId: string): Promise<string[]> {
   return rows.map((r) => r.permission_id as string);
 }
 
-describe.skipIf(!RUN)('migration: 2026-12-18-140100-sites-set-location-permission', () => {
+describe.skipIf(!RUN)('migration: 2026-12-20-220100-sites-set-location-permission', () => {
   it('the sites:set_location permission row exists exactly once', async () => {
     await replay();
     const rows = await adminSql`select id from permissions where resource = 'sites' and action = 'set_location'`;
