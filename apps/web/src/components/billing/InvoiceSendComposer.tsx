@@ -124,7 +124,13 @@ export default function InvoiceSendComposer({
   const [includePdf, setIncludePdf] = useState(true);
   const [includeDeviceAppendix, setIncludeDeviceAppendix] = useState(partnerDeviceAppendix);
   const [signature, setSignature] = useState<string | null>(null);
-  const [subjectHint, setSubjectHint] = useState<string | null>(null);
+  // What the subject hint needs from the partner; the hint itself is derived
+  // below so an invoice prop changing while open never re-runs the reset.
+  const [partnerPreview, setPartnerPreview] = useState<{
+    name?: string | null;
+    language?: unknown;
+    templateSubject?: string | null;
+  } | null>(null);
   // Set when a Send click finds no valid recipient — an inline reason under the
   // To field beats a silently dead button.
   const [toMissing, setToMissing] = useState(false);
@@ -141,7 +147,7 @@ export default function InvoiceSendComposer({
     if (!open) return;
     setTo(''); setCc(''); setCcOpen(false); setSubject(''); setMessage('');
     setIncludePdf(true); setIncludeDeviceAppendix(partnerDeviceAppendix);
-    setSignature(null); setSubjectHint(null); setToMissing(false); setToPrefillMissing(false);
+    setSignature(null); setPartnerPreview(null); setToMissing(false); setToPrefillMissing(false);
     let canceled = false;
     void (async () => {
       try {
@@ -171,33 +177,41 @@ export default function InvoiceSendComposer({
             } | null;
           };
           setSignature(partner.emailSignature?.trim() || null);
-          const language = partner.settings?.language;
-          const locale = isSupportedLocale(documentLocale)
-            ? documentLocale
-            : isSupportedLocale(language) ? language : 'en';
-          const amountDue = balance == null
-            ? ''
-            : formatMoney(
-              computeChargeNow({
-                depositDue: depositDue ?? null,
-                amountPaid,
-                balance,
-              }, currencyCode).amount,
-              currencyCode,
-              locale,
-            );
-          setSubjectHint(invoiceEmailSubjectPreview({
+          setPartnerPreview({
+            name: partner.name,
+            language: partner.settings?.language,
             templateSubject: partner.settings?.emailTemplates?.invoice_send?.subject,
-            invoiceNumber,
-            partnerName: partner.name,
-            total: amountDue,
-            dueDate: emailDueDate(dueDate),
-          }));
+          });
         } catch { /* no preview — the server still appends the signature */ }
       })();
     }
     return () => { canceled = true; };
-  }, [open, orgId, partnerDeviceAppendix, invoiceNumber, dueDate, currencyCode, amountPaid, balance, depositDue, documentLocale]);
+  }, [open, orgId, partnerDeviceAppendix]);
+
+  const subjectHint = useMemo(() => {
+    if (!partnerPreview) return null;
+    const locale = isSupportedLocale(documentLocale)
+      ? documentLocale
+      : isSupportedLocale(partnerPreview.language) ? partnerPreview.language : 'en';
+    const amountDue = balance == null
+      ? ''
+      : formatMoney(
+        computeChargeNow({
+          depositDue: depositDue ?? null,
+          amountPaid,
+          balance,
+        }, currencyCode).amount,
+        currencyCode,
+        locale,
+      );
+    return invoiceEmailSubjectPreview({
+      templateSubject: partnerPreview.templateSubject,
+      invoiceNumber,
+      partnerName: partnerPreview.name,
+      total: amountDue,
+      dueDate: emailDueDate(dueDate),
+    });
+  }, [partnerPreview, invoiceNumber, dueDate, currencyCode, amountPaid, balance, depositDue, documentLocale]);
 
   const toParsed = useMemo(() => parseAddressList(to), [to]);
   const ccParsed = useMemo(() => parseAddressList(cc), [cc]);

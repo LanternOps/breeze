@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InvoiceSendComposer, { invoiceEmailSubjectPreview } from './InvoiceSendComposer';
@@ -55,6 +55,17 @@ describe('InvoiceSendComposer device appendix (#3205 W07)', () => {
     await userEvent.click(box);
     await userEvent.click(screen.getByTestId('invoice-send-confirm'));
     expect(onSend.mock.calls[0]![0]).toMatchObject({ includeDeviceAppendix: false });
+  });
+
+  it('keeps what the user typed when the invoice props change while open (e.g. Issue & Send numbered it, then the send failed)', async () => {
+    const { rerender } = render(<InvoiceSendComposer {...props} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('billing@example.test'));
+    fireEvent.change(screen.getByTestId('invoice-send-subject'), { target: { value: 'My subject' } });
+
+    rerender(<InvoiceSendComposer {...props} invoiceNumber="INV-9" />);
+
+    expect(screen.getByTestId('invoice-send-subject')).toHaveValue('My subject');
+    expect(screen.getByTestId('invoice-send-to')).toHaveValue('billing@example.test');
   });
 
   it('does not offer an appendix override for an issued invoice', () => {
