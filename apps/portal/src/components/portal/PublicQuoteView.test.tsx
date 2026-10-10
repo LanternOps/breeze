@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { portalApi, type PublicQuoteDetail } from '@/lib/api';
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('@/lib/replaceLocation', () => ({ replaceLocation: vi.fn() }));
 
 import { PublicQuoteView } from './PublicQuoteView';
+import { replaceLocation } from '@/lib/replaceLocation';
 
 afterEach(() => {
   cleanup();
@@ -225,6 +227,73 @@ describe('PublicQuoteView accept validation', () => {
     expect(hint.textContent).toContain('full name');
     expect(accept.getAttribute('aria-describedby')).toBe('public-quote-sign-hint');
     expect(acceptSpy).not.toHaveBeenCalled();
+  });
+});
+
+// #8231 — Sign & pay: when the server says payment follows acceptance, the
+// button and copy say so (deposit-aware), and a successful accept goes straight
+// to the Stripe checkout it returns; otherwise the durable invoice page.
+describe('PublicQuoteView — Sign & pay (#8231)', () => {
+  beforeEach(() => vi.mocked(replaceLocation).mockClear());
+
+  const NO_DEPOSIT: PublicQuoteDetail = {
+    ...DETAIL,
+    quote: { ...DETAIL.quote, depositType: 'none', depositAmount: null, depositDueTotal: null },
+  };
+
+  const sign = () => {
+    fireEvent.change(screen.getByTestId('public-quote-signer'), { target: { value: 'Pat Prospect' } });
+    fireEvent.click(screen.getByTestId('public-quote-agree'));
+    fireEvent.click(screen.getByTestId('public-quote-accept'));
+  };
+
+  it('labels the button with the deposit when payment follows and a deposit is due', () => {
+    render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, payOnAccept: true }} />);
+    expect(screen.getByTestId('public-quote-accept').textContent).toBe('Sign & pay deposit $97.20');
+    expect(screen.getByTestId('public-quote-sign').textContent).toContain('secure payment');
+  });
+
+  it('labels the button with the amount due on acceptance when there is no deposit', () => {
+    render(<PublicQuoteView token="public-token" initial={{ ...NO_DEPOSIT, payOnAccept: true }} />);
+    expect(screen.getByTestId('public-quote-accept').textContent).toBe('Sign & pay $324.00');
+  });
+
+  it('keeps "Accept & sign" when no online payment follows', () => {
+    render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, payOnAccept: false }} />);
+    expect(screen.getByTestId('public-quote-accept').textContent).toBe('Accept & sign');
+    expect(screen.getByTestId('public-quote-sign').textContent).not.toContain('secure payment');
+  });
+
+  it('keeps "Accept & sign" when nothing is due on acceptance (recurring-only)', () => {
+    const recurringOnly: PublicQuoteDetail = {
+      ...NO_DEPOSIT,
+      quote: { ...NO_DEPOSIT.quote, oneTimeTotal: '0.00', dueOnAcceptanceTotal: '0.00' },
+      payOnAccept: true,
+    };
+    render(<PublicQuoteView token="public-token" initial={recurringOnly} />);
+    expect(screen.getByTestId('public-quote-accept').textContent).toBe('Accept & sign');
+  });
+
+  it('goes straight to the returned checkout after a successful accept', async () => {
+    vi.spyOn(portalApi, 'acceptPublicQuote').mockResolvedValue({ data: { data: {
+      status: 'converted', invoiceNumber: null, invoiceUrl: 'https://portal.test/invoice/tok',
+      checkoutUrl: 'https://checkout.stripe.com/c/pay/x',
+    } } });
+    render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, payOnAccept: true }} />);
+    sign();
+    await waitFor(() => expect(replaceLocation).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/x'));
+    expect(replaceLocation).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the durable invoice page when no checkout was minted', async () => {
+    vi.spyOn(portalApi, 'acceptPublicQuote').mockResolvedValue({ data: { data: {
+      status: 'converted', invoiceNumber: null, invoiceUrl: 'https://portal.test/invoice/tok', checkoutUrl: null,
+    } } });
+    render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, payOnAccept: true }} />);
+    sign();
+    await waitFor(() => expect(replaceLocation).toHaveBeenCalledWith('https://portal.test/invoice/tok'));
+    // The button promised payment, so the fallback says payment didn't open.
+    expect(screen.getByTestId('public-quote-accepted').textContent).toContain("couldn't open payment");
   });
 });
 

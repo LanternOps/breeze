@@ -387,6 +387,12 @@ export const SENTRY_EVENT_CODES = [
    *  `remote_desktop_stop_undelivered` because the actionable target is the
    *  relay (Redis/BullMQ), not the device. */
   'remote_desktop_stop_dispatch_failed',
+
+  // --- quotes / payments --------------------------------------------------
+  /** A public quote accept gave up waiting on the Stripe Checkout mint
+   *  (ACCEPT_CHECKOUT_TIMEOUT_MS) and sent the customer to the invoice page.
+   *  A run of these means Stripe (or the partner's account) is slow. */
+  'quote_accept_checkout_timeout',
 ] as const;
 
 /**
