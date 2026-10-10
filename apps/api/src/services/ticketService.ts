@@ -322,6 +322,30 @@ async function writeTicketOutbox(
 }
 
 /**
+ * The `ticket.commented` outbox row for a comment inserted outside this file —
+ * the email-authored writer (`inboundEmail/emailComments.ts`, #8326). Same
+ * payload as every comment writer here: ids only, with the origin read off the
+ * stored row so the webhook says what the Partner API feed says. Same
+ * transaction rule as `writeTicketOutbox`: call it on the ambient `db`, inside
+ * the transaction that inserted the comment.
+ */
+export async function writeTicketCommentedOutbox(input: {
+  orgId: string;
+  ticketId: string;
+  commentId: string;
+  isPublic: boolean;
+  originPrincipalKind: string;
+  originPrincipalId: string | null;
+}): Promise<void> {
+  await writeTicketOutbox(input.orgId, input.ticketId, 'ticket.commented', {
+    commentId: input.commentId,
+    isPublic: input.isPublic,
+    originPrincipalKind: input.originPrincipalKind,
+    originPrincipalId: input.originPrincipalId,
+  });
+}
+
+/**
  * Caller verification (#6354): a system comment on the ticket the
  * verification snapshotted, written in the CALLER's transaction after a
  * successful status CAS (that CAS is the idempotency boundary — a retry that

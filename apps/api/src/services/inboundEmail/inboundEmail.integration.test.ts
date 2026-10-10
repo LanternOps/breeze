@@ -501,6 +501,23 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     expect(inboundComment.isPublic).toBe(true);
     expect(inboundComment.commentType).toBe('comment');
 
+    // #8326: the reply itself writes a `ticket.commented` outbox row in the same
+    // ingest transaction as the reopen's `ticket.status_changed`, so webhooks
+    // and automations see the customer's reply. Same payload as every other
+    // comment writer; the origin is the stored row's (`user`, no principal).
+    const commentedRows = await admin().select().from(ticketOutbox).where(and(
+      eq(ticketOutbox.ticketId, fx.aResolvedTicketId),
+      eq(ticketOutbox.eventType, 'ticket.commented')
+    ));
+    expect(commentedRows).toHaveLength(1);
+    expect(commentedRows[0]!.orgId).toBe(fx.orgA.id);
+    expect(commentedRows[0]!.payload).toEqual({
+      commentId: inboundComment.id,
+      isPublic: true,
+      originPrincipalKind: 'user',
+      originPrincipalId: null,
+    });
+
     // Logged as `matched` under partner A.
     const aRows = await inboundRowsFor(fx.partnerA.id, providerMessageId);
     expect(aRows.length).toBe(1);
