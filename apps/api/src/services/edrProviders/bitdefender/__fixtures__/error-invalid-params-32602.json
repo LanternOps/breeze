@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params","data":{"details":"Invalid params: the endpoint does not exists or the user has not enough rights to access it"}}}

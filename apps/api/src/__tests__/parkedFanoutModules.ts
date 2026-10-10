@@ -11,6 +11,7 @@
 /** Target selection for background work: must reference a parked-device predicate. */
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
   // --- shared resolvers -----------------------------------------------------
+  'services/externalDeviceMatching/candidates.ts': { guards: 1, reason: 'candidate devices for external vendor endpoint matching carry the parked-device predicate' },
   'services/featureConfigResolver.ts': { guards: 5, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets' },
   'services/configurationPolicy.ts': { guards: 1, reason: 'effective configuration for a device (no partner-level assignment for a parked device)' },
   'services/policyEvaluationService.ts': { guards: 3, reason: 'policy scope and assignment-target device resolution' },
@@ -81,6 +82,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/commandDispatch.ts': { guards: 1, reason: '1 guarded site: the narrowed (parked) batch claim reads the org type and cancels refused rows. The single-row push claim hands the org type to partitionClaimable (commandClaimEligibility.ts), which carries the parked cancel for both legs and is pinned by parkedCommandDelivery.contract.test.ts' },
   'services/commandQueue.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/dispatchDeviceCommand.ts': { guards: 1, reason: '1 guarded site: prepareDeviceCommand checks isParkedDevice before persisting a command' },
+  'services/edrProviders/deviceMatching.ts': { guards: 1, reason: 'stale-link validation drops links to parked devices; candidates come from externalDeviceMatching/candidates.ts' },
   'services/monitors/conversion/convert.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },
   'services/monitors/conversion/legacyBaseline.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },
   'services/peripheralPolicyState.ts': { guards: 1, reason: '1 guarded site' },

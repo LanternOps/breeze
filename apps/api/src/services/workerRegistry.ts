@@ -959,6 +959,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // EDR provider framework W01 (#8164). 'global': its import closure reaches no socket-local
+    // dispatch (no alerts/events until W02 — re-verify placement then with
+    // workerEntrypointClosure.contract.test.ts).
+    name: 'edrProviderSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/edrProviderSync');
+      return { init: m.initializeEdrProviderSyncJob, shutdown: m.shutdownEdrProviderSyncJob };
+    },
+  },
+  {
     // socket-owner, not global: its runtime import closure reaches
     // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
     // -> services/m365ControlPlane/readActionService.ts ->

@@ -1,0 +1,3 @@
+{"id":2,"jsonrpc":"2.0","result":{"page":2,"perPage":2,"hasMoreRecords":false,"total":3,"pagesCount":2,"items":[
+{"id":"6a0000000000000000000a03","name":"printer-gamma","type":1,"companyId":"5f0a1b2c3d4e5f60718293a1","parentId":"5f0a1b2c3d4e5f60718293a1","details":{"fqdn":"printer-gamma.corp.example.test","ip":"10.0.0.13","macs":[],"isManaged":false,"machineType":1,"operatingSystemVersion":"","modules":{}}}
+]}}

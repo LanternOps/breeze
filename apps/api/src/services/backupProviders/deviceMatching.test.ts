@@ -98,4 +98,13 @@ describe('resolveDeviceMatches', () => {
     expect(out.links).toEqual([]);
     expect(out.ambiguous).toEqual([]);
   });
+
+  it("keeps exact-name semantics: 'ws-01.corp' does NOT match 'ws-01' (FQDN shortening is EDR-only)", () => {
+    const out = resolveDeviceMatches(
+      [{ id: 'p1', orgId: ORG, matchName: 'ws-01', macAddresses: [] }],
+      [dev('d1', 'ws-01.corp')],
+    );
+    expect(out.links).toEqual([]);
+    expect(out.ambiguous).toEqual([]);
+  });
 });

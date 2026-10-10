@@ -292,6 +292,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
   // #6008 W01. The scanner is file-local; both gates are one import away.
   'routes/backup/providers.ts': 'every connection write calls requireProviderPartnerAdmin (routes/backup/providerAccess.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
+  // #8164 W01b — same shape as routes/backup/providers.ts. NOT routes/edr/tenants.ts:
+  // it delegates to the service and mutates nothing itself.
+  'routes/edr/connections.ts': 'every connection write calls requireEdrPartnerAdmin (routes/edr/access.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
   'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
   // #6008 W02. persistVendorSnapshot has exactly one caller, syncConnectionById
   // (jobs/backupProviderSync.ts), invoked only from the backup-provider-sync
@@ -301,6 +304,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // connection's OWN partner_id (never a caller-supplied one). The one
   // caller-facing write to this table, remapCustomer, is the entry above.
   'services/backupProviders/persist.ts': 'persistVendorSnapshot runs only inside the backup-provider-sync worker under system context, invoked from a job payload with no caller to gate; it writes each row under the syncing connection\'s own partner_id',
+  // #8165 W01b. Mirrors the backup entries: the EDR mapping service is reached only through the gated route; the persist writers run only in the sync worker.
+  'services/edrProviders/mapping.ts': 'remapEdrTenant has one caller, PUT /edr/tenants/:id/mapping, which passes requireEdrPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached; autoMapEdrTenants runs only inside the edr-provider-sync worker under system context',
+  'services/edrProviders/persist.ts': 'upsertTenants/persistInventory/persistDetections run only inside the edr-provider-sync worker under system context, invoked from a job payload with no caller to gate; every row they write takes the syncing connection\'s own partner_id',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither

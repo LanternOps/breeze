@@ -304,6 +304,8 @@ const EXPECTED_NAMES = [
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker',
   // Backup provider integration W02 (#6008 / #6010).
   'backupProviderSyncWorker',
+  // EDR provider framework W01 (#8164).
+  'edrProviderSyncWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker', 'securityScanWorker', 'peripheralJobs',
