@@ -3,6 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
 )
 
 // PersistServerIdentity rewrites org_id and site_id in agent.yaml after the
@@ -31,5 +34,30 @@ func PersistServerIdentity(cfgPath, orgID, siteID string) error {
 	}
 	cfg.OrgID = orgID
 	cfg.SiteID = siteID
-	return saveToLocked(cfg, cfgPath, credentialsFromDisk)
+	return saveToLockedWithIdentity(cfg, cfgPath, credentialsFromDisk, identityFromConfig)
+}
+
+// resolveOrgSiteForSave returns the org/site a non-identity save writes: the
+// ones already in agent.yaml when it has them, else the caller's (a first save).
+// An unreadable file falls back to the caller's values, as before this rule.
+// Callers must hold persistMu.
+func resolveOrgSiteForSave(cfgPath, orgID, siteID string) (string, string) {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return orgID, siteID
+	}
+	var onDisk struct {
+		OrgID  string `yaml:"org_id"`
+		SiteID string `yaml:"site_id"`
+	}
+	if err := yaml.Unmarshal(raw, &onDisk); err != nil {
+		return orgID, siteID
+	}
+	if onDisk.OrgID != "" {
+		orgID = onDisk.OrgID
+	}
+	if onDisk.SiteID != "" {
+		siteID = onDisk.SiteID
+	}
+	return orgID, siteID
 }

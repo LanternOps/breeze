@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +56,14 @@ const (
 	// Spread the restarts when a whole org is re-homed at once (org merge).
 	identityRestartMaxJitter  = time.Minute
 	identityRestartMarkerFile = "identity-sync-restart.json"
+	// A restart that was requested but never came (RestartSelf reported
+	// success and the process kept running) must not hold back forever the
+	// upgrades, credential rotation and cert renewal it gates.
+	identityRestartPendingMax = identityRestartMaxJitter + identityRestartMaxWait + 9*time.Minute
+	// Restarts tried for one identity before this agent stops trying for the
+	// life of the process: a real BREEZE_ORG_ID / BREEZE_SITE_ID override
+	// never lets the persisted identity take effect.
+	identityRestartMaxAttempts = 2
 )
 
 var (
@@ -166,12 +175,14 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 	return nil
 }
 
-// identityRestartMarker records the identity the last restart was for, so a
-// persisted identity that did not take effect cannot trigger a restart loop.
+// identityRestartMarker records the identity the last restart was for and how
+// many restarts it took, so a persisted identity that does not take effect
+// cannot trigger a restart loop. It is removed once the identity is in effect.
 type identityRestartMarker struct {
 	RestartedAt time.Time `json:"restartedAt"`
 	OrgID       string    `json:"orgId"`
 	SiteID      string    `json:"siteId"`
+	Attempts    int       `json:"attempts"`
 }
 
 // Seams for tests.
@@ -193,11 +204,15 @@ var (
 )
 
 // identitySync holds the per-process state: the nonce of the latest beat, the
-// one-shot restart latch, and the bounded log of the last failure.
+// restart latch and when it was set, the identity given up on, and the bounded
+// log of the last failure.
 type identitySync struct {
-	nonce            atomic.Pointer[string]
-	restartRequested atomic.Bool
-	failureLogged    atomic.Pointer[string]
+	nonce              atomic.Pointer[string]
+	restartRequested   atomic.Bool
+	restartRequestedAt atomic.Int64
+	gaveUpOn           atomic.Pointer[string]
+	failureLogged      atomic.Pointer[string]
+	markerChecked      sync.Once
 }
 
 func newIdentityNonce() string {
@@ -218,6 +233,7 @@ func (h *Heartbeat) reportIdentityForBeat() *ReportedIdentity {
 	if h.config.DeviceID == "" || h.config.OrgID == "" || h.config.SiteID == "" {
 		return nil
 	}
+	h.identitySync.markerChecked.Do(h.clearAppliedIdentityRestartMarker)
 	nonce := newIdentityNonce()
 	if nonce == "" {
 		return nil
@@ -241,6 +257,20 @@ func (h *Heartbeat) logIdentitySyncFailure(level string, msg, reason string) {
 	log.Warn(msg, "reason", reason)
 }
 
+// clearAppliedIdentityRestartMarker removes the restart marker once the
+// identity it was written for is the one this process loaded: the restart
+// worked, so a later move to that same identity starts with a clean count.
+func (h *Heartbeat) clearAppliedIdentityRestartMarker() {
+	path := identityRestartMarkerPath()
+	m, ok := readIdentityRestartMarker(path)
+	if !ok || m.OrgID != h.config.OrgID || m.SiteID != h.config.SiteID {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Warn("failed to remove the identity restart marker", "error", err.Error())
+	}
+}
+
 func readIdentityRestartMarker(path string) (identityRestartMarker, bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -262,7 +292,13 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		return false
 	}
 	if h.identitySync.restartRequested.Load() {
-		return true
+		requestedAt := time.Unix(0, h.identitySync.restartRequestedAt.Load())
+		if identitySyncNow().Sub(requestedAt) < identityRestartPendingMax {
+			return true
+		}
+		h.identitySync.restartRequested.Store(false)
+		h.logIdentitySyncFailure("error", "the restart for the server-assigned identity never happened; resuming normal work",
+			"the new identity applies on the next start")
 	}
 	if a == nil {
 		return false
@@ -286,24 +322,40 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		return false
 	}
 
+	target := a.OrgID + "|" + a.SiteID
+	if p := h.identitySync.gaveUpOn.Load(); p != nil && *p == target {
+		return false
+	}
 	markerPath := identityRestartMarkerPath()
 	now := identitySyncNow()
-	if m, ok := readIdentityRestartMarker(markerPath); ok && m.OrgID == a.OrgID && m.SiteID == a.SiteID &&
-		now.Sub(m.RestartedAt) < identityRestartCooldown {
-		h.logIdentitySyncFailure("error", "server-assigned identity did not take effect after a restart; not restarting again",
-			"org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
-		return false
+	attempts := 1
+	if m, ok := readIdentityRestartMarker(markerPath); ok && m.OrgID == a.OrgID && m.SiteID == a.SiteID {
+		previous := max(m.Attempts, 1)
+		if previous >= identityRestartMaxAttempts {
+			h.identitySync.gaveUpOn.Store(&target)
+			log.Error("server-assigned identity did not take effect after restarting for it; not restarting for it again in this process",
+				"orgId", a.OrgID, "siteId", a.SiteID, "attempts", previous,
+				"hint", "org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
+			return false
+		}
+		if now.Sub(m.RestartedAt) < identityRestartCooldown {
+			h.logIdentitySyncFailure("error", "server-assigned identity did not take effect after a restart; waiting before one more attempt",
+				"org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
+			return false
+		}
+		attempts = previous + 1
 	}
 
 	if !h.identitySync.restartRequested.CompareAndSwap(false, true) {
 		return true
 	}
+	h.identitySync.restartRequestedAt.Store(now.UnixNano())
 	if err := persistServerIdentityFn(config.ActiveConfigFile(), a.OrgID, a.SiteID); err != nil {
 		h.identitySync.restartRequested.Store(false)
 		h.logIdentitySyncFailure("error", "failed to persist the server-assigned identity; keeping the enrolled one", err.Error())
 		return false
 	}
-	if raw, err := json.Marshal(identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID}); err == nil {
+	if raw, err := json.Marshal(identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, Attempts: attempts}); err == nil {
 		if err := os.WriteFile(markerPath, raw, 0600); err != nil {
 			log.Warn("failed to record the identity restart marker", "error", err.Error())
 		}
@@ -330,6 +382,11 @@ func (h *Heartbeat) restartForIdentity() {
 		time.Sleep(identityRestartPollInterval)
 	}
 	if err := restartForIdentityFn(); err != nil {
-		log.Error("restart after identity change failed; the new identity applies on the next start", "error", err.Error())
+		// Release the gate: the upgrades, credential rotation and mTLS cert
+		// renewal it holds back must not wait for a restart that will not
+		// come (a lapsed cert takes the device offline). The marker keeps
+		// the next try behind the cooldown.
+		h.identitySync.restartRequested.Store(false)
+		log.Error("restart after identity change failed; resuming normal work, the new identity applies on the next start", "error", err.Error())
 	}
 }

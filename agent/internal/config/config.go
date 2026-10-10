@@ -817,6 +817,10 @@ func Save(cfg *Config) error {
 // credential the disk does not have yet (the first save of a fresh install).
 // Enrollment, the one caller whose in-memory credentials ARE authoritative,
 // uses SaveEnrollment.
+//
+// #8317 — the same holds for org_id/site_id: once agent.yaml has them, they
+// are preserved from disk (see identitySource); only enrollment and
+// PersistServerIdentity change them.
 func SaveTo(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
@@ -928,6 +932,29 @@ func prepareSaveDir(cfgPath string) error {
 // loadLocked so a read-modify-write of the config file is atomic against every
 // other viper user.
 func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
+	identity := identityFromDisk
+	if source == credentialsFromConfig {
+		identity = identityFromConfig
+	}
+	return saveToLockedWithIdentity(cfg, cfgFile, source, identity)
+}
+
+// identitySource selects who is authoritative for org_id/site_id in a save.
+//
+// #8317 — they are written by enrollment and by PersistServerIdentity (a
+// server-signed reassignment) and by nothing else. Every other save passes a
+// *Config the caller loaded at startup — the token-rotation and mTLS paths
+// pass the heartbeat's — so between a reassignment and the restart that
+// applies it those copies still hold the old pair, and a plain SaveTo would
+// write it back over the new one. Same rule as credentials (#2773).
+type identitySource int
+
+const (
+	identityFromDisk identitySource = iota
+	identityFromConfig
+)
+
+func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSource, identity identitySource) error {
 	cfgPath := ResolveSavePath(cfgFile)
 	if err := prepareSaveDir(cfgPath); err != nil {
 		return err
@@ -940,11 +967,16 @@ func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
 		return err
 	}
 
+	orgID, siteID := cfg.OrgID, cfg.SiteID
+	if identity == identityFromDisk {
+		orgID, siteID = resolveOrgSiteForSave(cfgPath, orgID, siteID)
+	}
+
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
-	viper.Set("org_id", cfg.OrgID)
-	viper.Set("site_id", cfg.SiteID)
+	viper.Set("org_id", orgID)
+	viper.Set("site_id", siteID)
 	viper.Set("device_id", cfg.DeviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
