@@ -1056,6 +1056,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_event_log_settings', ['configuration_policies']],
   ['config_policy_hardware_monitoring_settings', ['configuration_policies']],
   ['config_policy_time_sync_settings', ['configuration_policies']],
+  ['config_policy_workload_inventory_settings', ['configuration_policies']],
   ['dashboard_widgets', ['analytics_dashboards']],
   ['backup_snapshot_files', ['backup_snapshots']],
   ['backup_snapshot_origins', ['backup_snapshots']],

@@ -225,6 +225,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
+  'agents/workloads.ts': { exempt: 'agent_transport' },
   'ai.ts': { exempt: 'ai_transport', note: 'Chat session transport (sessions, messages, interrupt, approve-plan); usage/budget/admin sub-routes are AI governance.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
@@ -414,6 +415,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { gap: '#6783' },
   'devices/watchdogLogs.ts': { gap: '#6783' },
+  // #3834 W01: the host axis (hostsWorkloads/workloadRuntimes) is part of the
+  // device projection that get_device_details returns. W04 adds
+  // query_device_workloads for the per-workload list and replaces this entry.
+  'devices/workloads.ts': { tools: ['get_device_details'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
   'discoveryAssetProbe.ts': { gap: '#6779' },
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },

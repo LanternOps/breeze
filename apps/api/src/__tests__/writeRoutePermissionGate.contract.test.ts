@@ -137,6 +137,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/unifi-telemetry': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/uninstallIntent.ts
   'POST /api/v1/agents/:id/uninstall-intent': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/workloads.ts
+  'PUT /api/v1/agents/:id/workloads': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/ai/scriptProposals.ts
   'POST /api/v1/ai/script-proposals/:id/request-changes': 'equivalent check: loadScriptProposalDetail viewer.canDecide (userCanDecideApprovals)',
   // routes/alerts/alerts.ts

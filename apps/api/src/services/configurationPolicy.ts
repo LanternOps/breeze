@@ -14,6 +14,7 @@ import {
   configPolicyEventLogSettings,
   configPolicyHardwareMonitoringSettings,
   configPolicyTimeSyncSettings,
+  configPolicyWorkloadInventorySettings,
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -63,6 +64,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   timeSyncInlineSettingsSchema,
+  workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
   warrantyHpCmslCollectionEffective,
   readRecordedWarrantyHpCmslConsent,
@@ -906,6 +908,15 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'workload_inventory': {
+      const parsed = workloadInventoryInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyWorkloadInventorySettings).values({
+        featureLinkId: linkId,
+        ...parsed,
+      });
+      break;
+    }
+
     case 'sensitive_data': {
       await tx.insert(configPolicySensitiveDataSettings).values({
         featureLinkId: linkId,
@@ -1172,6 +1183,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
     case 'time_sync':
       timeSyncInlineSettingsSchema.parse(settings);
       break;
+    case 'workload_inventory':
+      workloadInventoryInlineSettingsSchema.parse(settings);
+      break;
     case 'maintenance':
       maintenanceInlineSettingsSchema.parse(settings);
       break;
@@ -1222,6 +1236,9 @@ async function deleteNormalizedRows(
       break;
     case 'time_sync':
       await tx.delete(configPolicyTimeSyncSettings).where(eq(configPolicyTimeSyncSettings.featureLinkId, linkId));
+      break;
+    case 'workload_inventory':
+      await tx.delete(configPolicyWorkloadInventorySettings).where(eq(configPolicyWorkloadInventorySettings.featureLinkId, linkId));
       break;
     case 'sensitive_data':
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
@@ -1419,6 +1436,24 @@ async function assembleInlineSettings(
               pinnedTimezone: row.pinnedTimezone,
               autoFix: row.timezoneAutoFix,
             },
+          })
+        : null;
+    }
+
+    case 'workload_inventory': {
+      const [row] = await executor
+        .select()
+        .from(configPolicyWorkloadInventorySettings)
+        .where(eq(configPolicyWorkloadInventorySettings.featureLinkId, linkId))
+        .limit(1);
+      return row
+        ? workloadInventoryInlineSettingsSchema.parse({
+            enabled: row.enabled,
+            dockerEnabled: row.dockerEnabled,
+            podmanEnabled: row.podmanEnabled,
+            hypervEnabled: row.hypervEnabled,
+            proxmoxEnabled: row.proxmoxEnabled,
+            intervalMinutes: row.intervalMinutes,
           })
         : null;
     }
@@ -3148,6 +3183,7 @@ export async function validateFeaturePolicyExists(
     featureType === 'event_log' ||
     featureType === 'hardware_monitoring' ||
     featureType === 'time_sync' ||
+    featureType === 'workload_inventory' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||

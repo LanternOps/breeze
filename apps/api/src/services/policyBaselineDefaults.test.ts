@@ -3,7 +3,7 @@ import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from './configFeat
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
-import { TIME_SYNC_DEFAULTS } from '@breeze/shared';
+import { TIME_SYNC_DEFAULTS, WORKLOAD_INVENTORY_DEFAULTS } from '@breeze/shared';
 
 describe('policyBaselineDefaults', () => {
   it('has exactly one entry per ConfigFeatureType', () => {
@@ -57,6 +57,12 @@ describe('policyBaselineDefaults', () => {
       getPolicyBaselineDefaults().find((x) => x.featureType === 'time_sync')!
         .inlineSettings,
     ).toEqual(TIME_SYNC_DEFAULTS);
+  });
+
+  it('shows workload inventory as off by default and detection-only', () => {
+    const entry = getPolicyBaselineDefaults().find((x) => x.featureType === 'workload_inventory')!;
+    expect(entry).toMatchObject({ applied: false, inlineSettings: WORKLOAD_INVENTORY_DEFAULTS });
+    expect(entry.behavior).toMatch(/off by default/i);
   });
 });
 

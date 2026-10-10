@@ -29,6 +29,8 @@ export const CONFIG_FEATURE_TYPES = [
   'hardware_monitoring',
   // Time sync — inherited NTP/timezone management settings, inline-only.
   'time_sync',
+  // #3834 — workload host inventory enumeration settings, inline-only.
+  'workload_inventory',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -128,6 +130,7 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   monitors: 'protective', // monitor definitions — detection only
   hardware_monitoring: 'protective', // RAID/disk-health collection — detection only
   time_sync: 'protective', // NTP/timezone enforcement settings — no execution capability
+  workload_inventory: 'protective', // opt-in, read-only enumeration of containers/VMs — nothing executes, installs or receives a secret
   warranty: 'protective', // informational warranty alerts — no execution capability
   // A device that self-selects into a group
   // gains nothing new from patch/backup that it doesn't already have as an

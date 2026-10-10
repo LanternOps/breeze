@@ -14,7 +14,7 @@
 // service into pamSettings/helpers test suites (#1725 PR review).
 import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
 import type { RemoteAccessSettings } from './remoteAccessPolicy';
-import { HARDWARE_MONITORING_DEFAULTS, TIME_SYNC_DEFAULTS } from '@breeze/shared';
+import { HARDWARE_MONITORING_DEFAULTS, TIME_SYNC_DEFAULTS, WORKLOAD_INVENTORY_DEFAULTS } from '@breeze/shared';
 
 export interface BaselineEntry {
   featureType: ConfigFeatureType;
@@ -61,7 +61,7 @@ export function getPamBaseline(): { uacInterceptionEnabled: boolean } {
 // follows CONFIG_FEATURE_TYPES. "Not enforced" entries describe the real-world
 // effect of having no policy.
 const NOT_ENFORCED: Record<
-  Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring' | 'time_sync'>,
+  Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring' | 'time_sync' | 'workload_inventory'>,
   { label: string; behavior: string }
 > = {
   patch:             { label: 'Patches',            behavior: 'Not enforced — no patch deployments are created from policy.' },
@@ -124,6 +124,16 @@ export function getPolicyBaselineDefaults(): BaselineEntry[] {
         },
         behavior:
           'NTP enforcement and timezone auto-fix are OFF by default; expected timezone follows the site.',
+      };
+    }
+    if (ft === 'workload_inventory') {
+      return {
+        featureType: ft,
+        label: 'Workload Inventory',
+        applied: false,
+        inlineSettings: { ...WORKLOAD_INVENTORY_DEFAULTS },
+        behavior:
+          'Workload listing is OFF by default: container and VM runtimes are detected, but their workloads are not listed until a policy enables it.',
       };
     }
     const meta = NOT_ENFORCED[ft];

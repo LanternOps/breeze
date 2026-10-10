@@ -35,6 +35,7 @@ export type BodyLimitRule =
   | 'agent-ingest'
   | 'agent-hardware-health'
   | 'agent-time-status'
+  | 'agent-workloads'
   | 'agent-topology-adjacency'
   | 'agent-unifi-telemetry'
   | 'ticket-attachment'
@@ -209,6 +210,20 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
     return {
       rule: 'agent-time-status',
       maxSize: 512 * 1024,
+      error: 'Request body too large',
+    };
+  }
+  // Workload inventory report (#3834): capped at 2 MiB. The schema caps (max
+  // 1000 workloads per runtime, max 5 runtimes, per-field widths) do NOT fit
+  // inside this at their maximums (~14 MB worst case); a typical item is
+  // ~750 B. The agent must keep its report under this byte budget itself
+  // (truncate and send `complete: false`) rather than rely on the schema caps,
+  // or the whole report — detection included — is refused with 413.
+  // Matched before the broader agent-ingest branch so it keeps its own label.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/workloads$/)) {
+    return {
+      rule: 'agent-workloads',
+      maxSize: 2 * 1024 * 1024,
       error: 'Request body too large',
     };
   }

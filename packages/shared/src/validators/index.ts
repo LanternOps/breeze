@@ -856,6 +856,7 @@ export const patchInlineSettingsSchema = z.object({
 
 export * from './hardwareHealth';
 export * from './timeSync';
+export * from './workloads';
 
 export const eventLogInlineSettingsSchema = z.object({
   retentionDays: z.number().int().min(7).max(365).default(30),

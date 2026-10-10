@@ -47,6 +47,8 @@ import { i18n } from "../../lib/i18n";
 export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = [
   "remote_access",
   "pam",
+  // W04 (#3834) adds the workload_inventory row.
+  "workload_inventory",
 ] as const;
 type FeatureType = Exclude<
   ConfigFeatureType,

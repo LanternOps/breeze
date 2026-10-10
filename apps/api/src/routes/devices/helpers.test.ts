@@ -95,6 +95,12 @@ describe('public device projection', () => {
     expect(Object.keys(buildPublicDeviceProjection())).toEqual([...PUBLIC_DEVICE_FIELDS]);
   });
 
+  it('exposes the workload host axis but not the capability counter', () => {
+    expect(PUBLIC_DEVICE_FIELDS).toContain('hostsWorkloads');
+    expect(PUBLIC_DEVICE_FIELDS).toContain('workloadRuntimes');
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('workloadInventoryProtocolVersion');
+  });
+
   it('drops unknown future columns by default', () => {
     expect(projectPublicDevice({ ...safe, futureCredential: 'private' }))
       .not.toHaveProperty('futureCredential');

@@ -341,6 +341,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities', 'device_warranty',
+  'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
   'fleet_finding_devices',
@@ -612,6 +613,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
+  // #3834 — workload inventory: leaf tables, FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE.
+  'device_workload_runtimes', 'device_workloads',
   // Administrator-approved diagnostic read grants — FK device_id -> devices.id
   // plus a deferred composite (device_id, org_id) -> devices(id, org_id), both
   // without cascade. approval_requests rows reference it ON DELETE SET NULL;

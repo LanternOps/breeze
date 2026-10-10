@@ -152,6 +152,10 @@ const BUCKET_MATCHERS = {
   orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
   pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
   automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  // #8190: the workload-inventory resolver's single policy read. It rides the
+  // passed hierarchy (no device/org/group reads of its own) and runs only on a
+  // workload settings-cache miss.
+  workloadInventoryPolicy: (s: string) => s.includes('"config_policy_workload_inventory_settings"'),
   peripheralCapabilityWrites: (s: string) =>
     s.startsWith('update "device_commands"') || s.startsWith('update "peripheral_policy_device_states"'),
 } as const;
@@ -425,7 +429,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // The WS frame keys bypass HTTP auth (see the WS test).
   [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
   [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
-  'POST /agents/:id/heartbeat': { transactions: 4, statements: 31 },
+  // 31 -> 32 (#8190): workload inventory delivery's per-feature policy read
+  // (bucket workloadInventoryPolicy), the same +1 the route-only beat takes.
+  'POST /agents/:id/heartbeat': { transactions: 4, statements: 32 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
@@ -749,14 +755,20 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // beat reds this. If a change legitimately adds one, raise the number in
     // the same PR, name the bucket, and say why. The remaining bulk is the 9
     // per-feature policy reads plus the OneDrive context (W1a-2).
+    // 26 -> 27 steady, 57 -> 58 cold (and the miss/legacy shapes below +1): workload
+    // inventory delivery (#8190) adds a tenth per-feature policy read,
+    // bucket `workloadInventoryPolicy`, on a workload settings-cache miss.
+    // Warm is a Redis hit and stays at 20.
     // Cold's one org-partner and one group-membership read are the effective
     // config assignment resolution; warm and steady skip them via hotPathCache.
     expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
-    expect(steady.statements).toBeLessThanOrEqual(26);
+    expect(steady.statements).toBeLessThanOrEqual(27);
+    expect(steady.buckets.workloadInventoryPolicy).toBe(1);
+    expect(warm.buckets.workloadInventoryPolicy).toBe(0);
     expect(warm.transactions).toBe(3);
     expect(warm.statements).toBeLessThanOrEqual(20);
     expect(cold.transactions).toBeLessThanOrEqual(8);
-    expect(cold.statements).toBeLessThanOrEqual(57);
+    expect(cold.statements).toBeLessThanOrEqual(58); // 57 + workloadInventoryPolicy (#8190)
     expect(cold.buckets.hierarchyLoad).toBe(1);
     expect(cold.buckets.deviceLookup).toBe(0);
     expect(cold.buckets.topologyNegotiation).toBe(0);
@@ -809,7 +821,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.buckets.automationPolicies).toBe(1);
     expect(missed.buckets.orgHelperSettings).toBe(1);
     expect(missed.buckets.pamOrgConfig).toBe(1);
-    expect(missed.statements).toBeLessThanOrEqual(30);
+    expect(missed.statements).toBeLessThanOrEqual(31); // 30 + workloadInventoryPolicy (#8190)
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
@@ -826,7 +838,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.status).toBe(200);
     expect(steady.transactions).toBeLessThanOrEqual(3);
     expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
-    expect(steady.statements).toBeLessThanOrEqual(28);
+    expect(steady.statements).toBeLessThanOrEqual(29); // 28 + workloadInventoryPolicy (#8190)
   });
 
   runDb('a real SQL error in the helper reader stays inside its savepoint: the shared policy transaction still commits', async () => {
