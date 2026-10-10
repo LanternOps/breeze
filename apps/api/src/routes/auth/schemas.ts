@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { partnerPaymentSettingsPatchSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -172,6 +173,9 @@ const STEP_UP_OPERATIONS = [
   'ai_partner_script_ceiling_grant',
   'topology_arm',
   'backup_unattested_restore',
+  'autopay_charge_now',
+  'partner_payment_settings_update',
+  'autopay_request_recipient',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -274,7 +278,23 @@ export const unattestedRestoreStepUpResource = z.object({
     'bmr_recover', 'bare_metal_rebuild',
   ]),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource]);
+// Autopay charge now: one invoice (routes/invoices/autopay.ts).
+export const autopayChargeNowStepUpResource = z.object({ invoiceId: z.string().uuid() });
+// Partner payment settings: the partner and the exact patch, parsed by the
+// same shared schema the PUT route uses, so a grant can be minted only for a
+// patch the route would accept (routes/billingPaymentSettings.ts).
+export const partnerPaymentSettingsStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  settings: partnerPaymentSettingsPatchSchema,
+});
+// Redirected authorization request: mirrors the request body of
+// POST /billing/autopay/requests when recipientOverride is set.
+export const autopayRequestRecipientStepUpResource = z.object({
+  orgIds: z.array(z.string().uuid()).min(1).max(500),
+  recipientOverride: z.string().email().max(255),
+  mode: z.enum(['request', 'reauthorize']).optional(),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

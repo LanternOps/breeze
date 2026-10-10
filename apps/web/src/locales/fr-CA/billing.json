@@ -2636,6 +2636,21 @@
       "schedule_inactive": "Cette facture n’est plus prévue pour un paiement automatique.",
       "generic": "Le paiement automatique n’a pas pu être lancé. Actualisez la facture pour voir son état actuel.",
       "excluded_contract": "Le contrat de cette facture est exclu des paiements automatiques, donc rien n'a été prélevé. Si le client avait été avisé de ce paiement, il a reçu un courriel indiquant qu'il n'aura pas lieu."
+    },
+    "stepUp": {
+      "heading": "Confirmez que c'est bien vous",
+      "intro": {
+        "autopay_charge_now": "Prélever cette facture maintenant nécessite une nouvelle vérification à deux facteurs.",
+        "partner_payment_settings_update": "Modifier les paramètres de paiement nécessite une nouvelle vérification à deux facteurs pour ces valeurs précises.",
+        "autopay_request_recipient": "Envoyer la demande d'autorisation à une adresse autre que celle du contact de facturation nécessite une nouvelle vérification à deux facteurs."
+      },
+      "code": "Code d'authentification",
+      "passkey": "Vous confirmerez avec votre clé d'accès.",
+      "noFactor": "Ajoutez d'abord une application d'authentification ou une clé d'accès à votre compte.",
+      "enrollLink": "Configurer un deuxième facteur",
+      "confirm": "Confirmer",
+      "failed": "Échec de la vérification. Réessayez.",
+      "unavailable": "Impossible de démarrer la vérification"
     }
   },
   "reminders": {

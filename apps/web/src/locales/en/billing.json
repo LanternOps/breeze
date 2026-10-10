@@ -2636,6 +2636,21 @@
       "schedule_inactive": "This invoice is no longer scheduled for automatic payment.",
       "generic": "Automatic payment could not be started. Refresh the invoice to see its current status.",
       "excluded_contract": "This invoice's contract is excluded from automatic payments, so it was not charged. If the client had been told about this payment, they were emailed that it won't happen."
+    },
+    "stepUp": {
+      "heading": "Confirm it's you",
+      "intro": {
+        "autopay_charge_now": "Charging this invoice now needs a fresh second-factor check.",
+        "partner_payment_settings_update": "Changing payment settings needs a fresh second-factor check for these exact values.",
+        "autopay_request_recipient": "Sending the authorization request to an address other than the billing contact needs a fresh second-factor check."
+      },
+      "code": "Authenticator code",
+      "passkey": "You will confirm with your passkey.",
+      "noFactor": "Add an authenticator app or passkey to your account first.",
+      "enrollLink": "Set up a second factor",
+      "confirm": "Confirm",
+      "failed": "Verification failed. Try again.",
+      "unavailable": "Unable to start verification"
     }
   },
   "reminders": {

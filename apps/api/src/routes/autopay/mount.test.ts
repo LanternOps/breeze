@@ -9,6 +9,17 @@ const h = vi.hoisted(() => ({
   identity: vi.fn(),
   email: vi.fn(),
   confirmView: vi.fn(), confirm: vi.fn(),
+  consume: vi.fn(), mfa: true, principal: 'user_session',
+}));
+// Real digests, stubbed grant store: each test decides whether the presented
+// grant is accepted and the binding it was checked against is asserted.
+vi.mock('../../services/mfaStepUpGrant', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../services/mfaStepUpGrant')>()),
+  consumeStepUpGrant: h.consume,
+}));
+vi.mock('../../services/authEpochs', () => ({ getUserEpochs: async () => ({ authEpoch: 2, mfaEpoch: 4 }) }));
+vi.mock('../auth/schemas', async importOriginal => ({
+  ...(await importOriginal<typeof import('../auth/schemas')>()), ENABLE_2FA: true,
 }));
 vi.mock('../../services/autopay/confirmPayment',()=>({getConfirmPaymentView:h.confirmView,confirmInvoicePayment:h.confirm}));
 vi.mock('../../db', () => ({
@@ -37,6 +48,8 @@ vi.mock('../../middleware/auth', () => ({
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
     c.set('auth', {
       user: { id: 'user' },
+      principal: { kind: h.principal },
+      token: { mfa: h.mfa, sid: 'session-1' },
       partnerId: 'partner',
       accessibleOrgIds: ['org'],
       allowedSiteIds: ['site'],
@@ -44,6 +57,12 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
+  isInteractiveUserSession: (auth: any) => auth.principal?.kind === 'user_session',
+  hasSatisfiedMfa: (auth: any) => auth.token?.mfa === true,
+  requireInteractiveSession: () => async (c: any, next: any) => c.get('auth')?.principal?.kind === 'user_session'
+    ? next() : c.json({ error: 'Interactive user session required' }, 403),
+  requireMfa: () => async (c: any, next: any) => c.get('auth')?.token?.mfa === true
+    ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403),
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
     if (c.req.header('x-deny')) return c.json({ error: 'Forbidden' }, 403);
     await next();
@@ -77,6 +96,7 @@ const request = (
   });
 beforeEach(() => {
   vi.clearAllMocks();
+  h.mfa = true; h.principal = 'user_session'; h.consume.mockResolvedValue(true);
   h.exclude.mockResolvedValue({ status: 'excluded' });
   h.identity.mockResolvedValue({ orgId: 'org', partnerId: 'partner' });
   h.view.mockResolvedValue({ state: 'scheduled', collectOn: '2026-10-15' });
@@ -280,7 +300,11 @@ it('confirm rejects missing authority, stale binding, cross-origin and invalid J
  expect(h.confirm).not.toHaveBeenCalled();
 });
 
-const charge = (extra: Record<string,string> = {}, invoiceId = id) => app.request(`/api/v1/invoices/${invoiceId}/autopay/charge-now`, { method: 'POST', headers: {...headers,...extra} });
+const grant = '90000000-0000-4000-8000-000000000009';
+// body null: the request carries no body at all (what an older client sends).
+const charge = (extra: Record<string,string> = {}, invoiceId = id, body: unknown = { stepUpGrant: grant }) =>
+  app.request(`/api/v1/invoices/${invoiceId}/autopay/charge-now`, { method: 'POST', headers: {...headers,...extra},
+    ...(body === null ? {} : { body: JSON.stringify(body) }) });
 function chargeRows(schedule: any = {id:'schedule-1',eligible:true,state:'scheduled',noticeSentAt:new Date('2020-01-01'),noticeOutboxId:'notice',termsSnapshot:{issuedAt:'2026-10-01T00:00:00Z',offsetDays:0,rule:'later',cap:{enabled:false},methodType:'card',methodId:'method',last4:'4242',methodLabel:'Card',accountHolderType:null,noticeLeadDays:1,principal:'100.00',currency:'USD',feeAmount:'0.00',feeKind:'none',cardFeeBps:0,achFeeAmount:'0.00',chargeDate:'2026-10-01',noticeSeq:1}}) {
   const rows = [[{id,orgId:'org',siteId:'site',partnerId:'partner'}],schedule?[schedule]:[]];
   h.select.mockImplementation(() => ({from:()=>({where:()=>({limit:async()=>rows.shift()??[]})})}));
@@ -313,4 +337,41 @@ it('Charge now tells staff whether a payment was attempted, not only the provide
  chargeRows();h.collect.mockResolvedValue({outcome:'requires_action',state:'requires_action',reason:'authentication_required',attemptId:'attempt',failureClass:'auth_required'});
  const response=await charge();expect(response.status).toBe(409);
  expect(await response.json()).toEqual({error:'authentication_required',code:'authentication_required',outcome:'requires_action'});
+});
+
+it('Charge now asks for a step-up bound to this invoice before revocation or Stripe',async()=>{
+ for (const body of [null, {}]) {
+  chargeRows();
+  const response=await charge({},id,body);
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({error:'Step-up required',code:'STEP_UP_REQUIRED',
+   stepUp:{operation:'autopay_charge_now',resource:{invoiceId:id}}});
+ }
+ expect(h.consume).not.toHaveBeenCalled();expect(h.collect).not.toHaveBeenCalled();
+});
+it('Charge now consumes a grant bound to this invoice, this session and this operation',async()=>{
+ chargeRows();h.collect.mockResolvedValue({outcome:'created',attemptId:'attempt'});
+ expect((await charge()).status).toBe(200);
+ const { autopayChargeNowResourceDigest } = await import('../../services/mfaStepUpGrant');
+ expect(h.consume).toHaveBeenCalledWith(grant,{userId:'user',operation:'autopay_charge_now',authEpoch:2,mfaEpoch:4,
+  sid:'session-1',resourceDigest:autopayChargeNowResourceDigest({invoiceId:id})});
+ expect(h.consume.mock.invocationCallOrder[0]).toBeLessThan(h.collect.mock.invocationCallOrder[0]!);
+});
+it('Charge now refuses a stale, replayed or mismatched grant without charging',async()=>{
+ chargeRows();h.consume.mockResolvedValue(false);
+ const response=await charge();
+ expect(response.status).toBe(403);expect((await response.json()).code).toBe('STEP_UP_REQUIRED');
+ expect(h.collect).not.toHaveBeenCalled();
+});
+it('Charge now requires an MFA-assured interactive session',async()=>{
+ h.mfa=false;
+ const noMfa=await charge();expect(noMfa.status).toBe(403);expect((await noMfa.json()).code).toBe('MFA_REQUIRED');
+ h.mfa=true;h.principal='api_key';
+ expect((await charge()).status).toBe(403);
+ expect(h.consume).not.toHaveBeenCalled();expect(h.collect).not.toHaveBeenCalled();
+});
+it('Charge now rejects a malformed step-up grant',async()=>{
+ expect((await charge({},id,{stepUpGrant:'not-a-uuid'})).status).toBe(400);
+ expect((await charge({},id,{stepUpGrant:grant,extra:true})).status).toBe(400);
+ expect(h.collect).not.toHaveBeenCalled();
 });

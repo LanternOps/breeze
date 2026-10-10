@@ -593,6 +593,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
           disabled={saving || paymentSettings.saving || !canManageAutopay} />
         {paymentSettings.view.autopayEnabled && canManageAutopay && <OrgAutopayCard orgId={orgId} />}
       </div>}
+      {paymentSettings.stepUpPrompt}
 
       <div className="flex justify-end">
         <button

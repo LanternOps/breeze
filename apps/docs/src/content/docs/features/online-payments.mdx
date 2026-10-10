@@ -63,6 +63,10 @@ Refunds are **reflect-only**: you issue a refund from your own Stripe dashboard,
 
 Connecting and disconnecting Stripe requires billing management permission plus multi-factor authentication. Copying or resetting an invoice's customer link uses the same permission as issuing and sending invoices, and both actions are recorded in the [audit log](/reference/audit-logs/).
 
+**Charge now** on an invoice, saving the partner **Billing settings → Payments** tab, and sending a client's automatic-payment request to an address other than its billing contact each ask for a second-factor confirmation (an authenticator-app code or a passkey) for that exact invoice, those settings or that recipient. These actions are available only from a signed-in user session, not from API keys. If your account has only text-message codes, add an authenticator app or passkey under your profile first.
+
+Before an automatic payment is started, Breeze checks the invoice against the automatic-payment limit the client authorized and against your current limit, if lower. An invoice above either limit is not charged: nothing is created in Stripe, the planned charge is cancelled and the client is told it will not happen.
+
 <Aside type="caution">
   Your connected Stripe account can only charge in the currencies it supports. If a document is priced in a currency your Stripe account doesn't handle, Breeze warns you on the invoice or quote rather than blocking your work -- but the customer's card payment will be declined at checkout with a plain "this invoice can't be paid online" message. Fix it by enabling that currency in Stripe, or take payment another way and record it manually.
 </Aside>

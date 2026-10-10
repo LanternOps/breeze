@@ -2636,6 +2636,21 @@
       "schedule_inactive": "Bu fatura artık otomatik ödeme için planlanmış değil.",
       "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin.",
       "excluded_contract": "Bu faturanın sözleşmesi otomatik ödemelerin dışında tutulduğu için tahsilat yapılmadı. Müşteriye bu ödeme bildirildiyse, ödemenin gerçekleşmeyeceğine dair bir e-posta gönderildi."
+    },
+    "stepUp": {
+      "heading": "Kimliğinizi doğrulayın",
+      "intro": {
+        "autopay_charge_now": "Bu faturayı şimdi tahsil etmek yeni bir ikinci faktör doğrulaması gerektirir.",
+        "partner_payment_settings_update": "Ödeme ayarlarını değiştirmek, bu değerler için yeni bir ikinci faktör doğrulaması gerektirir.",
+        "autopay_request_recipient": "Yetkilendirme isteğini fatura kişisi dışındaki bir adrese göndermek yeni bir ikinci faktör doğrulaması gerektirir."
+      },
+      "code": "Kimlik doğrulayıcı kodu",
+      "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
+      "noFactor": "Önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+      "enrollLink": "İkinci faktörü ayarla",
+      "confirm": "Onayla",
+      "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
+      "unavailable": "Doğrulama başlatılamadı"
     }
   },
   "reminders": {

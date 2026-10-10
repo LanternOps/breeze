@@ -5,6 +5,8 @@ import { i18n } from '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import PaymentsSettingsTab, { usePaymentSettings } from './PaymentsSettingsTab';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const stepUpMint = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/mfaStepUp', () => ({ mintStepUpGrant: stepUpMint }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const inherited = {
@@ -420,4 +422,30 @@ describe('automatic payment controls at narrow widths (#7897)', () => {
     expect(caption()).toHaveTextContent('Overrides Partner default (Limit enabled)');
     expect(caption()).not.toHaveTextContent('inherited from');
   });
+});
+
+it('partner settings save asks for a second-factor confirmation and resubmits the same values with the grant', async () => {
+  stepUpMint.mockResolvedValue('grant-s');
+  const fetch = vi.mocked(fetchWithAuth);
+  fetch.mockImplementation(async (url, init) => {
+    if (url === '/users/me') return Response.json({ mfaEnabled: true, mfaMethod: 'totp' });
+    if (url === '/auth/passkeys') return Response.json([]);
+    if (init?.method === 'PUT') {
+      const { stepUpGrant, ...settings } = JSON.parse(init.body as string);
+      return stepUpGrant ? Response.json({ success: true }) : Response.json({ error: 'Step-up required', code: 'STEP_UP_REQUIRED',
+        stepUp: { operation: 'partner_payment_settings_update', resource: { partnerId: 'p1', settings } } }, { status: 403 });
+    }
+    return Response.json({ autopayEnabled: true, values, inherited, effective: inherited });
+  });
+  render(<I18nextProvider i18n={i18n}><PaymentsSettingsTab /></I18nextProvider>);
+  fireEvent.click(await screen.findByTestId('autopay-settings-save'));
+  fireEvent.change(await screen.findByTestId('billing-stepup-code'), { target: { value: '333444' } });
+  fireEvent.click(screen.getByTestId('billing-stepup-confirm'));
+  await waitFor(() => expect(fetch.mock.calls.filter(([, i]) => i?.method === 'PUT')).toHaveLength(2));
+  const [first, second] = fetch.mock.calls.filter(([, i]) => i?.method === 'PUT').map(([url, i]) => [url, JSON.parse(i!.body as string)] as const);
+  expect(first![0]).toBe('/partner/billing/payment-settings');
+  expect(second![1]).toEqual({ ...first![1], stepUpGrant: 'grant-s' });
+  expect(stepUpMint).toHaveBeenCalledWith({ operation: 'partner_payment_settings_update',
+    resource: { partnerId: 'p1', settings: first![1] }, reauth: { method: 'totp', code: '333444' } });
+  await waitFor(() => expect(screen.queryByTestId('billing-stepup')).toBeNull());
 });

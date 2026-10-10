@@ -2636,6 +2636,21 @@
       "schedule_inactive": "Diese Rechnung ist nicht mehr für eine automatische Zahlung geplant.",
       "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen.",
       "excluded_contract": "Der Vertrag dieser Rechnung ist von automatischen Zahlungen ausgenommen, daher wurde nichts belastet. Wurde der Kunde über diese Zahlung informiert, hat er eine E-Mail erhalten, dass sie nicht stattfindet."
+    },
+    "stepUp": {
+      "heading": "Bestätigen Sie, dass Sie es sind",
+      "intro": {
+        "autopay_charge_now": "Das sofortige Belasten dieser Rechnung erfordert eine erneute Zwei-Faktor-Prüfung.",
+        "partner_payment_settings_update": "Das Ändern der Zahlungseinstellungen erfordert eine erneute Zwei-Faktor-Prüfung für genau diese Werte.",
+        "autopay_request_recipient": "Das Senden der Autorisierungsanfrage an eine andere Adresse als den Rechnungskontakt erfordert eine erneute Zwei-Faktor-Prüfung."
+      },
+      "code": "Authenticator-Code",
+      "passkey": "Sie bestätigen mit Ihrem Passkey.",
+      "noFactor": "Fügen Sie Ihrem Konto zuerst eine Authenticator-App oder einen Passkey hinzu.",
+      "enrollLink": "Zweiten Faktor einrichten",
+      "confirm": "Bestätigen",
+      "failed": "Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
+      "unavailable": "Verifizierung konnte nicht gestartet werden"
     }
   },
   "reminders": {

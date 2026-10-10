@@ -208,6 +208,26 @@ export async function reserveCollection(input: CollectionInput)
       methodId:method.id,methodType:method.type,principal,currency:invoice.currencyCode,quote:lawfulQuote,
     });
     if (!quote) return refuse('consent_required');
+    if (schedule) {
+      // The cap the client accepted, and a lower current MSP cap, are checked here,
+      // before any PaymentIntent exists, so an over-cap invoice is refused with nothing
+      // created at Stripe. Same rule as the pre-confirm check in beforeConfirm, which
+      // stays as the second guard for a cap lowered between reservation and confirm.
+      // Like an excluded contract above, the schedule ends here for every caller (the
+      // scheduler and Charge now alike) and the client is told the announced charge
+      // will not happen. Unscheduled (on-session) payments carry their own per-invoice
+      // authorization and are not autopay.
+      const acceptedCap = await acceptedAutopayCap(db, { orgId: invoice.orgId, enrollmentId: enrollment.id,
+        generation: enrollment.generation, methodId: method.id });
+      const capReason = acceptedCap ? autopayCapReason({ current: settings.autopayCap.value, accepted: acceptedCap,
+        total: invoice.total, currency: invoice.currencyCode }) : 'consent_required';
+      if (capReason) {
+        await db.update(invoiceAutopaySchedules).set({ state: 'cancelled', stateReason: capReason, nextAttemptAt: null })
+          .where(eq(invoiceAutopaySchedules.id, schedule.id));
+        await noticeChargeNotMade(db, { invoiceId: invoice.id, scheduleId: schedule.id, reason: capReason });
+        return refuse(capReason);
+      }
+    }
     if (terms && (terms.methodType !== method.type || terms.noticeLeadDays !== noticeLeadDays(method)
       || terms.methodId !== method.id || terms.accountHolderType !== method.accountHolderType
       || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, quote)
