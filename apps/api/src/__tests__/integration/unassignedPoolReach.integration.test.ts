@@ -65,6 +65,7 @@ import {
   createRole,
   createUser,
   grantRolePermissions,
+  userEpochs,
 } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
@@ -145,6 +146,7 @@ describe('partner API principal discovery', () => {
       partnerId,
       name: 'holding reach key',
       actorId: user.id,
+      actorSessionEpochs: await userEpochs(user.id),
     });
     const app = new Hono();
     app.use('*', partnerApiAuthMiddleware);

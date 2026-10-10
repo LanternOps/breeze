@@ -96,7 +96,7 @@ function auth(partnerId: string | null = PARTNER_ID, scope = 'partner') {
     // credentials, so every mutation now requires the full-partner capability
     // (security review 2026-08-16 §1.1 #6). The denial cases live in
     // partnerServicePrincipals.partnerWide.test.ts.
-    c.set('auth', { scope, partnerId, partnerOrgAccess: 'all', user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true } });
+    c.set('auth', { scope, partnerId, partnerOrgAccess: 'all', user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true, aep: 1, mep: 1 } });
     c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
     return next();
   });
@@ -108,7 +108,7 @@ function selectRows(...rows: unknown[][]) {
       from: vi.fn(() => ({
         where: vi.fn(() => {
           const promise: any = Promise.resolve(result);
-          promise.limit = vi.fn(async () => result);
+          promise.limit = vi.fn(() => Object.assign(Promise.resolve(result), { for: vi.fn(async () => result) }));
           promise.orderBy = vi.fn(async () => result);
           return promise;
         }),
@@ -182,7 +182,7 @@ describe('service principal management routes', () => {
   });
 
   it('maps a wrapped name unique violation during rename to 409', async () => {
-    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }], []);
+    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null, createdBy: USER_ID }], []);
     const pgError = Object.assign(new Error('duplicate'), {
       code: '23505',
       constraint_name: 'partner_service_principals_partner_name_unique',
@@ -216,7 +216,7 @@ describe('service principal management routes', () => {
   });
 
   it('validates effective PATCH state when adding the write scope', async () => {
-    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }]);
+    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null, createdBy: USER_ID }]);
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ scopes: ['devices:read', 'enrollment-keys:write'] }),
@@ -239,7 +239,7 @@ describe('service principal management routes', () => {
   describe('MCP (ai:*) scopes are a delegation the acting admin must hold', () => {
     function permissionsOf(perms: Array<{ resource: string; action: string }>) {
       mocks.authMiddleware.mockImplementation((c: any, next: any) => {
-        c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all', user: { id: USER_ID }, token: { mfa: true } });
+        c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all', user: { id: USER_ID }, token: { mfa: true, aep: 1, mep: 1 } });
         c.set('permissions', { permissions: perms });
         return next();
       });
@@ -277,6 +277,7 @@ describe('service principal management routes', () => {
 
     it('refuses a PATCH that adds ai:write for an admin without the write baseline, before any update', async () => {
       permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read'], sourceCidrs: [], expiresAt: null, status: 'active', createdBy: USER_ID }]);
       const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ scopes: ['ai:read', 'ai:write'] }),
@@ -304,7 +305,7 @@ describe('service principal management routes', () => {
 
     it('refuses to ISSUE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
       permissionsOf(READ_ONLY);
-      selectRows([{ scopes: ['ai:read', 'ai:execute_admin'] }]);
+      selectRows([{ scopes: ['ai:read', 'ai:execute_admin'], createdBy: USER_ID }]);
       mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
       const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'escalate' }),
@@ -316,7 +317,7 @@ describe('service principal management routes', () => {
 
     it('refuses to ROTATE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
       permissionsOf(READ_ONLY);
-      selectRows([{ scopes: ['ai:read', 'ai:write'] }]);
+      selectRows([{ scopes: ['ai:read', 'ai:write'], createdBy: USER_ID }]);
       mocks.rotate.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
       vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
       const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
@@ -326,7 +327,7 @@ describe('service principal management routes', () => {
 
     it('lets a read-capable admin issue a key for an ai:read principal', async () => {
       permissionsOf(READ_ONLY);
-      selectRows([{ scopes: ['ai:read'] }]);
+      selectRows([{ scopes: ['ai:read'], createdBy: USER_ID }]);
       mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
       const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'ok' }),
@@ -336,7 +337,7 @@ describe('service principal management routes', () => {
 
     const EXISTING_STRONG = {
       scopes: ['ai:read', 'ai:execute_admin'], sourceCidrs: ['203.0.113.0/24'],
-      expiresAt: new Date(Date.now() + 86_400_000), status: 'disabled',
+      expiresAt: new Date(Date.now() + 86_400_000), status: 'disabled', createdBy: USER_ID,
     };
 
     it.each([
@@ -390,7 +391,7 @@ describe('service principal management routes', () => {
   });
 
   it('issues a key and audits only sanitized identifiers', async () => {
-    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
+    selectRows([{ scopes: ['devices:read'], createdBy: USER_ID }]); // principal's owner and scopes
     mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Production' }),
@@ -405,7 +406,7 @@ describe('service principal management routes', () => {
   });
 
   it('rotates atomically and reveals only the successor plaintext', async () => {
-    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
+    selectRows([{ scopes: ['devices:read'], createdBy: USER_ID }]); // principal's owner and scopes
     mocks.rotate.mockResolvedValue({ keyId: '55555555-5555-4555-8555-555555555555', rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
