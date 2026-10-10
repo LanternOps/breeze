@@ -163,7 +163,7 @@ vi.mock('../services/bullmqQueue', () => ({
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: m.enqueueOrReplaceStale }));
 
 import {
-  edrSyncJobId, enqueueEdrSync, selectDueStreams, syncEdrDetections, syncEdrInventory,
+  edrSyncJobId, enqueueEdrSync, isFinalSyncAttempt, selectDueStreams, syncEdrDetections, syncEdrInventory,
 } from './edrProviderSync';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000e1';
@@ -212,6 +212,21 @@ beforeEach(() => {
   m.refreshDetectionDeviceLinks.mockResolvedValue(undefined);
   m.isDeadlockError.mockImplementation((e: unknown) => pgErrorCode(e) === '40P01');
   m.enqueueOrReplaceStale.mockResolvedValue({ id: 'job-1' });
+});
+
+describe('isFinalSyncAttempt', () => {
+  // BullMQ 5 bumps attemptsMade only when an attempt finishes or is retried, so inside the
+  // processor it is 0-based: the 3rd of 3 attempts runs with attemptsMade === 2.
+  it('is true on the last configured attempt', () => {
+    expect(isFinalSyncAttempt({ attemptsMade: 2, opts: { attempts: 3 } })).toBe(true);
+  });
+  it('is false on earlier attempts', () => {
+    expect(isFinalSyncAttempt({ attemptsMade: 0, opts: { attempts: 3 } })).toBe(false);
+    expect(isFinalSyncAttempt({ attemptsMade: 1, opts: { attempts: 3 } })).toBe(false);
+  });
+  it('a job with no retry budget is always on its final attempt', () => {
+    expect(isFinalSyncAttempt({ attemptsMade: 0, opts: {} })).toBe(true);
+  });
 });
 
 describe('selectDueStreams', () => {
@@ -476,6 +491,28 @@ describe('phase-3 per-tenant fence (review #1)', () => {
     phase3TenantRows = [{ ...MAPPED, orgId: 'org-NEW' }];
     m.enqueueOrReplaceStale.mockRejectedValue(new Error('redis down'));
     await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+  });
+});
+
+describe('a connection-level fence trip releases the running status (review)', () => {
+  const lastStatusWrite = (key: string) => [...updatePayloads].reverse().find((u) => key in u.payload)?.payload;
+
+  it('inventory: deactivated mid-fetch -> nothing persisted, status restored from running to its prior value', async () => {
+    connectionRow = { ...BASE_ROW, lastInventorySyncStatus: 'success', lastInventorySyncError: null };
+    reReadRow = { ...BASE_ROW, isActive: false };
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.persistInventory).not.toHaveBeenCalled();
+    expect(lastStatusWrite('lastInventorySyncStatus')).toMatchObject({ lastInventorySyncStatus: 'success', lastInventorySyncError: null });
+  });
+
+  it('detections: re-credentialled mid-fetch -> status restored, prior error kept', async () => {
+    connectionRow = { ...BASE_ROW, lastDetectionSyncStatus: 'partial', lastDetectionSyncError: '1 tenant(s) failed to sync' };
+    reReadRow = { ...BASE_ROW, credentialsEncrypted: 'enc-rotated' };
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.persistDetections).not.toHaveBeenCalled();
+    expect(lastStatusWrite('lastDetectionSyncStatus')).toMatchObject({
+      lastDetectionSyncStatus: 'partial', lastDetectionSyncError: '1 tenant(s) failed to sync',
+    });
   });
 });
 

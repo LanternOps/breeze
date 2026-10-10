@@ -147,6 +147,38 @@ describe('GravityZoneClient pagination', () => {
     expect(limiter.acquire).toHaveBeenCalledWith('incidents');
   });
 
+  it('an incidents result without an items list -> malformed_response, never an empty window', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { total: 3, page: 1, pagesCount: 1 } });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getIncidentsChangedBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'operation' });
+  });
+
+  it('an incidents result of null -> malformed_response', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: null });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getIncidentsChangedBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'operation' });
+  });
+
+  it('an empty incidents page mid-enumeration (page < pagesCount) -> incomplete_enumeration, not a short list', async () => {
+    const page1 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 1, pagesCount: 3, items: [{ incidentId: 'i1' }] } });
+    const page2 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 2, pagesCount: 3, items: [] } });
+    const err = await rejection(makeClient(makeFetch([{ body: page1 }, { body: page2 }]).impl).client.getIncidentsChangedBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'incomplete_enumeration', scope: 'operation' });
+  });
+
+  it('a quarantine result without an items list -> malformed_response', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { total: 2, page: 1, pagesCount: 1 } });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getQuarantineBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'operation' });
+  });
+
+  it('an empty quarantine page mid-enumeration (page < pagesCount) -> incomplete_enumeration', async () => {
+    const page1 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 1, pagesCount: 2, items: [{ id: 'q1' }] } });
+    const page2 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 2, pagesCount: 2, items: [] } });
+    const err = await rejection(makeClient(makeFetch([{ body: page1 }, { body: page2 }]).impl).client.getQuarantineBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'incomplete_enumeration', scope: 'operation' });
+  });
+
   it('stops incidents on an empty page even if pagesCount claims more', async () => {
     const empty = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { total: 0, page: 1, perPage: 1000, pagesCount: 5, items: [] } });
     const { impl, calls } = makeFetch([{ body: empty }]);

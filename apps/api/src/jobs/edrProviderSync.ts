@@ -472,6 +472,31 @@ async function recordSyncFailure(
   }
 }
 
+/**
+ * Phase 3's fence wrote nothing (connection deleted, deactivated or re-credentialled), so undo
+ * Phase 1's `running` marker: an inactive connection is never polled again and would otherwise
+ * show as syncing forever. Restores the status/error read in Phase 1, only while still `running`.
+ */
+async function releaseRunningStatus(loaded: LoadedConnection, stream: EdrSyncStream): Promise<void> {
+  const { row } = loaded;
+  try {
+    await runWithSystemDbAccess(() => db
+      .update(edrConnections)
+      .set(stream === 'inventory'
+        ? { lastInventorySyncStatus: row.lastInventorySyncStatus, lastInventorySyncError: row.lastInventorySyncError }
+        : { lastDetectionSyncStatus: row.lastDetectionSyncStatus, lastDetectionSyncError: row.lastDetectionSyncError })
+      .where(and(
+        eq(edrConnections.id, row.id),
+        stream === 'inventory'
+          ? eq(edrConnections.lastInventorySyncStatus, 'running')
+          : eq(edrConnections.lastDetectionSyncStatus, 'running'),
+      )), 'edr-sync-release-running');
+  } catch (dbError) {
+    console.error(`[EdrProviderSync] Failed to release running status for ${row.id}:`, dbError);
+    captureException(dbError instanceof Error ? dbError : new Error(String(dbError)));
+  }
+}
+
 async function handleSyncError(
   error: unknown,
   loaded: LoadedConnection,
@@ -637,6 +662,7 @@ export async function syncEdrInventory(
         `[EdrProviderSync] Connection ${connectionId} changed during the vendor fetch `
         + '(deleted, deactivated or re-credentialled); nothing written, the next poll retries',
       );
+      await releaseRunningStatus(loaded, 'inventory');
     }
   } catch (error) {
     await handleSyncError(error, loaded, 'inventory', isFinalAttempt, secrets);
@@ -740,6 +766,7 @@ export async function syncEdrDetections(
         `[EdrProviderSync] Connection ${connectionId} changed during the vendor fetch `
         + '(deleted, deactivated or re-credentialled); nothing written, the next poll retries',
       );
+      await releaseRunningStatus(loaded, 'detections');
     }
   } catch (error) {
     await handleSyncError(error, loaded, 'detections', isFinalAttempt, secrets);
@@ -750,13 +777,21 @@ export async function syncEdrDetections(
 // Worker
 // ---------------------------------------------------------------------------
 
+/**
+ * True on the job's last configured attempt. BullMQ 5 increments `attemptsMade` only when an
+ * attempt finishes or is retried (move-to-active bumps `attemptsStarted`), so inside the
+ * processor it is 0-based: the 3rd of 3 attempts runs with attemptsMade === 2.
+ */
+export function isFinalSyncAttempt(job: Pick<Job, 'attemptsMade'> & { opts: { attempts?: number } }): boolean {
+  return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+}
+
 function createEdrProviderSyncWorker(): Worker<EdrSyncJobData> {
   return new Worker<EdrSyncJobData>(
     EDR_PROVIDER_SYNC_QUEUE,
     async (job: Job<EdrSyncJobData>) => {
       // No blanket system-context wrap: each path manages its own short contexts.
-      // attemptsMade is 1-based inside the processor.
-      const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+      const isFinalAttempt = isFinalSyncAttempt(job);
       switch (job.data.type) {
         case 'sync-all':
           return processSyncAll();

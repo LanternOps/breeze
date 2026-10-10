@@ -404,10 +404,10 @@ export class GravityZoneClient {
         },
         { operationClass: 'incidents' },
       );
-      const items = Array.isArray(r?.items) ? r.items : [];
+      const items = this.detectionPageItems(r, 'incidents', page);
       out.push(...items);
       if (items.length === 0) return out;
-      if (typeof r?.pagesCount !== 'number') {
+      if (typeof r.pagesCount !== 'number') {
         // A full page with no pagesCount might have a successor; never guess it is the last.
         if (items.length >= GZ_INCIDENTS_PAGE_SIZE) {
           throw this.fail('GravityZone incidents page had no pagesCount', { code: 'malformed_response', scope: 'operation' });
@@ -431,14 +431,36 @@ export class GravityZoneClient {
           filters: { startDate: from.toISOString(), endDate: to.toISOString() },
         },
       );
-      const items = Array.isArray(r?.items) ? r.items : [];
+      const items = this.detectionPageItems(r, 'quarantine', page);
       out.push(...items);
       if (items.length === 0) return out;
-      const more = typeof r?.pagesCount === 'number'
+      const more = typeof r.pagesCount === 'number'
         ? page < r.pagesCount
-        : r?.hasMoreRecords === true || items.length >= GZ_QUARANTINE_PAGE_SIZE;
+        : r.hasMoreRecords === true || items.length >= GZ_QUARANTINE_PAGE_SIZE;
       if (!more) return out;
     }
     throw this.fail(`GravityZone quarantine exceeded ${GZ_MAX_PAGES} pages`, { code: 'too_many_pages', scope: 'operation' });
+  }
+
+  /**
+   * A detection page's items, failing closed: the adapter advances the detection cursor past
+   * the whole window on success, so a missing items list or an empty page before `pagesCount`
+   * must throw rather than read as "no detections" (they would be skipped for good).
+   */
+  private detectionPageItems<T>(
+    r: { pagesCount?: number; items?: T[] } | null | undefined,
+    stream: 'incidents' | 'quarantine',
+    page: number,
+  ): T[] {
+    if (!r || !Array.isArray(r.items)) {
+      throw this.fail(`GravityZone ${stream} page had no items list`, { code: 'malformed_response', scope: 'operation' });
+    }
+    if (r.items.length === 0 && page > 1 && typeof r.pagesCount === 'number' && page <= r.pagesCount) {
+      throw this.fail(
+        `GravityZone ${stream} page ${page} of ${r.pagesCount} was empty`,
+        { code: 'incomplete_enumeration', scope: 'operation' },
+      );
+    }
+    return r.items;
   }
 }

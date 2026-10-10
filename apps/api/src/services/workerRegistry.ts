@@ -959,7 +959,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // EDR provider framework W01 (#3136). 'global': its import closure reaches no socket-local
+    // EDR provider framework W01 (#8164). 'global': its import closure reaches no socket-local
     // dispatch (no alerts/events until W02 — re-verify placement then with
     // workerEntrypointClosure.contract.test.ts).
     name: 'edrProviderSyncWorker',
