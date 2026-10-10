@@ -2237,6 +2237,7 @@
       "saveSettings": "Failed to save settings"
     },
     "hostname": "Hostname: {{hostname}}",
+    "saved": "Device settings saved",
     "permanentlyDelete": "Delete permanently",
     "restoreDevice": "Restore Device",
     "saveChanges": "Save Changes",

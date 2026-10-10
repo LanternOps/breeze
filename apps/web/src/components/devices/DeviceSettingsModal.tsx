@@ -5,7 +5,7 @@ import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
-import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError } from '@/lib/runAction';
 import UninstallStateBadge from './UninstallStateBadge';
 
 type Site = {
@@ -88,20 +88,23 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
         return;
       }
 
-      const res = await fetchWithAuth(`/devices/${device.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/devices/${device.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }),
+        errorFallback: t('deviceSettingsModal.errors.saveSettings'),
+        successMessage: t('deviceSettingsModal.saved'),
       });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('deviceSettingsModal.errors.saveSettings')));
-      }
 
       onSaved();
       onClose();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // let auth redirect handle it
+      // ActionError was already toasted by runAction; keep the message inline
+      // too so the open modal shows what failed.
       setError(err instanceof Error ? err.message : t('deviceSettingsModal.errors.saveSettings'));
     } finally {
       setSaving(false);
