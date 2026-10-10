@@ -27,3 +27,15 @@ it('reuses a matching checkout key but creates attempts for changed terms, gener
  await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({outcome:'failed',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,newer.id)));
  expect((await prepare()).id).not.toBe(newer.id);
 });
+it.each(['suspended','churned','deleted'] as const)('refuses setup for a %s partner before any Stripe call',async change=>{
+ const partner=await createPartner(),org=await createOrganization({partnerId:partner.id});
+ await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({autopayEnabled:true,...(change==='deleted'?{deletedAt:new Date()}:{status:change})}).where(eq(partners.id,partner.id));
+  const [connection]=await db.insert(stripeConnectAccounts).values({partnerId:partner.id,stripeAccountId:'acct_inactive',apiKey:'enc:synthetic',keyLast4:'test',accountCountry:'US',autopayCapabilitiesCheckedAt:new Date(),autopayMissingPermissions:[]}).returning();
+  await db.insert(orgAutopayEnrollments).values({orgId:org.id,partnerId:partner.id,stripeConnectionId:connection!.id,stripeAccountId:'acct_inactive'});
+ });
+ const disclosure=await withSystemDbAccessContext(()=>buildAutopayDisclosure(db,org.id,'card'));
+ await expect(withAcceptedAutopayDisclosure(disclosure.hash,()=>prepareAutopayCapture({orgId:org.id,methodType:'card',consentAccepted:true,returnTo:'portal',
+  contactEmail:'billing@example.test',ip:null,userAgent:null},'portal'))).rejects.toMatchObject({status:404,code:'INVALID_STATE'});
+ expect(await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.orgId,org.id)))).toEqual([]);
+});

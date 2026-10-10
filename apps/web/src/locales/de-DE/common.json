@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Wird ausgelöst, wenn ein Ticket erstellt wird.",
             "label": "Ticket erstellt"
+          },
+          "ticketCommented": {
+            "description": "Wird ausgelöst, wenn ein Kommentar oder eine Notiz zu einem Ticket hinzugefügt wird.",
+            "label": "Ticket kommentiert"
+          },
+          "ticketStatusChanged": {
+            "description": "Wird ausgelöst, wenn sich der Status eines Tickets ändert.",
+            "label": "Ticketstatus geändert"
+          },
+          "ticketUpdated": {
+            "description": "Wird ausgelöst, wenn Ticketfelder bearbeitet werden.",
+            "label": "Ticket aktualisiert"
+          },
+          "ticketAssigned": {
+            "description": "Wird ausgelöst, wenn ein Ticket zugewiesen oder die Zuweisung aufgehoben wird.",
+            "label": "Ticket zugewiesen"
           }
         },
         "fields": {
@@ -1431,6 +1447,7 @@
           "created": "Webhook erstellt",
           "disabled": "Webhook deaktiviert",
           "enabled": "Webhook aktiviert",
+          "retryQueued": "Erneute Zustellung in die Warteschlange gestellt",
           "testQueued": "Testzustellung in die Warteschlange gestellt",
           "updated": "Webhook aktualisiert"
         },

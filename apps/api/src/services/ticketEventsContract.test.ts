@@ -3,7 +3,10 @@
  *
  * Strategy:
  * 1. Run the real ticketService functions (with mocked DB / deps).
- * 2. Capture the TicketEvent objects passed to the mocked emitTicketEvent.
+ * 2. Capture the TicketEvent objects passed to the mocked emitTicketEvent —
+ *    or, for an event queued from the committed ticket_outbox row (#7963:
+ *    ticket.created), capture that row and map it through the publisher's
+ *    real assigneeNotificationFromOutboxRow.
  * 3. Feed each captured event through the real handleTicketEvent (with mocked
  *    DB / email), asserting the expected side-effects.
  *
@@ -190,6 +193,7 @@ vi.mock('./ticketMailbox/resolveOutboundMailbox', () => ({
 
 import { createTicket, addTicketComment, changeTicketStatus, updateTicketFields } from './ticketService';
 import { handleTicketEvent } from '../jobs/ticketNotifyWorker';
+import { assigneeNotificationFromOutboxRow } from '../jobs/ticketOutboxPublisher';
 import type { TicketEvent } from './ticketEvents';
 
 const actor = { kind: 'user' as const, userId: 'u-actor', name: 'Actor User' };
@@ -218,7 +222,7 @@ describe('ticket-events producer→consumer contract', () => {
 
   // ── createTicket with assignee → ticket.created ──────────────────────────
 
-  it('createTicket with assignee: emitted event feeds handleTicketEvent → in-app insert + email', async () => {
+  it('createTicket with assignee: the outbox row, mapped by the publisher, feeds handleTicketEvent → in-app insert + email', async () => {
     // Service selects, in call order: org lookup, then the #5075 W04 Service
     // Management mode read on partners, then the assignee lookup (users table).
     // The mode row must be seeded explicitly — this queue is positional, and an
@@ -231,10 +235,18 @@ describe('ticket-events producer→consumer contract', () => {
 
     await createTicket({ orgId: 'o-1', subject: 'Contract test', source: 'manual', assigneeId: 'u-assignee' }, actor);
 
-    // Exactly one event was emitted
-    expect(hoisted.emitCaptured).toHaveLength(1);
-    const event = hoisted.emitCaptured[0] as TicketEvent;
-    expect(event.type).toBe('ticket.created');
+    // Nothing is queued from inside the transaction (#7963's rule, applied to
+    // creates); the committed outbox row is what the publisher maps to a job.
+    expect(hoisted.emitCaptured).toHaveLength(0);
+    const outbox = hoisted.insertValuesMock.mock.calls
+      .map((c) => c[0] as { orgId: string; ticketId: string; eventType: string; payload: Record<string, unknown> })
+      .find((v) => v.eventType === 'ticket.created');
+    expect(outbox).toBeDefined();
+    const job = assigneeNotificationFromOutboxRow({
+      id: 42, org_id: outbox!.orgId, ticket_id: outbox!.ticketId, event_type: outbox!.eventType, payload: outbox!.payload,
+    });
+    expect(job).toMatchObject({ type: 'ticket.created', actorUserId: 'u-actor', eventId: 'ticket-outbox-42' });
+    const event = job as TicketEvent;
 
     // Worker selects: ticket lookup, then the org-name lookup for the push body.
     // The assignee row now comes from the mocked loadUserCandidate, not the queue.
@@ -247,14 +259,14 @@ describe('ticket-events producer→consumer contract', () => {
 
     await handleTicketEvent(event);
 
-    // The seam assertion: the emitted event's assigneeId/orgId reach the
-    // consumer's notification write, and the dedupe key is anchored on the
-    // event's own eventId (W07 D2).
+    // The seam assertion: the row's assigneeId/orgId reach the consumer's
+    // notification write, and the dedupe key is anchored on the publisher's
+    // deterministic eventId (W07 D2), so a re-queued job notifies once.
     expect(hoisted.createNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'u-assignee',
       orgId: 'o-1',
       type: 'ticket',
-      dedupeKey: expect.stringContaining('ticket:t-c1:assigned:u-assignee:')
+      dedupeKey: 'ticket:t-c1:assigned:u-assignee:ticket-outbox-42'
     }));
     expect(hoisted.sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'tech@msp.example',

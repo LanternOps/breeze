@@ -27,7 +27,7 @@ import { isNotChargedReason, noticeChargeNotMade, type DeferralEndReason } from 
 import { resolveBillingEmail } from '../invoicePdf';
 import { lockInvoiceForCollection } from './reservation';
 import { getAutopayMethod, markPaymentMethodUnusable } from './paymentMethods';
-import { isAutopayEnabledForPartner } from './autopayGate';
+import { hasLiveAutopayPartner, isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
@@ -692,6 +692,16 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
     if (record.attempt.failureCode === 'provider_create_unknown'
       || Date.now() - record.attempt.createdAt.getTime() >= 23 * 3_600_000) {
       await quarantineUnknownCreate(attemptId); return;
+    }
+    // No new PaymentIntent for a partner that is not active. A cancel-only caller (a client or
+    // MSP control) releases the reservation now through the lost-create recovery. Otherwise the
+    // reservation waits: it resumes once the partner is active again, and the recovery above
+    // releases it once it is too old to resume. (The rollout flag is checked at confirmation.)
+    if (!await withSystemDbAccessContext(() => hasLiveAutopayPartner(db, record.invoice.partnerId))) {
+      if (cancelOnly) { await quarantineUnknownCreate(attemptId); return; }
+      console.warn('[autopay] Reservation held: partner is not active', {
+        attemptId, invoiceId: record.invoice.id, orgId: record.invoice.orgId, partnerId: record.invoice.partnerId });
+      return;
     }
     const data = await loadAttempt(attemptId);
     const capture = data.attempt.initiatedBy === 'client_on_session'

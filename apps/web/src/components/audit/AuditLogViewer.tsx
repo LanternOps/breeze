@@ -26,6 +26,29 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 
+/**
+ * `/audit-logs` returns flat entries (string `resource`, JSON-string `details`).
+ * `/audit-logs/search` returns the full shape (object `resource`, object
+ * `details`, no `resourceType`/`changes`). Normalize to the flat shape at the
+ * fetch boundary so the viewer has exactly one entry type.
+ */
+function normalizeAuditEntry(raw: unknown): AuditLogEntry {
+  const e = (raw ?? {}) as Record<string, any>;
+  const res = e.resource;
+  const resourceIsObject = res !== null && typeof res === 'object';
+  const detailsObj = e.details !== null && typeof e.details === 'object' ? e.details : null;
+  return {
+    ...e,
+    resource: resourceIsObject ? String(res.name || res.type || res.id || '') : (res ?? ''),
+    resourceType: e.resourceType ?? (resourceIsObject ? String(res.type ?? '') : ''),
+    details: detailsObj ? JSON.stringify(detailsObj) : (e.details ?? '{}'),
+    ipAddress: e.ipAddress ?? '',
+    userAgent: e.userAgent ?? '',
+    user: { name: '', email: '', role: '', department: '', ...(e.user ?? {}) },
+    changes: e.changes ?? { before: {}, after: detailsObj ?? {} },
+  } as AuditLogEntry;
+}
+
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
 type SortConfig = {
@@ -198,7 +221,8 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
       }
 
       const data = await response.json();
-      setEntries(data.entries || data.data || data.logs || []);
+      const rawEntries: unknown[] = data.entries || data.data || data.logs || [];
+      setEntries(rawEntries.map(normalizeAuditEntry));
       if (data.pagination) {
         // When skipCount=true the API returns -1 sentinels; preserve them so
         // the UI can show "1 of ?" instead of a misleading "1 of 0".

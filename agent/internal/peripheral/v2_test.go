@@ -106,6 +106,56 @@ func TestPeripheralPolicyV2CanonicalDigestMatchesTypeScriptEscaping(t *testing.T
 	}
 }
 
+// A device in no group: the controller hashes "groupIds":[], so the agent must
+// too. The want value is the digest peripheralEffectivePolicy.test.ts pins for
+// the same envelope.
+func TestPeripheralPolicyV2CanonicalDigestMatchesTypeScriptWithNoGroups(t *testing.T) {
+	const want = "sha256:3b1ab3c2cd68c30491e461bb932357b1d8354c74c758a8bf57f8ed7659244472"
+	for name, groups := range map[string][]string{"empty": {}, "nil": nil} {
+		envelope := PeripheralPolicyEnvelopeV2{
+			SchemaVersion: 2,
+			Phase:         "clear_legacy",
+			Identity: PeripheralPolicyIdentityV2{
+				DeviceID: "00000000-0000-4000-8000-000000000004",
+				OrgID:    "00000000-0000-4000-8000-000000000001",
+				SiteID:   "00000000-0000-4000-8000-000000000003",
+				GroupIDs: groups,
+			},
+			Revision:          1,
+			EffectivePolicies: []PeripheralPolicyV2{},
+		}
+		got, err := DigestPeripheralPolicyEnvelopeV2(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s groups: digest = %q, want TypeScript digest %q", name, got, want)
+		}
+	}
+}
+
+// The end-to-end shape of the bug: an ungrouped device must accept the
+// envelope the controller sends, carrying the controller's digest, instead of
+// rejecting it as malformed_digest.
+func TestValidateEnvelopeV2AcceptsAnUngroupedDevice(t *testing.T) {
+	envelope := PeripheralPolicyEnvelopeV2{
+		SchemaVersion: 2,
+		Phase:         "clear_legacy",
+		Identity: PeripheralPolicyIdentityV2{
+			DeviceID: "00000000-0000-4000-8000-000000000004",
+			OrgID:    "00000000-0000-4000-8000-000000000001",
+			SiteID:   "00000000-0000-4000-8000-000000000003",
+			GroupIDs: []string{},
+		},
+		Revision:          1,
+		EffectivePolicies: []PeripheralPolicyV2{},
+		Digest:            "sha256:3b1ab3c2cd68c30491e461bb932357b1d8354c74c758a8bf57f8ed7659244472",
+	}
+	if reason := validateEnvelopeV2(envelope, envelope.Identity); reason != "" {
+		t.Fatalf("ungrouped device rejected the controller's envelope: %s", reason)
+	}
+}
+
 func TestApplyPeripheralPolicyV2RejectsBeforeActuation(t *testing.T) {
 	policy := PeripheralPolicyV2{PolicyID: "policy-1", Source: "organization", EffectiveClass: "storage", ConfiguredClass: "storage", Action: "block", Priority: 10, Exceptions: []ExceptionRule{}}
 	base := testV2Envelope(t, 2, "enforce", []PeripheralPolicyV2{policy})

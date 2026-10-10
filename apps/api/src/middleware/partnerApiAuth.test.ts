@@ -186,6 +186,11 @@ function credential(overrides: Record<string, unknown> = {}) {
     sourceCidrs: [],
     partnerStatus: 'active',
     partnerDeletedAt: null,
+    ownerStatus: 'active',
+    keyOwnerCredentialEpoch: 2,
+    keyOwnerMfaEpoch: 3,
+    ownerCredentialEpoch: 2,
+    ownerMfaEpoch: 3,
     ...overrides,
   };
 }
@@ -209,7 +214,9 @@ function credentialSelectResult(rows: unknown[]) {
     from: vi.fn(() => ({
       innerJoin: vi.fn(() => ({
         innerJoin: vi.fn(() => ({
-          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(rows) })),
+          innerJoin: vi.fn(() => ({
+            where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(rows) })),
+          })),
         })),
       })),
     })),
@@ -353,6 +360,9 @@ describe('partnerApiAuthMiddleware', () => {
     ['expired principal', { principalExpiresAt: new Date(Date.now() - 1000) }],
     ['inactive partner', { partnerStatus: 'suspended' }],
     ['deleted partner', { partnerDeletedAt: new Date() }],
+    ['owner whose password changed', { ownerCredentialEpoch: 3 }],
+    ['owner whose MFA factors changed', { ownerMfaEpoch: 4 }],
+    ['owner whose account is disabled', { ownerStatus: 'disabled' }],
   ])('sanitizes authentication failure for a %s', async (_label, overrides) => {
     mockBootstrap(credential(overrides));
 

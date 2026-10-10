@@ -9,7 +9,7 @@ import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
 import { partnerAlertFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -63,6 +63,7 @@ async function seed() {
     partnerId: partner.id,
     name: 'Alerts feed key',
     actorId: user.id,
+    actorSessionEpochs: await userEpochs(user.id),
   });
   return { org, device, rawKey };
 }

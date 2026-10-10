@@ -153,4 +153,27 @@ describe('DnsSecurityPoliciesTab', () => {
     });
     expect(showToastMock).not.toHaveBeenCalled();
   });
+
+  it('surfaces the API sync warning as a warning toast after a domain edit', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [samplePolicy] }));
+    render(<DnsSecurityPoliciesTab />);
+    await waitFor(() => expect(screen.getByText('Threat blocklist')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Threat blocklist'));
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ syncScheduled: false, warning: 'Domains updated but sync scheduling failed: queue down' }),
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [samplePolicy] }));
+    fireEvent.change(screen.getByLabelText(/Add domains/), { target: { value: 'warn.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Add$/ }));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'warning',
+          message: 'Domains updated but sync scheduling failed: queue down',
+        }),
+      ),
+    );
+  });
 });

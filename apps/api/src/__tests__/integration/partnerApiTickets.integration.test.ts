@@ -22,7 +22,7 @@ import {
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { moveTicketOrg } from '../../services/ticketService';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
+import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions, userEpochs } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -466,6 +466,7 @@ async function issueKey(
     partnerId,
     name: 'Ticket write key',
     actorId: userId,
+    actorSessionEpochs: await userEpochs(userId),
   });
   return { rawKey, principalId: principal.id };
 }

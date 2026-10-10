@@ -121,6 +121,11 @@ export type EventType =
   | 'ticket.created'
   | 'ticket.commented'
   | 'ticket.status_changed'
+  // Partner API tickets wave 4: the remaining lifecycle transitions, so an
+  // external PSA/ITSM can mirror field edits and assignment without polling.
+  // Same id-only posture (`changed` is a list of field NAMES, never values).
+  | 'ticket.updated'
+  | 'ticket.assigned'
   // Metric-anomaly incident events (#3828 wave-6-4 task 2). Published by
   // metricAnomalyIncidentPublisher.ts from the metric_anomaly_incidents
   // transactional dispatch marker (never re-published on re-upsert — see
@@ -630,6 +635,8 @@ export const EVENT_TYPES = {
   TICKET_CREATED: 'ticket.created' as const,
   TICKET_COMMENTED: 'ticket.commented' as const,
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
+  TICKET_UPDATED: 'ticket.updated' as const,
+  TICKET_ASSIGNED: 'ticket.assigned' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   // Security

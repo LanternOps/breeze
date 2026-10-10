@@ -366,10 +366,11 @@ function WebhooksPageContent() {
       await runAction({
         request: () =>
           fetchWithAuth(
-            `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
+            `/webhooks/${activeWebhookId}/retry/${delivery.id}`,
             { method: 'POST' }
           ),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.retryDelivery'),
+        successMessage: t('longTail.webhooks.WebhooksPage.success.retryQueued'),
         onUnauthorized: handleSessionExpired,
       });
 

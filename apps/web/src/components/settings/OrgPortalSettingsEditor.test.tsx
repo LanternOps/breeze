@@ -36,6 +36,7 @@ const SETTINGS = {
   enableLifecycle: false,
   enableHardwareHealth: false,
   enableHardwareInventory: false,
+  enablePerformanceMetrics: false,
   enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -133,6 +134,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableLifecycle',
       'enableHardwareHealth',
       'enableHardwareInventory',
+      'enablePerformanceMetrics',
       'enableNetworkVisibility',
     ]) {
       expect((screen.getByTestId(
@@ -188,6 +190,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableLifecycle: true,
       enableHardwareHealth: true,
       enableHardwareInventory: true,
+      enablePerformanceMetrics: true,
       enableNetworkVisibility: true,
     });
   });

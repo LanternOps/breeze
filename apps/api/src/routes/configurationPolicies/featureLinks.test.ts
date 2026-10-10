@@ -1450,6 +1450,38 @@ describe('featureLinks routes', () => {
     });
   });
 
+  describe('backup destination ownership refusal', () => {
+    it('maps a BackupDestinationNotInOrgError on add to a 400 with a code, not a 500', async () => {
+      const { BackupDestinationNotInOrgError } = await import('../../services/configurationPolicy');
+      addFeatureLinkMock.mockRejectedValueOnce(new BackupDestinationNotInOrgError());
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'backup', inlineSettings: {} }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({
+        error: 'Backup destination not found in this organization',
+        code: 'backup_destination_not_in_org',
+      });
+    });
+
+    it('maps a BackupDestinationNotInOrgError on update to a 400 with a code, not a 500', async () => {
+      const { BackupDestinationNotInOrgError } = await import('../../services/configurationPolicy');
+      updateFeatureLinkMock.mockRejectedValueOnce(new BackupDestinationNotInOrgError());
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: {} }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
   // ============================================================
   // #5511 W02 — the hpCmsl authorization gate (contract D4)
   // ============================================================

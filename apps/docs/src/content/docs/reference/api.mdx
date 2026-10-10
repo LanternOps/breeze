@@ -215,7 +215,7 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
 | `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
 | `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). |
-| `GET` | `/partner-api/tickets/:id/comments` | `tickets:read` | The ticket's comments and feed entries in creation order, keyset-paged; edits change `revision`, deletes are tombstones. |
+| `GET` | `/partner-api/tickets/:id/comments` | `tickets:read` | The ticket's comments and feed entries in creation order, keyset-paged; edits change `revision`, deletes are tombstones. Includes every internal note on the ticket (`isPublic: false`), whoever wrote it; forward only `isPublic: true` comments to end customers. |
 | `GET` | `/partner-api/device-status` | `device-status:read` | Live device status, last-seen time and agent version, keyset-paged with a signed cursor. No `updatedSince` or checkpoint; poll the full list |
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { surfaceSyncWarning } from './syncWarning';
 import { navigateTo } from '@/lib/navigation';
 import { Dialog } from '../shared/Dialog';
 import { useFleetOrgOwner } from '@/hooks/useFleetOrgOwner';
@@ -132,7 +133,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
     if (config.apiEndpoint?.trim()) trimmedConfig.apiEndpoint = config.apiEndpoint.trim();
 
     try {
-      await runAction({
+      const result = await runAction({
         request: () => fetchWithAuth('/dns-security/integrations', {
           method: 'POST',
           body: JSON.stringify({
@@ -153,6 +154,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
         }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
+      surfaceSyncWarning(result);
       onCreated();
       onClose();
     } catch (err) {

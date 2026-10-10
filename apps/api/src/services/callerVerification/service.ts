@@ -263,7 +263,7 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
   const rb = (await bindingsForContact(orgId, contactId)).filter((r) => r.entraOid);
   const tb = (await bindingsForContact(orgId, target.id)).filter((r) => r.entraOid);
   if (input.actionScope !== 'any' && (rb.length !== 1 || tb.length !== 1)) throw new Invalid('subject_unmatched', 'Exactly one canonical binding is required');
-  if (!requesterAuthorized(input.actionScope, rb[0] ?? null, tb[0] ?? null, requester, p.disableUserAuthorizerRoles)) {
+  if (!(await requesterAuthorized(input.actionScope, rb[0] ?? null, tb[0] ?? null, orgId, contactId, p.disableUserAuthorizerRoles))) {
     throw new Invalid('requester_not_authorized', 'Requester cannot authorize this target');
   }
   const methods = await methodsForContact(actor, orgId, contactId, input.actionScope);
@@ -294,9 +294,9 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
     // Re-read under locks.
     const currentR = (await bindingsForContact(orgId, contactId)).find((r) => r.id === rb[0]?.id) ?? null;
     const currentT = (await bindingsForContact(orgId, target.id)).find((r) => r.id === tb[0]?.id) ?? null;
-    const currentRequester = await reachableContact(actor, orgId, contactId);
+    await reachableContact(actor, orgId, contactId);
     await reachableContact(actor, orgId, target.id);
-    if (!requesterAuthorized(input.actionScope, currentR, currentT, currentRequester, p.disableUserAuthorizerRoles)) {
+    if (!(await requesterAuthorized(input.actionScope, currentR, currentT, orgId, contactId, p.disableUserAuthorizerRoles))) {
       throw new Invalid('requester_not_authorized', 'Requester changed');
     }
     const [attempts] = await db.select({ count: sql<number>`count(*)::int` }).from(v)

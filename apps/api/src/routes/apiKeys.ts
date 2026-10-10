@@ -748,10 +748,54 @@ apiKeyRoutes.post(
       return c.json({ error: `Cannot rotate ${existingKey.status} API key` }, 400);
     }
 
+    // Rotation re-mints the secret but keeps `created_by`, the identity whose
+    // live permissions the key acts with (apiKeyAuth for human keys; over MCP,
+    // buildAuthFromApiKey resolves per-tool permissions from `created_by` for
+    // service-principal keys too). So only that creator may rotate it; anyone
+    // else with access to the org can still revoke it. A service principal's
+    // key is rotated from the service principal itself
+    // (/service-principals/:id/rotate), which issues the new key under the
+    // rotating admin.
+    if (existingKey.createdBy !== auth.user.id) {
+      return c.json({
+        error: 'Only the API key\'s creator can rotate it. Revoke it and create a new key instead.',
+        code: 'API_KEY_CREATOR_REQUIRED',
+      }, 403);
+    }
+
     // §1.4 delegation ceiling: org access is not key access. Runs BEFORE any
     // secret is generated or written.
     const ceilingDenial = await enforceApiKeyDelegationCeiling(c, auth, existingKey);
     if (ceilingDenial) return ceilingDenial.response;
+
+    // A rotated human key is a fresh mint from this session, so re-bind it to
+    // the creator's current session and credential state exactly as POST /
+    // does (same guarded read and the same reasons). Service-principal keys
+    // never carry creator epochs.
+    const isServicePrincipalKey = existingKey.principalType === 'service' && !!existingKey.principalId;
+    let creatorEpochs: { creatorAuthEpoch: number; creatorMfaEpoch: number; creatorCredentialEpoch: number } | null = null;
+    if (!isServicePrincipalKey) {
+      const creatorAuthEpoch = auth.token?.aep;
+      const creatorMfaEpoch = auth.token?.mep;
+      if (typeof creatorAuthEpoch !== 'number' || typeof creatorMfaEpoch !== 'number') {
+        console.warn('[api-keys] refused rotation: request token carries no epoch claims', { userId: auth.user.id });
+        return c.json({ error: 'Session is no longer valid. Sign in again.' }, 401);
+      }
+      const [liveCreator] = await db
+        .select({ credentialEpoch: users.credentialEpoch })
+        .from(users)
+        .where(and(
+          eq(users.id, auth.user.id),
+          eq(users.status, 'active'),
+          eq(users.authEpoch, creatorAuthEpoch),
+          eq(users.mfaEpoch, creatorMfaEpoch),
+        ))
+        .limit(1);
+      if (!liveCreator) {
+        return c.json({ error: 'Session is no longer valid. Sign in again.' }, 401);
+      }
+      creatorEpochs = { creatorAuthEpoch, creatorMfaEpoch, creatorCredentialEpoch: liveCreator.credentialEpoch };
+    }
 
     // Generate new key
     const { fullKey, keyPrefix, keyHash } = generateApiKey();
@@ -762,6 +806,7 @@ apiKeyRoutes.post(
       .set({
         keyHash,
         keyPrefix,
+        ...(creatorEpochs ?? {}),
         updatedAt: new Date(),
         // Reset usage stats on rotation (optional - could preserve them)
         usageCount: 0,

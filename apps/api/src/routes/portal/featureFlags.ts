@@ -121,6 +121,10 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string
     error: 'Hardware inventory is not enabled for this portal',
     code: 'PORTAL_HARDWARE_INVENTORY_DISABLED',
   },
+  enablePerformanceMetrics: {
+    error: 'Performance metrics are not enabled for this portal',
+    code: 'PORTAL_PERFORMANCE_METRICS_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: StrictPortalVisibilityFlag): MiddlewareHandler {

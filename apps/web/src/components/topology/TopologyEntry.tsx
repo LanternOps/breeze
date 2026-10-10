@@ -48,7 +48,9 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
       // re-open the link either) and keep the view, so the new organization's sites load as usual.
       linkOwner.current = undefined;
       const view = parseTopologyHash(window.location.hash)?.view ?? 'overview';
-      history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${formatTopologyHash({ view, search: '' })}`);
+      // Pass the current state through: Astro's view-transitions router keeps its history index in it, and
+      // moveToLocation() throws on a null state at the next navigation (the org switch).
+      history.replaceState(history.state, '', `${window.location.pathname}${window.location.search}#${formatTopologyHash({ view, search: '' })}`);
       setHashSite(undefined);
       return;
     }

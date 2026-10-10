@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Attivato quando viene creato un ticket.",
             "label": "Ticket creato"
+          },
+          "ticketCommented": {
+            "description": "Attivato quando viene aggiunto un commento o una nota a un ticket.",
+            "label": "Ticket commentato"
+          },
+          "ticketStatusChanged": {
+            "description": "Attivato quando un ticket cambia stato.",
+            "label": "Stato del ticket modificato"
+          },
+          "ticketUpdated": {
+            "description": "Attivato quando vengono modificati i campi di un ticket.",
+            "label": "Ticket aggiornato"
+          },
+          "ticketAssigned": {
+            "description": "Attivato quando un ticket viene assegnato o rimosso dall’assegnazione.",
+            "label": "Ticket assegnato"
           }
         },
         "fields": {
@@ -1431,6 +1447,7 @@
           "created": "Webhook creato",
           "disabled": "Webhook disabilitato",
           "enabled": "Webhook abilitato",
+          "retryQueued": "Nuovo tentativo di consegna in coda",
           "testQueued": "Consegna di prova in coda",
           "updated": "Webhook aggiornato"
         },

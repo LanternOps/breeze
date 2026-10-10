@@ -137,4 +137,21 @@ describe('canonical peripheral envelope', () => {
   it('matches the frozen SHA-256 golden digest', () => {
     expect(digestPeripheralEnvelope(envelope)).toBe(canonicalGolden.digest);
   });
+
+  // An ungrouped device hashes "groupIds":[]. The agent pins this exact digest
+  // (v2_test.go TestPeripheralPolicyV2CanonicalDigestMatchesTypeScriptWithNoGroups);
+  // it used to hash null there and reject every envelope as malformed_digest.
+  it('hashes an empty group list as [] (pinned in the agent too)', () => {
+    const ungrouped = {
+      schemaVersion: 2 as const,
+      phase: 'clear_legacy' as const,
+      identity: { ...identity, groupIds: [] },
+      revision: 1,
+      effectivePolicies: [],
+    };
+    expect(new TextDecoder().decode(canonicalPeripheralEnvelopeBytes(ungrouped))).toContain('"groupIds":[]');
+    expect(digestPeripheralEnvelope(ungrouped)).toBe(
+      'sha256:3b1ab3c2cd68c30491e461bb932357b1d8354c74c758a8bf57f8ed7659244472',
+    );
+  });
 });

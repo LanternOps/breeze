@@ -19,6 +19,7 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableLifecycle',
   'enableHardwareHealth',
   'enableHardwareInventory',
+  'enablePerformanceMetrics',
   'enableNetworkVisibility'
 ] as const;
 

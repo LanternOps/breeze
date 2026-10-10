@@ -1909,6 +1909,10 @@
           "label": "Inventario hardware",
           "description": "Mostra produttore, modello, processore, memoria, schede di rete e numero di connessioni delle macchine del cliente."
         },
+        "enablePerformanceMetrics": {
+          "label": "Metriche delle prestazioni",
+          "description": "Mostra in sola lettura le tendenze delle prestazioni di CPU, memoria, disco e rete dei dispositivi del cliente."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilità di rete",
           "description": "Mostra nel portale cliente lo stato della rete e gli asset rilevati in sola lettura."

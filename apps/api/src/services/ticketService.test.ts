@@ -348,15 +348,18 @@ describe('createTicket', () => {
     });
   });
 
-  it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {
+  it('resolves partnerId from the org, allocates a number, inserts; queues no ticket.created job itself', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
-    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual', assigneeId: 'u-2' }, actor);
 
     expect(allocateMock).toHaveBeenCalledWith('p-1');
     expect(t.internalNumber).toBe('T-2026-0042');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', ticketId: 't-1' }));
+    // #7963's rule, applied to creates: a job queued inside this transaction
+    // would survive its rollback. ticketOutboxPublisher queues it from the
+    // committed outbox row instead.
+    expect(emitMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
     expect(auditMock).toHaveBeenCalled();
   });
 
@@ -371,8 +374,12 @@ describe('createTicket', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.created' });
-    // id-only: no subject/description ever reaches the outbox payload.
-    expect(outboxPayload.payload).toEqual({});
+    // id-only: no subject/description ever reaches the outbox payload. The
+    // actor and partner ride the row for the publisher's assignee job.
+    expect(outboxPayload.payload).toEqual({
+      internalNumber: 'T-2026-0042', source: 'manual', assigneeId: null,
+      actorUserId: 'u-1', actorPrincipalId: null, partnerId: 'p-1',
+    });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -1094,7 +1101,7 @@ describe('changeTicketStatus', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.status_changed' });
-    expect(outboxPayload.payload).toEqual({ from: 'open', to: 'resolved' });
+    expect(outboxPayload.payload).toEqual({ from: 'open', to: 'resolved', statusId: null });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -1809,7 +1816,8 @@ describe('addTicketComment', () => {
   // — the comment CONTENT never reaches the outbox, only its id + visibility.
   it('writes a ticket_outbox row (commented) with commentId + isPublic, never the comment content', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', firstResponseAt: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    // The inserted row, as Postgres returns it: the outbox origin is read off it.
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
 
     await addTicketComment('t-1', { content: 'SECRET: customer is a flight risk', isPublic: true }, actor);
@@ -1819,7 +1827,7 @@ describe('addTicketComment', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.commented' });
-    expect(outboxPayload.payload).toEqual({ commentId: 'c-1', isPublic: true });
+    expect(outboxPayload.payload).toEqual({ commentId: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -2227,7 +2235,9 @@ describe('updateTicketFields', () => {
       ticketId: 't-1',
       eventType: 'ticket.updated'
     });
-    expect(outboxPayload.payload).toEqual({});
+    // Field NAMES only — never the new values.
+    expect(outboxPayload.payload).toEqual({ changed: ['subject', 'priority'] });
+    expect(JSON.stringify(outboxPayload)).not.toContain('New subject');
 
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ticket.updated',
@@ -2726,7 +2736,9 @@ describe('createTicketFromAlert', () => {
 
     const t = await createTicketFromAlert('a-1', actor);
     expect(t.id).toBe('t-9');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(
+      expect.objectContaining({ ticketId: 't-9', eventType: 'ticket.created' }),
+    );
 
     // Assert createTicket's insert payload got priority: 'high' for severity: 'high'
     const ticketInsertPayload = valuesMock.mock.calls[0]![0];
@@ -4684,7 +4696,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
   it('sendTicketDraft writes the aiDraft claim (draft, run, trigger) into the ticket.commented outbox payload', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([replyDraft]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
@@ -4692,18 +4704,20 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     expect(outboxPayload('ticket.commented')).toEqual({
       commentId: 'c-1',
       isPublic: true,
+      originPrincipalKind: 'user',
+      originPrincipalId: null,
       aiDraft: { draftId: 'draft-1', runId: 'run-1', trigger: 'draft_sent' },
     });
   });
 
   it('sendTicketDraft writes no claim for a draft with no run', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([{ ...replyDraft, runId: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
 
-    expect(outboxPayload('ticket.commented')).toEqual({ commentId: 'c-1', isPublic: true });
+    expect(outboxPayload('ticket.commented')).toEqual({ commentId: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null });
   });
 
   it('resolving with an aiDraftId writes the resolved_with_ai_note claim into the ticket.status_changed outbox payload', async () => {
@@ -4720,6 +4734,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     expect(outboxPayload('ticket.status_changed')).toEqual({
       from: 'open',
       to: 'resolved',
+      statusId: null,
       aiDraft: { draftId: 'draft-1', runId: 'run-9', trigger: 'resolved_with_ai_note' },
     });
   });
@@ -4731,7 +4746,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
     await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Replaced toner' }, actor);
 
-    expect(outboxPayload('ticket.status_changed')).toEqual({ from: 'open', to: 'resolved' });
+    expect(outboxPayload('ticket.status_changed')).toEqual({ from: 'open', to: 'resolved', statusId: null });
   });
 
   it('ticketService never imports the action-intent graph (worker closure contract)', async () => {
@@ -5014,14 +5029,17 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
     expect(actorProvenance({ kind: 'system', source: 'planned_work' })).toBe('system');
   });
 
-  it('createTicket: audited as api_key keyed by the principal, event actorUserId null', async () => {
+  it('createTicket: audited as api_key keyed by the principal, outbox actorUserId null', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     const t = await createTicket({ orgId: 'o-1', subject: 'From PSA', source: 'api' }, spActor);
     expect(t.id).toBe('t-1');
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({ source: 'api', submitterName: 'PSA Bridge' });
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(expect.objectContaining({
+      eventType: 'ticket.created',
+      payload: expect.objectContaining({ actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }),
+    }));
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ticket.create', actorType: 'api_key', actorId: SP_PRINCIPAL_ID,
       details: expect.objectContaining({ source: 'api', partnerServicePrincipalName: 'PSA Bridge' }),

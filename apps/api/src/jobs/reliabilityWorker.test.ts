@@ -114,7 +114,7 @@ describe('enqueueDeviceReliabilityComputation', () => {
       'compute-device',
       expect.objectContaining({ deviceId: 'device-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^reliability-device:device-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^reliability-device-device-1-[a-z0-9]+$/),
       }),
     );
   });

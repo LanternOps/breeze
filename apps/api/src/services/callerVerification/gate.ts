@@ -180,7 +180,9 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
             : [];
           if (!requester) { reason = 'subject_unmatched'; return null; }
           const [contact] = await db.select().from(contacts).where(and(eq(contacts.id, r.contactId), eq(contacts.orgId, input.orgId))).limit(1);
-          if (!contact || !requesterAuthorized(input.action, requester, target, contact, p.disableUserAuthorizerRoles)) {
+          if (!contact || !(await requesterAuthorized(
+            input.action, requester, target, input.orgId, contact.id, p.disableUserAuthorizerRoles,
+          ))) {
             reason = 'requester_not_authorized'; return null;
           }
           bound = !!r.osPrincipalObserved && requester.osPrincipal === r.osPrincipalObserved;

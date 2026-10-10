@@ -12,7 +12,7 @@ import { contractRoutes } from '../../routes/contracts';
 import { partnerApiRoutes } from '../../routes/partnerApi';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -284,5 +284,6 @@ async function issueKey(
     partnerId,
     name: 'Contract write key',
     actorId: userId,
+    actorSessionEpochs: await userEpochs(userId),
   })).rawKey;
 }

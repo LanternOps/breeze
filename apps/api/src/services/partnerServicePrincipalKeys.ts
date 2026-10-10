@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../db';
-import { partnerServicePrincipalKeys, partnerServicePrincipals } from '../db/schema';
+import { partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
+import { PARTNER_SERVICE_PRINCIPAL_OWNER_REQUIRED_MESSAGE } from './partnerServicePrincipalDelegation';
 
 export type PartnerServicePrincipalKeyErrorCode =
   | 'not_found'
@@ -9,13 +10,36 @@ export type PartnerServicePrincipalKeyErrorCode =
   | 'expired'
   | 'revoked'
   | 'invalid_expiry'
-  | 'conflict';
+  | 'conflict'
+  | 'not_owner'
+  | 'session_stale';
+
+const ERROR_STATUS: Record<PartnerServicePrincipalKeyErrorCode, 400 | 401 | 403 | 404 | 409> = {
+  not_found: 404,
+  disabled: 400,
+  expired: 400,
+  revoked: 400,
+  invalid_expiry: 400,
+  conflict: 409,
+  not_owner: 403,
+  session_stale: 401,
+};
+
+/**
+ * The session epochs (`aep` / `mep`) of the access token that asked for a key.
+ * Used to read the owner's credential state without ever stamping a value
+ * newer than that session.
+ */
+export interface ActorSessionEpochs {
+  authEpoch: number;
+  mfaEpoch: number;
+}
 
 export class PartnerServicePrincipalKeyError extends Error {
   constructor(
     public readonly code: PartnerServicePrincipalKeyErrorCode,
     message: string,
-    public readonly status = code === 'not_found' ? 404 : code === 'conflict' ? 409 : 400,
+    public readonly status: 400 | 401 | 403 | 404 | 409 = ERROR_STATUS[code],
   ) {
     super(message);
     this.name = 'PartnerServicePrincipalKeyError';
@@ -35,16 +59,25 @@ function generatePartnerServicePrincipalKey(): {
   };
 }
 
+/**
+ * Keys are issued only by the principal's owner (`created_by`), for an active,
+ * unexpired principal. The owner is the identity whose live partner role
+ * bounds the key on the MCP endpoint and whose credential state the key is
+ * bound to, so a key minted by anyone else would carry authority they may not
+ * hold. Other admins can still revoke keys and disable the principal.
+ */
 async function assertPrincipalCanIssue(
   tx: Database,
   partnerServicePrincipalId: string,
   partnerId: string,
+  actorId: string,
 ): Promise<void> {
   const [principal] = await tx
     .select({
       id: partnerServicePrincipals.id,
       status: partnerServicePrincipals.status,
       expiresAt: partnerServicePrincipals.expiresAt,
+      createdBy: partnerServicePrincipals.createdBy,
     })
     .from(partnerServicePrincipals)
     .where(and(
@@ -56,12 +89,45 @@ async function assertPrincipalCanIssue(
   if (!principal) {
     throw new PartnerServicePrincipalKeyError('not_found', 'Service principal not found');
   }
+  if (principal.createdBy !== actorId) {
+    throw new PartnerServicePrincipalKeyError('not_owner', PARTNER_SERVICE_PRINCIPAL_OWNER_REQUIRED_MESSAGE);
+  }
   if (principal.status !== 'active') {
     throw new PartnerServicePrincipalKeyError('disabled', 'Service principal is disabled');
   }
   if (principal.expiresAt && principal.expiresAt.getTime() <= Date.now()) {
     throw new PartnerServicePrincipalKeyError('expired', 'Service principal has expired');
   }
+}
+
+/**
+ * The owner's credential and MFA epochs, read from the live users row only
+ * while it still matches the issuing session (the same guard POST /api-keys
+ * uses). A password change/reset, invite acceptance or admin status change
+ * advances credential_epoch and an MFA factor change advances mfa_epoch
+ * (services/authLifecycle.ts); each also advances auth_epoch. So a change
+ * committed before this read fails the guard, and one committed after it
+ * leaves the key with the old value, which the credential loader rejects.
+ */
+async function readOwnerCredentialEpochs(
+  tx: Database,
+  actorId: string,
+  session: ActorSessionEpochs,
+): Promise<{ credentialEpoch: number; mfaEpoch: number }> {
+  const [row] = await tx
+    .select({ credentialEpoch: users.credentialEpoch, mfaEpoch: users.mfaEpoch })
+    .from(users)
+    .where(and(
+      eq(users.id, actorId),
+      eq(users.status, 'active'),
+      eq(users.authEpoch, session.authEpoch),
+      eq(users.mfaEpoch, session.mfaEpoch),
+    ))
+    .limit(1);
+  if (!row) {
+    throw new PartnerServicePrincipalKeyError('session_stale', 'Session is no longer valid. Sign in again.');
+  }
+  return row;
 }
 
 function validateExpiry(expiresAt: Date | null | undefined): void {
@@ -77,11 +143,13 @@ async function insertKey(
     partnerId: string;
     name: string;
     actorId: string;
+    actorSessionEpochs: ActorSessionEpochs;
     expiresAt?: Date | null;
     rateLimit?: number;
     rotatedFromId?: string;
   },
 ): Promise<{ keyId: string; rawKey: string; keyPrefix: string }> {
+  const ownerEpochs = await readOwnerCredentialEpochs(tx, input.actorId, input.actorSessionEpochs);
   const generated = generatePartnerServicePrincipalKey();
   const [created] = await tx
     .insert(partnerServicePrincipalKeys)
@@ -95,6 +163,8 @@ async function insertKey(
       rateLimit: input.rateLimit ?? 600,
       rotatedFromId: input.rotatedFromId ?? null,
       createdBy: input.actorId,
+      ownerCredentialEpoch: ownerEpochs.credentialEpoch,
+      ownerMfaEpoch: ownerEpochs.mfaEpoch,
       status: 'active',
     })
     .returning({ id: partnerServicePrincipalKeys.id });
@@ -111,13 +181,15 @@ export async function issuePartnerServicePrincipalKey(
     partnerServicePrincipalId: string;
     partnerId: string;
     name: string;
+    /** Must be the principal's owner. */
     actorId: string;
+    actorSessionEpochs: ActorSessionEpochs;
     expiresAt?: Date | null;
     rateLimit?: number;
   },
 ): Promise<{ keyId: string; rawKey: string; keyPrefix: string }> {
   validateExpiry(input.expiresAt);
-  await assertPrincipalCanIssue(tx, input.partnerServicePrincipalId, input.partnerId);
+  await assertPrincipalCanIssue(tx, input.partnerServicePrincipalId, input.partnerId, input.actorId);
   return insertKey(tx, input);
 }
 
@@ -127,10 +199,12 @@ export async function rotatePartnerServicePrincipalKey(
     partnerServicePrincipalId: string;
     keyId: string;
     partnerId: string;
+    /** Must be the principal's owner. */
     actorId: string;
+    actorSessionEpochs: ActorSessionEpochs;
   },
 ): Promise<{ keyId: string; rawKey: string; keyPrefix: string }> {
-  await assertPrincipalCanIssue(tx, input.partnerServicePrincipalId, input.partnerId);
+  await assertPrincipalCanIssue(tx, input.partnerServicePrincipalId, input.partnerId, input.actorId);
 
   const [predecessor] = await tx
     .select({
@@ -163,6 +237,7 @@ export async function rotatePartnerServicePrincipalKey(
     partnerId: input.partnerId,
     name: predecessor.name,
     actorId: input.actorId,
+    actorSessionEpochs: input.actorSessionEpochs,
     expiresAt: predecessor.expiresAt,
     rateLimit: predecessor.rateLimit,
     rotatedFromId: predecessor.id,

@@ -3,6 +3,10 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
+const responsibilityMocks = vi.hoisted(() => ({
+  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./responsibilities', () => responsibilityMocks);
 
 import {
   readContactBlob,
@@ -66,14 +70,21 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
         log.push({ verb: 'insert', table, values });
-        return { returning: async () => [{ id: 'c-new' }] };
+        return { returning: async () => [{ id: 'c-new', siteId: values.siteId ?? null, roles: values.roles ?? [] }] };
       },
     }),
     update: (table: unknown) => ({
       set: (values: Record<string, unknown>) => {
         const entry: Statement = { verb: 'update', table, values };
         log.push(entry);
-        return { where: async (condition: unknown) => { entry.where = condition; } };
+        return {
+          where: (condition: unknown) => {
+            entry.where = condition;
+            const result = Promise.resolve([]) as Promise<unknown[]> & { returning?: () => Promise<unknown[]> };
+            result.returning = async () => [{ id: BILL, siteId: null, roles: [] }];
+            return result;
+          },
+        };
       },
     }),
     delete: (table: unknown) => ({
@@ -135,9 +146,12 @@ describe('the billing path targets the billing-role contact, never the primary',
 
     const lookup = compile(f.contactSelects()[0]!.where);
     expect(lookup.sql).toContain('"contacts"."org_id" = $1');
-    expect(lookup.sql).toContain('"contacts"."site_id" is null');
-    expect(lookup.sql).toContain('"contacts"."roles" @> $2');
-    expect(lookup.params).toEqual([ORG, '{"billing"}']);
+    expect(lookup.sql).toContain('EXISTS');
+    expect(lookup.sql).toContain('"contact_roles"."contact_id" = "contacts"."id"');
+    expect(lookup.sql).toContain('"contact_roles"."role" = $2');
+    expect(lookup.sql).toContain('"contact_roles"."site_id" IS NULL');
+    expect(lookup.sql).toContain('"contact_roles"."device_group_id" IS NULL');
+    expect(lookup.params).toEqual([ORG, 'billing']);
     // Primacy may ORDER the billing contacts; it must never SELECT the target.
     expect(lookup.sql).not.toContain('"is_primary"');
   });

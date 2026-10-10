@@ -236,6 +236,8 @@ export default defineConfig({
       'src/services/portal/hardwareHealthReadModel.integration.test.ts',
       // #7732 portal hardware inventory: real-DB test, belongs to vitest.integration.config.ts.
       'src/services/portal/hardwareInventoryReadModel.integration.test.ts',
+      // #7733 portal performance metrics: real-DB test, belongs to vitest.integration.config.ts.
+      'src/services/portal/performanceReadModel.integration.test.ts',
       // Canary for issue #4046: asserts the process observes a non-UTC
       // offset. It must ONLY run under the pinned non-UTC pass
       // (vitest.config.tz.ts, TZ=America/Denver), where it belongs — it is

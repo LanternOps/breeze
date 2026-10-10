@@ -140,3 +140,33 @@ describe('WebhooksPage — enable/disable (#6767)', () => {
     );
   });
 });
+
+describe('WebhooksPage — delivery retry', () => {
+  beforeEach(() => {
+    fetchWithAuth.mockReset();
+    vi.mocked(showToast).mockReset();
+  });
+
+  it('POSTs the real API route /webhooks/:id/retry/:deliveryId, toasts, and refetches deliveries', async () => {
+    const failed = { id: 'del-9', eventType: 'alert.created', status: 'failed', createdAt: '2026-10-01T00:00:00Z' };
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return url === '/webhooks/wh-1/retry/del-9'
+          ? json({ message: 'Delivery retry queued', delivery: { id: 'del-10', status: 'pending' } }, 202)
+          : json({ error: 'Not Found' }, 404);
+      }
+      if (url.startsWith('/webhooks/wh-1/deliveries')) return json({ data: [failed] });
+      if (url.startsWith('/webhooks')) return json({ data: [webhook()] });
+      return json({}, 404);
+    });
+    render(<WebhooksPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^retry$/i }));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Delivery retry queued' }))
+    );
+    const deliveryFetches = fetchWithAuth.mock.calls.filter(([u]) => String(u).startsWith('/webhooks/wh-1/deliveries'));
+    expect(deliveryFetches.length).toBeGreaterThanOrEqual(2);
+  });
+});

@@ -53,7 +53,7 @@ Weavestream delegation. They must be granted explicitly, per principal:
 | `sites:write` | Create sites within an accessible organization |
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
-| `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay human, MFA-gated actions on the main API. The principal acts as **itself**: comments and audit rows name the principal, never a person. |
+| `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay with signed-in staff on the main API, under each person's own ticket permissions (moving a ticket between organizations and changing a ticket mailbox connection also require MFA). The principal acts as **itself**: comments and audit rows name the principal, never a person. |
 
 `tickets:read` is a further **opt-in read** scope, like `alerts:read`: ticket
 subjects, descriptions and comments are customer-authored data across every
@@ -551,11 +551,18 @@ Three companion routes:
 |---|---|
 | `GET /partner-api/tickets/ids` | `{ schemaVersion, data: [{ id, orgId, changeVersion }], nextCursor, hasMore }` — every **live** ticket in the accessible set, keyset-paged by `id`; `orgId` narrows it. A mirror diffs it on a schedule (daily is enough) and drops anything it holds that is absent — the only way to observe a ticket that moved to an organization outside the principal's set |
 | `GET /partner-api/tickets/<ticket-uuid>` | `{ schemaVersion, data }` — one ticket record, or `404 partner_ticket_not_found` for a ticket that is soft-deleted, in another partner, or in an organization the principal cannot reach |
-| `GET /partner-api/tickets/<ticket-uuid>/comments` | `{ schemaVersion, ticketId, data, nextCursor, hasMore }` — the ticket's comments and feed entries (status changes, assignments, system notes) in creation order, keyset-paged with a signed `cursor`. Includes the principal's **internal notes** (`isPublic: false`) alongside public replies. `since` (offset ISO timestamp) returns only comments **created** strictly after that instant, so it never surfaces an edit or a delete of an older comment |
+| `GET /partner-api/tickets/<ticket-uuid>/comments` | `{ schemaVersion, ticketId, data, nextCursor, hasMore }` — the ticket's comments and feed entries (status changes, assignments, system notes) in creation order, keyset-paged with a signed `cursor`. Includes **every internal note** on the ticket (`isPublic: false`), whoever wrote it — technicians, AI agents, other integrations and this principal — alongside public replies; see the note below the table. `since` (offset ISO timestamp) returns only comments **created** strictly after that instant, so it never surfaces an edit or a delete of an older comment |
 
 `tickets:read` is an opt-in scope: ticket subjects, descriptions and
 comments are customer-authored data, so it is never part of the default
 delegation and must be requested explicitly. Nothing is written through it.
+
+**Internal notes are included.** The comments route returns every comment on
+a ticket the principal can reach, including all internal notes, not only the
+ones this principal wrote. Internal notes are the MSP's own working notes, so
+an integration that shows ticket activity to end customers (a customer portal,
+a PSA's customer view, an outbound email) must filter on `isPublic` and pass on
+only `isPublic: true` comments.
 
 Feed query parameters (all optional): `orgId`, `status` and `priority`
 (comma lists of the core values `new`, `open`, `pending`, `on_hold`,
@@ -614,9 +621,12 @@ Guarantees and limits, in addition to the alerts feed's:
 - A ticket (or comment) whose text contains a detected secret is withheld and
   listed in `blocked` (`GET /tickets/<id>` answers `422
   partner_export_record_blocked`). It reappears only when written again.
-- Checkpoints, cursors and comment cursors are signed, bound to the partner
-  (and to the filters, organization set, or ticket they were minted for),
-  and expire after 24 hours.
+- Checkpoints, cursors and comment cursors are signed and bound to the
+  partner (and to the filters, organization set, or ticket they were minted
+  for). Page cursors and comment cursors expire after 24 hours; a checkpoint
+  does not expire. A stored checkpoint stays valid until the principal's
+  organization set changes or the database is restored or replaced; either
+  answers `409 partner_tickets_resync_required`.
 
 ## Device status feed (`device-status:read`)
 
@@ -703,7 +713,7 @@ text; the ids are always present. A ticket in another partner, outside the
 principal's organizations, or soft-deleted is a `404 partner_ticket_not_found`
 on every by-id route.
 
-**Attribution.** A partner service principal has no human owner and acts as
+**Attribution.** On the Partner API a partner service principal acts as
 itself, identified by the principal id (stable across key rotations):
 comments and feed entries name the principal (`authorName`,
 `originPrincipalKind: "service_principal"`, `originPrincipalId`), users-FK
@@ -761,8 +771,33 @@ ticket answers `409 partner_tickets_idempotency_key_reused`.
 
 **Not offered here.** Delete and restore, moving a ticket between
 organizations, bulk actions, attachments, time entries and parts, AI drafts,
-the mailbox, and editing or deleting comments stay human, MFA-gated actions
-on the main API.
+the mailbox, and editing or deleting comments stay with signed-in staff on
+the main API, under each person's own ticket permissions; moving a ticket
+between organizations and changing a ticket mailbox connection also require
+MFA there.
+
+This list describes the Partner API only. If the same principal also holds
+MCP scopes (`ai:*`), its key can reach ticket actions through the MCP server's
+ticketing tools, and that lane has its own rules: the principal acts with its
+owner's live partner role, re-checked on every request, and Tier 3 actions
+(for example moving a ticket between organizations) stay approval-gated
+unless the operator lists the principal in `MCP_UNATTENDED_TIER3_PRINCIPALS`
+as `partner_sp:<id>`. Grant MCP scopes only to a principal that needs them.
+
+**Pairing the feed with webhooks.** An organization webhook (Settings →
+Webhooks) subscribed to `ticket.created`, `ticket.commented`,
+`ticket.status_changed`, `ticket.updated` and `ticket.assigned` tells an
+integration *that* something changed with id-only payloads (`ticketId`,
+`commentId`, `changed` field names, `assigneeId`, `from`/`to`); the feed
+and `GET /tickets/<id>` are how it reads *what* changed — including this
+principal's `externalTicketId`, which no webhook carries because the key
+is namespaced per integration. `ticket.commented` carries
+`originPrincipalKind` and `originPrincipalId`, the same values the feed
+returns for that comment, so a mirror can ignore exactly the comments it
+posted itself, even when several integrations share
+one partner; `ticket.created` and `ticket.assigned` carry `actorPrincipalId`
+for the same purpose. Webhooks are per organization today; a partner-wide
+subscription is a tracked follow-up.
 
 **Rate limits.** Ticket writes have their own hourly buckets, separate from
 the 120/hour provisioning write budget, so a busy mirror can neither starve
