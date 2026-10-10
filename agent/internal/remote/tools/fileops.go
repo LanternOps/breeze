@@ -232,7 +232,7 @@ func isDeniedSystemPath(cleanPath string) bool {
 
 // sensitiveReadPatterns are lowercased, forward-slash-normalized path fragments
 // for credential/secret stores that must never be exfiltrated via a file read or
-// directory list. This is a defense-in-depth deny-list (SR5-01): the primary
+// directory list. This is a defense-in-depth deny-list: the primary
 // gate is the API re-tiering that forces devices.execute + Tier-3 approval, but
 // the agent runs as root/LocalSystem and must not blindly trust the path it is
 // handed. Matched at a path-component boundary (see matchesPathFragment) so e.g.
@@ -716,7 +716,7 @@ func ListFiles(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
-	// Defense-in-depth: never enumerate a credential store directory (SR5-01).
+	// Defense-in-depth: never enumerate a credential store directory.
 	if err := enforceReadContainment(cleanPath); err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -835,7 +835,7 @@ func ReadFile(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
-	// Defense-in-depth: never read a credential store, even symlinked (SR5-01).
+	// Defense-in-depth: never read a credential store, even symlinked.
 	if err := enforceReadContainment(cleanPath); err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}

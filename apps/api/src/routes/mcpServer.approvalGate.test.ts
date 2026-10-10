@@ -341,7 +341,7 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
       expect(mocks.executeTool).not.toHaveBeenCalled();
     });
 
-    // SR5-01 applied to registry reads (2026-09-17 ROLE audit §2.4): read_key /
+    // The privileged-read rule applied to registry reads (2026-09-17 ROLE audit §2.4): read_key /
     // get_value moved into TIER2_ACTIONS, so they still clear the Tier-3
     // approval gate but are no longer reachable on an `ai:read` key.
     it('action:"get_value" (now Tier 2) is refused on an ai:read-only key', async () => {

@@ -7,7 +7,7 @@
  * accident of naming).
  *
  * WHAT IS DELIBERATELY ABSENT is the important part. `file_operations:read`,
- * `execute_command` and `run_script` are Tier 3 BY DESIGN (SR5-01): they run
+ * `execute_command` and `run_script` are Tier 3 BY DESIGN (privileged-read rule): they run
  * as root/LocalSystem on a customer endpoint, so approval is the human check
  * on what enters the box. An unattended analysis run has no approval surface,
  * so v1 gives it none of them (spec §5.4 "Live device reads"). A technician

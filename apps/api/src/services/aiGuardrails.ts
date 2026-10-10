@@ -103,7 +103,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // (POST /devices/:id/filesystem/system-cleanup/list needs devices:execute).
   // `status` reads the stored run and stays Tier 1 (TIER1_READ_ACTIONS).
   system_cleanup: ['list'],
-  // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
+  // Privileged-read rule, partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
@@ -119,7 +119,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   //
   // Deliberately NOT downgraded, despite being nominally "read" operations:
   //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
-  //     (same SR5-01 rationale as file_operations read).
+  //     (same privileged-read rationale as file_operations read).
   //   - kill_process, start/stop/restart_service: mutating.
   //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
   //     populates ServiceInfo.Path from the service's full binary path/command
@@ -149,7 +149,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
-  // SR5-01 (2026-09-17 audit §2.4): registry reads are privileged agent
+  // Privileged-read rule (2026-09-17 audit §2.4): registry reads are privileged agent
   // executions, not device reads — Tier 1 gave them no approval gate AND no
   // MFA. Raised alongside their devices:execute mapping below. Deliberately
   // NOT added to TIER2_READONLY_ACTIONS: unlike file_operations.list these
@@ -184,7 +184,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // call is exactly the approval-fatigue scenario #3088 measured (25 prompts in
 // 35 minutes). Entries here keep Tier 2 — and its ai_tool_executions
 // audit-ledger row; they are deliberately NOT demoted to Tier 1, which never
-// writes one (recon reads stay in the audit trail, SR5-01 precedent) — but
+// writes one (recon reads stay in the audit trail, privileged-read precedent) — but
 // auto-execute under every session approval mode. A paused session still
 // prompts (aiAgentSdk.ts gates on !isPaused).
 //
@@ -307,7 +307,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
-  // SR5-01: filesystem READ is privileged. The endpoint agent runs as
+  // Privileged-read rule: filesystem READ is privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
   // Require interactive approval (Tier 3) for read, same as the mutations.
@@ -1105,7 +1105,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
-    // SR5-01: read/list require devices.execute (not devices.read). Reading an
+    // Privileged-read rule: read/list require devices.execute (not devices.read). Reading an
     // arbitrary file off a root/LocalSystem agent is a privileged operation.
     list: { resource: 'devices', action: 'execute' },
     read: { resource: 'devices', action: 'execute' },
@@ -1368,7 +1368,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   query_custom_fields: { resource: 'devices', action: 'read' },
   registry_operations: {
-    // SR5-01 precedent, applied (2026-09-17 audit §2.4). These are not device
+    // Privileged-read precedent, applied (2026-09-17 audit §2.4). These are not device
     // reads: the handler dispatches a real agent command
     // (aiToolsScripts.ts, aiExecuteCommand(auth, 'registry_operations', …)),
     // and the HTTP path for agent commands requires DEVICES_EXECUTE plus

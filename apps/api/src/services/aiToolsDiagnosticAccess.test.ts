@@ -110,6 +110,16 @@ describe('diagnostic read tools', () => {
     ).toBe(false);
   });
 
+  it('the request schema no longer accepts sensitive classes', () => {
+    const base = { deviceId: DEVICE_ID, paths: [{ path: LOGS, recursive: true }], purpose: 'crash logs' };
+    expect(validateToolInput('request_diagnostic_access', base).success).toBe(true);
+    for (const cls of ['browser_secrets', 'credential_store', 'private_keys', 'session_tokens']) {
+      expect(validateToolInput('request_diagnostic_access', { ...base, sensitiveClasses: [cls] }).success).toBe(false);
+    }
+    const def = tools.get('request_diagnostic_access')!.definition.input_schema as { properties: Record<string, unknown> };
+    expect(def.properties).not.toHaveProperty('sensitiveClasses');
+  });
+
   it('the previously blocked AppData paths now pass schema validation (the grant decides)', () => {
     for (const path of [LOGS, 'C:\\Users\\Alice\\AppData\\Local\\NVIDIA Corporation\\GeForceNOW']) {
       expect(validateToolInput('diagnostic_list_directory', { deviceId: DEVICE_ID, path }).success).toBe(true);
@@ -132,7 +142,7 @@ describe('diagnostic read tools', () => {
     expect(m.aiExecuteCommand).not.toHaveBeenCalled();
   });
 
-  it.each(['grant_expired', 'grant_revoked', 'out_of_scope', 'sensitive_not_granted', 'grant_pending'])('denial %s is distinct and dispatches nothing', async (reason) => {
+  it.each(['grant_expired', 'grant_revoked', 'out_of_scope', 'credential_material', 'grant_pending'])('denial %s is distinct and dispatches nothing', async (reason) => {
     m.findCoveringGrant.mockResolvedValue({ ok: false, reason, detail: 'x' });
     const res = await read({});
     expect(res.condition).toBe(reason);
@@ -170,6 +180,57 @@ describe('diagnostic read tools', () => {
     expect(JSON.stringify(m.recordDiagnosticAccess.mock.calls)).not.toContain('SECRET-LOOKING');
   });
 
+  function answerWith(body: Record<string, unknown>) {
+    m.aiExecuteCommand.mockImplementation(async (_a, _t, _d, _type: string, payload: Record<string, unknown>) => ({
+      status: 'completed',
+      commandId: 'cmd-r',
+      stdout: sealLikeAgent(payload.resultPublicKey as string, 'auth-r', { resolvedPath: `${LOGS}\\app.config`, bytesRead: 1, eof: true, ...body }),
+    }));
+  }
+
+  const PEM = ['-----BEGIN PRIVATE KEY-----', 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', '-----END PRIVATE KEY-----'].join('\n');
+  const SECRET_TEXT = [
+    'startup ok',
+    'db_password=Hunter2Hunter2',
+    'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345',
+    'aws key AKIAABCDEFGHIJKLMNOP',
+    PEM,
+    'shutdown ok',
+  ].join('\n');
+
+  it('redacts secrets from text content before the assistant sees it', async () => {
+    answerWith({ content: SECRET_TEXT, encoding: 'text' });
+    const res = await read({});
+    expect(res.content).toContain('startup ok');
+    expect(res.content).toContain('shutdown ok');
+    for (const secret of ['Hunter2Hunter2', 'abcdefghijklmnopqrstuvwxyz012345', 'AKIAABCDEFGHIJKLMNOP', 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC']) {
+      expect(res.content).not.toContain(secret);
+    }
+    expect(res.contentRedacted).toBe(true);
+  });
+
+  it('redacts secrets inside base64 content and re-encodes the result', async () => {
+    answerWith({ content: Buffer.from(SECRET_TEXT, 'utf8').toString('base64'), encoding: 'base64' });
+    const res = await read({ encoding: 'base64' });
+    const decoded = Buffer.from(res.content, 'base64').toString('utf8');
+    expect(decoded).toContain('startup ok');
+    expect(decoded).not.toContain('Hunter2Hunter2');
+    expect(decoded).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC');
+    expect(res.contentRedacted).toBe(true);
+  });
+
+  it('leaves content without secrets byte-for-byte unchanged', async () => {
+    const binary = Buffer.from([0, 1, 2, 250, 251, 252, 253, 254, 255, 10, 65]).toString('base64');
+    answerWith({ content: binary, encoding: 'base64' });
+    const res = await read({ encoding: 'base64' });
+    expect(res.content).toBe(binary);
+    expect(res.contentRedacted).toBe(false);
+    answerWith({ content: 'line1\nline2 \u2603\n', encoding: 'text' });
+    const txt = await read({});
+    expect(txt.content).toBe('line1\nline2 \u2603\n');
+    expect(txt.contentRedacted).toBe(false);
+  });
+
   it('refuses an unsealed or wrongly sealed answer', async () => {
     m.aiExecuteCommand.mockResolvedValue({ status: 'completed', commandId: 'cmd-2', stdout: JSON.stringify({ content: 'plain' }) });
     expect((await read({})).condition).toBe('result_unreadable');
@@ -183,6 +244,7 @@ describe('diagnostic read tools', () => {
     ['E_DIAG_NOT_FOUND: missing', 'file_not_found'],
     ['E_DIAG_LINK_REFUSED: junction', 'link_refused'],
     ['E_DIAG_EXPIRED: expired', 'authorization_expired'],
+    ['E_DIAG_CREDENTIAL_MATERIAL: holds credential material', 'credential_material'],
     ['diagnostic access grant_revoked: grant was revoked', 'grant_revoked'],
   ])('agent/delivery failure %s maps to %s', async (error, condition) => {
     m.aiExecuteCommand.mockResolvedValue({ status: 'failed', commandId: 'cmd-4', error });

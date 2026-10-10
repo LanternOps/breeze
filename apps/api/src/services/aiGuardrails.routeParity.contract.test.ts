@@ -147,7 +147,7 @@ describe('manage_tickets move_org requires BOTH permissions its route requires',
   });
 });
 
-describe('registry_operations reads are agent executions, not device reads (§2.4, SR5-01 precedent)', () => {
+describe('registry_operations reads are agent executions, not device reads (§2.4, privileged-read precedent)', () => {
   // routes/devices/commands.ts:49 — DEVICES_EXECUTE + requireMfa(); the handler
   // dispatches a real agent command via aiExecuteCommand.
   it.each(['read_key', 'get_value'])('%s is denied to a devices:read-only role', (action) => {
@@ -157,7 +157,7 @@ describe('registry_operations reads are agent executions, not device reads (§2.
   it.each(['read_key', 'get_value'])('%s is allowed with devices:execute', (action) => {
     expect(allows(parseGrants(['devices:execute']), 'registry_operations', { action })).toBe(true);
   });
-  it('matches the SR5-01 treatment of file_operations list/read exactly', () => {
+  it('matches the privileged-read treatment of file_operations list/read exactly', () => {
     const readOnly = parseGrants(['devices:read', 'devices:write']);
     expect(allows(readOnly, 'file_operations', { action: 'list' })).toBe(false);
     expect(allows(readOnly, 'file_operations', { action: 'read' })).toBe(false);

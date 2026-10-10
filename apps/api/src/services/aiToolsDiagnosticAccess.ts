@@ -13,6 +13,10 @@
  *   the signed per-command authorization is minted at delivery
  *   (services/diagnosticAccess/delivery.ts) and results come back sealed to a
  *   key only this process holds.
+ *
+ * Credential material (browser secrets, credential stores, private keys,
+ * stored tokens) is never grantable, and file content is passed through secret
+ * redaction (diagnosticAccess/contentRedaction.ts) before it is returned.
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
@@ -34,7 +38,7 @@ import {
   type DiagnosticOperation,
   type GrantRow,
 } from './diagnosticAccess/grants';
-import { SENSITIVE_CLASS_LABELS, type SensitiveClass } from './diagnosticAccess/classification';
+import { redactDiagnosticContent } from './diagnosticAccess/contentRedaction';
 import { generateResultKeyPair, isSealedDiagnosticResult, openSealedDiagnosticResult } from './diagnosticAccess/seal';
 import { describeAgentDiagnosticError, splitResolvedTarget } from './diagnosticAccess/errors';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
@@ -68,7 +72,6 @@ function grantView(g: GrantRow) {
     status: g.status,
     operations: g.operations,
     paths: g.scopes,
-    sensitiveClasses: g.sensitiveClasses,
     purpose: g.purpose,
     durationMinutes: g.durationMinutes,
     requestedAt: g.requestedAt.toISOString(),
@@ -88,7 +91,7 @@ const COVERAGE_MESSAGES: Record<CoverageDenial, string> = {
   grant_revoked: 'Your diagnostic access grant was revoked. Request a new one if access is still needed.',
   operation_not_granted: 'Your grant does not include this operation (list vs read).',
   out_of_scope: 'This path is outside every location in your approved grant. Request access to it explicitly.',
-  sensitive_not_granted: 'This path is a sensitive store (credentials, browser secrets, private keys or tokens) that your grant did not explicitly include.',
+  credential_material: 'This path holds credential material (browser secrets, credential stores, private keys or stored tokens), which is never available through diagnostic access.',
   hard_denied: 'This location is never available through diagnostic access.',
   invalid_path: 'The path is not an acceptable absolute path.',
 };
@@ -208,6 +211,16 @@ async function runDiagnosticCommand(
     return out({ error: 'The device answered, but its sealed result could not be opened.', condition: 'result_unreadable', commandId });
   }
 
+  // File content is redacted for secrets before it is returned to the
+  // assistant; the flag tells the model that some of it was withheld.
+  let contentRedacted: boolean | undefined;
+  if (operation === 'read') {
+    const raw = typeof body.content === 'string' ? body.content : '';
+    const redaction = redactDiagnosticContent(raw, paging.encoding === 'base64' ? 'base64' : 'text');
+    body = { ...body, content: redaction.content };
+    contentRedacted = redaction.redacted;
+  }
+
   const resolvedPath = typeof body.resolvedPath === 'string' ? body.resolvedPath : null;
   await recordDiagnosticAccess(grant, auth, {
     operation,
@@ -217,8 +230,9 @@ async function runDiagnosticCommand(
     outcome: 'ok',
     bytesRead: typeof body.bytesRead === 'number' ? body.bytesRead : undefined,
     entries: Array.isArray(body.entries) ? body.entries.length : undefined,
+    contentRedacted,
   });
-  return out({ ...body, grantExpiresAt: grant.expiresAt?.toISOString() ?? null, commandId });
+  return out({ ...body, contentRedacted, grantExpiresAt: grant.expiresAt?.toISOString() ?? null, commandId });
 }
 
 export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): void {
@@ -234,7 +248,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
     definition: {
       name: 'request_diagnostic_access',
       description:
-        'Ask an administrator to approve READ-ONLY listing/reading of specific paths on one device, including locations the default path restriction blocks (e.g. AppData logs). Creates a pending approval; grants nothing until approved.',
+        'Ask an administrator to approve READ-ONLY list/read of specific paths on one device, incl. locations the default restriction blocks (e.g. AppData logs). Grants nothing until approved. Credential stores, browser secrets, keys and tokens are never available.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -258,11 +272,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
           },
           purpose: { type: 'string', description: 'Why the access is needed; shown to the approver' },
           durationMinutes: { type: 'number', description: `How long the grant lasts after approval (default ${DEFAULT_GRANT_MINUTES}, 5-1440)` },
-          sensitiveClasses: {
-            type: 'array',
-            items: { type: 'string', enum: ['browser_secrets', 'credential_store', 'private_keys', 'session_tokens'] },
-            description: 'Only when the task truly needs a sensitive store; each is shown to the approver as sensitive',
-          },
         },
         required: ['deviceId', 'paths', 'purpose'],
       },
@@ -280,7 +289,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
           operations: ((input.operations as DiagnosticOperation[] | undefined) ?? ['list', 'read']),
           purpose: input.purpose as string,
           durationMinutes: input.durationMinutes as number | undefined,
-          sensitiveClasses: input.sensitiveClasses as SensitiveClass[] | undefined,
         });
         if (!result.reused) {
           await pushDiagnosticApprovals(result.approvals, `Read-only diagnostic access on ${device.hostname}`);
@@ -299,9 +307,6 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
               : result.approverCount === 0 && !result.reused
                 ? 'Request recorded, but no administrator is eligible to approve it (needs devices:execute and approvals:decide with access to this device).'
                 : `Waiting for administrator approval in Breeze (Approvals, or the Breeze mobile app): ${approvalsUrl()}. Check with list_diagnostic_access_grants.`,
-          sensitiveClassesExplained: g.sensitiveClasses.length
-            ? g.sensitiveClasses.map((c) => SENSITIVE_CLASS_LABELS[c as SensitiveClass] ?? c)
-            : undefined,
         });
       } catch (err) {
         if (err instanceof DiagnosticAccessError) return out({ error: err.message, condition: err.code });
@@ -401,7 +406,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
     deviceArgs: ['deviceId'],
     definition: {
       name: 'diagnostic_read_file',
-      description: 'Read a bounded chunk of a file under your ACTIVE diagnostic access grant (read-only). Page large logs with offset/nextOffset.',
+      description: 'Read a bounded chunk of a file under your ACTIVE diagnostic access grant (read-only). Page large logs with offset/nextOffset. Secrets in the content are redacted (contentRedacted: true when any were).',
       input_schema: {
         type: 'object' as const,
         properties: {

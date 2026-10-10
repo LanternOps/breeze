@@ -1676,7 +1676,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   // registry_operations - Tier 2 base, with action escalation
   //
-  // Base raised 1 -> 2 (2026-09-17 AI tool ROLE audit §2.4, SR5-01 precedent):
+  // Base raised 1 -> 2 (2026-09-17 AI tool ROLE audit §2.4, privileged-read precedent):
   // every action dispatches a real agent command, whose HTTP path requires
   // devices:execute + MFA (routes/devices/commands.ts:49). read_key/get_value
   // are classified in TIER2_ACTIONS and the writes in TIER3_ACTIONS; the base

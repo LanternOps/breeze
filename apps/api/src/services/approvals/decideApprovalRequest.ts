@@ -46,6 +46,7 @@ import { organizations } from '../../db/schema/orgs';
 import { diagnosticAccessGrants } from '../../db/schema/diagnosticAccess';
 import {
   auditDiagnosticDecision,
+  auditDiagnosticSelfApproval,
   decideDiagnosticGrantInTx,
   isEligibleApprover as isEligibleDiagnosticApprover,
   resolveEligibleApprovers as resolveDiagnosticApprovers,
@@ -617,12 +618,14 @@ export async function decideApprovalRequest(
   // access to the device's site. A Site-A administrator cannot decide a
   // Site-B grant, even if the device moved after the request.
   let diagnosticSelfApprove = false;
+  let diagnosticTarget: { orgId: string; deviceId: string } | null = null;
   if (existing.diagnosticAccessGrantId && !existing.intentId) {
     const target = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const [row] = await db
           .select({
             orgId: diagnosticAccessGrants.orgId,
+            deviceId: diagnosticAccessGrants.deviceId,
             status: diagnosticAccessGrants.status,
             deviceOrgId: devices.orgId,
             siteId: devices.siteId,
@@ -637,6 +640,7 @@ export async function decideApprovalRequest(
       }),
     );
     if (!target) return { httpStatus: 404, body: { error: 'diagnostic_access_grant_not_found' } };
+    diagnosticTarget = { orgId: target.orgId, deviceId: target.deviceId };
     if (target.deviceOrgId !== target.orgId) {
       return { httpStatus: 409, body: { error: 'diagnostic_access_device_moved', finalStatus: 'expired' } };
     }
@@ -1287,11 +1291,19 @@ export async function decideApprovalRequest(
     }
   }
 
-  // A sole operator approving their OWN diagnostic grant needs >= L3, the same
-  // floor as a sole-operator intent, whatever the partner policy or batch
-  // path. Deny is never gated.
-  if (diagnosticSelfApprove && (assurance.decidedAssuranceLevel ?? 0) < 3) {
-    return { httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } };
+  // A sole operator approving their OWN diagnostic grant needs a fresh
+  // second factor: a hardware-backed assertion (>= L3) made for THIS
+  // decision, never a session tap or a reused step-up grant, whatever the
+  // partner policy or batch path. Deny is never gated.
+  if (
+    diagnosticSelfApprove
+    && !isFreshApproverFactor({
+      decidedVia: assurance.decidedVia,
+      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+      stepUpGrantReuse: assurance.stepUpGrantReuse === true,
+    })
+  ) {
+    return { httpStatus: 403, body: { error: 'step_up_required', requiredLevel: FRESH_APPROVER_FACTOR_MIN_LEVEL } };
   }
 
   // Topology M4-D3 (#6000): a tool listed in FRESH_APPROVER_FACTOR_TOOLS is
@@ -1326,6 +1338,27 @@ export async function decideApprovalRequest(
       httpStatus: 403,
       body: { error: 'step_up_required', requiredLevel: FRESH_APPROVER_FACTOR_MIN_LEVEL, reason: 'fresh_mfa_required' },
     };
+  }
+
+  // Every diagnostic self-approval leaves a durable audit record, written
+  // BEFORE the grant can become active: if it cannot be written the decision
+  // is refused (retryable) rather than activating an unrecorded self-approval.
+  if (diagnosticSelfApprove && diagnosticTarget) {
+    try {
+      await auditDiagnosticSelfApproval({
+        grantId: existing.diagnosticAccessGrantId as string,
+        orgId: diagnosticTarget.orgId,
+        deviceId: diagnosticTarget.deviceId,
+        deciderUserId: userId,
+        approvalRequestId: id,
+        decidedAssuranceLevel: assurance.decidedAssuranceLevel ?? null,
+        decidedVia: assurance.decidedVia ?? null,
+        authenticatorDeviceId: assurance.authenticatorDeviceId ?? null,
+      });
+    } catch (err) {
+      console.error('[approvals] diagnostic self-approval audit failed; refusing the decision:', err);
+      return { httpStatus: 503, body: { error: 'audit_unavailable', retryable: true } };
+    }
   }
 
   // Task 6: the ENTIRE decision write — approval-row CAS, the ai_tool_executions
@@ -1760,7 +1793,7 @@ export async function decideApprovalRequest(
 
   if (decidedDiagnosticGrant) {
     try {
-      await auditDiagnosticDecision(decidedDiagnosticGrant, userId, id);
+      await auditDiagnosticDecision(decidedDiagnosticGrant, userId, id, { selfApproved: diagnosticSelfApprove });
     } catch (auditErr) {
       console.error('[approvals] diagnostic access decision audit failed:', auditErr);
     }
