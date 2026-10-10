@@ -1,0 +1,48 @@
+---
+title: Community Ecosystem
+description: Open-source projects that work with Breeze through its public APIs. Listed when they meet published criteria, maintained by their own authors, and not endorsed or supported by Breeze.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Open-source projects that connect to Breeze through its public interfaces. A project is listed here because it meets the [listing criteria](#listing-criteria) below, and any project that meets them can be added the same way.
+
+<Aside type="caution" title="Community-maintained">
+  These projects are built, maintained, and supported by their own authors. Breeze does not review, audit, or endorse them, and a listing is not a security assessment. Before you grant a project access, read its documentation and check the scopes it asks for. Report problems to the project's own issue tracker, not to Breeze.
+</Aside>
+
+## Projects
+
+### Weavestream
+
+Self-hosted IT documentation, asset management, and data intelligence platform. It syncs Breeze organizations, sites, devices, inventory, configuration policies, scripts, backup configurations, and custom fields into its own relational documentation model.
+
+| | |
+|---|---|
+| **License** | AGPL-3.0 |
+| **Connects through** | [Partner API](/reference/api/#partner-api-service-principals), read-only |
+| **Scopes it requests** | `organizations:read`, `sites:read`, `devices:read`, `inventory:read`, `configuration:read`, `scripts:read`, `backup-configuration:read`, `custom-fields:read` |
+| **Compatibility** | Weavestream 1.9.10 or later. Earlier releases reject the fields Breeze v0.111+ adds within `schemaVersion: "1"`. |
+| **Setup guide** | [Breeze integration docs](https://github.com/Weavestream/Weavestream/blob/main/docs/integrations/breeze.md) |
+| **Source and issues** | [github.com/Weavestream/Weavestream](https://github.com/Weavestream/Weavestream) |
+
+The scope list comes from Weavestream's own setup guide. Check it there before you create the service principal, since the project may change what it needs.
+
+## Listing criteria
+
+A project is listed when all of these hold:
+
+1. **Open source.** The code that talks to Breeze is published under an [OSI-approved license](https://opensource.org/licenses).
+2. **Public interfaces only.** It connects through documented Breeze surfaces: the [Partner API](/reference/api/#partner-api-service-principals), [webhooks](/features/webhooks/), the [MCP server](/features/mcp-server/), or the [extension SDK](/features/extensions/). It never reads the Breeze database directly or calls undocumented endpoints.
+3. **Least privilege, stated up front.** Its documentation lists the exact scopes or permissions it needs and what each one is used for. It uses a service principal or API key, never a Breeze user's password or session.
+4. **Tolerates additive API changes.** It ignores fields it does not recognize, per the [Partner API compatibility rule](/reference/api/#schema-versioning-and-compatibility), so a routine Breeze upgrade does not break it.
+5. **Reachable maintainers.** It has its own public documentation and issue tracker.
+6. **Maintained.** It has had a release or commit in the last 12 months.
+
+These criteria are about how a project connects to Breeze. They say nothing about its quality or fitness for your environment.
+
+## Adding or removing a project
+
+To add a project, open a pull request against this page ([`apps/docs/src/content/docs/features/community-ecosystem.mdx`](https://github.com/LanternOps/breeze/blob/main/apps/docs/src/content/docs/features/community-ecosystem.mdx)). Add an entry with the same fields as the ones above, and include a link that shows each criterion is met. Maintainers of a project can ask for its listing to be updated or removed the same way.
+
+An entry can be removed when the project no longer meets the criteria, for example when it stops working with current Breeze releases or has had no activity for 12 months. Before removing an entry, we open an issue on the project's tracker and wait 30 days for a response.

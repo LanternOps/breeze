@@ -197,6 +197,7 @@ export default defineConfig({
                 { slug: 'features/webhooks' },
                 { slug: 'features/plugins' },
                 { slug: 'features/extensions' },
+                { slug: 'features/community-ecosystem' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
                 { slug: 'features/setup-wizard' },
