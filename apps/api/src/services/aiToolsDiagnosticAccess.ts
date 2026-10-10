@@ -38,7 +38,11 @@ import {
   type DiagnosticOperation,
   type GrantRow,
 } from './diagnosticAccess/grants';
-import { redactDiagnosticContent } from './diagnosticAccess/contentRedaction';
+import {
+  DIAGNOSTIC_REDACTION_CONTEXT_BYTES,
+  diagnosticReadWindow,
+  redactDiagnosticWindow,
+} from './diagnosticAccess/contentRedaction';
 import { generateResultKeyPair, isSealedDiagnosticResult, openSealedDiagnosticResult } from './diagnosticAccess/seal';
 import { describeAgentDiagnosticError, splitResolvedTarget } from './diagnosticAccess/errors';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
@@ -47,7 +51,9 @@ import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 type AiToolTier = 1 | 2 | 3 | 4;
 
 const READ_DEFAULT_BYTES = 256 * 1024;
-const READ_MAX_BYTES = 1024 * 1024;
+// The device reads at most 1 MiB per command; the redaction context on each
+// side of the caller's range comes out of that.
+const READ_MAX_BYTES = 1024 * 1024 - 2 * DIAGNOSTIC_REDACTION_CONTEXT_BYTES;
 const LIST_DEFAULT_LIMIT = 500;
 const LIST_MAX_LIMIT = 5000;
 
@@ -178,15 +184,18 @@ async function runDiagnosticCommand(
   }
 
   const keys = generateResultKeyPair();
+  // A read asks the device for a wider window, as raw bytes, so secrets that
+  // straddle the caller's range are still found (diagnosticAccess/contentRedaction.ts).
+  const window = operation === 'read' ? diagnosticReadWindow(paging.offset, paging.maxBytes ?? READ_DEFAULT_BYTES) : null;
   const payload: Record<string, unknown> = {
     grantId: grant.id,
     path,
-    offset: paging.offset,
+    offset: window ? window.offset : paging.offset,
     resultPublicKey: keys.publicKeyB64,
   };
-  if (operation === 'read') {
-    payload.maxBytes = paging.maxBytes;
-    payload.encoding = paging.encoding;
+  if (window) {
+    payload.maxBytes = window.maxBytes;
+    payload.encoding = 'base64';
   } else {
     payload.limit = paging.limit;
   }
@@ -206,21 +215,13 @@ async function runDiagnosticCommand(
     const sealed = JSON.parse(result.stdout ?? '');
     if (!isSealedDiagnosticResult(sealed)) throw new Error('result is not sealed');
     body = openSealedDiagnosticResult(keys.privateKey, sealed, sealed.authorizationId) as Record<string, unknown>;
+    if (window) body = redactReadWindow(body, window.offset, paging);
   } catch {
     await recordDiagnosticAccess(grant, auth, { operation, path, resolvedPath: null, commandId, outcome: 'result_unreadable' });
     return out({ error: 'The device answered, but its sealed result could not be opened.', condition: 'result_unreadable', commandId });
   }
 
-  // File content is redacted for secrets before it is returned to the
-  // assistant; the flag tells the model that some of it was withheld.
-  let contentRedacted: boolean | undefined;
-  if (operation === 'read') {
-    const raw = typeof body.content === 'string' ? body.content : '';
-    const redaction = redactDiagnosticContent(raw, paging.encoding === 'base64' ? 'base64' : 'text');
-    body = { ...body, content: redaction.content };
-    contentRedacted = redaction.redacted;
-  }
-
+  const contentRedacted = typeof body.contentRedacted === 'boolean' ? body.contentRedacted : undefined;
   const resolvedPath = typeof body.resolvedPath === 'string' ? body.resolvedPath : null;
   await recordDiagnosticAccess(grant, auth, {
     operation,
@@ -232,7 +233,40 @@ async function runDiagnosticCommand(
     entries: Array.isArray(body.entries) ? body.entries.length : undefined,
     contentRedacted,
   });
-  return out({ ...body, contentRedacted, grantExpiresAt: grant.expiresAt?.toISOString() ?? null, commandId });
+  return out({ ...body, grantExpiresAt: grant.expiresAt?.toISOString() ?? null, commandId });
+}
+
+/**
+ * Cuts the caller's range out of the window the device returned, with every
+ * secret that overlaps it redacted, and re-states paging for that range. The
+ * window must come back as base64; anything else is treated as unreadable.
+ */
+function redactReadWindow(
+  body: Record<string, unknown>,
+  windowOffset: number,
+  paging: { offset: number; maxBytes?: number; encoding?: 'text' | 'base64' },
+): Record<string, unknown> {
+  const raw = body.content;
+  if (typeof raw !== 'string' || Buffer.from(raw, 'base64').toString('base64') !== raw) {
+    throw new Error('diagnostic read window is not base64');
+  }
+  const windowBytes = Buffer.from(raw, 'base64');
+  const requested = paging.maxBytes ?? READ_DEFAULT_BYTES;
+  const { bytes, redacted } = redactDiagnosticWindow(windowBytes, paging.offset - windowOffset, requested);
+  const bytesRead = Math.max(0, Math.min(windowBytes.length - (paging.offset - windowOffset), requested));
+  const nextOffset = paging.offset + bytesRead;
+  const size = typeof body.size === 'number' ? body.size : undefined;
+  const encoding = paging.encoding === 'base64' ? 'base64' : 'text';
+  return {
+    ...body,
+    offset: paging.offset,
+    bytesRead,
+    nextOffset,
+    eof: size !== undefined ? nextOffset >= size : body.eof,
+    encoding,
+    content: encoding === 'base64' ? bytes.toString('base64') : bytes.toString('utf8'),
+    contentRedacted: redacted,
+  };
 }
 
 export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): void {

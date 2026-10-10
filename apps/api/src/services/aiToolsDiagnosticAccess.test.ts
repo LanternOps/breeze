@@ -161,13 +161,14 @@ describe('diagnostic read tools', () => {
     m.aiExecuteCommand.mockImplementation(async (_a, _t, _d, type: string, payload: Record<string, unknown>) => {
       expect(type).toBe('diag_file_read');
       expect(payload).not.toHaveProperty('diagnosticAuthorization');
-      expect(payload).toMatchObject({ grantId: 'g1', path: `${LOGS}\\Agent.log`, offset: 0, encoding: 'text' });
+      expect(payload).toMatchObject({ grantId: 'g1', path: `${LOGS}\\Agent.log`, offset: 0, encoding: 'base64' });
       return {
         status: 'completed',
         commandId: 'cmd-1',
         stdout: sealLikeAgent(payload.resultPublicKey as string, 'auth-1', {
           resolvedPath: `${LOGS}\\Agent.log`,
-          content: 'SECRET-LOOKING LOG LINE',
+          content: Buffer.from('SECRET-LOOKING LOG LINE').toString('base64'),
+          encoding: 'base64',
           bytesRead: 23,
           eof: true,
         }),
@@ -180,12 +181,26 @@ describe('diagnostic read tools', () => {
     expect(JSON.stringify(m.recordDiagnosticAccess.mock.calls)).not.toContain('SECRET-LOOKING');
   });
 
-  function answerWith(body: Record<string, unknown>) {
-    m.aiExecuteCommand.mockImplementation(async (_a, _t, _d, _type: string, payload: Record<string, unknown>) => ({
-      status: 'completed',
-      commandId: 'cmd-r',
-      stdout: sealLikeAgent(payload.resultPublicKey as string, 'auth-r', { resolvedPath: `${LOGS}\\app.config`, bytesRead: 1, eof: true, ...body }),
-    }));
+  /** The device side: serves `file` for whatever window the tool asks for, as base64. */
+  function serveFile(file: Buffer) {
+    m.aiExecuteCommand.mockImplementation(async (_a, _t, _d, _type: string, payload: Record<string, unknown>) => {
+      const offset = payload.offset as number;
+      const chunk = file.subarray(offset, offset + (payload.maxBytes as number));
+      return {
+        status: 'completed',
+        commandId: 'cmd-r',
+        stdout: sealLikeAgent(payload.resultPublicKey as string, 'auth-r', {
+          resolvedPath: `${LOGS}\\app.config`,
+          size: file.length,
+          offset,
+          bytesRead: chunk.length,
+          nextOffset: offset + chunk.length,
+          eof: offset + chunk.length >= file.length,
+          encoding: payload.encoding,
+          content: chunk.toString('base64'),
+        }),
+      };
+    });
   }
 
   const PEM = ['-----BEGIN PRIVATE KEY-----', 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', '-----END PRIVATE KEY-----'].join('\n');
@@ -198,37 +213,63 @@ describe('diagnostic read tools', () => {
     'shutdown ok',
   ].join('\n');
 
+  it('asks the device for context around the requested range, always as bytes', async () => {
+    serveFile(Buffer.from(SECRET_TEXT));
+    await read({ offset: 20_000, maxBytes: 100 });
+    expect(m.aiExecuteCommand.mock.calls[0]![4]).toMatchObject({ offset: 20_000 - 16_384, maxBytes: 16_384 + 100 + 16_384, encoding: 'base64' });
+  });
+
   it('redacts secrets from text content before the assistant sees it', async () => {
-    answerWith({ content: SECRET_TEXT, encoding: 'text' });
+    serveFile(Buffer.from(SECRET_TEXT));
     const res = await read({});
     expect(res.content).toContain('startup ok');
     expect(res.content).toContain('shutdown ok');
     for (const secret of ['Hunter2Hunter2', 'abcdefghijklmnopqrstuvwxyz012345', 'AKIAABCDEFGHIJKLMNOP', 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC']) {
       expect(res.content).not.toContain(secret);
     }
-    expect(res.contentRedacted).toBe(true);
+    expect(res).toMatchObject({ contentRedacted: true, encoding: 'text', offset: 0 });
+  });
+
+  it('a read that starts inside a secret value returns no part of it, with honest paging', async () => {
+    const file = Buffer.from(SECRET_TEXT);
+    serveFile(file);
+    const at = file.indexOf('Hunter2');
+    const res = await read({ offset: at, maxBytes: 7 });
+    expect(res.content).not.toMatch(/Hunter|unter2/);
+    expect(res).toMatchObject({ contentRedacted: true, offset: at, bytesRead: 7, nextOffset: at + 7, eof: false, size: file.length });
   });
 
   it('redacts secrets inside base64 content and re-encodes the result', async () => {
-    answerWith({ content: Buffer.from(SECRET_TEXT, 'utf8').toString('base64'), encoding: 'base64' });
+    serveFile(Buffer.from(SECRET_TEXT));
     const res = await read({ encoding: 'base64' });
     const decoded = Buffer.from(res.content, 'base64').toString('utf8');
     expect(decoded).toContain('startup ok');
     expect(decoded).not.toContain('Hunter2Hunter2');
     expect(decoded).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC');
-    expect(res.contentRedacted).toBe(true);
+    expect(res).toMatchObject({ contentRedacted: true, encoding: 'base64' });
   });
 
   it('leaves content without secrets byte-for-byte unchanged', async () => {
-    const binary = Buffer.from([0, 1, 2, 250, 251, 252, 253, 254, 255, 10, 65]).toString('base64');
-    answerWith({ content: binary, encoding: 'base64' });
+    const bin = Buffer.from([0, 1, 2, 250, 251, 252, 253, 254, 255, 10, 65]);
+    serveFile(bin);
     const res = await read({ encoding: 'base64' });
-    expect(res.content).toBe(binary);
+    expect(res.content).toBe(bin.toString('base64'));
     expect(res.contentRedacted).toBe(false);
-    answerWith({ content: 'line1\nline2 \u2603\n', encoding: 'text' });
+    serveFile(Buffer.from('line1\nline2 \u2603\n'));
     const txt = await read({});
     expect(txt.content).toBe('line1\nline2 \u2603\n');
-    expect(txt.contentRedacted).toBe(false);
+    expect(txt).toMatchObject({ contentRedacted: false, eof: true });
+  });
+
+  it('refuses an answer whose window is not base64', async () => {
+    m.aiExecuteCommand.mockImplementation(async (_a, _t, _d, _type: string, payload: Record<string, unknown>) => ({
+      status: 'completed',
+      commandId: 'cmd-x',
+      stdout: sealLikeAgent(payload.resultPublicKey as string, 'auth-x', { content: 'password=Hunter2Hunter2 %%', encoding: 'text' }),
+    }));
+    const res = await read({});
+    expect(res.condition).toBe('result_unreadable');
+    expect(JSON.stringify(res)).not.toContain('Hunter2');
   });
 
   it('refuses an unsealed or wrongly sealed answer', async () => {
@@ -255,7 +296,8 @@ describe('diagnostic read tools', () => {
   it('bounds page sizes', async () => {
     m.aiExecuteCommand.mockResolvedValue({ status: 'failed', error: 'x' });
     await read({ maxBytes: 50_000_000 });
-    expect(m.aiExecuteCommand.mock.calls[0]![4]).toMatchObject({ maxBytes: 1024 * 1024 });
+    // The caller's range is capped so the window (with context) fits the device's 1 MiB read limit.
+    expect(m.aiExecuteCommand.mock.calls[0]![4]).toMatchObject({ offset: 0, maxBytes: 1024 * 1024 - 16_384 });
     await tools.get('diagnostic_list_directory')!.handler({ deviceId: DEVICE_ID, path: LOGS, limit: 999_999 }, auth());
     expect(m.aiExecuteCommand.mock.calls[1]![3]).toBe('diag_file_list');
     expect(m.aiExecuteCommand.mock.calls[1]![4]).toMatchObject({ limit: 5000 });

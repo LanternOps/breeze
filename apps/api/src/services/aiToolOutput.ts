@@ -88,7 +88,8 @@ const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
 const REDACTED = '[REDACTED]';
 
-const BARE_SECRET_PATTERNS: RegExp[] = [
+/** Whole-match secret shapes; exported for span-based redaction (diagnosticAccess/contentRedaction.ts). */
+export const BARE_SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,

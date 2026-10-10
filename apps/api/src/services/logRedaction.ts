@@ -2,7 +2,11 @@ const REDACTED = '[REDACTED]';
 
 const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
-const SECRET_ASSIGNMENT_PATTERNS: RegExp[] = [
+/**
+ * Exported for span-based redaction (diagnosticAccess/contentRedaction.ts).
+ * Every pattern keeps its capture group 1 (the key) and redacts the rest.
+ */
+export const SECRET_ASSIGNMENT_PATTERNS: readonly RegExp[] = [
   /\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi,
   // Includes `auth=` to catch Pi-hole's URL pattern `?auth=<apiKey>` —
   // these can leak into Node fetch error messages whose .cause echoes

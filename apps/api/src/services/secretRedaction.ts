@@ -50,7 +50,7 @@ const TRUNCATED_PRIVATE_KEY =
  * server-side behavior matches what up-to-date agents already do to their own
  * output — no new false-positive surface beyond what the fleet already redacts.
  */
-const REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
+export const SECRET_OUTPUT_REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
   // api_key/apikey/token/secret/password/passwd/pwd = <value> pairs.
   {
     pattern:
@@ -83,7 +83,7 @@ const REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
  */
 export function redactSecretsFromOutput(text: string): string {
   let result = text;
-  for (const { pattern, replacement } of REDACTIONS) {
+  for (const { pattern, replacement } of SECRET_OUTPUT_REDACTIONS) {
     result = result.replace(pattern, replacement);
   }
   return result;

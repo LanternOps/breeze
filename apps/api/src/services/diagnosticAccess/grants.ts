@@ -36,7 +36,7 @@ import type { DiagnosticAccessScope } from '../../db/schema/diagnosticAccess';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessOrg, canAccessSite, getUserPermissions, hasPermission, PERMISSIONS } from '../permissions';
 import { resolveUsersWithPermissionForOrg } from '../usersWithPermission';
-import { createAuditLog } from '../auditService';
+import { createAuditLog, createAuditLogAsync } from '../auditService';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import {
   classifyDiagnosticPath,
@@ -780,8 +780,11 @@ export async function decideDiagnosticGrantInTx(
  * Durable record of a sole operator approving their own grant. Written BEFORE
  * the decision transaction and required: when it cannot be written, the
  * self-approval is refused (decideApprovalRequest), so no self-approved grant
- * can become active without this record. The ordinary decision record follows
- * after commit with `selfApproved: true`.
+ * can become active without this record. It records that the self-approval
+ * passed its checks (`stage: 'before_activation'`); the decision record that
+ * follows after commit (`diagnostic_access.approved`, `selfApproved: true`)
+ * confirms the activation. A self-approval record with no matching decision
+ * record marks an approval that did not complete (e.g. the request lapsed).
  */
 export async function auditDiagnosticSelfApproval(input: {
   grantId: string;
@@ -803,6 +806,7 @@ export async function auditDiagnosticSelfApproval(input: {
     details: {
       deviceId: input.deviceId,
       approvalRequestId: input.approvalRequestId,
+      stage: 'before_activation',
       soleOperator: true,
       decidedAssuranceLevel: input.decidedAssuranceLevel,
       decidedVia: input.decidedVia,
@@ -812,14 +816,19 @@ export async function auditDiagnosticSelfApproval(input: {
   });
 }
 
-/** Audit a decision (called after the decision transaction commits). */
+/**
+ * Audit a decision (called after the decision transaction commits). Uses the
+ * retrying writer: the decision has already committed, so a transient audit
+ * failure is queued for retry (and reported if it keeps failing) rather than
+ * lost.
+ */
 export async function auditDiagnosticDecision(
   grant: GrantRow,
   deciderUserId: string,
   approvalRequestId: string,
   opts: { selfApproved: boolean },
 ): Promise<void> {
-  await createAuditLog({
+  await createAuditLogAsync({
     orgId: grant.orgId,
     actorType: 'user',
     actorId: deciderUserId,
