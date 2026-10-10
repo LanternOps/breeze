@@ -361,6 +361,19 @@ describe('parked orgs keep their partner-drop rules on the set path (#8142)', ()
       expect(await threeWay(ctx, 'resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o)))
         .toMatchObject({ settings: { ntpServers: ['time.partner.example'] } });
     });
+
+    runDb(`${orgType}: every resolver's partner-target rule agrees three ways`, async () => {
+      const world = await seedParityWorld();
+      const parked = (await createOrganization({ partnerId: world.partnerId, type: orgType }))!;
+      const parkedSite = (await createSite({ orgId: parked.id }))!;
+      const deviceId = await seedDevice(parked.id, parkedSite.id, `${orgType}-all`);
+      // The world's partner-level policies target this device too; a resolver
+      // whose set-path rule drifts from its legacy SQL breaks parity here.
+      for (const [name, resolve] of RESOLVERS) {
+        const r: Resolver = name === 'buildHelperConfigUpdate' ? (id, o) => buildHelperConfigUpdate(id, parked.id, o) : resolve;
+        await threeWay({ deviceId, orgId: parked.id, partnerId: world.partnerId }, `${orgType} ${name}`, r);
+      }
+    });
   }
 });
 

@@ -282,6 +282,11 @@ export async function seedParityWorld(): Promise<ParityWorld> {
     assignments: [{ level: 'partner', targetId: partner.id }] });
   await seedPolicy({ owner: O, links: [{ featureType: 'monitors', inheritance: 'replace' }],
     assignments: [{ level: 'site', targetId: site.id }] });
+  // Servers only; the device is a workstation. Monitors filter role/OS ONLY
+  // through MONITOR_APPLICABILITY on the set path (no second ranking check),
+  // so a dropped rule surfaces this service on every path but legacy.
+  await seedPolicy({ owner: O, links: [{ featureType: 'monitors', serviceName: 'ServerOnlySvc' }],
+    assignments: [{ level: 'device', targetId: deviceId, roleFilter: ['server'] }] });
 
   await seedPolicy({ owner: O, links: [{ featureType: 'onedrive_helper', orgId: org.id, filesOnDemand: false, libraryName: 'Parity Docs' }],
     assignments: [{ level: 'site', targetId: site.id }] });
