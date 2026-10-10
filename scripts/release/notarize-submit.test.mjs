@@ -85,3 +85,15 @@ test('notarytool exits 0 with status Accepted: succeeds', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Notarization Accepted: breeze-agent\.zip \(submission 3333-4444\)/);
 });
+
+test('a large Accepted output does not trip SIGPIPE under pipefail', () => {
+  // awk exits at the first match; when the rest of the output exceeds the pipe
+  // buffer, the upstream writer used to die with SIGPIPE (141) under pipefail.
+  const filler = 'x'.repeat(200).concat('\n').repeat(2000);
+  const result = run({
+    output: `  id: 5555-6666\n  status: Accepted\n${filler}Processing complete`,
+    status: 0,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Notarization Accepted: breeze-agent\.zip \(submission 5555-6666\)/);
+});
