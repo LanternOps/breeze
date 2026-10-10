@@ -45,7 +45,7 @@ it('replays the first migration without deleting observations', async () => {
 it('protects normalized settings through the policy chain and bounds both intervals', async () => {
   const rows = await getTestDb().execute(sql`SELECT p.polname,c.relrowsecurity,c.relforcerowsecurity,pg_get_expr(p.polqual,p.polrelid) AS predicate FROM pg_class c JOIN pg_policy p ON p.polrelid=c.oid WHERE c.oid=to_regclass('config_policy_hardware_monitoring_settings') AND p.polcmd='r' ORDER BY p.polname`);
   // The parent-chain SELECT plus the SELECT-only partner-wide read branch
-  // (2026-12-20-210000, #8142); nothing else may widen reads.
+  // (2026-12-21-110000, #8142); nothing else may widen reads.
   expect(rows.map((r)=>r.polname)).toEqual(['breeze_parent_select','config_policy_hardware_monitoring_settings_partner_wide_select']);
   const [parent,partnerWide]=rows;
   expect(parent).toMatchObject({relrowsecurity:true,relforcerowsecurity:true});

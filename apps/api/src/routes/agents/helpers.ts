@@ -2213,7 +2213,7 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DevicePolicySe
   }
 
   // #8142: config_policy_hardware_monitoring_settings now carries the
-  // SELECT-only partner-wide branch (2026-12-20-210000), so this reads in the
+  // SELECT-only partner-wide branch (2026-12-21-110000), so this reads in the
   // caller's own context — no breeze.accessible_partner_ids widening.
   const rows = await db
       .select({
