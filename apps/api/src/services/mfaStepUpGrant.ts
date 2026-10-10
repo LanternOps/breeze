@@ -127,7 +127,12 @@ export type StepUpOperation =
   // Sending a client's automatic-payment authorization request to an address
   // other than its billing contact. Bound to the exact org set, recipient and
   // request mode.
-  | 'autopay_request_recipient';
+  | 'autopay_request_recipient'
+  // Saving an organization's own payment settings, which override the
+  // partner's (cap, schedule, fees, payment methods, reminders). Asked for only
+  // when a saved value differs from the stored one; bound to the organization
+  // AND to the exact values saved, like partner_payment_settings_update.
+  | 'org_payment_settings_update';
 
 export interface StepUpGrant {
   id: string;
@@ -436,6 +441,24 @@ export function partnerPaymentSettingsResourceDigest(input: {
   const canonical = JSON.stringify({
     kind: 'partner_payment_settings_update',
     partnerId: input.partnerId.toLowerCase(),
+    settings: canonicalValue(input.settings),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Organization payment-settings binding: the organization and every value in
+ * the saved patch (as parsed by the shared org patch schema on both the mint
+ * and the write side), independent of key order. Its own `kind`, so a partner
+ * grant never fits an organization save.
+ */
+export function orgPaymentSettingsResourceDigest(input: {
+  orgId: string;
+  settings: Record<string, unknown>;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'org_payment_settings_update',
+    orgId: input.orgId.toLowerCase(),
     settings: canonicalValue(input.settings),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;

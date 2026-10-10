@@ -26,6 +26,7 @@ import {
   autopayChargeNowResourceDigest,
   autopayRequestRecipientResourceDigest,
   mintStepUpGrant,
+  orgPaymentSettingsResourceDigest,
   partnerPaymentSettingsResourceDigest,
 } from '../services/mfaStepUpGrant';
 import { requireBillingStepUp } from './billingStepUp';
@@ -140,6 +141,18 @@ describe('billing step-up digests', () => {
     const attested = (value: boolean) => partnerPaymentSettingsResourceDigest({ partnerId,
       settings: { feeAttestation: { doesNotExceedAcceptanceCost: true, acquirerAndNetworksNotified30DaysAgo: value } } });
     expect(attested(true)).not.toBe(attested(false));
+  });
+
+  it('binds organization payment settings to the organization and every saved value, apart from the partner binding', () => {
+    const orgId = '66666666-6666-4666-8666-666666666666';
+    const settings = { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' };
+    const a = orgPaymentSettingsResourceDigest({ orgId, settings });
+    expect(orgPaymentSettingsResourceDigest({ orgId: orgId.toUpperCase(),
+      settings: { autopayCapCurrency: 'USD', autopayCapAmount: '500.00', autopayCapEnabled: true } })).toBe(a);
+    expect(orgPaymentSettingsResourceDigest({ orgId, settings: { ...settings, autopayCapAmount: '5000.00' } })).not.toBe(a);
+    expect(orgPaymentSettingsResourceDigest({ orgId: partnerId, settings })).not.toBe(a);
+    // A partner grant for the same id and values never fits an organization save.
+    expect(partnerPaymentSettingsResourceDigest({ partnerId: orgId, settings })).not.toBe(a);
   });
 
   it('binds a redirected authorization request to the exact org set, recipient and mode', () => {

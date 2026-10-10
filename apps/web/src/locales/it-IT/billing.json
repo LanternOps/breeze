@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Addebitare ora questa fattura richiede una nuova verifica a due fattori.",
         "partner_payment_settings_update": "Modificare le impostazioni di pagamento richiede una nuova verifica a due fattori per questi valori specifici.",
+        "org_payment_settings_update": "Modificare le impostazioni di pagamento di questa organizzazione richiede una nuova verifica a due fattori per questi valori specifici.",
         "autopay_request_recipient": "Inviare la richiesta di autorizzazione a un indirizzo diverso dal contatto di fatturazione richiede una nuova verifica a due fattori."
       },
       "code": "Codice dell'autenticatore",

@@ -7,13 +7,13 @@ import { db } from '../db';
 import { organizations } from '../db/schema';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission } from '../middleware/auth';
-import { partnerPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
+import { orgPaymentSettingsResourceDigest, partnerPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { requireBillingStepUp } from './billingStepUp';
 import { PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
-import { resolveBillingPaymentSettings, updatePartnerPaymentSettings, updateOrgPaymentSettings } from '../services/autopay/billingPaymentSettings';
+import { orgPaymentSettingsChanges, resolveBillingPaymentSettings, updatePartnerPaymentSettings, updateOrgPaymentSettings } from '../services/autopay/billingPaymentSettings';
 import { isAutopayEnabledForPartner } from '../services/autopay/autopayGate';
 
 import { feeAuthorizationGaps, paymentSettingsView } from '../services/autopay/paymentSettingsView';
@@ -42,14 +42,18 @@ async function refuseDisabledAutopay(c: Context, partnerId: string, patch: objec
   }
 }
 /**
- * The partner PUT body is the settings patch plus an optional `stepUpGrant`.
- * The grant is split off before the (strict) shared patch schema runs, so the
- * patch can never carry it into storage and every other key stays rejected.
+ * A payment-settings PUT body is the settings patch plus an optional
+ * `stepUpGrant`. The grant is split off before the (strict) shared patch
+ * schema runs, so the patch can never carry it into storage and every other
+ * key stays rejected.
  */
-const partnerPutBody = z.record(z.string(), z.unknown())
+const splitStepUpGrant = z.record(z.string(), z.unknown())
   .transform(({ stepUpGrant, ...patch }): { stepUpGrant?: unknown; patch: Record<string, unknown> } =>
-    (stepUpGrant === undefined ? { patch } : { stepUpGrant, patch }))
+    (stepUpGrant === undefined ? { patch } : { stepUpGrant, patch }));
+const partnerPutBody = splitStepUpGrant
   .pipe(z.object({ stepUpGrant: z.string().uuid().optional(), patch: partnerPaymentSettingsPatchSchema }));
+const orgPutBody = splitStepUpGrant
+  .pipe(z.object({ stepUpGrant: z.string().uuid().optional(), patch: orgPaymentSettingsPatchSchema }));
 billingPaymentSettingsRoutes.get('/partner/billing/payment-settings', authMiddleware, requireScope('partner'), async c => {
   const partnerId = partnerFrom(c);
   const view = await paymentSettingsView(db, partnerId);
@@ -85,13 +89,26 @@ billingPaymentSettingsRoutes.get('/orgs/:orgId/billing/payment-settings', authMi
     const view = await paymentSettingsView(db, partnerId, orgId);
     return c.json({ data: view.effective, ...view });
   });
+// An organization's own payment settings override the partner's, so a save
+// that changes any of them needs the same second-factor confirmation, bound to
+// the organization and the exact values saved. Whether anything changes is
+// decided here against the stored org row: a save that changes nothing writes
+// nothing and needs no confirmation.
 billingPaymentSettingsRoutes.put('/orgs/:orgId/billing/payment-settings', authMiddleware, requireScope('partner', 'system'), writePermission, requireMfa(),
-  zValidator('param', z.object({ orgId: z.string().guid() })), zValidator('json', orgPaymentSettingsPatchSchema), async c => {
-    const { orgId } = c.req.valid('param'); const partnerId = await orgPartner(c, orgId); const patch = c.req.valid('json');
+  zValidator('param', z.object({ orgId: z.string().guid() })), zValidator('json', orgPutBody), async c => {
+    const { orgId } = c.req.valid('param'); const partnerId = await orgPartner(c, orgId);
+    const { patch, stepUpGrant } = c.req.valid('json');
     const refusal = await refuseDisabledAutopay(c, partnerId, patch); if (refusal) return refusal;
-    await updateOrgPaymentSettings(db, orgId, patch, c.get('auth').user.id);
-    writeRouteAudit(c as never, { orgId, action: 'organization.payment_settings.update', resourceType: 'organization',
-      resourceId: orgId, details: { changedFields: Object.keys(patch) } });
+    const changedFields = await orgPaymentSettingsChanges(db, orgId, patch);
+    if (changedFields.length) {
+      const stepUpRefusal = await requireBillingStepUp(c, { operation: 'org_payment_settings_update',
+        resource: { orgId, settings: patch },
+        resourceDigest: orgPaymentSettingsResourceDigest({ orgId, settings: patch }), grant: stepUpGrant });
+      if (stepUpRefusal) return stepUpRefusal;
+      await updateOrgPaymentSettings(db, orgId, patch, c.get('auth').user.id);
+      writeRouteAudit(c as never, { orgId, action: 'organization.payment_settings.update', resourceType: 'organization',
+        resourceId: orgId, details: { changedFields } });
+    }
     return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId, orgId }),
       ...(Object.keys(patch).some(key => ['cardFeeBps', 'achFeeAmount'].includes(key))
         ? { feeAuthorizationGaps: await feeAuthorizationGaps(db, partnerId, orgId) } : {}) });

@@ -113,38 +113,68 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
   </fieldset>;
 }
 
+/** The PUT body for a draft: payment values (with autopay on), reminders, and the partner's fee attestation. */
+function paymentSettingsBody(view: PaymentSettingsView, reminders: ReminderDraft, affirmations: FeeAffirmations, org: boolean) {
+  const payload = { ...view.values };
+  if (payload.autopayCapEnabled === true && payload.autopayCapAmount !== null) {
+    const [whole, fraction = ''] = payload.autopayCapAmount.split('.');
+    payload.autopayCapAmount = `${whole}.${fraction.padEnd(2, '0')}`;
+  }
+  return { ...(view.autopayEnabled ? payload : {}), ...reminderPatch(reminders),
+    ...(view.autopayEnabled && !org && affirmations.notified && affirmations.cost ? {
+      feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true },
+    } : {}) };
+}
+/** Key-order-independent form of a PUT body, to tell an edited draft from the loaded one. */
+function bodyKey(body: Record<string, unknown>): string {
+  return JSON.stringify(Object.keys(body).sort().map(key => [key, body[key]]));
+}
+const NO_AFFIRMATIONS: FeeAffirmations = { notified: false, cost: false };
+/**
+ * `unchanged`: an organization draft equal to what was loaded, so no request
+ * was sent (changing an organization's payment settings asks for a
+ * second-factor confirmation, and a Save that changes none of them must not).
+ * `cancelled`: the confirmation was closed, nothing was saved. `skipped`: there
+ * was nothing valid to save.
+ */
+export type PaymentSettingsSaveResult = 'saved' | 'unchanged' | 'cancelled' | 'skipped';
+
 export function usePaymentSettings(orgId?: string) {
   const { t } = useTranslation('billing');
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';
-  // Saving partner payment settings asks for a second-factor confirmation bound to the saved values.
+  // Changing partner or organization payment settings asks for a second-factor confirmation bound to the saved values.
   const stepUp = useBillingStepUp();
   // Each identity owns its requests, including save-triggered reloads.
   const scope = useMemo(() => ({ path, active: false, request: 0 }), [path]);
   const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null, reminders: null as ReminderDraft | null,
+    /** bodyKey of the draft as loaded (organization scope only). */
+    baseline: null as string | null,
     affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false });
-  const { view, reminders, affirmations, error, loading, saving } = state.scope === scope
-    ? state : { view: null, reminders: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false };
+  const { view, reminders, baseline, affirmations, error, loading, saving } = state.scope === scope
+    ? state : { view: null, reminders: null, baseline: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false };
   const load = useCallback(async () => {
     if (!scope.active) return;
     const request = ++scope.request;
     const isCurrent = () => scope.active && scope.request === request;
-    setState(current => ({ ...current, scope, view: null, reminders: null, loading: true, error: false }));
+    setState(current => ({ ...current, scope, view: null, reminders: null, baseline: null, loading: true, error: false }));
     try {
       const response = await fetchWithAuth(scope.path);
       if (!response.ok) throw new Error('load');
       const nextView: PaymentSettingsView = await response.json();
       if (!nextView.values || !nextView.effective?.remindersEnabled || !nextView.inherited?.remindersEnabled) throw new Error('shape');
-      if (isCurrent()) setState(current => ({ ...current, view: nextView,
-        reminders: reminderDraft(nextView.effective, orgId ? 'org' : 'partner') }));
+      const nextReminders = reminderDraft(nextView.effective, orgId ? 'org' : 'partner');
+      const nextBaseline = orgId && !reminderDraftInvalid(nextReminders)
+        ? bodyKey(paymentSettingsBody(nextView, nextReminders, NO_AFFIRMATIONS, true)) : null;
+      if (isCurrent()) setState(current => ({ ...current, view: nextView, reminders: nextReminders, baseline: nextBaseline }));
     } catch {
-      if (isCurrent()) setState(current => ({ ...current, view: null, reminders: null, error: true }));
+      if (isCurrent()) setState(current => ({ ...current, view: null, reminders: null, baseline: null, error: true }));
     } finally {
       if (isCurrent()) setState(current => ({ ...current, loading: false }));
     }
   }, [scope, orgId]);
   useEffect(() => {
     scope.active = true;
-    setState({ scope, view: null, reminders: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false });
+    setState({ scope, view: null, reminders: null, baseline: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false });
     void load();
     return () => { scope.active = false; ++scope.request; };
   }, [scope, load]);
@@ -156,17 +186,11 @@ export function usePaymentSettings(orgId?: string) {
   const feesInvalid = !!view?.autopayEnabled && !!values && feeValuesInvalid(values);
   const attestationIncomplete = !!view?.autopayEnabled && !orgId && affirmations.notified !== affirmations.cost;
   const invalid = !view || !reminders || reminderDraftInvalid(reminders) || autopayInvalid || feesInvalid || attestationIncomplete;
-  const save = async () => {
-    if (!scope.active || !view || !reminders || invalid || loading || saving) return;
-    const payload = { ...view.values };
-    if (payload.autopayCapEnabled === true && payload.autopayCapAmount !== null) {
-      const [whole, fraction = ''] = payload.autopayCapAmount.split('.');
-      payload.autopayCapAmount = `${whole}.${fraction.padEnd(2, '0')}`;
-    }
-    const body = { ...(view.autopayEnabled ? payload : {}), ...reminderPatch(reminders),
-      ...(view.autopayEnabled && !orgId && affirmations.notified && affirmations.cost ? {
-        feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true },
-      } : {}) };
+  const save = async (): Promise<PaymentSettingsSaveResult> => {
+    if (!scope.active || !view || !reminders || invalid || loading || saving) return 'skipped';
+    const body: Record<string, unknown> = paymentSettingsBody(view, reminders, affirmations, !!orgId);
+    // The server makes the same comparison against the stored values; this one only avoids a needless request.
+    if (orgId && baseline !== null && bodyKey(body) === baseline) return 'unchanged';
     setState(current => ({ ...current, saving: true }));
     try {
       const outcome = await stepUp.run(stepUpGrant => runAction({
@@ -175,10 +199,11 @@ export function usePaymentSettings(orgId?: string) {
         errorFallback: t('reminders.saveFailed'), successMessage: t('reminders.saved'),
         suppressErrorToast: suppressBillingStepUpToast }));
       // Closed at the confirmation: nothing was saved, and the draft stays as it is.
-      if (!outcome.confirmed) return;
+      if (!outcome.confirmed) return 'cancelled';
       if (scope.active) setState(current => current.scope === scope
         ? { ...current, affirmations: { notified: false, cost: false } } : current);
       await load();
+      return 'saved';
     } finally {
       if (scope.active) setState(current => ({ ...current, saving: false }));
     }

@@ -6,7 +6,7 @@ const m = vi.hoisted(() => ({
   adminRows: [] as Array<{ id: string; autopayEnabled: boolean }>, update: vi.fn(),
   orgRows: [] as Array<{ partnerId: string }>,
   feeGapRows: [] as Array<Record<string, unknown>>,
-  consume: vi.fn(), autoGrant: true,
+  consume: vi.fn(), autoGrant: true, enable2fa: true, orgChanges: vi.fn(),
 }));
 // Real digests, stubbed grant store (see services/mfaStepUpGrant).
 vi.mock('./services/mfaStepUpGrant', async importOriginal => ({
@@ -18,7 +18,7 @@ vi.mock('./services/authEpochs', async importOriginal => ({
   getUserEpochs: async () => ({ authEpoch: 7, mfaEpoch: 9 }),
 }));
 vi.mock('./routes/auth/schemas', async importOriginal => ({
-  ...(await importOriginal<typeof import('./routes/auth/schemas')>()), ENABLE_2FA: true,
+  ...(await importOriginal<typeof import('./routes/auth/schemas')>()), get ENABLE_2FA() { return m.enable2fa; },
 }));
 vi.mock('./services/redis', async importOriginal => ({
   ...(await importOriginal<typeof import('./services/redis')>()), getRedis: () => null,
@@ -60,6 +60,7 @@ vi.mock('./services/autopay/billingPaymentSettings', async importOriginal => ({
   resolveBillingPaymentSettings: (...args: unknown[]) => m.read(...args),
   updatePartnerPaymentSettings: (...args: unknown[]) => m.partnerWrite(...args),
   updateOrgPaymentSettings: (...args: unknown[]) => m.orgWrite(...args),
+  orgPaymentSettingsChanges: (...args: unknown[]) => m.orgChanges(...args),
 }));
 vi.mock('./services/autopay/autopayGate', async importOriginal => ({
   ...(await importOriginal<typeof import('./services/autopay/autopayGate')>()),
@@ -81,8 +82,8 @@ const partnerPath = '/api/v1/partner/billing/payment-settings';
 const orgPath = `/api/v1/orgs/${orgId}/billing/payment-settings`;
 const grant = '90000000-0000-4000-8000-000000000009';
 function request(path: string, method = 'GET', body?: unknown) {
-  // Partner payment-settings writes carry a step-up grant unless a test opts out.
-  if (path === partnerPath && method === 'PUT' && m.autoGrant && body && typeof body === 'object') {
+  // Payment-settings writes carry a step-up grant unless a test opts out.
+  if ((path === partnerPath || path === orgPath) && method === 'PUT' && m.autoGrant && body && typeof body === 'object') {
     body = { ...body, stepUpGrant: grant };
   }
   return app.request(path, { method, ...(body === undefined ? {} : {
@@ -91,6 +92,9 @@ function request(path: string, method = 'GET', body?: unknown) {
 }
 beforeEach(() => {
   vi.clearAllMocks(); m.allowed = true; m.enabled = false; m.autoGrant = true; m.consume.mockResolvedValue(true);
+  m.enable2fa = true;
+  // Unless a test says otherwise, every sent org value differs from the stored one.
+  m.orgChanges.mockImplementation(async (_db: unknown, _orgId: string, patch: object) => Object.keys(patch));
   m.auth = { scope: 'partner', partnerId, partnerOrgAccess: 'all', orgId: null,
     user: { id: partnerId, email: 'admin@example.test', isPlatformAdmin: false }, token: { mfa: true, sid: 'sid-1' },
     principal: { kind: 'user_session' }, canAccessOrg: (id: string) => id === orgId, accessibleOrgIds: [orgId] };
@@ -280,5 +284,66 @@ describe('partner payment settings ask for a second-factor confirmation', () => 
     expect((await request(partnerPath, 'PUT', { remindersEnabled: true, stepUpGrant: 'nope' })).status).toBe(400);
     expect((await request(partnerPath, 'PUT', { remindersEnabled: true, stepUpGrant: grant, bogus: 1 })).status).toBe(400);
     expect(m.partnerWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('organization payment settings ask for a second-factor confirmation only when a value changes', () => {
+  const cap = { autopayCapEnabled: true, autopayCapAmount: '5000.00', autopayCapCurrency: 'USD' };
+  it('saves a PUT that changes nothing without a grant, and writes nothing', async () => {
+    m.enabled = true; m.autoGrant = false; m.orgChanges.mockResolvedValue([]);
+    const response = await request(orgPath, 'PUT', { ...cap, remindersEnabled: null });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: await m.read() });
+    // The server decided "unchanged" against the stored org row, not the client.
+    expect(m.orgChanges).toHaveBeenCalledWith(expect.anything(), orgId, { ...cap, remindersEnabled: null });
+    expect(m.consume).not.toHaveBeenCalled(); expect(m.orgWrite).not.toHaveBeenCalled();
+  });
+  it.each([cap, { cardFeeBps: 300 }, { achMode: 'ach_only' }, { remindersEnabled: true }])(
+    'answers STEP_UP_REQUIRED for a changed %j without a grant, and writes nothing', async patch => {
+      m.enabled = true; m.autoGrant = false;
+      const response = await request(orgPath, 'PUT', patch);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED',
+        stepUp: { operation: 'org_payment_settings_update', resource: { orgId, settings: patch } } });
+      expect(m.consume).not.toHaveBeenCalled(); expect(m.orgWrite).not.toHaveBeenCalled();
+    });
+  it('refuses a grant bound to different settings, and writes nothing', async () => {
+    m.enabled = true;
+    const { orgPaymentSettingsResourceDigest } = await import('./services/mfaStepUpGrant');
+    // The grant store accepts only the binding the grant was minted for.
+    const minted = orgPaymentSettingsResourceDigest({ orgId, settings: { cardFeeBps: 100 } });
+    m.consume.mockImplementation(async (_grant: string, binding: { resourceDigest: string }) => binding.resourceDigest === minted);
+    const response = await request(orgPath, 'PUT', { cardFeeBps: 300 });
+    expect(response.status).toBe(403); expect((await response.json()).code).toBe('STEP_UP_REQUIRED');
+    expect(m.orgWrite).not.toHaveBeenCalled();
+    // Positive control: the same grant saves the values it was minted for.
+    expect((await request(orgPath, 'PUT', { cardFeeBps: 100 })).status).toBe(200);
+    expect(m.orgWrite).toHaveBeenCalledOnce();
+  });
+  it('writes with a grant bound to this organization and these values, and never stores the grant', async () => {
+    m.enabled = true;
+    expect((await request(orgPath, 'PUT', cap)).status).toBe(200);
+    const { orgPaymentSettingsResourceDigest } = await import('./services/mfaStepUpGrant');
+    expect(m.consume).toHaveBeenCalledWith(grant, { userId: partnerId, operation: 'org_payment_settings_update',
+      authEpoch: 7, mfaEpoch: 9, sid: 'sid-1', resourceDigest: orgPaymentSettingsResourceDigest({ orgId, settings: cap }) });
+    expect(m.orgWrite).toHaveBeenCalledWith(expect.anything(), orgId, cap, partnerId);
+  });
+  it('refuses a changed PUT from a non-interactive principal, even with a grant', async () => {
+    m.auth.principal = { kind: 'api_key' };
+    expect((await request(orgPath, 'PUT', { remindersEnabled: true })).status).toBe(403);
+    expect(m.consume).not.toHaveBeenCalled(); expect(m.orgWrite).not.toHaveBeenCalled();
+  });
+  it('asks for no grant on a deployment with two-factor authentication disabled', async () => {
+    m.enabled = true; m.autoGrant = false; m.enable2fa = false;
+    expect((await request(orgPath, 'PUT', cap)).status).toBe(200);
+    expect(m.consume).not.toHaveBeenCalled(); expect(m.orgWrite).toHaveBeenCalledOnce();
+  });
+  it('rejects a malformed grant and keeps the settings schema strict', async () => {
+    m.autoGrant = false;
+    expect((await request(orgPath, 'PUT', { remindersEnabled: true, stepUpGrant: 'nope' })).status).toBe(400);
+    expect((await request(orgPath, 'PUT', { remindersEnabled: true, stepUpGrant: grant, bogus: 1 })).status).toBe(400);
+    expect((await request(orgPath, 'PUT', { stepUpGrant: grant, feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true,
+      doesNotExceedAcceptanceCost: true } })).status).toBe(400);
+    expect(m.orgChanges).not.toHaveBeenCalled(); expect(m.orgWrite).not.toHaveBeenCalled();
   });
 });

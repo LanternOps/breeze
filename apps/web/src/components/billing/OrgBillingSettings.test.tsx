@@ -8,6 +8,8 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+const stepUpMint = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/mfaStepUp', () => ({ mintStepUpGrant: stepUpMint }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -644,4 +646,77 @@ it('mounts inherited fees without partner attestation in the org page',async()=>
   expect(await screen.findByTestId('autopay-org-fee-settings-page')).toBeInTheDocument();
   expect(await screen.findByTestId('autopay-card-fee-bps')).toHaveAttribute('placeholder','300');
   expect(screen.queryByTestId('autopay-attest-notified')).toBeNull();
+});
+
+// The org's own payment settings override the partner's: changing one asks for
+// a second-factor confirmation, so a Save that changes none of them (a tax ID
+// or address edit) must not send the payment-settings PUT at all.
+describe('OrgBillingSettings payment-settings Save and second-factor confirmation', () => {
+  const path = '/orgs/org-1/billing/payment-settings';
+  const puts = () => fetchMock.mock.calls.filter(([url, init]) => url === path && init?.method === 'PUT')
+    .map(([, init]) => JSON.parse(init!.body as string) as Record<string, unknown>);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stepUpMint.mockResolvedValue('grant-org');
+    const base = feeView();
+    // Stored org overrides, so an untouched draft is not all-blank.
+    const view = { ...base, values: { ...base.values, cardFeeBps: 150, autopayCapEnabled: true,
+      autopayCapAmount: '500.00', autopayCapCurrency: 'USD' } };
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/users/me') return Response.json({ mfaEnabled: true, mfaMethod: 'totp' });
+      if (url === '/auth/passkeys') return Response.json([]);
+      if (url === path && init?.method === 'PUT') {
+        const { stepUpGrant, ...settings } = JSON.parse(init.body as string);
+        return stepUpGrant ? Response.json({ data: {} }) : Response.json({ error: 'Step-up required', code: 'STEP_UP_REQUIRED',
+          stepUp: { operation: 'org_payment_settings_update', resource: { orgId: 'org-1', settings } } }, { status: 403 });
+      }
+      if (url === path) return json(view);
+      if (String(url).endsWith('/autopay')) return json({ status: 'not_requested', method: null });
+      if (init?.method === 'PATCH') return json({ data: {} });
+      return orgPayload();
+    });
+  });
+
+  it('sends no payment-settings PUT when only non-payment fields changed', async () => {
+    render(<OrgBillingSettings orgId="org-1" />);
+    await screen.findByTestId('autopay-card-fee-bps');
+    fireEvent.change(screen.getByTestId('org-billing-taxid'), { target: { value: 'GB123' } });
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    expect(JSON.parse((findPatch()![1] as RequestInit).body as string)).toHaveProperty('taxId', 'GB123');
+    expect(puts()).toHaveLength(0);
+    expect(screen.queryByTestId('billing-stepup')).toBeNull();
+    expect(stepUpMint).not.toHaveBeenCalled();
+  });
+
+  it('asks for a confirmation when a payment setting changed and resubmits the same values with the grant', async () => {
+    render(<OrgBillingSettings orgId="org-1" />);
+    fireEvent.change(await screen.findByTestId('autopay-card-fee-bps'), { target: { value: '300' } });
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    fireEvent.change(await screen.findByTestId('billing-stepup-code'), { target: { value: '333444' } });
+    // Nothing else is saved while the confirmation is open.
+    expect(findPatch()).toBeUndefined();
+    fireEvent.click(screen.getByTestId('billing-stepup-confirm'));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    const [first, second] = puts();
+    expect(first).toMatchObject({ cardFeeBps: 300, autopayCapAmount: '500.00' });
+    expect(second).toEqual({ ...first, stepUpGrant: 'grant-org' });
+    expect(stepUpMint).toHaveBeenCalledWith({ operation: 'org_payment_settings_update',
+      resource: { orgId: 'org-1', settings: first }, reauth: { method: 'totp', code: '333444' } });
+    await waitFor(() => expect(screen.queryByTestId('billing-stepup')).toBeNull());
+  });
+
+  it('saves nothing else when the confirmation is closed', async () => {
+    render(<OrgBillingSettings orgId="org-1" />);
+    fireEvent.change(await screen.findByTestId('autopay-card-fee-bps'), { target: { value: '300' } });
+    fireEvent.change(screen.getByTestId('org-billing-taxid'), { target: { value: 'GB123' } });
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    fireEvent.click(await screen.findByTestId('billing-stepup-cancel'));
+    await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
+    expect(puts()).toHaveLength(1);
+    expect(findPatch()).toBeUndefined();
+    // The draft is kept for another try.
+    expect(screen.getByTestId('autopay-card-fee-bps')).toHaveValue(300);
+    expect(screen.getByTestId('org-billing-taxid')).toHaveValue('GB123');
+  });
 });

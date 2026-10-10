@@ -268,6 +268,7 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   autopayChargeNowResourceDigest: vi.fn(() => 'sha256:c4a79e0000000000000000000000000000000000000000000000000000000006'),
   partnerPaymentSettingsResourceDigest: vi.fn(() => 'sha256:9a75e77000000000000000000000000000000000000000000000000000000007'),
   autopayRequestRecipientResourceDigest: vi.fn(() => 'sha256:7ec191e000000000000000000000000000000000000000000000000000000008'),
+  orgPaymentSettingsResourceDigest: vi.fn(() => 'sha256:0a95e77000000000000000000000000000000000000000000000000000000009'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -490,7 +491,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5154,6 +5155,9 @@ describe('auth routes', () => {
 				() => partnerPaymentSettingsResourceDigest, 'sha256:9a75e77000000000000000000000000000000000000000000000000000000007'],
 			['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test' },
 				() => autopayRequestRecipientResourceDigest, 'sha256:7ec191e000000000000000000000000000000000000000000000000000000008'],
+			['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
+				settings: { cardFeeBps: 300, remindersEnabled: null } },
+				() => orgPaymentSettingsResourceDigest, 'sha256:0a95e77000000000000000000000000000000000000000000000000000000009'],
 		] as const)('mints a %s grant bound to its resource digest', async (operation, resource, digestFn, digest) => {
 			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
 			vi.mocked(mintStepUpGrant).mockResolvedValueOnce(`grant-${operation}`);
@@ -5174,6 +5178,11 @@ describe('auth routes', () => {
 			['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020', settings: { autopayCapEnabled: true } }],
 			['autopay_request_recipient', { orgIds: [], recipientOverride: 'accounts@example.test' }],
 			['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'not-an-email' }],
+			['org_payment_settings_update', { orgId: 'not-an-id', settings: { cardFeeBps: 300 } }],
+			['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040', settings: { cardFeeBps: 301 } }],
+			// The partner-only fee attestation is not an organization setting.
+			['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
+				settings: { feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true } } }],
 		] as const)('refuses to mint %s without a valid resource (%j)', async (operation, resource) => {
 			const res = await app.request('/auth/mfa/step-up', {
 				method: 'POST',

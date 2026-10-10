@@ -105,6 +105,8 @@ it.each(['success', 'error'])('ignores obsolete organization load %s after the n
   });
   expect(screen.queryByTestId('autopay-settings-error')).toBeNull();
   expect(screen.getByTestId('autopay-offset-days')).toHaveValue(12);
+  // An organization Save sends a request only when a value changed.
+  fireEvent.change(screen.getByTestId('autopay-ach-mode'), { target: { value: 'ach_only' } });
   fireEvent.click(screen.getByTestId('autopay-settings-save'));
   await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'PUT')!;
@@ -180,7 +182,9 @@ it('saves blanks as null for an org then displays the inherited partner value', 
   const fetch = vi.mocked(fetchWithAuth); fetch.mockImplementation(async () => Response.json(data));
   const { result } = renderHook(() => usePaymentSettings('11111111-1111-4111-8111-111111111111'));
   await waitFor(() => expect(result.current.reminders).not.toBeNull());
-  await act(async () => { await result.current.save(); });
+  // An organization Save sends a request only when a value changed.
+  act(() => result.current.setReminders({ ...result.current.reminders!, remindersEnabled: 'true' }));
+  await act(async () => { expect(await result.current.save()).toBe('saved'); });
   const call = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')!;
   expect(JSON.parse(call[1]!.body as string).reminderBeforeDueDays).toBeNull();
   expect(result.current.view?.inherited.reminderBeforeDueDays.value).toBe(5);
@@ -195,14 +199,15 @@ it('isolates a deferred save across A to B to A, including draft and saving stat
     ? (++puts === 1 ? oldSave.promise : currentSave.promise) : Response.json(reminderView()));
   const { result, rerender } = renderHook(({ id }) => usePaymentSettings(id), { initialProps: { id: 'a' } });
   await waitFor(() => expect(result.current.reminders).not.toBeNull());
-  let pendingOld!: Promise<void>;
+  let pendingOld!: Promise<unknown>;
+  act(() => result.current.setReminders({ ...result.current.reminders!, reminderBeforeDueDays: '6' }));
   act(() => { pendingOld = result.current.save(); });
   rerender({ id: 'b' });
   await waitFor(() => expect(result.current.reminders).not.toBeNull());
   rerender({ id: 'a' });
   await waitFor(() => expect(result.current.reminders).not.toBeNull());
   act(() => result.current.setReminders({ ...result.current.reminders!, reminderBeforeDueDays: '8' }));
-  let pendingCurrent!: Promise<void>;
+  let pendingCurrent!: Promise<unknown>;
   act(() => { pendingCurrent = result.current.save(); });
   expect(result.current.saving).toBe(true);
   const calls = fetch.mock.calls.length;
@@ -448,4 +453,40 @@ it('partner settings save asks for a second-factor confirmation and resubmits th
   expect(stepUpMint).toHaveBeenCalledWith({ operation: 'partner_payment_settings_update',
     resource: { partnerId: 'p1', settings: first![1] }, reauth: { method: 'totp', code: '333444' } });
   await waitFor(() => expect(screen.queryByTestId('billing-stepup')).toBeNull());
+});
+
+describe('organization Save sends a request only when a value changed', () => {
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  const loaded = { autopayEnabled: true, values: { ...values, cardFeeBps: 150, autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' },
+    inherited, effective: { ...inherited, remindersEnabled: { value: true, source: 'org' } } };
+  beforeEach(() => {
+    vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(init?.method === 'PUT' ? { success: true } : loaded));
+  });
+  const putCount = () => vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method === 'PUT').length;
+  it('returns unchanged without a request for an untouched draft, or one edited back', async () => {
+    const { result } = renderHook(() => usePaymentSettings(orgId));
+    await waitFor(() => expect(result.current.reminders).not.toBeNull());
+    await act(async () => { expect(await result.current.save()).toBe('unchanged'); });
+    act(() => result.current.setValues({ cardFeeBps: 300 }));
+    act(() => result.current.setValues({ cardFeeBps: 150 }));
+    await act(async () => { expect(await result.current.save()).toBe('unchanged'); });
+    expect(putCount()).toBe(0);
+  });
+  it.each([
+    ['a fee', (r: any) => r.setValues({ cardFeeBps: 300 })],
+    ['the cap', (r: any) => r.setValues({ autopayCapAmount: '5000.00' })],
+    ['a reminder', (r: any) => r.setReminders({ ...r.reminders, remindersEnabled: 'false' })],
+  ])('sends the PUT when %s changed', async (_case, change) => {
+    const { result } = renderHook(() => usePaymentSettings(orgId));
+    await waitFor(() => expect(result.current.reminders).not.toBeNull());
+    act(() => change(result.current));
+    await act(async () => { expect(await result.current.save()).toBe('saved'); });
+    expect(putCount()).toBe(1);
+  });
+  it('still sends an untouched partner draft (the partner tab has its own Save)', async () => {
+    const { result } = renderHook(() => usePaymentSettings());
+    await waitFor(() => expect(result.current.reminders).not.toBeNull());
+    await act(async () => { expect(await result.current.save()).toBe('saved'); });
+    expect(putCount()).toBe(1);
+  });
 });
