@@ -392,6 +392,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'analytics_dashboards',
   'api_keys',
   'asset_checkouts',
+  'asset_physical_placements',
   'audit_baseline_apply_approvals',
   'audit_baseline_results',
   'audit_baselines',

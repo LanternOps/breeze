@@ -58,6 +58,14 @@ vi.mock('../jobs/discoveryWorker', () => ({
   getDiscoveryQueue: vi.fn(() => null),
 }));
 
+// Placement reconciliation on link is covered by services/assetPlacement.test.ts;
+// here it is a no-op so the link route's own contract stays under test.
+vi.mock('../services/assetPlacement', () => ({
+  findLinkPlacementConflict: vi.fn(async () => null),
+  reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
+  PlacementLinkConflictError: class PlacementLinkConflictError extends Error {},
+}));
+
 vi.mock('../services/discoveryJobCreation', () => ({
   createDiscoveryJobIfIdle: vi.fn(async ({ profileId, orgId, siteId, agentId }: any) => ({
     job: {
@@ -105,6 +113,9 @@ vi.mock('../db', () => ({
       where: vi.fn(() => Promise.resolve())
     })),
     transaction: vi.fn(async (fn: any) => fn({
+      // The link write runs inside the savepoint transaction; route its UPDATE
+      // through the same db.update mock the pre-savepoint tests configure.
+      update: (...args: any[]) => (db as any).update(...args),
       select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
       delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
       insert: vi.fn(() => ({

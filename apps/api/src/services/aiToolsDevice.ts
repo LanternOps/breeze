@@ -39,6 +39,7 @@ import { getDeviceTimeStatusView } from './timeSync/view';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
+import { readPlacement } from './assetPlacement';
 import {
   sanitizeUntrustedText,
   wrapUntrustedData,
@@ -265,7 +266,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_details',
-      description: 'Get comprehensive details about a specific device including hardware specs, installed memory modules per RAM slot (capacity, type, speed, manufacturer, part/serial number, free slots), network interfaces, disk usage, and recent metrics.',
+      description: 'Get comprehensive details about a specific device including hardware specs, installed memory modules per RAM slot (capacity, type, speed, manufacturer, part/serial number, free slots), network interfaces, disk usage, physical placement (room, rack, rack unit), and recent metrics.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -282,7 +283,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const { device } = access;
 
       // Fetch related data in parallel
-      const [hardware, network, disks, recentMetrics, memoryModules] = await Promise.all([
+      const [hardware, network, disks, recentMetrics, memoryModules, placement] = await Promise.all([
         db.select().from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
         db.select().from(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId)),
         db.select().from(deviceDisks).where(eq(deviceDisks.deviceId, deviceId)),
@@ -293,6 +294,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         db.select().from(deviceMemoryModules)
           .where(eq(deviceMemoryModules.deviceId, deviceId))
           .orderBy(asc(deviceMemoryModules.slotIndex), asc(deviceMemoryModules.id)),
+        // #8134: room / rack / rack unit / height U, or null when not recorded.
+        readPlacement('device', deviceId),
       ]);
 
       // Get site name
@@ -319,6 +322,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         memorySummary: summarizeMemory(hardware[0] ?? null, memoryModules),
         memoryModules: memoryModules.slice(0, MEMORY_MODULES_TOOL_LIMIT).map(projectMemoryModule),
         memoryModuleCount: memoryModules.length,
+        placement,
         recentMetrics
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }

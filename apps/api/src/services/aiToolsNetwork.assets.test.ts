@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 vi.mock('./aiDispatch', () => ({ aiExecuteCommand: vi.fn() }));
+const placement = vi.hoisted(() => ({ read: vi.fn(), authority: vi.fn() }));
+vi.mock('./assetPlacement', () => ({ readPlacement: placement.read, resolvePlacementAuthority: placement.authority }));
 vi.mock('./networkBaselineAuthority', () => ({
   BaselineAuthorityUnsupportedError: class extends Error {}, buildBaselineAuthorityEnvelope: vi.fn(),
 }));
@@ -41,6 +43,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   page = query([row]);
   vi.mocked(db.select).mockImplementation(() => page as never);
+  placement.authority.mockImplementation(async (subject: unknown) => ({ authority: subject, linked: false }));
+  placement.read.mockResolvedValue(null);
 });
 
 describe('network asset reads', () => {
@@ -104,7 +108,9 @@ describe('network asset reads', () => {
     ].sort());
   });
   it('scopes detail by id and org and returns a safe asset', async () => {
-    expect(await run('get_network_asset', { assetId: ASSET })).toEqual({ asset: { ...row, nicVendor: null } });
+    expect(await run('get_network_asset', { assetId: ASSET })).toEqual({
+      asset: { ...row, nicVendor: null }, placement: null, placementAuthority: { kind: 'discovered', id: ASSET, linked: false },
+    });
     expect(orgCondition).toHaveBeenCalledWith(discoveredAssets.orgId);
     expect(page.where).toHaveBeenCalledWith(and(eq(discoveredAssets.id, ASSET), eq(discoveredAssets.orgId, ORG)));
   });
@@ -117,6 +123,30 @@ describe('network asset reads', () => {
   it.each([null, ORG])('denies detail outside the exact-device scope: %j', async (linkedDeviceId) => {
     page = query([{ ...row, linkedDeviceId }]);
     expect(await run('get_network_asset', { assetId: ASSET }, { allowedDeviceIds: [OTHER] })).toEqual({ error: 'Asset not found' });
+  });
+  it('returns the authoritative placement: the linked device\'s when the asset is linked (#8134)', async () => {
+    const DEVICE_SUBJECT = { kind: 'device', id: OTHER, orgId: ORG, siteId: SITE };
+    placement.authority.mockResolvedValue({ authority: DEVICE_SUBJECT, linked: true });
+    placement.read.mockResolvedValue({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
+    const out = await run('get_network_asset', { assetId: ASSET });
+    expect(placement.authority).toHaveBeenCalledWith({ kind: 'discovered', id: ASSET, orgId: ORG, siteId: SITE });
+    expect(placement.read).toHaveBeenCalledWith('device', OTHER);
+    expect(out.placement).toEqual({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
+    expect(out.placementAuthority).toEqual({ kind: 'device', id: OTHER, linked: true });
+  });
+  it("withholds a linked device's placement when that device's site is outside the caller's sites", async () => {
+    const OTHER_SITE = '55555555-5555-4555-8555-555555555555';
+    placement.authority.mockResolvedValue({ authority: { kind: 'device', id: OTHER, orgId: ORG, siteId: OTHER_SITE }, linked: true });
+    placement.read.mockResolvedValue({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
+    const out = await run('get_network_asset', { assetId: ASSET }, { allowedSiteIds: [SITE] });
+    expect(out.asset.id).toBe(ASSET);
+    expect(out.placement).toBeNull();
+    expect(placement.read).not.toHaveBeenCalled();
+  });
+  it('does not read placement for a denied asset', async () => {
+    page = query([]);
+    await run('get_network_asset', { assetId: ASSET });
+    expect(placement.read).not.toHaveBeenCalled();
   });
   it.each([{ assetId: 'bad' }, {}])('rejects invalid detail ids %j', async (input) => {
     expect((await run('get_network_asset', input)).error).toBeTruthy();

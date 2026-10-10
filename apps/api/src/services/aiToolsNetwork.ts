@@ -13,6 +13,7 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { maskOidShapedModel, nicVendorFromMac } from './assetIdentity';
+import { readPlacement, resolvePlacementAuthority } from './assetPlacement';
 import { db } from '../db';
 import {
   devices,
@@ -245,7 +246,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: [],
     definition: {
       name: 'get_network_asset',
-      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device and last-seen time.',
+      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device, last-seen time and physical placement (room, rack, rack unit).',
       input_schema: {
         type: 'object', properties: { assetId: { type: 'string', description: 'Discovered asset UUID' } }, required: ['assetId'],
       },
@@ -265,7 +266,16 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         || (auth.scope === 'organization' && row.orgId !== auth.orgId)
         || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(row.orgId))
         || deviceSiteDenied(auth, row.siteId, row.linkedDeviceId)) return jsonError('Asset not found');
-      return JSON.stringify({ asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) } });
+      // #8134: a linked asset's placement is its managed device's (the sole authority for that box).
+      const { authority, linked } = await resolvePlacementAuthority({ kind: 'discovered', id: row.id, orgId: row.orgId, siteId: row.siteId });
+      // Same rule as GET /discovery/assets/:id/placement: a linked device's
+      // placement is withheld when that device's site is outside the caller's.
+      const placementDenied = linked && deviceSiteDenied(auth, authority.siteId, authority.id);
+      return JSON.stringify({
+        asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) },
+        placement: placementDenied ? null : await readPlacement(authority.kind, authority.id),
+        placementAuthority: { kind: authority.kind, id: authority.id, linked },
+      });
     },
   });
 

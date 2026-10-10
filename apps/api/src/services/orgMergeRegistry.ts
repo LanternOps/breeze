@@ -768,6 +768,7 @@ const REPOINT_TABLES: readonly string[] = [
   "alerts",
   "analytics_dashboards",
   "asset_checkouts",
+  "asset_physical_placements",
   "audit_baseline_apply_approvals",
   "audit_baseline_results",
   "audit_policy_states",

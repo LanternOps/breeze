@@ -402,6 +402,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
+  'devices/placement.ts': { tools: ['get_device_details'] },
   'devices/patches.ts': { tools: ['manage_patches'] },
   'devices/posture.ts': { gap: '#6783' },
   'devices/processSamples.ts': { gap: '#6783' },
@@ -420,6 +421,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // query_device_workloads for the per-workload list and replaces this entry.
   'devices/workloads.ts': { tools: ['get_device_details'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
+  'discoveryAssetPlacement.ts': { tools: ['get_network_asset'] },
   'discoveryAssetProbe.ts': { gap: '#6779' },
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
   'docs.ts': { tools: ['search_documentation'] },
