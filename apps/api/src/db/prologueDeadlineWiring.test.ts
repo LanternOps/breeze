@@ -102,7 +102,13 @@ describe('#6048 prologue deadline wiring', () => {
     // the transaction safe.
     expect(fn).not.toHaveBeenCalled();
     expect(issued).toHaveLength(1);
+    // #8143: no pass at expiry (the set_config cannot be old enough yet). The
+    // permit is still held one prologue budget + 1 s later, so the scheduler
+    // asks then, with the same age threshold.
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(17_000);
     expect(requestWedgedBackendReclaim).toHaveBeenCalledTimes(1);
+    expect(requestWedgedBackendReclaim).toHaveBeenCalledWith({ minAgeMs: 15_000 });
   });
 
   it('never runs the caller work when the prologue statement resolves AFTER the deadline', async () => {
@@ -413,8 +419,12 @@ describe('#6048 prologue deadline wiring', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await result;
     expect(captured).toBeInstanceOf(DbAccessContextPrologueTimeoutError);
-    // A genuine prologue wedge still asks for recovery, exactly as before.
+    // A genuine prologue wedge still asks for recovery, but deferred (#8143):
+    // only once the abandoned permit is still held a budget + 1 s later.
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(17_000);
     expect(requestWedgedBackendReclaim).toHaveBeenCalledTimes(1);
+    expect(requestWedgedBackendReclaim).toHaveBeenCalledWith({ minAgeMs: 15_000 });
   });
 
   it('is a pass-through when the deadline is disabled', async () => {

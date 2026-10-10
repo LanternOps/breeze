@@ -12,7 +12,8 @@
  * container running that work.
  *
  * Import closure: `prom-client`, `./metricsRegistry`, `./eventLoopMonitor`,
- * `./dbConnectTimeoutStats` and `../db/dbPoolHealthMonitor` — none of which
+ * `./dbConnectTimeoutStats`, `../db/dbPoolHealthMonitor`, `../db/poolAdmission`,
+ * `../db/prologueDeadline` and `../db/lagTolerantTimeout` — none of which
  * reach `routes/`, which is what lets `worker.ts` load this module at boot
  * without violating `services/workerEntrypointClosure.contract.test.ts`.
  *
@@ -42,6 +43,9 @@ import {
   getWedgedBackendReclaimTerminatedTotal,
   getWedgedBackendSideClientCloseFailures,
 } from '../db/wedgedBackends';
+import { ABANDONED_RETURN_KINDS, getRequestPoolAdmission } from '../db/poolAdmission';
+import { getDeadlineExpiryTotals } from '../db/prologueDeadline';
+import { TIMER_LATENESS_VALUES } from '../db/lagTolerantTimeout';
 
 const register = metricsRegistry;
 
@@ -243,6 +247,63 @@ const dbWedgedBackendSideCloseFailuresGauge = new Gauge({
   registers: [register]
 });
 
+// #8143 - request-pool admission. Permits, not connections: bare-pool queries
+// are not gated (db/poolAdmission.ts). The five size series read -1 in a
+// process with no request pool, so "no pool" can never read as "pool empty".
+const dbPoolAdmissionPermitsGauge = new Gauge({
+  name: 'breeze_db_pool_admission_permits',
+  help: 'Transaction permits configured for the request pool (DB_POOL_MAX); -1 when this process has no request pool',
+  registers: [register]
+});
+const dbPoolAdmissionInUseGauge = new Gauge({
+  name: 'breeze_db_pool_admission_in_use',
+  help: 'Transaction permits currently held, including permits held by abandoned transactions; -1 when no request pool',
+  registers: [register]
+});
+const dbPoolAdmissionWaitingGauge = new Gauge({
+  name: 'breeze_db_pool_admission_waiting',
+  help: 'Requests waiting for a transaction permit; -1 when no request pool',
+  registers: [register]
+});
+const dbPoolAdmissionAbandonedGauge = new Gauge({
+  name: 'breeze_db_pool_admission_abandoned',
+  help: 'Permits held by transactions abandoned at their RLS prologue deadline or pool-acquire expiry and not yet settled; -1 when no request pool',
+  registers: [register]
+});
+const dbPoolAdmissionEffectivePermitsGauge = new Gauge({
+  name: 'breeze_db_pool_admission_effective_permits',
+  help: 'Permits minus abandoned permits: the pool size the gate can actually hand out; -1 when no request pool',
+  registers: [register]
+});
+const dbPoolAdmissionCancelledWaitersGauge = new Gauge({
+  name: 'breeze_db_pool_admission_cancelled_waiters_total',
+  help: 'Requests that left the admission queue at acquire expiry and never reached the driver; monotonic',
+  registers: [register]
+});
+const dbPoolAdmissionAbandonedTotalGauge = new Gauge({
+  name: 'breeze_db_pool_admission_abandoned_total',
+  help: 'Permits abandoned at an RLS prologue deadline or pool-acquire expiry since process start; monotonic',
+  registers: [register]
+});
+const dbPoolAdmissionAbandonedReturnedGauge = new Gauge({
+  name: 'breeze_db_pool_admission_abandoned_returned_total',
+  help: 'Abandoned permits returned, by how: rollback (late statement completed) or connection-closed (reclaimed); monotonic',
+  labelNames: ['how'] as const,
+  registers: [register]
+});
+const dbPoolAcquireTimeoutsGauge = new Gauge({
+  name: 'breeze_db_pool_acquire_timeouts_total',
+  help: 'Requests that hit DB_POOL_ACQUIRE_TIMEOUT_MS (#8229), by whether the timer fired late (event-loop stall); monotonic',
+  labelNames: ['timer'] as const,
+  registers: [register]
+});
+const dbPrologueDeadlineExpiriesGauge = new Gauge({
+  name: 'breeze_db_prologue_deadline_expiries_total',
+  help: 'RLS GUC prologue deadlines that expired, by whether the timer fired late (event-loop stall); monotonic',
+  labelNames: ['timer'] as const,
+  registers: [register]
+});
+
 /**
  * Seeds every series above so a dashboard or alert rule referencing them is
  * never querying a metric that does not exist yet. Idempotent — safe to call
@@ -281,6 +342,7 @@ export function initializeRuntimeMetricDefaults(): void {
   dbWedgedBackendReclaimFailuresGauge.set(0);
   dbWedgedBackendReclaimSkippedGauge.set(0);
   dbWedgedBackendSideCloseFailuresGauge.set(0);
+  updateDbPoolAdmissionMetrics();
 }
 
 /**
@@ -378,6 +440,28 @@ function updateEventLoopMetrics(): void {
   );
 }
 
+/** #8143. Read on scrape from the registered gate and the deadline totals. */
+function updateDbPoolAdmissionMetrics(): void {
+  const gate = getRequestPoolAdmission();
+  const snapshot = gate?.snapshot();
+  dbPoolAdmissionPermitsGauge.set(snapshot?.permits ?? -1);
+  dbPoolAdmissionInUseGauge.set(snapshot?.inUse ?? -1);
+  dbPoolAdmissionWaitingGauge.set(snapshot?.waiting ?? -1);
+  dbPoolAdmissionAbandonedGauge.set(snapshot?.abandoned ?? -1);
+  dbPoolAdmissionEffectivePermitsGauge.set(snapshot?.effectivePermits ?? -1);
+  const totals = gate?.totals();
+  dbPoolAdmissionCancelledWaitersGauge.set(totals?.cancelledWaiters ?? 0);
+  dbPoolAdmissionAbandonedTotalGauge.set(totals?.abandoned ?? 0);
+  for (const how of ABANDONED_RETURN_KINDS) {
+    dbPoolAdmissionAbandonedReturnedGauge.labels(how).set(totals?.abandonedReturned[how] ?? 0);
+  }
+  const expiries = getDeadlineExpiryTotals();
+  for (const timer of TIMER_LATENESS_VALUES) {
+    dbPoolAcquireTimeoutsGauge.labels(timer).set(expiries.acquire[timer]);
+    dbPrologueDeadlineExpiriesGauge.labels(timer).set(expiries.prologue[timer]);
+  }
+}
+
 /**
  * Refreshes every read-on-scrape series here. Both entrypoints call this
  * immediately before rendering the registry.
@@ -386,6 +470,7 @@ export function updateRuntimeMetrics(): void {
   processStartTimeGauge.set(Math.floor(Date.now() / 1000 - process.uptime()));
   updateEventLoopMetrics();
   updateDbPoolHealthMetrics();
+  updateDbPoolAdmissionMetrics();
 }
 
 initializeRuntimeMetricDefaults();

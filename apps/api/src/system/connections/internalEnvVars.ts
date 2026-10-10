@@ -147,6 +147,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DB_POOL_HEALTH_PROBE_TIMEOUT_MS: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_WINDOW_MS: 'database pool/watchdog tuning',
   DB_POOL_MAX: 'database pool/watchdog tuning',
+  DB_TIMER_LAG_GRACE_MS: 'database pool/watchdog tuning',
   DB_WEDGED_BACKEND_CONFIRM_DELAY_MS: 'database pool/watchdog tuning',
   DB_WEDGED_BACKEND_MIN_AGE_MS: 'database pool/watchdog tuning',
   DB_WEDGED_BACKEND_RECLAIM_DISABLED: 'database pool/watchdog tuning',

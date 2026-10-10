@@ -19,6 +19,8 @@ import {
   DbPoolAcquireTimeoutError,
   getDbAccessContextPrologueTimeoutMs,
   getDbPoolAcquireTimeoutMs,
+  getDeadlineExpiryTotals,
+  __resetDeadlineExpiryTotalsForTests,
   withAcquireAndPrologueDeadline,
   type PoolAcquisition,
   type PrologueDeadline,
@@ -73,9 +75,9 @@ describe('getDbPoolAcquireTimeoutMs', () => {
     else process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = original;
   });
 
-  it('defaults to 15s', () => {
+  it('defaults to 10s, so acquire + prologue + two graces stays under the agent 30s HTTP timeout (#8143)', () => {
     delete process.env.DB_POOL_ACQUIRE_TIMEOUT_MS;
-    expect(getDbPoolAcquireTimeoutMs()).toBe(15_000);
+    expect(getDbPoolAcquireTimeoutMs()).toBe(10_000);
   });
 
   it('honours an explicit 0 as "disabled"', () => {
@@ -90,9 +92,9 @@ describe('getDbPoolAcquireTimeoutMs', () => {
 
   it('falls back to the default on garbage or a negative value', () => {
     process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = 'soon';
-    expect(getDbPoolAcquireTimeoutMs()).toBe(15_000);
+    expect(getDbPoolAcquireTimeoutMs()).toBe(10_000);
     process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '-5';
-    expect(getDbPoolAcquireTimeoutMs()).toBe(15_000);
+    expect(getDbPoolAcquireTimeoutMs()).toBe(10_000);
   });
 
   it('is read from its own knob, independent of the prologue knob', () => {
@@ -413,5 +415,155 @@ describe('withAcquireAndPrologueDeadline', () => {
     expect(result).toBe(7);
     expect(vi.getTimerCount()).toBe(0);
     expect(seen[0]!.aborted).toBe(false);
+  });
+});
+
+describe('withAcquireAndPrologueDeadline: #8143 additions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    __resetDeadlineExpiryTotalsForTests();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function track(promise: Promise<unknown>) {
+    const state = { settled: false, error: undefined as unknown };
+    promise.then(
+      () => { state.settled = true; },
+      (err: unknown) => { state.settled = true; state.error = err; },
+    );
+    return state;
+  }
+
+  it('aborts acquisition.signal at acquire expiry, so a waiter queued in the admission gate can leave', async () => {
+    let signal: AbortSignal | undefined;
+    const result = withAcquireAndPrologueDeadline(
+      'withDbAccessContext(scope=system)',
+      (acquisition) => {
+        signal = acquisition.signal;
+        return new Promise<never>(() => {});
+      },
+      { acquireTimeoutMs: 1_000, timeoutMs: 15_000 },
+    );
+    const assertion = expect(result).rejects.toMatchObject({ name: 'DbPoolAcquireTimeoutError', timer: 'on-time' });
+    expect(signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await assertion;
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it('rejects the caller with the typed error even when a gate waiter rejects the instant the signal aborts', async () => {
+    const seen: string[] = [];
+    const result = withAcquireAndPrologueDeadline(
+      'x',
+      (acquisition) =>
+        // A gate waiter: rejects with its own error as soon as the signal aborts.
+        new Promise<never>((_resolve, reject) => {
+          acquisition.signal.addEventListener('abort', () => reject(new Error('gate waiter cancelled')));
+        }),
+      { acquireTimeoutMs: 1_000, timeoutMs: 15_000 },
+    ).catch((err: Error) => {
+      seen.push(err.name);
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await result;
+    expect(seen).toEqual(['DbPoolAcquireTimeoutError']);
+  });
+
+  it('never aborts the signal once the connection was acquired', async () => {
+    let signal: AbortSignal | undefined;
+    const result = withAcquireAndPrologueDeadline(
+      'x',
+      async (acquisition) => {
+        signal = acquisition.signal;
+        acquisition.acquired().disarm();
+        return 'ok';
+      },
+      { acquireTimeoutMs: 1_000, timeoutMs: 15_000 },
+    );
+    await expect(result).resolves.toBe('ok');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signal!.aborted).toBe(false);
+  });
+
+  it('counts expiries per clock and timer lateness', async () => {
+    const acquire = withAcquireAndPrologueDeadline('a', () => new Promise<never>(() => {}), {
+      acquireTimeoutMs: 1_000,
+      timeoutMs: 15_000,
+    }).catch(() => undefined);
+    const prologue = withAcquireAndPrologueDeadline(
+      'p',
+      (acquisition) => {
+        acquisition.acquired();
+        return new Promise<never>(() => {});
+      },
+      { acquireTimeoutMs: 1_000, timeoutMs: 2_000 },
+    ).catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await acquire;
+    await prologue;
+    expect(getDeadlineExpiryTotals()).toEqual({
+      acquire: { late: 0, 'on-time': 1 },
+      prologue: { late: 0, 'on-time': 1 },
+    });
+  });
+
+  it('gives a late acquire timer one grace period and labels the error late', async () => {
+    let skew = 0;
+    const result = withAcquireAndPrologueDeadline('x', () => new Promise<never>(() => {}), {
+      acquireTimeoutMs: 1_000,
+      timeoutMs: 15_000,
+      graceMs: 2_000,
+      now: () => Date.now() + skew,
+    });
+    const state = track(result);
+    skew = 1_500; // the loop was stalled past the due time
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(state.error).toMatchObject({ name: 'DbPoolAcquireTimeoutError', timer: 'late' });
+    expect(getDeadlineExpiryTotals().acquire).toEqual({ late: 1, 'on-time': 0 });
+  });
+
+  it('gives a late prologue timer one grace period and labels the expiry late', async () => {
+    let skew = 0;
+    const onExpired = vi.fn();
+    const result = withAcquireAndPrologueDeadline(
+      'x',
+      (acquisition) => {
+        acquisition.acquired();
+        return new Promise<never>(() => {});
+      },
+      { acquireTimeoutMs: 1_000, timeoutMs: 1_000, graceMs: 2_000, onExpired, now: () => Date.now() + skew },
+    );
+    const state = track(result);
+    skew = 1_500;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(state.error).toMatchObject({ name: 'DbAccessContextPrologueTimeoutError', timer: 'late' });
+    expect(onExpired.mock.calls[0]?.[0]).toMatchObject({ timer: 'late', timeoutMs: 1_000 });
+  });
+
+  it('a prologue that lands during the grace period wins', async () => {
+    let skew = 0;
+    let finishPrologue!: () => void;
+    const result = withAcquireAndPrologueDeadline(
+      'x',
+      async (acquisition) => {
+        const deadline = acquisition.acquired();
+        await new Promise<void>((resolve) => { finishPrologue = resolve; });
+        deadline.disarm();
+        return 'ok';
+      },
+      { acquireTimeoutMs: 1_000, timeoutMs: 1_000, graceMs: 2_000, now: () => Date.now() + skew },
+    );
+    skew = 1_500;
+    await vi.advanceTimersByTimeAsync(1_000);
+    finishPrologue();
+    await expect(result).resolves.toBe('ok');
+    expect(getDeadlineExpiryTotals().prologue).toEqual({ late: 0, 'on-time': 0 });
   });
 });

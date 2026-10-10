@@ -20,17 +20,23 @@ import {
 } from './requestDatabaseRoleSafety';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import {
+  DbAccessContextPrologueTimeoutError,
+  DbPoolAcquireAbortedError,
+  DbPoolAcquireTimeoutError,
   getDbAccessContextPrologueTimeoutMs,
   withAcquireAndPrologueDeadline,
   withPrologueDeadline,
   type PoolAcquisition,
   type PrologueDeadline,
+  type PrologueDeadlineExpiry,
 } from './prologueDeadline';
-import { requestWedgedBackendReclaim } from './wedgedBackends';
 import {
-  claimDbPoolHealthCaptureSlot,
-  getDbPoolHealthCaptureThrottleMs,
-} from './dbPoolHealthMonitor';
+  classifyPoolSlotSettlement,
+  createPoolAdmission,
+  registerRequestPoolAdmission,
+  type PoolSlot,
+} from './poolAdmission';
+import { createAbandonedSlotReclaimScheduler } from './abandonedSlotReclaim';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
@@ -46,8 +52,10 @@ function getDbPoolMax(): number {
   return raw;
 }
 
+const requestPoolMax = getDbPoolMax();
+
 const client = postgres(requestDatabaseConfig.url, {
-  max: getDbPoolMax(),
+  max: requestPoolMax,
   idle_timeout: 20,
   max_lifetime: 60 * 30,
   // #3022. This timer is a plain setTimeout inside the driver, so it expires
@@ -68,6 +76,20 @@ const client = postgres(requestDatabaseConfig.url, {
   // wedged-backend side clients set their own names for the same reason.
   connection: { application_name: 'breeze-api' },
 });
+
+// #8143. One permit per outermost transaction, DB_POOL_MAX of them, granted
+// inside #8229's acquire budget. See db/poolAdmission.ts.
+const requestPoolAdmission = createPoolAdmission({ permits: requestPoolMax });
+registerRequestPoolAdmission(requestPoolAdmission);
+if (requestPoolAdmission.snapshot().nestedReserve === 0) {
+  console.warn(
+    `[database] DB_POOL_MAX=${requestPoolMax} leaves no nested-escalation reserve (needs >= 3): `
+      + 'a nested withResolvedDbAccessContext / runOutsideDbContext transaction competes with '
+      + 'top-level requests for the same permits, so it can wait out its acquire budget while its '
+      + 'own parent holds the last one (#8143).',
+  );
+}
+const abandonedSlotReclaimScheduler = createAbandonedSlotReclaimScheduler();
 
 export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
 
@@ -134,6 +156,18 @@ const dbContextMetaStorage = new AsyncLocalStorage<DbAccessContext>();
 // contexts and savepoints share it.
 type AfterContextExitTask = { label: string; run: () => unknown };
 const afterContextExitStorage = new AsyncLocalStorage<AfterContextExitTask[]>();
+// #8143. The pool permit of the OUTERMOST context in this async scope.
+// Deliberately NOT exited by runOutsideDbContext: a context opened from inside
+// runOutsideDbContext while this permit is still held is a NESTED acquisition
+// (the #1105 escalation) and is served from the nested reserve. That includes
+// fire-and-forget runOutsideDbContext work started while the parent permit is
+// still held: it is queued ahead of top-level waiters and may take the reserve.
+// That is a fairness cost only; the gate never grants more than its permits.
+// A parent permit already released no longer counts. Prologue expiry
+// handlers do NOT read this store from inside their timer callback (timer ALS
+// propagation is not something to bet the abandon path on): each opener binds
+// the slot into its handler synchronously, when the prologue starts.
+const poolSlotStorage = new AsyncLocalStorage<PoolSlot>();
 
 function getCurrentDb(): typeof baseDb {
   return dbContextStorage.getStore() ?? baseDb;
@@ -535,95 +569,125 @@ function prologueLabel(opener: string, context: DbAccessContext): string {
 }
 
 /**
- * The expiry handler shared by every context opener. Logs the structured
- * warning the issue asks for and kicks off a single-flight reclamation pass.
- * Never awaited — recovery must not extend the caller's bounded latency.
+ * Prologue expiry (#6048, re-scoped by #8143). Works for BOTH prologue sites:
+ * the opener's own (runInPoolSlot binds its permit) and the narrowing prologue
+ * of withResolvedDbAccessContext (same connection, same permit, bound by
+ * withContextPrologueDeadline when the prologue starts). Abandoning the permit
+ * releases the outermost caller at once through `slot.abandonment` and makes
+ * COMMIT impossible. No reclaim pass is requested
+ * here: the set_config cannot be old enough yet. The scheduler asks if the
+ * permit is still held one prologue budget + 1 s later; its outcome reporting
+ * (log + throttled Sentry on failure) lives in abandonedSlotReclaim.ts.
  */
-function onPrologueDeadlineExpired(expiry: {
-  contextLabel: string;
-  elapsedMs: number;
-  timeoutMs: number;
-}): void {
+function onPrologueDeadlineExpired(expiry: PrologueDeadlineExpiry, slot: PoolSlot | undefined): void {
   console.warn(
-    `[db-prologue-deadline] RLS GUC prologue for ${expiry.contextLabel} exceeded `
-      + `${expiry.timeoutMs}ms (elapsed ${expiry.elapsedMs}ms). The pooled connection has been `
-      + 'abandoned; requesting a wedged-backend reclamation pass (#6048). If this fires without a '
-      + 'matching [db-wedged-backend] termination, suspect event-loop starvation rather than a '
-      + 'wedged connection (#3022).',
+    `[db-prologue-deadline] RLS GUC prologue for ${expiry.contextLabel} exceeded ${expiry.timeoutMs}ms `
+      + `(elapsed ${expiry.elapsedMs}ms, timer ${expiry.timer}). The transaction is abandoned and will roll back; `
+      + 'its pool permit returns when it settles. '
+      + (expiry.timer === 'late' ? 'The timer fired late, so the event loop was stalled (#3022). ' : '')
+      + 'A permit still held one more prologue budget plus ~1 s later triggers a wedged-backend reclaim pass (#6048, #8143).',
   );
-  const pass = requestWedgedBackendReclaim({
-    // The reclaimer must not consider a backend wedged on a shorter clock than
-    // the one that just expired, or a merely slow prologue elsewhere in the
-    // fleet becomes a termination candidate.
-    minAgeMs: expiry.timeoutMs,
-  });
-  if (pass === null) {
-    console.warn(
-      '[db-prologue-deadline] reclamation pass declined (disabled, or inside the retry floor). '
-        + 'The pool slot stays lost until the next accepted pass.',
-    );
-    return;
-  }
-  void pass
-    .then((outcome) => {
-      if (outcome.error) {
-        console.warn('[db-wedged-backend] reclamation pass failed:', outcome.error);
-        // Sentry too, not console only. The detector alerts that something is
-        // wedged; THIS alerts that we cannot clear it — and a repair path broken
-        // for days while the pool bleeds slots is the same invisible failure
-        // #6048 was filed for, one layer up. Throttled on its own key (a broken
-        // reclaimer fails on every expiry, and this repo has twice blacked out
-        // Sentry with an unthrottled recurring warning) and wrapped, because the
-        // reporter may be what is failing.
-        if (
-          claimDbPoolHealthCaptureSlot(
-            'wedged-backend-reclaim-failed',
-            Date.now(),
-            getDbPoolHealthCaptureThrottleMs(),
-          )
-        ) {
-          try {
-            // Stable headline, no interpolated error text: Sentry groups by
-            // message, and a varying message mints a fresh issue per occurrence.
-            captureMessage('[db-wedged-backend] reclamation pass failed (#6048)', {
-              eventCode: 'db_wedged_backend_reclaim_failed',
-              tags: { db_pool_health_verdict: 'wedged-backend-reclaim-failed' },
-            });
-          } catch (captureErr) {
-            console.error('[db-wedged-backend] failed to report reclaim failure to Sentry:', captureErr);
-          }
-        }
-        return;
-      }
-      console.warn(
-        `[db-wedged-backend] reclamation pass: scanned=${outcome.scanned} `
-          + `confirmed=${outcome.confirmed} terminated=[${outcome.terminated.join(',')}] `
-          + `cappedAt=${outcome.cappedAt ?? 'none'} in ${outcome.elapsedMs}ms.`,
-      );
-    })
-    .catch((err: unknown) => {
-      console.warn('[db-wedged-backend] reclamation pass threw unexpectedly:', err);
-    });
+  // No permit: a prologue outside any gated opener (the test-only context entry).
+  if (!slot) return;
+  slot.abandon(new DbAccessContextPrologueTimeoutError(expiry));
+  // Synchronous on purpose: the scheduler stamps abandonedAt at track time.
+  abandonedSlotReclaimScheduler.track(slot, expiry.timeoutMs);
 }
 
 /**
- * Run a context-opening transaction that checks a connection out of the pool
- * under the #8229 pool-acquire budget followed by the #6048 prologue deadline.
- * The transaction callback MUST call `acquisition.acquired()` first: that is
- * what stops the acquire clock, starts the prologue clock, and — when the
- * connection arrived after the acquire budget expired — throws so the driver
- * releases it. An acquire timeout requests no reclaim pass (nothing is
- * wedged); only a prologue expiry reaches `onPrologueDeadlineExpired`.
+ * Every OUTERMOST opener that checks a connection out goes through here.
+ *
+ *   1. #8229's acquire clock starts. Inside it, take a pool permit; if the
+ *      budget expires first, `acquisition.signal` removes us from the gate
+ *      queue, so the request never reaches the driver (#8143).
+ *   2. The transaction callback calls `acquisition.acquired()` first, which
+ *      starts the prologue clock (#8229) and refuses a late connection.
+ *   3. The permit is released when the UNDERLYING transaction settles, never
+ *      when the caller is answered.
+ *   4. The caller is answered from a race of the transaction against the
+ *      permit's abandonment, so any prologue on this connection, including the
+ *      narrowing one in withResolvedDbAccessContext, releases the caller.
+ *   5. runAfterDbContextExit work starts when the transaction has settled.
  */
-function withContextAcquireAndPrologueDeadline<T>(
+function runInPoolSlot<T>(
   opener: string,
   context: DbAccessContext,
-  work: (acquisition: PoolAcquisition) => Promise<T>,
+  open: (acquisition: PoolAcquisition, slot: PoolSlot) => Promise<T>,
 ): Promise<T> {
-  return withAcquireAndPrologueDeadline(prologueLabel(opener, context), work, {
-    onExpired: onPrologueDeadlineExpired,
-    onAcquireExpired: onPoolAcquireExpired,
-  });
+  const label = prologueLabel(opener, context);
+  const parent = poolSlotStorage.getStore();
+  const nested = parent !== undefined && !parent.released;
+  // Bound before the prologue clock can start (acquired() runs inside `open`).
+  let boundSlot: PoolSlot | undefined;
+  return withAcquireAndPrologueDeadline(
+    label,
+    async (acquisition) => {
+      const slot = await requestPoolAdmission.acquire(label, { nested, signal: acquisition.signal });
+      boundSlot = slot;
+      if (acquisition.signal.aborted) {
+        // Granted in the same turn the acquire budget expired: the caller has
+        // already been rejected, so hand the permit straight back rather than
+        // spend a connection on BEGIN + ROLLBACK for nobody.
+        slot.release('rejected');
+        throw new DbPoolAcquireAbortedError(label);
+      }
+      const pending: AfterContextExitTask[] = [];
+      // Deferred work held by an abandoned transaction runs only when it
+      // settles, which may be much later (or never, with reclaim disabled).
+      // Name it once, at abandonment, so a missing side effect is traceable.
+      slot.abandonment.catch(() => {
+        if (pending.length === 0) return;
+        console.warn(
+          `[db-pool-admission] ${label} was abandoned holding ${pending.length} after-exit task(s) `
+            + `[${pending.map((task) => task.label).join(', ')}]; they run only when its transaction settles (#8143).`,
+        );
+      });
+      let transaction: Promise<T>;
+      try {
+        transaction = afterContextExitStorage.run(pending, () =>
+          poolSlotStorage.run(slot, () => open(acquisition, slot)),
+        );
+      } catch (err) {
+        slot.release(classifyPoolSlotSettlement(err));
+        throw err;
+      }
+      // Exactly one release, when the UNDERLYING transaction settles: commit,
+      // rollback, a late connection refused with DbPoolAcquireAbortedError, or
+      // a connection closed by the reclaimer. Deferred work starts after it.
+      void transaction
+        .then(
+          () => slot.release('resolved'),
+          (err: unknown) => slot.release(classifyPoolSlotSettlement(err)),
+        )
+        .finally(() => {
+          for (const task of pending.splice(0)) startAfterContextExitTask(task);
+        })
+        // Terminal: nobody awaits this chain, so a throw from release/drain or
+        // a task start must be logged here, never become an unhandled rejection.
+        .catch((err: unknown) => {
+          console.error(`[db-pool-admission] settle path for ${label} threw (#8143):`, err);
+        });
+      return Promise.race([transaction, slot.abandonment]);
+    },
+    {
+      onExpired: (expiry) => onPrologueDeadlineExpired(expiry, boundSlot),
+      onAcquireExpired: (expiry) => {
+        // A permit already GRANTED whose BEGIN is still queued (or hung) in the
+        // driver is genuinely held: mark it abandoned so in_use, abandoned and
+        // effective_permits (and the alert) show it until the transaction
+        // settles. When the late connection arrives, acquired() refuses it with
+        // DbPoolAcquireAbortedError, the driver rolls back and the permit
+        // returns once. NOT tracked for wedged-backend reclaim: the reclaimer's
+        // predicate only matches the set_config prologue, so it can never clear
+        // a hung BEGIN. The caller still sees DbPoolAcquireTimeoutError: the
+        // acquire race rejects first, and the abandon reason is the same type.
+        const slot = boundSlot;
+        const granted = slot !== undefined && !slot.released;
+        if (granted) slot.abandon(new DbPoolAcquireTimeoutError(expiry));
+        onPoolAcquireExpired(expiry, granted);
+      },
+    },
+  );
 }
 
 /**
@@ -637,11 +701,7 @@ const POOL_ACQUIRE_WARN_WINDOW_MS = 60_000;
 let poolAcquireWarnedAt: number | null = null;
 let poolAcquireSuppressed = 0;
 
-function onPoolAcquireExpired(expiry: {
-  contextLabel: string;
-  elapsedMs: number;
-  timeoutMs: number;
-}): void {
+function onPoolAcquireExpired(expiry: PrologueDeadlineExpiry, permitGranted: boolean): void {
   const nowMs = Date.now();
   if (poolAcquireWarnedAt !== null && nowMs - poolAcquireWarnedAt < POOL_ACQUIRE_WARN_WINDOW_MS) {
     poolAcquireSuppressed += 1;
@@ -652,10 +712,13 @@ function onPoolAcquireExpired(expiry: {
   poolAcquireSuppressed = 0;
   console.warn(
     `[db-pool-acquire] ${expiry.contextLabel} waited ${expiry.elapsedMs}ms for a pooled connection `
-      + `(budget ${expiry.timeoutMs}ms) and gave up`
+      + `(budget ${expiry.timeoutMs}ms, timer ${expiry.timer}) and gave up`
       + (folded > 0 ? `; ${folded} more such timeout(s) since the last warning` : '')
-      + '. The pool is saturated or the event loop is starved — no reclamation requested, nothing '
-      + 'is wedged (#8229).',
+      + (permitGranted
+        ? '. Its pool permit was already granted (BEGIN still queued in the driver), so the permit is marked '
+          + 'abandoned and returns when that transaction settles; no reclamation requested (#8229, #8143).'
+        : '. The pool is saturated or the event loop is starved — no reclamation requested, nothing '
+          + 'is wedged (#8229).'),
   );
 }
 
@@ -670,8 +733,11 @@ function withContextPrologueDeadline<T>(
   context: DbAccessContext,
   work: (deadline: PrologueDeadline) => Promise<T>,
 ): Promise<T> {
+  // The permit of the transaction this prologue runs on, read NOW (we are
+  // inside its callback), so its expiry abandons that transaction (#8143).
+  const slot = poolSlotStorage.getStore();
   return withPrologueDeadline(prologueLabel(opener, context), work, {
-    onExpired: onPrologueDeadlineExpired,
+    onExpired: (expiry) => onPrologueDeadlineExpired(expiry, slot),
   });
 }
 
@@ -756,6 +822,15 @@ function startAfterContextExitTask(task: AfterContextExitTask): void {
  * held, `work` starts immediately. `work` also runs when the transaction rolls
  * back, so it must be safe to run either way (e.g. an idempotent queue
  * request).
+ *
+ * "Settled" means the UNDERLYING transaction, not the caller's answer (#8143).
+ * When a prologue expiry abandons a wedged transaction, its caller is released
+ * at once but `work` waits until that transaction actually ends. Usually the
+ * late statement completes and the transaction rolls back on its own;
+ * otherwise the wedged-backend reclaim closes the connection. If the
+ * connection is truly wedged and the reclaim is disabled or keeps being
+ * declined, the transaction never settles and `work` never runs (the held
+ * task labels are logged when the transaction is abandoned).
  */
 export function runAfterDbContextExit(label: string, work: () => unknown): void {
   const task = { label, run: work };
@@ -771,16 +846,6 @@ export function runAfterDbContextExit(label: string, work: () => unknown): void 
     return;
   }
   startAfterContextExitTask(task);
-}
-
-/** Runs an outermost context opener, then starts the work deferred inside it. */
-async function withAfterContextExit<T>(open: () => Promise<T>): Promise<T> {
-  const pending: AfterContextExitTask[] = [];
-  try {
-    return await afterContextExitStorage.run(pending, open);
-  } finally {
-    for (const task of pending.splice(0)) startAfterContextExitTask(task);
-  }
 }
 
 /**
@@ -838,7 +903,7 @@ export async function withDbAccessContext<T>(
   // serialization, and only when the tripwire is armed at all.
   const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
-  return withAfterContextExit(() => withContextAcquireAndPrologueDeadline('withDbAccessContext', context, (acquisition) =>
+  return runInPoolSlot('withDbAccessContext', context, (acquisition, slot) =>
     baseDb.transaction(async (tx) => {
       // FIRST, before any statement: the pool has handed us a connection, so
       // the prologue clock starts here, not at call time (#8229). Throws — and
@@ -856,9 +921,15 @@ export async function withDbAccessContext<T>(
       // one. Time spent waiting for the pool is a different problem.
       const startedAt = warnMs > 0 ? Date.now() : 0;
       try {
-        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+        const result = await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
           dbContextMetaStorage.run(context, fn),
         );
+        // #8143: an abandoned transaction must never COMMIT. Its caller already
+        // has a typed error; a caller that swallowed an inner timeout and
+        // returned normally would otherwise commit work nobody is waiting for,
+        // on a connection whose RLS context may not be the one it believes.
+        slot.throwIfAbandoned();
+        return result;
       } finally {
         reportHeldContextIfNeeded({
           scope: context.scope,
@@ -869,7 +940,7 @@ export async function withDbAccessContext<T>(
         });
       }
     }, options),
-  ));
+  );
 }
 
 /**
@@ -1022,7 +1093,7 @@ export async function withArchivedOrgReadContext<T>(
   // Captured at entry, before any await — see withDbAccessContext for why.
   const opener = warnMs > 0 ? new Error('withArchivedOrgReadContext opened here') : undefined;
 
-  return withAfterContextExit(() => withContextAcquireAndPrologueDeadline('withArchivedOrgReadContext', context, (acquisition) =>
+  return runInPoolSlot('withArchivedOrgReadContext', context, (acquisition, slot) =>
     baseDb.transaction(async (tx) => {
       // Before any statement — see withDbAccessContext (#8229).
       const deadline = acquisition.acquired();
@@ -1038,9 +1109,11 @@ export async function withArchivedOrgReadContext<T>(
 
       const startedAt = warnMs > 0 ? Date.now() : 0;
       try {
-        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+        const result = await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
           dbContextMetaStorage.run(context, fn),
         );
+        slot.throwIfAbandoned(); // #8143: never commit an abandoned transaction
+        return result;
       } finally {
         reportHeldContextIfNeeded({
           scope: context.scope,
@@ -1051,7 +1124,7 @@ export async function withArchivedOrgReadContext<T>(
         });
       }
     }),
-  ));
+  );
 }
 
 /**
@@ -1390,11 +1463,22 @@ export {
   DbPoolAcquireAbortedError,
   getDbAccessContextPrologueTimeoutMs,
   getDbPoolAcquireTimeoutMs,
+  getDeadlineExpiryTotals,
 } from './prologueDeadline';
+
+// #8143 — the process gate, for metrics and the pool-recovery integration suite.
+export {
+  getRequestPoolAdmission,
+  type PoolAdmissionSnapshot,
+  type PoolAdmissionTotals,
+} from './poolAdmission';
 
 import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
 
 export async function closeDb(): Promise<void> {
+  // No reclaim passes against a pool that is shutting down (#8143). stop() is
+  // idempotent; a later abandonment would re-arm it, as before close.
+  abandonedSlotReclaimScheduler.stop();
   // Drain the dedicated audit-admin pool (#915) alongside the main pool so a
   // graceful shutdown doesn't leak its connection.
   await Promise.all([client.end(), closeAuditAdminPoolInternal()]);
