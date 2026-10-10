@@ -10,6 +10,7 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
 import { usePermissions } from '../../lib/permissions';
 import HelpTooltip from '../shared/HelpTooltip';
+import ReliabilityBaselineSection, { type ReliabilityBaselineDetails } from './ReliabilityBaselineSection';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -47,6 +48,10 @@ type ReliabilitySnapshot = {
   drivers?: ReliabilityDriver[];
   computedAt: string;
   enrolledAt?: string | null;
+  // #5876: while the active baseline marker is provisional the API already
+  // reports trend 'stable' and MTBF null; the panel renders both as a dash.
+  provisional?: boolean;
+  baseline?: ReliabilityBaselineDetails | null;
 };
 
 type ReliabilityOffender = {
@@ -304,11 +309,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   // cannot overwrite the current one (#4513).
   const snapshotRequestRef = useRef<CancellableRequest | null>(null);
 
-  const fetchReliability = useCallback(async () => {
+  // `silent` refreshes in place: the panel keeps rendering the current
+  // snapshot instead of swapping to the spinner, so children holding their own
+  // state (the baseline marker section's open history, its dialogs and their
+  // focus-return targets) stay mounted across a refetch after a marker write.
+  const fetchReliability = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     snapshotRequestRef.current?.cancel();
     const request = createCancellableRequest();
     snapshotRequestRef.current = request;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(undefined);
     try {
       // sweep D15: no snapshot yet is an expected empty state, so the API
@@ -360,7 +369,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const startDeviceTask = useAiStore((s) => s.startDeviceTask);
   // #6396: the sidebar is unmounted without ai_sessions:use, so this button
   // would be a dead click (and a background 403) for roles without it.
-  const canUseAi = usePermissions().can('ai_sessions', 'use');
+  const permissions = usePermissions();
+  const canUseAi = permissions.can('ai_sessions', 'use');
+  const canWriteDevices = permissions.can('devices', 'write');
 
   const askAi = useCallback(() => {
     if (!snapshot) return;
@@ -442,6 +453,22 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     if (!offendersFetchedRef.current) void loadOffenders();
   }, [offendersOpen, loadOffenders]);
 
+  // A marker write moves the scoring window, and /offenders only counts events
+  // since the active marker: re-read the score in place and drop the cached
+  // offender list (refetching it now if the drill-down is open).
+  const handleBaselineChanged = useCallback(() => {
+    void fetchReliability({ silent: true });
+    offendersRequestRef.current?.cancel();
+    setOffenders(null);
+    setOffendersError(undefined);
+    offendersFetchedRef.current = false;
+    if (offendersOpen) {
+      void loadOffenders();
+    } else {
+      setOffendersLoading(false);
+    }
+  }, [fetchReliability, offendersOpen, loadOffenders]);
+
   if (loading) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs">
@@ -521,6 +548,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const youngDevice = ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS;
   const offenderEventTotal =
     snapshot.serviceFailureCount30d + snapshot.hardwareErrorCount30d + snapshot.hangCount30d;
+  const provisional = snapshot.provisional === true;
 
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs">
@@ -529,7 +557,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
             <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
-            {snapshot.reliabilityScore <= 70 && (
+            {/* A provisional score is not evidence either way (the fleet
+                finding excludes provisional devices too), so no at-risk pill. */}
+            {!provisional && snapshot.reliabilityScore <= 70 && (
               <span className="inline-flex items-center gap-1" data-testid="reliability-atrisk-help">
                 <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
                   <AlertTriangle className="h-3.5 w-3.5" />
@@ -556,13 +586,27 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   })}
                 />
               </div>
-              <div className={`text-3xl font-semibold tabular-nums ${scoreClass(snapshot.reliabilityScore)}`}>
-                {snapshot.reliabilityScore}
+              <div className="flex items-center gap-2">
+                <div
+                  className={`text-3xl font-semibold tabular-nums ${provisional ? 'text-muted-foreground' : scoreClass(snapshot.reliabilityScore)}`}
+                >
+                  {snapshot.reliabilityScore}
+                </div>
+                {provisional && (
+                  <span
+                    data-testid="reliability-provisional-pill"
+                    className="rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                  >
+                    {t('deviceReliabilityPanel.baseline.provisional')}
+                  </span>
+                )}
               </div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.trend')}</div>
-              <div className="text-sm font-medium capitalize">{t(/* i18n-dynamic */ `deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}</div>
+              <div className="text-sm font-medium capitalize" data-testid="reliability-trend-value">
+                {provisional ? '—' : t(/* i18n-dynamic */ `deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}
+              </div>
             </div>
             {showTopDragStat && topDrag ? (
               <div>
@@ -598,8 +642,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             )}
             <div>
               <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.mtbf')}</div>
-              <div className="text-sm font-medium tabular-nums">
-                {snapshot.mtbfHours === null ? '—' : `${Math.round(snapshot.mtbfHours)}h`}
+              <div className="text-sm font-medium tabular-nums" data-testid="reliability-mtbf-value">
+                {provisional || snapshot.mtbfHours === null ? '—' : `${Math.round(snapshot.mtbfHours)}h`}
               </div>
             </div>
           </div>
@@ -665,6 +709,21 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               feedback route remains for when a real loop exists. */}
         </div>
       </div>
+
+      <ReliabilityBaselineSection
+        deviceId={deviceId}
+        snapshot={{
+          reliabilityScore: snapshot.reliabilityScore,
+          crashCount30d: snapshot.crashCount30d,
+          hangCount30d: snapshot.hangCount30d,
+          serviceFailureCount30d: snapshot.serviceFailureCount30d,
+          hardwareErrorCount30d: snapshot.hardwareErrorCount30d,
+          provisional,
+          baseline: snapshot.baseline ?? null,
+        }}
+        canWrite={canWriteDevices}
+        onChanged={handleBaselineChanged}
+      />
 
       {factorRows.length > 0 ? (
         <div className="mt-5" data-testid="reliability-factors">

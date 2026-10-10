@@ -504,6 +504,11 @@ const TARGET_GLOBS = [
   // measured (or no longer is) when it is not.
   'src/components/topology/MonitoringPolicyPanel.tsx',
   'src/components/topology/InterfaceTelemetrySettings.tsx',
+  // Reliability baseline markers (#5876 W02 Task 12): "Mark work done" (POST)
+  // and Clear (DELETE). A silent failure leaves a tech believing the score
+  // restarted from their fix — or reverted to full history — when it did not.
+  'src/components/devices/ReliabilityBaselineDialog.tsx',
+  'src/components/devices/ReliabilityBaselineSection.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -903,7 +908,8 @@ describe('no silent mutations in targeted set', () => {
     // M365 identity-first W03 #7913 adds M365ConfirmTenantPanel.tsx and the
     // two Customer Graph cards that host it: 216 → 219.
     // Ticket-assignment Pushover adds settings/TicketPushoverSettings.tsx: 219 → 220.
-    expect(absoluteFiles.length).toBe(220);
+    // Reliability baselines (#5876) add devices/ReliabilityBaseline{Dialog,Section}.tsx: 220 → 222.
+    expect(absoluteFiles.length).toBe(222);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

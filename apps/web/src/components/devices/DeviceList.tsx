@@ -351,6 +351,8 @@ export type Device = {
   reliabilityScore?: number | null;
   /** Reliability trend from the same subsystem; drives the small arrow indicator. */
   reliabilityTrend?: "improving" | "stable" | "degrading" | null;
+  /** True while the score is provisional (recent fix or reimage baseline, #5876). */
+  reliabilityProvisional?: boolean;
   /**
    * Hardware & RAID health rollup (#6854 W04). Null/undefined when no report
    * has been received yet — the Hardware column renders a dash.
@@ -2393,7 +2395,9 @@ export default function DeviceList({
             </td>
           );
         }
-        const trend = device.reliabilityTrend
+        // A provisional score has no trend yet; a glyph labelled "Stable" would
+        // contradict the provisional title.
+        const trend = device.reliabilityTrend && !device.reliabilityProvisional
           ? reliabilityTrendGlyph[device.reliabilityTrend]
           : null;
         return (
@@ -2403,11 +2407,17 @@ export default function DeviceList({
             data-testid={`device-${device.id}-reliability`}
           >
             <span
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium tabular-nums ${reliabilityBandClass(score)}`}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium tabular-nums ${
+                device.reliabilityProvisional
+                  ? "border-border bg-muted text-muted-foreground"
+                  : reliabilityBandClass(score)
+              }`}
               title={
-                trend
-                  ? `Reliability ${score}/100 · ${trend.label}`
-                  : `Reliability ${score}/100`
+                device.reliabilityProvisional
+                  ? `Reliability ${score}/100 · provisional (recent fix or reimage)`
+                  : trend
+                    ? `Reliability ${score}/100 · ${trend.label}`
+                    : `Reliability ${score}/100`
               }
             >
               {score}
