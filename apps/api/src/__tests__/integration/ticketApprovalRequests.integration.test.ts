@@ -423,8 +423,8 @@ describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
   });
 });
 
-describe('tickets:record_approval back-fill (2026-12-18-150400), executed', () => {
-  const FILE = path.resolve(__dirname, '../../../migrations/2026-12-18-150400-tickets-record-approval-permission.sql');
+describe('tickets:record_approval back-fill (2026-12-20-200400), executed', () => {
+  const FILE = path.resolve(__dirname, '../../../migrations/2026-12-20-200400-tickets-record-approval-permission.sql');
 
   runDb('grants it to a custom role holding tickets:manage, not to one without, and re-applies as a no-op', async () => {
     const f = await seed();

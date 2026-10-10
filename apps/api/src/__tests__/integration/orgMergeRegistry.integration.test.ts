@@ -281,7 +281,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // UPDATE targets ownership_epoch, and passes whenever org_id changes too.
   'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
-  // Customer work approval (#4617, 2026-12-18-150200): freezes a DECIDED
+  // Customer work approval (#4617, 2026-12-20-200200): freezes a DECIDED
   // request, but org_id is in its exempt list (to_jsonb(NEW) - org_id …), so an
   // org_id-only repoint, move or merge passes on every row, pending or decided.
   'ticket_approval_requests.ticket_approval_requests_decided_immutable': 'freezes decided rows but exempts org_id by name; an org_id-only repoint always passes',

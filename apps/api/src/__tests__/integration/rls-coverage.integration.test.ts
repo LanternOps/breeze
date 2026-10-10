@@ -543,7 +543,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ticket_approval_settings (#4617 spec §4.1): customer work approval policy,
   // org override XOR partner default (ticket_approval_settings_one_owner_chk),
   // created dual-axis with its partner-wide SELECT branch in
-  // 2026-12-18-150100. Functional forge proof:
+  // 2026-12-20-200100. Functional forge proof:
   // ticketApprovalSettingsPartnerRls.integration.test.ts.
   'ticket_approval_settings',
   // tool_sources / tool_source_tools (Tool catalog W01, #5215 / #5216, spec
@@ -875,7 +875,7 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'ticket_checklist_templates',
   'ticket_checklist_template_items',
-  // ticket_approval_settings_one_owner_chk, 2026-12-18-150100 (#4617). Its
+  // ticket_approval_settings_one_owner_chk, 2026-12-20-200100 (#4617). Its
   // partner-wide SELECT branch ships in the same migration.
   'ticket_approval_settings',
   // tool_sources_one_owner_chk / tool_source_tools_one_owner_chk
