@@ -43,11 +43,16 @@ it('replays the first migration without deleting observations', async () => {
   expect(await getTestDb().execute(sql`SELECT * FROM device_hardware_health WHERE device_id=${f.device}`)).toHaveLength(1);
 });
 it('protects normalized settings through the policy chain and bounds both intervals', async () => {
-  const rows = await getTestDb().execute(sql`SELECT c.relrowsecurity,c.relforcerowsecurity,pg_get_expr(p.polqual,p.polrelid) AS predicate FROM pg_class c JOIN pg_policy p ON p.polrelid=c.oid WHERE c.oid=to_regclass('config_policy_hardware_monitoring_settings') AND p.polcmd='r'`);
-  expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({relrowsecurity:true,relforcerowsecurity:true});
-  expect(String(rows[0]!.predicate)).toContain('configuration_policies');
-  expect(String(rows[0]!.predicate)).toContain('breeze_has_partner_access');
+  const rows = await getTestDb().execute(sql`SELECT p.polname,c.relrowsecurity,c.relforcerowsecurity,pg_get_expr(p.polqual,p.polrelid) AS predicate FROM pg_class c JOIN pg_policy p ON p.polrelid=c.oid WHERE c.oid=to_regclass('config_policy_hardware_monitoring_settings') AND p.polcmd='r' ORDER BY p.polname`);
+  // The parent-chain SELECT plus the SELECT-only partner-wide read branch
+  // (2026-12-21-110000, #8142); nothing else may widen reads.
+  expect(rows.map((r)=>r.polname)).toEqual(['breeze_parent_select','config_policy_hardware_monitoring_settings_partner_wide_select']);
+  const [parent,partnerWide]=rows;
+  expect(parent).toMatchObject({relrowsecurity:true,relforcerowsecurity:true});
+  expect(String(parent!.predicate)).toContain('configuration_policies');
+  expect(String(parent!.predicate)).toContain('breeze_has_partner_access');
+  expect(String(partnerWide!.predicate)).toContain('org_id IS NULL');
+  expect(String(partnerWide!.predicate)).toContain('breeze_current_partner_id()');
   const checks = await getTestDb().execute(sql`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid=to_regclass('config_policy_hardware_monitoring_settings') AND contype='c'`);
   expect(checks).toHaveLength(2);
   await replayMigration('2026-10-30-110100-hardware-monitoring-config-feature.sql');

@@ -1,4 +1,4 @@
-import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit } from '../db';
+import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit, type DbAccessContext } from '../db';
 import { registerHotPathCache } from './hotPathCacheRegistry';
 
 export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
@@ -32,10 +32,13 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   DB context `getOrLoad` bypasses the cache entirely (the loader would join
  *   the caller's transaction: its RLS scope and its uncommitted writes). The
  *   exception is `DeferredCacheFills` (#8053 W1a-1): a hot path that already
- *   runs inside a SYSTEM-scoped context with no writes of its own can load a
+ *   runs inside a system-scoped context, or an org-scoped one with an exact fill
+ *   scope (see `fillScopeIsCacheable`), with no writes of its own can load a
  *   per-org value there, and the value is stored only after that context has
  *   committed, through `fillIfCurrent`, which keeps the invalidation-race rule
- *   below. A load under any narrower scope is returned but never stored.
+ *   below. Which org-scoped contexts may fill is decided in ONE place,
+ *   `fillScopeIsCacheable`; a load under any other narrower scope is returned
+ *   but never stored (an RLS-narrowed answer must not be served org-wide).
  * - **Failures are never cached.** A throwing loader propagates to the caller
  *   and leaves the cache untouched, so a fail-closed caller re-resolves on its
  *   next request.
@@ -156,14 +159,47 @@ export class HotPathTtlCache<K, V> {
   }
 }
 
+/** The exact org-scoped context a per-org value may be cached from (#8142). */
+export interface DeferredFillScope {
+  readonly orgId: string;
+  /** The org's own partner, read under RLS in the same context. */
+  readonly partnerId: string;
+}
+// Both fields must be non-empty, and the context must carry no userId
+// (checked by fillScopeIsCacheable).
+
 /**
- * Read-through for a hot path that runs INSIDE a system-scoped context
+ * Whether a load under `ctx` may be stored for everyone in the org.
+ * - system scope: yes (#8053 W1a-1).
+ * - org scope: only when the caller names the scope it built the context for
+ *   AND the context is exactly that: this org alone, no partner-level grant,
+ *   no userId (it would enable the users self-read RLS branch),
+ *   and this org's partner as the partner-wide read axis. Then RLS shows the
+ *   loader every row any device of the org would see, so the value is not
+ *   narrowed or widened. Anything else is returned but never stored.
+ */
+export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope?: DeferredFillScope): boolean {
+  if (!ctx) return false;
+  if (ctx.scope === 'system') return true;
+  if (!fillScope || ctx.scope !== 'organization') return false;
+  if (fillScope.orgId === '' || fillScope.partnerId === '') return false;
+  return ctx.orgId === fillScope.orgId
+    && (ctx.userId ?? null) === null
+    && Array.isArray(ctx.accessibleOrgIds)
+    && ctx.accessibleOrgIds.length === 1
+    && ctx.accessibleOrgIds[0] === fillScope.orgId
+    && (ctx.accessiblePartnerIds ?? []).length === 0
+    && (ctx.currentPartnerId ?? null) === fillScope.partnerId;
+}
+
+/**
+ * Read-through for a hot path that runs INSIDE a system-scoped context, or an
+ * org-scoped one with an exact fill scope (see `fillScopeIsCacheable`)
  * (#8053 W1a-1: the heartbeat's shared post-commit policy context). A hit
  * returns at once with no load. A miss loads in the caller's transaction, as
  * the code did before it was cached, and queues the fill. The caller calls
- * `flush()` once, after that context has committed. A miss under a non-system
- * scope still loads and returns, but is never stored: an RLS-narrowed answer
- * must not be served to the rest of the org.
+ * `flush()` once, after that context has committed. Whether a miss is stored
+ * at all is `fillScopeIsCacheable`'s decision.
  *
  * Caller contract: the context must have made no writes the loaded rows could
  * observe, and the value must be a function of `key` alone.
@@ -171,10 +207,12 @@ export class HotPathTtlCache<K, V> {
 export class DeferredCacheFills {
   private readonly pending: Array<() => void> = [];
 
-  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>): Promise<V> {
+  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>, fillScope?: DeferredFillScope): Promise<V> {
     const hit = cache.peek(key);
     if (hit !== undefined) return hit;
-    const cacheable = getCurrentDbAccessContext()?.scope === 'system';
+    // A fill scope binds the key: another org's key under this scope would cache an RLS-narrowed value.
+    const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope)
+      && !(fillScope && key !== fillScope.orgId);
     const ticket = cache.ticket();
     const value = await load();
     if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));

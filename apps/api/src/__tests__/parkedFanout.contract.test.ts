@@ -396,6 +396,7 @@ const EXEMPT: Record<string, string> = {
   'services/unassignedPool/assignParkedDevice.ts': 'lifecycle: the assignment operation itself; acts on the one parked device a full partner admin named',
   'services/unassignedPool/assignParkedDeviceSteps.ts': 'lifecycle: locked reads of the one named parked device and of its destination identity rows, for the assignment operation',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
+  'services/devicePolicySet.ts': 'derived: every candidate policy assignment of the one device a heartbeat already identified (loaded in its org-scoped context); selects no work',
   'services/helperSettings.ts': 'derived: the effective Helper setting of the one device a heartbeat or Helper token already identified; selects no work',
   'services/userRiskScoring.ts': 'org-pinned: Devices queried by orgId from job data; upstream org scan requires organizationUsers rows, which holding orgs never have',
   'services/vmRestoreRebuildEngine.ts': 'request path: Human-initiated restore route/AI tool; orgId + rebuildHostDeviceId pre-authorized by caller',

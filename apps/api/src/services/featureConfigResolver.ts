@@ -2,6 +2,7 @@ import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
+import { candidatesWithLink, type ApplicabilityRule, type DevicePolicySet } from './devicePolicySet';
 import {
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
@@ -156,8 +157,8 @@ function fromPassedHierarchy(h: PassedDeviceHierarchy): DeviceHierarchy {
 }
 
 export type RoleOsFilterable = {
-  roleFilter?: string[] | null;
-  osFilter?: string[] | null;
+  roleFilter?: readonly string[] | null;
+  osFilter?: readonly string[] | null;
 };
 
 export type DeviceRoleOs = {
@@ -608,7 +609,8 @@ export async function resolvePatchConfigPolicyForDevice(
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
+      configPolicyAssignments.createdAt,
+      configPolicyAssignments.id
     );
 
   if (rows.length === 0) return null;
@@ -626,6 +628,31 @@ export async function resolvePatchConfigPolicyForDevice(
     assignmentTargetId: winner.assignmentTargetId,
     assignmentPriority: winner.assignmentPriority,
   };
+}
+
+/** #8142: patch's own rules — the device's partner is dropped (ownership AND target) for an unassigned_pool org. */
+const PATCH_APPLICABILITY: ApplicabilityRule = {
+  ownership: 'orgOrPartnerUnlessUnassignedPool', partnerTarget: 'partnerUnlessUnassignedPool', roleOs: 'sql',
+};
+
+/**
+ * The heartbeat's patch_source flag from a loaded policy set: the
+ * `settings.exclusiveWindowsUpdate` of the same winner
+ * resolvePatchConfigPolicyForDevice picks (sortByHierarchy over candidates
+ * with a patch settings row), false when none applies. A projection, not a
+ * substitute for the full resolver: it carries only the one column the
+ * heartbeat delivers.
+ */
+export function patchExclusiveWindowsUpdateFromPolicySet(set: DevicePolicySet): boolean {
+  const rows = candidatesWithLink(set, 'patch', PATCH_APPLICABILITY).flatMap(({ candidate, link }) =>
+    link.patch
+      ? [{
+        assignmentLevel: candidate.level, assignmentPriority: candidate.priority,
+        assignmentCreatedAt: candidate.assignmentCreatedAt, exclusiveWindowsUpdate: link.patch.exclusiveWindowsUpdate,
+      }]
+      : []);
+  if (rows.length === 0) return false;
+  return sortByHierarchy(rows)[0]!.exclusiveWindowsUpdate;
 }
 
 /**

@@ -1,5 +1,6 @@
-import { and, eq, inArray, or } from 'drizzle-orm';
-import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
+import { hierarchyFor } from '../deviceHierarchy';
+import { candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../devicePolicySet';
 import { z } from 'zod';
 import {
   timeSyncInlineSettingsSchema,
@@ -17,7 +18,6 @@ import {
 } from '../../db/schema';
 import {
   policyOwnershipCondition,
-  withDevicePartnerPolicyVisibility,
 } from '../configPolicyOwnership';
 import {
   buildRoleOsFilterConditions,
@@ -54,11 +54,57 @@ const cacheSchema = z
   })
   .strict();
 
+const TIME_SYNC_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type TimeSyncRankRow = {
+  policyId: string; policyName: string | null; level: string; assignmentPriority: number; assignmentCreatedAt: Date;
+  roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
+  enforceNtp: boolean; ntpServers: string[]; pollIntervalMinutes: number;
+  timezoneExpected: 'site' | 'pinned'; pinnedTimezone: string | null; timezoneAutoFix: boolean;
+};
+
+function timeSyncFromRows(orgId: string, rows: TimeSyncRankRow[], device: { deviceRole: string; osType: string }): ResolvedTimeSyncSettings {
+  const eligible = rows.filter((row) => matchesRoleOsFilter(row, device));
+  eligible.sort(
+    (a, b) =>
+      (levelPriority[b.level] ?? 0) - (levelPriority[a.level] ?? 0) ||
+      a.assignmentPriority - b.assignmentPriority ||
+      a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime(),
+  );
+  const winner = eligible[0];
+  if (!winner) return { orgId, settings: timeSyncInlineSettingsSchema.parse({}), policy: null };
+  const settings = timeSyncInlineSettingsSchema.parse({
+    enforceNtp: winner.enforceNtp,
+    ntpServers: winner.ntpServers,
+    pollIntervalMinutes: winner.pollIntervalMinutes,
+    timezone: { expected: winner.timezoneExpected, pinnedTimezone: winner.pinnedTimezone, autoFix: winner.timezoneAutoFix },
+  });
+  return {
+    orgId,
+    settings,
+    policy: { policyId: winner.policyId, policyName: winner.policyName, expected: settings.timezone.expected, pinnedTimezone: settings.timezone.pinnedTimezone },
+  };
+}
+
 export async function resolveDeviceTimeSyncSettings(
   deviceId: string,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<ResolvedTimeSyncSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return timeSyncFromRows(set.hierarchy.orgId, candidatesWithLink(set, 'time_sync', TIME_SYNC_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.timeSync
+        ? [{
+          policyId: candidate.policyId, policyName: candidate.policyName, level: candidate.level,
+          assignmentPriority: candidate.priority, assignmentCreatedAt: candidate.assignmentCreatedAt,
+          roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
+          enforceNtp: link.timeSync.enforceNtp, ntpServers: link.timeSync.ntpServers,
+          pollIntervalMinutes: link.timeSync.pollIntervalMinutes, timezoneExpected: link.timeSync.timezoneExpected,
+          pinnedTimezone: link.timeSync.pinnedTimezone, timezoneAutoFix: link.timeSync.timezoneAutoFix,
+        }]
+        : []), set.hierarchy);
+  }
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
     : await db
@@ -119,15 +165,11 @@ export async function resolveDeviceTimeSyncSettings(
         ),
       ),
     );
-  // Same visibility rule as the hardware-monitoring resolver (routes/agents/helpers.ts):
-  // an org-scoped caller (device view, agent ingest) cannot see partner-wide policy rows
-  // without widening to the device's own partner. partnerId comes from the org row read
-  // above under the caller's RLS context, never from input.
-  const rows = await withDevicePartnerPolicyVisibility(
-    db,
-    org?.partnerId ?? null,
-    (executor) =>
-      executor
+  // #8142: read in the caller's own context. config_policy_time_sync_settings
+  // carries the SELECT-only partner-wide branch, so a context with
+  // currentPartnerId (the agent heartbeat, every user context) sees its own
+  // partner's partner-wide rows without widening accessible_partner_ids.
+  const rows = await db
         .select({
           policyId: configurationPolicies.id,
           policyName: configurationPolicies.name,
@@ -178,50 +220,17 @@ export async function resolveDeviceTimeSyncSettings(
               osType: device.osType,
             }),
           ),
-        ),
-  );
-  const eligible = rows.filter((row) => matchesRoleOsFilter(row, device));
-  eligible.sort(
-    (a, b) =>
-      (levelPriority[b.level] ?? 0) - (levelPriority[a.level] ?? 0) ||
-      a.assignmentPriority - b.assignmentPriority ||
-      // Same tie-break as resolveEffectiveConfig (services/configurationPolicy.ts ~2554).
-      a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime(),
-  );
-  const winner = eligible[0];
-  if (!winner)
-    return {
-      orgId: device.orgId,
-      settings: timeSyncInlineSettingsSchema.parse({}),
-      policy: null,
-    };
-  const settings = timeSyncInlineSettingsSchema.parse({
-    enforceNtp: winner.enforceNtp,
-    ntpServers: winner.ntpServers,
-    pollIntervalMinutes: winner.pollIntervalMinutes,
-    timezone: {
-      expected: winner.timezoneExpected,
-      pinnedTimezone: winner.pinnedTimezone,
-      autoFix: winner.timezoneAutoFix,
-    },
-  });
-  return {
-    orgId: device.orgId,
-    settings,
-    policy: {
-      policyId: winner.policyId,
-      policyName: winner.policyName,
-      expected: settings.timezone.expected,
-      pinnedTimezone: settings.timezone.pinnedTimezone,
-    },
-  };
+        )
+        .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
+  return timeSyncFromRows(device.orgId, rows, device);
 }
 
 export async function getDeviceTimeSyncSettings(
   deviceId: string,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<ResolvedTimeSyncSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const [device] = passed
     ? [{ orgId: passed.orgId }]
     : await db

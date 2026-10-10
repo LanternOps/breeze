@@ -25,6 +25,7 @@ import { m365Connections } from '../db/schema/m365';
 import { decryptForColumn } from './secretCrypto';
 import { acquireClientCredentialsToken, isM365TenantId } from './c2cM365';
 import type { DelegantToolName } from './delegantClient';
+import { captureException } from './sentry';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -102,7 +103,10 @@ function setTokenCacheEntry(key: string, token: string, expiresInSeconds: number
   }
 }
 
-export async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeError> {
+export type LegacyDirectConnection = typeof m365Connections.$inferSelect;
+
+/** The org's active legacy-direct connection, or null. The only DB read on the token path. */
+export async function loadLegacyDirectConnection(orgId: string): Promise<LegacyDirectConnection | null> {
   const [row] = await db
     .select()
     .from(m365Connections)
@@ -112,8 +116,34 @@ export async function getToken(orgId: string): Promise<{ token: string } | Direc
       eq(m365Connections.status, 'active'),
     ))
     .limit(1);
+  return row ?? null;
+}
+
+export interface GetTokenOptions {
+  /**
+   * #8142: the connection row the caller already loaded (null = the org has
+   * none). When present, getToken issues NO DB statement: the agent heartbeat
+   * resolves Graph memberships after its DB context has committed (#1105).
+   */
+  connection?: LegacyDirectConnection | null;
+}
+
+export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<{ token: string } | DirectInvokeError> {
+  const supplied = opts?.connection !== undefined;
+  const row = supplied ? opts!.connection! : await loadLegacyDirectConnection(orgId);
   if (!row) {
     return { kind: 'error', code: 'no_connection', message: 'No legacy Microsoft 365 connection for this organization.' };
+  }
+  if (supplied && row.orgId !== orgId) {
+    // A caller handed us another org's row: a bug, not "no connection". It must
+    // be loud, and its code must stay out of the negative-cacheable set so it
+    // is retried (and re-reported) rather than silently cached for minutes.
+    console.error(`[m365DirectGraph] supplied connection belongs to org ${row.orgId}, not the requested org ${orgId}; refusing`);
+    captureException(new Error('m365 direct getToken: supplied connection org mismatch'), undefined, {
+      requestedOrgId: orgId,
+      connectionOrgId: row.orgId ?? 'none',
+    });
+    return { kind: 'error', code: 'connection_org_mismatch', message: 'The supplied Microsoft 365 connection does not belong to this organization.' };
   }
   if (!row.clientSecret) {
     return { kind: 'error', code: 'connection_key_error', message: 'Legacy Microsoft 365 connection has no stored client secret.' };
