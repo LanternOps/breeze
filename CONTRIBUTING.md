@@ -34,11 +34,14 @@ cp .env.example .env
 #   AGENT_ENROLLMENT_SECRET: openssl rand -hex 32
 #   APP_ENCRYPTION_KEY: openssl rand -hex 32
 
-# Start infrastructure (Postgres, Redis, MinIO)
-docker compose up -d
+# Start infrastructure (Postgres and Redis)
+# The base compose file requires digest-pinned BREEZE_*_IMAGE_REF values and
+# .env.example ships placeholders for them, so local dev layers the dev override on
+# top. Same invocation as docs/guides/DEVELOPER_GUIDE.md.
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d postgres redis
 
 # Set up the database
-pnpm db:push
+pnpm db:migrate
 pnpm db:seed
 
 # Start dev servers
@@ -93,7 +96,9 @@ make build-all # Cross-platform builds
    ```bash
    pnpm install --frozen-lockfile
    pnpm lint                                                 # CI: Lint
-   pnpm exec tsc --build apps/api/tsconfig.tests.json        # CI: Type Check
+   # tsc on apps/api exceeds Node's default heap; CI's Type Check job sets the same value.
+   NODE_OPTIONS=--max-old-space-size=12288 \
+     pnpm exec tsc --build apps/api/tsconfig.tests.json      # CI: Type Check
    pnpm --filter=@breeze/web exec astro check                # CI: Type Check
    pnpm test --filter=@breeze/api                            # CI: Test API
    pnpm test --filter=@breeze/web                            # CI: Test Web
