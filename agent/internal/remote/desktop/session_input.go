@@ -39,8 +39,9 @@ func (s *Session) onViewerDataChannelClosed(label string) {
 
 // onPeerDisconnected releases immediately rather than after the 20 s ICE
 // grace: ending an in-progress drag is better than a latched Shift for 20 s
-// on the customer's machine, and the viewer re-presses whatever is still
-// physically held.
+// on the customer's machine. The viewer is not told: if ICE recovers, a key
+// the operator is still physically holding stays released on the remote
+// until they press it again (the viewer's own held-key set still lists it).
 func (s *Session) onPeerDisconnected() {
 	s.releaseHeldInput("peer_disconnected")
 }

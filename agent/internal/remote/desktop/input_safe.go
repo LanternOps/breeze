@@ -250,13 +250,17 @@ func (s *SafeInput) ReleaseAll(reason string) {
 		s.discardQueued()
 		s.takeMove()
 		releases := s.held.releases()
+		failed := 0
 		for _, ev := range releases {
 			if err := s.inner.HandleEvent(ev); err != nil {
-				slog.Debug("Release injection failed", "session", s.label, "type", ev.Type, "error", err.Error())
+				// A release that did not land may leave a key down on the
+				// customer's machine: the failure this worker exists to prevent.
+				failed++
+				slog.Warn("Release injection failed", "session", s.label, "type", ev.Type, "key", ev.Key, "button", ev.Button, "error", err.Error())
 			}
 		}
 		if len(releases) > 0 {
-			slog.Info("Released held remote input", "session", s.label, "reason", reason, "count", len(releases))
+			slog.Info("Released held remote input", "session", s.label, "reason", reason, "count", len(releases)-failed, "failed", failed)
 		}
 		return nil
 	})
@@ -284,7 +288,9 @@ func (s *SafeInput) InjectText(text string) error {
 }
 
 // Close releases everything held and stops the worker. Idempotent, and
-// bounded by the close timeout even if the platform handler is wedged.
+// bounded by twice the close timeout (release, then worker exit) even if the
+// platform handler is wedged; a release that timed out still runs when the
+// handler returns.
 func (s *SafeInput) Close() {
 	s.closeOnce.Do(func() {
 		s.ReleaseAll("closed")

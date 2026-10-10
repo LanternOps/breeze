@@ -42,8 +42,10 @@ func (h *heldInput) filterableModifier(name string) bool {
 	return false
 }
 
+// heldKeyName normalises case only. Whitespace is a key: " " is space, and
+// trimming it would record a name no platform handler can release.
 func heldKeyName(key string) string {
-	k := strings.ToLower(strings.TrimSpace(key))
+	k := strings.ToLower(key)
 	if k == "control" {
 		return "ctrl"
 	}

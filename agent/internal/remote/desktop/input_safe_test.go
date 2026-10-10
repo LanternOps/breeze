@@ -167,6 +167,22 @@ func TestSafeInputCloseDoesNotHangOnStuckHandler(t *testing.T) {
 	}
 }
 
+func TestSafeInputReleaseThatTimedOutStillRuns(t *testing.T) {
+	// Close gives up waiting on a wedged handler, but its release stays
+	// queued: once the handler returns, the key it was pressing is released
+	// rather than left down on the customer's machine.
+	inner := newBlockingRecorder()
+	s := NewSafeInput(inner, "t")
+	s.closeTimeout = 50 * time.Millisecond
+	wedge(t, s, inner, "shift")
+	s.Close()
+	close(inner.block)
+	waitFor(t, "the queued release to run once the handler returned", func() bool {
+		got := inner.snapshot()
+		return len(got) > 0 && got[len(got)-1] == "key_up:shift"
+	})
+}
+
 func TestSafeInputMovesCoalesceAndKeepOrderWithDiscreteEvents(t *testing.T) {
 	inner := newBlockingRecorder()
 	s := NewSafeInput(inner, "t")

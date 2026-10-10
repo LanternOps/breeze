@@ -28,6 +28,23 @@ func TestHeldInputReleasesEverythingHeld(t *testing.T) {
 	}
 }
 
+func TestHeldInputReleasesHeldSpace(t *testing.T) {
+	// " " is the space key (the viewer's keystroke paste sends it as key_down
+	// then key_up). Recorded under any other name, its release would be a
+	// key_up the platform handler cannot map, leaving space held.
+	h := newHeldInput()
+	h.observe(InputEvent{Type: "key_down", Key: " "}, nil)
+	want := []InputEvent{{Type: "key_up", Key: " "}}
+	if got := h.releases(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("releases = %+v, want %+v", got, want)
+	}
+	h.observe(InputEvent{Type: "key_down", Key: " "}, nil)
+	h.observe(InputEvent{Type: "key_up", Key: " "}, nil)
+	if n := h.count(); n != 0 {
+		t.Fatalf("count = %d after space up, want 0", n)
+	}
+}
+
 func TestHeldInputForgetsReleasedKeys(t *testing.T) {
 	h := newHeldInput()
 	h.observe(InputEvent{Type: "key_down", Key: "Shift"}, nil)
