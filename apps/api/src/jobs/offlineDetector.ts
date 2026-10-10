@@ -13,7 +13,7 @@ import * as dbModule from '../db';
 import { devices } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
 import { createAuditLogAsync } from '../services/auditService';
@@ -807,7 +807,7 @@ export async function triggerOfflineDetection(thresholdMinutes?: number): Promis
   const queue = getOfflineQueue();
   const normalizedThreshold = typeof thresholdMinutes === 'number' ? thresholdMinutes : 'default';
   const slot = Math.floor(Date.now() / ON_DEMAND_OFFLINE_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `offline-detect:${normalizedThreshold}:${slot}`;
+  const jobId = bullmqJobId('offline-detect', normalizedThreshold, slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

@@ -17,6 +17,7 @@ import {
   resolveBaselineDispatchAuthority,
   type BaselineBlockedReason
 } from '../services/networkBaselineAuthority';
+import { bullmqJobId } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -482,7 +483,7 @@ export async function enqueueBaselineComparison(
       hosts
     },
     {
-      jobId: `baseline-compare:${baselineId}:${jobId}`,
+      jobId: bullmqJobId('baseline-compare', baselineId, jobId),
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }

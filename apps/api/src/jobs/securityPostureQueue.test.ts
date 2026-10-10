@@ -73,7 +73,7 @@ describe('triggerSecurityPostureRecompute', () => {
       'compute-org',
       expect.objectContaining({ orgId: 'org-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^security-posture-recompute:org-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^security-posture-recompute-org-1-[a-z0-9]+$/),
       }),
     );
   });

@@ -1,6 +1,30 @@
 import type { JobsOptions, Queue } from 'bullmq';
 
 /**
+ * Build a BullMQ custom job id from its parts, joined with '-'.
+ *
+ * bullmq 5.x throws `Custom Id cannot contain :` from `queue.add` for a custom
+ * jobId containing ':' unless it happens to split into exactly three parts (a
+ * legacy-repeatable carve-out bullmq marks for removal), and `Custom Id cannot
+ * be integers` for an all-digit id. Most enqueue sites catch and log, so a bad
+ * id silently disables the feature instead of failing loudly. Any ':' inside a
+ * part (an ISO timestamp, a free-text key) is replaced with '-', so no input can
+ * produce an id bullmq rejects. Deterministic: use the same call for the
+ * matching `getJob(id)` / `remove(id)` lookup. The no-colon rule for every id in
+ * apps/api/src is enforced by `bullmqUtils.noColonJobIds.test.ts`.
+ */
+export function bullmqJobId(...parts: Array<string | number>): string {
+  const id = parts.map((part) => String(part).replace(/:/g, '-')).join('-');
+  if (id.length === 0) {
+    throw new Error('bullmqJobId: at least one non-empty part is required');
+  }
+  if (`${Number.parseInt(id, 10)}` === id) {
+    throw new Error(`bullmqJobId: "${id}" is an integer, which BullMQ rejects as a custom id`);
+  }
+  return id;
+}
+
+/**
  * BullMQ job states that indicate the job is already queued for processing
  * and should be reused rather than creating a duplicate.
  */

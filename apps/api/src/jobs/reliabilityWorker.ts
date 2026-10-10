@@ -7,7 +7,7 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { computeAndPersistDeviceReliability, computeAndPersistOrgReliability } from '../services/reliabilityScoring';
 import { captureException } from '../services/sentry';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -208,7 +208,7 @@ export async function shutdownReliabilityWorker(): Promise<void> {
 export async function enqueueDeviceReliabilityComputation(deviceId: string): Promise<string> {
   const queue = getReliabilityQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `reliability-device:${deviceId}:${slot}`;
+  const jobId = bullmqJobId('reliability-device', deviceId, slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

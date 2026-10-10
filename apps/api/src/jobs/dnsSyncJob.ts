@@ -19,7 +19,7 @@ import {
 } from '../db/schema';
 import { createDnsProvider, DnsProviderHttpError, type DnsEvent, type DnsEventSlice } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
@@ -413,7 +413,7 @@ export async function schedulePolicySync(
         }
         : undefined
     },
-    `sync-policy:${policyId}`,
+    bullmqJobId('sync-policy', policyId),
     { removeOnComplete: true, removeOnFail: true }
   );
 }
