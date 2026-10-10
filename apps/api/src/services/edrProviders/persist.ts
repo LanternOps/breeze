@@ -3,6 +3,7 @@ import { edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import type { ProviderSyncTx } from '../backupProviders/persist';
 import { validateVendorUrl } from './guardedFetch';
 import { getEdrProvider } from './registry';
+import { pgErrorCode } from '../../utils/pgErrors';
 import type {
   EdrDetectionPage,
   EdrErrorScope,
@@ -82,12 +83,7 @@ function clip(value: string | null | undefined, max: number): string | null {
  * lock-order note above: the sync job retries Phase 3 on this.
  */
 export function isDeadlockError(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < 6 && current !== null && typeof current === 'object'; depth += 1) {
-    if ((current as { code?: unknown }).code === '40P01') return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return pgErrorCode(err) === '40P01';
 }
 
 // ---------------------------------------------------------------------------

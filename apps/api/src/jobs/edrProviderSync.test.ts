@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UnrecoverableError } from 'bullmq';
+import { pgErrorCode } from '@breeze/shared/pgErrors';
 
 // Three-phase contract (mirrors backupProviderSync.test.ts): vendor HTTP at
 // context depth 0, every read/write at depth > 0.
@@ -209,7 +210,7 @@ beforeEach(() => {
   m.pruneMissingTenantEndpoints.mockResolvedValue(0);
   m.matchEdrEndpoints.mockResolvedValue({ linked: 1, ambiguous: 0 });
   m.refreshDetectionDeviceLinks.mockResolvedValue(undefined);
-  m.isDeadlockError.mockImplementation((e: unknown) => (e as { code?: string })?.code === '40P01');
+  m.isDeadlockError.mockImplementation((e: unknown) => pgErrorCode(e) === '40P01');
   m.enqueueOrReplaceStale.mockResolvedValue({ id: 'job-1' });
 });
 
