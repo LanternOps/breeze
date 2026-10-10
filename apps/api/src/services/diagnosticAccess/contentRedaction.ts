@@ -6,11 +6,11 @@
  * (./classification.ts), but an ordinary log or config file can still carry a
  * password assignment, a bearer token or a pasted private key. The rules are
  * the ones the codebase already applies, not a new set:
- *   - SECRET_OUTPUT_REDACTIONS (../secretRedaction.ts): PEM private-key
+ *   - SECRET_OUTPUT_REDACTIONS (../redactionPatterns.ts, applied by ../secretRedaction.ts): PEM private-key
  *     blocks, AWS key ids, bearer tokens, JWTs, connection strings and
  *     `secret=`-style pairs — the rules the agent applies to script output;
- *   - SECRET_ASSIGNMENT_PATTERNS (../logRedaction.ts) and BARE_SECRET_PATTERNS
- *     (../aiToolOutput.ts): the assignment and vendor-token rules every AI tool
+ *   - SECRET_ASSIGNMENT_PATTERNS and BARE_SECRET_PATTERNS (same module,
+ *     applied by ../logRedaction.ts and ../aiToolOutput.ts): the assignment and vendor-token rules every AI tool
  *     result already passes through.
  *
  * The caller chooses the offset and size of each read, so redacting only the
@@ -22,9 +22,8 @@
  * body is also caught from its END line when its header is out of reach.
  * UTF-16 text (Windows logs) is scanned in both byte alignments as well.
  */
-import { BARE_SECRET_PATTERNS } from '../aiToolOutput';
-import { SECRET_ASSIGNMENT_PATTERNS } from '../logRedaction';
-import { SECRET_OUTPUT_REDACTIONS } from '../secretRedaction';
+// The leaf module, not the redactors: tests mock those wholesale.
+import { BARE_SECRET_PATTERNS, SECRET_ASSIGNMENT_PATTERNS, SECRET_OUTPUT_REDACTIONS } from '../redactionPatterns';
 
 /** Context read on each side of the requested range; matches the PEM block bound in secretRedaction.ts. */
 export const DIAGNOSTIC_REDACTION_CONTEXT_BYTES = 16 * 1024;

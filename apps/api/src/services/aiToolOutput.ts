@@ -1,6 +1,10 @@
 import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 import { sanitizeUntrustedText } from './aiInputSanitizer';
+import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+
+// Re-exported for existing importers; the rule set lives in ./redactionPatterns.
+export { BARE_SECRET_PATTERNS };
 
 type CompactStats = {
   stringsTruncated: number;
@@ -88,14 +92,6 @@ const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
 const REDACTED = '[REDACTED]';
 
-/** Whole-match secret shapes; exported for span-based redaction (diagnosticAccess/contentRedaction.ts). */
-export const BARE_SECRET_PATTERNS: readonly RegExp[] = [
-  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b/g,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
-  /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g,
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
