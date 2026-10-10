@@ -2415,3 +2415,62 @@ it('refuses bank pay over a working card on active automatic payments (G3)',asyn
  const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
  expect(method).toMatchObject({status:'active',isAutopayMethod:true});
 });
+
+// Automatic payments run only for an active partner: a suspended, churned or deleted partner's
+// due charges, retries and in-flight attempts never reach Stripe, and its notices stop for good.
+type PartnerChange='suspended'|'churned'|'offboarding'|'deleted';
+const makePartnerInactive=(f:Awaited<ReturnType<typeof fixture>>,change:PartnerChange)=>withSystemDbAccessContext(()=>db.update(partners)
+ .set(change==='deleted'?{status:'churned',deletedAt:new Date()}:{status:change}).where(eq(partners.id,f.partner.id)));
+it.each(['suspended','churned','offboarding','deleted'] as const)('defers due and retry charges for a %s partner without calling Stripe',async change=>{
+ const f=await fixture();const now=new Date();
+ await makePartnerInactive(f,change);
+ expect(await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'}))
+  .toMatchObject({attemptId:null,outcome:'deferred',reason:'charging_disabled'});
+ await runAutopayCollection(now);
+ expect(await scheduleFor(f)).toMatchObject({state:'scheduled',stateReason:'charging_disabled'});
+ await withSystemDbAccessContext(()=>db.update(invoiceAutopaySchedules).set({state:'retry_scheduled',nextAttemptAt:new Date(now.getTime()-1000)})
+  .where(eq(invoiceAutopaySchedules.id,f.schedule.id)));
+ await runAutopayCollection(now);
+ expect(await scheduleFor(f)).toMatchObject({state:'retry_scheduled',stateReason:'charging_disabled'});
+ expect(await attempts(f.invoice.id)).toEqual([]);
+ expect(provider.methodRetrieve).not.toHaveBeenCalled();expect(provider.create).not.toHaveBeenCalled();expect(provider.confirm).not.toHaveBeenCalled();
+});
+it.each(['suspended','deleted'] as const)('reconcile does not create a payment for a reservation made before the partner became %s',async change=>{
+ const f=await fixture();
+ const reserved=await reserveCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
+ expect('attempt' in reserved).toBe(true);
+ await makePartnerInactive(f,change);
+ const {reconcilePendingStripePayments}=await import('../../jobs/stripeReconcileSweep');
+ await reconcilePendingStripePayments();
+ expect(provider.create).not.toHaveBeenCalled();expect(provider.confirm).not.toHaveBeenCalled();
+ expect((await attempts(f.invoice.id))[0]?.state).toBe('reserved');
+});
+it('reconcile cancels, never confirms, a created payment once the partner is suspended',async()=>{
+ const f=await fixture();
+ provider.confirm.mockRejectedValueOnce(new Error('connection reset'));
+ await expect(attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'})).rejects.toThrow();
+ expect((await attempts(f.invoice.id))[0]?.stripePaymentIntentId).toBeTruthy();
+ expect(provider.confirm).toHaveBeenCalledOnce();
+ await makePartnerInactive(f,'suspended');
+ const {reconcilePendingStripePayments}=await import('../../jobs/stripeReconcileSweep');
+ await reconcilePendingStripePayments();
+ expect(provider.confirm).toHaveBeenCalledOnce();expect(provider.cancel).toHaveBeenCalledOnce();
+ expect((await attempts(f.invoice.id))[0]?.state).toBe('canceled');
+});
+it.each(['suspended','deleted'] as const)('the orphan notice sweep does not re-plan a cancelled notice for a %s partner',async change=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  await db.update(invoiceAutopaySchedules).set({state:'awaiting_notice',noticeSentAt:null}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+  await db.update(billingNoticeOutbox).set({status:'cancelled'}).where(eq(billingNoticeOutbox.id,f.notice.id));
+ });
+ await makePartnerInactive(f,change);
+ const counts=()=>withSystemDbAccessContext(async()=>({
+  notices:(await db.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id))).length,
+  links:(await db.select({id:billingLinkTokens.id}).from(billingLinkTokens).where(eq(billingLinkTokens.orgId,f.org.id))).length,
+ }));
+ const before=await counts();
+ const {sweepOrphanAutopayNotices}=await import('./scheduler');
+ for(let run=0;run<3;run++)await sweepOrphanAutopayNotices();
+ expect(await counts()).toEqual(before);
+ expect(await scheduleFor(f)).toMatchObject({state:'not_needed',stateReason:'charging_disabled'});
+});

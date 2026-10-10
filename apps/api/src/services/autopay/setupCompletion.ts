@@ -20,6 +20,7 @@ import {DEFERRAL_END_REASONS} from './notChargedNotice';
 import {formatPaymentMethod} from '@breeze/shared';
 import {notifyAutopayStaff} from './staffNotifications';
 import {autopayConsentSnapshotSchema} from './types';
+import {hasLiveAutopayPartner} from './autopayGate';
 import type {AutopayEnrollmentStatus,AutopaySetupOutcome as Outcome} from '@breeze/shared';
 export function setupAuthorityOutcome(enrollment:{status:AutopayEnrollmentStatus;generation:number},generation:number,newest:boolean):'stale_generation'|null{
  return enrollment.generation!==generation||(enrollment.status!=='requested'&&enrollment.status!=='active')||!newest?'stale_generation':null;
@@ -68,10 +69,12 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    return {outcome,orgId:attempt.orgId};
   }
   const wasPending=attempt.outcome==='pending_verification';
+  // A partner that is no longer active saves no method and activates nothing (same as an org that is not live).
+  const partnerLive=await hasLiveAutopayPartner(db,attempt.partnerId);
   // A newly accepted update may finish while paused; a capture started before the pause cannot.
   const pausedUpdate=enrollment?.status==='paused'&&!!enrollment.pausedAt&&!!attempt.tokenId&&
    attempt.source==='setup_page'&&attempt.createdAt>enrollment.pausedAt;
-  if(!org||org.deletedAt||!['active','trial'].includes(org.status)||!connection||connection.stripeAccountId!==attempt.stripeAccountId||!enrollment||
+  if(!org||org.deletedAt||!['active','trial'].includes(org.status)||!partnerLive||!connection||connection.stripeAccountId!==attempt.stripeAccountId||!enrollment||
    ['stripe_account_changed','key_missing_permissions'].includes(enrollment.needsAttentionReason??'')||attempt.outcome==='stale_generation'||setupAuthorityOutcome((wasPending||pausedUpdate)&&enrollment.status==='paused'?{...enrollment,status:'active'}:enrollment,attempt.generation,wasPending||latest?.id===attempt.id)||
    enrollment.stripeAccountId!==attempt.stripeAccountId||enrollment.stripeCustomerId!==attempt.stripeCustomerId||method?.customer!=null&&attempt.stripeCustomerId!==id(method.customer)){
    await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));

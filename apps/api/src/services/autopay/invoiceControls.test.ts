@@ -127,7 +127,7 @@ function fixture(over: Record<string, unknown> = {}, attempts: unknown[] = []) {
       ],
     ],
     [organizations, [{ status:'active',deletedAt:null,name: 'Customer', billingContact: { email: 'billing@example.test' } }]],
-    [partners, [{ enabled: true, name: 'Partner', settings: {} }]],
+    [partners, [{ autopayEnabled: true, status: 'active', deletedAt: null, name: 'Partner', settings: {} }]],
   ]);
   const tx: any = {
     select: () => chain(),
@@ -355,7 +355,7 @@ it('fence predicate covers each authority marker', () => {
 
 it('retains a read-only processing/unapplied projection after rollout disable', async () => {
   const f = fixture({}, [{ state: 'processing' }, { state: 'unapplied' }]);
-  f.data.set(partners, [{ enabled: false }]);
+  f.data.set(partners, [{ autopayEnabled: false, status: 'active', deletedAt: null }]);
   expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({
     processing: true,
     unapplied: true,
@@ -365,7 +365,7 @@ it('retains a read-only processing/unapplied projection after rollout disable', 
 });
 it('hides disabled idle autopay', async () => {
   const f = fixture();
-  f.data.set(partners, [{ enabled: false }]);
+  f.data.set(partners, [{ autopayEnabled: false, status: 'active', deletedAt: null }]);
   expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toBeNull();
 });
 
@@ -682,7 +682,7 @@ it('a skippable invoice carries no reason, and reports whether the MSP put autom
   const on = fixture();
   expect(await getSkipInvoiceView(on.tx, 'token')).toMatchObject({ status: 'ready', reason: null, onHold: false, balance: '10.00' });
   const off = fixture();
-  off.data.set(partners, [{ enabled: false, name: 'Partner' }]);
+  off.data.set(partners, [{ autopayEnabled: false, status: 'active', deletedAt: null, name: 'Partner' }]);
   expect(await getSkipInvoiceView(off.tx, 'token')).toMatchObject({ status: 'ready', onHold: true });
 });
 

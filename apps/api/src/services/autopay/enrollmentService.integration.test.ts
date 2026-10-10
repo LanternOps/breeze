@@ -102,6 +102,34 @@ describe('real enrollment authority fence',()=>{
   if(outcome==='activated')await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
   else{await new Promise(resolve=>setImmediate(resolve));expect(notifyAutopayStaff).not.toHaveBeenCalled();}
  });
+ it.each(['suspended','churned','deleted'] as const)('a completed setup for a %s partner saves no method and leaves automatic payments off',async change=>{
+  const partner=await createPartner({name:'Example MSP'});const org=await createOrganization({partnerId:partner.id,name:'Example client'});
+  const conn=await connection(partner.id,'acct_inactive_partner');
+  const snapshot={version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),partnerName:partner.name,
+   achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+   contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page',scheduleText:'On the due date.',feeText:'No fee.'};
+  const attempt=await withSystemDbAccessContext(async()=>{
+   const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:org.id,partnerId:partner.id,stripeConnectionId:conn.id,
+    stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_inactive_partner'}).returning();
+   const [row]=await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:partner.id,enrollmentId:enrollment!.id,generation:1,
+    source:'setup_page',methodType:'card',stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_inactive_partner',
+    consentSnapshot:snapshot}).returning();
+   await db.execute(change==='deleted'?sql`UPDATE partners SET deleted_at=now() WHERE id=${partner.id}`:sql`UPDATE partners SET status=${change} WHERE id=${partner.id}`);
+   return row!;
+  });
+  const method={id:'pm_inactive_partner',type:'card',customer:'cus_inactive_partner',card:liveCard} as Stripe.PaymentMethod;
+  expect(await persistCapturedAutopayMethod(attempt.id,method,'activated','seti_inactive_partner',null)).toEqual({outcome:'stale_generation',orgId:org.id});
+  const saved=await withSystemDbAccessContext(async()=>({
+   consents:await db.select().from(orgAutopayConsents).where(sql`${orgAutopayConsents.orgId}=${org.id}`),
+   tokens:await db.select().from(billingLinkTokens).where(sql`${billingLinkTokens.orgId}=${org.id}`),
+   notices:await db.select().from(billingNoticeOutbox).where(sql`${billingNoticeOutbox.orgId}=${org.id}`),
+   enrollments:await db.select().from(orgAutopayEnrollments).where(sql`${orgAutopayEnrollments.orgId}=${org.id}`),
+   methods:await db.select().from(orgPaymentMethods).where(sql`${orgPaymentMethods.orgId}=${org.id}`),
+  }));
+  expect(saved.consents).toEqual([]);expect(saved.tokens).toEqual([]);expect(saved.notices).toEqual([]);
+  expect(saved.enrollments[0]).toMatchObject({status:'requested',effectiveFrom:null});
+  expect(saved.methods.filter(row=>row.isAutopayMethod)).toEqual([]);
+ });
 
 });
 

@@ -2,12 +2,13 @@ import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import type Stripe from 'stripe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { billingLinkTokens, organizations, orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts } from '../../db/schema';
+import { billingLinkTokens, invoices, organizations, orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { createPartner, createOrganization } from '../../__tests__/integration/db-utils';
 import { mintBillingLinkToken } from './linkTokens';
+import { getOrMintInvoiceLink, resetInvoiceLink } from '../invoiceLinkToken';
 import { stopAutopayByClient, withAutopayStopToken } from './enrollmentLifecycle';
 import { completeAutopaySetup } from './enrollmentService';
 import { completeOwnedAutopaySetup, describeAutopayLinkFailure, getAutopayStopView, resolveAutopayLinkIdentity, resolveAutopayReturnIdentity, resolveAutopayOrgIdentity } from './customerViews';
@@ -33,6 +34,11 @@ async function fixture() {
       checkoutSessionId: `cs_${randomUUID().replaceAll('-', '')}`, consentSnapshot: {} }).returning();
     return { identity: { ...identity, tokenId: link.id }, link, attempt: attempt! };
   });
+}
+async function openInvoice(f: Awaited<ReturnType<typeof fixture>>) {
+  const [invoice] = await system(() => db.insert(invoices).values({ partnerId: f.identity.partnerId, orgId: f.identity.orgId,
+    invoiceNumber: `T-${randomUUID()}`, currencyCode: 'USD', status: 'sent', total: '10.00', balance: '10.00', amountPaid: '0.00' }).returning());
+  return invoice!;
 }
 
 describe('customer token and return ownership against PostgreSQL', () => {
@@ -63,6 +69,29 @@ describe('customer token and return ownership against PostgreSQL', () => {
       expect(await resolveAutopayReturnIdentity(f.link.token, f.attempt.checkoutSessionId!)).toBeNull();
       expect(await resolveAutopayLinkIdentity(f.link.token, 'enroll')).toBeNull();
       if (kind === 'inactive' || kind === 'deleted') expect(await resolveAutopayOrgIdentity(f.identity.orgId)).toBeNull();
+    },
+  );
+
+  it.each(['suspended', 'churned', 'pending', 'offboarding', 'deleted'] as const)(
+    'a %s partner\'s enroll and confirm links stop working, while its stop and skip links keep working', async kind => {
+      const f = await fixture();
+      const invoiceId = (await openInvoice(f)).id;
+      const confirm = await system(() => mintBillingLinkToken(db, { ...f.identity, invoiceId, purpose: 'confirm_payment', ttlDays: 1 }));
+      const stop = await system(() => mintBillingLinkToken(db, { ...f.identity, purpose: 'stop_autopay', ttlDays: 1 }));
+      const skip = await system(() => mintBillingLinkToken(db, { ...f.identity, invoiceId, purpose: 'skip_invoice', ttlDays: 1 }));
+      expect(await resolveAutopayLinkIdentity(f.link.token, 'enroll')).not.toBeNull();
+      await system(() => db.update(partners).set(kind === 'deleted' ? { deletedAt: new Date() } : { status: kind })
+        .where(eq(partners.id, f.identity.partnerId)));
+      expect(await resolveAutopayLinkIdentity(f.link.token, 'enroll')).toBeNull();
+      expect(await resolveAutopayReturnIdentity(f.link.token, f.attempt.checkoutSessionId!)).toBeNull();
+      expect(await resolveAutopayLinkIdentity(confirm.token, 'confirm_payment')).toBeNull();
+      expect(await resolveAutopayOrgIdentity(f.identity.orgId)).toBeNull();
+      // Stopping and skipping only reduce charging, so a client can always use them.
+      expect(await resolveAutopayLinkIdentity(stop.token, 'stop_autopay')).toMatchObject({ orgId: f.identity.orgId });
+      expect(await resolveAutopayLinkIdentity(skip.token, 'skip_invoice')).toMatchObject({ orgId: f.identity.orgId });
+      // The failure page names nobody for a partner that is not active.
+      await system(() => db.update(billingLinkTokens).set({ expiresAt: new Date(0) }).where(eq(billingLinkTokens.id, f.link.id)));
+      expect(await describeAutopayLinkFailure(f.link.token, 'enroll')).toEqual({ error: expect.any(String), code: 'link_invalid' });
     },
   );
 
@@ -150,6 +179,38 @@ describe('client pages are told why a link is unusable (real PostgreSQL)', () =>
       await db.update(orgAutopayEnrollments).set({ generation: 2 }).where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId));
     });
     expect(await describeAutopayLinkFailure(old.token, 'stop_autopay')).toMatchObject({ code: 'link_replaced' });
+  });
+
+  it('resetting an invoice link also resets every autopay link tied to that invoice', async () => {
+    const f = await fixture();
+    const invoice = await openInvoice(f);
+    await system(() => getOrMintInvoiceLink(invoice));
+    const mint = (purpose: 'skip_invoice' | 'confirm_payment' | 'enroll', invoiceId?: string) =>
+      system(() => mintBillingLinkToken(db, { ...f.identity, invoiceId, purpose, ttlDays: 1 }));
+    const liveSkip = await mint('skip_invoice', invoice.id);
+    const expiredSkip = await mint('skip_invoice', invoice.id);
+    const expiredConfirm = await mint('confirm_payment', invoice.id);
+    const invoiceEnroll = await mint('enroll', invoice.id);
+    const otherEnroll = await mint('enroll');
+    const stop = await system(() => mintBillingLinkToken(db, { ...f.identity, purpose: 'stop_autopay', ttlDays: 1 }));
+    await system(() => db.update(billingLinkTokens).set({ expiresAt: new Date(0) })
+      .where(inArray(billingLinkTokens.id, [expiredSkip.id, expiredConfirm.id])));
+    // Expired but never reset: the invoice link from the same email is still the current one.
+    expect(await describeAutopayLinkFailure(expiredSkip.token, 'skip_invoice')).toMatchObject({ data: { invoiceUrl: expect.any(String) } });
+    expect(await resolveAutopayLinkIdentity(liveSkip.token, 'skip_invoice')).not.toBeNull();
+
+    await system(() => resetInvoiceLink(invoice));
+
+    expect(await resolveAutopayLinkIdentity(liveSkip.token, 'skip_invoice')).toBeNull();
+    expect(await resolveAutopayLinkIdentity(invoiceEnroll.token, 'enroll')).toBeNull();
+    for (const [token, purpose] of [[liveSkip.token, 'skip_invoice'], [expiredSkip.token, 'skip_invoice'],
+      [expiredConfirm.token, 'confirm_payment'], [invoiceEnroll.token, 'enroll']] as const) {
+      const failure = await describeAutopayLinkFailure(token, purpose);
+      expect(failure.data ?? {}).not.toHaveProperty('invoiceUrl');
+    }
+    // Links not tied to the invoice are untouched.
+    expect(await resolveAutopayLinkIdentity(otherEnroll.token, 'enroll')).not.toBeNull();
+    expect(await resolveAutopayLinkIdentity(stop.token, 'stop_autopay')).not.toBeNull();
   });
 
   it('a stop link used to stop reports automatic payments are off, and the stop view says who stopped them', async () => {

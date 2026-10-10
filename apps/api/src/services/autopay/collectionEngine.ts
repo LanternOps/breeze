@@ -693,6 +693,10 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
       || Date.now() - record.attempt.createdAt.getTime() >= 23 * 3_600_000) {
       await quarantineUnknownCreate(attemptId); return;
     }
+    // No new PaymentIntent unless automatic payments may run for the partner (rollout flag on,
+    // partner active). The reservation waits: it resumes once the partner is active again, and
+    // the lost-create recovery above releases it once it is too old to resume.
+    if (!await withSystemDbAccessContext(() => isAutopayEnabledForPartner(db, record.invoice.partnerId))) return;
     const data = await loadAttempt(attemptId);
     const capture = data.attempt.initiatedBy === 'client_on_session'
       ? await withSystemDbAccessContext(() => loadClientCapture(data.attempt)) : null;

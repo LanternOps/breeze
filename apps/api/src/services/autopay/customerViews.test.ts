@@ -18,7 +18,7 @@ beforeEach(()=>{
 });
 function seed(status:string|null,enabled=false){
  h.rows.push([{id:orgId,name:'Example client',partnerId:'22222222-2222-4222-8222-222222222222'}],
-  [{name:'Example MSP',autopayEnabled:enabled}],[],status?[{status,generation:1,effectiveFrom:null,needsAttentionReason:null}]:[]);
+  [{name:'Example MSP',autopayEnabled:enabled,status:'active',deletedAt:null}],[],status?[{status,generation:1,effectiveFrom:null,needsAttentionReason:null}]:[]);
 }
 it.each(['active','requested','paused','verification_failed'])('returns only a read-only summary for disabled %s enrollment',async status=>{
  seed(status);
@@ -54,7 +54,7 @@ const cases:Array<[string,Case,{card:[string,string,number|null];debit:string;ba
 it.each(cases)('reports the configured card fee reason: %s',async(_label,c,expected)=>{
  h.rows.push([{id:orgId,name:'Example client',partnerId:'22222222-2222-4222-8222-222222222222',currencyCode:'USD',
   billingAddressCountry:c.country??'US',billingAddressRegion:c.region,billingContact:{email:'billing@example.test'}}],
-  [{name:'Example MSP',autopayEnabled:true}],[],[{status:'requested',generation:1,effectiveFrom:null,needsAttentionReason:null}]);
+  [{name:'Example MSP',autopayEnabled:true,status:'active',deletedAt:null}],[],[{status:'requested',generation:1,effectiveFrom:null,needsAttentionReason:null}]);
  h.settings.mockResolvedValue({cardFeeBps:{value:c.bps,source:'partner'},achFeeAmount:{value:c.ach??'0.00',source:'partner'},feeAttested:c.attested});
  h.readiness.mockResolvedValue({accountCountry:c.account??'US'});
  h.disclosure.mockImplementation(async(_db:unknown,_org:string,type:'card'|'us_bank_account')=>({partnerName:'Example MSP',scheduleText:'Due date',
@@ -68,7 +68,7 @@ it.each(cases)('reports the configured card fee reason: %s',async(_label,c,expec
 });
 it('keeps disclosed amounts from the accepted terms when configuration differs',async()=>{
  h.rows.push([{id:orgId,name:'Example client',partnerId:'22222222-2222-4222-8222-222222222222',currencyCode:'USD',
-  billingAddressCountry:'US',billingAddressRegion:'NY',billingContact:null}],[{name:'Example MSP',autopayEnabled:true}],[],[]);
+  billingAddressCountry:'US',billingAddressRegion:'NY',billingContact:null}],[{name:'Example MSP',autopayEnabled:true,status:'active',deletedAt:null}],[],[]);
  h.settings.mockResolvedValue({cardFeeBps:{value:300,source:'partner'},achFeeAmount:{value:'5.00',source:'partner'},feeAttested:true});
  h.readiness.mockResolvedValue({accountCountry:'US'});
  h.disclosure.mockImplementation(async(_db:unknown,_org:string,type:'card'|'us_bank_account')=>({partnerName:'Example MSP',scheduleText:'Due date',
