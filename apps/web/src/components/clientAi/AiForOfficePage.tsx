@@ -1,4 +1,7 @@
+import { useEffect } from "react";
+import { Loader2 } from "lucide-react";
 import { useHashState } from "@/lib/useHashState";
+import { usePermissions } from "@/lib/permissions";
 import OrgsTab from "./OrgsTab";
 import PolicyEditor from "./PolicyEditor";
 import SessionsTab from "./SessionsTab";
@@ -12,6 +15,11 @@ import "@/lib/i18n";
  * window.location.hash (#orgs default, #sessions, #usage, #templates,
  * #policy/<orgId>) per the DeviceDetails.tsx hash-tab convention — never
  * query params. Deep links and reloads land on the right tab.
+ *
+ * The Templates tab is shown only to holders of client_ai_templates:read
+ * (UX only; the API enforces the same permission). A #templates deep link
+ * shows a spinner while permissions load, and once they are known to lack
+ * the grant it falls back to #orgs (the URL is rewritten to match).
  */
 
 const SIMPLE_TABS = ["orgs", "sessions", "usage", "templates"] as const;
@@ -37,6 +45,29 @@ export default function AiForOfficePage() {
     { tab: "orgs" },
     getStateFromHash,
   );
+  const { permissions, can } = usePermissions();
+  const canReadTemplates = can("client_ai_templates", "read");
+  // While permissions load, a #templates deep link keeps its tab selected
+  // (next to the spinner) rather than leaving no tab active.
+  const visibleTabs = SIMPLE_TABS.filter(
+    (tab) =>
+      tab !== "templates" ||
+      canReadTemplates ||
+      (permissions === undefined && state.tab === "templates"),
+  );
+  const templatesDenied =
+    state.tab === "templates" && permissions !== undefined && !canReadTemplates;
+  const view: TabState = templatesDenied ? { tab: "orgs" } : state;
+
+  useEffect(() => {
+    if (!templatesDenied) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}#orgs`,
+    );
+    setState({ tab: "orgs" });
+  }, [templatesDenied, setState]);
 
   const switchTab = (tab: SimpleTab) => {
     window.location.hash = tab;
@@ -61,9 +92,9 @@ export default function AiForOfficePage() {
 
       <div className="border-b">
         <nav className="-mb-px flex gap-4">
-          {SIMPLE_TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const active =
-              state.tab === tab || (tab === "orgs" && state.tab === "policy");
+              view.tab === tab || (tab === "orgs" && view.tab === "policy");
             return (
               <button
                 key={tab}
@@ -83,13 +114,21 @@ export default function AiForOfficePage() {
         </nav>
       </div>
 
-      {state.tab === "orgs" && <OrgsTab onOpenPolicy={openPolicy} />}
-      {state.tab === "policy" && (
-        <PolicyEditor orgId={state.orgId} onBack={() => switchTab("orgs")} />
+      {view.tab === "orgs" && <OrgsTab onOpenPolicy={openPolicy} />}
+      {view.tab === "policy" && (
+        <PolicyEditor orgId={view.orgId} onBack={() => switchTab("orgs")} />
       )}
-      {state.tab === "sessions" && <SessionsTab />}
-      {state.tab === "usage" && <UsageTab />}
-      {state.tab === "templates" && <TemplatesTab />}
+      {view.tab === "sessions" && <SessionsTab />}
+      {view.tab === "usage" && <UsageTab />}
+      {view.tab === "templates" && permissions === undefined && (
+        <div
+          className="flex items-center justify-center py-12"
+          data-testid="ai-office-tab-loading"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      )}
+      {view.tab === "templates" && canReadTemplates && <TemplatesTab />}
     </div>
   );
 }

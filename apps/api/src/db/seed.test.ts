@@ -212,6 +212,7 @@ describe('vulnerability risk-acceptance RBAC', () => {
     expect(role?.permissions).toEqual([
       'devices:read',
       'organizations:read',
+      'client_ai_templates:read',
       'vulnerabilities:accept_risk',
     ]);
   });
