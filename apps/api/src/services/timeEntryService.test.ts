@@ -578,6 +578,39 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
     expect(setArgs.ticketId).toBeNull();
     expect(setArgs.orgId).toBeNull();
   });
+
+  // #8210 review: site_id is a plain FK (time_entries is partner-axis), so the
+  // org/site invariant set at create/start must be kept on relink and detach.
+  it('detaching clears a location site link (no org left to own the site)', async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, ticketId: 't-5', orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [{ ...baseEntry, ticketId: null, orgId: null, siteId: null }];
+    await updateTimeEntry('te-1', { ticketId: null }, ACTOR);
+    expect(dbMocks.updateSetArgs.at(-1)!.siteId).toBeNull();
+  });
+
+  it('relinking to a ticket in another org clears the site link', async () => {
+    dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-9', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-9', orgId: 'o-9' }]);
+    dbMocks.selectResults.push([{ ...baseEntry, orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.orgId).toBe('o-9');
+    expect(setArgs.siteId).toBeNull();
+  });
+
+  it('relinking to a ticket in the same org keeps the site link', async () => {
+    dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-5', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-9', orgId: 'o-5' }]);
+    dbMocks.selectResults.push([{ ...baseEntry, orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
+    expect(dbMocks.updateSetArgs.at(-1)!).not.toHaveProperty('siteId');
+  });
 });
 
 describe('deleteTimeEntry', () => {

@@ -170,7 +170,10 @@ describe('POST /sites/:id/location', () => {
   it('500 when the update matches no row (RLS mismatch)', async () => {
     mockSite([{ id: SITE, orgId: ORG, name: 'HQ' }]);
     mockUpdate([]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect((await post({ latitude: 1, longitude: 2 })).status).toBe(500);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('[siteLocation]'), expect.objectContaining({ siteId: SITE, orgId: ORG }));
+    errSpy.mockRestore();
   });
 
   it('writes site.location_set audit with coordinates and radius only', async () => {

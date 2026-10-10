@@ -1173,6 +1173,13 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
       }
     }
     // Detach leaves currencyCode untouched (the snapshot outlives the link).
+    // site_id is a plain FK (#4186), so the org/site invariant set at
+    // create/start is kept here: a site link survives only while the entry
+    // stays in the site's org.
+    if (entry.siteId != null && set.orgId !== entry.orgId) {
+      set.siteId = null;
+      changed.push('siteId');
+    }
     changed.push('ticketId');
   }
   if (input.resetBilling) assertManageBilling(actor);

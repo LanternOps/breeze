@@ -77,8 +77,10 @@ siteLocationRoutes.post(
 
     const body = c.req.valid('json');
     const updated = await pinSiteLocation(site.id, body, auth.user.id);
-    // 0-row write: the RLS UPDATE policy rejected it despite the SELECT passing.
+    // 0-row write: the RLS UPDATE policy rejected it despite the SELECT passing,
+    // or the site was deleted between the read and the write.
     if (!updated) {
+      console.error('[siteLocation] pin write matched no row', { siteId: site.id, orgId: site.orgId, userId: auth.user.id });
       return c.json({ error: 'Failed to update site' }, 500);
     }
 
