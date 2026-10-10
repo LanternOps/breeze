@@ -444,6 +444,18 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(markViewedMock).not.toHaveBeenCalled();
   });
 
+  // A draft and a missing / other-org invoice must be indistinguishable, or the
+  // body tells a portal user that an unissued invoice exists (#8123 follow-up).
+  it.each(['', '/pdf'])('GET /invoices/:id%s answers a draft and a missing invoice with the same 404 body', async (suffix) => {
+    getCustomerInvoiceMock.mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const missing = await app().request(`/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'draft' }, lines: [] });
+    const draft = await app().request(`/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    expect(missing.status).toBe(404);
+    expect(draft.status).toBe(404);
+    expect(await missing.json()).toEqual(await draft.json());
+  });
+
   it('GET /invoices/:id/pdf streams the stored PDF', async () => {
     getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
     getInvoicePdfMock.mockResolvedValue(Buffer.from('%PDF-portal'));
