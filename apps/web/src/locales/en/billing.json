@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Charging this invoice now needs a fresh second-factor check.",
         "partner_payment_settings_update": "Changing payment settings needs a fresh second-factor check for these exact values.",
+        "org_payment_settings_update": "Changing this organization's payment settings needs a fresh second-factor check for these exact values.",
         "autopay_request_recipient": "Sending the authorization request to an address other than the billing contact needs a fresh second-factor check."
       },
       "code": "Authenticator code",

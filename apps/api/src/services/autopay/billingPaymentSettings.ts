@@ -83,6 +83,35 @@ export async function updatePartnerPaymentSettings(db: Tx, partnerId: string,
     .onConflictDoUpdate({ target: billingPaymentSettings.partnerId,
       targetWhere: isNotNull(billingPaymentSettings.partnerId), set });
 }
+/** The org-row columns an org payment-settings patch can write. */
+const ORG_SETTING_COLUMNS = Object.keys(orgPaymentSettingsPatchSchema.shape) as Array<keyof OrgPaymentSettingsPatch>;
+
+/**
+ * The org-row columns a patch would actually change, compared with the stored
+ * org row (`undefined` = the organization has no row, so every column is
+ * inherited, i.e. null). Uses the same normalisation as the write, so turning
+ * the cap off also counts the amount and currency it clears. Values compare
+ * exactly: a formatting difference (say `'5'` against a stored `'5.00'`)
+ * counts as a change, which can only ever ask for a confirmation, never skip
+ * one. The patch must already have been parsed by the shared org schema.
+ */
+export function changedOrgPaymentSettingFields(stored: Partial<Record<string, unknown>> | undefined,
+  patch: OrgPaymentSettingsPatch): string[] {
+  const set = columns(patch) as Record<string, unknown>;
+  return ORG_SETTING_COLUMNS.filter(key => key in set && set[key] !== (stored?.[key] ?? null));
+}
+
+/**
+ * Which values an org payment-settings PUT would change, decided against the
+ * stored org row (routes/billingPaymentSettings.ts asks for a second-factor
+ * confirmation only when this is non-empty).
+ */
+export async function orgPaymentSettingsChanges(db: Tx, orgId: string, patch: OrgPaymentSettingsPatch): Promise<string[]> {
+  const parsed = orgPaymentSettingsPatchSchema.parse(patch);
+  const rows = await db.select().from(billingPaymentSettings).where(eq(billingPaymentSettings.orgId, orgId));
+  const stored = rows.find(row => row.orgId === orgId && row.partnerId === null);
+  return changedOrgPaymentSettingFields(stored, parsed);
+}
 export async function updateOrgPaymentSettings(db: Tx, orgId: string, patch: OrgPaymentSettingsPatch, actorUserId: string): Promise<void> {
   const set = columns(orgPaymentSettingsPatchSchema.parse(patch));
   if (!Object.keys(set).length) return;

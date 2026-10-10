@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Prélever cette facture maintenant nécessite une nouvelle vérification à deux facteurs.",
         "partner_payment_settings_update": "Modifier les paramètres de paiement nécessite une nouvelle vérification à deux facteurs pour ces valeurs précises.",
+        "org_payment_settings_update": "Modifier les paramètres de paiement de cette organisation nécessite une nouvelle vérification à deux facteurs pour ces valeurs précises.",
         "autopay_request_recipient": "Envoyer la demande d'autorisation à une adresse autre que celle du contact de facturation nécessite une nouvelle vérification à deux facteurs."
       },
       "code": "Code d'authentification",

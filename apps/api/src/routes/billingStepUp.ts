@@ -6,12 +6,12 @@ import { ENABLE_2FA } from './auth/schemas';
 
 /** Billing actions that move money or change who is asked to authorize it. */
 export type BillingStepUpOperation = Extract<StepUpOperation,
-  'autopay_charge_now' | 'partner_payment_settings_update' | 'autopay_request_recipient'>;
+  'autopay_charge_now' | 'partner_payment_settings_update' | 'org_payment_settings_update' | 'autopay_request_recipient'>;
 
 /**
  * Second-factor confirmation for a billing action (charging a client now,
- * changing partner payment settings, sending a client's authorization request
- * to an address other than its billing contact).
+ * changing partner or organization payment settings, sending a client's
+ * authorization request to an address other than its billing contact).
  *
  * Same contract as the device move-org and maintenance step-ups: an
  * interactive user session with a satisfied second factor, and, while

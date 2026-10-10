@@ -201,6 +201,8 @@ describe('mfaStepUpSchema operation field', () => {
     ['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020',
       settings: { remindersEnabled: true, feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true } } }],
     ['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test', mode: 'reauthorize' }],
+    ['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
+      settings: { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD', reminderRepeatDays: null } }],
   ] as const)('accepts %s with its resource binding, unchanged', (operation, resource) => {
     const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
     expect(parsed.operation).toBe(operation);

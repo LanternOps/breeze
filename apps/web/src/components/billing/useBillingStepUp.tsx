@@ -7,7 +7,7 @@ import { showToast } from '../shared/Toast';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 
 /** Billing actions the API confirms with a second factor (apps/api/src/routes/billingStepUp.ts). */
-export const BILLING_STEP_UP_OPERATIONS = ['autopay_charge_now', 'partner_payment_settings_update', 'autopay_request_recipient'] as const;
+export const BILLING_STEP_UP_OPERATIONS = ['autopay_charge_now', 'partner_payment_settings_update', 'org_payment_settings_update', 'autopay_request_recipient'] as const;
 export type BillingStepUpOperation = typeof BILLING_STEP_UP_OPERATIONS[number];
 
 /** Sends the request; `stepUpGrant` is set only on the resubmit after a confirmation. */
@@ -64,8 +64,8 @@ async function discoverTier(): Promise<{ tier: ReauthTier; smsOnly: boolean }> {
 
 /**
  * Server-driven second-factor confirmation for charging a client now, saving
- * partner payment settings and sending an authorization request to another
- * address (same contract as the topology arm and unattested-restore
+ * partner or organization payment settings and sending an authorization
+ * request to another address (same contract as the topology arm and unattested-restore
  * step-ups). The first submit carries no grant; only a `403 STEP_UP_REQUIRED`
  * naming one of the operations above reveals the prompt. The grant is minted
  * for exactly the resource the server named and the request is resubmitted

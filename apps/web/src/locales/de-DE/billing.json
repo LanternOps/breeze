@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Das sofortige Belasten dieser Rechnung erfordert eine erneute Zwei-Faktor-Prüfung.",
         "partner_payment_settings_update": "Das Ändern der Zahlungseinstellungen erfordert eine erneute Zwei-Faktor-Prüfung für genau diese Werte.",
+        "org_payment_settings_update": "Das Ändern der Zahlungseinstellungen dieser Organisation erfordert eine erneute Zwei-Faktor-Prüfung für genau diese Werte.",
         "autopay_request_recipient": "Das Senden der Autorisierungsanfrage an eine andere Adresse als den Rechnungskontakt erfordert eine erneute Zwei-Faktor-Prüfung."
       },
       "code": "Authenticator-Code",

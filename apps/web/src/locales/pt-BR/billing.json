@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Cobrar esta fatura agora exige uma nova verificação de segundo fator.",
         "partner_payment_settings_update": "Alterar as configurações de pagamento exige uma nova verificação de segundo fator para estes valores exatos.",
+        "org_payment_settings_update": "Alterar as configurações de pagamento desta organização exige uma nova verificação de segundo fator para estes valores exatos.",
         "autopay_request_recipient": "Enviar a solicitação de autorização para um endereço diferente do contato de cobrança exige uma nova verificação de segundo fator."
       },
       "code": "Código do autenticador",

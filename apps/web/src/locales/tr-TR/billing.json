@@ -2648,6 +2648,7 @@
       "intro": {
         "autopay_charge_now": "Bu faturayı şimdi tahsil etmek yeni bir ikinci faktör doğrulaması gerektirir.",
         "partner_payment_settings_update": "Ödeme ayarlarını değiştirmek, bu değerler için yeni bir ikinci faktör doğrulaması gerektirir.",
+        "org_payment_settings_update": "Bu kuruluşun ödeme ayarlarını değiştirmek, bu değerler için yeni bir ikinci faktör doğrulaması gerektirir.",
         "autopay_request_recipient": "Yetkilendirme isteğini fatura kişisi dışındaki bir adrese göndermek yeni bir ikinci faktör doğrulaması gerektirir."
       },
       "code": "Kimlik doğrulayıcı kodu",
