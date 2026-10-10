@@ -2,6 +2,7 @@ import { RFB } from '../novnc';
 import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
 import type { VncTunnelInfo } from '../tunnel';
+import { attachVncClipboard, type VncClipboardDeps, type VncClipboardHandle } from '../vncClipboard';
 
 export type { VncTunnelInfo };
 
@@ -17,11 +18,14 @@ export interface VncDeps {
     requiresUsername: boolean,
     submit: (creds: { username?: string; password: string }) => void,
   ) => void;
+  /** Local clipboard access; the policy comes from the tunnel info. Omitted → no clipboard. */
+  clipboard?: Omit<VncClipboardDeps, 'policy'>;
 }
 
 export interface VncSessionWrapper extends TransportSession {
   kind: 'vnc';
   vncContainer: HTMLDivElement;
+  clipboard: VncClipboardHandle | null;
 }
 
 /**
@@ -59,6 +63,12 @@ export async function connectVnc(
   rfb.showDotCursor = true;
 
   rfb.addEventListener('connect', () => deps.onStatus('connected'));
+
+  // Capture phase on the container, so a paste key can be held back from
+  // noVNC's own keyboard handler on the canvas inside it.
+  const clipboard = deps.clipboard
+    ? attachVncClipboard(rfb, deps.container, { ...deps.clipboard, policy: info.clipboard })
+    : null;
 
   rfb.addEventListener('disconnect', (e: CustomEvent) => {
     const clean = e.detail?.clean === true;
@@ -196,9 +206,11 @@ export async function connectVnc(
     kind: 'vnc',
     capabilities: capabilitiesFor('vnc'),
     vncContainer: deps.container as HTMLDivElement,
+    clipboard,
     close: () => {
       if (disposed) return;
       disposed = true;
+      clipboard?.detach();
       cleanupPump();
       cleanupWatchdog();
       resizeObserver?.disconnect();

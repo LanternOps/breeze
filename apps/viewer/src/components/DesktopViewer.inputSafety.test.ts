@@ -26,11 +26,11 @@ describe('DesktopViewer input safety wiring', () => {
     expect(source).toMatch(/onPointerDown: handlePointerDown/);
   });
 
-  it('gates remote→local clipboard writes on the focus rule', () => {
-    const decision = source.indexOf('remoteClipboardDecision({');
-    const write = source.indexOf('writeText(payload.text)');
-    expect(decision).toBeGreaterThan(-1);
-    expect(write).toBeGreaterThan(decision);
+  it('leaves remote→local clipboard writes to the controller, which gates them on the focus rule', () => {
+    // The rule itself is exercised in lib/clipboardSync.test.ts and
+    // lib/vncClipboard.test.ts; here, only that nothing bypasses it.
+    expect(source).not.toMatch(/writeText\(payload/);
+    expect(source).not.toMatch(/remoteClipboardDecision\(/);
   });
 
   it('does not hard-code the Cmd↔Ctrl remap on', () => {
@@ -67,5 +67,36 @@ describe('DesktopViewer input safety wiring', () => {
   it('records copy intent instead of a blur grace for background clipboard pushes', () => {
     expect(source).toMatch(/if \(isCopyChord\(ne\)\) lastCopyIntentAtRef\.current = Date\.now\(\);/);
     expect(source).not.toMatch(/lastBlurAt/);
+  });
+
+  it('runs one clipboard controller per clipboard channel, closing the one it replaces', () => {
+    const open = source.indexOf('onClipboardChannel: (channel) => {');
+    const close = source.indexOf('clipboardSyncRef.current?.close();', open);
+    const create = source.indexOf('new ClipboardSync({', open);
+    expect(open).toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(open);
+    expect(create).toBeGreaterThan(close);
+  });
+
+  it('pastes through the controller\'s transaction, and no longer through the W1 ack map', () => {
+    expect(source).toMatch(/\.pasteTransaction\(dispatchPaste\)/);
+    expect(source).not.toMatch(/handleCtrlVPaste/);
+    expect(source).not.toMatch(/clipboardAckMapRef/);
+  });
+
+  it('closes the clipboard controller on unmount', () => {
+    const unmount = source.indexOf("invoke('unregister_session')");
+    const close = source.lastIndexOf('clipboardSyncRef.current?.close();', unmount);
+    expect(close).toBeGreaterThan(source.indexOf('const oldVnc = vncSessionRef.current;'));
+  });
+
+  it('wires VNC clipboard and the toolbar chip', () => {
+    expect(source).toMatch(/clipboard: \{\s*readLocalText:/);
+    expect(source).toMatch(/clipboardChip=\{\{/);
+  });
+
+  it('passes the reported clipboard policy through on every VNC tunnel path', () => {
+    expect(source).toMatch(/clipboard: parseClipboardPolicy\(exchange\)/);
+    expect(source).toMatch(/clipboard: parseClipboardPolicy\(body\)/);
   });
 });

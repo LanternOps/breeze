@@ -116,6 +116,12 @@ export interface RemoteClipboardState {
   channelOpenedAt: number | null;
   /** Remote pushes received on this channel before this one. */
   pushesSeen: number;
+  /**
+   * The agent's clipboard status said it records the connect-time clipboard
+   * instead of sending it (W4a). The baseline skip is then only a fallback for
+   * agents that predate it, and skipping would drop a real copy.
+   */
+  suppressesBaseline?: boolean;
 }
 
 /**
@@ -137,6 +143,7 @@ export function remoteClipboardDecision(
   s: RemoteClipboardState,
 ): 'apply' | 'skip-baseline' | 'skip-unfocused' {
   if (
+    !s.suppressesBaseline &&
     s.pushesSeen === 0 &&
     s.channelOpenedAt !== null &&
     s.now - s.channelOpenedAt < REMOTE_CLIPBOARD_BASELINE_WINDOW_MS

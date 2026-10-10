@@ -1,3 +1,6 @@
+import { parseClipboardPolicy } from './vncClipboard';
+import type { ClipboardDirectionPolicy } from './clipboardChip';
+
 export interface TunnelAuth {
   apiUrl: string;
   accessToken: string;
@@ -6,6 +9,12 @@ export interface TunnelAuth {
 export interface VncTunnelInfo {
   tunnelId: string;
   wsUrl: string;
+  /**
+   * The session's remote_access clipboard policy, when the API reports it with
+   * the tunnel. The agent cannot filter the raw RFB stream, so the viewer
+   * enforces it on VNC; absent means clipboard off (see lib/vncClipboard.ts).
+   */
+  clipboard?: ClipboardDirectionPolicy;
 }
 
 /**
@@ -27,7 +36,8 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
     const err = await tunnelRes.json().catch(() => null) as { error?: string } | null;
     throw new Error(err?.error ?? `Tunnel create failed (${tunnelRes.status})`);
   }
-  const { id: tunnelId } = await tunnelRes.json() as { id: string };
+  const tunnelBody = await tunnelRes.json() as { id: string };
+  const tunnelId = tunnelBody.id;
 
   const ticketRes = await fetch(`${auth.apiUrl}/api/v1/tunnels/${tunnelId}/ws-ticket`, {
     method: 'POST',
@@ -37,13 +47,14 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
     await closeTunnel(tunnelId, auth);
     throw new Error(`Failed to get tunnel ws-ticket (${ticketRes.status})`);
   }
-  const { ticket } = await ticketRes.json() as { ticket: string };
+  const ticketBody = await ticketRes.json() as { ticket: string };
+  const ticket = ticketBody.ticket;
 
   const wsProtocol = auth.apiUrl.startsWith('https') ? 'wss' : 'ws';
   const wsHost = auth.apiUrl.replace(/^https?:\/\//, '');
   const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnelId}/ws?ticket=${ticket}`;
 
-  return { tunnelId, wsUrl };
+  return { tunnelId, wsUrl, clipboard: parseClipboardPolicy(ticketBody) ?? parseClipboardPolicy(tunnelBody) };
 }
 
 /**
