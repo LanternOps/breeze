@@ -88,7 +88,7 @@ func startRunForReprobeTest(t *testing.T, canCaptureAtConnect *atomic.Bool) (*Cl
 		runTCCCheckLoop, detectCapabilitiesFn, captureReprobeGOOS = restoreTCC, restoreDetect, restoreGOOS
 	})
 	tccReturned := make(chan struct{})
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _ string, _ func() bool) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, _ func() bool) {
 		<-stop
 		close(tccReturned)
 	}

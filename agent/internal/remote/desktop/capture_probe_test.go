@@ -282,7 +282,7 @@ func TestProbeCaptureAccess_UsesPlatformPlanAndReportsResult(t *testing.T) {
 	}}
 	cg := &scriptedBackend{name: "coregraphics"}
 	var got *captureProbeResult
-	platformCaptureProbePlan = func(CaptureConfig) captureProbePlan {
+	platformCaptureProbePlan = func(CaptureConfig, CaptureProbeOptions) captureProbePlan {
 		fallback := cg.step()
 		return captureProbePlan{
 			primary:              sck.step(),
@@ -307,7 +307,7 @@ func TestProbeCaptureAccess_FailureDoesNotCallOnSuccess(t *testing.T) {
 	t.Cleanup(func() { platformCaptureProbePlan = restore })
 
 	sck := &scriptedBackend{name: "screencapturekit", frames: []*fakeProbeCapturer{{err: errSCKTimeout}}}
-	platformCaptureProbePlan = func(CaptureConfig) captureProbePlan {
+	platformCaptureProbePlan = func(CaptureConfig, CaptureProbeOptions) captureProbePlan {
 		return captureProbePlan{
 			primary:         sck.step(),
 			primaryAttempts: 1,
@@ -319,4 +319,157 @@ func TestProbeCaptureAccess_FailureDoesNotCallOnSuccess(t *testing.T) {
 	if granted || !errors.Is(err, errSCKTimeout) {
 		t.Fatalf("ProbeCaptureAccess = %v, %v; want false with the primary error", granted, err)
 	}
+}
+
+// A refusal (on macOS, ScreenCaptureKit's SCStreamErrorUserDeclined, -3801)
+// is the user's answer, not a transient failure. Retrying it asks the user
+// again (#8058), so the primary is not re-opened; the caller learns it was a
+// refusal so it can remember the verdict.
+func TestProbeCaptureBackends_PermissionDeniedIsNotRetried(t *testing.T) {
+	sck := &scriptedBackend{name: "screencapturekit", frames: []*fakeProbeCapturer{
+		{err: ErrPermissionDenied},
+		{frame: goodFrame()},
+	}}
+	cg := &scriptedBackend{name: "coregraphics"}
+	fallback := cg.step()
+
+	res, err := probeCaptureBackends(captureProbePlan{
+		primary:              sck.step(),
+		primaryAttempts:      2,
+		fallback:             &fallback,
+		allowCaptureFallback: func() bool { return true },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sck.opened != 1 {
+		t.Fatalf("SCK opened %d times after a refusal, want 1", sck.opened)
+	}
+	if res.backend != "coregraphics" || !res.primaryCaptureFailed || !res.primaryPermissionDenied {
+		t.Fatalf("got %+v, want a coregraphics frame flagged as a refused primary", res)
+	}
+	if res.primaryOpens != 1 || !errors.Is(res.primaryErr, ErrPermissionDenied) {
+		t.Fatalf("primaryOpens=%d primaryErr=%v, want 1 and ErrPermissionDenied", res.primaryOpens, res.primaryErr)
+	}
+}
+
+// sckLikeProbeCapturer models the SCStream capturer: Capture() reports an
+// unchanged screen as (nil, nil), CaptureLatest always returns the frame.
+type sckLikeProbeCapturer struct {
+	fakeProbeCapturer
+	latestCalls int
+}
+
+func (l *sckLikeProbeCapturer) Capture() (*image.RGBA, error) { return nil, nil }
+func (l *sckLikeProbeCapturer) CaptureLatest() (*image.RGBA, error) {
+	l.latestCalls++
+	return goodFrame(), nil
+}
+
+// A session opens its capturer through the same plan the probe uses, but
+// keeps the capturer that produced the frame. The check frame must come from
+// CaptureLatest so it is not consumed from the stream the session then reads.
+func TestOpenCaptureBackends_KeepsWinningCapturerOpenAndUsesCaptureLatest(t *testing.T) {
+	closed := 0
+	winner := &sckLikeProbeCapturer{fakeProbeCapturer: fakeProbeCapturer{closed: &closed}}
+	plan := captureProbePlan{
+		primary: captureProbeBackend{
+			name: "screencapturekit",
+			open: func() (ScreenCapturer, error) { return winner, nil },
+		},
+		primaryAttempts: 2,
+	}
+
+	capturer, res, err := openCaptureBackends(plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturer != winner {
+		t.Fatalf("got capturer %T, want the primary's capturer", capturer)
+	}
+	if closed != 0 {
+		t.Fatal("the winning capturer was closed; a session needs it open")
+	}
+	if winner.latestCalls != 1 {
+		t.Fatalf("CaptureLatest called %d times, want 1", winner.latestCalls)
+	}
+	if res.backend != "screencapturekit" {
+		t.Fatalf("backend = %q, want screencapturekit", res.backend)
+	}
+}
+
+func TestOpenCaptureBackends_ClosesFailedPrimaryBeforeFallback(t *testing.T) {
+	sck := &scriptedBackend{name: "screencapturekit", frames: []*fakeProbeCapturer{
+		{err: errSCKTimeout},
+		{err: errSCKTimeout},
+	}}
+	cg := &scriptedBackend{name: "coregraphics"}
+	fallback := cg.step()
+
+	capturer, res, err := openCaptureBackends(captureProbePlan{
+		primary:              sck.step(),
+		primaryAttempts:      2,
+		fallback:             &fallback,
+		allowCaptureFallback: func() bool { return true },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sck.closed != 2 {
+		t.Fatalf("failed SCK capturers closed %d times, want 2", sck.closed)
+	}
+	if cg.closed != 0 {
+		t.Fatal("the CoreGraphics capturer that produced the frame was closed")
+	}
+	if res.backend != "coregraphics" || !res.primaryCaptureFailed || res.primaryPermissionDenied {
+		t.Fatalf("got %+v, want coregraphics after a non-refusal capture failure", res)
+	}
+	_ = capturer.Close()
+}
+
+// Review finding on #8058: attempt 1 reaches the capture phase and fails
+// (possibly a missing grant), attempt 2 fails at init. The capture-phase
+// failure must still gate the fallback on preflight, and must still count as
+// a capture failure for the verdict.
+func TestOpenCaptureBackends_CaptureThenInitFailureStillGatesFallback(t *testing.T) {
+	opens := 0
+	primary := captureProbeBackend{
+		name: "screencapturekit",
+		open: func() (ScreenCapturer, error) {
+			opens++
+			if opens == 1 {
+				return &fakeProbeCapturer{err: errSCKTimeout}, nil
+			}
+			return nil, errors.New("display reconfiguring")
+		},
+	}
+	t.Run("gate refuses", func(t *testing.T) {
+		opens = 0
+		cg := &scriptedBackend{name: "coregraphics"}
+		fallback := cg.step()
+		gateCalls := 0
+		_, _, err := openCaptureBackends(captureProbePlan{
+			primary: primary, primaryAttempts: 2, fallback: &fallback,
+			allowCaptureFallback: func() bool { gateCalls++; return false },
+		})
+		if err == nil || gateCalls != 1 || cg.opened != 0 {
+			t.Fatalf("err=%v gateCalls=%d cgOpened=%d; want the preflight gate consulted and refusing", err, gateCalls, cg.opened)
+		}
+	})
+	t.Run("gate allows", func(t *testing.T) {
+		opens = 0
+		cg := &scriptedBackend{name: "coregraphics"}
+		fallback := cg.step()
+		capturer, res, err := openCaptureBackends(captureProbePlan{
+			primary: primary, primaryAttempts: 2, fallback: &fallback,
+			allowCaptureFallback: func() bool { return true },
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		_ = capturer.Close()
+		if !res.primaryCaptureFailed {
+			t.Fatalf("res = %+v, want primaryCaptureFailed after a capture-phase failure", res)
+		}
+	})
 }

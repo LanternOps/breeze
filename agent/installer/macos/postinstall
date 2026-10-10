@@ -24,6 +24,8 @@ DAEMON_PLIST="/Library/LaunchDaemons/com.breeze.agent.plist"
 WATCHDOG_PLIST="/Library/LaunchDaemons/com.breeze.watchdog.plist"
 DESKTOP_USER_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
 DESKTOP_LOGINWINDOW_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
+# Legacy `breeze-agent user-helper` LaunchAgent from older installs.
+LEGACY_AGENT_USER_PLIST="/Library/LaunchAgents/com.breeze.agent-user.plist"
 
 # Pick the install directory BEFORE placing anything: choose_bin_dir keys
 # off whether an agent already lives in the trusted directory.
@@ -152,6 +154,12 @@ if [ -f "$WATCHDOG_PLIST" ]; then
         echo "Warning: the watchdog did not load; the agent was loaded but has no supervisor" >&2
     fi
 fi
+
+# Delete the legacy agent-user LaunchAgent. preinstall boots it out of every
+# GUI session, but the plist stayed, so launchd loaded it again at the next
+# login and it ran a second TCC check loop beside the desktop helper (#8058).
+# The desktop helper replaced it; nothing in this package ships it.
+rm -f "$LEGACY_AGENT_USER_PLIST"
 
 # Load the user helper LaunchAgent for all currently logged-in GUI users.
 # The plist lives in /Library/LaunchAgents/ so launchd will auto-load it

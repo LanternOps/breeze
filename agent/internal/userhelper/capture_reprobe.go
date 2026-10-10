@@ -13,6 +13,11 @@ import (
 // lands a minute later) left the device Desktop Unavailable until the helper
 // restarted. The broker accepts a later capabilities message and overwrites
 // the stored set, so recovering only needs a re-probe and a re-send.
+//
+// Like the connect-time probe it re-runs (detectCapabilities), the re-probe is
+// a permission check and never calls ScreenCaptureKit (#8058): it runs while
+// capture is failing, which on Sequoia is exactly when a ScreenCaptureKit call
+// would keep putting macOS's consent dialog back in front of the user.
 
 const (
 	captureReprobeInitialDelay = 30 * time.Second

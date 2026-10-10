@@ -2,83 +2,87 @@
 
 package desktop
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
-// These assert the plan's shape only; nothing is opened, so no capture or
-// TCC prompt happens on the test host.
-func TestDarwinCaptureProbePlan_Shape(t *testing.T) {
-	restore := sckCaptureUnhealthy.Load()
-	t.Cleanup(func() { sckCaptureUnhealthy.Store(restore) })
-
-	t.Run("login window keeps the single-attempt default", func(t *testing.T) {
-		sckCaptureUnhealthy.Store(false)
-		plan := darwinCaptureProbePlan(CaptureConfig{DesktopContext: "login_window"})
-		if plan.fallback != nil || plan.primary.name != "platform" || plan.primaryAttempts != 1 {
-			t.Fatalf("login_window plan = %+v, want the default single attempt", plan)
-		}
+// These cover the darwin wiring only; the policy itself is tested in
+// capture_backend_session_test.go and capture_backend_plan_test.go, which run
+// in Linux CI. Every backend is faked: no test here opens a real
+// ScreenCaptureKit stream (which could raise the consent dialog on the
+// developer's Mac) or touches the real ~/Library verdict.
+func installDarwinFakes(t *testing.T, sck, cg *scriptedBackend) *sckVerdictStore {
+	t.Helper()
+	if !hasSCScreenshotManager() {
+		t.Skip("host is older than macOS 14; the ScreenCaptureKit path is not used")
+	}
+	store := &sckVerdictStore{dir: filepath.Join(t.TempDir(), "Breeze"), uid: os.Getuid()}
+	saveSCK, saveCG, savePre, savePolicy, saveLatch := openSCKCapturer, openCGCapturer, screenRecordingPreflight, sckPolicy, sckCaptureUnhealthy.Load()
+	t.Cleanup(func() {
+		openSCKCapturer, openCGCapturer, screenRecordingPreflight, sckPolicy = saveSCK, saveCG, savePre, savePolicy
+		sckCaptureUnhealthy.Store(saveLatch)
 	})
-
-	t.Run("latched SCK failure skips ScreenCaptureKit", func(t *testing.T) {
-		sckCaptureUnhealthy.Store(true)
-		plan := darwinCaptureProbePlan(CaptureConfig{DesktopContext: "user_session"})
-		if plan.fallback != nil || plan.primary.name != "platform" {
-			t.Fatalf("latched plan = %+v, want the default plan (newPlatformCapturer picks CG)", plan)
-		}
-	})
-
-	t.Run("user session on macOS 14+ probes SCK with a gated CG fallback", func(t *testing.T) {
-		if !hasSCScreenshotManager() {
-			t.Skip("host is older than macOS 14; SCK plan not used")
-		}
-		sckCaptureUnhealthy.Store(false)
-		plan := darwinCaptureProbePlan(CaptureConfig{DesktopContext: "user_session"})
-		if plan.primary.name != "screencapturekit" || plan.primaryAttempts != sckProbeAttempts {
-			t.Fatalf("primary = %q x%d, want screencapturekit x%d", plan.primary.name, plan.primaryAttempts, sckProbeAttempts)
-		}
-		if plan.fallback == nil || plan.fallback.name != "coregraphics" {
-			t.Fatalf("fallback = %+v, want coregraphics", plan.fallback)
-		}
-		if plan.allowCaptureFallback == nil {
-			t.Fatal("capture-phase fallback must be gated on Screen Recording preflight")
-		}
-	})
-
-	t.Run("onSuccess latches only after a capture-phase fallback", func(t *testing.T) {
-		if !hasSCScreenshotManager() {
-			t.Skip("host is older than macOS 14; SCK plan not used")
-		}
-		sckCaptureUnhealthy.Store(false)
-		plan := darwinCaptureProbePlan(CaptureConfig{DesktopContext: "user_session"})
-		plan.onSuccess(captureProbeResult{backend: "screencapturekit"})
-		if sckCaptureUnhealthy.Load() {
-			t.Fatal("latched after an SCK success")
-		}
-		plan.onSuccess(captureProbeResult{backend: "coregraphics"})
-		if sckCaptureUnhealthy.Load() {
-			t.Fatal("latched after an init-phase fallback; only capture-phase failures should latch")
-		}
-		plan.onSuccess(captureProbeResult{backend: "coregraphics", primaryCaptureFailed: true})
-		if !sckCaptureUnhealthy.Load() {
-			t.Fatal("did not latch after SCK failed to capture and CG succeeded")
-		}
-	})
+	openSCKCapturer = func(CaptureConfig) (ScreenCapturer, error) { return sck.step().open() }
+	openCGCapturer = func(CaptureConfig) (ScreenCapturer, error) { return cg.step().open() }
+	screenRecordingPreflight = func() bool { return true }
+	fp := testFingerprint()
+	sckPolicy.store = func() (*sckVerdictStore, error) { return store, nil }
+	sckPolicy.fingerprint = func() sckFingerprint { return fp }
+	sckPolicy.now = time.Now
+	sckCaptureUnhealthy.Store(false)
+	return store
 }
 
-// The latch must reach streaming sessions, not just the probe: otherwise the
-// probe reports CanCapture=true off a CG frame and the session goes straight
-// back to the SCK path that cannot capture.
-func TestNewPlatformCapturer_HonorsSCKCaptureUnhealthyLatch(t *testing.T) {
-	restore := sckCaptureUnhealthy.Load()
-	t.Cleanup(func() { sckCaptureUnhealthy.Store(restore) })
-	sckCaptureUnhealthy.Store(true)
+func userSession() CaptureConfig { return CaptureConfig{DesktopContext: "user_session"} }
 
-	capturer, err := newPlatformCapturer(CaptureConfig{DesktopContext: "user_session"})
-	if err != nil {
-		// CG init only needs an active display list; a headless host has none.
-		t.Skipf("CoreGraphics init unavailable on this host: %v", err)
+func TestDarwinCaptureProbePlan_LoginWindowKeepsDefault(t *testing.T) {
+	plan := darwinCaptureProbePlan(CaptureConfig{DesktopContext: "login_window"}, CaptureProbeOptions{AllowScreenCaptureKit: true})
+	if plan.fallback != nil || plan.primary.name != "platform" || plan.primaryAttempts != 1 {
+		t.Fatalf("login_window plan = %+v, want the default single attempt", plan)
 	}
-	defer capturer.Close()
-	if _, ok := capturer.(*darwinCGCapturer); !ok {
-		t.Fatalf("newPlatformCapturer returned %T with the latch set, want *darwinCGCapturer", capturer)
+}
+
+// #8058: the real permission-check entry point never reaches the
+// ScreenCaptureKit opener.
+func TestProbeCaptureAccess_NeverCallsScreenCaptureKit(t *testing.T) {
+	sck := &scriptedBackend{name: captureBackendScreenCaptureKit}
+	cg := &scriptedBackend{name: captureBackendCoreGraphics}
+	installDarwinFakes(t, sck, cg)
+
+	for i := 0; i < 3; i++ {
+		if granted, err := ProbeCaptureAccess(userSession()); err != nil || !granted {
+			t.Fatalf("ProbeCaptureAccess = %v, %v", granted, err)
+		}
+	}
+	if sck.opened != 0 || cg.opened != 3 {
+		t.Fatalf("opened sck=%d cg=%d, want 0/3", sck.opened, cg.opened)
+	}
+}
+
+// newPlatformCapturer goes through the live session policy: a decline is
+// recorded, and the next open (as after a restart) skips ScreenCaptureKit.
+func TestNewPlatformCapturer_UsesSessionPolicy(t *testing.T) {
+	sck := &scriptedBackend{name: captureBackendScreenCaptureKit, frames: []*fakeProbeCapturer{{err: ErrPermissionDenied}}}
+	cg := &scriptedBackend{name: captureBackendCoreGraphics}
+	store := installDarwinFakes(t, sck, cg)
+
+	for i := 0; i < 2; i++ {
+		c, err := newPlatformCapturer(userSession())
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		_ = c.Close()
+	}
+	if sck.opened != 1 || cg.opened != 2 {
+		t.Fatalf("opened sck=%d cg=%d, want 1/2", sck.opened, cg.opened)
+	}
+	if v, err := store.load(); err != nil || v == nil || v.Reason != sckVerdictReasonDeclined {
+		t.Fatalf("verdict = %+v, %v; want declined", v, err)
+	}
+	if status := ScreenCaptureKitVerdict(); !status.Applies {
+		t.Fatalf("exported status = %+v, want an applicable verdict", status)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -258,5 +259,25 @@ func TestBuildPkgStagesDaemonBinariesAndShipsLibrary(t *testing.T) {
 	}
 	if !strings.Contains(s, "install-location.sh") {
 		t.Error("build-pkg.sh does not ship install-location.sh with the scripts")
+	}
+}
+
+// #8058: preinstall boots out the legacy com.breeze.agent-user LaunchAgent
+// (`breeze-agent user-helper`) but nothing deleted its plist, so launchd
+// loaded it again at the next login and it ran the TCC check loop alongside
+// the desktop helper. postinstall must delete it.
+func TestPostinstallRemovesLegacyAgentUserLaunchAgent(t *testing.T) {
+	s := readRepoFile(t, "macos/postinstall")
+	const plist = `LEGACY_AGENT_USER_PLIST="/Library/LaunchAgents/com.breeze.agent-user.plist"`
+	if !strings.Contains(s, plist) {
+		t.Fatalf("postinstall does not name the legacy plist (%s)", plist)
+	}
+	// A top-level, uncommented line: not commented out, not inside a branch.
+	if !regexp.MustCompile(`(?m)^rm -f "\$LEGACY_AGENT_USER_PLIST"$`).MatchString(s) {
+		t.Fatal("postinstall does not delete the legacy com.breeze.agent-user plist at top level")
+	}
+	pre := readRepoFile(t, "macos/preinstall")
+	if !strings.Contains(pre, "com.breeze.agent-user") {
+		t.Fatal("preinstall no longer boots out the legacy agent; keep the bootout with the delete")
 	}
 }
