@@ -7,8 +7,10 @@ import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 // notarize-submit.sh runs `xcrun notarytool submit … --wait`. A stub `xcrun`
-// on PATH stands in for Apple: it prints XCRUN_OUTPUT and exits XCRUN_STATUS
-// for `notarytool submit`, and prints a marker for `notarytool log`.
+// on PATH stands in for Apple: it prints $XCRUN_OUTPUT_FILE and exits XCRUN_STATUS
+// for `notarytool submit`, and prints a marker for `notarytool log`. Output
+// travels through a file, not the env var itself: Linux caps one env string at
+// 128 KB, and the SIGPIPE regression needs output well past the pipe buffer.
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'release', 'notarize-submit.sh');
@@ -25,14 +27,17 @@ if [ "$1 $2" = "notarytool log" ]; then
   echo "STUB-LOG for $3"
   exit 0
 fi
-printf '%s\\n' "$XCRUN_OUTPUT"
+cat "$XCRUN_OUTPUT_FILE"
 exit "$XCRUN_STATUS"
 `,
 );
 chmodSync(join(binDir, 'xcrun'), 0o755);
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
+let outputSeq = 0;
 function run({ output, status }) {
+  const outputFile = join(scratch, `xcrun-output-${outputSeq++}.txt`);
+  writeFileSync(outputFile, `${output}\n`);
   return spawnSync('bash', [SCRIPT, artifact], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
@@ -42,7 +47,7 @@ function run({ output, status }) {
       APPLE_ID: 'dev@example.com',
       APPLE_PASSWORD: 'app-specific-password',
       APPLE_TEAM_ID: 'ABCDE12345',
-      XCRUN_OUTPUT: output,
+      XCRUN_OUTPUT_FILE: outputFile,
       XCRUN_STATUS: String(status),
     },
   });
@@ -89,7 +94,7 @@ test('notarytool exits 0 with status Accepted: succeeds', () => {
 test('a large Accepted output does not trip SIGPIPE under pipefail', () => {
   // awk exits at the first match; when the rest of the output exceeds the pipe
   // buffer, the upstream writer used to die with SIGPIPE (141) under pipefail.
-  const filler = 'x'.repeat(200).concat('\n').repeat(2000);
+  const filler = 'x'.repeat(200).concat('\n').repeat(5000); // ~1 MB, far past the pipe buffer
   const result = run({
     output: `  id: 5555-6666\n  status: Accepted\n${filler}Processing complete`,
     status: 0,
