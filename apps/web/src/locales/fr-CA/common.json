@@ -1447,6 +1447,7 @@
           "created": "Webhook créé",
           "disabled": "Webhook désactivé",
           "enabled": "Webhook activé",
+          "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
           "updated": "Webhook mis à jour"
         },

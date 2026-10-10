@@ -1447,6 +1447,7 @@
           "created": "Web kancası oluşturuldu",
           "disabled": "Web kancası devre dışı bırakıldı",
           "enabled": "Web kancası etkinleştirildi",
+          "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
           "updated": "Web kancası güncellendi"
         },
