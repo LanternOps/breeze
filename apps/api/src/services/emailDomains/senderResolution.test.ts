@@ -58,7 +58,9 @@ const domainsConfig = vi.mocked(getEmailDomainsConfig);
 const lookup = vi.mocked(lookupPartnerLaneIdentity);
 const cap = vi.mocked(tryCountPartnerLaneSend);
 
-const DEFAULT_FROM = 'Breeze <no-reply@2breeze.app>';
+// Bare address, as shipped in .env.example / deploy compose: the case the
+// company name applies to. A named EMAIL_FROM is pinned separately below.
+const DEFAULT_FROM = 'no-reply@2breeze.app';
 const ALL_PURPOSES = Object.keys(MAIL_PURPOSES) as MailPurpose[];
 const PLATFORM_PURPOSES = ALL_PURPOSES.filter((p) => mailPurposePolicy(p).lane === 'platform');
 const PARTNER_PURPOSES = ALL_PURPOSES.filter((p) => mailPurposePolicy(p).lane === 'partner');
@@ -101,6 +103,22 @@ describe('platformFallbackFrom (spec §8.3)', () => {
       expect(platformFallbackFrom(purpose, DEFAULT_FROM, 'Acme MSP'))
         .toBe('"Acme MSP" <no-reply@2breeze.app>');
     }
+  });
+
+  // Spec §8.3: an operator who set their own display name on EMAIL_FROM keeps
+  // it — an upgrade must not relabel their customer mail. Only a bare
+  // EMAIL_FROM address picks up the company name.
+  it('keeps an operator display name on EMAIL_FROM unchanged', () => {
+    for (const named of ['"Acme Support" <support@acme.com>', 'Acme Support <support@acme.com>']) {
+      for (const purpose of ['quote.sent', 'invoice.sent', 'ticket.customer_notification', 'portal.invite'] as const) {
+        expect(platformFallbackFrom(purpose, named, 'Acme MSP')).toBe(named);
+      }
+    }
+  });
+
+  it('gives a bare EMAIL_FROM address (bracketed or not) the company name', () => {
+    expect(platformFallbackFrom('quote.sent', '<support@acme.com>', 'Acme MSP')).toBe('"Acme MSP" <support@acme.com>');
+    expect(platformFallbackFrom('quote.sent', 'support@acme.com', 'Acme MSP')).toBe('"Acme MSP" <support@acme.com>');
   });
 
   it('keeps autopay billing notices on the bare default sender', () => {

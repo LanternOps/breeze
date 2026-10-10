@@ -609,7 +609,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     resetEmailEnv();
     process.env.EMAIL_PROVIDER = 'resend';
     process.env.RESEND_API_KEY = 're_test_123';
-    process.env.EMAIL_FROM = 'Breeze <no-reply@2breeze.app>';
+    process.env.EMAIL_FROM = 'no-reply@2breeze.app';
     resendSendMock.mockResolvedValue({ id: 'resend-1' });
     laneSend.mockResolvedValue({ providerMessageId: 'partner-1' });
     lookup.mockResolvedValue(IDENTITY);
@@ -655,7 +655,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     await (await service()).sendEmail({ ...BASE, purpose: 'auth.password_reset' });
     expect(laneSend).not.toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalled();
-    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('no-reply@2breeze.app');
   });
 
   it.each([
@@ -706,7 +706,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     await (await service()).sendEmail({ ...BASE, purpose: 'report.delivery', partnerId: null });
     expect(laneSend).not.toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalled();
-    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('no-reply@2breeze.app');
   });
 
   it('an over-cap send goes out on the platform lane, exactly once', async () => {

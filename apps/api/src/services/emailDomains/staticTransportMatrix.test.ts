@@ -34,7 +34,9 @@ vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: vi.fn(asy
 vi.mock('../opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true), isOpsAlertingConfigured: () => false }));
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
-const DEFAULT_FROM = '"Acme IT" <helpdesk@acme.test>';
+// A bare address picks up the company name on fallback; a named EMAIL_FROM is
+// kept as-is (pinned below, spec §8.3).
+const DEFAULT_FROM = 'helpdesk@acme.test';
 const PARTNER_FROM = '"Acme Billing" <billing@acme.test>';
 
 const IDENTITY = {
@@ -121,8 +123,18 @@ describe('static + EMAIL_PROVIDER=resend', () => {
     await sendInvoice();
     expect(resendSendMock).toHaveBeenCalledTimes(2);
     const fallback = resendSendMock.mock.calls[1]![0];
+    // Bare EMAIL_FROM address: the fallback shows the company name.
     expect(fallback.from).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(fallback.headers?.['X-Breeze-Outbound']).toBeUndefined();
+  });
+
+  it("keeps the operator's own EMAIL_FROM display name on fallback (spec §8.3)", async () => {
+    process.env.EMAIL_FROM = '"Acme IT" <helpdesk@acme.test>';
+    resendSendMock
+      .mockResolvedValueOnce({ error: { name: 'validation_error', statusCode: 403, message: 'The acme.test domain is not verified.' } })
+      .mockResolvedValueOnce({ error: null });
+    await sendInvoice();
+    expect(resendSendMock.mock.calls[1]![0].from).toBe('"Acme IT" <helpdesk@acme.test>');
   });
 });
 

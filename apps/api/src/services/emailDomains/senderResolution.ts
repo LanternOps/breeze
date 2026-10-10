@@ -72,11 +72,20 @@ export function fromWithDisplayName(defaultFrom: string, displayName: string): s
   return `"${safe}" <${address}>`;
 }
 
+/** True when a From header carries a display name (`Name <addr>`), not a bare address. */
+function hasDisplayName(from: string): boolean {
+  const lt = from.indexOf('<');
+  return lt > 0 && from.slice(0, lt).replace(/"/g, '').trim().length > 0;
+}
+
 /**
- * The From a customer purpose uses when no partner sending identity applies.
- * The display name is the company name. The address stays EMAIL_FROM so
- * SPF/DKIM still match. A blank name keeps the plain platform sender.
- * Staff and security purposes never reach the display-name branch.
+ * The From a customer purpose uses when no partner sending identity applies
+ * (spec §8.3). The display name is the company name and the address stays
+ * EMAIL_FROM, so SPF/DKIM still match. An operator who already set their own
+ * display name on EMAIL_FROM (`"Acme Support" <support@acme.com>`) keeps it
+ * unchanged: an upgrade must not relabel a self-hoster's customer mail. Only a
+ * bare EMAIL_FROM address picks up the company name. A blank name keeps the
+ * plain platform sender. Staff and security purposes never reach this branch.
  */
 export function platformFallbackFrom(
   purpose: MailPurpose,
@@ -85,6 +94,7 @@ export function platformFallbackFrom(
 ): string {
   const policy = mailPurposePolicy(purpose);
   if (policy.lane !== 'partner' || policy.fallbackFrom !== 'partner_display_name') return defaultFrom;
+  if (hasDisplayName(defaultFrom)) return defaultFrom;
   const name = partnerName?.trim();
   if (!name) return defaultFrom;
   return fromWithDisplayName(defaultFrom, name);

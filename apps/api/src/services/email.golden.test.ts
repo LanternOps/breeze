@@ -28,7 +28,8 @@ vi.mock('nodemailer', () => ({
   createTransport: createTransportMock,
 }));
 
-const DEFAULT_FROM = 'Breeze <no-reply@2breeze.app>';
+// Bare address (the shipped default); a named EMAIL_FROM keeps its own name (senderResolution.test.ts).
+const DEFAULT_FROM = 'no-reply@2breeze.app';
 const BRANDED_FROM = '"Acme MSP" <no-reply@2breeze.app>';
 const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
 
