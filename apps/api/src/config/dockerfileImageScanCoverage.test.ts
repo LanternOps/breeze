@@ -320,9 +320,11 @@ function uncoveredPublished(
  * rather than returning an empty list.
  */
 function findDockerfiles(): string[] {
-  const result = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' });
-  if (result.status !== 0) {
-    throw new Error(`git ls-files failed: ${result.stderr}`);
+  // 64 MiB: the full -z listing outgrew spawnSync's 1 MiB default maxBuffer (ENOBUFS).
+  const result = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  // macOS reports status 0 on ENOBUFS (Linux reports null), so check error too.
+  if (result.error || result.status !== 0) {
+    throw new Error(`git ls-files failed: ${result.error?.message ?? result.stderr}`);
   }
   return result.stdout
     .split('\0')
