@@ -22,11 +22,11 @@ Status ∈ `TODO | PASS | PARTIAL | FAIL | BLOCKED | N/A`. Click-paths read from
 | #8248 | Quotes require part number for parts order | web | `/billing/quotes/<id>` (draft) > product line | A line with no part number shows "Add a part number to include this in the parts order." The Send dialog says "N product line has no part number and won't be added to the parts order." and the button reads "Send anyway" instead of "Send proposal". The order breakdown shows "Not in this order (no part number): …". | A draft quote with a product line and a blank SKU/part number. Seed via SQL. | A | TODO |
 | #8249 | Public quote "Sign & pay" goes straight to Stripe checkout | portal | `/quote/<token>` (public accept page, `PublicQuoteView` and `SignaturePanel`) | The button reads "Sign & pay $X" or "Sign & pay deposit $X", with the note "You'll then go to secure payment." After signing: "Signed and accepted. Taking you to secure payment." and a redirect to checkout. | `payOnAccept` needs Stripe and a partner taking online payment (BLOCKED for checkout). Without Stripe the label stays as before. The label branch can be checked with a quote carrying a deposit or due-on-acceptance amount, plus Stripe test keys if available. | A | TODO |
 | #8276 | Block hours drawdown engine | api-only | None. `contractWorker` job plus `moveOrg` and `preAssignment` hooks. | Nothing new in the UI. Ledger or period-close changes show in the DB only. | A contract with a block-hours config. Run the worker (SQL fixture). | E | N/A, no web surface |
-| #8323 | Reliability baseline markers UI (W02) | web | `/devices/<id>` Overview > reliability panel (`DeviceReliabilityPanel`) > "Mark work done" | The dialog "Mark work done on this device" has "What was done" (Reimaged, Remediated or Hardware replaced), "When the work finished" and "Note". Saving shows "Marker saved — scoring restarts from this point". The panel then shows the banner "Scoring since … — provisional, N of 14 days reported", a "Provisional" pill, "Before → since", and "Marker history" with a Clear action ("Clear marker"). The device list reliability badge turns grey with the title "provisional (recent fix or reimage)". The device Activity feed shows `device.reliability.*` rows with a shield icon. | Offline fixture devices are fine. Needs a device with reliability data and `devices:write`. SQL: reliability score history. Remediated requires a note. | B | TODO |
+| #8323 | Reliability baseline markers UI (W02) | web | `/devices/<id>` Overview > reliability panel (`DeviceReliabilityPanel`) > "Mark work done" | The dialog "Mark work done on this device" has "What was done" (Reimaged, Remediated or Hardware replaced), "When the work finished" and "Note". Saving shows "Marker saved — scoring restarts from this point". The panel then shows the banner "Scoring since … — provisional, N of 14 days reported", a "Provisional" pill, "Before → since", and "Marker history" with a Clear action ("Clear marker"). The device list reliability badge turns grey with the title "provisional (recent fix or reimage)". The device Activity feed shows `device.reliability.*` rows with a shield icon. | Offline fixture devices are fine. Needs a device with reliability data and `devices:write`. SQL: reliability score history. Remediated requires a note. | B | PASS |
 | #8319 | Reliability baseline markers API (W01) | api-only | Covered through #8323's UI. Reimage reset comes from heartbeat/enrolment. | Automatic marker shows "Breeze (automatic)" in marker history. | Live agent for the auto-reset path (BLOCKED). The manual path works through the UI. | B | N/A, covered by #8323 |
 | #8348 | Physical placement for devices and discovered assets | api-only | None in the UI (`devices/placement.ts`, `discoveryAssetPlacement.ts`). | Nothing visible. Check through API/curl only. | API token. | E | N/A, no UI yet |
-| #8223 | Site location pins; location-sites read; partner toggle | web | `/settings/ticketing#timeTracking` (Time tracking card, partner scope) | New toggle "Suggest a timer when a technician arrives at a client site". Help text: "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze." Enabling shows "Default arrival radius (m)", range 50–1000 (default 150). An out-of-range value gives "Arrival radius must be between 50 and 1000 meters". If the load fails, Save is disabled and "Could not load the saved settings…" shows. | Partner admin. Pins are written by the mobile app, so no pin UI is testable here. | C | TODO |
-| #8175 | Portal performance metrics visibility | web (setting). The portal has no page in this PR. | `/settings/organization#portal` (`OrgPortalSettingsEditor` > visibility toggles) | New toggle "Performance metrics": "Show read-only CPU, memory, disk and network performance trends for your customer's machines." It defaults to on and persists across a save and reload. API `GET /portal/performance/overview` returns `PORTAL_PERFORMANCE_METRICS_DISABLED` when it is off. | A seeded org. Portal user login for the API path. No portal page consumes it yet, so curl is needed. | C | TODO |
+| #8223 | Site location pins; location-sites read; partner toggle | web | `/settings/ticketing#timeTracking` (Time tracking card, partner scope) | New toggle "Suggest a timer when a technician arrives at a client site". Help text: "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze." Enabling shows "Default arrival radius (m)", range 50–1000 (default 150). An out-of-range value gives "Arrival radius must be between 50 and 1000 meters". If the load fails, Save is disabled and "Could not load the saved settings…" shows. | Partner admin. Pins are written by the mobile app, so no pin UI is testable here. | C | PASS |
+| #8175 | Portal performance metrics visibility | web (setting). The portal has no page in this PR. | `/settings/organization#portal` (`OrgPortalSettingsEditor` > visibility toggles) | New toggle "Performance metrics": "Show read-only CPU, memory, disk and network performance trends for your customer's machines." It defaults to on and persists across a save and reload. API `GET /portal/performance/overview` returns `PORTAL_PERFORMANCE_METRICS_DISABLED` when it is off. | A seeded org. Portal user login for the API path. No portal page consumes it yet, so curl is needed. | C | PASS |
 | #8286 | Client AI templates: dedicated permissions plus MFA on writes | web | `/ai-for-office#templates` | The Templates tab (`ai-office-tab-templates`) shows only with `client_ai_templates:read`. Without it, a `#templates` deep link falls back to `#orgs`. Create, edit and delete need `client_ai_templates:write` plus an MFA-assured session, so a non-MFA session gets an MFA-required refusal. | Roles: a custom role without the grant, a role with read only, and one with the `*:*` wildcard. MFA enrolled for the write path. The AI-for-office feature may be partner-scope and EE-gated. | D | TODO |
 | #8303 | Ticket webhooks wave 4 (`ticket.updated`/`assigned`) | web | `/integrations/webhooks` > create or edit webhook > event list | New events "Ticket Updated" ("Triggered when ticket fields are edited."), "Ticket Assigned" ("Triggered when a ticket is assigned or unassigned."), "Ticket Commented" and "Ticket Status Changed". Delivery log is visible after editing or assigning a ticket. | Outbox worker running. A webhook sink needs outbound HTTP, so use a local echo URL. SQL: a ticket. | D | TODO |
 | #8344 | Customer email replies write a `ticket.commented` outbox row | api-only | None | A webhook for `ticket.commented` fires on an inbound reply. | Inbound email (BLOCKED locally). SQL: insert a comment and check the outbox. | E | N/A, inbound email needed |
@@ -37,7 +37,7 @@ Status ∈ `TODO | PASS | PARTIAL | FAIL | BLOCKED | N/A`. Click-paths read from
 | #8282 | DB pool admission gate, lag-tolerant deadlines, deferred reclaim | api-only | None | None. Behaviour under load only. | Env vars below. Load test only. | E | N/A, infra only |
 | #8259 | EDR W01b: provider framework and Bitdefender GravityZone read path | api-only | `/security/edr` shows no changes in the diff. Routes are `routes/edr/*`. | Nothing new visible. The provider list may include GravityZone through the API. | A GravityZone tenant (BLOCKED). | E | N/A, real EDR needed |
 | #7619 | Cloudflare Gateway DNS: real APIs for event sync and list edits | web (indirect) | `/dns-security` > integration > sync | Sync pulls Gateway events and edits lists. | A Cloudflare account (BLOCKED). | D | N/A, Cloudflare account needed |
-| #8213 | Breeze Assist starts hidden; tray-icon setting removed | web (setting removed), helper | `/configuration-policies/<id>` > Helper tab | The "Show tray icon" checkbox is gone. The context-menu text reads "Configure which items appear in the Breeze Assist right-click context menu." A stored `showTrayIcon` is dropped on the next save. | A policy with a Helper link. The helper app itself needs a live device (BLOCKED). | B | TODO |
+| #8213 | Breeze Assist starts hidden; tray-icon setting removed | web (setting removed), helper | `/configuration-policies/<id>` > Helper tab | The "Show tray icon" checkbox is gone. The context-menu text reads "Configure which items appear in the Breeze Assist right-click context menu." A stored `showTrayIcon` is dropped on the next save. | A policy with a Helper link. The helper app itself needs a live device (BLOCKED). | B | PARTIAL |
 | #8221 | Workload host inventory W01 (API contract) | api-only | `/devices/<id>` effective-config tab only. The `workload_inventory` policy tab is explicitly excluded until W04. | No editor tab. The device effective-config tab may list the feature. | Agent heartbeat for data (BLOCKED). | B | N/A, W04 adds UI |
 | #8218 | Ring app-rules column; dual-read evaluation | api-only | `/settings/update-rings` or `/patches` rings. Not in the diff. | No change. | Update ring fixture. | E | N/A, no UI change |
 | #8212 | BYOK refusal-fallback pricing | api-only | None | AI usage cost uses the key's own offering rate (`/settings/ai-usage`). | BYOK key and a refusal (BLOCKED). | E | N/A, provider needed |
@@ -70,16 +70,309 @@ Status ∈ `TODO | PASS | PARTIAL | FAIL | BLOCKED | N/A`. Click-paths read from
 
 | Phase | Area | Status |
 |---|---|---|
-| 2 | Login + every sidebar destination renders, primary data call status, console errors | TODO |
-| 3 | Everyday workflows (devices, device actions, alerts, scripts, patches, remote, search, filters/tags/custom fields, reports/audit, theme/profile) | TODO |
+| 2 | Login + every sidebar destination renders, primary data call status, console errors | PASS — 134 routes, none broken |
+| 3 | Everyday workflows (devices, device actions, alerts, scripts, patches, remote, search, filters/tags/custom fields, reports/audit, theme/profile) | PARTIAL — audit export fails silently; Cmd+K settings search; tags no feedback |
 | 4 | Setup tasks (org/site, users/roles, enrollment, notification channels, config policies, partner settings, monitoring/discovery, backup/DR, integrations) | TODO |
 
 ## Sweep log (append as you go)
+
+### Groups B + C, Phase 3 workflows, Phase 2 crawl — opus agent, headless Playwright, 2026-10-10
+
+**Fixtures**
+## SQL fixtures applied
+- F1: 30 rows `device_reliability_history` for device e2e-windows.local (e65460f3-…) collected_at now-1..30d, bsod every 6th day, outlook.exe hang every 4th, Spooler failure every 5th (system scope).
+- F2: `device_reliability` row for e65460f3-… score 58, degrading.
+
+## Fixtures left in DB
+- F1/F2: reliability history (30 rows) + device_reliability row for e2e-windows (e65460f3…).
+- F3: active reimaged baseline marker 0e43a733-… + cleared remediated marker d64fdeb2-… on e2e-windows.
+- F4: config policy "QA SweepB Helper Policy" f31a3e98-… (partner-wide) with helper link 2d263aa0-….
+- F5: partner settings timeTracking.locationSuggestions {enabled:true, defaultRadiusM:300}.
+- F6: portal_users portal@breeze.local password_hash = admin's (password BreezeAdmin123!). Portal Performance metrics toggle left OFF (default).
+- Script "QA SweepB Script (edited)" dfac6ca1-… + 1 queued execution on e2e-windows; 2 queued patch-scan commands (both devices).
+- Alerts: be645141 (disk full) acknowledged; 6e5887d5 (high CPU) resolved.
+- Tag `qa-sweepb` on e2e-windows; custom field `qa_sweep_rack` deleted (its device value R12-U3 may linger in devices.custom_fields).
+- Device list column prefs/page size are localStorage-only (sweep browser contexts).
+
+#### [#8323 reliability baseline markers UI] — PASS
+- ✅ `/devices/e65460f3…` Overview reliability panel shows "Mark work done" (`reliability-mark-work-done`). Dialog "Mark work done on this device": labels "What was done" (options Remediated / Reimaged / Hardware replaced), "When the work finished" (datetime min = now-30d, max = now), "Note *".
+- ✅ Remediated with empty note → Save disabled; with note → enabled. Save → POST /reliability/:id/baselines 201 → toast "Marker saved — scoring restarts from this point".
+- ✅ Banner "Scoring since Remediated on Oct 10, 2026, 03:40 PM by Breeze Admin — provisional, 0 of 14 days reported" + note; "Provisional" pill; trend and MTBF show "—"; "Before → since" Score 62→100, Crashes 5→0, Hangs 7→0, Service failures 6→0, "Before based on 31 days of history"; "Marker history (1)" with Active + Clear.
+- ✅ Device list (after enabling the Reliability column via Columns menu, hidden by default): pill "100", grey `bg-muted text-muted-foreground`, title "Reliability 100/100 · provisional (recent fix or reimage)".
+- ✅ Clear → confirm dialog "Clear marker" → DELETE 200 → toast "Marker cleared"; banner + pill gone; score back to 62; history shows "Cleared".
+- ✅ Activity feed rows "Reliability baseline set — e2e-windows.local" / "Reliability baseline cleared — …" with `lucide-shield-check` icon.
+- ✅ Reimaged, backdated 3 days, no note → Save enabled, toast "Marker saved — scoring restarts…", banner "… Reimaged on Oct 7, 2026, 10:00 AM … provisional, 3 of 14 days reported".
+- Fixture left: F3 active reimaged marker 0e43a733-… on e2e-windows (cleared remediated marker d64fdeb2-… also remains in history).
+
+#### [#8213 Helper tab — tray-icon setting removed] — PASS (web half; helper app BLOCKED: needs live device)
+- ✅ Created partner-wide config policy "QA SweepB Helper Policy" (f31a3e98-…) via /configuration-policies/new → Configure new → POST 201, landed on detail.
+- ✅ `#helper` tab: no "tray icon" text anywhere; text "Configure which items appear in the Breeze Assist right-click context menu." present; options Open Breeze Portal / Device Info / Request Support / Custom Portal URL / lifecycle.
+- ✅ Save → POST features 201, toast "Saved"; inlineSettings has no showTrayIcon.
+- ✅ SQL-injected `showTrayIcon:false` into the link (F4), reloaded, Save → PATCH 200 toast "Saved"; DB inline_settings no longer contains showTrayIcon.
+- BLOCKED: Breeze Assist starts-hidden behaviour (needs a live Windows/macOS device with the helper).
+- Fixtures: F4 config policy f31a3e98-… + helper link 2d263aa0-… (left in place).
+
+#### [#8223 time-tracking location suggestion toggle + radius] — PASS
+- ✅ `/settings/ticketing#timeTracking` card: toggle "Suggest a timer when a technician arrives at a client site" + help "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze." Default off, radius hidden.
+- ✅ Enabling shows "Default arrival radius (m)" = 150, min 50 max 1000.
+- ✅ 20 / 5000 / 150.5 + Save → inline "Arrival radius must be between 50 and 1000 meters", zero write requests sent.
+- ✅ 300 + Save → PATCH /orgs/partners/me 200 → toast "Time tracking settings saved"; reload shows toggle on, radius 300.
+- ✅ Forced GET /orgs/partners/me 500 (route intercept) → Save disabled + "Could not load the saved settings. Saving is disabled until they load; refresh to try again."
+- Fixture: partner settings timeTracking.locationSuggestions {enabled:true, defaultRadiusM:300} left (F5).
+
+#### [#8175 portal Performance metrics toggle] — PASS
+- ✅ Real route is `/settings/organizations/<orgId>#portal` (the row's `/settings/organization#portal` 301s to `/organizations#portal`, which opens the org list, not the portal editor — see paper cuts).
+- ✅ Toggle row "Performance metrics | Show read-only CPU, memory, disk and network performance trends for your customer's machines."
+- ℹ️ Initial state OFF, not on as the row says. That is by design: PR body + DB column `portal_branding.enable_performance_metrics DEFAULT false` (fail-closed). The row expectation was wrong; this is not a bug.
+- ✅ On → Save → PATCH portal-settings 200, toast "Portal settings saved", reload = on. Off → Save → toast, reload = off.
+- ✅ Portal API (portal@breeze.local session): ON → GET /portal/performance/overview 200 `{dataStatus:"no_data",series:[]…}`; OFF → 403 `{"error":"Performance metrics are not enabled for this portal","code":"PORTAL_PERFORMANCE_METRICS_DISABLED"}`; /portal/branding shows enablePerformanceMetrics:false.
+- Fixture F6: portal_users portal@breeze.local password_hash copied from admin (password BreezeAdmin123!). Toggle left OFF (default).
+
+#### [P3 devices list: search / quick filter / sort / page size] — PASS
+- ✅ /devices "2 of 2 devices"; search "macos" → 1 of 2 (E2E macOS); "zzzz-nomatch" → 0 of 2 + "No devices found. Try adjusting your search or filters." + Clear.
+- ✅ Quick chip Offline → chip "Status is offline", 2 of 2 (both fixtures render offline), URL hash filtersV2; filter-clear-all → 2 of 2; Online → 0 of 2 with empty state.
+- ✅ Sort by Device toggles asc/desc order. Page size 50 persists across reload (localStorage). No console errors / non-2xx.
+
+#### [P3 device detail tabs] — PASS
+- ✅ /devices/42fc7de0… (e2e-macos): Details, Performance, Alerts, Event Log, Hardware, Software, Patches, Scripts, Overview each set the hash (#alerts, #eventlog…), render content, 0 non-2xx, 0 console errors. More menu lists 20 further tabs (Topology … Backup).
+
+#### [P3 device actions on offline device] — PASS
+- ✅ Run Script, Connect Desktop, Remote Tools, Power: disabled with title "Device is offline".
+- ✅ Wake (enabled) → POST /devices/:id/commands 412 `{"code":"NO_MACS"}` → error toast "e2e-macos.local: No MAC address on file. The agent must check in at least once before Wake-on-LAN is available." Graceful.
+- ⚠️ UI/UX: the only reason given for the disabled buttons is the native `title` tooltip (not visible on touch, not announced reliably).
+
+#### [P3 alerts acknowledge / resolve / search] — PASS
+- ✅ /alerts row "Ack" on "E2E fixture: disk full" → POST /alerts/:id/acknowledge 200 → toast "Alert Acknowledged"; row status Active → Acknowledged, Ack button removed.
+- ✅ Row "Resolve" on "E2E fixture: high CPU" → opens the detail drawer → Resolve → "Resolution note" textarea → "Resolve Alert" → POST /resolve 200 → toast "Alert Resolved"; row now "Resolved", only Dismiss left.
+- ✅ Search "disk" → 1 row.
+- ⚠️ UI/UX: the row-level "Resolve" button does not resolve. It opens the drawer, where you click Resolve again and then "Resolve Alert". That is three clicks for a button labelled as the action.
+- Fixtures changed: alert be645141 (disk full) → acknowledged; 6e5887d5 (high CPU) → resolved.
+
+#### [P3 scripts create / run on offline device] — PASS
+- ✅ /scripts/new: name "QA SweepB Script", Windows, Monaco content → Create Script → POST /scripts 201 → toast "Script created" → back to /scripts list with the row.
+- ✅ Empty content → inline "Script content is required", no request sent.
+- ✅ Row Run → modal; status filter defaults to Online → "No Online devices match. 1 compatible device is hidden by the status filter — show all devices to include it." + "Show all devices"; after that, e2e-windows (offline) is selectable → Execute → "Confirm Execution: Run “QA SweepB Script” on 1 device(s) as System…" → Confirm Execute → toast "Runs when the device is online"; Execution Details "Queued — device offline / Script is queued for delivery to the device". Graceful.
+- Fixtures: script dfac6ca1-… "QA SweepB Script" (partner-wide) + 1 queued execution on e2e-windows.
+
+- ✅ Edit: row 'Edit script' → /scripts/dfac6ca1… loads name; rename → Save → PUT 200 → toast 'Script saved' → list shows 'QA SweepB Script (edited)'.
+#### [P3 patches view + filter + scan] — PASS
+- ✅ /patches Compliance: filter options All (2) / Pending (2) / Critical (1) / Pending Reboot (0) / 3rd-Party Pending (0) / Compliant (0); counts match the rows; an empty filter shows "No devices match your filters."
+- ✅ Patches tab (#patches): 3 synthetic patches; severity Critical → 1 row; search "Safari" → 1 row.
+- ✅ Run Scan → "Confirm patch scan: Scan for patches on 2 devices in Default Organization?" → Scan → POST /patches/scan 200 → toast "Patch scan queued for 2 devices."
+- ⚠️ UI/UX: both devices are offline (`dispatchedCommandIds:[]`, all pending), but the toast does not say the scans wait for the devices to come online. Script run says "Runs when the device is online".
+- ⚠️ UI/UX: the Patches tab has no source filter (Microsoft / Apple / third-party). Third-party only shows up as a compliance-status bucket.
+
+#### [P3 Cmd+K global search] — PARTIAL
+- ✅ Meta+K opens the palette ("Search devices, scripts, alerts, users, settings…"). "e2e-windows" → Devices: E2E Windows Test Device → click goes to /devices/e65460f3…; "QA SweepB" → Scripts: "QA SweepB Script (edited)" → /scripts/dfac6ca1…; no-match query → empty, no errors.
+- ⚠️ UI/UX (med): "enrollment" returns nothing, though the placeholder promises settings. The settings index in `apps/api/src/routes/search.ts` (lines 18-22) holds only 3 hard-coded entries (Profile, Security, User management). The web already has the full `lib/settingsCatalog.ts`, which the palette does not use.
+- ⚠️ UI/UX (low): the "Recent" section still shows the old name "QA SweepB Script" after the rename. The recent-items cache is not refreshed.
+
+#### [P3 custom field create → apply → delete] — PASS
+- ✅ /settings/custom-fields → Add Custom Field → name "QA Sweep Rack" (key auto `qa_sweep_rack`), partner-wide → POST 201 → toast "Custom field created"; row "QA Sweep Rack · All organizations · Text".
+- ✅ /devices/e65460f3…#details shows the field → pencil → "R12-U3" → save → PATCH /devices/:id 200 → toast "Custom field saved", value shown.
+- ✅ Delete → DELETE 200 → toast "Custom field deleted", row gone.
+
+#### [P3 saved views (device list) create → apply → delete] — PASS
+- ✅ Online chip (0 of 2) → Views → "Save current" → name "QA online only" → POST /filters 201 → toast `Saved view "QA online only"`. Clear filters → 2 of 2; pick the view → 0 of 2, chip "Status is online". The view is also listed on /settings/filters.
+- ✅ Delete (trash icon in menu) → DELETE /filters/:id 200 → toast `Deleted view "QA online only"`; entry gone.
+- ⚠️ UI/UX (low): deleting a saved view takes one click, with no confirmation and no undo.
+- ⚠️ UI/UX (low): "Save current" is disabled ("Build a filter first") when only the search box is used, so a search-term view can't be saved.
+
+#### [P3 device tags: add → filter → remove] — PARTIAL
+- ✅ Device actions menu → "Device Settings" → "Add a tag..." "qa-sweepb" → Save Changes → PATCH /devices/:id 200; modal closes. The tag is then visible on the Details tab under "Tags".
+- ✅ /devices quick chip "Untagged" → 1 of 2 (only e2e-macos), so the tag was applied.
+- ✅ Removing the tag in the same modal → PATCH 200.
+- ❌ (low) No success feedback: no toast, and the default Overview tab shows no tags, so from Overview the save looks like the modal just closed. `DeviceSettingsModal.tsx` `handleSave` uses a raw fetchWithAuth with no runAction/successMessage, and the file is listed in `apps/web/src/lib/runActionAllowlist.ts`. This is a known exemption, but it still fails the "2xx with no visible confirmation" rule.
+- ⚠️ UI/UX (low): device search "qa-sweepb" → 0 of 2 while the tag was set. The search box does not match tags.
+- Fixture: tag `qa-sweepb` left on e2e-windows.
+
+#### [P3 audit trail filter / paginate / export] — FAIL (export error path)
+- ✅ /audit shows 25 rows, "Showing 1-25". Next → "Showing 26-50 of 84" with different rows; Previous → back to page 1.
+- ✅ Filters panel (Date Range presets, User, Action Types, Resource Types, Apply Filters / Clear All). Apply with "Last 7 days" → GET /audit-logs?…&from=…&to=… 200.
+- ✅ Export Logs → GET /audit-logs/export 200 → download `audit-logs-2026-10-10.csv` (95 lines, header id,timestamp,actorId,…).
+- ❌ BUG: when the export fails, nothing tells the user. With GET /audit-logs/export forced to 500 `{"error":"boom"}`, clicking Export Logs shows no toast and no inline message, only a console 500. On success there is no toast either, just the browser download. Cause: `apps/web/src/components/audit/AuditLogViewer.tsx` `handleExportLogs` (~line 298) ignores `!response.ok` and has `catch { // Handle error silently }`.
+- ⚠️ UI/UX (med): the export ignores the active filters. The request is `/audit-logs/export?orgId=…` with no from/to/action/resource, so after filtering to "Last 7 days" the CSV still holds every entry.
+- ⚠️ UI/UX (low): page 1 says "Showing 1-25" with no total (skipCount=true); page 2 says "Showing 26-50 of 84".
+
+#### [P3 theme toggle] — PASS
+- ✅ Header "Theme" → Dark sets `<html class="dark">`, body bg rgb(13,16,23). Light and System → class '' and rgb(249,250,251). Dark persists across navigation; the /devices dark screenshot looks clean.
+
+#### [P3 sign out / sign in] — PASS
+- ✅ Account menu (Profile, Settings, API Keys, Service Principals, Trusted devices, Connected apps, Billing, Contact support, Activity Log, Sign out) → Sign out → POST /auth/logout 200 → /login. Going to /devices after that → /login. Signing in again → / "Good afternoon, Breeze".
+
+#### [P3 notification channel create → Test → delete] — PASS
+- ✅ /alerts/delivery → New Channel → "QA Sweep Webhook", type Webhook, URL https://qa-sweep.invalid/hook → POST /alerts/channels 201 → toast `Channel "QA Sweep Webhook" created`.
+- ✅ Test → POST /channels/:id/test 200 with a failed testResult → error toast "getaddrinfo ENOTFOUND qa-sweep.invalid" + inline "Reason: getaddrinfo ENOTFOUND qa-sweep.invalid". The failure is visible, not silent.
+- ✅ Delete → confirm → DELETE 200 → toast `Channel "QA Sweep Webhook" deleted`. A re-run had created a second channel; both were deleted, nothing left over.
+
+<details><summary>Phase 2 nav crawl — 134 routes</summary>
+
+#### [Part 2 nav crawl] — PASS (no route broken)
+
+Pass 1: every sidebar destination (73 links, all groups expanded) + every /settings catalog link (29) → 90 unique routes. Pass 2: 44 pages not in the nav (found by diffing apps/web/src/pages against the rendered nav) + legacy redirects. Paced ≥1.5 s per page (~4 s load + 1.5 s gap).
+
+| route | renders (h1 / main chars) | non-2xx calls | console errors |
+|---|---|---|---|
+| / | Good afternoon, Breeze / 1163 | — | — |
+| /organizations | Organizations / 1143 | — | — |
+| /devices | Devices & Assets / 731 | — | — |
+| /devices/e65460f3-413c-4599-a9a6-90ee71bbc4ff | E2E Windows Test Device / 1513 | — | — |
+| /alerts | Alerts / 698 | — | — |
+| /approvals | Approvals / 731 | — | — |
+| /incidents | Incidents / 326 | — | — |
+| /remote | Remote Access / 377 | — | — |
+| /scripts | Script Library / 394 | — | — |
+| /jobs | Jobs / 455 | — | — |
+| /patches | Patch Management / 762 | — | — |
+| /vulnerabilities | Vulnerabilities / 707 | — | — |
+| /fleet | Fleet Orchestration / 1048 | — | — |
+| /workspace | (no h1) / 334 | — | — |
+| /settings/ai-agents | AI Agents / 1042 | — | — |
+| /ai-agents/runs | Agent runs / 361 | — | — |
+| /ai-agents/impact | AI impact / 1168 | — | — |
+| /ai-agents/fix-memory | Fix memory / 448 | — | — |
+| /ai-agents/fleet-design | Fleet Design / 578 | — | — |
+| /settings/ai-usage | AI Usage / 1102 | — | — |
+| /settings/ai-script-authoring | Script authoring / 2560 | — | — |
+| /settings/tool-sources | Tool Sources / 398 | — | — |
+| /devices/groups | Device Groups / 453 | — | — |
+| /configuration-policies | Configuration Policies / 523 | — | — |
+| /software | Software Library / 329 | — | — |
+| /software-inventory | Software / 430 | — | — |
+| /software-policies | Software / 477 | — | — |
+| /monitoring | Network / 591 | — | — |
+| /discovery | Network Discovery / 490 | — | — |
+| /onedrive | OneDrive / 594 | — | — |
+| /security | Security / 1228 | — | — |
+| /security/scans | (no h1) / 800 | — | — |
+| /dns-security | DNS Security / 477 | — | — |
+| /pam | Privileged Access / 849 | — | — |
+| /security/user-risk | User Risk / 397 | — | — |
+| /sensitive-data | Sensitive Data / 338 | — | — |
+| /peripherals | Peripheral Control / 401 | — | — |
+| /ai-risk | AI Risk Engine / 7656 | — | — |
+| /cis-hardening | (no h1) / 577 | — | — |
+| /audit-baselines | Audit Baselines / 400 | — | — |
+| /backup | (no h1) / 2078 | — | — |
+| /c2c | Cloud-to-Cloud Backup / 566 | — | — |
+| /dr | Disaster Recovery / 651 | — | — |
+| /tickets | Tickets / 616 | — | — |
+| /timesheet | Timesheet / 441 | — | — |
+| /billing/quotes | Quotes / 486 | — | — |
+| /billing/autopay | Automatic payment / 337 | — | — |
+| /billing/invoices | Invoices / 459 | — | — |
+| /contracts | Contracts / 437 | — | — |
+| /agreements/templates | (no h1) / 512 | — | — |
+| /settings/catalog | Product Catalog / 1136 | — | — |
+| /settings/deliverable-templates | Deliverable templates / 397 | — | — |
+| /reports | Reports / 1465 | — | — |
+| /analytics | Analytics / 769 | — | — |
+| /devices/posture | Fleet Posture Report / 1080 | — | — |
+| /devices/time | Time synchronization / 1443 | — | — |
+| /audit | Audit Trail / 5802 | — | — |
+| /logs | Event Logs / 451 | — | — |
+| /settings/partner | Partner Settings / 1664 | — | — |
+| /settings/billing | Billing settings / 1207 | — | — |
+| /settings/ticketing | Ticketing Settings / 676 | — | — |
+| /settings/users | Users / 654 | — | — |
+| /integrations | Integrations / 599 | — | — |
+| /settings | Settings / 1495 | — | — |
+| /admin/account-deletion-requests | Account deletion requests / 405 | — | — |
+| /admin/quarantined | Quarantined Devices / 438 | — | — |
+| /admin/third-party-catalog | Third-Party Package Catalog / 1395 | — | — |
+| /admin/llm-provider-catalog | LLM Provider Catalog / 301 | — | — |
+| /admin/ai-models | AI models / 2417 | — | — |
+| /admin/connected-apps | Connected apps (org-wide) / 425 | — | — |
+| /admin/ai-kill-switch | AI Kill Switch / 610 | — | — |
+| /admin/system | System / 14714 | — | — |
+| /admin/monitor-conversion | Legacy alert conversion / 334 | — | — |
+| /settings/partner#security | Partner Settings / 1568 | — | — |
+| /settings/roles | Roles / 1425 | — | — |
+| /settings/sso | Single Sign-On / 423 | — | — |
+| /settings/access-reviews | Access Reviews / 659 | — | — |
+| /settings/profile | Profile settings / 2961 | — | — |
+| /settings/api-keys | API Keys / 386 | — | — |
+| /settings/partner-service-principals | Service principals / 310 | — | — |
+| /settings/billing#payments | Billing settings / 2657 | — | — |
+| /settings/ticketing#templates | Ticketing Settings / 650 | — | — |
+| /settings/enrollment-keys | Enrollment Keys / 404 | — | — |
+| /settings/custom-fields | Custom Fields / 437 | — | — |
+| /settings/variables | Variables / 397 | — | — |
+| /settings/filters | Saved Filters / 423 | — | — |
+| /settings/alert-templates → /alerts/monitors | Monitors / 1547 | — | — |
+| /settings/partner#ai-provider | Partner Settings / 7087 | — | — |
+| /settings/connected-apps | Connected apps / 795 | — | — |
+| /settings/office-addin-bindings | Outlook add-in bindings / 390 | — | — |
+| /alerts/correlations | Alert Correlations / 467 | GET /api/v1/alerts/correlations 401 {"error":"Missing or invalid authorization header","message":"Missing or invalid authorization header"}; POST /api/v1/auth/refresh 401  | 3 |
+| /alerts/delivery | Delivery / 1529 | — | — |
+| /alerts/monitors | Monitors / 1547 | — | — |
+| /alerts/monitors/new | New monitor / 1554 | — | — |
+| /devices/compare | Device Comparison / 1822 | — | — |
+| /devices/unassigned → /devices | Devices & Assets / 696 | — | — |
+| /integrations/psa | PSA Integrations / 575 | — | — |
+| /integrations/webhooks | Webhooks / 396 | — | — |
+| /partner | Partner Portal / 1077 | — | — |
+| /policies | Policies / 475 | — | — |
+| /policies/compliance | Compliance Dashboard / 613 | — | — |
+| /policies/new | Create Policy / 1116 | — | — |
+| /remote/files | Start File Transfer / 269 | — | — |
+| /remote/quick-support | Quick Support / 309 | — | — |
+| /remote/sessions | Session History / 538 | — | — |
+| /remote/terminal | Start Terminal Session / 266 | — | — |
+| /reports/builder | Report Builder / 2348 | — | — |
+| /reports/new | Create Report / 2585 | — | — |
+| /reports/templates | Report Templates / 5513 | — | — |
+| /security/admin-audit | (no h1) / 563 | — | — |
+| /security/antivirus | (no h1) / 574 | — | — |
+| /security/edr | Endpoint Detection & Response / 548 | — | — |
+| /security/encryption | (no h1) / 636 | — | — |
+| /security/firewall | (no h1) / 472 | — | — |
+| /security/password-policy | (no h1) / 703 | — | — |
+| /security/recommendations | (no h1) / 547 | — | — |
+| /security/score | (no h1) / 635 | — | — |
+| /security/trends | (no h1) / 441 | — | — |
+| /security/vulnerabilities | (no h1) / 517 | — | — |
+| /configuration-policies/defaults | (no h1) / 3076 | — | — |
+| /admin/trust-queue | Partner trust queue / 291 | — | — |
+| /admin/sending-domains | Partner sending domains / 213 | — | — |
+| /account/connected-apps | (no h1) / 404 | — | — |
+| /account/devices | (no h1) / 368 | — | — |
+| /agreements/signed | (no h1) / 585 | — | — |
+| /ai-for-office | AI for Office / 455 | GET /api/v1/client-ai/admin/orgs 404 {"error":"Breeze AI for Office is not enabled"} | 1 |
+| /jobs/new | Create Automation / 1281 | — | — |
+| /tickets/new | Create ticket / 381 | — | — |
+| /setup → / | Good afternoon, Breeze / 1029 | — | — |
+| /settings/system/deprecations → /admin/system | System / 3930 | — | — |
+| /alerts/channels → /alerts/delivery | Delivery / 1529 | — | — |
+| /settings/webhooks → /integrations#webhooks | Integrations / 599 | — | — |
+| /snmp → /monitoring | Network / 591 | — | — |
+| /remote/tools → /remote | Remote Access / 377 | — | — |
+
+Crawl notes:
+- 134 routes visited, 0 error boundaries, 0 Vite overlays, 0 blank mains.
+- `/alerts/correlations` got 401 (alerts/correlations + auth/refresh) in pass 2 only. It was the first page after a fresh login in that run, and a re-run is clean (200, 0 errors). Login-timing artefact, not a defect.
+- `/ai-for-office`: GET /client-ai/admin/orgs 404 `{"error":"Breeze AI for Office is not enabled"}`. The page handles it: "Breeze AI for Office is not enabled on this instance. Set CLIENT_AI_ENTRA_CLIENT_ID…". Expected noise (feature unconfigured), but it logs a console 404 every time the page is visited.
+- `/devices` "ERRTXT 500" is the "500" page-size option, a false positive.
+- No h1 on: /workspace, /agreements/templates, /security/scans, /cis-hardening, /backup, every /security/* sub-page (admin-audit, antivirus, encryption, firewall, password-policy, recommendations, score, trends, vulnerabilities), /configuration-policies/defaults, /account/connected-apps, /account/devices, /agreements/signed. All render content (a11y paper cut: no page heading).
+- Settings catalog card "Alert templates" → /settings/alert-templates 301 → /alerts/monitors (h1 "Monitors"). The card links to a legacy URL and the label doesn't match the destination.
+- `/settings/system/deprecations` redirects to `/admin/system?tab=deprecations`, which uses a query param for tab state (repo convention is the hash).
+- Not in the nav, but reachable from in-page links/tabs (source refs > 0): /alerts/correlations, /alerts/delivery, /alerts/monitors(/new), /devices/compare, /integrations/psa, /partner, /policies(/compliance,/new), /remote/files|quick-support|sessions|terminal, /reports/builder|new|templates, /security/* sub-pages, /configuration-policies/defaults, /account/*, /agreements/signed, /ai-for-office, /jobs/new, /tickets/new.
+- Not reachable from any nav or in-app link (0 references in apps/web/src): `/admin/trust-queue` and `/admin/sending-domains` (deliberately unlisted per the SendingDomainsAdmin.tsx comment, "reached by URL"; but the memory notes trust-queue review requests have been missed, so consider a sidebar entry under Admin), `/integrations/webhooks` (renders "Webhooks"; Integrations links to `#webhooks` instead), `/account/test-approval`, `/quick` (public quick-support landing, by design).
+- `/devices/unassigned` → client redirect to /devices. `/setup` → / (setup already complete).
+
+</details>
+
 
 ## UI/UX paper cuts
 
 | # | Where | Observation | Severity | Disposition |
 |---|---|---|---|---|
+| B1 | `/audit` → Export Logs | Export failure is silent (500 → no toast; `handleExportLogs` swallows non-OK + `catch {}`); export ignores active filters (request carries only orgId) | med | fix pending |
+| B2 | Cmd+K | Settings index is 3 hard-coded entries (`routes/search.ts:18-22`) though the placeholder promises settings | med | issue pending |
+| B3 | Device Settings → tags | PATCH 200, modal closes, no toast; tags not shown on Overview (`DeviceSettingsModal.tsx`, on runActionAllowlist) | low | fix pending |
+| B4 | nav | `/admin/trust-queue`, `/admin/sending-domains`, `/integrations/webhooks` reachable only by URL; "Alert templates" card points at a legacy redirect | low | noted |
+| B5 | `/security/*`, `/backup` + ~13 more | no `<h1>` | low | noted |
+| B6 | misc | patch-scan toast silent about offline devices; no patch-source filter; alert "Resolve" opens a drawer (+2 clicks); offline reason only in a tooltip; device search doesn't match tags; saved-view delete has no confirm; Cmd+K Recent shows a renamed script's old name; audit pager total missing on page 1; deprecations page uses a query-param tab | low | noted |
 
 ## Fixes applied
 
