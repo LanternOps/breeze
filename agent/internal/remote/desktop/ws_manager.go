@@ -98,7 +98,7 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 
 	// Create input handler
 	if m.newCapturer == nil {
-		inputHandler = NewInputHandler("user_session")
+		inputHandler = NewSafeInput(NewInputHandler("user_session"), id)
 	}
 
 	// Create and start session
