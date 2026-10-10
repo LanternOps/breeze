@@ -2647,6 +2647,7 @@
       "code": "Code d'authentification",
       "passkey": "Vous confirmerez avec votre clé d'accès.",
       "noFactor": "Ajoutez d'abord une application d'authentification ou une clé d'accès à votre compte.",
+      "noFactorSmsOnly": "Les codes par texto ne peuvent pas confirmer cette action. Ajoutez d'abord une application d'authentification ou une clé d'accès à votre compte.",
       "enrollLink": "Configurer un deuxième facteur",
       "confirm": "Confirmer",
       "failed": "Échec de la vérification. Réessayez.",

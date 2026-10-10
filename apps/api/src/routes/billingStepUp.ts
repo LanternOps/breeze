@@ -45,7 +45,11 @@ export async function requireBillingStepUp(c: Context, input: {
   if (!input.grant) return required();
   const epochs = await getUserEpochs(auth.user.id);
   const sid = auth.token?.sid;
-  if (!epochs || !sid) return c.json({ error: 'Service temporarily unavailable' }, 503);
+  if (!epochs || !sid) {
+    // Nothing was attempted: coded so a client never reads it as an unknown charge result.
+    console.error(`[billingStepUp] ${input.operation}: ${!sid ? 'session has no sid' : 'user epochs unavailable'} for user ${auth.user.id}`);
+    return c.json({ error: 'Second-factor verification is temporarily unavailable', code: 'STEP_UP_UNAVAILABLE' }, 503);
+  }
   const consumed = await consumeStepUpGrant(input.grant, {
     userId: auth.user.id,
     operation: input.operation,

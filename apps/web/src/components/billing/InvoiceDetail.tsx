@@ -1,4 +1,4 @@
-import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey } from './autopayReason';
+import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey, STEP_UP_UNAVAILABLE } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -120,7 +120,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           const key = chargeNowFailureKey(body);
           return key ? t(/* i18n-dynamic */ key) : undefined;
         },
-        suppressErrorToast: (status, code) => status >= 500 || suppressBillingStepUpToast(status, code),
+        // A 5xx may follow money moving and is reported as an unknown result below, except
+        // when the second-factor check itself could not run (nothing was attempted).
+        suppressErrorToast: (status, code) => (status >= 500 && code !== STEP_UP_UNAVAILABLE)
+          || suppressBillingStepUpToast(status, code),
         onUnauthorized: UNAUTHORIZED }));
       // Closed at the confirmation: nothing was charged and nothing needs reloading.
       if (!outcome.confirmed) return;

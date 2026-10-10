@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { ActionError } from '../../lib/runAction';
 import { useBillingStepUp, suppressBillingStepUpToast, type BillingStepUpOutcome, type BillingStepUpSubmit } from './useBillingStepUp';
 
-const h = vi.hoisted(() => ({ fetch: vi.fn(), mint: vi.fn() }));
+const h = vi.hoisted(() => ({ fetch: vi.fn(), mint: vi.fn(), toast: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: h.toast }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: h.fetch }));
 vi.mock('../../lib/mfaStepUp', () => ({ mintStepUpGrant: h.mint }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -98,11 +99,51 @@ it('rejects with a non-step-up failure of the resubmit', async () => {
   await waitFor(() => expect(screen.queryByTestId('billing-stepup')).toBeNull());
 });
 
-it('passes through failures that are not a billing step-up', async () => {
+it('passes through failures that are not a step-up, without a toast of its own', async () => {
+  const other = new ActionError('Conflict', 409, 'notice_lead');
+  render(<Harness submit={async () => { throw other; }} />);
+  fireEvent.click(screen.getByTestId('go'));
+  await expect(outcome).rejects.toBe(other);
+  expect(h.toast).not.toHaveBeenCalled();
+});
+
+it('tells the user when the server asks for a step-up this prompt cannot handle', async () => {
   const other = new ActionError('Step-up required', 403, 'STEP_UP_REQUIRED', { stepUp: { operation: 'device_move_org', resource: {} } });
   render(<Harness submit={async () => { throw other; }} />);
   fireEvent.click(screen.getByTestId('go'));
   await expect(outcome).rejects.toBe(other);
+  expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Unable to start verification' }));
+});
+
+it('tells the user when the verification cannot be started, and does not leave a stale error behind', async () => {
+  h.fetch.mockResolvedValue(new Response('nope', { status: 500 }));
+  render(<Harness submit={async () => { throw stepUpError(); }} />);
+  fireEvent.click(screen.getByTestId('go'));
+  await expect(outcome).resolves.toEqual({ confirmed: false });
+  expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Unable to start verification' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('names text-message codes when they are the account\'s only factor', async () => {
+  h.fetch.mockImplementation(async (url: string) => url === '/users/me'
+    ? Response.json({ mfaEnabled: true, mfaMethod: 'sms' }) : Response.json([]));
+  render(<Harness submit={async () => { throw stepUpError(); }} />);
+  fireEvent.click(screen.getByTestId('go'));
+  expect(await screen.findByTestId('billing-stepup')).toHaveTextContent('Text-message codes cannot confirm this action');
+});
+
+it('keeps the caller waiting for a resubmit that is still in flight when the prompt unmounts', async () => {
+  let finish!: (value: string) => void;
+  const submit = vi.fn((grant?: string) => grant ? new Promise<string>(resolve => { finish = resolve; }) : Promise.reject(stepUpError()));
+  const view = render(<Harness submit={submit} />);
+  fireEvent.click(screen.getByTestId('go'));
+  fireEvent.change(await screen.findByTestId('billing-stepup-code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByTestId('billing-stepup-confirm'));
+  await waitFor(() => expect(submit).toHaveBeenCalledWith('grant-1'));
+  act(() => view.unmount());
+  finish('charged');
+  // The charge the user confirmed is reported, not read as a cancel.
+  await expect(outcome).resolves.toEqual({ confirmed: true, value: 'charged' });
 });
 
 it('asks an account without an authenticator app or passkey to set one up', async () => {

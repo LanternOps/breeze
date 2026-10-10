@@ -113,7 +113,13 @@ describe('requireBillingStepUp', () => {
   it('answers 503 when the session epochs cannot be read', async () => {
     const grant = await mint(invoiceA);
     h.epochs = null;
-    expect((await post(appFor(invoiceA), { stepUpGrant: grant })).status).toBe(503);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await post(appFor(invoiceA), { stepUpGrant: grant });
+    expect(res.status).toBe(503);
+    // Coded, so a client can tell nothing was attempted; logged, so the cause is visible.
+    expect(await res.json()).toEqual({ error: 'Second-factor verification is temporarily unavailable', code: 'STEP_UP_UNAVAILABLE' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('autopay_charge_now'));
+    error.mockRestore();
   });
 
   it('needs no step-up on a deployment with two-factor authentication disabled', async () => {

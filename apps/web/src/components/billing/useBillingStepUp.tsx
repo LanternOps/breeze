@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ActionError } from '../../lib/runAction';
 import { mintStepUpGrant } from '../../lib/mfaStepUp';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 
 /** Billing actions the API confirms with a second factor (apps/api/src/routes/billingStepUp.ts). */
@@ -18,6 +19,10 @@ type Details = { operation: BillingStepUpOperation; resource: unknown };
 type Pending = {
   details: Details;
   tier: ReauthTier;
+  /** With tier `password`: the account's only factor is text-message codes, which cannot confirm here. */
+  smsOnly: boolean;
+  /** A resubmit with a minted grant is in flight: only its own result may settle the caller. */
+  submitting: boolean;
   submit: BillingStepUpSubmit<unknown>;
   resolve: (outcome: BillingStepUpOutcome<unknown>) => void;
   reject: (cause: unknown) => void;
@@ -44,14 +49,17 @@ export function suppressBillingStepUpToast(status: number, code: string | undefi
   return status === 403 && code === STEP_UP_REQUIRED;
 }
 
-async function discoverTier(): Promise<ReauthTier> {
+async function discoverTier(): Promise<{ tier: ReauthTier; smsOnly: boolean }> {
   const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
   if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = await user.json() as { mfaMethod?: string | null } | null;
+  const me = await user.json() as { mfaEnabled?: boolean | null; mfaMethod?: string | null } | null;
   const keys = await passkeys.json() as unknown;
   const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
   if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
-  return pickReauthTier(list.length, me.mfaMethod ?? null);
+  return {
+    tier: pickReauthTier(list.length, me.mfaMethod ?? null),
+    smsOnly: list.length === 0 && me.mfaEnabled === true && me.mfaMethod === 'sms',
+  };
 }
 
 /**
@@ -87,8 +95,10 @@ export function useBillingStepUp(): {
     live.current = true;
     return () => {
       live.current = false;
-      // An unmounted prompt can never be confirmed: settle the caller's await.
-      current.current?.resolve({ confirmed: false });
+      // An unmounted prompt can never be confirmed: settle the caller's await,
+      // unless a confirmed resubmit is in flight (it settles the caller itself,
+      // so a charge that may have happened is never read as a cancel).
+      if (current.current && !current.current.submitting) current.current.resolve({ confirmed: false });
       current.current = null;
     };
   }, []);
@@ -96,23 +106,32 @@ export function useBillingStepUp(): {
   const show = (next: Pending | null) => { current.current = next; setPending(next); };
 
   const run = useCallback(async <T,>(submit: BillingStepUpSubmit<T>): Promise<BillingStepUpOutcome<T>> => {
+    setError(undefined);
     try {
       return { confirmed: true, value: await submit() };
     } catch (cause) {
       const details = stepUpDetails(cause);
-      if (!details) throw cause;
-      let tier: ReauthTier;
+      if (!details) {
+        // runAction does not toast a step-up answer (suppressBillingStepUpToast);
+        // one for an operation this prompt does not know must not end in silence.
+        if (cause instanceof ActionError && suppressBillingStepUpToast(cause.status, cause.code)) {
+          showToast({ type: 'error', message: t('autopay.stepUp.unavailable') });
+        }
+        throw cause;
+      }
+      let factors: { tier: ReauthTier; smsOnly: boolean };
       try {
-        tier = await discoverTier();
+        factors = await discoverTier();
       } catch {
-        if (live.current) setError(t('autopay.stepUp.unavailable'));
+        // A toast, not an inline error: the caller may close the view that renders the prompt.
+        showToast({ type: 'error', message: t('autopay.stepUp.unavailable') });
         return { confirmed: false };
       }
       if (!live.current) return { confirmed: false };
       return new Promise<BillingStepUpOutcome<T>>((resolve, reject) => {
         setCode('');
         setError(undefined);
-        show({ details, tier, submit: submit as BillingStepUpSubmit<unknown>,
+        show({ details, ...factors, submitting: false, submit: submit as BillingStepUpSubmit<unknown>,
           resolve: resolve as Pending['resolve'], reject });
       });
     }
@@ -136,14 +155,16 @@ export function useBillingStepUp(): {
         return;
       }
       if (!live.current) return;
+      active.submitting = true;
       try {
         const value = await active.submit(grant);
         if (current.current === active) show(null);
         active.resolve({ confirmed: true, value });
       } catch (cause) {
-        if (stepUpDetails(cause)) {
+        active.submitting = false;
+        if (stepUpDetails(cause) && live.current) {
           // The grant was refused (expired, or the values changed): ask again.
-          if (live.current) { setCode(''); setError(t('autopay.stepUp.failed')); }
+          setCode(''); setError(t('autopay.stepUp.failed'));
           return;
         }
         if (current.current === active) show(null);
@@ -164,7 +185,7 @@ export function useBillingStepUp(): {
   if (!pending) {
     return { run, pending: false, prompt: error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null };
   }
-  const { tier, details } = pending;
+  const { tier, details, smsOnly } = pending;
   const prompt = (
     <div data-testid="billing-stepup" role="group" aria-labelledby="billing-stepup-heading"
       className="space-y-2 rounded-md border border-primary/40 bg-card p-3">
@@ -172,7 +193,7 @@ export function useBillingStepUp(): {
       <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `autopay.stepUp.intro.${details.operation}`)}</p>
       {tier === 'password' ? (
         <p role="alert" className="text-sm text-destructive">
-          {t('autopay.stepUp.noFactor')}{' '}
+          {smsOnly ? t('autopay.stepUp.noFactorSmsOnly') : t('autopay.stepUp.noFactor')}{' '}
           <a data-testid="billing-stepup-enroll" href={ENROLL_HREF} target="_blank" rel="noopener noreferrer"
             className="font-medium underline underline-offset-4">{t('autopay.stepUp.enrollLink')}</a>
         </p>

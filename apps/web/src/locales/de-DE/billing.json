@@ -2647,6 +2647,7 @@
       "code": "Authenticator-Code",
       "passkey": "Sie bestätigen mit Ihrem Passkey.",
       "noFactor": "Fügen Sie Ihrem Konto zuerst eine Authenticator-App oder einen Passkey hinzu.",
+      "noFactorSmsOnly": "SMS-Codes können diese Aktion nicht bestätigen. Fügen Sie Ihrem Konto zuerst eine Authenticator-App oder einen Passkey hinzu.",
       "enrollLink": "Zweiten Faktor einrichten",
       "confirm": "Bestätigen",
       "failed": "Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",

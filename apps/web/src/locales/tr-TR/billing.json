@@ -2647,6 +2647,7 @@
       "code": "Kimlik doğrulayıcı kodu",
       "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
       "noFactor": "Önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+      "noFactorSmsOnly": "Kısa mesaj kodları bu işlemi onaylayamaz. Önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
       "enrollLink": "İkinci faktörü ayarla",
       "confirm": "Onayla",
       "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
