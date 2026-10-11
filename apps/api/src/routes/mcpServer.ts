@@ -55,6 +55,7 @@ import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
+import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
@@ -1320,6 +1321,12 @@ async function handleToolsList(
   const canRunTier3Unattended = (toolName: string) => unattendedPrincipal
     && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
     && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(toolName));
+  // #8340: some tool actions are refused in their handler unless the session
+  // carries the live MFA claim (services/aiToolMfaGate.ts). API-key and OAuth
+  // callers carry token:{}, so with ENABLE_2FA on they can never clear it —
+  // advertise those actions as unavailable, independent of the approval gate
+  // (a designated unattended principal still has no MFA claim).
+  const callerFailsMfaGate = mfaGateRefusesCaller(auth);
 
   // Filter tools based on API key scopes.
   const scopedTools = allTools.filter((tool) => {
@@ -1328,6 +1335,8 @@ async function handleToolsList(
     // it would be denied by the tools/call gate below, so listing it is
     // exactly the advertised-but-dead pattern this payoff eliminates.
     if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name))) return false;
+    // Same invariant for the MFA gate: every call would be refused by the handler.
+    if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
 
     const registryTier = getToolTier(tool.name);
     if (registryTier === undefined) return false;
@@ -1355,9 +1364,18 @@ async function handleToolsList(
     // listed — its ungated actions (typically reads/drafts) still work —
     // but its MCP-visible description gains a note about which don't.
     const gatedActions = gatedActionsForTool(tool.name, tool.input_schema, canRunTier3Unattended(tool.name));
-    const description = gatedActions.length > 0
-      ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
-      : tool.description ?? '';
+    // An action behind both gates is reported once, under approval.
+    const mfaGatedActions = callerFailsMfaGate
+      ? mfaGatedActionsForTool(tool.name, extractActionEnum(tool.input_schema)).filter((a) => !gatedActions.includes(a))
+      : [];
+    const quote = (actions: string[]) => actions.map((a) => `"${a}"`).join(', ');
+    let description = tool.description ?? '';
+    if (gatedActions.length > 0) {
+      description += ` (Actions ${quote(gatedActions)} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`;
+    }
+    if (mfaGatedActions.length > 0) {
+      description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
+    }
     const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
     return {
       ...presentation,
@@ -1449,8 +1467,8 @@ async function handleToolsList(
  * #6408: core AI tools overwhelmingly signal failure by RETURNING
  * `JSON.stringify({ error: '…' })` rather than throwing, so the thrown-error
  * path below never sees them. Returns the error message when `safeText` is a
- * PURE returned error — a top-level string `error` and no other key except the
- * `_chat` compaction marker — and undefined otherwise.
+ * PURE returned error — a top-level string `error` and no other key except a
+ * string `code` and the `_chat` compaction marker — and undefined otherwise.
  *
  * The predicate is deliberately narrow: plenty of tools return an `error`
  * field ALONGSIDE real data (partial results, `error: null`), and those are
@@ -1467,7 +1485,10 @@ function pureReturnedToolError(safeText: string): string | undefined {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
   const object = parsed as Record<string, unknown>;
   if (typeof object.error !== 'string') return undefined;
-  if (!Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+  // A string `code` is part of the refusal (e.g. MFA_REQUIRED, #8340), not
+  // data returned alongside an error.
+  if (object.code !== undefined && typeof object.code !== 'string') return undefined;
+  if (!Object.keys(object).every((key) => key === 'error' || key === 'code' || key === '_chat')) return undefined;
   return object.error;
 }
 

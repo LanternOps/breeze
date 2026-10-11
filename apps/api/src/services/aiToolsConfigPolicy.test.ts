@@ -142,6 +142,7 @@ import {
 } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
+import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction } from './aiToolMfaGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -217,6 +218,12 @@ function mockSelectWhereRows(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce(chain);
 }
 
+// #8340: a coded, actionable refusal — not a bare 'MFA required' string.
+const MFA_REFUSAL = {
+  error: expect.stringMatching(/^MFA required: .*API keys and MCP connections cannot satisfy it.*Breeze web app/),
+  code: 'MFA_REQUIRED',
+};
+
 describe('configuration policy AI/MCP mutation MFA boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -245,7 +252,7 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   ])('denies an unassured user in %s before any query or mutation', async (toolName, input) => {
     const output = await tools().get(toolName)!.handler(input, unassuredUser());
 
-    expect(JSON.parse(output)).toEqual({ error: 'MFA required' });
+    expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
     expect(db.select).not.toHaveBeenCalled();
     expect(assignPolicyMock).not.toHaveBeenCalled();
     expect(unassignPolicyMock).not.toHaveBeenCalled();
@@ -261,7 +268,7 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
         makeMachineAuth(kind),
       );
 
-      expect(JSON.parse(output)).toEqual({ error: 'MFA required' });
+      expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
       expect(db.select).not.toHaveBeenCalled();
       expect(createConfigPolicyMock).not.toHaveBeenCalled();
     },
@@ -283,6 +290,45 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
 
     expect(JSON.parse(output).success).toBe(true);
     expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
+  });
+
+  // #8340: MFA_GATED_TOOL_ACTIONS is the list the MCP catalog advertises from.
+  // These two pin that it is also exactly what the handlers enforce, so the
+  // catalog cannot drift from the gate again.
+  it('every MFA_GATED_TOOL_ACTIONS entry names a real tool and real actions', () => {
+    const registered = tools();
+    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS)) {
+      const tool = registered.get(toolName);
+      expect(tool, toolName).toBeDefined();
+      if (gated === '*') continue;
+      const actionEnum: string[] = tool.definition.input_schema.properties.action.enum;
+      for (const action of gated) expect(actionEnum, `${toolName}:${action}`).toContain(action);
+    }
+  });
+
+  it.each(
+    Object.keys(MFA_GATED_TOOL_ACTIONS).flatMap((toolName) => {
+      const definition = tools().get(toolName)!.definition;
+      const actionEnum: string[] | undefined = definition.input_schema.properties.action?.enum;
+      return (actionEnum ?? [undefined]).map((action) => [toolName, action] as const);
+    }),
+  )('%s action=%s: the handler refuses an unassured user exactly when the shared table gates it', async (toolName, action) => {
+    vi.mocked(db.select).mockImplementation(() => { throw new Error('reached a query'); });
+    const input: Record<string, unknown> = {
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'monitors', policyId: POLICY_ID,
+      assignmentId: 'assignment-1', level: 'device', targetId: DEVICE_ID, name: 'x',
+    };
+    let output: string;
+    try {
+      output = await tools().get(toolName)!.handler(input, unassuredUser());
+    } catch {
+      output = JSON.stringify({ error: 'reached a query' });
+    }
+    if (isMfaGatedToolAction(toolName, action)) {
+      expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
+    } else {
+      expect(JSON.parse(output).code).not.toBe('MFA_REQUIRED');
+    }
   });
 
   it('keeps read-only feature-link listing available without MFA', async () => {
@@ -1147,7 +1193,7 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
       action: 'add', configPolicyId: POLICY_ID, featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
     expect(getConfigPolicy).not.toHaveBeenCalled();
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
@@ -1160,7 +1206,7 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
       featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
     }, makeMachineAuth('oauth_grant'));
 
-    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
     expect(getConfigPolicy).not.toHaveBeenCalled();
     expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
   });
@@ -1248,7 +1294,7 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
       inlineSettings: { checkIntervalSeconds: 60, items: [] },
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
     expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
@@ -1258,7 +1304,7 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
       action: 'remove', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(JSON.parse(output)).toEqual(MFA_REFUSAL);
     expect(removeFeatureLink).not.toHaveBeenCalled();
   });
 
