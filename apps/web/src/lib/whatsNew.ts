@@ -20,9 +20,9 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
     version: '0.122.0',
     date: '2026-10-11',
-    title: 'Richer remote clipboard, AI that researches fixes, and a clearer network map',
+    title: 'Larger remote clipboard transfers, AI that researches fixes, and a clearer network map',
     highlights: [
-      'With this release’s agent, the remote desktop clipboard carries images and large text, and a status chip shows which directions policy allows. Each session writes one audit entry for its clipboard activity.',
+      'With this release’s agent, the remote desktop clipboard handles large text, and a status chip shows which directions policy allows. Each session writes one audit entry for its clipboard activity.',
       'AI suggested fixes can research a problem, propose fixes for you to review and remember the fixes that worked, so later triage checks them first.',
       'The AI assistant can ask to read files in chosen folders on one device, read-only and only after an administrator approves. Passwords, keys and other credentials are never shared.',
       'The network topology page opens on summary cards and role sections, and each device page shows who is already connected to it remotely.',
