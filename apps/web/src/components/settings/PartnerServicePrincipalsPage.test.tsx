@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), runAction: vi.fn(), handleActionError: vi.fn() }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: mocks.fetchWithAuth }));
@@ -206,5 +206,74 @@ describe('PartnerServicePrincipalsPage', () => {
     });
     expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
     expect(screen.getByTestId('save-principal')).not.toBeDisabled();
+  });
+
+  describe('editing a principal with an expiry', () => {
+    const originalTz = process.env.TZ;
+    const EXPIRES_AT = '2026-12-01T15:30:45.123Z';
+
+    beforeEach(() => {
+      // A UTC-minus zone: the expiry must round-trip through the
+      // datetime-local input without moving.
+      process.env.TZ = 'America/New_York';
+      mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
+        id: PRINCIPAL_ID,
+        name: 'Weavestream', description: null, status: 'active', scopes: ['devices:read'],
+        expiresAt: EXPIRES_AT, sourceCidrs: ['203.0.113.0/24'], keys: [],
+      }] }));
+      mocks.runAction.mockImplementation(async ({ request }: { request: () => Promise<Response> }) => {
+        await request();
+        return {};
+      });
+    });
+
+    afterEach(() => {
+      process.env.TZ = originalTz;
+    });
+
+    function patchBody() {
+      const call = mocks.fetchWithAuth.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      return call ? JSON.parse(call[1].body as string) : undefined;
+    }
+
+    async function openEdit() {
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      fireEvent.click(screen.getByText('partnerServicePrincipals.edit'));
+    }
+
+    it('shows the expiry in the browser time zone', async () => {
+      await openEdit();
+      expect(screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')).toHaveValue('2026-12-01T10:30');
+    });
+
+    it('a rename sends only the name, so the expiry is neither moved nor read as extended', async () => {
+      await openEdit();
+      fireEvent.change(screen.getByText('partnerServicePrincipals.name').querySelector('input')!, {
+        target: { value: 'Weavestream sync' },
+      });
+      fireEvent.click(screen.getByTestId('save-principal'));
+
+      await waitFor(() => expect(patchBody()).toEqual({ name: 'Weavestream sync' }));
+    });
+
+    it('a changed expiry is sent as the instant picked in the browser time zone', async () => {
+      await openEdit();
+      fireEvent.change(screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')!, {
+        target: { value: '2026-12-02T09:00' },
+      });
+      fireEvent.click(screen.getByTestId('save-principal'));
+
+      await waitFor(() => expect(patchBody()).toEqual({ expiresAt: '2026-12-02T14:00:00.000Z' }));
+    });
+
+    it('saving without changes sends no request', async () => {
+      await openEdit();
+      fireEvent.click(screen.getByTestId('save-principal'));
+
+      await waitFor(() => expect(screen.queryByTestId('save-principal')).not.toBeInTheDocument());
+      expect(mocks.runAction).not.toHaveBeenCalled();
+      expect(patchBody()).toBeUndefined();
+    });
   });
 });

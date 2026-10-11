@@ -59,6 +59,39 @@ const EMPTY_DRAFT: PrincipalDraft = {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
+// <input type="datetime-local"> reads and writes wall-clock time in the
+// browser's zone, so seed it with the local time of the stored instant.
+function toDateTimeLocal(iso: string): string {
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function principalPayload(draft: PrincipalDraft) {
+  return {
+    name: draft.name.trim(),
+    description: draft.description.trim() || null,
+    scopes: draft.scopes,
+    expiresAt: draft.expiresAt ? new Date(draft.expiresAt).toISOString() : null,
+    sourceCidrs: draft.sourceCidrs.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
+  };
+}
+
+// An edit sends only the fields the user changed. Re-sending an untouched
+// expiry would truncate it to the minute, and the API treats any later expiry
+// or other loosening as an owner-only change.
+function changedFields(draft: PrincipalDraft, original: PrincipalDraft) {
+  const next = principalPayload(draft);
+  const before = principalPayload(original);
+  const changed: Partial<ReturnType<typeof principalPayload>> = {};
+  if (next.name !== before.name) changed.name = next.name;
+  if (next.description !== before.description) changed.description = next.description;
+  if ([...next.scopes].sort().join() !== [...before.scopes].sort().join()) changed.scopes = next.scopes;
+  if (draft.expiresAt !== original.expiresAt) changed.expiresAt = next.expiresAt;
+  if (next.sourceCidrs.join() !== before.sourceCidrs.join()) changed.sourceCidrs = next.sourceCidrs;
+  return changed;
+}
+
 export default function PartnerServicePrincipalsPage() {
   const { t } = useTranslation('settings');
   const [principals, setPrincipals] = useState<Principal[]>([]);
@@ -66,6 +99,7 @@ export default function PartnerServicePrincipalsPage() {
   const [loadError, setLoadError] = useState(false);
   const [editing, setEditing] = useState<Principal | 'new' | null>(null);
   const [draft, setDraft] = useState<PrincipalDraft>(EMPTY_DRAFT);
+  const [originalDraft, setOriginalDraft] = useState<PrincipalDraft>(EMPTY_DRAFT);
   const [issueTarget, setIssueTarget] = useState<Principal | null>(null);
   const [keyName, setKeyName] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -113,26 +147,26 @@ export default function PartnerServicePrincipalsPage() {
   const closeReveal = () => setNewKey(null);
   const openCreate = () => { setEditing('new'); setDraft({ ...EMPTY_DRAFT, scopes: [...READ_SCOPES] }); };
   const openEdit = (principal: Principal) => {
-    setEditing(principal);
-    setDraft({
+    const seeded: PrincipalDraft = {
       name: principal.name,
       description: principal.description ?? '',
       scopes: [...principal.scopes],
-      expiresAt: principal.expiresAt ? principal.expiresAt.slice(0, 16) : '',
+      expiresAt: principal.expiresAt ? toDateTimeLocal(principal.expiresAt) : '',
       sourceCidrs: principal.sourceCidrs.join('\n'),
-    });
+    };
+    setEditing(principal);
+    setDraft(seeded);
+    setOriginalDraft(seeded);
   };
 
   const savePrincipal = async () => {
     if (!editing || !draft.name.trim() || draft.scopes.length === 0) return;
     const creating = editing === 'new';
-    const payload = {
-      name: draft.name.trim(),
-      description: draft.description.trim() || null,
-      scopes: draft.scopes,
-      expiresAt: draft.expiresAt ? new Date(draft.expiresAt).toISOString() : null,
-      sourceCidrs: draft.sourceCidrs.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
-    };
+    const payload = creating ? principalPayload(draft) : changedFields(draft, originalDraft);
+    if (!creating && Object.keys(payload).length === 0) {
+      setEditing(null);
+      return;
+    }
     try {
       await runAction({
         request: () => fetchWithAuth(
