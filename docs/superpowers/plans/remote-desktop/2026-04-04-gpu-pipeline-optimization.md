@@ -298,7 +298,7 @@ if out != nil && !m.zeroCopyLogged {
 
 Add the `zeroCopyLogged bool` field to the `mftEncoder` struct in `mft_windows.go`.
 
-- [ ] **Step 2: Build the Windows agent and dev-push to Kit**
+- [ ] **Step 2: Build the Windows agent and dev-push to lab-hyperv-host**
 
 ```bash
 cd agent
@@ -314,7 +314,7 @@ curl -sf -X POST "http://localhost:3001/api/v1/dev/push" \
   -F "binary=@bin/breeze-agent-dev"
 ```
 
-- [ ] **Step 3: Connect to Kit via desktop viewer and check logs**
+- [ ] **Step 3: Connect to lab-hyperv-host via desktop viewer and check logs**
 
 After connecting, query:
 ```sql
@@ -328,7 +328,7 @@ ORDER BY timestamp ASC LIMIT 20;
 ```
 
 **Expected outcomes:**
-- Best case: `"MFT zero-copy encode producing output"` — zero-copy works on Kit's GPU.
+- Best case: `"MFT zero-copy encode producing output"` — zero-copy works on lab-hyperv-host's GPU.
 - Acceptable: `"MFT rejected DXGI surface sample"` then normal metrics — fallback to CPU readback worked, no regression.
 - Bad: Crash or black screen — debug the HRESULT.
 
@@ -1215,7 +1215,7 @@ Zero CPU readback of raw frames — only the compressed H264 bitstream
 
 ## Verification Checklist
 
-After all phases, verify on Kit:
+After all phases, verify on lab-hyperv-host:
 
 ```sql
 SELECT timestamp, message, fields::text FROM agent_logs

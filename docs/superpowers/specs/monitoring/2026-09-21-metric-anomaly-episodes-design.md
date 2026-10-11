@@ -1,7 +1,7 @@
 # Metric anomaly episodes: one card per event, auto-resolve, process attribution
 
 Status: **draft for owner review** (Todd asked for the spec 2026-09-21 after reviewing the
-anomalies tab on KIT, US prod).
+anomalies tab on lab-hyperv-host, US prod).
 Advisor quorum: two reviews. (1) Design quorum — Fable position formed; Codex unavailable (usage
 limit until 2026-09-26), so the independent review was a fresh-context Opus agent with repo access.
 Ten questions put, ten verdicts returned; eight amendments adopted, two positions held on the
@@ -36,7 +36,7 @@ Measured on US prod, partner OliveTech, 12 hours after enabling the flag (2026-0
 | Promoted by a human | 2 |
 | Dismissed or resolved | 0 |
 
-On one device (KIT):
+On one device (lab-hyperv-host):
 
 - A single disk-write burst from 22:35 to 23:55 produced **17 separate "Disk write spike" cards**
   (one per bucket, 86–153 MB/s against a baseline of 5.5–11 MB/s).
@@ -186,7 +186,7 @@ by count. Never reopen a closed episode.**
 - Extending is what carries duration and peak, the two facts a tech reads first.
 - A closed episode may carry a human label (dismissed, resolved, promoted). Reopening it would
   silently overwrite that verdict and confuse the evaluation endpoint.
-- Recurrence is itself diagnostic. KIT's hourly `:30` process anomaly reads as "5 episodes, hourly,
+- Recurrence is itself diagnostic. lab-hyperv-host's hourly `:30` process anomaly reads as "5 episodes, hourly,
   each about 5 minutes" — which points at a scheduled task. As one ever-extending episode it would
   be a 5-hour window that was clean 90 % of the time.
 - The gap tolerance and the close threshold are the same constant so a burst that dips for one or

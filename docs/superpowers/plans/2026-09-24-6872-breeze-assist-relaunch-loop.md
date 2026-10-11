@@ -1114,7 +1114,7 @@ Session 1 need not exist: the stat guard must return before `acquireUserToken`, 
 
 - [ ] **Step 2: Run to verify it fails (native Windows)**
 
-On the Windows lab VM (`ssh administrator@100.101.150.55`, Go at `C:\go-1.26.6`; read memory `windows_test_vm.md` first), sync the branch and run:
+On the Windows lab VM (`ssh administrator@<lab-windows-test-vm-ip>`, Go at `C:\go-1.26.6`; read memory `windows_test_vm.md` first), sync the branch and run:
 `go test -race ./internal/sessionbroker/ -run TestSpawnProcessInSessionWithArgsMissingBinary -v`
 Expected: compile FAIL — `undefined: ErrBinaryMissing`.
 
@@ -1234,4 +1234,4 @@ EOF
 pnpm wt-stack down
 ```
 
-- [ ] **Step 6: File the follow-ups from spec §8** as GitHub issues (hosted manifest coverage of helper installers; direct launch in `SpawnProcessInSessionWithArgs`; KIT `.backup`-only binary; "not installed" surfaced in UI; 09-09 offer provenance), each linking #6872, and list their numbers in a comment on #6872.
+- [ ] **Step 6: File the follow-ups from spec §8** as GitHub issues (hosted manifest coverage of helper installers; direct launch in `SpawnProcessInSessionWithArgs`; lab-hyperv-host `.backup`-only binary; "not installed" surfaced in UI; 09-09 offer provenance), each linking #6872, and list their numbers in a comment on #6872.

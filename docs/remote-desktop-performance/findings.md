@@ -46,7 +46,7 @@ Two secondary bugs found while validating:
 ### Zero-copy DXGI input (Change #4) — a false belief corrected
 
 The old init comment said hardware MFTs "stall when fed DXGI surface samples on
-many GPU/driver combinations — tested and confirmed on Kit," which justified the
+many GPU/driver combinations — tested and confirmed on lab-hyperv-host," which justified the
 per-frame NV12 readback. **That test was run against the synchronous-driving
 bug above** — any input mode appeared to stall. With the async handshake in
 place, DXGI-surface input works. Do not reintroduce the readback based on the

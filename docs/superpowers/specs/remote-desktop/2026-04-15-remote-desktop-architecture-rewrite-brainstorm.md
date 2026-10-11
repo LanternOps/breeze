@@ -1,10 +1,10 @@
 # Remote Desktop Architecture Rewrite — Brainstorm Notes (DEFERRED)
 
-> **Status:** Deferred. This is a working brainstorm, not a finalized spec. Sections 3–5 of the design (data flow, error handling, testing) were never written because we discovered a concrete one-row encoder bug that explains the acute Kit symptoms and needs to ship first. Come back to this doc after the encoder fix has stabilized Kit and decide whether the rewrite is still worthwhile.
+> **Status:** Deferred. This is a working brainstorm, not a finalized spec. Sections 3–5 of the design (data flow, error handling, testing) were never written because we discovered a concrete one-row encoder bug that explains the acute lab-hyperv-host symptoms and needs to ship first. Come back to this doc after the encoder fix has stabilized lab-hyperv-host and decide whether the rewrite is still worthwhile.
 
 ## Why this exists
 
-Kit's remote desktop regressed between v0.62.0 and v0.62.25-rc.2. The symptoms — low-bitrate blurry streams, disconnect/reconnect on login→desktop handoff, black-screen 0fps, and a general sense that every fix breaks something else — were attributed during brainstorming to structural fragility in the desktop path: 20KLOC across 40+ files, no state machine, four independent watchdogs that can all kill a session, two parallel helper-spawn pipelines, and no way to write integration tests without a real Windows desktop.
+lab-hyperv-host's remote desktop regressed between v0.62.0 and v0.62.25-rc.2. The symptoms — low-bitrate blurry streams, disconnect/reconnect on login→desktop handoff, black-screen 0fps, and a general sense that every fix breaks something else — were attributed during brainstorming to structural fragility in the desktop path: 20KLOC across 40+ files, no state machine, four independent watchdogs that can all kill a session, two parallel helper-spawn pipelines, and no way to write integration tests without a real Windows desktop.
 
 During investigation we found the actual acute cause was simpler: **`amfEncoder.SetDimensions` silently rounds odd heights down with `h &^ 1`, but the capturer is never told to crop its output, so every frame fails with `frame size 1434888 doesn't match 1512x948`**. That's being fixed in a separate, scoped change. This document preserves what we designed for the broader rewrite so we can resume if the fragility pattern persists after the encoder fix.
 
@@ -12,7 +12,7 @@ During investigation we found the actual acute cause was simpler: **`amfEncoder.
 
 | Decision | Answer | Rationale |
 |---|---|---|
-| **Scope** (Q1) | **A** — all four workstreams in one spec: integration-test harness, single FSM, kill heartbeat-parallel helper spawn, fix Kit's ForceReattach loop | User explicit choice; the four items were considered coherent as one story. |
+| **Scope** (Q1) | **A** — all four workstreams in one spec: integration-test harness, single FSM, kill heartbeat-parallel helper spawn, fix lab-hyperv-host's ForceReattach loop | User explicit choice; the four items were considered coherent as one story. |
 | **Migration** (Q2) | **B** — full cutover behind a normal RC, no feature flag | User explicit choice; no safety net. Raises the bar on the harness. |
 | **FSM implementation** (Q3) | **C** — extract-and-own: rename `Session` → unexported `sessionState` (data only), introduce `SessionController` as the only exported type, single writer goroutine | Deletes fragility instead of moving it: the `sync.Mutex`, `atomic.Pointer[VideoEncoder]`, `atomic.Bool`, and `startMu` primitives all become dead code because only one goroutine touches state. |
 | **Coordinator placement** (Q4, after pushback) | **Two-level FSM** — `DesktopCoordinator` in agent (session 0), `PipelineController` in each helper process | I first proposed putting everything in the helper; user correctly pushed back that cross-helper decisions (RDP server with multiple concurrent sessions, failover between console/RDP helpers) can only be made from the main service. Two-level is the corrected model. |
@@ -49,7 +49,7 @@ During investigation we found the actual acute cause was simpler: **`amfEncoder.
 | `state.go` | State enum + transition table | ~80 lines |
 | `events.go` | All event types | ~120 lines |
 | `actions.go` | `Actions` interface (for fake injection in tests) | ~60 lines |
-| `coordinator_test.go` | FSM tests driven by `FakeActions`. Every transition has at least one test, including the Kit scenario: session 2 streaming, pion failed, coord switches to session 4. | ~600 lines |
+| `coordinator_test.go` | FSM tests driven by `FakeActions`. Every transition has at least one test, including the lab-hyperv-host scenario: session 2 streaming, pion failed, coord switches to session 4. | ~600 lines |
 | `fakes.go` | `FakeActions` + test helpers | ~150 lines |
 
 Public surface: `type Coordinator`, `func New(actions Actions) *Coordinator`, `func (*Coordinator) Run(ctx context.Context)`, `func (*Coordinator) Submit(event Event) error`. Everything else unexported.
@@ -101,7 +101,7 @@ Construct `desktopcoord.Coordinator` at startup, wire it to `sessionbroker.Broke
 
 ## Why this was deferred
 
-The concrete Kit symptoms trace cleanly to `encoder_amf_windows.go:146-156`:
+The concrete lab-hyperv-host symptoms trace cleanly to `encoder_amf_windows.go:146-156`:
 
 ```go
 func (e *amfEncoder) SetDimensions(w, h int) error {
@@ -111,22 +111,22 @@ func (e *amfEncoder) SetDimensions(w, h int) error {
 }
 ```
 
-Kit's display is 1512×949 (odd height). AMF silently rounds to 1512×948. The capturer is never told to crop. Every frame fails with `frame size 1434888 doesn't match 1512x948` (`1,434,888 = 1512 × 949`). The cascading failures (low bitrate, reconnect, watchdog-triggered restart) all follow from this one bug once the encoder throughput collapses to near-zero.
+lab-hyperv-host's display is 1512×949 (odd height). AMF silently rounds to 1512×948. The capturer is never told to crop. Every frame fails with `frame size 1434888 doesn't match 1512x948` (`1,434,888 = 1512 × 949`). The cascading failures (low bitrate, reconnect, watchdog-triggered restart) all follow from this one bug once the encoder throughput collapses to near-zero.
 
-This is a one-row fix. The full rewrite is not urgent — it's an improvement worth scheduling, not a fire worth rebuilding the house for. We'll do the encoder fix, verify Kit is stable, and revisit the rewrite decision based on whether the remaining fragility (helper spawn storms, parallel heartbeat/broker spawn paths, no integration-test harness) is still actively causing problems.
+This is a one-row fix. The full rewrite is not urgent — it's an improvement worth scheduling, not a fire worth rebuilding the house for. We'll do the encoder fix, verify lab-hyperv-host is stable, and revisit the rewrite decision based on whether the remaining fragility (helper spawn storms, parallel heartbeat/broker spawn paths, no integration-test harness) is still actively causing problems.
 
 ## Pickup checklist (for the next session)
 
-- [ ] Has the encoder fix stabilized Kit? (Need days, not hours, of soak.)
+- [ ] Has the encoder fix stabilized lab-hyperv-host? (Need days, not hours, of soak.)
 - [ ] Are there still helper spawn storms in the broker logs after the encoder fix? (The `max connections exceeded count=5 identity=S-1-5-18` pattern.)
 - [ ] Is heartbeat still stalling during active desktop sessions? (Watch for gaps in the `heartbeat` component logs.)
 - [ ] If any of those are still yes, resume this spec at Section 3 (data flow), 4 (error handling), 5 (testing harness).
 - [ ] If all three are no, archive this doc as "resolved without rewrite" and keep the learnings.
-- [ ] Regardless: **write the integration-test harness anyway** — `fakeCapturer`/`fakeEncoder`/`fakeTransport` + one end-to-end test that drives a fake DXGI through Winlogon→Default. That's the smallest-footprint piece of this plan and it retires the "live-Kit-only regression cycle" even without the FSM work.
+- [ ] Regardless: **write the integration-test harness anyway** — `fakeCapturer`/`fakeEncoder`/`fakeTransport` + one end-to-end test that drives a fake DXGI through Winlogon→Default. That's the smallest-footprint piece of this plan and it retires the "live-lab-hyperv-host-only regression cycle" even without the FSM work.
 
 ## References
 
-- Original Kit log repro: `agent_logs` for device `85ff0d63-fe61-4a89-ac48-a5da02ccbd17` between 2026-04-16 00:13:19 and 00:15:38 UTC.
+- Original lab-hyperv-host log repro: `agent_logs` for device `85ff0d63-fe61-4a89-ac48-a5da02ccbd17` between 2026-04-16 00:13:19 and 00:15:38 UTC.
 - Watchdog code path: `agent/internal/watchdog/watchdog.go`, `checks.go`, `recovery_windows.go`. Added Apr 5 in commit `06b94e3c`. Present in v0.62.0.
 - Restore-hardware-encoder path: `agent/internal/remote/desktop/session_capture.go:1118-1198`, from commit `19240eee` (Apr 12).
 - Encoder dimension rounding: `agent/internal/remote/desktop/encoder_amf_windows.go:146-156`, from commit `acdccf23` (direct NVENC+AMF encoders via purego).

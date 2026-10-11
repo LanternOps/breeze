@@ -9,7 +9,7 @@
 - **Metadata:** new `third_party_package_catalog` table holds Breeze-curated entries (winget package ID → friendly name, vendor, category, severity policy, "Breeze-tested" flag). Catalog data enriches inbound patch scans at ingest time.
 - **Severity / CVE:** a daily BullMQ worker queries OSV.dev for known vulns affecting catalog packages and bumps `patches.severity` when matches land in pending versions.
 - **Approval:** zero new flow — winget patches flow into the existing `patches` table with `source='third_party'`; existing approval rings, deferrals, and `patchJobExecutor` work unchanged.
-- **AI test routine (Phase 9):** when winget detects a new version of a Breeze-tested catalog package, queue an AI-driven smoke test on the Windows test VM (`100.101.150.55` per `windows_test_vm.md`). Test result writes back to `third_party_package_catalog.last_tested_at` and `last_tested_result`.
+- **AI test routine (Phase 9):** when winget detects a new version of a Breeze-tested catalog package, queue an AI-driven smoke test on the Windows test VM (`<lab-windows-test-vm-ip>` per `windows_test_vm.md`). Test result writes back to `third_party_package_catalog.last_tested_at` and `last_tested_result`.
 
 **Tech Stack:** Go 1.25.9 (agent), TypeScript + Hono (API), Drizzle (Postgres schema), React/Astro (web), BullMQ (jobs), Vitest (unit/integration), Go `testing` + `-race` (agent), Playwright (E2E — for UI work).
 
@@ -388,7 +388,7 @@ git add apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/patches
 git commit -m "feat(api): accept packageId on patch submit (interim metadata stash)"
 ```
 
-**Phase 1 acceptance:** Build the Windows agent, deploy to the Windows test VM (`100.101.150.55`), run a patch scan, and verify rows appear in `patches` with `source='third_party'` and `metadata.packageId='Mozilla.Firefox'` (or whichever app reports an upgrade). One-line smoke check:
+**Phase 1 acceptance:** Build the Windows agent, deploy to the Windows test VM (`<lab-windows-test-vm-ip>`), run a patch scan, and verify rows appear in `patches` with `source='third_party'` and `metadata.packageId='Mozilla.Firefox'` (or whichever app reports an upgrade). One-line smoke check:
 
 ```bash
 docker exec -i breeze-postgres psql -U breeze -d breeze -c \
@@ -2319,7 +2319,7 @@ git commit -m "feat(jobs): scaffold AI release test queue (off by default)"
  * aiPatchTestRunner: drives an AI smoke test for a winget-installable package.
  *
  * Flow:
- *   1. SSH to Windows test VM (per windows_test_vm.md: 100.101.150.55,
+ *   1. SSH to Windows test VM (per windows_test_vm.md: <lab-windows-test-vm-ip>,
  *      user 'administrator', key in ~/.ssh).
  *   2. Pre-step: `winget uninstall --id <packageId> --silent` (best-effort).
  *   3. Install previous version: `winget install --id <packageId> --version <prev>`.
@@ -2351,7 +2351,7 @@ Then wrap `ssh` calls with that helper so all package IDs and versions pass as s
 import { execFileSafe } from '../utils/execFileNoThrow';
 
 async function runOnTestVm(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  const sshTarget = process.env.WIN_TEST_VM_TARGET!;   // e.g. "administrator@100.101.150.55"
+  const sshTarget = process.env.WIN_TEST_VM_TARGET!;   // e.g. "administrator@<lab-windows-test-vm-ip>"
   const sshKey = process.env.WIN_TEST_VM_SSH_KEY!;     // path
   return execFileSafe('ssh', ['-i', sshKey, '-o', 'StrictHostKeyChecking=yes', sshTarget, ...args]);
 }

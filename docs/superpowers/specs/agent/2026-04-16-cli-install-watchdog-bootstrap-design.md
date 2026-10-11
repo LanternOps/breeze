@@ -92,7 +92,7 @@ The UI command templates in `AddDeviceModal.tsx` and `EnrollDeviceStep.tsx` do *
 ### Manual smoke
 
 Order of verification:
-1. **Windows VM** (Tailscale `100.101.150.55`, per memory) — run the dashboard one-liner; confirm `sc query BreezeWatchdog` shows RUNNING and `sc query BreezeAgent` shows RUNNING.
+1. **Windows VM** (Tailscale `<lab-windows-test-vm-ip>`, per memory) — run the dashboard one-liner; confirm `sc query BreezeWatchdog` shows RUNNING and `sc query BreezeAgent` shows RUNNING.
 2. **Linux** (Docker container or local VM) — run the Linux one-liner; confirm `systemctl status breeze-agent breeze-watchdog` both active.
 3. **macOS** manual binary path — run `./breeze-agent service install`; confirm both LaunchDaemons loaded.
 4. **Re-run repair** — on a machine with agent-only install (simulate by uninstalling watchdog), re-run `breeze-agent service install`; confirm watchdog is now present without reinstalling the agent.

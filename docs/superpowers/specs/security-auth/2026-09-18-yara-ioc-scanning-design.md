@@ -231,7 +231,7 @@ policy `USING (is_builtin)`; write access to them is system-scope only.
 ## 10. Performance budget and gates
 
 - Quick scan (Temp / Downloads / autoruns) with the core pack: ≤ 2 minutes, ≤ 25 % of one
-  core on the Windows lab rig `WIN-IMDR2GAIDMV`.
+  core on the Windows lab rig `lab-windows-server-vm`.
 - Full scan: bounded by `scanTimeoutMinutes` (default 120), partial results reported.
 - W02 publishes wasm vs native numbers; the sidecar decision is made on those.
 

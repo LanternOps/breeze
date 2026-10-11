@@ -60,7 +60,7 @@ Improve perceived and measured performance of the Windows remote-desktop path
 ### Topology
 
 ```
-Mac (dev + measurement)                    Kit / Intel / VM (agent under test)
+Mac (dev + measurement)                    lab-hyperv-host / Intel / VM (agent under test)
 ──────────────────────                     ──────────────────────────────────
 worktree docker stack (api/web/pg/redis)   breeze-user-helper.exe (session 1)
   caddy :32797  ── Tailscale proxy ──▶      server_url = http://<mac-ts>:41890
@@ -120,7 +120,7 @@ npx tsx perf-harness/compare.ts perf-harness/results/<base>.json perf-harness/re
 
 ### Motion source (RESOLVED) + remaining caveats
 - **Root cause of "throttling" was the 15-min console auto-lock**, not browser
-  rAF throttling. Once Kit locked, capture went to the static lock/secure desktop
+  rAF throttling. Once lab-hyperv-host locked, capture went to the static lock/secure desktop
   (`frameBytes`→~16, fps→~2). Fix:
   - `powercfg /change monitor-timeout-ac 0` + `standby-timeout-ac 0` (and `-dc`),
     and `HKLM\...\Policies\System\InactivityTimeoutSecs=0` (machine-wide, via SSH).
@@ -147,13 +147,13 @@ npx tsx perf-harness/compare.ts perf-harness/results/<base>.json perf-harness/re
   a ~constant offset. Fine for A/B (same path both sides); revisit only if we need
   true latency numbers. Agent-side metrics are unaffected.
 
-### Video baseline — Kit / RX 590 / AMF (Change #1 binary, constant video motion)
+### Video baseline — lab-hyperv-host / RX 590 / AMF (Change #1 binary, constant video motion)
 48fps, skip 0, dropped 0, **encodeMs ~0.6ms**, frameBytes ~4.6KB, ~1.9 Mbps,
 client jitter ~1.5ms. This is the reference point for constant-motion A/B.
 
 ---
 
-## Baseline — Kit / Radeon RX 590 / AMF / 2560×1440 (under motion)
+## Baseline — lab-hyperv-host / Radeon RX 590 / AMF / 2560×1440 (under motion)
 
 | Metric (agent-side) | Value |
 |---|---|
@@ -185,7 +185,7 @@ reference chain stays intact — **we never drop a frame here.** First call(s) a
 init/flush return nil while the pipeline fills; the capture loop tolerates nil and
 `amfStallThreshold=8` still guards a genuinely stalled encoder.
 
-**Result (Kit / RX 590):**
+**Result (lab-hyperv-host / RX 590):**
 
 | | Baseline | Change #1 |
 |---|---|---|
@@ -240,7 +240,7 @@ the fix is a **no-op under constant motion**. Also fixed a metric bug: per-frame
 blowing the accumulated drift up to ±hundreds of millions — replaced with signed
 32-bit deltas (a 30s span at 90kHz never wraps).
 
-**Result (Kit / RX 590, bursty motion, fixed metric, 3× each):**
+**Result (lab-hyperv-host / RX 590, bursty motion, fixed metric, 3× each):**
 
 | | Baseline (change #1) | Change #2 |
 |---|---|---|
@@ -260,7 +260,7 @@ motion by design).
 `mft_encode_windows.go` (`encodeAsync`, `pumpEvents`, `popPendingOutput`, branch
 in `Encode`/`EncodeTexture`).
 
-**Problem (root cause, confirmed on dell70601 / UHD 630):** the QuickSync
+**Problem (root cause, confirmed on lab-windows-11-host / UHD 630):** the QuickSync
 hardware encoder is enumerated with `MFT_ENUM_FLAG_HARDWARE`, which returns an
 **asynchronous MFT**. Async MFTs deliver `METransformNeedInput` /
 `METransformHaveOutput` events through `IMFMediaEventGenerator`, and
@@ -269,7 +269,7 @@ async mode (`MF_TRANSFORM_ASYNC_UNLOCK`) but then drove the transform
 **synchronously** — `ProcessInput` then poll `ProcessOutput` every frame — never
 servicing the event queue. So the MFT accepted input but `ProcessOutput` returned
 `E_UNEXPECTED` forever → 8 nil outputs → permanent-stall → swap to **OpenH264
-software** (~19ms/frame, pins a CPU core). AMD/Kit never hit this because the AMF
+software** (~19ms/frame, pins a CPU core). AMD/lab-hyperv-host never hit this because the AMF
 backend outranks MFT; NVENC has its own backend. **The stall is specific to the
 async MFT path (Intel QuickSync + generic hardware MFTs).**
 
@@ -302,7 +302,7 @@ instant the driver posts the event). Steady state never enters the wait (the
 previous frame's NeedInput is already queued by the time the next capture
 arrives).
 
-**Result (dell70601 / UHD 630 / 1080p, constant RDMotion, 3× each):**
+**Result (lab-windows-11-host / UHD 630 / 1080p, constant RDMotion, 3× each):**
 
 | | Baseline (openh264 sw) | Change #3 (mft-hardware async) |
 |---|---|---|
@@ -342,7 +342,7 @@ BGRA→NV12 (`VideoProcessorBlt`) then **read the NV12 back to CPU** and memcpy'
 it into a memory-buffer IMFSample — ~7–8ms/frame of readback+copy at 1080p. The
 true zero-copy path (DXGI-surface input samples) existed as dead code
 (`createDXGISurfaceSample`, `tryInitGPUPipeline`) but was abandoned because
-"hardware MFTs stall when fed DXGI surface samples (tested on Kit)" — which was
+"hardware MFTs stall when fed DXGI surface samples (tested on lab-hyperv-host)" — which was
 actually the **async-MFT-driven-synchronously bug** (Change #3): with the event
 queue never serviced, *any* input mode appeared to stall.
 
@@ -366,7 +366,7 @@ queue never serviced, *any* input mode appeared to stall.
   OpenH264. Monitor switch re-points the manager via `ResetDevice`; a CPU frame
   arriving in `Encode()` tears the manager down first.
 
-**Result (dell70601 / UHD 630 / 1080p, constant motion, 3× each):**
+**Result (lab-windows-11-host / UHD 630 / 1080p, constant motion, 3× each):**
 
 | | Change #3 (readback) | Change #4 (zero-copy) |
 |---|---|---|
@@ -381,11 +381,11 @@ Full-path Intel story: **~18.7ms CPU (openh264) → ~10ms (hw MFT + readback) �
 ~2.5ms (hw MFT zero-copy)** — ~7× less encode latency than where the box
 started, with the work on the iGPU instead of pinning a CPU core.
 
-**AMF regression check (Kit / RX 590, same binary):** AMF initializes and runs
+**AMF regression check (lab-hyperv-host / RX 590, same binary):** AMF initializes and runs
 identically (encodeMs 0.0–0.5, encoded==sent, dropped 0). Client fps/freezes on
-Kit looked "degraded" until root-caused: Kit's RDMotion task is still loaded with
+lab-hyperv-host looked "degraded" until root-caused: lab-hyperv-host's RDMotion task is still loaded with
 **bursty.html** from Change #2 testing — the skips/idle cycles are the motion
-profile, not a regression. (Reminder: swap Kit back to `motion-video.html` for
+profile, not a regression. (Reminder: swap lab-hyperv-host back to `motion-video.html` for
 constant-motion A/B.)
 
 **Verdict:** kept. Residual risks noted: tearing can't be detected by the
@@ -447,7 +447,7 @@ require a cross-backend guarantee that encoder output buffers are never reused
 
 ## Finding — Intel UHD 630 MFT stalls → software fallback ✅ FIXED (Change #3)
 **RESOLVED by Change #3 above.** Retained for context: on real Intel UHD 630
-(dell70601) the QuickSync **MFT hardware encoder accepted input but never produced
+(lab-windows-11-host) the QuickSync **MFT hardware encoder accepted input but never produced
 output** because it's an **async MFT driven synchronously** (output arrives via
 `METransformHaveOutput` events, but the code polled `ProcessOutput` and never
 serviced the event queue). After ~8 nil frames the agent marked it permanently
@@ -456,13 +456,13 @@ handshake so the hardware encoder produces output and the stall never occurs.
 Files: `comutil_windows.go`, `mft_windows.go`, `mft_encode_windows.go`.
 
 ## Legs & status
-- **Kit — Radeon RX 590 (AMF):** enrolled, live, on the **Change #6 binary**.
+- **lab-hyperv-host — Radeon RX 590 (AMF):** enrolled, live, on the **Change #6 binary**.
   Constant-motion regression-verified: 49.7fps, 0 freezes, encodeMs 0.5,
   skip/drop 0/0 — identical to the Change #1 reference. RDMotion swapped back
   to `motion-video.html` (constant). ⚠️ Gotcha hit while swapping: PowerShell
   `Set-ScheduledTask` argument strings with `\"` get truncated — use a
   single-quoted PS string with inner double quotes.
-- **Intel — dell70601 / UHD 630 (MFT):** enrolled, live, on the **Change #6
+- **Intel — lab-windows-11-host / UHD 630 (MFT):** enrolled, live, on the **Change #6
   binary**. QuickSync hardware encoder end-to-end with **zero-copy DXGI input**
   (`encodeMs ~2.5ms`, 0 downgrades, 0 software-swaps).
 - **VM .55 (Hyper-V):** GDI + software OpenH264 only. Not enrolled.
@@ -530,7 +530,7 @@ hardware encoding instead of stalling to software.
   (dirty-rect-driven encode region vs encoder ROI hints; helpers preserved in
   `dxgi_dirty_rects_windows.go`).
 - **#6 live bursty-loss validation:** still needs a network shaper; unchanged.
-- **Ship gate (end of phase):** squash-PR the branch to main after a Kit+Intel
+- **Ship gate (end of phase):** squash-PR the branch to main after a lab-hyperv-host+Intel
   regression pass and a human visual pass in the real viewer on the final binary.
 
 ---
@@ -549,8 +549,8 @@ per-frame dirty-rect fetch removed. Adaptive bitrate recovers from a deep dip
 in ~13 clean samples instead of ~60 (slow-start streak, unit-test pinned).
 cacheEncodedFrame gating (#2) investigated and **skipped** (µs-scale, risk >
 win — see Skipped entry). **Both boxes are on the Change #6 binary** and
-regression-verified (Kit constant-motion 49.7fps / encodeMs 0.5 / skip 0;
-Intel zero-copy ~2.5ms). Kit's RDMotion restored to `motion-video.html`.
+regression-verified (lab-hyperv-host constant-motion 49.7fps / encodeMs 0.5 / skip 0;
+Intel zero-copy ~2.5ms). lab-hyperv-host's RDMotion restored to `motion-video.html`.
 Remaining Tier-2 candidate: CRC32→Castagnoli (software/GDI path only).
 Outstanding: human visual pass in the real viewer (node-peer can't see
 tearing), live bursty-loss validation of Change #6 when a network shaper is
@@ -576,7 +576,7 @@ available.
 
 | Box | IP | GPU / encoder | device id | agent_id (dev-push) | SSH |
 |---|---|---|---|---|---|
-| Kit | `<tailscale-ip>` | RX 590 / **AMF** | *(internal doc)* | *(internal doc)* | key auth |
+| lab-hyperv-host | `<tailscale-ip>` | RX 590 / **AMF** | *(internal doc)* | *(internal doc)* | key auth |
 | Intel | `<tailscale-ip>` | UHD 630 / **MFT** | *(internal doc)* | *(internal doc)* | local-admin pw |
 
 Real IPs, device/agent IDs, and SSH access: **`internal/remote-desktop-perf-rig.md`** (gitignored — never commit these here; CLAUDE.md "No Internal Infrastructure Details in Public Code").
@@ -602,6 +602,6 @@ in `C:\ProgramData\Breeze\logs\user-helper.log` (`Desktop WebRTC metrics`,
 Motion section). Run each condition **3×** (client metrics are noisy over the TURN
 relay; agent-side `encodeMs` is deterministic).
 
-**To restore a box to prod when done:** Kit — restore `agent.yaml.prod-bak-*` +
+**To restore a box to prod when done:** lab-hyperv-host — restore `agent.yaml.prod-bak-*` +
 re-enroll to `https://us.2breeze.app`. Intel — fresh install (never on prod);
 `breeze-agent.exe service uninstall` to remove, or leave for testing.

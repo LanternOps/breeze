@@ -195,17 +195,17 @@ the full wire contract, data model and refusal matrix.
 
 - **Engine unit tests** on every platform against fake mount/exec seams and raw image files (VHDX on Windows in wave 6): provisioning from recorded layouts, UUID reuse, refusal matrix, identity modes, resumability.
 - **CI integration**: build the Linux ISO, boot it in QEMU on the runner, restore a seeded snapshot from a MinIO service, reboot, assert the agent checks in and the recovery reaches `checked_in`. Windows equivalent on a self-hosted Windows runner with ADK (later wave).
-- **Lab** (campaign harness): KIT Hyper-V VMs boot the ISO (Linux first, then Windows media built on WIN-A); a new `cells-bmr-media.sh` records evidence like the existing cells.
+- **Lab** (campaign harness): lab-hyperv-host Hyper-V VMs boot the ISO (Linux first, then Windows media built on WIN-A); a new `cells-bmr-media.sh` records evidence like the existing cells.
 
 ## 11. Waves
 
 1. Layout manifest + whole-machine preset + restorability guard (agent + API + UI preset).
 2. File-backup fidelity: symlinks, directories, ownership, full mode bits (§5.4).
 3. Rebuild engine, Linux: disk + raw-image (loop) targets, offline system-state apply, GRUB/EFI boot, unit tests without root, root-gated loopback test.
-4. Linux live media in CI, console, recovery codes and state machine, heartbeat completion; QEMU integration test; lab proof on KIT.
+4. Linux live media in CI, console, recovery codes and state machine, heartbeat completion; QEMU integration test; lab proof on lab-hyperv-host.
 5. Restore-as-VM / Instant Boot and DR plans on the engine (rehearsal mode); raw image → VHDX conversion for Hyper-V.
 6. Windows engine: offline hives, `bcdboot`, `vhdx` target with tests (driver injection not supported yet — §6.1).
-7. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
+7. Windows media builder (WinPE) + console; lab proof on lab-hyperv-host via WIN-A.
 8. Docs, UI polish, recovery readiness fed from real results.
 9. Token-mode recovery follows cross-snapshot object references (§8.5): server-verified file index, provenance tracking, refuse-before-provision on both client and server.
 

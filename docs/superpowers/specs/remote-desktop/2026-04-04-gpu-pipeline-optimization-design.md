@@ -13,7 +13,7 @@ The current recovery path (flush → retry → swap to OpenH264) works but costs
 
 **Phase 1 (Zero-Copy MFT via DXGI Device Manager): ABANDONED**
 
-Tested on Kit (AMD RX 590). The DXGI Device Manager binding succeeds and the MFT produces valid H264 from DXGI surface samples for a few frames, then stalls harder and faster than the CPU readback path. The MFT's internal buffer management breaks when fed GPU-backed samples. This was disabled before for the same reason ("DXGI surface buffer compatibility issues with hardware MFTs"). Confirmed twice — this is a dead end for MFT-based encoding.
+Tested on lab-hyperv-host (AMD RX 590). The DXGI Device Manager binding succeeds and the MFT produces valid H264 from DXGI surface samples for a few frames, then stalls harder and faster than the CPU readback path. The MFT's internal buffer management breaks when fed GPU-backed samples. This was disabled before for the same reason ("DXGI surface buffer compatibility issues with hardware MFTs"). Confirmed twice — this is a dead end for MFT-based encoding.
 
 **Phase 2 (Dirty Rect Extraction): SHIPPED**
 

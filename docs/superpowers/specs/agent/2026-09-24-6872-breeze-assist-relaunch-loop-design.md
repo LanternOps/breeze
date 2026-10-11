@@ -72,7 +72,7 @@ evidence but not proven; **not checked** = left open.
 - The downgrade guard (`agent/internal/heartbeat/version_downgrade.go:57-67`)
   allows a bootstrap offer when the binary is missing and the installed
   version is empty (`fresh_install`). It would not have dropped an offer for
-  the KIT device. Verified.
+  the lab-hyperv-host device. Verified.
 
 **Not established:** where the `helper update pending` for 0.111.1 on
 2026-09-09 came from. Current code cannot create a hosted helper row, and no
@@ -81,7 +81,7 @@ release and removed by the #5704 self-host row cleanup on 09-22 (732 rows on
 US), or a row inserted under a different edition. It does not change the fix.
 The ops step in §6 verifies the rows exist after deploy, which is what matters.
 
-**Not checked:** why the KIT device's `breeze-helper.exe` is gone with only
+**Not checked:** why the lab-hyperv-host device's `breeze-helper.exe` is gone with only
 `breeze-helper.exe.backup` (mtime 2026-04-09) left. A failed in-place update
 that renamed the old binary and never wrote the new one fits (#6252 territory),
 but no log proves it. Out of scope here; §8 files it.
@@ -121,7 +121,7 @@ See §2. Consequence: on hosted prod, **no device** with Assist enabled and no
 helper installed can ever bootstrap, on any OS, since the hosted droplets went
 `BINARY_SOURCE=local`. Devices that already had a helper keep it; nothing
 upgrades it either. This is an outage of the Assist install/upgrade lane, not
-a KIT-only problem.
+a lab-hyperv-host-only problem.
 
 ## 4. Design
 
@@ -296,9 +296,9 @@ expect the bootstrap install to run and Assist to start. Run
    ```
    Expect four rows for the deployed version, `is_latest=true`,
    `edition='hosted'`. Then `curl -sI https://<region>.2breeze.app/api/v1/agents/download/helper/windows/amd64` → 200.
-3. Watch the KIT device: next heartbeat should log `helper update pending`,
+3. Watch the lab-hyperv-host device: next heartbeat should log `helper update pending`,
    then `downloading helper package (verified)`, `helper installed`, and a
-   real spawn. Until the agent PR ships, the old give-up state on KIT clears
+   real spawn. Until the agent PR ships, the old give-up state on lab-hyperv-host clears
    on the next agent restart or on the install itself
    (`applyPendingUpdate` resets session state).
 4. Merge the agent PR; ships in the next agent release. Add
@@ -330,7 +330,7 @@ expect the bootstrap install to run and Assist to start. Run
 - `SpawnProcessInSessionWithArgs`: launch the target directly (real PID, no
   cmd.exe), aligning with `install_windows.go:spawnWithConfig`; audit the
   OneDrive helper caller.
-- Why KIT's `breeze-helper.exe` disappeared leaving only `.backup` (probable
+- Why lab-hyperv-host's `breeze-helper.exe` disappeared leaving only `.backup` (probable
   failed in-place update; relate to #6252).
 - Surface "Assist enabled but not installed, no server offer" in the device
   page / fleet health instead of only in agent.log.

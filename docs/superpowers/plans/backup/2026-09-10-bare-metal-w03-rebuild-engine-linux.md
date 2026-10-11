@@ -2360,11 +2360,11 @@ jq '.status, .phaseReached, [.phases[] | .phase + ":" + .status], .warnings' /va
 ```
 Expected: `completed`, `validate`, seven `…:completed`, warnings only about `package reinstall skipped` (and initramfs if the rig lacks the kernel package in the tree).
 
-- [ ] **Step 2: Boot the image** — convert and boot on KIT (Hyper-V Gen2, Secure Boot off for this proof):
+- [ ] **Step 2: Boot the image** — convert and boot on lab-hyperv-host (Hyper-V Gen2, Secure Boot off for this proof):
 
 ```bash
 qemu-img convert -O vhdx -o subformat=dynamic /var/tmp/rebuild.img /var/tmp/rebuild.vhdx
-# scp to KIT D:\lab\, then on KIT (kit-vm-from-vhdx.ps1 from the campaign harness): New-VM -Generation 2 … ; Start-VM
+# scp to lab-hyperv-host D:\lab\, then on lab-hyperv-host (kit-vm-from-vhdx.ps1 from the campaign harness): New-VM -Generation 2 … ; Start-VM
 ```
 Expected: the VM boots to a login prompt with hostname `<orig>-restored`; `systemctl is-enabled ssh` → enabled; `cat /etc/machine-id` differs from the source. Record the console screenshot path and the result JSON in the PR body and in the campaign doc `docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md` §11 as row `W03-linux-image-boot`.
 

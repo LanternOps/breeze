@@ -86,7 +86,7 @@ Three orgs, three sites, ~10 devices. The partner admin spans all orgs — **mul
 
 | Org | id | Site | Devices |
 |---|---|---|---|
-| Default Organization | `b50945ac-54f8-4e16-8caa-af4999cf8c03` | Default Site `979a7d33-…` | most; incl. the one **online** Windows box `WIN-DHQNR1F8LO2` |
+| Default Organization | `b50945ac-54f8-4e16-8caa-af4999cf8c03` | Default Site `979a7d33-…` | most; incl. the one **online** Windows box `lab-windows-server-vm-2` |
 | Acme MSP Customer 2 | `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa` | Acme HQ `bbbbbbbb-…` | a few (use for cross-org tests) |
 | VM Test Org | `463a227d-9df1-4dfb-b990-8564c1a2dcca` | VM Site | typically 0 devices |
 

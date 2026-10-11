@@ -2,7 +2,7 @@
 
 **Companion to:** `2026-07-03-pam-path-b-token-launch-actuator.md` (Task 7)
 **Design:** `docs/superpowers/specs/pam/2026-07-03-pam-path-b-token-launch-actuator-design.md`
-**Target VM:** Windows test VM `100.101.150.55`
+**Target VM:** Windows test VM `<lab-windows-test-vm-ip>`
 
 This is where the raw `winTokenLauncher.Launch` Win32 layer (the intentional stub from Task 3, `agent/internal/pamactuator/tokenlaunch_windows.go`) is implemented for real and iterated against hardware. Everything above it (config selection, strategy dispatch, orchestration, target plumbing, guaranteed-demote) is already merged and CI-green; this file covers only what cannot be proven off-hardware.
 
@@ -203,7 +203,7 @@ account (via `userenv.dll`), so the elevated app gets `~breeze_elev`'s HKCU/`APP
 Verified on-VM: `Win32_UserProfile` shows `C:\Users\pamtest Loaded=True` during the launch. Any
 failure falls back to the SYSTEM env — it is NOT the paint fix.
 
-**On-VM validation (2026-07-04, VM `100.101.150.55`, SYSTEM scheduled task → session 3 RDP `user`):**
+**On-VM validation (2026-07-04, VM `<lab-windows-test-vm-ip>`, SYSTEM scheduled task → session 3 RDP `user`):**
 - `pamtest` launched **as `pamtest`, elevated (linked-token), in session 3** — Todd visually confirmed
   the window **paints fully** (Notepad: white client area, live caret, painted menu + status bar).
   Black-window bug is **gone**.
@@ -216,8 +216,8 @@ failure falls back to the SYSTEM env — it is NOT the paint fix.
 
 ## VM finding (2026-07-15): Case A re-validated on a real Windows 11 workstation
 
-Re-ran the raw-layer harness on a **Windows 11 Pro physical machine** (`dell70601`,
-Tailscale `100.71.124.112`) — a fresh environment that had never been exercised, closer to a
+Re-ran the raw-layer harness on a **Windows 11 Pro physical machine** (`lab-windows-11-host`,
+Tailscale `<lab-windows-11-host-ip>`) — a fresh environment that had never been exercised, closer to a
 real customer endpoint than the Server 2022 VM (DWM, modern UAC). Rig: `pamtest` local-admin
 account + a SYSTEM/Highest scheduled task (`PamLaunchTest`) running
 `pamlaunchtest.exe -user pamtest -pass ... -session 1 -target mmc.exe` into the **physical
@@ -226,7 +226,7 @@ console session (id 1)**. Harness exe was a fresh cross-compile from the current
 
 **Results (all green):**
 - `OK pid=… session=1`, `LastTaskResult=0`.
-- Launched process owner = `dell70601\pamtest` (runs **as `~breeze_elev`**), `SessionId=1`
+- Launched process owner = `lab-windows-11-host\pamtest` (runs **as `~breeze_elev`**), `SessionId=1`
   (the requesting console session).
 - Elevation proof via a `whoami /user /groups` dump from the launched process:
   `BUILTIN\Administrators` **Enabled + Group owner**, integrity =
@@ -251,7 +251,7 @@ Fill in per case as you run them (pass/fail + notes), and iterate `winTokenLaunc
 
 | Case | Result | Notes |
 |---|---|---|
-| A — approve/launch (console) | Raw layer ✅ (Server VM + **Win11 physical `dell70601`, 2026-07-15**) | Launch primitive proven via harness (elevated/High integrity, as `pamtest`, correct console session, **paints** — usable MMC). Win11 shows the same classic-frame cosmetic. Full auto-flow pending session resolver (#8) + live ETW/user-helper (dev-stack helper broken). |
+| A — approve/launch (console) | Raw layer ✅ (Server VM + **Win11 physical `lab-windows-11-host`, 2026-07-15**) | Launch primitive proven via harness (elevated/High integrity, as `pamtest`, correct console session, **paints** — usable MMC). Win11 shows the same classic-frame cosmetic. Full auto-flow pending session resolver (#8) + live ETW/user-helper (dev-stack helper broken). |
 | B — deny/block | Deferred | Suppression/deny path unchanged from Path A; not re-exercised this cycle. |
 | C — lifecycle demote | Deferred | Guaranteed-demote covered by CI (`TestTokenLaunchFailureStillDemotes`); on-VM lifecycle run pending full auto-flow. |
 | D — failure demotes | Deferred | See C. |

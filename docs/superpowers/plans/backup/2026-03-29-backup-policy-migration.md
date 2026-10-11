@@ -776,7 +776,7 @@ docker exec -i breeze-postgres psql -U breeze -d breeze < apps/api/migrations/00
 
 Verify: `docker exec -i breeze-postgres psql -U breeze -d breeze -c "SELECT count(*) FROM config_policy_backup_settings;"`
 
-- [ ] **Step 5: Verify Kit shows as protected**
+- [ ] **Step 5: Verify lab-hyperv-host shows as protected**
 
 Hit the status endpoint:
 ```bash

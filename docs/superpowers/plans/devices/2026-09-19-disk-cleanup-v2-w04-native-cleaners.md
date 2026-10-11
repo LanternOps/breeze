@@ -9707,7 +9707,7 @@ Expected: green and unchanged. `rls-coverage.integration.test.ts` and the cascad
 
 Recorded on the W05 sub-issue with the raw command output attached.
 
-**Windows rig `WIN-IMDR2GAIDMV`** (agent running as the SYSTEM service, not an interactive session — the whole point of the test is session 0):
+**Windows rig `lab-windows-server-vm`** (agent running as the SYSTEM service, not an interactive session — the whole point of the test is session 0):
 
 1. Scan `C:\` and a second volume, and empty that volume's recycle bin through the file engine. PASS = both volumes produce snapshots and the bin reclaim reports non-zero bytes.
 2. Run `win_cleanmgr` with `Update Cleanup` selected, plus `win_dism_component_cleanup`, as the SYSTEM service.
@@ -9718,7 +9718,7 @@ Recorded on the W05 sub-issue with the raw command output attached.
 3b. **Single run per device.** Start a run, then start a second from another browser session. PASS = the second is refused with `409 run_in_progress` and no second `device_filesystem_cleanup_runs` row is created.
 3c. **Budget.** Select `Update Cleanup` + DISM. PASS = the run row's `plan.deadlineAt` is ~160 minutes out, and the run is not marked `timed out` at 120.
 
-**KIT rig `lab-ubuntu-src`:**
+**lab-hyperv-host rig `lab-ubuntu-src`:**
 
 4. `linux_pkg_cache_clean` — PASS = `/var/cache/apt/archives` shrinks and the measured delta matches within the noise of concurrent writes.
 5. `linux_journal_vacuum` at the default 256 MiB — PASS = `journalctl --disk-usage` afterwards is at or below the target, and the active journal still contains the current boot.
@@ -9742,7 +9742,7 @@ W04 is mergeable on its unit and contract coverage. The AGENT RELEASE is not:
 cleanmgr's behaviour under the SYSTEM account in session 0 cannot be proven by
 a unit test, and neither can "the measured delta is non-zero after the flagged
 restart". Both are lab criteria, listed in the PR description and executed by
-W05 on WIN-IMDR2GAIDMV and lab-ubuntu-src.
+W05 on lab-windows-server-vm and lab-ubuntu-src.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
