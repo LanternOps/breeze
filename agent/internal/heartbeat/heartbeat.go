@@ -431,7 +431,11 @@ type Heartbeat struct {
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
 	// nil in production — always constructed in NewWithVersion.
-	backupOutbox          *backupResultOutbox
+	backupOutbox *backupResultOutbox
+	// commandJournal records, on disk, which server-tracked commands are
+	// executing, so a restart can report one that died with no result as
+	// failed instead of leaving its row in `sent` until the reaper (#8296).
+	commandJournal        *commandJournal
 	mu                    sync.Mutex
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
@@ -1038,6 +1042,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		retryCfg:                       httputil.DefaultRetryConfig(),
 		seenCommands:                   make(map[string]time.Time),
 		backupOutbox:                   newBackupResultOutbox(outboxRoot),
+		commandJournal:                 newCommandJournal(commandJournalDir(outboxRoot)),
 		pamReconciliationOutbox:        newPamReconciliationOutbox(outboxRoot),
 		pamReconciliationStaged:        make(map[string]pamlifetime.Result),
 		pamReconciliationStagedReasons: make(map[string]string),
@@ -1047,6 +1052,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		hwhealthCol:                    hwhealth.New(hwhealth.Options{DataDir: config.GetDataDir(), ExtraToolDirs: cfg.Hardware.ToolDirs}),
 		hwConfig:                       hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour},
 	}
+	// Before any websocket exists, so the first connect's outbox flush carries
+	// a failed result for every command the previous process died running
+	// (#8296).
+	h.commandJournal.Recover(h.backupOutbox)
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.accepting.Store(true)
@@ -1310,6 +1319,9 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// isn't silently lost after SendResult already reported success. The
 		// next reconnect's OnConnected flush redelivers it. (FIX 3)
 		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+		// Clear a command's in-flight journal entry only once its result is
+		// queued or already in the outbox (#8296).
+		ws.OnResultHandedOff = h.onWSResultHandedOff
 		// Revocation-lease answers from the control plane. This process owns the
 		// command socket, so it performs every renewal — including for sessions
 		// whose capture actually runs in a user helper, which is told to stop
@@ -1453,11 +1465,26 @@ func (h *Heartbeat) requestRevocationLeaseRenew(sessionID string) {
 // failed command-result writes, not just backup results — the write pump can't
 // distinguish them — which is safe: the outbox re-sends via SendResult and the
 // server tolerates a late or duplicate terminal result.
+//
+// If the result cannot be persisted, its in-flight journal entry is pinned so
+// the hand-off that follows does not clear it: the next start then reports
+// the command failed instead of the result vanishing with no trace (#8296).
 func (h *Heartbeat) preserveUndeliveredResult(result websocket.CommandResult) {
-	if h.backupOutbox == nil {
+	if h.backupOutbox != nil && h.backupOutbox.Enqueue(result) {
 		return
 	}
-	h.backupOutbox.Enqueue(result)
+	log.Error("command result could not be persisted to the outbox; if it was journaled it will be reported failed on the next start",
+		"commandId", result.CommandID)
+	h.commandJournal.Pin(result.CommandID)
+}
+
+// onWSResultHandedOff clears the in-flight journal entry for a command whose
+// result the websocket client has queued or outboxed — but only for the
+// delivery that ran the command (HandleCommand's ExpectHandOff). A second
+// delivery of the same id (a "duplicate" marker, or a pre-dedupe rejection
+// such as pool full) must not clear the entry of an execution still running.
+func (h *Heartbeat) onWSResultHandedOff(result websocket.CommandResult) {
+	h.commandJournal.HandedOff(result.CommandID)
 }
 
 // flushBackupResultOutbox retries delivery of any backup results persisted
@@ -6546,8 +6573,33 @@ func (h *Heartbeat) processCommand(cmd Command) {
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
-		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
+		// submitCommandResult already retried; the result is undeliverable
+		// over REST for now. Logging alone dropped it and left the row in
+		// `sent` until the reaper (#8296) — hand it to the websocket, or to
+		// the outbox the next connect flushes.
+		log.Error("failed to submit command result; falling back to websocket/outbox",
+			logging.KeyCommandID, cmd.ID, "error", err.Error())
+		h.deliverResultOrOutbox(toWSCommandResult(cmd.ID, result))
 	}
+	// End respects a Pin from a failed outbox write, so a result that could
+	// be neither delivered nor persisted leaves its entry for the next start
+	// to report.
+	h.commandJournal.End(cmd.ID)
+}
+
+// deliverResultOrOutbox queues result on the live websocket if there is one,
+// and otherwise persists it to the outbox for the next connect's flush.
+func (h *Heartbeat) deliverResultOrOutbox(result websocket.CommandResult) {
+	result.Type = "command_result"
+	if h.wsClient != nil {
+		err := h.wsClient.SendResult(result)
+		if err == nil {
+			return
+		}
+		log.Warn("websocket refused a REST-undeliverable result; persisting it to the outbox",
+			"commandId", result.CommandID, "error", err.Error())
+	}
+	h.preserveUndeliveredResult(result)
 }
 
 func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandResult) error {
@@ -6640,7 +6692,13 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		Payload: wsCmd.Payload,
 	}
 
-	result := h.executeCommandViaPool(cmd)
+	result, executed := h.executeCommandViaPoolReportingDelivery(cmd)
+	if executed && result.Status != "duplicate" {
+		// This delivery ran the command, so its hand-off (the websocket
+		// client's OnResultHandedOff, right after this returns) is the one
+		// that clears the journal entry (#8296).
+		h.commandJournal.ExpectHandOff(cmd)
+	}
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
@@ -6656,6 +6714,18 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 }
 
 func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
+	result, _ := h.executeCommandViaPoolReportingDelivery(cmd)
+	return result
+}
+
+// executeCommandViaPoolReportingDelivery is executeCommandViaPool that also
+// reports whether the returned result is the one executeCommand produced
+// (executed=true) rather than a synthetic stand-in — pool full, or shutdown
+// overtaking a still-running worker. HandleCommand needs the distinction for
+// the in-flight journal (#8296): only the delivery that actually ran a
+// command may clear its entry, never a second delivery of the same id that
+// was rejected before dedupe.
+func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result tools.CommandResult, executed bool) {
 	// #3525: lifecycle commands BYPASS the worker pool. MaxConcurrentCommands
 	// clamps to a floor of 1 (config/validate.go), so a cancel submitted to the
 	// pool queues behind the very script it must stop — and once the queue is
@@ -6667,11 +6737,11 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	// ordered command, so websocket dispatchCommand gives it its own goroutine,
 	// and the heartbeat poll path spawns one explicitly.
 	if isLifecycleCommand(cmd.Type) {
-		return h.runTrackedCommand(cmd)
+		return h.runTrackedCommand(cmd), true
 	}
 
 	if h.pool == nil {
-		return h.executeCommand(cmd)
+		return h.executeCommand(cmd), true
 	}
 
 	resultCh := make(chan tools.CommandResult, 1)
@@ -6683,7 +6753,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
 			ExitCode: 1,
 			Error:    "command rejected, worker pool full",
-		}
+		}, false
 	}
 
 	// Watchdog: log-only, deliberately NOT a timeout. Some handlers are
@@ -6703,7 +6773,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	for {
 		select {
 		case result := <-resultCh:
-			return result
+			return result, true
 		case <-watchdog.C:
 			log.Warn("command still in flight after watchdog interval — handler may be wedged and retaining its payload",
 				logging.KeyCommandID, cmd.ID,
@@ -6717,13 +6787,13 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "agent is shutting down",
-			}
+			}, false
 		case <-h.pool.Context().Done():
 			return tools.CommandResult{
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "command execution interrupted during shutdown",
-			}
+			}, false
 		}
 	}
 }
@@ -6936,6 +7006,12 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	}
 
 	cmdLog.Info("processing command")
+
+	// Past dedupe, so this is the one execution of cmd.ID. Ended by the
+	// caller once the result is handed off (onWSResultHandedOff on the
+	// websocket path, processCommand on the REST path) — not here, because a
+	// result produced but not yet queued or outboxed is still losable (#8296).
+	h.commandJournal.Begin(cmd)
 
 	// Audit: command received
 	if h.auditLog != nil {

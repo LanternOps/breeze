@@ -146,8 +146,15 @@ type Client struct {
 	// defaultOrderedEnqueueTimeout.
 	orderedEnqueueTimeout time.Duration
 	stopOnce              sync.Once
-	isRunning             bool
-	runningMu             sync.RWMutex
+	// stopMu makes SendResult's "is the client stopped?" check and its
+	// enqueue onto resultChan atomic with respect to Stop closing done
+	// (#8296). SendResult holds the read lock across both (the enqueue never
+	// blocks); Stop takes the write lock to close done. Once Stop has the
+	// lock, no further result can enter resultChan, so its drain to the
+	// outbox is complete rather than racing a late enqueue.
+	stopMu    sync.RWMutex
+	isRunning bool
+	runningMu sync.RWMutex
 
 	// OnConnected, if set, is invoked synchronously from the read pump once
 	// the server's "connected" welcome frame has been parsed — i.e. after a
@@ -178,6 +185,17 @@ type Client struct {
 	// which the server never processes before the connection drops; closing
 	// that fully would need an application-level per-result ACK.
 	OnResultWriteFailed func(CommandResult)
+
+	// OnResultHandedOff, if set, is invoked from processCommand once a
+	// command's result has been handed to a delivery path: accepted into
+	// resultChan by SendResult, or — when SendResult refused it (client
+	// stopped, channel full) — already passed to OnResultWriteFailed. The
+	// heartbeat clears the command's on-disk in-flight journal entry here
+	// (#8296); firing it only after the outbox write is what keeps a crash in
+	// between from losing both the result and the record that it was running.
+	// Runs on the command goroutine. Set once before Start(), so it needs no
+	// lock.
+	OnResultHandedOff func(CommandResult)
 
 	// OnRevocationLease, if set, is invoked from the read pump when the server
 	// answers a revocation-lease renewal. `Revoked` is true for a
@@ -273,11 +291,33 @@ func (c *Client) Stop() {
 		c.isRunning = false
 		c.runningMu.Unlock()
 
+		c.stopMu.Lock()
 		close(c.done)
+		c.stopMu.Unlock()
 		c.closeCurrentConn(true)
+		c.drainBufferedResultsToOutbox()
 
 		log.Info("client stopped")
 	})
+}
+
+// drainBufferedResultsToOutbox hands every result still queued in resultChan
+// to the outbox owner. Called from Stop, after done is closed: the pumps are
+// exiting, so nothing will ever write these, and the process is usually about
+// to exit with them (#8296). The write pump may still pop one concurrently —
+// it then writes it or, finding no connection, preserves it itself — so each
+// result is handled exactly once either way.
+func (c *Client) drainBufferedResultsToOutbox() {
+	for {
+		select {
+		case res := <-c.resultChan:
+			log.Warn("command result still queued at stop; handing it to the outbox",
+				"commandId", res.result.CommandID)
+			c.handleResultWriteFailure(res.result)
+		default:
+			return
+		}
+	}
 }
 
 func (c *Client) closeCurrentConn(sendClose bool) {
@@ -801,7 +841,22 @@ func (c *Client) processCommand(cmd Command) {
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
-		log.Error("failed to send command result", "commandId", cmd.ID, "error", err.Error())
+		// Most often "client is stopped": a long command (install_patches
+		// mid-WUA) that outlives the shutdown drain finishes after the client
+		// is torn down. Logging alone dropped the terminal result and left the
+		// server row in `sent` until the reaper (#8296); the outbox resends it
+		// on the next connect. A "duplicate" marker is not a terminal result —
+		// the server's schema rejects it — so it is not worth a resend.
+		if result.Status == "duplicate" {
+			log.Warn("failed to send duplicate-command marker", "commandId", cmd.ID, "error", err.Error())
+		} else {
+			log.Error("failed to send command result; handing it to the outbox",
+				"commandId", cmd.ID, "error", err.Error())
+			c.handleResultWriteFailure(result)
+		}
+	}
+	if c.OnResultHandedOff != nil {
+		c.OnResultHandedOff(result)
 	}
 }
 
@@ -845,6 +900,12 @@ func (c *Client) SendResult(result CommandResult) error {
 			}
 		}
 	}
+
+	// Held across the stopped check AND the enqueue so Stop cannot close done
+	// in between and then drain resultChan before this result lands in it
+	// (#8296). The enqueue below never blocks, so neither does Stop.
+	c.stopMu.RLock()
+	defer c.stopMu.RUnlock()
 
 	// Checked first: with buffer space free, the select below picks between a
 	// ready send and a closed done at random, and a result accepted into the
