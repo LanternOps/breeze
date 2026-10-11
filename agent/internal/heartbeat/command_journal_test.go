@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	gwebsocket "github.com/gorilla/websocket"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -143,41 +146,199 @@ func TestCommandJournal_DoesNotLeakIntoOutboxFlush(t *testing.T) {
 }
 
 // The WebSocket path: executeCommand journals a command once it passes
-// dedupe, and the websocket client's hand-off notice clears it — except for a
-// "duplicate" marker, whose original is still running under the same id.
-func TestSetWebSocketClient_HandOffClearsTheJournal(t *testing.T) {
+// dedupe, and only the hand-off of the delivery that RAN it clears the entry.
+// A second delivery of the same id — answered "duplicate", or rejected before
+// dedupe (pool full) — must not clear the entry of an execution still running.
+func TestSetWebSocketClient_HandOffClearsOnlyTheExecutingDelivery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
 	root := t.TempDir()
-	h := &Heartbeat{
-		backupOutbox:   newBackupResultOutbox(root),
-		commandJournal: newCommandJournal(commandJournalDir(root)),
-		seenCommands:   make(map[string]time.Time),
+	h := newResultSubmitHeartbeat(srv.URL)
+	h.backupOutbox = newBackupResultOutbox(root)
+	h.commandJournal = newCommandJournal(commandJournalDir(root))
+	if h.seenCommands == nil {
+		h.seenCommands = make(map[string]time.Time)
 	}
+	h.accepting.Store(true)
 	ws := websocket.New(&websocket.Config{ServerURL: "http://localhost", AgentID: "a", AuthToken: secmem.NewSecureString("t")},
 		func(websocket.Command) websocket.CommandResult { return websocket.CommandResult{} })
 	h.SetWebSocketClient(ws)
 	if ws.OnResultHandedOff == nil {
 		t.Fatal("SetWebSocketClient did not wire OnResultHandedOff")
 	}
+	journal := commandJournalDir(root)
 
-	// An unknown type keeps the handler side effect-free; what matters is that
-	// it passed dedupe and so is now "running" as far as the journal knows.
-	_ = h.executeCommand(Command{ID: journalTestCmdID, Type: "test_unknown_type"})
-	if left := jsonFilesIn(t, commandJournalDir(root)); len(left) != 1 {
-		t.Fatalf("executeCommand journaled %v, want exactly one entry until the result is handed off", left)
+	// Normal delivery: journaled while running, cleared by its own hand-off.
+	// An unknown type keeps the handler side effect-free.
+	first := websocket.Command{ID: journalTestCmdID, Type: "test_unknown_type"}
+	res := h.HandleCommand(first)
+	if left := jsonFilesIn(t, journal); len(left) != 1 {
+		t.Fatalf("HandleCommand journaled %v, want one entry until the result is handed off", left)
+	}
+	ws.OnResultHandedOff(res)
+	if left := jsonFilesIn(t, journal); len(left) != 0 {
+		t.Fatalf("the executing delivery's hand-off did not clear the journal: %v", left)
 	}
 
-	dup := h.executeCommand(Command{ID: journalTestCmdID, Type: "test_unknown_type"})
+	// An execution still running (journaled, past dedupe, not yet returned).
+	const runningID = "0c6e9a3e-6a3f-4d7e-9a43-1b2f3c4d5e71"
+	running := Command{ID: runningID, Type: tools.CmdInstallPatches}
+	h.markCommandSeen(runningID)
+	h.commandJournal.Begin(running)
+
+	dup := h.HandleCommand(websocket.Command{ID: runningID, Type: tools.CmdInstallPatches})
 	if dup.Status != "duplicate" {
 		t.Fatalf("second delivery status = %q, want duplicate", dup.Status)
 	}
-	ws.OnResultHandedOff(toWSCommandResult(journalTestCmdID, dup))
-	if left := jsonFilesIn(t, commandJournalDir(root)); len(left) != 1 {
-		t.Fatalf("a duplicate's hand-off cleared the original's journal entry: %v", left)
+	ws.OnResultHandedOff(dup)
+	// A pre-dedupe rejection of yet another delivery (pool full).
+	ws.OnResultHandedOff(websocket.CommandResult{CommandID: runningID, Status: "failed", ExitCode: 1,
+		Error: "command rejected, worker pool full"})
+	if left := jsonFilesIn(t, journal); len(left) != 1 {
+		t.Fatalf("another delivery's hand-off cleared a running command's journal entry: %v", left)
 	}
 
-	ws.OnResultHandedOff(websocket.CommandResult{CommandID: journalTestCmdID, Status: "failed"})
-	if left := jsonFilesIn(t, commandJournalDir(root)); len(left) != 0 {
-		t.Fatalf("hand-off did not clear the journal: %v", left)
+	// The running execution finishes and is handed off.
+	h.commandJournal.ExpectHandOff(running)
+	ws.OnResultHandedOff(websocket.CommandResult{CommandID: runningID, Status: "completed"})
+	if left := jsonFilesIn(t, journal); len(left) != 0 {
+		t.Fatalf("the running execution's hand-off did not clear its entry: %v", left)
+	}
+}
+
+// If the outbox cannot persist a refused result, the journal entry must
+// survive the hand-off that follows, so the next start still reports the
+// command failed instead of the result vanishing with no trace.
+func TestPreserveUndeliveredResult_OutboxFailureKeepsTheJournalEntry(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	journalDir := filepath.Join(root, "journal")
+	h := &Heartbeat{
+		backupOutbox:   newBackupResultOutbox(blocked), // MkdirAll fails: a file is in the way
+		commandJournal: newCommandJournal(journalDir),
+	}
+	cmd := Command{ID: journalTestCmdID, Type: tools.CmdInstallPatches}
+	h.commandJournal.Begin(cmd)
+	h.commandJournal.ExpectHandOff(cmd)
+
+	h.preserveUndeliveredResult(websocket.CommandResult{Type: "command_result", CommandID: journalTestCmdID, Status: "failed"})
+	h.onWSResultHandedOff(websocket.CommandResult{CommandID: journalTestCmdID, Status: "failed"})
+
+	if left := jsonFilesIn(t, journalDir); len(left) != 1 {
+		t.Fatalf("journal = %v after an unpersistable result; want the entry kept for Recover", left)
+	}
+	working := newBackupResultOutbox(filepath.Join(root, "outbox"))
+	if n := newCommandJournal(journalDir).Recover(working); n != 1 {
+		t.Fatalf("Recover reported %d, want 1 for the result that was never persisted", n)
+	}
+}
+
+// End and HandedOff for an id this process never journaled must not touch a
+// file someone else left in the journal (e.g. the previous process's entry
+// awaiting Recover).
+func TestCommandJournal_EndIgnoresIdsItNeverJournaled(t *testing.T) {
+	root := t.TempDir()
+	dir := commandJournalDir(root)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(dir, journalTestCmdID+".json")
+	if err := os.WriteFile(stray, []byte(`{"commandId":"`+journalTestCmdID+`","type":"install_patches"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j := newCommandJournal(dir)
+	j.End(journalTestCmdID)
+	j.HandedOff(journalTestCmdID)
+	j.End(journalTestCmdID)
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("End removed an entry this process never journaled: %v", err)
+	}
+}
+
+// Recover drops entries it can never act on — and must not turn them into
+// results: corrupt JSON, an id that is not a UUID, an ephemeral type, and a
+// file whose name disagrees with its id (the path-traversal guard).
+func TestCommandJournal_RecoverDropsCorruptAndHostileEntries(t *testing.T) {
+	cases := map[string]string{
+		"corrupt json":     `{not json`,
+		"non-uuid id":      `{"commandId":"snmp-1","type":"install_patches"}`,
+		"ephemeral type":   `{"commandId":"` + journalTestCmdID + `","type":"terminal_start"}`,
+		"name/id mismatch": `{"commandId":"0c6e9a3e-6a3f-4d7e-9a43-1b2f3c4d5e72","type":"install_patches"}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := commandJournalDir(root)
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, journalTestCmdID+".json")
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			outbox := newBackupResultOutbox(root)
+			if n := newCommandJournal(dir).Recover(outbox); n != 0 {
+				t.Fatalf("Recover reported %d for a bad entry, want 0", n)
+			}
+			if got := flushAll(t, outbox); len(got) != 0 {
+				t.Fatalf("a bad journal entry became a result: %+v", got)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("bad entry not removed (stat err=%v)", err)
+			}
+		})
+	}
+}
+
+// An entry Recover cannot outbox now is kept for the next start, and leftover
+// .tmp files from a crash mid-Begin are cleared.
+func TestCommandJournal_RecoverKeepsEntryWhenOutboxFailsAndClearsTmp(t *testing.T) {
+	root := t.TempDir()
+	dir := commandJournalDir(root)
+	newCommandJournal(dir).Begin(Command{ID: journalTestCmdID, Type: tools.CmdInstallPatches})
+	tmp := filepath.Join(dir, "0c6e9a3e-6a3f-4d7e-9a43-1b2f3c4d5e73.json.tmp")
+	if err := os.WriteFile(tmp, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocked, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := newCommandJournal(dir).Recover(newBackupResultOutbox(blocked)); n != 0 {
+		t.Fatalf("Recover reported %d with an unwritable outbox, want 0", n)
+	}
+	if left := jsonFilesIn(t, dir); len(left) != 1 {
+		t.Fatalf("journal = %v; an entry that could not be outboxed must be kept", left)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("leftover .tmp not cleared (stat err=%v)", err)
+	}
+}
+
+// The constructor is where recovery runs in production; deleting that call
+// would silently disable the whole restart path, so pin it.
+func TestNewWithVersion_RecoversInterruptedCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	outboxRoot := backupResultOutboxDir()
+	if !strings.HasPrefix(outboxRoot, home) {
+		t.Skipf("outbox dir %q is not under the test HOME on this host; cannot isolate", outboxRoot)
+	}
+	newCommandJournal(commandJournalDir(outboxRoot)).Begin(Command{ID: journalTestCmdID, Type: tools.CmdInstallPatches})
+
+	_ = NewWithVersion(&config.Config{AgentID: "agent-1", ServerURL: "http://127.0.0.1:1", AuthToken: "t"}, "test", nil, nil)
+
+	got := flushAll(t, newBackupResultOutbox(outboxRoot))
+	if len(got) != 1 || got[0].CommandID != journalTestCmdID || got[0].Error != interruptedCommandError {
+		t.Fatalf("after construction the outbox holds %+v, want the interrupted-command failure", got)
 	}
 }
 
@@ -277,12 +438,15 @@ func TestResultProducedAfterStop_IsFlushedOnNextConnect(t *testing.T) {
 // just be logged — it goes to the outbox too, and its journal entry is cleared
 // only after that.
 func TestProcessCommand_RESTSubmitFailureGoesToOutbox(t *testing.T) {
+	root := t.TempDir()
+	journaledDuringSubmit := make(chan int, 16)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		matches, _ := filepath.Glob(filepath.Join(commandJournalDir(root), "*.json"))
+		journaledDuringSubmit <- len(matches)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	root := t.TempDir()
 	h := newResultSubmitHeartbeat(srv.URL)
 	h.backupOutbox = newBackupResultOutbox(root)
 	h.commandJournal = newCommandJournal(commandJournalDir(root))
@@ -291,6 +455,15 @@ func TestProcessCommand_RESTSubmitFailureGoesToOutbox(t *testing.T) {
 	}
 
 	h.processCommand(Command{ID: journalTestCmdID, Type: "test_unknown_type"})
+
+	select {
+	case n := <-journaledDuringSubmit:
+		if n != 1 {
+			t.Fatalf("journal held %d entries while the result was being submitted, want 1", n)
+		}
+	default:
+		t.Fatal("the REST submit never reached the server")
+	}
 
 	got := flushAll(t, h.backupOutbox)
 	if len(got) != 1 || got[0].CommandID != journalTestCmdID || got[0].Type != "command_result" || got[0].Status != "failed" {

@@ -1465,22 +1465,26 @@ func (h *Heartbeat) requestRevocationLeaseRenew(sessionID string) {
 // failed command-result writes, not just backup results — the write pump can't
 // distinguish them — which is safe: the outbox re-sends via SendResult and the
 // server tolerates a late or duplicate terminal result.
+//
+// If the result cannot be persisted, its in-flight journal entry is pinned so
+// the hand-off that follows does not clear it: the next start then reports
+// the command failed instead of the result vanishing with no trace (#8296).
 func (h *Heartbeat) preserveUndeliveredResult(result websocket.CommandResult) {
-	if h.backupOutbox == nil {
+	if h.backupOutbox != nil && h.backupOutbox.Enqueue(result) {
 		return
 	}
-	h.backupOutbox.Enqueue(result)
+	log.Error("command result could not be persisted to the outbox; if it was journaled it will be reported failed on the next start",
+		"commandId", result.CommandID)
+	h.commandJournal.Pin(result.CommandID)
 }
 
 // onWSResultHandedOff clears the in-flight journal entry for a command whose
-// result the websocket client has queued or outboxed. A "duplicate" marker is
-// skipped: it answers a second delivery of an id whose original execution is
-// still running and still journaled.
+// result the websocket client has queued or outboxed — but only for the
+// delivery that ran the command (HandleCommand's ExpectHandOff). A second
+// delivery of the same id (a "duplicate" marker, or a pre-dedupe rejection
+// such as pool full) must not clear the entry of an execution still running.
 func (h *Heartbeat) onWSResultHandedOff(result websocket.CommandResult) {
-	if result.Status == "duplicate" {
-		return
-	}
-	h.commandJournal.End(result.CommandID)
+	h.commandJournal.HandedOff(result.CommandID)
 }
 
 // flushBackupResultOutbox retries delivery of any backup results persisted
@@ -6577,6 +6581,9 @@ func (h *Heartbeat) processCommand(cmd Command) {
 			logging.KeyCommandID, cmd.ID, "error", err.Error())
 		h.deliverResultOrOutbox(toWSCommandResult(cmd.ID, result))
 	}
+	// End respects a Pin from a failed outbox write, so a result that could
+	// be neither delivered nor persisted leaves its entry for the next start
+	// to report.
 	h.commandJournal.End(cmd.ID)
 }
 
@@ -6585,9 +6592,12 @@ func (h *Heartbeat) processCommand(cmd Command) {
 func (h *Heartbeat) deliverResultOrOutbox(result websocket.CommandResult) {
 	result.Type = "command_result"
 	if h.wsClient != nil {
-		if err := h.wsClient.SendResult(result); err == nil {
+		err := h.wsClient.SendResult(result)
+		if err == nil {
 			return
 		}
+		log.Warn("websocket refused a REST-undeliverable result; persisting it to the outbox",
+			"commandId", result.CommandID, "error", err.Error())
 	}
 	h.preserveUndeliveredResult(result)
 }
@@ -6682,7 +6692,13 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		Payload: wsCmd.Payload,
 	}
 
-	result := h.executeCommandViaPool(cmd)
+	result, executed := h.executeCommandViaPoolReportingDelivery(cmd)
+	if executed && result.Status != "duplicate" {
+		// This delivery ran the command, so its hand-off (the websocket
+		// client's OnResultHandedOff, right after this returns) is the one
+		// that clears the journal entry (#8296).
+		h.commandJournal.ExpectHandOff(cmd)
+	}
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
@@ -6698,6 +6714,18 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 }
 
 func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
+	result, _ := h.executeCommandViaPoolReportingDelivery(cmd)
+	return result
+}
+
+// executeCommandViaPoolReportingDelivery is executeCommandViaPool that also
+// reports whether the returned result is the one executeCommand produced
+// (executed=true) rather than a synthetic stand-in — pool full, or shutdown
+// overtaking a still-running worker. HandleCommand needs the distinction for
+// the in-flight journal (#8296): only the delivery that actually ran a
+// command may clear its entry, never a second delivery of the same id that
+// was rejected before dedupe.
+func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result tools.CommandResult, executed bool) {
 	// #3525: lifecycle commands BYPASS the worker pool. MaxConcurrentCommands
 	// clamps to a floor of 1 (config/validate.go), so a cancel submitted to the
 	// pool queues behind the very script it must stop — and once the queue is
@@ -6709,11 +6737,11 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	// ordered command, so websocket dispatchCommand gives it its own goroutine,
 	// and the heartbeat poll path spawns one explicitly.
 	if isLifecycleCommand(cmd.Type) {
-		return h.runTrackedCommand(cmd)
+		return h.runTrackedCommand(cmd), true
 	}
 
 	if h.pool == nil {
-		return h.executeCommand(cmd)
+		return h.executeCommand(cmd), true
 	}
 
 	resultCh := make(chan tools.CommandResult, 1)
@@ -6725,7 +6753,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
 			ExitCode: 1,
 			Error:    "command rejected, worker pool full",
-		}
+		}, false
 	}
 
 	// Watchdog: log-only, deliberately NOT a timeout. Some handlers are
@@ -6745,7 +6773,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	for {
 		select {
 		case result := <-resultCh:
-			return result
+			return result, true
 		case <-watchdog.C:
 			log.Warn("command still in flight after watchdog interval — handler may be wedged and retaining its payload",
 				logging.KeyCommandID, cmd.ID,
@@ -6759,13 +6787,13 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "agent is shutting down",
-			}
+			}, false
 		case <-h.pool.Context().Done():
 			return tools.CommandResult{
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "command execution interrupted during shutdown",
-			}
+			}, false
 		}
 	}
 }

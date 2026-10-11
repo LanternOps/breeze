@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -100,5 +101,54 @@ func TestProcessCommand_HandedOffOnSuccessfulQueue(t *testing.T) {
 	}
 	if len(c.resultChan) != 1 {
 		t.Fatalf("resultChan holds %d, want 1", len(c.resultChan))
+	}
+}
+
+// SendResult racing Stop: every result SendResult ACCEPTED must reach the
+// outbox through Stop's drain (nothing else drains a never-connected client).
+// Without stopMu, an enqueue landing after the drain is reported as success
+// and then lost with the process.
+func TestSendResult_RacingStopLosesNothing(t *testing.T) {
+	for iter := 0; iter < 200; iter++ {
+		c := newTestClient("http://localhost", noopHandler)
+		var mu sync.Mutex
+		preserved := map[string]bool{}
+		c.OnResultWriteFailed = func(r CommandResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			preserved[r.CommandID] = true
+		}
+
+		const senders = 8
+		accepted := make(chan string, senders)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < senders; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				id := fmt.Sprintf("cmd-%d-%d", iter, i)
+				if c.SendResult(CommandResult{Type: "command_result", CommandID: id, Status: "completed"}) == nil {
+					accepted <- id
+				}
+			}(i)
+		}
+		close(start)
+		c.Stop()
+		wg.Wait()
+		close(accepted)
+
+		mu.Lock()
+		for id := range accepted {
+			if !preserved[id] {
+				mu.Unlock()
+				t.Fatalf("iteration %d: %s was accepted by SendResult but never reached the outbox", iter, id)
+			}
+		}
+		mu.Unlock()
+		if n := len(c.resultChan); n != 0 {
+			t.Fatalf("iteration %d: %d results stranded in resultChan after Stop", iter, n)
+		}
 	}
 }

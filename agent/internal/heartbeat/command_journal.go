@@ -59,12 +59,25 @@ type commandJournal struct {
 	// the overwhelming majority of results (terminal/tunnel/desktop frames,
 	// monitor checks) that were never journaled — never a filesystem call.
 	active map[string]struct{}
+	// handOffExpected holds ids whose websocket delivery ran the command, so
+	// that delivery's hand-off — and no other delivery's — clears the entry.
+	handOffExpected map[string]struct{}
+	// pinned holds ids whose result could not be persisted to the outbox.
+	// End forgets them in memory but leaves the file, so the next start
+	// reports the command failed rather than nothing at all.
+	pinned map[string]struct{}
 
 	nowFn func() time.Time
 }
 
 func newCommandJournal(dir string) *commandJournal {
-	return &commandJournal{dir: dir, active: make(map[string]struct{}), nowFn: time.Now}
+	return &commandJournal{
+		dir:             dir,
+		active:          make(map[string]struct{}),
+		handOffExpected: make(map[string]struct{}),
+		pinned:          make(map[string]struct{}),
+		nowFn:           time.Now,
+	}
 }
 
 // commandJournalDir returns where the journal lives for a given outbox root.
@@ -133,12 +146,70 @@ func (j *commandJournal) End(commandID string) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.endLocked(commandID)
+}
+
+func (j *commandJournal) endLocked(commandID string) {
 	if _, ok := j.active[commandID]; !ok {
 		return
 	}
 	delete(j.active, commandID)
+	delete(j.handOffExpected, commandID)
+	if _, pinned := j.pinned[commandID]; pinned {
+		// The result never reached the outbox: keep the file for Recover.
+		delete(j.pinned, commandID)
+		return
+	}
+	// A failed remove leaves a file Recover will turn into a synthetic
+	// failure for a command that finished. That is harmless: by then the
+	// server row is terminal, and a terminal row ignores a second result
+	// (commandAcceptsAgentResultCondition), so the real result stands.
 	if err := os.Remove(j.entryPath(commandID)); err != nil && !os.IsNotExist(err) {
 		log.Warn("failed to clear command journal entry", "commandId", commandID, "error", err.Error())
+	}
+}
+
+// ExpectHandOff marks cmd's current execution as the one whose websocket
+// hand-off ends its entry. Called by HandleCommand only when its delivery
+// actually ran the command, so a second delivery of the same id — answered
+// "duplicate", or rejected before dedupe (pool full) — cannot clear the
+// entry of an execution that is still running.
+func (j *commandJournal) ExpectHandOff(cmd Command) {
+	if j == nil || !journalable(cmd) {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.active[cmd.ID]; ok {
+		j.handOffExpected[cmd.ID] = struct{}{}
+	}
+}
+
+// HandedOff ends commandID's entry if, and only if, ExpectHandOff marked the
+// delivery whose result was just handed off.
+func (j *commandJournal) HandedOff(commandID string) {
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.handOffExpected[commandID]; !ok {
+		return
+	}
+	j.endLocked(commandID)
+}
+
+// Pin records that commandID's result could not be persisted, so the End
+// that follows keeps its file for the next start's Recover. A no-op for an
+// id that is not journaled.
+func (j *commandJournal) Pin(commandID string) {
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.active[commandID]; ok {
+		j.pinned[commandID] = struct{}{}
 	}
 }
 
@@ -158,8 +229,20 @@ func (j *commandJournal) Recover(outbox *backupResultOutbox) int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	// A crash between Begin's write and its rename leaves a .tmp the glob
+	// below never matches; clear them so they cannot accumulate.
+	if tmps, err := filepath.Glob(filepath.Join(j.dir, "*.json.tmp")); err == nil {
+		for _, tmp := range tmps {
+			_ = os.Remove(tmp)
+		}
+	}
+
 	matches, err := filepath.Glob(filepath.Join(j.dir, "*.json"))
-	if err != nil || len(matches) == 0 {
+	if err != nil {
+		log.Warn("failed to scan command journal", "dir", j.dir, "error", err.Error())
+		return 0
+	}
+	if len(matches) == 0 {
 		return 0
 	}
 
