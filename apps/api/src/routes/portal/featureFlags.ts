@@ -125,6 +125,10 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string
     error: 'Performance metrics are not enabled for this portal',
     code: 'PORTAL_PERFORMANCE_METRICS_DISABLED',
   },
+  enableSoftwareInventory: {
+    error: 'Software inventory is not enabled for this portal',
+    code: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: StrictPortalVisibilityFlag): MiddlewareHandler {

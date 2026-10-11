@@ -129,6 +129,12 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
     reason: 'cis_baseline_results.id, aliased to resultId inside the window-function subquery',
   },
   {
+    file: 'services/portal/softwareInventoryReadModel.ts',
+    orderByContains: '...SUMMARY_GROUP_ORDER',
+    reason:
+      'W04 (#7734): the organization summary groups by name/version/vendor and orders by that complete tuple, uniquely identifying each aggregate row, including NULL groups. The per-device query uses softwareInventory.id. The complete grouping/order tuple is pinned by softwareInventoryReadModel.ordering.test.ts; real-Postgres page walks are covered by portalSoftwareInventory.integration.test.ts.',
+  },
+  {
     file: 'services/portal/networkVisibilityReadModel.ts',
     orderByContains: '...STABLE_ASSET_ORDER',
     reason:

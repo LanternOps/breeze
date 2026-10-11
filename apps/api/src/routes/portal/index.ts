@@ -18,6 +18,7 @@ import { portalSecurityRoutes } from './security';
 import { portalHardwareHealthRoutes } from './hardwareHealth';
 import { portalHardwareInventoryRoutes } from './hardwareInventory';
 import { portalPerformanceRoutes } from './performance';
+import { portalSoftwareRoutes } from './software';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
@@ -77,6 +78,9 @@ portalRoutes.use('/hardware-inventory/*', createPortalFeatureGateStrict('enableH
 // Portal Advanced Visibility W03 (#7733): performance metrics, fail-closed.
 portalRoutes.use('/performance/*', portalAuthMiddleware);
 portalRoutes.use('/performance/*', createPortalFeatureGateStrict('enablePerformanceMetrics'));
+// W04 (#7734): independent of enableDevices.
+portalRoutes.use('/software/*', portalAuthMiddleware);
+portalRoutes.use('/software/*', createPortalFeatureGateStrict('enableSoftwareInventory'));
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
@@ -120,6 +124,7 @@ portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalHardwareHealthRoutes);
 portalRoutes.route('/', portalHardwareInventoryRoutes);
 portalRoutes.route('/', portalPerformanceRoutes);
+portalRoutes.route('/', portalSoftwareRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);

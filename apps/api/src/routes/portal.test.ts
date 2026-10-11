@@ -110,6 +110,8 @@ vi.mock('../services/backupHealthReadModel', () => ({
 vi.mock('../db/schema', () => ({
   // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
   patches: { severity: 'patches.severity', category: 'patches.category' },
+  // Software summary ordering is constructed when the portal routes load.
+  softwareInventory: { name: 'softwareInventory.name', version: 'softwareInventory.version', vendor: 'softwareInventory.vendor' },
   assetCheckouts: {},
   backupConfigs: {},
   backupJobs: {},

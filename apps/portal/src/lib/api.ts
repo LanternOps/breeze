@@ -828,6 +828,7 @@ export interface BrandingConfig {
   enableHardwareHealth?: boolean;
   enableHardwareInventory?: boolean;
   enablePerformanceMetrics?: boolean;
+  enableSoftwareInventory?: boolean;
   enableNetworkVisibility?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
@@ -859,7 +860,26 @@ function mapPaginatedData<T>(
   };
 }
 
+export interface PortalSoftwareItem {
+  name: string;
+  version: string | null;
+  vendor: string | null;
+  installDate: string | null;
+  lastSeen: string | null;
+}
+export interface PortalSoftwarePage<T = PortalSoftwareItem> {
+  asOf: string;
+  dataStatus: 'ok' | 'no_data';
+  data: T[];
+  pagination: { page: number; limit: number; total: number };
+}
+
 export const portalApi = {
+  getSoftwareSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>
+    apiGet<PortalSoftwarePage>('/portal/software/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
+  getDeviceSoftware: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>
+    apiGet<PortalSoftwarePage>('/portal/software/devices/' + encodeURIComponent(deviceId) + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
+
   getDevices: async (
     params: ListParams = {},
     config: ApiRequestConfig = {}

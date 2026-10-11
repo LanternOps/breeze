@@ -1914,6 +1914,10 @@
           "label": "Performans metrikleri",
           "description": "Müşterinizin makineleri için CPU, bellek, disk ve ağ performansı eğilimlerini salt okunur olarak gösterir."
         },
+        "enableSoftwareInventory": {
+          "label": "Yazılım envanteri",
+          "description": "Müşterinizin cihazlarındaki yazılımların adını, sürümünü, sağlayıcısını, kurulum tarihini ve son görülme zamanını gösterir."
+        },
         "enableNetworkVisibility": {
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."

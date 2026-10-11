@@ -19,7 +19,7 @@ import {
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the eleven visibility flags', () => {
+  it('lists exactly the thirteen visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
@@ -32,6 +32,7 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableHardwareHealth',
       'enableHardwareInventory',
       'enablePerformanceMetrics',
+      'enableSoftwareInventory',
       'enableNetworkVisibility'
     ]);
   });
@@ -62,6 +63,7 @@ describe('onPortalFlagsChanged', () => {
     enableHardwareHealth: false,
     enableHardwareInventory: false,
     enablePerformanceMetrics: false,
+    enableSoftwareInventory: false,
     enableNetworkVisibility: false,
   };
 

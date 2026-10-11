@@ -37,6 +37,7 @@ const SETTINGS = {
   enableHardwareHealth: false,
   enableHardwareInventory: false,
   enablePerformanceMetrics: false,
+  enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -110,7 +111,7 @@ describe('OrgPortalSettingsEditor', () => {
     expect(body.welcomeMessage).toBe('Welcome!');
   });
 
-  it('enables all visibility flags in the local draft', async () => {
+  it('enables available visibility flags in the local draft', async () => {
     mockApi();
     render(<OrgPortalSettingsEditor
       orgId={ORG_ID}
@@ -143,6 +144,23 @@ describe('OrgPortalSettingsEditor', () => {
     }
 
     expect(onDirty).toHaveBeenCalled();
+  });
+
+  it('preserves individual software opt-in when "Enable all" is clicked', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const softwareToggle = screen.getByTestId('org-portal-toggle-enableSoftwareInventory') as HTMLInputElement;
+    expect(softwareToggle.checked).toBe(false);
+    fireEvent.click(softwareToggle);
+    expect(softwareToggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(softwareToggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableSoftwareInventory).toBe(true);
   });
 
   it('leaves every sensitive flag off when "Enable all" is clicked', async () => {
@@ -191,6 +209,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableHardwareHealth: true,
       enableHardwareInventory: true,
       enablePerformanceMetrics: true,
+      enableSoftwareInventory: false,
       enableNetworkVisibility: true,
     });
   });

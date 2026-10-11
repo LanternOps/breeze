@@ -1914,6 +1914,10 @@
           "label": "Leistungsmetriken",
           "description": "Zeigt schreibgeschützte Trends zur CPU-, Arbeitsspeicher-, Laufwerks- und Netzwerkleistung der Geräte Ihres Kunden an."
         },
+        "enableSoftwareInventory": {
+          "label": "Software-Inventar",
+          "description": "Zeigt Name, Version, Anbieter, Installationsdatum und letzte Erfassung der Software auf den Geräten Ihres Kunden."
+        },
         "enableNetworkVisibility": {
           "label": "Netzwerksichtbarkeit",
           "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."

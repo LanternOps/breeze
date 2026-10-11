@@ -1914,6 +1914,10 @@
           "label": "Performance metrics",
           "description": "Show read-only CPU, memory, disk and network performance trends for your customer's machines."
         },
+        "enableSoftwareInventory": {
+          "label": "Software inventory",
+          "description": "Show software name, version, vendor, installation date and last seen for your customer's devices."
+        },
         "enableNetworkVisibility": {
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."

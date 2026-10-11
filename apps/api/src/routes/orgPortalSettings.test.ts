@@ -87,6 +87,7 @@ vi.mock('../db/schema', () => ({
     enableHardwareHealth: 'enableHardwareHealth',
     enableHardwareInventory: 'enableHardwareInventory',
     enablePerformanceMetrics: 'enablePerformanceMetrics',
+    enableSoftwareInventory: 'enableSoftwareInventory',
     enableNetworkVisibility: 'enableNetworkVisibility',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
@@ -127,6 +128,7 @@ const FULL_ROW = {
   enableHardwareHealth: false,
   enableHardwareInventory: false,
   enablePerformanceMetrics: false,
+  enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
@@ -188,6 +190,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableHardwareHealth: false,
       enableHardwareInventory: false,
       enablePerformanceMetrics: false,
+      enableSoftwareInventory: false,
       enableNetworkVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
@@ -225,6 +228,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableHardwareHealth: false,
       enableHardwareInventory: false,
       enablePerformanceMetrics: false,
+      enableSoftwareInventory: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
       chromeAccent: null,
@@ -395,6 +399,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableHardwareHealth: true,
       enableHardwareInventory: true,
       enablePerformanceMetrics: true,
+      enableSoftwareInventory: true,
       enableNetworkVisibility: true
     }]);
 
@@ -406,6 +411,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableHardwareHealth: true,
       enableHardwareInventory: true,
       enablePerformanceMetrics: true,
+      enableSoftwareInventory: true,
       enableNetworkVisibility: true
     });
 
@@ -422,6 +428,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableHardwareHealth: true,
       enableHardwareInventory: true,
       enablePerformanceMetrics: true,
+      enableSoftwareInventory: true,
       enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
@@ -435,6 +442,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableHardwareHealth: true,
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
+        enableSoftwareInventory: true,
         enableNetworkVisibility: true
       },
       current: {
@@ -449,6 +457,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableHardwareHealth: true,
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
+        enableSoftwareInventory: true,
         enableNetworkVisibility: true
       }
     });

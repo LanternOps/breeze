@@ -79,6 +79,7 @@ describe('GET /branding (authenticated)', () => {
       enableHardwareHealth: true,
       enableHardwareInventory: true,
       enablePerformanceMetrics: true,
+      enableSoftwareInventory: true,
       enableNetworkVisibility: true,
     }];
 
@@ -98,6 +99,7 @@ describe('GET /branding (authenticated)', () => {
         enableHardwareHealth: true,
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
+        enableSoftwareInventory: true,
       },
     });
 
@@ -123,6 +125,7 @@ describe('GET /branding (authenticated)', () => {
         'enableHardwareHealth',
         'enableHardwareInventory',
         'enablePerformanceMetrics',
+        'enableSoftwareInventory',
         'enableNetworkVisibility',
       ]),
     );
@@ -157,6 +160,7 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableHardwareHealth');
     expect(body).not.toHaveProperty('enableHardwareInventory');
     expect(body).not.toHaveProperty('enablePerformanceMetrics');
+    expect(body).not.toHaveProperty('enableSoftwareInventory');
     expect(body).not.toHaveProperty('enableNetworkVisibility');
   });
 
@@ -225,6 +229,7 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableHardwareHealth');
     expect(body.branding).not.toHaveProperty('enableHardwareInventory');
     expect(body.branding).not.toHaveProperty('enablePerformanceMetrics');
+    expect(body.branding).not.toHaveProperty('enableSoftwareInventory');
     expect(body.branding).not.toHaveProperty('enableNetworkVisibility');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
@@ -245,6 +250,7 @@ describe('GET /branding/:domain (public)', () => {
       'enableHardwareHealth',
       'enableHardwareInventory',
       'enablePerformanceMetrics',
+      'enableSoftwareInventory',
       'enableNetworkVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
