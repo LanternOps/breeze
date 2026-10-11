@@ -209,13 +209,12 @@ describe('PartnerServicePrincipalsPage', () => {
   });
 
   describe('editing a principal with an expiry', () => {
-    const originalTz = process.env.TZ;
     const EXPIRES_AT = '2026-12-01T15:30:45.123Z';
 
     beforeEach(() => {
       // A UTC-minus zone: the expiry must round-trip through the
       // datetime-local input without moving.
-      process.env.TZ = 'America/New_York';
+      vi.stubEnv('TZ', 'America/New_York');
       mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
         id: PRINCIPAL_ID,
         name: 'Weavestream', description: null, status: 'active', scopes: ['devices:read'],
@@ -228,7 +227,8 @@ describe('PartnerServicePrincipalsPage', () => {
     });
 
     afterEach(() => {
-      process.env.TZ = originalTz;
+      // Restores TZ, or deletes it when it was unset.
+      vi.unstubAllEnvs();
     });
 
     function patchBody() {
