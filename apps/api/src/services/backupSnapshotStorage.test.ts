@@ -330,6 +330,61 @@ describe('backup snapshot storage', () => {
     expect(deletedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
   });
 
+  // #8364: S3 reports per-key delete failures (object lock, permissions) inside
+  // a 200 response; a prefix delete must not report success while objects remain.
+  it('throws when DeleteObjects reports per-key errors for a prefix delete (#8364)', async () => {
+    sendMock
+      .mockImplementationOnce(async () => ({
+        Contents: [
+          { Key: 'snapshots/provider-snap-1/manifest.json' },
+          { Key: 'snapshots/provider-snap-1/data.bin' },
+        ],
+        IsTruncated: false,
+      }))
+      .mockImplementationOnce(async () => ({
+        Errors: [
+          { Key: 'snapshots/provider-snap-1/data.bin', Code: 'AccessDenied', Message: 'Object is locked' },
+        ],
+      }));
+
+    await expect(deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    })).rejects.toThrow(/1 object.*snapshots\/provider-snap-1\/data\.bin.*Object is locked/s);
+  });
+
+  it('still deletes later pages before throwing on per-key errors (#8364)', async () => {
+    let deleteCalls = 0;
+    sendMock
+      .mockImplementationOnce(async () => ({
+        Contents: [{ Key: 'snapshots/provider-snap-1/a' }],
+        IsTruncated: true,
+        NextContinuationToken: 'p2',
+      }))
+      .mockImplementationOnce(async () => {
+        deleteCalls += 1;
+        return { Errors: [{ Key: 'snapshots/provider-snap-1/a', Code: 'AccessDenied' }] };
+      })
+      .mockImplementationOnce(async () => ({
+        Contents: [{ Key: 'snapshots/provider-snap-1/b' }],
+        IsTruncated: false,
+      }))
+      .mockImplementationOnce(async () => {
+        deleteCalls += 1;
+        return {};
+      });
+
+    await expect(deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    })).rejects.toThrow(/snapshots\/provider-snap-1\/a.*AccessDenied/s);
+    expect(deleteCalls).toBe(2);
+  });
+
   it('fails when no objects are found for provider immutability', async () => {
     sendMock.mockImplementationOnce(async () => ({
       Contents: [],
