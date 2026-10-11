@@ -84,13 +84,14 @@ export default function TimeTrackingSettingsCard() {
       try {
         const res = await fetchWithAuth('/orgs/partners/me');
         if (res.ok) {
-          const body = (await res.json()) as { data?: { settings?: unknown } };
-          const block = readBlock(body.data?.settings);
+          // The endpoint returns the partner row itself, with no { data } envelope.
+          const body = (await res.json()) as { settings?: unknown };
+          const block = readBlock(body.settings);
           if (!cancelled) {
             setEnabled(block.enabled);
             setMinSession(String(block.minSessionSeconds));
             setMergeGap(String(block.mergeGapMinutes));
-            const loc = readLocationBlock(body.data?.settings);
+            const loc = readLocationBlock(body.settings);
             setLocationEnabled(loc.enabled);
             setRadius(String(loc.defaultRadiusM));
           }

@@ -8,8 +8,9 @@ vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(..
 
 import TimeTrackingSettingsCard from './TimeTrackingSettingsCard';
 
+// GET /orgs/partners/me returns the partner row itself, not a { data } envelope.
 const partnerRes = (settings: unknown) =>
-  ({ ok: true, status: 200, json: async () => ({ data: { id: 'p-1', settings } }) }) as Response;
+  ({ ok: true, status: 200, json: async () => ({ id: 'p-1', settings }) }) as Response;
 
 function mockPartner(settings: unknown) {
   fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -47,6 +48,26 @@ describe('TimeTrackingSettingsCard', () => {
     // The stored thresholds still render — off does not mean "no configuration".
     expect((screen.getByTestId('time-suggestions-min-session') as HTMLInputElement).value).toBe('300');
     expect((screen.getByTestId('time-suggestions-merge-gap') as HTMLInputElement).value).toBe('5');
+  });
+
+  it('saving without changes sends the stored settings back unchanged', async () => {
+    mockPartner({ timeTracking: {
+      sessionSuggestions: { enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5 },
+      locationSuggestions: { enabled: true, defaultRadiusM: 300 },
+    } });
+    render(<TimeTrackingSettingsCard />);
+    await waitFor(() =>
+      expect((screen.getByTestId('time-suggestions-enabled') as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(screen.getByTestId('time-suggestions-save'));
+    await waitFor(() => expect(lastPatchBody()).not.toBeNull());
+    expect(lastPatchBody()).toEqual({
+      settings: {
+        timeTracking: {
+          sessionSuggestions: { enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5 },
+          locationSuggestions: { enabled: true, defaultRadiusM: 300 },
+        },
+      },
+    });
   });
 
   it('saving sends the COMPLETE sessionSuggestions object (PATCH replaces it wholesale)', async () => {
