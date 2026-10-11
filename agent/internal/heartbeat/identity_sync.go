@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
@@ -64,7 +65,38 @@ const (
 	// life of the process: a real BREEZE_ORG_ID / BREEZE_SITE_ID override
 	// never lets the persisted identity take effect.
 	identityRestartMaxAttempts = 2
+	// Once the restart is scheduled this process takes no new work (#8382):
+	// it sends no heartbeat, which is what delivers queued commands (they
+	// stay queued for the restarted process, as during a self-update), and
+	// it refuses WebSocket commands that start work. So the bounded wait
+	// above only ever covers what was already running. The pause covers the
+	// jitter and that wait plus time for the restart to land, and ends on its
+	// own so an agent whose restart never comes heartbeats again. With
+	// nothing in flight it lasts only the jitter (at most a minute).
+	identityIntakePauseMax = identityRestartMaxJitter + identityRestartMaxWait + 2*time.Minute
+	// The message a WebSocket command gets while the pause holds.
+	identityRestartRefusal = "agent is restarting to apply a new org/site assignment; retry in a few minutes"
 )
+
+// Why this agent refused an identity assertion (#8382), reported on its next
+// beat so the server stops signing one per beat for a target it will not
+// adopt. The server validates this closed set (apps/api/src/routes/agents/schemas.ts).
+// Refusals it will retry by itself (a cooldown, a rollback in progress, a
+// failed write, an assertion for an earlier beat) are not reported.
+const (
+	// Gave up, and BREEZE_ORG_ID / BREEZE_SITE_ID are set: the environment
+	// overrides agent.yaml on every start, so no restart can apply it.
+	identityRejectionEnvOverride = "env_override"
+	// Gave up for the life of the process: restarting did not apply the
+	// identity, or the restart could not be bounded.
+	identityRejectionGaveUp = "gave_up"
+	// Signed with a key this agent never pinned.
+	identityRejectionUnpinnedKey = "unpinned_key"
+	// Did not verify for any other lasting reason.
+	identityRejectionInvalid = "invalid"
+)
+
+var errIdentityAssertionStale = errors.New("assertion does not answer this agent's latest heartbeat")
 
 var (
 	identityUUIDPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -143,7 +175,7 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 		return err
 	}
 	if local.Nonce == "" || a.Nonce != local.Nonce {
-		return errors.New("assertion does not answer this agent's latest heartbeat")
+		return errIdentityAssertionStale
 	}
 	if local.AgentID == "" || a.AgentID != local.AgentID {
 		return errors.New("assertion is for a different agent")
@@ -204,15 +236,21 @@ var (
 )
 
 // identitySync holds the per-process state: the nonce of the latest beat, the
-// restart latch and when it was set, the identity given up on, and the bounded
-// log of the last failure.
+// restart latch and when it was set, until when new work is refused, the
+// identity given up on, the refusal to report on the next beat, and the
+// bounded log of the last failure.
 type identitySync struct {
 	nonce              atomic.Pointer[string]
 	restartRequested   atomic.Bool
 	restartRequestedAt atomic.Int64
-	gaveUpOn           atomic.Pointer[string]
-	failureLogged      atomic.Pointer[string]
-	markerChecked      sync.Once
+	// Until when new work is refused; nil = taking work. A time.Time from
+	// time.Now keeps its monotonic reading, so a clock step cannot stretch
+	// the pause.
+	intakePausedUntil atomic.Pointer[time.Time]
+	gaveUpOn          atomic.Pointer[string]
+	rejection         atomic.Pointer[IdentityAssertionRejection]
+	failureLogged     atomic.Pointer[string]
+	markerChecked     sync.Once
 }
 
 func newIdentityNonce() string {
@@ -325,7 +363,7 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		if identitySyncNow().Sub(requestedAt) < identityRestartPendingMax {
 			return true
 		}
-		h.identitySync.restartRequested.Store(false)
+		h.releaseIdentityRestart()
 		h.logIdentitySyncFailure("error", "the restart for the server-assigned identity never happened; resuming normal work",
 			"the new identity applies on the next start")
 	}
@@ -344,6 +382,7 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 	}
 	if err := verifyIdentityAssertion(a, local); err != nil {
 		h.logIdentitySyncFailure("warn", "ignoring server identity assertion", err.Error())
+		h.noteIdentityRejection(identityRejectionCode(err), a.OrgID, a.SiteID)
 		return false
 	}
 	fromOrg, fromSite := h.config.OrgID, h.config.SiteID
@@ -353,18 +392,30 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 
 	target := a.OrgID + "|" + a.SiteID
 	if p := h.identitySync.gaveUpOn.Load(); p != nil && *p == target {
+		h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
+		return false
+	}
+	// #8382 — a rollback restarts the agent through its own helper (on
+	// Windows it swaps binaries); a restart for the identity must not race
+	// it. Nothing is persisted or scheduled; the server re-signs every beat,
+	// so the identity applies on the first beat after the rollback.
+	if h.rollbackInProgress() {
+		h.logIdentitySyncFailure("warn", "deferring the server-assigned identity while an agent rollback is in progress",
+			"the next heartbeat re-evaluates it")
 		return false
 	}
 	markerPath := identityRestartMarkerPath()
 	now := identitySyncNow()
 	attempts := 1
-	if m, ok := readIdentityRestartMarker(markerPath); ok && m.OrgID == a.OrgID && m.SiteID == a.SiteID {
+	previousMarker, hadMarker := readIdentityRestartMarker(markerPath)
+	if m := previousMarker; hadMarker && m.OrgID == a.OrgID && m.SiteID == a.SiteID {
 		previous := max(m.Attempts, 1)
 		if previous >= identityRestartMaxAttempts {
 			h.identitySync.gaveUpOn.Store(&target)
 			log.Error("server-assigned identity did not take effect after restarting for it; not restarting for it again in this process",
 				"orgId", a.OrgID, "siteId", a.SiteID, "attempts", previous,
 				"hint", "org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
+			h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
 			return false
 		}
 		if now.Sub(m.RestartedAt) < identityRestartCooldown {
@@ -393,18 +444,27 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		h.identitySync.restartRequested.Store(false)
 		log.Error("failed to record the identity restart marker; not restarting, the new identity applies on the next start",
 			"error", err.Error())
+		h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
 		return false
 	}
+	pausedUntil := now.Add(identityIntakePauseMax)
+	h.identitySync.intakePausedUntil.Store(&pausedUntil)
 	log.Info("device was reassigned by the server; restarting to load the new identity",
 		"fromOrgId", fromOrg, "toOrgId", a.OrgID, "fromSiteId", fromSite, "toSiteId", a.SiteID)
-	go h.restartForIdentity()
+	var restore *identityRestartMarker
+	if hadMarker {
+		restore = &previousMarker
+	}
+	go h.restartForIdentity(restore)
 	return true
 }
 
 // restartForIdentity waits a random jitter and for the commands already
 // running to finish (bounded), then restarts the service. The identity is
 // already on disk, so a restart that fails still applies it on the next start.
-func (h *Heartbeat) restartForIdentity() {
+// previousMarker is the restart marker as it was before this attempt was
+// recorded (nil if there was none), put back if the restart yields.
+func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 	if jitter := identityRestartJitter(); jitter > 0 {
 		time.Sleep(jitter)
 	}
@@ -416,12 +476,139 @@ func (h *Heartbeat) restartForIdentity() {
 		}
 		time.Sleep(identityRestartPollInterval)
 	}
+	// #8382 — a rollback can start during the wait (its command may have
+	// come in the response that carried the assertion). It owns the restart.
+	if h.rollbackInProgress() {
+		h.yieldIdentityRestart(previousMarker)
+		return
+	}
 	if err := restartForIdentityFn(); err != nil {
 		// Release the gate: the upgrades, credential rotation and mTLS cert
 		// renewal it holds back must not wait for a restart that will not
-		// come (a lapsed cert takes the device offline). The marker keeps
-		// the next try behind the cooldown.
-		h.identitySync.restartRequested.Store(false)
+		// come (a lapsed cert takes the device offline), and beats and
+		// commands resume. The marker keeps the next try behind the cooldown.
+		h.releaseIdentityRestart()
 		log.Error("restart after identity change failed; resuming normal work, the new identity applies on the next start", "error", err.Error())
 	}
+}
+
+// releaseIdentityRestart reopens everything a pending identity restart holds
+// back: beats, new commands, upgrades, credential rotation, cert renewal.
+func (h *Heartbeat) releaseIdentityRestart() {
+	h.identitySync.intakePausedUntil.Store(nil)
+	h.identitySync.restartRequested.Store(false)
+}
+
+// yieldIdentityRestart abandons a scheduled restart in favour of a rollback.
+// The restart never happened, so it must not count as an attempt: the marker
+// goes back to what it was, and the next beat's assertion is evaluated afresh
+// instead of waiting out a cooldown (or giving up) for a restart that never
+// was. The identity stays persisted; whichever restart comes next applies it.
+func (h *Heartbeat) yieldIdentityRestart(previousMarker *identityRestartMarker) {
+	path := identityRestartMarkerPath()
+	var err error
+	if previousMarker == nil {
+		if err = os.Remove(path); os.IsNotExist(err) {
+			err = nil
+		}
+	} else {
+		err = writeIdentityRestartMarker(path, *previousMarker)
+	}
+	if err != nil {
+		log.Warn("failed to restore the identity restart marker after yielding to a rollback", "error", err.Error())
+	}
+	h.releaseIdentityRestart()
+	log.Warn("an agent rollback started while the restart for the server-assigned identity was pending; not restarting, the next heartbeat re-evaluates it")
+}
+
+func (h *Heartbeat) rollbackInProgress() bool {
+	return h.rollbackController != nil && h.rollbackController.Active()
+}
+
+// identityIntakePaused reports whether this process has stopped taking new
+// work because it is about to restart for a new identity. The pause ends on
+// its own after identityIntakePauseMax.
+func (h *Heartbeat) identityIntakePaused() bool {
+	if h == nil {
+		return false
+	}
+	until := h.identitySync.intakePausedUntil.Load()
+	if until == nil {
+		return false
+	}
+	if identitySyncNow().Before(*until) {
+		return true
+	}
+	if h.identitySync.intakePausedUntil.CompareAndSwap(until, nil) {
+		log.Error("the restart for the server-assigned identity has not happened; taking new work again",
+			"pausedFor", identityIntakePauseMax.String())
+	}
+	return false
+}
+
+// admittedDuringIdentityRestart reports whether a WebSocket command is still
+// taken while the identity restart is pending: one that stops work, or that
+// carries on a terminal, desktop or tunnel session already open. Anything that
+// starts new work is refused, since the restart would cut it off.
+func admittedDuringIdentityRestart(cmdType string) bool {
+	if isLifecycleCommand(cmdType) {
+		return true
+	}
+	switch cmdType {
+	case tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
+		tools.CmdStopDesktop, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
+		tools.CmdTunnelData, tools.CmdTunnelClose:
+		return true
+	}
+	return false
+}
+
+// identityRejectionCode classifies a verification failure: a lasting one gets
+// a code, an answer to an earlier beat (transient) gets none.
+func identityRejectionCode(err error) string {
+	switch {
+	case errors.Is(err, errIdentityAssertionStale):
+		return ""
+	case errors.Is(err, errDiagKeyNotPinned):
+		return identityRejectionUnpinnedKey
+	default:
+		return identityRejectionInvalid
+	}
+}
+
+// identityGiveUpCode names why this agent gave up on an identity. viper reads
+// BREEZE_ORG_ID / BREEZE_SITE_ID over agent.yaml (AutomaticEnv, prefix
+// BREEZE), which is the usual reason a persisted identity never applies.
+func identityGiveUpCode() string {
+	if os.Getenv("BREEZE_ORG_ID") != "" || os.Getenv("BREEZE_SITE_ID") != "" {
+		return identityRejectionEnvOverride
+	}
+	return identityRejectionGaveUp
+}
+
+// noteIdentityRejection records a refusal for the next beat to report. Only
+// for an org/site the server could have signed (UUIDs).
+func (h *Heartbeat) noteIdentityRejection(code, orgID, siteID string) {
+	if code == "" || !identityUUIDPattern.MatchString(orgID) || !identityUUIDPattern.MatchString(siteID) {
+		return
+	}
+	h.identitySync.rejection.Store(&IdentityAssertionRejection{Code: code, OrgID: orgID, SiteID: siteID})
+}
+
+// identityRejectionForBeat hands the latest refusal to exactly one beat. If
+// that beat is lost the server signs again, this agent refuses again, and the
+// following beat reports it.
+func (h *Heartbeat) identityRejectionForBeat() *IdentityAssertionRejection {
+	if h == nil {
+		return nil
+	}
+	return h.identitySync.rejection.Swap(nil)
+}
+
+// IdentityAssertionRejection is why this agent refused an identity assertion,
+// and the org/site that assertion named.
+type IdentityAssertionRejection struct {
+	Code   string `json:"code"`
+	OrgID  string `json:"orgId"`
+	SiteID string `json:"siteId"`
 }
