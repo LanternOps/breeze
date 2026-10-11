@@ -629,6 +629,13 @@ async function deleteS3Prefix(
   const { bucket, client } = buildS3StorageClient(providerConfig);
   const normalizedPrefix = normalizeObjectPrefix(storagePrefix);
 
+  // S3 reports per-key failures (object lock, permissions, provider quirks)
+  // inside a 200 response, and still does so with Quiet: true. Collect those
+  // per-key failures across all pages (delete as much as possible; a
+  // whole-request transport/auth error still aborts immediately), then throw so the caller
+  // never treats a prefix with surviving objects as deleted (#8364).
+  const failures: { key: string; error: string }[] = [];
+
   let continuationToken: string | undefined;
   do {
     const listed = await client.send(new ListObjectsV2Command({
@@ -645,17 +652,35 @@ async function deleteS3Prefix(
       );
 
     if (objects.length > 0) {
-      await client.send(new DeleteObjectsCommand({
+      const response = await client.send(new DeleteObjectsCommand({
         Bucket: bucket,
         Delete: {
           Objects: objects.map((Key) => ({ Key })),
           Quiet: true,
         },
       }));
+      for (const err of response?.Errors ?? []) {
+        failures.push({
+          key: typeof err.Key === 'string' ? err.Key : '(unknown key)',
+          // Code distinguishes object-lock from IAM denials; keep both.
+          error: [err.Code, err.Message].filter(Boolean).join(': ') || 'unknown S3 delete error',
+        });
+      }
     }
 
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
   } while (continuationToken);
+
+  if (failures.length > 0) {
+    const sample = failures
+      .slice(0, 5)
+      .map((f) => `${f.key} (${f.error})`)
+      .join('; ');
+    const more = failures.length > 5 ? `; +${failures.length - 5} more` : '';
+    throw new Error(
+      `Failed to delete ${failures.length} object(s) under S3 prefix ${normalizedPrefix}: ${sample}${more}`,
+    );
+  }
 }
 
 async function deleteLocalPrefix(
