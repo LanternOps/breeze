@@ -107,6 +107,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('authEmailWorker'),
   consumers('quoteSendWorker'),
   consumers('enrollmentKeyCleanup'),
+  consumers('migrationWindowSweep'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
   consumers('softwareUploadSessionCleanup'),

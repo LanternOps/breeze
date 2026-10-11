@@ -38,7 +38,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'events', 'ext', 'extensions', 'filters', 'fix-memory', 'fleet', 'google', 'groups', 'helper',
   'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
-  'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitor-definitions',
+  'm365', 'maintenance', 'mcp', 'me', 'metrics', 'migration-windows', 'mobile', 'monitor-definitions',
   'monitoring', 'monitors', 'network', 'notifications', 'oauth', 'office-addin',
   'onedrive', 'orgs',
   'pam', 'partner', 'partner-api', 'partner-service-principals', 'partners',

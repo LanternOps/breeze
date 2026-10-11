@@ -169,6 +169,7 @@ export * from './abuseSignals';
 export * from './servicePrincipals';
 export * from './partnerServicePrincipals';
 export * from './partnerApiIdempotencyKeys';
+export * from './migrationWindows';
 export * from './extensions';
 export * from './deviceMtlsCertificates';
 export * from './supportSessions';

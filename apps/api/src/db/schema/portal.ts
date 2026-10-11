@@ -224,6 +224,12 @@ export const tickets = pgTable('tickets', {
   budgetMinutes: integer('budget_minutes'),
   budgetAmount: numeric('budget_amount', { precision: 12, scale: 2 }),
   budgetCurrencyCode: char('budget_currency_code', { length: 3 }),
+  // Ticket migration windows (#8313, 2026-12-23-110000): the window that
+  // imported this ticket, null for live tickets. An FK-less snapshot, so it
+  // outlives window retention and never couples an org table to a partner
+  // table. Partial index idx_tickets_migration_window (2026-12-23-110100) is
+  // not modeled here, like the other partial indexes in this file.
+  migrationWindowId: uuid('migration_window_id'),
 });
 
 export const ticketComments = pgTable('ticket_comments', {
@@ -300,7 +306,20 @@ export const ticketComments = pgTable('ticket_comments', {
   // ticket_comments_one_ai_note_per_run_uq. Not modeled in Drizzle for the
   // same "partial index" reason as that index and ticketDrafts.ts's
   // ticket_drafts_active_uq.
-  proposedByRunId: uuid('proposed_by_run_id')
+  proposedByRunId: uuid('proposed_by_run_id'),
+  // Ticket migration windows (#8313, 2026-12-23-110000), all null on live
+  // comments. migrationWindowId marks an imported comment (FK-less, like
+  // tickets.migration_window_id). originalAuthorEmail/originalAuthorKind
+  // ('staff' | 'requester', CHECK ticket_comments_original_author_kind_chk)
+  // are the display-only "originally by" of an imported comment: authorName
+  // carries the original name and no user or contact is created.
+  // importSourceId is the source's comment id, unique per principal through
+  // the partial index ticket_comments_import_source_uq (2026-12-23-110100),
+  // so a rerun skips what it already imported.
+  migrationWindowId: uuid('migration_window_id'),
+  originalAuthorEmail: varchar('original_author_email', { length: 320 }),
+  originalAuthorKind: text('original_author_kind').$type<'staff' | 'requester'>(),
+  importSourceId: varchar('import_source_id', { length: 255 }),
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

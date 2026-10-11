@@ -55,6 +55,8 @@ const EXPECTED_WORKER_NAMES = [
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
+  // Ticket migration windows (#8313) — the per-minute window sweep.
+  'migrationWindowSweep',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'softwareUploadSessionCleanup',

@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Se activa cuando un ticket se asigna o se desasigna.",
             "label": "Ticket asignado"
+          },
+          "migrationWindowClosed": {
+            "description": "Se activa una vez por organización cuando se cierra una ventana de migración de tickets, con los conteos importados.",
+            "label": "Ventana de migración cerrada"
           }
         },
         "fields": {

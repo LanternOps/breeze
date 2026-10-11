@@ -539,6 +539,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // the survivor ends up WITH a row, so an exclusion (target_mode 'all') wins,
   // as the spec requires; in 'selected' mode the inclusion wins symmetrically.
   report_series_org_targets: { kind: 'repoint-dedupe', key: ['series_id'] },
+  // #8313: migration_window_orgs PK (window_id, org_id). When both merged orgs
+  // are in one window, the loser's row collides with the survivor's and is
+  // dropped; the survivor stays in the window either way.
+  migration_window_orgs: { kind: 'repoint-dedupe', key: ['window_id'] },
   // #6592: Gmail mailbox connections carry org_id; repoint them to the survivor
   // instead of letting the FK cascade delete them with the loser org. Plain
   // repoint (no dedupe): the only unique is (partner_id, mailbox_address), which
