@@ -381,7 +381,7 @@ systemctl start breeze-api breeze-worker breeze-web
 2. API health check passes.
 3. Log in to the UI and verify recent data is present.
 4. Check audit logs for the expected most-recent entry.
-5. Confirm migrations are current: `psql "$DATABASE_URL" -c "SELECT count(*) FROM breeze_migrations;"` matches the count on a healthy instance, and `pnpm db:migrate` reports nothing left to apply.
+5. Confirm migrations are current: `psql "$DATABASE_URL" -c "SELECT count(*) FROM breeze_migrations;"` matches the count on a healthy instance, and `pnpm db:migrate` exits 0.
 
 ---
 
