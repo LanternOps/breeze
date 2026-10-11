@@ -4,7 +4,8 @@ import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination'
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
-import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import {
   complianceInlineSettingsSchema,
@@ -48,31 +49,13 @@ import {
   buildComplianceSummary,
 } from '../routes/policyManagement/helpers';
 
-const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
-
-/**
- * Match the HTTP `requireMfa()` boundary for config-policy mutations reached
- * through AI or MCP instead of a Hono route: a human session must carry the
- * live MFA claim before it can change what takes effect across a fleet.
- *
- * `ai_agent` principals are EXEMPT, deliberately. `requireMfa()` rejects them
- * (middleware/auth.ts) because HTTP is not an agent's channel at all — not
- * because an agent failed an MFA check. An agent never has, and never could
- * have, a session MFA claim, so deriving its authorization from one would
- * permanently disable the grantable `config_policies` agent capability
- * (agentToolCatalog.ts) rather than gate it. An approved agent run's
- * authorization is the UPSTREAM Tier-3 approval enforced in aiGuardrails; the
- * maintenance-link machine-principal check below exempts `ai_agent` for exactly
- * the same reason (RMM-QA-176 D9.3).
- *
- * API-key and OAuth MCP callers carry `token: {}` (mcpServer.ts) and so are
- * denied while `ENABLE_2FA` is on, and retain the product-wide
- * `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
- */
-function configPolicyMutationMfaError(auth: AuthContext): string | null {
-  if (auth.principal?.kind === 'ai_agent') return null;
-  return hasSatisfiedMfa(auth) ? null : MFA_REQUIRED_ERROR;
-}
+// Config-policy mutations reached through AI or MCP match the HTTP
+// `requireMfa()` boundary: a human session must carry the live MFA claim before
+// it can change what takes effect across a fleet. Which (tool, action) pairs are
+// gated, who is exempt (ai_agent principals) and the coded refusal all live in
+// services/aiToolMfaGate.ts, which the MCP catalog also reads (#8340) — so the
+// handlers below call `mfaGatedToolError` with their own tool name rather than
+// deciding locally.
 
 /**
  * Feature types whose inline settings are validated here, in the handler, rather
@@ -482,7 +465,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
-      const mfaError = configPolicyMutationMfaError(auth);
+      const mfaError = mfaGatedToolError('apply_configuration_policy', undefined, auth);
       if (mfaError) return mfaError;
 
       // Dual-axis reader so a partner-scoped caller can reach a partner-OWNED
@@ -594,7 +577,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
-      const mfaError = configPolicyMutationMfaError(auth);
+      const mfaError = mfaGatedToolError('remove_configuration_policy_assignment', undefined, auth);
       if (mfaError) return mfaError;
 
       // Verify the assignment belongs to a policy the caller can see. The
@@ -703,7 +686,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_configuration_policy', async (input, auth) => {
-      const mfaError = configPolicyMutationMfaError(auth);
+      const mfaError = mfaGatedToolError('manage_configuration_policy', input.action as string | undefined, auth);
       if (mfaError) return mfaError;
 
       if (!canMutateOrgWideGovernance(auth)) {
@@ -1039,10 +1022,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const configPolicyId = input.configPolicyId as string;
       if (!configPolicyId) return JSON.stringify({ error: 'configPolicyId is required' });
 
-      if (action === 'add' || action === 'update' || action === 'remove') {
-        const mfaError = configPolicyMutationMfaError(auth);
-        if (mfaError) return mfaError;
-      }
+      const mfaError = mfaGatedToolError('manage_policy_feature_link', action, auth);
+      if (mfaError) return mfaError;
 
       // Reads (list) are not gated by the site-ceiling — only add/update/remove.
       if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {

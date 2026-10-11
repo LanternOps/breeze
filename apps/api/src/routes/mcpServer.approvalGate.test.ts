@@ -16,7 +16,20 @@ const testState = vi.hoisted(() => ({
   scopes: ['ai:read', 'ai:write', 'ai:execute'] as string[],
   redis: null as unknown,
   apiKeyExtra: {} as Record<string, unknown>,
+  // null = the real hasSatisfiedMfa (ENABLE_2FA defaults on, and MCP callers
+  // carry token:{}, so it refuses). true simulates an MFA-satisfied caller
+  // (equivalently, an ENABLE_2FA=false deployment).
+  mfaSatisfied: null as boolean | null,
 }));
+
+vi.mock('../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    ...actual,
+    hasSatisfiedMfa: (auth: Parameters<typeof actual.hasSatisfiedMfa>[0]) =>
+      testState.mfaSatisfied ?? actual.hasSatisfiedMfa(auth),
+  };
+});
 
 const mocks = vi.hoisted(() => ({
   executeTool: vi.fn(),
@@ -233,6 +246,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
   testState.apiKeyExtra = {};
+  testState.mfaSatisfied = null;
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([]);
   mocks.getToolTier.mockReset().mockReturnValue(undefined);
@@ -904,5 +918,94 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(mocks.executeTool).not.toHaveBeenCalled();
       expect(mocks.ledgerBegin).not.toHaveBeenCalled();
     });
+  });
+});
+
+// #8340 — config-policy mutations are MFA-gated in their handlers
+// (services/aiToolMfaGate.ts). The catalog must say so for a caller that can't
+// clear that gate, instead of advertising only the Tier 3 approval gate.
+describe('MFA-gated config-policy actions in tools/list (#8340)', () => {
+  const FEATURE_LINK_SCHEMA = {
+    type: 'object',
+    properties: { action: { type: 'string', enum: ['add', 'update', 'remove', 'list', 'describe'] } },
+  };
+  const MANAGE_CONFIG_POLICY_SCHEMA = {
+    type: 'object',
+    properties: { action: { type: 'string', enum: ['create', 'update', 'activate', 'deactivate', 'delete'] } },
+  };
+
+  beforeEach(() => {
+    // The preceding suite's "when enabled" block leaves this key designated.
+    vi.unstubAllEnvs();
+    mocks.getToolDefinitions.mockReturnValue([
+      { name: 'manage_policy_feature_link', description: 'Manage feature links.', input_schema: FEATURE_LINK_SCHEMA },
+      { name: 'manage_configuration_policy', description: 'Manage policies.', input_schema: MANAGE_CONFIG_POLICY_SCHEMA },
+      { name: 'apply_configuration_policy', description: 'Assign a policy.', input_schema: { type: 'object', properties: {} } },
+      { name: 'remove_configuration_policy_assignment', description: 'Remove an assignment.', input_schema: { type: 'object', properties: {} } },
+      { name: 'list_configuration_policies', description: 'List policies.', input_schema: { type: 'object', properties: {} } },
+    ]);
+    mocks.getToolTier.mockImplementation((name: string) => {
+      if (name === 'list_configuration_policies') return 1;
+      if (name.includes('configuration_polic') || name === 'manage_policy_feature_link') return 2;
+      return undefined;
+    });
+  });
+
+  async function listedTools(): Promise<Array<{ name: string; description: string }>> {
+    return (await (await listTools()).json()).result.tools;
+  }
+
+  it('an API-key caller (2FA on) sees add/update advertised as unavailable, not just remove', async () => {
+    const tool = (await listedTools()).find((t) => t.name === 'manage_policy_feature_link');
+    expect(tool).toBeDefined();
+    expect(tool!.description).toMatch(/Actions "add", "update" require a multi-factor-authenticated session and are not available over MCP/);
+    // remove keeps its approval note; reads stay advertised as available.
+    expect(tool!.description).toMatch(/Actions "remove" require interactive approval/);
+    expect(tool!.description).not.toContain('"list"');
+    expect(tool!.description).not.toContain('"describe"');
+  });
+
+  it('hides the wholly MFA-gated tools from that caller and keeps the reads', async () => {
+    const names = (await listedTools()).map((t) => t.name);
+    expect(names).not.toContain('manage_configuration_policy');
+    expect(names).not.toContain('apply_configuration_policy');
+    expect(names).not.toContain('remove_configuration_policy_assignment');
+    expect(names).toEqual(expect.arrayContaining(['list_configuration_policies', 'manage_policy_feature_link']));
+  });
+
+  it('an MFA-satisfied caller is unaffected: every tool listed, no MFA note', async () => {
+    testState.mfaSatisfied = true;
+    const tools = await listedTools();
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining([
+      'manage_configuration_policy', 'apply_configuration_policy', 'remove_configuration_policy_assignment',
+    ]));
+    for (const tool of tools) expect(tool.description).not.toContain('multi-factor');
+    const featureLink = tools.find((t) => t.name === 'manage_policy_feature_link')!;
+    expect(featureLink.description).toMatch(/Actions "remove" require interactive approval/);
+  });
+
+  it('a designated unattended principal still cannot clear MFA: remove moves to the MFA note', async () => {
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:11111111-1111-4111-8111-111111111111');
+    try {
+      const tool = (await listedTools()).find((t) => t.name === 'manage_policy_feature_link')!;
+      expect(tool.description).toMatch(/Actions "add", "update", "remove" require a multi-factor-authenticated session/);
+      expect(tool.description).not.toContain('interactive approval');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("tools/call surfaces the handler's coded MFA refusal as an MCP error with its code intact", async () => {
+    const { mfaGatedToolError } = await import('../services/aiToolMfaGate');
+    const refusal = mfaGatedToolError('manage_policy_feature_link', 'update', { token: {} } as any);
+    expect(refusal).not.toBeNull();
+    mocks.executeTool.mockResolvedValue(refusal);
+    const body = await (await callTool('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'patch', inlineSettings: {},
+    })).json();
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MFA_REQUIRED');
+    expect(payload.error).toContain('web app');
   });
 });
