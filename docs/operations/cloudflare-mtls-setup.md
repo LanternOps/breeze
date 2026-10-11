@@ -119,10 +119,10 @@ docker exec <postgres-container> psql -U breeze -d breeze -f \
   /path/to/2026-02-11-mtls-cert-management.sql
 ```
 
-### Option C: Drizzle Push (development only)
+### Option C: Migration runner
 
 ```bash
-DATABASE_URL=postgresql://breeze:password@localhost:5432/breeze pnpm db:push
+DATABASE_URL=postgresql://breeze:password@localhost:5432/breeze pnpm db:migrate
 ```
 
 ### Verify Migration
