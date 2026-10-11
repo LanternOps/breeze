@@ -129,11 +129,12 @@ func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
 // backupResultOutboxMaxAge) entries and, if the pending count would
 // otherwise exceed backupResultOutboxMaxPending once the new entry lands,
 // the oldest surviving entries — so Enqueue never leaves more than
-// backupResultOutboxMaxPending files behind.
-func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
+// backupResultOutboxMaxPending files behind. Reports whether the result is
+// now on disk.
+func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) bool {
 	if !safeOutboxFilenameID(result.CommandID) {
 		log.Warn("refusing to outbox backup result with empty or unsafe commandId", "commandId", result.CommandID)
-		return
+		return false
 	}
 
 	o.mu.Lock()
@@ -141,7 +142,7 @@ func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
 
 	if err := os.MkdirAll(o.dir, 0700); err != nil {
 		log.Warn("failed to create backup result outbox directory", "dir", o.dir, "error", err.Error())
-		return
+		return false
 	}
 
 	now := o.nowFn()
@@ -164,19 +165,34 @@ func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
 	payload, err := json.Marshal(entry)
 	if err != nil {
 		log.Warn("failed to encode backup result for outbox", "commandId", result.CommandID, "error", err.Error())
-		return
+		return false
 	}
 
 	path := o.entryPath(result.CommandID)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, payload, 0600); err != nil {
 		log.Warn("failed to write backup result outbox entry", "commandId", result.CommandID, "error", err.Error())
-		return
+		return false
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		log.Warn("failed to persist backup result outbox entry", "commandId", result.CommandID, "error", err.Error())
+		return false
 	}
+	return true
+}
+
+// has reports whether a result for commandID is pending in the outbox. Used
+// by the command journal's startup recovery: a real result already on disk
+// must not be contradicted by a synthetic "interrupted" failure.
+func (o *backupResultOutbox) has(commandID string) bool {
+	if !safeOutboxFilenameID(commandID) {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, err := os.Stat(o.entryPath(commandID))
+	return err == nil
 }
 
 // Flush attempts to redeliver every pending entry via send, oldest first. A

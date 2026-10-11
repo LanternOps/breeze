@@ -431,7 +431,11 @@ type Heartbeat struct {
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
 	// nil in production — always constructed in NewWithVersion.
-	backupOutbox          *backupResultOutbox
+	backupOutbox *backupResultOutbox
+	// commandJournal records, on disk, which server-tracked commands are
+	// executing, so a restart can report one that died with no result as
+	// failed instead of leaving its row in `sent` until the reaper (#8296).
+	commandJournal        *commandJournal
 	mu                    sync.Mutex
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
@@ -1038,6 +1042,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		retryCfg:                       httputil.DefaultRetryConfig(),
 		seenCommands:                   make(map[string]time.Time),
 		backupOutbox:                   newBackupResultOutbox(outboxRoot),
+		commandJournal:                 newCommandJournal(commandJournalDir(outboxRoot)),
 		pamReconciliationOutbox:        newPamReconciliationOutbox(outboxRoot),
 		pamReconciliationStaged:        make(map[string]pamlifetime.Result),
 		pamReconciliationStagedReasons: make(map[string]string),
@@ -1047,6 +1052,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		hwhealthCol:                    hwhealth.New(hwhealth.Options{DataDir: config.GetDataDir(), ExtraToolDirs: cfg.Hardware.ToolDirs}),
 		hwConfig:                       hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour},
 	}
+	// Before any websocket exists, so the first connect's outbox flush carries
+	// a failed result for every command the previous process died running
+	// (#8296).
+	h.commandJournal.Recover(h.backupOutbox)
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.accepting.Store(true)
@@ -1310,6 +1319,9 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// isn't silently lost after SendResult already reported success. The
 		// next reconnect's OnConnected flush redelivers it. (FIX 3)
 		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+		// Clear a command's in-flight journal entry only once its result is
+		// queued or already in the outbox (#8296).
+		ws.OnResultHandedOff = h.onWSResultHandedOff
 		// Revocation-lease answers from the control plane. This process owns the
 		// command socket, so it performs every renewal — including for sessions
 		// whose capture actually runs in a user helper, which is told to stop
@@ -1458,6 +1470,17 @@ func (h *Heartbeat) preserveUndeliveredResult(result websocket.CommandResult) {
 		return
 	}
 	h.backupOutbox.Enqueue(result)
+}
+
+// onWSResultHandedOff clears the in-flight journal entry for a command whose
+// result the websocket client has queued or outboxed. A "duplicate" marker is
+// skipped: it answers a second delivery of an id whose original execution is
+// still running and still journaled.
+func (h *Heartbeat) onWSResultHandedOff(result websocket.CommandResult) {
+	if result.Status == "duplicate" {
+		return
+	}
+	h.commandJournal.End(result.CommandID)
 }
 
 // flushBackupResultOutbox retries delivery of any backup results persisted
@@ -6546,8 +6569,27 @@ func (h *Heartbeat) processCommand(cmd Command) {
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
-		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
+		// submitCommandResult already retried; the result is undeliverable
+		// over REST for now. Logging alone dropped it and left the row in
+		// `sent` until the reaper (#8296) — hand it to the websocket, or to
+		// the outbox the next connect flushes.
+		log.Error("failed to submit command result; falling back to websocket/outbox",
+			logging.KeyCommandID, cmd.ID, "error", err.Error())
+		h.deliverResultOrOutbox(toWSCommandResult(cmd.ID, result))
 	}
+	h.commandJournal.End(cmd.ID)
+}
+
+// deliverResultOrOutbox queues result on the live websocket if there is one,
+// and otherwise persists it to the outbox for the next connect's flush.
+func (h *Heartbeat) deliverResultOrOutbox(result websocket.CommandResult) {
+	result.Type = "command_result"
+	if h.wsClient != nil {
+		if err := h.wsClient.SendResult(result); err == nil {
+			return
+		}
+	}
+	h.preserveUndeliveredResult(result)
 }
 
 func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandResult) error {
@@ -6936,6 +6978,12 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	}
 
 	cmdLog.Info("processing command")
+
+	// Past dedupe, so this is the one execution of cmd.ID. Ended by the
+	// caller once the result is handed off (onWSResultHandedOff on the
+	// websocket path, processCommand on the REST path) — not here, because a
+	// result produced but not yet queued or outboxed is still losable (#8296).
+	h.commandJournal.Begin(cmd)
 
 	// Audit: command received
 	if h.auditLog != nil {
