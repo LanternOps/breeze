@@ -179,8 +179,8 @@ This starts:
 **2. Initialize the database:**
 
 ```bash
-# Push schema to database
-pnpm db:push
+# Apply migrations to the database
+pnpm db:migrate
 
 # Optional: Open Drizzle Studio to inspect data
 pnpm db:studio
@@ -202,14 +202,11 @@ pnpm dev
 ### Database Setup and Migrations
 
 ```bash
-# Generate migration from schema changes
-pnpm db:generate
-
-# Push schema directly (development)
-pnpm db:push
-
-# Run migrations (production)
+# Apply migrations (development and production)
 pnpm db:migrate
+
+# Verify the migration set applies cleanly to a fresh database
+pnpm db:check-drift
 
 # Open database GUI
 pnpm db:studio
@@ -992,23 +989,16 @@ export const devices = pgTable('devices', {
 
 ### Migration Workflow
 
-**Development (schema push):**
+Migrations are hand-written SQL files in `apps/api/migrations/`. Drizzle is used for queries only: do not run `drizzle-kit generate` or `drizzle-kit push`. Read `apps/api/migrations/README.md` for naming and idempotency rules.
 
 ```bash
-# Directly push schema changes to database
-pnpm db:push
-```
+# 1. Add an idempotent SQL file to apps/api/migrations/ (and update the Drizzle schema in apps/api/src/db/schema/)
 
-**Production (migrations):**
-
-```bash
-# Generate migration from schema changes
-pnpm db:generate
-
-# Review generated SQL in apps/api/drizzle/
-
-# Apply migrations
+# 2. Apply migrations
 pnpm db:migrate
+
+# 3. Verify the migration set applies cleanly to a fresh database
+pnpm db:check-drift
 ```
 
 ### Common Query Patterns

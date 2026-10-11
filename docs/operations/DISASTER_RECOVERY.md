@@ -337,8 +337,9 @@ psql -U postgres -c "CREATE DATABASE breeze OWNER breeze;"
 pg_restore -d breeze -U breeze --no-owner \
   /backups/breeze-YYYYMMDD-HHMMSS.dump
 
-# 4. Run Drizzle migrations to ensure schema is current
-cd /path/to/breeze && pnpm db:push
+# 4. Apply any migrations newer than the dump (tracked in the breeze_migrations table;
+#    already-applied files are skipped)
+cd /path/to/breeze && pnpm db:migrate
 
 # 5. Restart services
 systemctl start breeze-api breeze-worker breeze-web
@@ -380,7 +381,7 @@ systemctl start breeze-api breeze-worker breeze-web
 2. API health check passes.
 3. Log in to the UI and verify recent data is present.
 4. Check audit logs for the expected most-recent entry.
-5. Run `pnpm db:push` with `--dry-run` (if supported) to confirm schema matches.
+5. Confirm migrations are current: `psql "$DATABASE_URL" -c "SELECT count(*) FROM breeze_migrations;"` matches the count on a healthy instance, and `pnpm db:migrate` exits 0.
 
 ---
 
@@ -447,7 +448,7 @@ rclone sync offsite-backup:breeze-backup s3:breeze
 # Clone the repo, install dependencies, start services
 git clone <repo-url> /opt/breeze
 cd /opt/breeze && pnpm install
-pnpm db:push  # Ensure schema is current
+pnpm db:migrate  # Apply migrations (restored DB: applies only those newer than the backup)
 
 # Start all services
 systemctl start breeze-api breeze-worker breeze-web

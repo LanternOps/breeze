@@ -117,11 +117,11 @@ Seeded by `pnpm db:seed`:
 ## Schema Management
 
 ```bash
-# Push schema changes (development)
-pnpm db:push
-
-# Run migrations (production)
+# Apply migrations (development and production)
 pnpm db:migrate
+
+# Verify the migration set applies cleanly to a fresh database
+pnpm db:check-drift
 
 # Seed default roles, permissions, templates
 pnpm db:seed
