@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 // Fixed Ed25519 seed (bytes 1..32). Ed25519 signatures are deterministic, so
 // the signature below is pinned verbatim in the agent's identity_sync_test.go:
@@ -19,10 +19,19 @@ vi.mock('./manifestSigning', () => ({
   signBytesWithActiveKey: (...args: unknown[]) => signBytesWithActiveKeyMock(...args),
 }));
 
+const getRedisMock = vi.fn();
+vi.mock('./redis', () => ({
+  getRedis: () => getRedisMock(),
+}));
+
 import {
   AGENT_IDENTITY_ASSERTION_DOMAIN,
   AGENT_IDENTITY_ASSERTION_LIFETIME_MS,
+  AGENT_IDENTITY_REJECTION_LOG_TTL_SECONDS,
+  AGENT_IDENTITY_REJECTION_TTL_SECONDS,
+  agentIdentityAssertionRefused,
   agentIdentityNeedsSync,
+  resetAgentIdentityRejectionLogStateForTests,
   canonicalAgentIdentityAssertionBytes,
   normalizeIdentitySyncProtocolVersion,
   signAgentIdentityAssertion,
@@ -152,5 +161,125 @@ describe('signAgentIdentityAssertion', () => {
     await expect(
       signAgentIdentityAssertion({ agentId: 'a', deviceId: 'd', orgId: 'o', siteId: 's', nonce: 'n' }),
     ).rejects.toThrow(/rotated/);
+  });
+});
+
+// #8382 — an agent that refused the assertion for a target reports it, and the
+// server holds back new assertions for that device and target for a while.
+describe('agentIdentityAssertionRefused', () => {
+  const DEVICE = '00000000-0000-4000-8000-000000000004';
+  const TARGET = { orgId: '00000000-0000-4000-8000-0000000000b1', siteId: '00000000-0000-4000-8000-0000000000b2' };
+  const OLDER = { orgId: '00000000-0000-4000-8000-0000000000c1', siteId: '00000000-0000-4000-8000-0000000000c2' };
+  const AGENT = 'a'.repeat(64);
+
+  function fakeRedis(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial));
+    return {
+      store,
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string, ...options: unknown[]) => {
+        if (options.includes('NX') && store.has(key)) return null;
+        store.set(key, value);
+        return 'OK';
+      }),
+    };
+  }
+
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => {
+    getRedisMock.mockReset();
+    resetAgentIdentityRejectionLogStateForTests();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    return () => warn.mockRestore();
+  });
+
+  function refused(rejection?: { code: 'env_override' | 'gave_up' | 'unpinned_key' | 'invalid'; orgId: string; siteId: string }) {
+    return agentIdentityAssertionRefused({ agentId: AGENT, deviceId: DEVICE, target: TARGET, rejection });
+  }
+
+  it('records a refusal of the current target with a TTL and holds back the assertion until it expires', async () => {
+    const redis = fakeRedis();
+    getRedisMock.mockReturnValue(redis);
+
+    await expect(refused({ code: 'unpinned_key', ...TARGET })).resolves.toBe(true);
+    expect(redis.set).toHaveBeenCalledWith(
+      `identity-sync:rejected:device:${DEVICE}`,
+      JSON.stringify({ code: 'unpinned_key', ...TARGET }),
+      'EX',
+      AGENT_IDENTITY_REJECTION_TTL_SECONDS,
+    );
+    // Later beats carry no report (the agent got nothing to refuse) and stay held back.
+    await expect(refused()).resolves.toBe(true);
+    await expect(refused()).resolves.toBe(true);
+
+    // The TTL lapses: the server signs again so the agent can re-check.
+    redis.store.delete(`identity-sync:rejected:device:${DEVICE}`);
+    await expect(refused()).resolves.toBe(false);
+  });
+
+  it('logs one structured warning per device, target and code', async () => {
+    getRedisMock.mockReturnValue(fakeRedis());
+
+    await refused({ code: 'env_override', ...TARGET });
+    await refused({ code: 'env_override', ...TARGET });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({
+      agentId: AGENT,
+      deviceId: DEVICE,
+      orgId: TARGET.orgId,
+      siteId: TARGET.siteId,
+      code: 'env_override',
+      retryAfterSeconds: AGENT_IDENTITY_REJECTION_TTL_SECONDS,
+    });
+    expect(String(warn.mock.calls[0]?.[1]?.hint)).toContain('BREEZE_ORG_ID');
+
+    // A different reason for the same target is a new warning.
+    await refused({ code: 'gave_up', ...TARGET });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedupes the warning with a day-long NX key', async () => {
+    const redis = fakeRedis();
+    getRedisMock.mockReturnValue(redis);
+    await refused({ code: 'invalid', ...TARGET });
+    expect(redis.set).toHaveBeenCalledWith(
+      `identity-sync:rejection-logged:device:${DEVICE}:${TARGET.orgId}:${TARGET.siteId}:invalid`,
+      '1',
+      'EX',
+      AGENT_IDENTITY_REJECTION_LOG_TTL_SECONDS,
+      'NX',
+    );
+  });
+
+  it('signs at once for a device moved again: a refusal of an older target does not count', async () => {
+    const redis = fakeRedis({ [`identity-sync:rejected:device:${DEVICE}`]: JSON.stringify({ code: 'gave_up', ...OLDER }) });
+    getRedisMock.mockReturnValue(redis);
+
+    await expect(refused()).resolves.toBe(false);
+    await expect(refused({ code: 'gave_up', ...OLDER })).resolves.toBe(false);
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stored value it cannot read', async () => {
+    getRedisMock.mockReturnValue(fakeRedis({ [`identity-sync:rejected:device:${DEVICE}`]: 'not json' }));
+    await expect(refused()).resolves.toBe(false);
+  });
+
+  it('fails open when Redis errors, and still holds back the beat that reports the refusal', async () => {
+    getRedisMock.mockReturnValue({
+      get: vi.fn().mockRejectedValue(new Error('redis down')),
+      set: vi.fn().mockRejectedValue(new Error('redis down')),
+    });
+    await expect(refused()).resolves.toBe(false);
+    await expect(refused({ code: 'unpinned_key', ...TARGET })).resolves.toBe(true);
+  });
+
+  it('without Redis holds back only the beat that reports the refusal, and rate-limits the warning', async () => {
+    getRedisMock.mockReturnValue(null);
+    await expect(refused({ code: 'unpinned_key', ...TARGET })).resolves.toBe(true);
+    await expect(refused({ code: 'unpinned_key', ...TARGET })).resolves.toBe(true);
+    await expect(refused()).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

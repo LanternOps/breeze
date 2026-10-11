@@ -23,7 +23,9 @@
  * This never creates the deployment key (see getActiveSigningKeyId): on a
  * deployment that has none, no assertion is sent.
  */
+import type { IdentityAssertionRejection } from '../routes/agents/schemas';
 import { getActiveSigningKeyId, signBytesWithActiveKey } from './manifestSigning';
+import { getRedis } from './redis';
 
 export const AGENT_IDENTITY_ASSERTION_DOMAIN = 'breeze-agent-identity-v1';
 // Informational: the nonce, not the clock, makes an assertion fresh. The agent
@@ -132,4 +134,155 @@ export async function signAgentIdentityAssertion(input: {
     throw new Error('active signing key rotated while signing an agent identity assertion');
   }
   return { ...unsigned, signature: signed.signature };
+}
+
+/*
+ * #8382 — an agent that refuses the assertion (BREEZE_ORG_ID/BREEZE_SITE_ID
+ * override its agent.yaml, it gave up after restarting did not apply the
+ * identity, or it never pinned the key that signs) still reports the old
+ * identity, so the row keeps disagreeing and every beat would cost two key
+ * reads, a decrypt and a signature for an assertion it refuses again. The
+ * agent now says so on its next beat, with the org/site the refused assertion
+ * named, and the server holds back the assertion for that device and target
+ * for a while instead of signing one per beat.
+ *
+ * Kept in Redis with a TTL rather than on the device row: it is a
+ * rate limit on a retry, not device state, and expiring is the point. The
+ * server signs again when the TTL lapses (the agent re-checks, e.g. after a
+ * key delegation reached it), when the row moves to another target, or when
+ * Redis is unavailable (fail open: one assertion per beat, as before).
+ */
+export const AGENT_IDENTITY_REJECTION_TTL_SECONDS = 60 * 60;
+// One structured warning per (device, target, code) per day.
+export const AGENT_IDENTITY_REJECTION_LOG_TTL_SECONDS = 24 * 60 * 60;
+const IDENTITY_REJECTION_FALLBACK_REPORT_INTERVAL_MS = 10 * 60 * 1000;
+
+const REJECTION_HINTS: Record<IdentityAssertionRejection['code'], string> = {
+  env_override:
+    'BREEZE_ORG_ID / BREEZE_SITE_ID in the agent service environment override agent.yaml on every start; '
+    + 'remove them (or set them to the new org/site) and restart the agent',
+  gave_up:
+    'restarting the agent did not apply the new org/site, so it stopped trying until its next start; '
+    + 'check the agent log',
+  unpinned_key:
+    'the agent never pinned the deployment key that signs the assertion; it keeps its enrolled org/site '
+    + 'until a key delegation reaches it or it is re-enrolled',
+  invalid: 'the agent could not verify the assertion; check the agent log',
+};
+
+let identityRejectionStoreFailureReportedAt = 0;
+let identityRejectionFallbackLoggedAt = 0;
+
+function rejectionKey(deviceId: string): string {
+  return `identity-sync:rejected:device:${deviceId}`;
+}
+
+function rejectionLogKey(deviceId: string, r: IdentityAssertionRejection): string {
+  return `identity-sync:rejection-logged:device:${deviceId}:${r.orgId}:${r.siteId}:${r.code}`;
+}
+
+function warnRejectionStoreFailure(op: 'record' | 'read', deviceId: string, err: unknown): void {
+  const now = Date.now();
+  if (now - identityRejectionStoreFailureReportedAt < IDENTITY_REJECTION_FALLBACK_REPORT_INTERVAL_MS) return;
+  identityRejectionStoreFailureReportedAt = now;
+  console.warn(`[heartbeat] Failed to ${op} an identity assertion refusal in Redis; signing as before`, {
+    deviceId,
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
+
+function logRejection(agentId: string, deviceId: string, r: IdentityAssertionRejection): void {
+  console.warn(
+    '[heartbeat] Agent refused the signed identity assertion for its moved device; holding back new ones '
+    + 'for this org/site until it changes or the refusal expires (#8382)',
+    {
+      agentId,
+      deviceId,
+      orgId: r.orgId,
+      siteId: r.siteId,
+      code: r.code,
+      hint: REJECTION_HINTS[r.code],
+      retryAfterSeconds: AGENT_IDENTITY_REJECTION_TTL_SECONDS,
+    },
+  );
+}
+
+function parseStoredTarget(raw: string): { orgId: string; siteId: string } | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      value !== null
+      && typeof value === 'object'
+      && typeof (value as { orgId?: unknown }).orgId === 'string'
+      && typeof (value as { siteId?: unknown }).siteId === 'string'
+    ) {
+      return value as { orgId: string; siteId: string };
+    }
+  } catch {
+    // A value this code did not write: treat as absent.
+  }
+  return null;
+}
+
+/**
+ * Whether to hold back this beat's identity assertion because the agent
+ * refused one for the row's current org/site. A refusal the beat carries for
+ * that target is recorded (and logged once per device, target and code); a
+ * refusal of an older target is ignored, so a device moved again is signed
+ * for at once. Never throws: any Redis failure means "sign as before".
+ */
+export async function agentIdentityAssertionRefused(input: {
+  agentId: string;
+  deviceId: string;
+  target: { orgId: string; siteId: string };
+  rejection: IdentityAssertionRejection | undefined;
+}): Promise<boolean> {
+  const { agentId, deviceId, target, rejection } = input;
+  const reported = rejection && rejection.orgId === target.orgId && rejection.siteId === target.siteId
+    ? rejection
+    : undefined;
+  const redis = getRedis();
+
+  if (reported) {
+    // This beat is itself the agent saying it refuses this target: an
+    // assertion now would only be refused again.
+    if (!redis) {
+      const now = Date.now();
+      if (now - identityRejectionFallbackLoggedAt >= IDENTITY_REJECTION_FALLBACK_REPORT_INTERVAL_MS) {
+        identityRejectionFallbackLoggedAt = now;
+        logRejection(agentId, deviceId, reported);
+      }
+      return true;
+    }
+    try {
+      await redis.set(rejectionKey(deviceId), JSON.stringify(reported), 'EX', AGENT_IDENTITY_REJECTION_TTL_SECONDS);
+      const first = await redis.set(
+        rejectionLogKey(deviceId, reported),
+        '1',
+        'EX',
+        AGENT_IDENTITY_REJECTION_LOG_TTL_SECONDS,
+        'NX',
+      );
+      if (first === 'OK') logRejection(agentId, deviceId, reported);
+    } catch (err) {
+      warnRejectionStoreFailure('record', deviceId, err);
+    }
+    return true;
+  }
+
+  if (!redis) return false;
+  try {
+    const raw = await redis.get(rejectionKey(deviceId));
+    if (!raw) return false;
+    const stored = parseStoredTarget(raw);
+    return stored !== null && stored.orgId === target.orgId && stored.siteId === target.siteId;
+  } catch (err) {
+    warnRejectionStoreFailure('read', deviceId, err);
+    return false;
+  }
+}
+
+export function resetAgentIdentityRejectionLogStateForTests(): void {
+  identityRejectionStoreFailureReportedAt = 0;
+  identityRejectionFallbackLoggedAt = 0;
 }

@@ -869,4 +869,29 @@ describe('heartbeatSchema — identity sync tolerance (#8317)', () => {
     expect(data.securityCapabilities?.identitySyncProtocolVersion).toBeUndefined();
     expect(data.securityCapabilities?.outboundNetworkPolicyVersion).toBe(1);
   });
+
+  // #8382 — the agent's reason for refusing the last assertion.
+  const rejection = { code: 'env_override', orgId: identity.orgId, siteId: identity.siteId };
+
+  it.each(['env_override', 'gave_up', 'unpinned_key', 'invalid'])('keeps a well-formed %s rejection', (code) => {
+    const data = parse({ reportedIdentity: identity, identityAssertionRejection: { ...rejection, code } });
+    expect(data.identityAssertionRejection).toEqual({ ...rejection, code });
+    expect(data.reportedIdentity).toEqual(identity);
+  });
+
+  it.each([
+    ['a code outside the closed set', { code: 'nope' }],
+    ['an upper-case code', { code: 'GAVE_UP' }],
+    ['an org id that is not a UUID', { orgId: 'org-b' }],
+    ['a missing site id', { siteId: undefined }],
+    ['an extra field', { detail: 'free text from the agent' }],
+  ])('drops the rejection alone with %s', (_label, override) => {
+    const data = parse({ reportedIdentity: identity, identityAssertionRejection: { ...rejection, ...override } });
+    expect(data.identityAssertionRejection).toBeUndefined();
+    expect(data.reportedIdentity).toEqual(identity);
+  });
+
+  it('drops a rejection that is not an object', () => {
+    expect(parse({ identityAssertionRejection: 'gave_up' }).identityAssertionRejection).toBeUndefined();
+  });
 });

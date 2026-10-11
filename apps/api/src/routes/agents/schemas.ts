@@ -147,6 +147,24 @@ const agentHealthObservationWireV1Schema = z.object({
   observedAt: z.string().datetime({ offset: true }),
 }).strict();
 
+// #8382 — the closed set of reasons an agent refuses a signed identity
+// assertion (agent/internal/heartbeat/identity_sync.go):
+// - env_override: it gave up, and BREEZE_ORG_ID / BREEZE_SITE_ID are set in
+//   its environment, which override agent.yaml on every start.
+// - gave_up: restarting did not apply the identity (or the restart could not
+//   be bounded), so it stopped trying for the life of the process.
+// - unpinned_key: the assertion is signed by a key it never pinned.
+// - invalid: the assertion did not verify for any other lasting reason.
+export const IDENTITY_ASSERTION_REJECTION_CODES = ['env_override', 'gave_up', 'unpinned_key', 'invalid'] as const;
+
+export const identityAssertionRejectionSchema = z.object({
+  code: z.enum(IDENTITY_ASSERTION_REJECTION_CODES),
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid(),
+}).strict();
+
+export type IdentityAssertionRejection = z.infer<typeof identityAssertionRejectionSchema>;
+
 export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
@@ -408,6 +426,11 @@ export const heartbeatSchema = z.object({
     siteId: z.string().uuid(),
     nonce: z.string().regex(/^[0-9a-f]{32}$/),
   }).optional().catch(undefined),
+  // #8382 — why the agent refused the last identity assertion, and the
+  // org/site that assertion named. The server stops signing for that target
+  // for a while instead of signing one every beat. Same tolerant contract: a
+  // malformed value drops this field alone and the server signs as before.
+  identityAssertionRejection: identityAssertionRejectionSchema.optional().catch(undefined),
   // Signed rollback progress is informational and restart-resend safe. A
   // malformed optional observation must never take the ordinary heartbeat
   // offline; the server simply withholds an acknowledgement for that value.

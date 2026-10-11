@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- mocks ----------
@@ -1381,6 +1381,182 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     });
     expect(body).not.toHaveProperty('identityAssertion');
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+});
+
+// #8382 — follow-ups from the #8320 review: an agent that refused the
+// assertion is not signed one every beat, and a mismatched device id is logged.
+describe('POST /agents/:id/heartbeat — identity sync refusals (#8382)', () => {
+  const DEVICE_ID = '00000000-0000-4000-8000-000000000004';
+  const ORG_B = '00000000-0000-4000-8000-0000000000b1';
+  const SITE_B = '00000000-0000-4000-8000-0000000000b2';
+  const ORG_A = '00000000-0000-4000-8000-0000000000a1';
+  const SITE_A = '00000000-0000-4000-8000-0000000000a2';
+  const ORG_C = '00000000-0000-4000-8000-0000000000c1';
+  const SITE_C = '00000000-0000-4000-8000-0000000000c2';
+  const NONCE = '0123456789abcdef0123456789abcdef';
+  const REJECTION_KEY = `identity-sync:rejected:device:${DEVICE_ID}`;
+  const capable = { securityCapabilities: { identitySyncProtocolVersion: 1 } };
+  const oldIdentity = { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE };
+
+  // The row the agent authenticated as now lives in org B / site B.
+  function queueMovedDeviceRow() {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: DEVICE_ID,
+          orgId: ORG_B,
+          siteId: SITE_B,
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+  }
+
+  function fakeRedis(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial));
+    return {
+      store,
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string, ...options: unknown[]) => {
+        if (options.includes('NX') && store.has(key)) return null;
+        store.set(key, value);
+        return 'OK';
+      }),
+    };
+  }
+
+  async function useRedis(redis: ReturnType<typeof fakeRedis> | null) {
+    const { getRedis } = await import('../../services/redis');
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+  }
+
+  let warn: MockInstance<typeof console.warn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    signAgentIdentityAssertionMock.mockResolvedValue({ v: 1, orgId: ORG_B, siteId: SITE_B, signature: 'sig' });
+    const { resetWatchdogRestartLogCacheForTests, resetIdentitySyncLogStateForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    resetIdentitySyncLogStateForTests();
+    const { resetAgentIdentityRejectionLogStateForTests } = await import('../../services/agentIdentityAssertion');
+    resetAgentIdentityRejectionLogStateForTests();
+    await useRedis(null);
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    queueMovedDeviceRow();
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  afterEach(async () => {
+    warn.mockRestore();
+    await useRedis(null);
+  });
+
+  async function beat(extra: Record<string, unknown>) {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+    expect(resp.status).toBe(200);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  function identityWarnings(fragment: string) {
+    return warn.mock.calls.filter((call) => String(call[0]).includes(fragment));
+  }
+
+  it('holds the assertion back on a beat that reports the agent refused the current org/site', async () => {
+    const redis = fakeRedis();
+    await useRedis(redis);
+    const body = await beat({
+      ...capable,
+      reportedIdentity: oldIdentity,
+      identityAssertionRejection: { code: 'env_override', orgId: ORG_B, siteId: SITE_B },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    expect(JSON.parse(redis.store.get(REJECTION_KEY) ?? 'null')).toEqual({ code: 'env_override', orgId: ORG_B, siteId: SITE_B });
+    const logged = identityWarnings('refused the signed identity assertion');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.[1]).toMatchObject({ agentId: 'device-1', deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, code: 'env_override' });
+  });
+
+  it('keeps holding it back on later beats while the refusal is on record', async () => {
+    await useRedis(fakeRedis({ [REJECTION_KEY]: JSON.stringify({ code: 'unpinned_key', orgId: ORG_B, siteId: SITE_B }) }));
+    const body = await beat({ ...capable, reportedIdentity: oldIdentity });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('signs for a device moved again, whatever the agent refused for the earlier target', async () => {
+    await useRedis(fakeRedis({ [REJECTION_KEY]: JSON.stringify({ code: 'gave_up', orgId: ORG_C, siteId: SITE_C }) }));
+    const body = await beat({
+      ...capable,
+      reportedIdentity: oldIdentity,
+      identityAssertionRejection: { code: 'gave_up', orgId: ORG_C, siteId: SITE_C },
+    });
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledTimes(1);
+    expect(body).toHaveProperty('identityAssertion');
+  });
+
+  it('signs as before when Redis is unavailable and the beat reports nothing', async () => {
+    const body = await beat({ ...capable, reportedIdentity: oldIdentity });
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledTimes(1);
+    expect(body).toHaveProperty('identityAssertion');
+  });
+
+  it('ignores a refusal from an agent whose identity already matches the row', async () => {
+    const redis = fakeRedis();
+    await useRedis(redis);
+    const body = await beat({
+      ...capable,
+      reportedIdentity: { ...oldIdentity, orgId: ORG_B, siteId: SITE_B },
+      identityAssertionRejection: { code: 'invalid', orgId: ORG_B, siteId: SITE_B },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('warns, rate-limited, when the reported device id is not the row, and still sends nothing', async () => {
+    const otherDevice = '00000000-0000-4000-8000-000000000099';
+    const body = await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    const mismatch = identityWarnings('device id that is not the device its credential belongs to');
+    expect(mismatch).toHaveLength(1);
+    expect(mismatch[0]?.[1]).toEqual({ agentId: 'device-1', reportedDeviceId: otherDevice, rowDeviceId: DEVICE_ID });
+
+    queueMovedDeviceRow();
+    await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(1);
+  });
+
+  it('does not warn about a device id from an agent without the capability', async () => {
+    await beat({ reportedIdentity: { ...oldIdentity, deviceId: '00000000-0000-4000-8000-000000000099' } });
+    expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(0);
   });
 });
 
