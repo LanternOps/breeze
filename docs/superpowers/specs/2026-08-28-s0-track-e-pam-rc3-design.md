@@ -206,7 +206,7 @@ refused with "received observation transport unavailable".
 - `cd agent && go test ./internal/pamlifetime/... ./internal/heartbeat/...`
   and `GOOS=windows GOARCH=amd64 go vet ./...` pass locally; the Windows test
   executables for `internal/pamlifetime` and `internal/heartbeat` pass on a lab
-  VM (`administrator@100.101.28.70`, scp then `.\x.test.exe -test.v`).
+  VM (`administrator@<lab-windows-server-vm-ip>`, scp then `.\x.test.exe -test.v`).
 - API: `pnpm --filter @breeze/api vitest run src/services/pamActuationResult.test.ts`
   (or the repo's equivalent) passes.
 - Label every claim verified / inferred / not-checked in the hand-back.

@@ -2156,9 +2156,9 @@ EOF
 - Consumes: the W04 agent build, the W03/W04 Disk Cleanup tab, `POST /devices/:id/filesystem/system-cleanup/{list,run}`.
 - Produces: a PASS/FAIL record with measured numbers. Nothing in CI can produce this: `cleanmgr` under the SYSTEM account in session 0 renders a hidden progress UI and is known to return before its work finishes or to hang (spec §7.2), and no unit test executes a real cleaner. This is why W04's acceptance criterion is a lab run.
 
-**Rigs (non-prod; never touch WIN-DHQNR1F8LO2 or the US Ubuntu KVM rig, both prod-enrolled):**
-- **Windows:** `WIN-IMDR2GAIDMV`, `ssh administrator@100.101.28.70` (PowerShell shell, key auth), enrolled to the Mac lab stack over Tailscale.
-- **Linux:** KIT `lab-ubuntu-src`, `ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240` (passwordless sudo; the Mac has no route to KIT's `192.168.10.0/24`, always ProxyJump), enrolled to the Mac lab stack at `http://192.168.0.60:3000`.
+**Rigs (non-prod; never touch lab-windows-server-vm-2 or the US Ubuntu KVM rig, both prod-enrolled):**
+- **Windows:** `lab-windows-server-vm`, `ssh administrator@<lab-windows-server-vm-ip>` (PowerShell shell, key auth), enrolled to the Mac lab stack over Tailscale.
+- **Linux:** lab-hyperv-host `lab-ubuntu-src`, `ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip>` (passwordless sudo; the Mac has no route to lab-hyperv-host's `<lab-lan-subnet>`, always ProxyJump), enrolled to the Mac lab stack at `http://<lab-macos-host-lan-ip>:3000`.
 
 - [ ] **Step 1: Put this branch's API and the W04 agent on both rigs.**
 
@@ -2171,15 +2171,15 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && pn
 Then push the branch's agent to each rig (amendment B12: the `dev-<epoch>` version is unparseable, so `compareAgentVersions` returns `0` and the `MIN_AGENT_VERSION_SYSTEM_CLEANUP` gate lets it through — this is what makes a dev build testable):
 
 ```bash
-cd agent && make dev-push DEVICE=<WIN-IMDR2GAIDMV device uuid> AUTH_TOKEN=$BREEZE_API_KEY
+cd agent && make dev-push DEVICE=<lab-windows-server-vm device uuid> AUTH_TOKEN=$BREEZE_API_KEY
 cd agent && make dev-push DEVICE=<lab-ubuntu-src device uuid> AUTH_TOKEN=$BREEZE_API_KEY
 ```
 
 Confirm each agent restarted on the new build:
 
 ```bash
-ssh administrator@100.101.28.70 'Get-Service breeze-agent | Select-Object Status; (Get-Item "C:\Program Files\Breeze\breeze-agent.exe").LastWriteTime'
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 'systemctl is-active breeze-agent && breeze-agent --version'
+ssh administrator@<lab-windows-server-vm-ip> 'Get-Service breeze-agent | Select-Object Status; (Get-Item "C:\Program Files\Breeze\breeze-agent.exe").LastWriteTime'
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> 'systemctl is-active breeze-agent && breeze-agent --version'
 ```
 
 - [ ] **Step 2: R1 — Windows, multi-volume scan and per-volume bin.** In the browser, open `/devices/<win-device-id>#filesystem`.
@@ -2188,8 +2188,8 @@ ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 'syste
 2. Before scanning, plant a recycle-bin fixture from the rig so the trash candidate is non-trivial:
 
 ```powershell
-ssh administrator@100.101.28.70 'fsutil file createnew D:\junkfile.bin 536870912; Remove-Item D:\junkfile.bin'
-ssh administrator@100.101.28.70 'Get-ChildItem "D:\$Recycle.Bin" -Force -Recurse | Measure-Object -Property Length -Sum'
+ssh administrator@<lab-windows-server-vm-ip> 'fsutil file createnew D:\junkfile.bin 536870912; Remove-Item D:\junkfile.bin'
+ssh administrator@<lab-windows-server-vm-ip> 'Get-ChildItem "D:\$Recycle.Bin" -Force -Recurse | Measure-Object -Property Length -Sum'
 ```
 
 3. Select `C:\`, click **Analyze**, wait for the snapshot. Then select the second volume and **Analyze** again.
@@ -2202,14 +2202,14 @@ ssh administrator@100.101.28.70 'Get-ChildItem "D:\$Recycle.Bin" -Force -Recurse
 1. Note free space before:
 
 ```powershell
-ssh administrator@100.101.28.70 'Get-PSDrive D | Select-Object Used,Free'
+ssh administrator@<lab-windows-server-vm-ip> 'Get-PSDrive D | Select-Object Used,Free'
 ```
 
 2. In the **Cleanup panel**, tick the `trash` category (the `$Recycle.Bin\S-…` candidate planted in R1), click **Execute**, and confirm in the destructive dialog.
 3. Note free space after, and confirm nothing was relocated onto `C:`:
 
 ```powershell
-ssh administrator@100.101.28.70 'Get-PSDrive C,D | Select-Object Name,Used,Free; Test-Path "$env:USERPROFILE\.breeze-trash"'
+ssh administrator@<lab-windows-server-vm-ip> 'Get-PSDrive C,D | Select-Object Name,Used,Free; Test-Path "$env:USERPROFILE\.breeze-trash"'
 ```
 
 **Acceptance R2:** `D:` free space increases by approximately the reported `bytesReclaimed`; `C:` free space does **not** decrease; `~\.breeze-trash` either does not exist or is unchanged. Also confirm `D:\$Recycle.Bin` itself and its `desktop.ini` still exist — only the contents went (spec §6.3). This is defect 1 plus defect 2.
@@ -2221,7 +2221,7 @@ ssh administrator@100.101.28.70 'Get-PSDrive C,D | Select-Object Name,Used,Free;
 3. While it runs, watch the process tree from the rig:
 
 ```powershell
-ssh administrator@100.101.28.70 'while ($true) { Get-Process cleanmgr,dismhost,TiWorker -ErrorAction SilentlyContinue | Select-Object Name,Id,StartTime; Start-Sleep 30 }'
+ssh administrator@<lab-windows-server-vm-ip> 'while ($true) { Get-Process cleanmgr,dismhost,TiWorker -ErrorAction SilentlyContinue | Select-Object Name,Id,StartTime; Start-Sleep 30 }'
 ```
 
 **Acceptance R3(a):** the run reaches a terminal state on its own — every `cleanmgr`/`dismhost`/`TiWorker` process exits and the panel moves off "running" — within the 60- and 90-minute caps, with no operator intervention. A hang, or a result that arrives while `cleanmgr` is still in the process list, is a **FAIL** and blocks the agent release.
@@ -2229,9 +2229,9 @@ ssh administrator@100.101.28.70 'while ($true) { Get-Process cleanmgr,dismhost,T
 4. Reboot the rig, wait for the agent to reconnect, then read the measured delta:
 
 ```powershell
-ssh administrator@100.101.28.70 'Restart-Computer -Force'
+ssh administrator@<lab-windows-server-vm-ip> 'Restart-Computer -Force'
 # after it returns:
-ssh administrator@100.101.28.70 'Get-PSDrive C | Select-Object Used,Free'
+ssh administrator@<lab-windows-server-vm-ip> 'Get-PSDrive C | Select-Object Used,Free'
 ```
 
 **Acceptance R3(b):** free space on `C:` after the reboot is greater than before the run. `Update Cleanup` releases its space at restart, so a zero delta *before* the reboot is expected and is not a failure; a zero delta *after* it is.
@@ -2241,7 +2241,7 @@ ssh administrator@100.101.28.70 'Get-PSDrive C | Select-Object Used,Free'
 1. Prime a cache so the run has something to reclaim, and capture the simulated numbers the estimator parses:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> \
   'sudo apt-get -y install --reinstall --download-only vim >/dev/null 2>&1; du -sb /var/cache/apt/archives; LC_ALL=C sudo apt-get -s autoremove | tail -3; LC_ALL=C journalctl --disk-usage'
 ```
 
@@ -2269,13 +2269,13 @@ Expected: a `device.filesystem.system_cleanup.run` row with `surface = ai_tool`.
 Pre-set one of the deliberately-excluded handlers before the run:
 
 ```powershell
-ssh administrator@100.101.28.70 'New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder" -Name StateFlags5555 -Value 2 -PropertyType DWord -Force; New-Item -ItemType File -Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" -Force; fsutil file createnew "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" 10485760'
+ssh administrator@<lab-windows-server-vm-ip> 'New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder" -Name StateFlags5555 -Value 2 -PropertyType DWord -Force; New-Item -ItemType File -Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" -Force; fsutil file createnew "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" 10485760'
 ```
 
 Run `win_cleanmgr` with `Update Cleanup` selected (as in R3), then read the flag and the canary back:
 
 ```powershell
-ssh administrator@100.101.28.70 '(Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder").StateFlags5555; Test-Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin"'
+ssh administrator@<lab-windows-server-vm-ip> '(Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder").StateFlags5555; Test-Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin"'
 ```
 
 **Acceptance R7:** `StateFlags5555` reads `0` and the canary file still exists. A `2` (or a deleted canary) means the runner writes flags only for the handlers it selected and leaves every other key as it found it — which lets an excluded handler run on any box with stale flags, and is a **FAIL** that blocks the agent release. Clean up the key afterwards with `Remove-ItemProperty … -Name StateFlags5555`.
@@ -2297,7 +2297,7 @@ cat /tmp/second-run.json
 - [ ] **Step 6c: R9 — the apt autoremove estimate matches the space actually freed.** R4 compares the estimate against `apt-get -s autoremove`'s own summary, which only proves the parser reads the simulation correctly. This check closes the loop against the disk.
 
 ```bash
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> \
   'sudo apt-get -y install linux-headers-generic build-essential >/dev/null 2>&1; \
    LC_ALL=C dpkg-query -W -f="\${Package}\t\${Installed-Size}\n" $(LC_ALL=C apt-get -s autoremove 2>/dev/null | awk "/^Remv /{print \$2}") | awk "{s+=\$2} END {print s*1024}"; \
    df -B1 --output=avail / | tail -1'
@@ -2306,7 +2306,7 @@ ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
 The first number is the estimate computed from `dpkg-query`'s `Installed-Size` over exactly the packages `apt-get -s autoremove` would remove; the second is free space before. Read the catalog's `linux_pkg_autoremove` estimate, run that one action from the UI, then:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 'df -B1 --output=avail / | tail -1'
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> 'df -B1 --output=avail / | tail -1'
 ```
 
 **Acceptance R9:** the catalog estimate, the `dpkg-query` figure and the measured free-space delta agree **within 10%**. A larger gap means the estimator is parsing a different package set from the one apt removes (dnf5's changed summary format is the known case — spec §7.2 — but this rig is apt), and the "up to" label is hiding a real parser bug rather than the expected over-estimate. Record all three numbers.
@@ -2314,7 +2314,7 @@ ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 'df -B
 - [ ] **Step 6d: R10 — an ancestor symlink does not carry a delete outside the tree.** Spec §10 item 4 and §6.3: `contentsOnly` and `cleanupGuard` must `Lstat` at every level, and Go's `RemoveAll` must never traverse a link. The Go suite plants a symlink two levels deep; this is the same property against a real filesystem, with the link in the **ancestor** position that a rule match walks through.
 
 ```bash
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> \
   'mkdir -p ~/scratch-target && dd if=/dev/zero of=~/scratch-target/precious.bin bs=1M count=64 2>/dev/null && \
    mkdir -p ~/.cache && rm -rf ~/.cache/sub && ln -s ~/scratch-target ~/.cache/sub && \
    mkdir -p ~/.cache/real && dd if=/dev/zero of=~/.cache/real/junk.bin bs=1M count=64 2>/dev/null && \
@@ -2324,7 +2324,7 @@ ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
 Scan `/`, then in the Cleanup panel select the `browser_cache` candidates under `~/.cache` (which is a `browser_cache` root on Linux, spec §6.1) and Execute. Afterwards:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+ssh -o StrictHostKeyChecking=no -J breeze-svc@lab-hyperv-host breeze@<lab-ubuntu-vm-ip> \
   'ls -la ~/scratch-target/ ; test -f ~/scratch-target/precious.bin && echo TARGET_SURVIVED || echo TARGET_DESTROYED; ls -la ~/.cache/'
 ```
 
@@ -2339,15 +2339,15 @@ ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
 ```
 | Check | Rig | Result | Evidence |
 |---|---|---|---|
-| R1 multi-volume snapshot isolation | WIN-IMDR2GAIDMV | PASS/FAIL | <before/after byte totals per volume> |
-| R2 cleanup frees space, nothing lands on C: | WIN-IMDR2GAIDMV | PASS/FAIL | <Get-PSDrive before/after, bytesReclaimed> |
-| R3(a) cleanmgr process tree exits in session 0 | WIN-IMDR2GAIDMV | PASS/FAIL | <elapsed, last process-list sample> |
-| R3(b) measured free-space delta after reboot | WIN-IMDR2GAIDMV | PASS/FAIL | <Get-PSDrive before/after> |
+| R1 multi-volume snapshot isolation | lab-windows-server-vm | PASS/FAIL | <before/after byte totals per volume> |
+| R2 cleanup frees space, nothing lands on C: | lab-windows-server-vm | PASS/FAIL | <Get-PSDrive before/after, bytesReclaimed> |
+| R3(a) cleanmgr process tree exits in session 0 | lab-windows-server-vm | PASS/FAIL | <elapsed, last process-list sample> |
+| R3(b) measured free-space delta after reboot | lab-windows-server-vm | PASS/FAIL | <Get-PSDrive before/after> |
 | R4 Linux cleaners + estimate fidelity | lab-ubuntu-src | PASS/FAIL | <du/apt-get -s/journalctl vs catalog> |
 | R5 AI lane list + approved run | lab-ubuntu-src | PASS/FAIL | <audit row> |
 | R6 old-agent 409 banner | either | PASS/FAIL | <screenshot / response body> |
-| R7 non-allowlisted cleanmgr handler zeroed, canary intact | WIN-IMDR2GAIDMV | PASS/FAIL | <StateFlags5555 value, Test-Path result> |
-| R8 concurrent run refused 409 run_in_progress | WIN-IMDR2GAIDMV | PASS/FAIL | <status code, body, run-row statuses> |
+| R7 non-allowlisted cleanmgr handler zeroed, canary intact | lab-windows-server-vm | PASS/FAIL | <StateFlags5555 value, Test-Path result> |
+| R8 concurrent run refused 409 run_in_progress | lab-windows-server-vm | PASS/FAIL | <status code, body, run-row statuses> |
 | R9 autoremove estimate vs dpkg-query vs measured delta (±10%) | lab-ubuntu-src | PASS/FAIL | <all three numbers> |
 | R10 ancestor-symlink target survives | lab-ubuntu-src | PASS/FAIL | <TARGET_SURVIVED, per-path statuses> |
 ```
@@ -2520,7 +2520,7 @@ At that point the release runs normally: `/release` cuts the tag, the agent fami
 | §9.3 item 12 — `tierConfig.ts`, `RATE_LIMIT_CONFIGS`, permission map, `ApprovalHistoryFeed`, 3 keys × 8 locales | §9.3 | 8 |
 | §9.3 item 13 — `ai.mdx` tier and rate tables, `mcp-server.mdx` tables + hard-deny sentence, `docsIndex.json` | §9.3 | 11, 12 |
 | §9.3 item 14 — mobile: one added `aiToolLabels` case | §9.3 | 9, amendment B13 |
-| §11 Lab — Windows rig and KIT rig, results on the W05 sub-issue | §11 | 14 |
+| §11 Lab — Windows rig and lab-hyperv-host rig, results on the W05 sub-issue | §11 | 14 |
 | §13 quorum — non-allowlisted cleanmgr handler zeroed (R7); concurrent run 409 (R8); autoremove estimate vs `dpkg-query` vs measured, ±10% (R9); ancestor-symlink target survives (R10) | §13 | 14 |
 | §11 Docs — `filesystem-analysis.mdx` rewrite, `playbooks.mdx`, `docsIndex.json` (`agents/commands.mdx` is W04's, alignment A3) | §11 | 11, 12 |
 | §13 quorum — docs state preview expiry (24 h), "current contents at execution", `MIN_AGENT_VERSION_CLEANUP_GUARD`, heuristic/"up to" estimates, and the risk flags incl. `removes_os_rollback` / `removes_recovery_points` | §13 | 12 |

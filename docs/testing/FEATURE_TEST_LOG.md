@@ -448,7 +448,7 @@ Real Google Workspace + M365 tenants (actual connect, offboard/wipe Phase 5, dri
 ### Side effects (local dev DB)
 - Enabled identity feature flags (untracked `docker-compose.identity-test.yml`); api recreated in dev mode; caddy started.
 - `e2e-sitea@breeze.local` password set to `BreezeAdmin123!` (copied admin hash) for RBAC tests.
-- Case 9C dispatched a real `software_update firefox 123.0` command to online device `WIN-DHQNR1F8LO2` (benign winget upgrade).
+- Case 9C dispatched a real `software_update firefox 123.0` command to online device `lab-windows-server-vm-2` (benign winget upgrade).
 - All test notification rows cleaned up.
 
 ## Recently-Merged-PR Batch Verification (9 PRs) — 2026-05-17
@@ -488,9 +488,9 @@ Local dev containers hot-reload from the working tree. The active branch (`feat/
 **Result:** PASS (feature works end-to-end) — but surfaced two unrelated bugs during verification: a critical API validation bug (bug #2) and an observability gap in startup logging (bug #3). Bug #1 in the original version of this entry was a wrong hypothesis; see "Hypothesis correction" below.
 
 ### Environment
-- VM: `WIN-DHQNR1F8LO2` (Windows Server 2022 Standard Eval, 10.0.20348.587)
+- VM: `lab-windows-server-vm-2` (Windows Server 2022 Standard Eval, 10.0.20348.587)
 - Agent version: `0.62.24` (MSI-installed, includes `SafeBoot\Network\BreezeAgent` registry component from PR #304)
-- Tailscale: `100.101.150.55`
+- Tailscale: `<lab-windows-test-vm-ip>`
 - Server: local docker `https://2breeze.app`
 - Device id (local): `668299a1-a473-4a05-9701-c069c843b3e4`
 
@@ -645,7 +645,7 @@ Option 1 is simplest and correct. Shipper init should be one of the first things
 **Branch:** `main` (merged from `feature/tcp-tunnel-relay`)
 **Commit:** `c6c33624`
 **Tested by:** Claude
-**Device:** KIT (Windows, `e65460f3`)
+**Device:** lab-hyperv-host (Windows, `e65460f3`)
 **Agent Version:** `dev-1775280177`
 **Result:** PASS — all layers verified
 
@@ -675,7 +675,7 @@ Option 1 is simplest and correct. Shipper init should be one of the first things
 - [x] Discovery → Asset Detail modal shows Proxy Access section with enable button
 - [x] Zero JS console errors across all tested pages
 - [ ] VNC viewer (noVNC) — requires @novnc/novnc install
-- [ ] Proxy data flow — needs reachable target on KIT's LAN
+- [ ] Proxy data flow — needs reachable target on lab-hyperv-host's LAN
 
 ### Issues Found & Fixed
 1. `authMiddleware` missing on tunnel routes → 401 on all endpoints
@@ -1007,7 +1007,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ---
 
-## BE-1: Deep File System Intelligence (Kit/Windows) — 2026-03-01
+## BE-1: Deep File System Intelligence (lab-hyperv-host/Windows) — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `256442e`
@@ -1015,7 +1015,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 **Result:** PASS (API-only, no dedicated UI page)
 
 ### What was tested
-- [x] API: `GET /devices/:id/filesystem` — 200, returns real data from Kit: 528.2GB scanned, 2,011,506 files, 370,818 dirs, max depth 21, 22 permission denied
+- [x] API: `GET /devices/:id/filesystem` — 200, returns real data from lab-hyperv-host: 528.2GB scanned, 2,011,506 files, 370,818 dirs, max depth 21, 22 permission denied
 - [x] API: Top 50 largest files returned — Docker data.vhdx (117.84GB), WSL ext4.vhdx (23.99GB), pagefile.sys (14.85GB), swapfile.sys (9.76GB), hiberfil.sys (3.35GB)
 - [x] API: 1,000 cleanup candidates (browser_cache category) with file paths and sizes
 - [x] API: Routes confirmed: GET /:id/filesystem, POST /:id/filesystem/scan, POST /:id/filesystem/cleanup-preview, POST /:id/filesystem/cleanup-execute
@@ -1133,8 +1133,8 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 **Result:** PASS
 
 ### What was tested
-- [x] API: `GET /security/posture/:deviceId` — 200, Kit scores 72/100 (medium) with 8 factors: patch_compliance=100, encryption=67, av_health=50, firewall=100, open_ports=0, password_policy=60, os_currency=100, admin_exposure=70
-- [x] API: `GET /security/posture` (list) — 200, 2 devices: MacBook-Pro=61 (high), Kit=72 (medium)
+- [x] API: `GET /security/posture/:deviceId` — 200, lab-hyperv-host scores 72/100 (medium) with 8 factors: patch_compliance=100, encryption=67, av_health=50, firewall=100, open_ports=0, password_policy=60, os_currency=100, admin_exposure=70
+- [x] API: `GET /security/posture` (list) — 200, 2 devices: MacBook-Pro=61 (high), lab-hyperv-host=72 (medium)
 - [x] UI: `/security` dashboard renders with Security Score 67/100 (Elevated), trend chart (7 days), vulnerability counts, AV coverage (50%), firewall (50%), encryption (BitLocker+FileVault), password policy (60%), admin audit, 6 recommendations
 - [x] UI: Sub-pages linked: /security/score, /security/trends, /security/vulnerabilities, /security/antivirus, /security/firewall, /security/encryption, /security/password-policy, /security/admin-audit, /security/recommendations
 - [x] Backend: BullMQ `securityPostureWorker` initialized, daily scoring job
@@ -1215,14 +1215,14 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 **Result:** PASS
 
 ### What was tested
-- [x] API: `GET /devices/:id/diagnostic-logs` — 200, 21,060 total logs for Kit (Windows)
+- [x] API: `GET /devices/:id/diagnostic-logs` — 200, 21,060 total logs for lab-hyperv-host (Windows)
 - [x] API: Filters verified in prior sessions: `component`, `level`, `since`, `until`, `search` all work correctly
 - [x] Agent: `handlers_logship.go` ships logs via `POST /agents/:id/logs` (gzip batches)
-- [x] Agent: Kit logs show continuous `[heartbeat]` entries (applied event log config update, boot performance, etc.)
+- [x] Agent: lab-hyperv-host logs show continuous `[heartbeat]` entries (applied event log config update, boot performance, etc.)
 - [x] DB: `agentLogs` table in schema, indexed by device + timestamp
 
 ### Evidence
-- API: 21,060 diagnostic log entries for Kit device spanning weeks of operation
+- API: 21,060 diagnostic log entries for lab-hyperv-host device spanning weeks of operation
 - Most recent entries: `applied event log config update` every ~60s (heartbeat cycle)
 
 ### Issues Found
@@ -1270,7 +1270,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ---
 
-## BE-19: IP History Tracking (Kit/Windows) — 2026-03-01
+## BE-19: IP History Tracking (lab-hyperv-host/Windows) — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `256442e`
@@ -1278,16 +1278,16 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 **Result:** PASS (no bugs found — fully implemented and working end-to-end)
 
 ### What was tested
-- [x] API: `GET /devices/:id/ip-history` (Kit) — 200, returns 7 IP history entries (4 active, 3 inactive)
+- [x] API: `GET /devices/:id/ip-history` (lab-hyperv-host) — 200, returns 7 IP history entries (4 active, 3 inactive)
 - [x] API: `GET /devices/:id/ip-history?active_only=true` — 200, returns 4 active entries (Ethernet DHCP, 2 link-local, vEthernet DHCP)
 - [x] API: `GET /devices/:id/ip-history` (MacBook) — 200, returns 0 entries (macOS agent v0.5.0 doesn't have IP tracking)
-- [x] DB: `device_ip_history` table exists with 7 rows for Kit
-- [x] DB: 4 active entries — Ethernet (192.168.10.100 DHCP), Ethernet 2 (169.254.200.223 link-local), Ethernet 3 (169.254.147.160 link-local), vEthernet Default Switch (172.22.176.1 DHCP)
+- [x] DB: `device_ip_history` table exists with 7 rows for lab-hyperv-host
+- [x] DB: 4 active entries — Ethernet (`<lab-hyperv-host-lan-ip>` DHCP), Ethernet 2 (169.254.200.223 link-local), Ethernet 3 (169.254.147.160 link-local), vEthernet Default Switch (172.22.176.1 DHCP)
 - [x] DB: 3 inactive entries — vEthernet Default Switch IP changes: 172.30.240.1 → 172.27.48.1 → 172.23.144.1 → 172.22.176.1 (DHCP rotation over Feb 24-25)
 - [x] DB: `lastSeen` timestamps updated to current time (2026-03-01 01:13:27) — heartbeat refresh working
 - [x] DB: `deactivatedAt` correctly set for inactive entries (Feb 24-25 range)
 - [x] DB: `ip_assignment_type` enum with values: dhcp, static, vpn, link-local, unknown
-- [x] UI: "IP History" tab present in device detail navigation (19th tab on Kit)
+- [x] UI: "IP History" tab present in device detail navigation (19th tab on lab-hyperv-host)
 - [x] UI: Tab heading "IP Assignment History" with count badge (7), Refresh button
 - [x] UI: Filters — search box, Assignment type dropdown (All/DHCP/Static/VPN/Link-local/Unknown), Interface dropdown (Ethernet/Ethernet 2/Ethernet 3/vEthernet), IP Type dropdown (IPv4/IPv6), Active only checkbox
 - [x] UI: Date range — Since and Until date pickers
@@ -1299,7 +1299,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### Evidence
 - Screenshot: `.playwright-mcp/page-2026-03-01T01-14-10-457Z.png` — IP History tab showing all 7 entries with DHCP rotation on vEthernet
-- API: Kit has 7 entries: 4 active (Ethernet DHCP 192.168.10.100, vEthernet DHCP 172.22.176.1, 2x link-local), 3 inactive (vEthernet DHCP rotation: 172.30.240.1 → 172.27.48.1 → 172.23.144.1)
+- API: lab-hyperv-host has 7 entries: 4 active (Ethernet DHCP `<lab-hyperv-host-lan-ip>`, vEthernet DHCP 172.22.176.1, 2x link-local), 3 inactive (vEthernet DHCP rotation: 172.30.240.1 → 172.27.48.1 → 172.23.144.1)
 - DB: `lastSeen` timestamps actively refreshing each heartbeat cycle (~15 min)
 - DB: Inactive entries have `deactivated_at` set correctly to timestamp when IP changed
 
@@ -1307,7 +1307,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - **No bugs found** — API, DB, UI all working correctly with real agent-collected data
 
 ### Notes
-- Kit (Windows) agent actively tracking IP changes — 7 entries captured over 5 days (Feb 24-Mar 1)
+- lab-hyperv-host (Windows) agent actively tracking IP changes — 7 entries captured over 5 days (Feb 24-Mar 1)
 - vEthernet (Default Switch) shows 4 DHCP IP changes — likely Hyper-V virtual switch DHCP lease rotation
 - MacBook (macOS) has 0 entries — agent v0.5.0 doesn't include IP history tracking; needs rebuild with current code
 - Agent detects IP changes in heartbeat cycle (~15 min), only sends updates when changes detected (bandwidth optimization)
@@ -1382,7 +1382,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### What was tested
 - [x] API: `POST /logs/search` — 200, full-text search via tsvector, 408 results for "error", cursor pagination works
-- [x] API: `POST /logs/search` with deviceId filter — 200, returns 0 for Kit (Windows not shipping event logs to this table)
+- [x] API: `POST /logs/search` with deviceId filter — 200, returns 0 for lab-hyperv-host (Windows not shipping event logs to this table)
 - [x] API: `GET /logs/aggregation` — **500 BUG** → fixed → 200, hourly bucketing by level shows 542 errors in 23 hourly buckets
 - [x] API: `GET /logs/trends` — **500 BUG** → fixed → 200, level distribution, top sources (com.apple.TCC=418), spike detection (threshold=61, 1 spike found)
 - [x] API: `GET /logs/queries` — 200, empty list (expected)
@@ -1406,7 +1406,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - API: `GET /logs/aggregation` — 200 after fix, 23 hourly buckets of error-level logs
 
 ### Notes
-- Windows device (Kit) has 0 event logs in `deviceEventLogs` table — event log shipping may only be enabled for macOS currently
+- Windows device (lab-hyperv-host) has 0 event logs in `deviceEventLogs` table — event log shipping may only be enabled for macOS currently
 - Sidebar shows "Event Logs" link under Operations section
 - Correlation detection queues properly to BullMQ (202 response)
 - Fix applied in `apps/api/src/services/logSearch.ts` — same Drizzle date_trunc pattern seen in CIS compliance fix (commit `6703cc2`)
@@ -1503,7 +1503,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### Notes
 - On-demand collection (`POST /collect-boot-metrics`) dispatches successfully but the 30s API timeout is too short for Windows PowerShell boot metric collection. The command completes asynchronously — not a bug, but UX could show a "collection in progress" state
-- Boot time trend chart and startup items table both render correctly with real data from Kit (Windows)
+- Boot time trend chart and startup items table both render correctly with real data from lab-hyperv-host (Windows)
 
 ---
 
@@ -1569,27 +1569,27 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### What was tested
 - [x] API: `GET /reliability?limit=5` — 200, returns 2 devices with scores, trends, pagination, and org summary
-- [x] API: `GET /reliability/:deviceId` — 200, returns Kit snapshot + 30d history (4 daily data points)
+- [x] API: `GET /reliability/:deviceId` — 200, returns lab-hyperv-host snapshot + 30d history (4 daily data points)
 - [x] API: `GET /reliability/:deviceId/history?days=30` — 200, returns daily aggregated points with reliability estimates
 - [x] API: `GET /reliability/org/:orgId/summary` — 200, returns org averageScore=70, criticalDevices=1, goodDevices=1, worstDevices list
-- [x] API: `GET /reliability?scoreRange=critical` — 200, returns only Kit (score 40)
+- [x] API: `GET /reliability?scoreRange=critical` — 200, returns only lab-hyperv-host (score 40)
 - [x] API: `GET /reliability?scoreRange=good` — 200, returns only MacBook-Pro (score 100)
-- [x] API: `GET /reliability?trendDirection=improving` — 200, returns Kit (improving trend)
+- [x] API: `GET /reliability?trendDirection=improving` — 200, returns lab-hyperv-host (improving trend)
 - [x] API: Response includes all scoring components: uptimeScore, crashScore, hangScore, serviceFailureScore, hardwareErrorScore
-- [x] API: Top issues array populated (Kit: uptime=87/critical, hardware=102/error, services=30/error)
-- [x] API: MTBF calculated (Kit: 0.7h)
-- [x] API: Trend confidence metric present (Kit: 0.21)
-- [x] Agent (Kit/Windows `dev-1772322641`): 32 successful reliability uploads, 0 errors
+- [x] API: Top issues array populated (lab-hyperv-host: uptime=87/critical, hardware=102/error, services=30/error)
+- [x] API: MTBF calculated (lab-hyperv-host: 0.7h)
+- [x] API: Trend confidence metric present (lab-hyperv-host: 0.21)
+- [x] Agent (lab-hyperv-host/Windows `dev-1772322641`): 32 successful reliability uploads, 0 errors
 - [x] Agent: Collects crashes, hangs, service failures, hardware errors per heartbeat cycle
 - [x] Agent: Most recent upload shows 0 crashes, 0 hangs, 0 hw errors, 0 service failures (improving)
 - [x] Agent: Historical uploads show hardware errors declining (11 → 7 → 4 → 1 → 0 over 5 days)
 - [x] Agent: macOS device (MacBook-Pro) also reporting — score 100, no issues
 
 ### Evidence
-- API: Kit reliability snapshot: `score=40, trend=improving, uptime30d=12.78%, serviceFailures30d=30, hardwareErrors30d=102, mtbf=0.7h`
+- API: lab-hyperv-host reliability snapshot: `score=40, trend=improving, uptime30d=12.78%, serviceFailures30d=30, hardwareErrors30d=102, mtbf=0.7h`
 - API: MacBook-Pro snapshot: `score=100, trend=stable, uptime30d=100%, 0 issues`
 - API: Org summary: `averageScore=70, criticalDevices=1, goodDevices=1, degradingDevices=0`
-- API: Kit history points: Feb 24 (est=0, 32 hw err), Feb 25 (est=0, 68 hw err), Feb 27 (est=100, 0 err), Feb 28 (est=70, 2 hw err)
+- API: lab-hyperv-host history points: Feb 24 (est=0, 32 hw err), Feb 25 (est=0, 68 hw err), Feb 27 (est=100, 0 err), Feb 28 (est=70, 2 hw err)
 - Agent logs: 32 uploads over 5 days, all successful, declining error counts showing real improvement
 
 ### Issues Found
@@ -1597,7 +1597,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### Notes
 - No frontend UI exists for Reliability Scoring — backend-only feature (DB, API, agent, AI tool)
-- Kit score of 40 is driven by low 30d uptime (12.78%) and high hardware error count (102) — likely WHEA/MCE events
+- lab-hyperv-host score of 40 is driven by low 30d uptime (12.78%) and high hardware error count (102) — likely WHEA/MCE events
 - BullMQ worker runs daily at 2 AM UTC to recompute scores org-wide
 - Retention job prunes history older than 120 days
 - AI tool `get_fleet_health` available for brain integration
@@ -1614,7 +1614,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### What was tested
 - [x] API: `GET /changes?limit=5` — 200, returns 176 total changes with correct shape (id, deviceId, hostname, timestamp, changeType, changeAction, subject, beforeValue, afterValue, details)
-- [x] API: `GET /changes?deviceId=<kit>` — 200, filters by Kit device (176 changes)
+- [x] API: `GET /changes?deviceId=<lab-hyperv-host>` — 200, filters by lab-hyperv-host device (176 changes)
 - [x] API: `GET /changes?changeType=software` — 200, returns 25 software changes
 - [x] API: `GET /changes?changeType=service` — 200, returns 148 service changes
 - [x] API: `GET /changes?changeType=network` — 200, returns 3 network changes
@@ -1624,7 +1624,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] API: `GET /changes?changeAction=updated` — 200, returns 8 software updates
 - [x] API: `GET /changes?startTime=<24h ago>` — 200, time range filtering works (6 recent changes)
 - [x] API: Cursor pagination — `limit=3` returns `hasMore=true` + `nextCursor`, second page returns different records
-- [x] Agent (Kit/Windows `dev-1772322641`): 176 changes collected and shipped to API
+- [x] Agent (lab-hyperv-host/Windows `dev-1772322641`): 176 changes collected and shipped to API
 - [x] Agent: Software changes include before/after version (e.g., Edge 145.0.3800.70 → 145.0.3800.82)
 - [x] Agent: Service changes include before/after startup type (e.g., Windows Modules Installer manual ↔ automatic)
 - [x] Agent: Network changes include before/after IP (e.g., vEthernet Default Switch IP changes)
@@ -1653,7 +1653,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ---
 
-## BE-15: Application Whitelisting (Kit/Windows) — 2026-03-01
+## BE-15: Application Whitelisting (lab-hyperv-host/Windows) — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `256442e`
@@ -1666,16 +1666,16 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] API: `PATCH /software-policies/:id` — 200, updates policy description
 - [x] API: `DELETE /software-policies/:id` — 200, returns `{"success":true}` but policy still visible in list (soft delete issue)
 - [x] API: `GET /software-policies/compliance/overview` — 200, returns `{total:2, compliant:0, violations:2, unknown:0}`
-- [x] API: `GET /software-policies/violations` — 200, returns violations for both devices (KIT: 151, MacBook: 474)
+- [x] API: `GET /software-policies/violations` — 200, returns violations for both devices (lab-hyperv-host: 151, MacBook: 474)
 - [x] API: `GET /software/inventory` — 200, returns 625 unique software entries across fleet
-- [x] API: `GET /software/inventory` (per-device) — KIT has 150 installed apps with publisher/version/install date
+- [x] API: `GET /software/inventory` (per-device) — lab-hyperv-host has 150 installed apps with publisher/version/install date
 - [x] API: `POST /software-policies/:id/check` — 503 "Failed to schedule compliance check" (BullMQ worker issue)
 - [x] UI: App Library page (`/software`) loads — Software Catalog with Add Package/Bulk Deploy buttons, search, category filter
 - [x] UI: App Policies page (`/software-inventory`) Inventory tab — 612 unique software table with Name/Vendor/Devices/Versions/Policy Status/Actions columns, pagination (1-50 of 612)
-- [x] UI: App Policies page Policies tab — summary cards (Policies:2, Devices Checked:2, Compliant:0, Violations:2), Policy Definitions table, Recent Violations section (KIT: 151, MacBook: 474)
+- [x] UI: App Policies page Policies tab — summary cards (Policies:2, Devices Checked:2, Compliant:0, Violations:2), Policy Definitions table, Recent Violations section (lab-hyperv-host: 151, MacBook: 474)
 - [x] UI: Policy actions available — Check Compliance, Remediate, Edit, Deactivate buttons per policy
 - [x] UI: Create Policy button present with Refresh
-- [x] UI: Device detail Software Inventory tab — KIT shows 150 installed software with search, publisher filter (50 publishers), pagination (6 pages)
+- [x] UI: Device detail Software Inventory tab — lab-hyperv-host shows 150 installed software with search, publisher filter (50 publishers), pagination (6 pages)
 - [x] Agent: Diagnostic logs show "SoftwareSASGeneration policy is enabled" on startup — software collection active
 - [x] Agent: BullMQ compliance queue active in Redis (repeating 15-min schedule, multiple job keys present)
 - [x] DB: Compliance data populated — last checked 2/28/2026 5:30 PM for both devices
@@ -1689,13 +1689,13 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - Screenshot: `.playwright-mcp/page-2026-03-01T00-30-16-372Z.png` — App Library (Software Catalog) page
 - Screenshot: `.playwright-mcp/page-2026-03-01T00-30-30-959Z.png` — Software Inventory tab with 612 entries
 - Screenshot: `.playwright-mcp/page-2026-03-01T00-30-44-476Z.png` — Policies tab with compliance dashboard
-- Screenshot: `.playwright-mcp/page-2026-03-01T00-31-06-042Z.png` — KIT device Software Inventory (150 apps)
+- Screenshot: `.playwright-mcp/page-2026-03-01T00-31-06-042Z.png` — lab-hyperv-host device Software Inventory (150 apps)
 - API: Compliance overview: `{"total":2,"compliant":0,"violations":2,"unknown":0}`
-- API: KIT violations: 151 unauthorized apps (7-Zip, Docker Desktop, Git, AutoHotkey, Obsidian, etc.)
+- API: lab-hyperv-host violations: 151 unauthorized apps (7-Zip, Docker Desktop, Git, AutoHotkey, Obsidian, etc.)
 - Agent logs: `SoftwareSASGeneration policy is enabled` on agent startup
 
 ### Notes
-- Default Allowlist policy has no rules defined — all software is flagged as unauthorized (151 KIT + 474 macOS violations)
+- Default Allowlist policy has no rules defined — all software is flagged as unauthorized (151 lab-hyperv-host + 474 macOS violations)
 - Compliance worker runs on 15-min repeating BullMQ schedule — data is current as of 5:30 PM
 - Software inventory collected by agent includes install dates, publishers, and versions
 - Policy CRUD is fully functional (create, read, update verified; delete has soft-delete visibility bug)
@@ -1727,14 +1727,14 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] API: `PATCH /backup/configs/:id` — 200, updates config successfully
 - [x] API: `POST /backup/configs/:id/test` — 200, connectivity test works for local provider
 - [x] API: `GET /backup/policies` — 200, returns policies with pagination
-- [x] API: `POST /backup/policies` — 201, creates policy ("E2E Daily Backup" targeting Kit)
+- [x] API: `POST /backup/policies` — 201, creates policy ("E2E Daily Backup" targeting lab-hyperv-host)
 - [x] API: `PATCH /backup/policies/:id` — 200, updates policy successfully
 - [x] API: `GET /backup/jobs` — 200, returns jobs with pagination
 - [x] API: `GET /backup/jobs/:id` — 200, returns single job detail
 - [x] API: `POST /backup/jobs/run/:deviceId` — 201, manual backup triggered successfully
 - [x] API: `GET /backup/snapshots` — 200, returns snapshots list (empty)
 - [x] API: `POST /backup/restore` — 400, proper Zod validation for missing snapshotId
-- [x] Agent (Kit/Windows `dev-1772322641`): Received 2 `backup_run` commands via WebSocket
+- [x] Agent (lab-hyperv-host/Windows `dev-1772322641`): Received 2 `backup_run` commands via WebSocket
 - [x] Agent: Commands processed without errors — returned "backup not configured" (expected, agent lacks local backup config)
 - [x] Agent: Job status correctly updated to `failed` with errorLog in DB
 
@@ -1755,14 +1755,14 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - **No backup sub-pages**: Configs, policies, jobs, snapshots, and restore wizard components exist (`BackupConfigList`, `BackupPolicyList`, `BackupJobList`, `SnapshotBrowser`, `RestoreWizard`) but are not routed — the entire backup UI is a single dashboard page
 
 ### Notes
-- Kit agent processes `backup_run` commands but fails because no local backup provider is configured on the agent side — this is correct behavior
+- lab-hyperv-host agent processes `backup_run` commands but fails because no local backup provider is configured on the agent side — this is correct behavior
 - The full API pipeline works: create config → create policy → trigger manual job → dispatch to agent → receive result → update job status
 - macOS agent behavior not tested (would also fail — no backup handler in v0.5.0)
 - Test data created: 1 config ("E2E Local Backup"), 1 policy ("E2E Daily Backup"), 2 failed jobs
 
 ---
 
-## BE-8: User Session Intelligence (Kit/Windows) — 2026-03-01
+## BE-8: User Session Intelligence (lab-hyperv-host/Windows) — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `256442e`
@@ -1776,12 +1776,12 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] UI: Device Overview tab shows "Logged-in User: ToddHebebrand" from live session data
 - [x] UI: Activities tab shows "Sessions reported" entries from agent (source: Agent, 5m ago)
 - [x] UI: "Clear Sessions" action available in device overflow menu (...) with confirmation modal
-- [x] Agent: Session broker running on Kit — named pipe listener created, user helper spawned and connected
+- [x] Agent: Session broker running on lab-hyperv-host — named pipe listener created, user helper spawned and connected
 - [x] Agent: Diagnostic logs show sessionbroker info-level activity, no session-related errors
-- [x] DB: `device_sessions` table has 4 rows for Kit — 1 active (is_active=true, activity_state=active), 3 closed (disconnected, with duration_seconds calculated)
+- [x] DB: `device_sessions` table has 4 rows for lab-hyperv-host — 1 active (is_active=true, activity_state=active), 3 closed (disconnected, with duration_seconds calculated)
 
 ### Evidence
-- Screenshot: `.playwright-mcp/page-2026-03-01T00-20-35-820Z.png` — KIT Overview showing "Logged-in User: Tod..."
+- Screenshot: `.playwright-mcp/page-2026-03-01T00-20-35-820Z.png` — lab-hyperv-host Overview showing "Logged-in User: Tod..."
 - Screenshot: `.playwright-mcp/page-2026-03-01T00-20-57-476Z.png` — Activities tab showing "Sessions reported" entries
 - API active sessions: `{"activeUsers":[{"username":"ToddHebebrand","sessionType":"console","activityState":"active","idleMinutes":0}],"count":1}`
 - API experience metrics: `{"totals":{"sessions":4,"currentlyActive":1},"averages":{"sessionDurationSeconds":23921}}`
@@ -1802,7 +1802,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ---
 
-## Audit Baselines (Kit/Windows) — 2026-03-01
+## Audit Baselines (lab-hyperv-host/Windows) — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `736d28a` + uncommitted fixes
@@ -1815,7 +1815,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] UI: Compliance by Baseline table shows "CIS L1 Audit Baseline (Windows) - E2E Test 2" with 75 avg score and progress bar
 - [x] UI: Baselines tab lists 9 baselines with Name, OS, Profile, Active/Inactive toggle, Edit/Delete actions
 - [x] UI: Baseline detail page shows Overview (settings in code blocks), Compliance (device results), Apply (3-step wizard)
-- [x] UI: Apply tab renders device selection table with KIT (Windows/online), Preview/Approval steps
+- [x] UI: Apply tab renders device selection table with lab-hyperv-host (Windows/online), Preview/Approval steps
 - [x] UI: Approvals tab shows pending apply request with Approve/Reject buttons, expiration time
 - [x] UI: Audit Logs page at `/audit` shows table with timestamp, user, action, resource, details, IP columns
 - [x] API: `GET /audit-baselines` — 200, returns all baselines
@@ -1829,7 +1829,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] API: `GET /audit-logs/stats` — 200, returns category/user breakdowns
 - [x] API: `GET /audit-logs/export` — 200, CSV export works
 - [x] API: `GET /audit-logs/reports/user-activity` — 200, returns user action summaries
-- [x] Agent (Kit/Windows `dev-1772322641`): Received `collect_audit_policy` command, executed `auditpol /get`, returned settings
+- [x] Agent (lab-hyperv-host/Windows `dev-1772322641`): Received `collect_audit_policy` command, executed `auditpol /get`, returned settings
 - [x] Agent: Audit policy collected — 4 settings evaluated, 3 compliant, 1 deviation (account lockout: expected success_and_failure, actual failure)
 - [x] Agent: Tamper-evident audit logger running (SHA-256 hash chain)
 - [x] Agent logs: No errors related to audit collection
@@ -1851,7 +1851,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 ### Evidence
 - Screenshot: `.playwright-mcp/page-2026-03-01T00-11-26-555Z.png` — Audit Baselines Dashboard showing 75 avg score
 - API: Compliance summary: `{"totalDevices":1,"compliant":0,"nonCompliant":1,"averageScore":75}`
-- API: Kit deviation: `auditpol:account lockout` expected `success_and_failure`, actual `failure`
+- API: lab-hyperv-host deviation: `auditpol:account lockout` expected `success_and_failure`, actual `failure`
 - API: Apply request created with 1h expiry, self-approval correctly blocked (400)
 - Agent logs: 2 successful `collect_audit_policy` commands processed, audit logger started
 - EventBus: `compliance.audit_deviation` published for org after evaluation
@@ -1886,7 +1886,7 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] API: `GET /peripherals/policies?deviceClass=storage` — 200, filtering works correctly
 - [x] API: `GET /peripherals/policies?deviceClass=bluetooth` — 200, returns 0 (correct filter)
 - [x] API: `GET /peripherals/activity` — 200, returns paginated activity log
-- [x] API: `GET /peripherals/activity?deviceId=<kit>` — 200, device-scoped filtering works
+- [x] API: `GET /peripherals/activity?deviceId=<lab-hyperv-host>` — 200, device-scoped filtering works
 - [x] API: `POST /peripherals/policies` — 403 "MFA required" (correct — MFA gate working)
 
 ### Issues Found
@@ -1903,12 +1903,12 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - Policy create/update/disable require MFA (403 without it) — working as designed
 - Anomaly detection job runs every 15 min (threshold: 5 blocked in 30 min)
 - Policy distribution job queues PERIPHERAL_POLICY_SYNC to devices on create/update
-- No agent-side peripheral events exist yet — Kit has no peripheral telemetry submitted
+- No agent-side peripheral events exist yet — lab-hyperv-host has no peripheral telemetry submitted
 - Test policy was inserted via SQL and cleaned up after verification
 
 ---
 
-## Data Discovery / Sensitive Data (Kit/Windows) — 2026-02-28
+## Data Discovery / Sensitive Data (lab-hyperv-host/Windows) — 2026-02-28
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `6703cc2` (pre-fix) + uncommitted changes
@@ -1921,15 +1921,15 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] UI: Dashboard charts (Findings by Data Type, Risk Distribution) render with "No data yet" placeholder
 - [x] UI: Scans tab lists all scans with correct status, device name, timestamps, and durations
 - [x] UI: Scans tab Refresh button fetches latest data from API
-- [x] UI: New Scan modal creates scan targeting Kit device successfully
+- [x] UI: New Scan modal creates scan targeting lab-hyperv-host device successfully
 - [x] UI: Policies tab renders
 - [x] API: `POST /sensitive-data/scan` — 202, creates and queues scan
 - [x] API: `GET /sensitive-data/scans` — 200, returns all scans (NEW endpoint added during testing)
 - [x] API: `GET /sensitive-data/scans/:id` — 200, returns scan detail with findings summary
 - [x] API: `GET /sensitive-data/dashboard` — 200, returns aggregate counts
 - [x] API: `GET /sensitive-data/report` — 200, returns paginated findings
-- [x] Agent (Kit/Windows `dev-1772316104`): Received `sensitive_data_scan` command, executed scan, returned results
-- [x] Agent: Scan completed with 0 findings (default scan paths on Kit have no sensitive files)
+- [x] Agent (lab-hyperv-host/Windows `dev-1772316104`): Received `sensitive_data_scan` command, executed scan, returned results
+- [x] Agent: Scan completed with 0 findings (default scan paths on lab-hyperv-host have no sensitive files)
 - [x] BullMQ: Scan job dispatched and completed through queue
 
 ### Bugs Found & Fixed
@@ -1951,18 +1951,18 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 
 ### Evidence
 - Screenshot: `e2e-tests/snapshots/sensitive-data-scans-completed.png` — 3 scans all showing "Completed" with durations
-- API: `GET /sensitive-data/scans` returns 3 scans, all `status: completed`, Kit device
-- API: Scan summary shows `filesScanned: 0, findingsCount: 0` (expected — Kit default paths empty)
+- API: `GET /sensitive-data/scans` returns 3 scans, all `status: completed`, lab-hyperv-host device
+- API: Scan summary shows `filesScanned: 0, findingsCount: 0` (expected — lab-hyperv-host default paths empty)
 - Agent: Command completed via WebSocket with `sensitive_data_scan` type processed correctly
 
 ### Notes
-- Kit's default scan paths have no sensitive files, so 0 findings is expected
+- lab-hyperv-host's default scan paths have no sensitive files, so 0 findings is expected
 - macOS agent (v0.5.0) does NOT have `sensitive_data_scan` handler — needs rebuild
 - The `agentWs.ts` fix also added CIS post-processing (same pattern — was missing from WS handler)
 
 ---
 
-## CIS Benchmarking (Kit/Windows) — 2026-02-28
+## CIS Benchmarking (lab-hyperv-host/Windows) — 2026-02-28
 
 **Branch:** `fix/integration-testing-502s`
 **Commit:** `f99127c`
@@ -1975,15 +1975,15 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - [x] UI: Baselines tab lists all baselines with Edit/Trigger Scan actions
 - [x] UI: New Baseline form creates baseline successfully (count 9→10)
 - [x] UI: Remediations tab renders with status filter dropdown
-- [x] UI: Compliance tab shows Kit scan result with expandable failed findings row
+- [x] UI: Compliance tab shows lab-hyperv-host scan result with expandable failed findings row
 - [x] UI: Expanded row shows check 2.3.7 severity badge, check ID, title, and evidence
 - [x] API: `GET /cis/baselines` — 200, returns all baselines
 - [x] API: `POST /cis/baselines` — 201, creates new baseline
 - [x] API: `GET /cis/compliance` — 200, returns summary + results (after bug fix)
 - [x] API: `GET /cis/remediations` — 200, returns paginated remediations
 - [x] API: `POST /cis/scan` — 202, queues scan job
-- [x] API: `GET /cis/devices/:id/report` — 200, returns Kit report with findings
-- [x] Agent (Kit/Windows `dev-1772316104`): Received `cis_benchmark` command, executed checks, returned results
+- [x] API: `GET /cis/devices/:id/report` — 200, returns lab-hyperv-host report with findings
+- [x] Agent (lab-hyperv-host/Windows `dev-1772316104`): Received `cis_benchmark` command, executed checks, returned results
 - [x] Agent: Score 44% — 4 passed, 1 failed (check 2.3.7), 4 not_applicable out of 9 total checks
 - [x] BullMQ: Job completed with `devicesTargeted: 1, commandsQueued: 1`
 
@@ -1999,13 +1999,13 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 ### Evidence
 - Screenshot: `cis-compliance-tab.png` — Empty compliance tab before scan
 - Screenshot: `cis-baselines-tab.png` — Baselines tab showing 9 baselines
-- Screenshot: `cis-kit-compliance-result.png` — Kit compliance result: 44%, 1 failed check expanded inline
-- API: Kit device report shows: Score 44, Passed 4/9, Failed 1 (check 2.3.7: Interactive logon last user name)
+- Screenshot: `cis-kit-compliance-result.png` — lab-hyperv-host compliance result: 44%, 1 failed check expanded inline
+- API: lab-hyperv-host device report shows: Score 44, Passed 4/9, Failed 1 (check 2.3.7: Interactive logon last user name)
 - Agent logs: `[info] heartbeat: processing command` → `[info] heartbeat: command completed`
 
 ### Notes
 - macOS agent (v0.5.0) does NOT have CIS handlers — needs rebuild/redeploy
-- Windows agent (Kit, `dev-1772316104`) has CIS handlers and works end-to-end
+- Windows agent (lab-hyperv-host, `dev-1772316104`) has CIS handlers and works end-to-end
 - Duplicate baselines from prior E2E runs — no dedup guard on baseline creation
 
 ## OAuth/MCP end-to-end (DCR → consent → token → MCP → revoke) — 2026-04-24
@@ -2219,7 +2219,7 @@ Many pages (Patches, Fleet, AI Risk, others) embed `<iframe src="https://docs.br
 ### Phase 3 — Everyday-workflow checklist
 #### Devices workflow — PASS
 - ✅ Status filter (Offline → "2 of 3 devices", 2 rows). OS/role/org/site filter dropdowns present.
-- ✅ Open device → detail renders (WIN-DHQNR1F8LO2, agent v0.65.10, real hardware/IP data).
+- ✅ Open device → detail renders (lab-windows-server-vm-2, agent v0.65.10, real hardware/IP data).
 - ✅ Tabs all render via hash routing (#performance charts, #hardware real disk/RAM, #software inventory, #eventlog filters). "More" dropdown reveals Patches/Peripherals/Scripts/Connections; #patches sub-tab renders patch controls.
 - ⚠️ UI/UX: device-detail "More" dropdown is a portal popover that toggles on each click — fine for users, but the chevron stays "^" (open-looking) even after the menu visually closes in some states; minor. Also the global Documentation iframe + Breeze AI panel are always mounted in the DOM (fixed right-0 panels) → the docs iframe loads `docs.breezermm.com` on EVERY page even when collapsed, which is the source of the site-wide CSP console spam and an extra cross-origin request per navigation.
 #### Device actions — PASS
@@ -2241,7 +2241,7 @@ Many pages (Patches, Fleet, AI Risk, others) embed `<iframe src="https://docs.br
 - ✅ Script picker integration: device Run Script modal now shows "QA Sweep Test Script ... 1 script(s) available" — create→pick works end-to-end. (Earlier "No scripts available" was a correct empty state, not a bug.)
 - BLOCKED (fixture): cannot verify actual execution/output — no live agent. Re-test with live agent.
 #### Global search / theme / profile — PASS (with minor UX note)
-- ✅ Cmd+K opens command palette ("Search devices, scripts, alerts, users, settings..."). Query "WIN" → returns devices (WIN-DHQNR1F8LO2, E2E Windows Test Device); clicking a result navigates to /devices/:id. Entity search works.
+- ✅ Cmd+K opens command palette ("Search devices, scripts, alerts, users, settings..."). Query "WIN" → returns devices (lab-windows-server-vm-2, E2E Windows Test Device); clicking a result navigates to /devices/:id. Entity search works.
 - ⚠️ UI/UX: typing the literal word "devices" / "scripts" → "No results found." The placeholder implies you can search nav sections by name, but it's entity-only search. Minor expectation mismatch — consider indexing nav destinations or rewording the placeholder.
 - ✅ Theme toggle: dropdown Light/Dark/System; Dark applies `.dark` on <html>, reverts to Light cleanly.
 - ✅ Profile menu: Profile / Settings / Sign out present (sign-out not exercised to preserve session).
@@ -2677,8 +2677,8 @@ Driver: Playwright MCP. Sweep follows docs/testing/v0.81.0-to-HEAD-test-plan.md.
 - Created in local DB: quote Q-2026-0001 (converted) + invoice INV-2026-0001 ($500), blank invoice INV-2026-0002 ($600), catalog item "Managed Workstation" (archived), alert template "QA High CPU Partner-Wide" (partner-wide).
 - Set billing@breeze.local + tech@breeze.local password_hash = admin's hash (to test RBAC). Harmless in local dev; reset if needed.
 
-### Windows agent verification — 2026-06-19 (.55 / WIN-DHQNR1F8LO2)
-Built current-main agent (`0.82.0-maintest-db6b0dc5`, `CGO_ENABLED=0 GOOS=windows`), uninstalled the existing v0.68.2 MSI on the .55 Tailscale box, installed the new build as a service (`service install --no-watchdog`), enrolled against the local stack via `http://100.95.194.59` (Mac's Tailscale IP) into Default Org / Default Site.
+### Windows agent verification — 2026-06-19 (.55 / lab-windows-server-vm-2)
+Built current-main agent (`0.82.0-maintest-db6b0dc5`, `CGO_ENABLED=0 GOOS=windows`), uninstalled the existing v0.68.2 MSI on the .55 Tailscale box, installed the new build as a service (`service install --no-watchdog`), enrolled against the local stack via `http://<lab-stack-host-ip>` (Mac's Tailscale IP) into Default Org / Default Site.
 
 - ✅ **#1524 hardware reporting — PASS (agent→API→DB→device-detail API).** device_hardware + `GET /devices/:id` return the new fields: `biosVersion=090008`, `gpuModel=Microsoft Hyper-V Video`, `motherboardManufacturer=Microsoft Corporation`, `motherboardProduct=Virtual Machine`, `motherboardVersion=7.0` (plus cpuModel/manufacturer/model). Unblocks the sweep's empty-fleet BLOCK on #1524. Pixel-render check pending (MCP browser wedged from prior sub-agent session — infra, not a product bug).
 - ⚠️ **#1478 pending_reboot — PARTIAL.** Field is live and populated (`pendingReboot=true` from the live OS signal). Full clear-after-reboot cycle not exercised (would require rebooting the box).
@@ -2692,7 +2692,7 @@ Built current-main agent (`0.82.0-maintest-db6b0dc5`, `CGO_ENABLED=0 GOOS=window
 ## Patching Area Sweep — 2026-06-19
 
 Tester: UI QA sweep (Playwright MCP, http://localhost, admin@breeze.local Partner Admin).
-Fixture: one live Windows device WIN-DHQNR1F8LO2 (online) in Default Organization / Default Site. 2 outstanding patches (1 approved, 1 pending approval, 1 critical, 0 third-party).
+Fixture: one live Windows device lab-windows-server-vm-2 (online) in Default Organization / Default Site. 2 outstanding patches (1 approved, 1 pending approval, 1 critical, 0 third-party).
 
 ### Patching page (Compliance tab) — PARTIAL
 - ✅ Compliance tab loads cleanly, no console errors. Summary chips render real data: "0% compliant / 0 of 1 devices / 1 have pending patches / 1 approved / 1 pending approval / 1 critical".
@@ -2897,7 +2897,7 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 
 ### Remote Access — **PASS**
 - `/remote` hub renders 3 entry cards: Start Terminal, File Transfer, Session History. No console errors.
-- `/remote/terminal` — device picker lists the online device WIN-DHQNR1F8LO2 (Windows/online) with "Open Terminal" action. Entry point works (did **not** start a real WebRTC session per scope).
+- `/remote/terminal` — device picker lists the online device lab-windows-server-vm-2 (Windows/online) with "Open Terminal" action. Entry point works (did **not** start a real WebRTC session per scope).
 - `/remote/sessions` — Session History audit log renders (Total Sessions/Duration/Data stats, type+user+time filters, Export). Empty but well-formed.
 - ⚠️ Note: `/remote/history` is a 404 (Page not found) — but that was my wrong URL guess; the real path is `/remote/sessions`. Not a bug.
 
@@ -2927,7 +2927,7 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 ### Reports (/reports + builder) — **PASS**
 - `/reports` lists Saved Reports + Recent Runs (empty seed, clean empty state). Ad-hoc Report → `/reports/builder`.
 - Report Builder is full-featured: report type (Devices/Alerts/Patches/Compliance/Activity), column picker, record filters, viz type, schedule (cadence/day/format).
-- **Live preview populates with real data** — Devices preview shows WIN-DHQNR1F8LO2 (Windows Server 2022, online); switching to Alerts re-renders the preview with the 2 real alerts (reflecting their current ack/resolved state). NOT a fake-empty 200. No console errors.
+- **Live preview populates with real data** — Devices preview shows lab-windows-server-vm-2 (Windows Server 2022, online); switching to Alerts re-renders the preview with the 2 real alerts (reflecting their current ack/resolved state). NOT a fake-empty 200. No console errors.
 
 ### Analytics (/analytics) — **PASS**
 - Renders Operations Overview / Capacity Planning / SLA Compliance tabs, Query Builder (metric type/name/aggregation/time-range), and a draggable widget grid.
@@ -2940,7 +2940,7 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 
 ### Event Logs (/logs) — **PASS**
 - Renders search + Source/Start/End/Rows(50/100/250)/level(Info/Warning/Error/Critical) filters, Save Query, Export CSV.
-- Shows 1 real seeded log: Error / Hardware / Microsoft-Windows-DNS-Client on WIN-DHQNR1F8LO2. No console errors.
+- Shows 1 real seeded log: Error / Hardware / Microsoft-Windows-DNS-Client on lab-windows-server-vm-2. No console errors.
 
 ### Backup (/backup) — **PASS**
 - Renders Overview + Verification/Snapshots/SQL Server/Hyper-V/Vault/SLA/Encryption/Recovery Bootstrap tabs (most badged ALPHA — honest). Stat cards (Total Jobs/Snapshots/Success Rate/Devices Protected/Storage). Run all backups.
@@ -2950,7 +2950,7 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 - "Cloud-to-Cloud Backup" with honest ALPHA disclaimer ("sync and restore jobs are not yet implemented"); Add Connection + Connections/Configs/Jobs/Items tabs. No console errors.
 
 ### Disaster Recovery (/dr) — **PASS**
-- ALPHA disclaimer; Create Plan + Plans/Executions tabs. Create Plan modal renders a full form: Plan name, Description, RPO/RTO targets, recovery groups (name/duration/dependency), device selection (WIN-DHQNR1F8LO2). No console errors. (Forms render & validate per scope; did not submit.)
+- ALPHA disclaimer; Create Plan + Plans/Executions tabs. Create Plan modal renders a full form: Plan name, Description, RPO/RTO targets, recovery groups (name/duration/dependency), device selection (lab-windows-server-vm-2). No console errors. (Forms render & validate per scope; did not submit.)
 
 ### Settings → Organizations & Sites (full CRUD lifecycle) — **PASS (1 LOW)**
 - Master-detail: 3 seeded orgs; select to view sites. Add organization form (name/slug/type/status/maxDevices/contract dates).
@@ -2991,12 +2991,12 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 
 ### AI Assistant panel (#1484 / #1591) — **PASS**
 - Header AI button opens the right-rail panel (quick prompts: Check server health / Show critical alerts / Find offline devices / Security overview / Disk space report / Recent activity).
-- Sent "List my devices" (Cmd+Enter) → panel showed **streaming** ("AI is thinking… click stop to cancel"), invoked the **Query Devices tool** ("Tool Result" chip), and **streamed a complete, accurate answer**: a formatted table with WIN-DHQNR1F8LO2 (Windows Server 2022 21H2, 🟢 Online, Default Site, Agent 0.82.0-maintest-db6b0dc5) + a follow-up question.
+- Sent "List my devices" (Cmd+Enter) → panel showed **streaming** ("AI is thinking… click stop to cancel"), invoked the **Query Devices tool** ("Tool Result" chip), and **streamed a complete, accurate answer**: a formatted table with lab-windows-server-vm-2 (Windows Server 2022 21H2, 🟢 Online, Default Site, Agent 0.82.0-maintest-db6b0dc5) + a follow-up question.
 - This confirms the SDK tool-execution path resolves (NOT the #1591 "always rejected or timed out" failure) and streaming works end-to-end. No console errors.
 
 ### Cross-cutting everyday flows — **PASS**
 - **Theme toggle** — header Theme button opens Light/Dark/System menu; selecting Dark applies `html.dark`; Light reverts. Works.
-- **Cmd+K global search** — header Search opens the palette; typing "WIN-DHQ" returns the device WIN-DHQNR1F8LO2 as a result. Works.
+- **Cmd+K global search** — header Search opens the palette; typing "WIN-DHQ" returns the device lab-windows-server-vm-2 as a result. Works.
 
 ---
 
@@ -3055,7 +3055,7 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 
 ## UI QA Sweep — 2026-06-20 (since 2026-06-19 sweep / v0.81.0 release)
 
-Target: http://localhost (docker dev). Login: admin@breeze.local (Partner Admin, multi-org seed: Default Partner → Default Organization, Northwind IT, Acme Managed Services). Fixture: 1 online Windows device (WIN-DHQNR1F8LO2). Driver: Playwright MCP.
+Target: http://localhost (docker dev). Login: admin@breeze.local (Partner Admin, multi-org seed: Default Partner → Default Organization, Northwind IT, Acme Managed Services). Fixture: 1 online Windows device (lab-windows-server-vm-2). Driver: Playwright MCP.
 Scope: re-verify 6/19 fix-PRs that resolved the prior sweep's own findings (Tier 1) + new 6/20–6/21 feature PRs with a UI surface (Tier 2). The ~30-PR security-review-#2 hardening wave is backend/agent/RLS/audit (no web surface) → out of scope for this browser sweep.
 
 ### Env recovery (pre-sweep)
@@ -3124,7 +3124,7 @@ Scope: re-verify 6/19 fix-PRs that resolved the prior sweep's own findings (Tier
 - ✅ /discovery: clicking "Profiles" → URL `/discovery#profiles` (hash). Both areas now use window.location.hash for tab state per the repo convention.
 
 ### Patches respect org switcher + action feedback (#1636) — PASS
-- ✅ Org switcher: /patches header + device list follow the active-org switch. Default Organization → "Patch Management / Default Organization", 0 of 1 devices compliant, WIN-DHQNR1F8LO2 listed (1 pending). Switched to Northwind IT → "Patch Management / Northwind IT", 0 of 0 devices, WIN device gone. Switched back → device returns. The patches view no longer ignores the org switcher.
+- ✅ Org switcher: /patches header + device list follow the active-org switch. Default Organization → "Patch Management / Default Organization", 0 of 1 devices compliant, lab-windows-server-vm-2 listed (1 pending). Switched to Northwind IT → "Patch Management / Northwind IT", 0 of 0 devices, WIN device gone. Switched back → device returns. The patches view no longer ignores the org switcher.
 - ✅ Action feedback: device #patches tab "Run OS patch scan" → POST /patches/scan?orgId=… **200** (org-scoped) with a transient success toast. Non-destructive scan path surfaces feedback. (Did NOT click "Install pending OS patches" — that triggers a real install on the live box. Approve/reject approval-workflow feedback was exercised by the 6/19 patching sweep.)
 
 ### Invoice manual payment record + void (#1701) — PASS
@@ -3134,7 +3134,7 @@ Scope: re-verify 6/19 fix-PRs that resolved the prior sweep's own findings (Tier
 - State: invoice returned to Issued/$500 (void undid the test payment — no lasting artifact).
 
 ### Tickets partner org-access (#1666) — PASS (UI), backend authz
-- ✅ /tickets renders for the partner admin with real tickets ("High CPU sustained on WIN-DHQNR1F8LO2", 2 open) + org filter (all 3 orgs), priority/category filters, Create ticket. Partner-scope admin reads tickets across its orgs (correct). The restrictive enforcement (a partner user only reads orgs they can access) is backend authz — best verified by integration tests, not a browser positive path.
+- ✅ /tickets renders for the partner admin with real tickets ("High CPU sustained on lab-windows-server-vm-2", 2 open) + org filter (all 3 orgs), priority/category filters, Create ticket. Partner-scope admin reads tickets across its orgs (correct). The restrictive enforcement (a partner user only reads orgs they can access) is backend authz — best verified by integration tests, not a browser positive path.
 
 ### SSO admin gating + domain verification (#1691 / #1695) — N/A for browser sweep (backend/gating)
 - #1695 is explicitly backend ("SSO domain verification … backend"); #1691 is permission gating (sso:admin). Partner → Security tab has password/MFA/session/IP-allowlist but NO SSO config UI surface. These are security-review-#2 backend+permission PRs with no meaningful click-path. Out of scope for Playwright; covered by integration/unit tests.
@@ -3196,7 +3196,7 @@ http://localhost, login admin@breeze.local. Run mode: background agent owns brow
 
 ### Baseline (login + sidebar render) — PASS
 - ✅ Login via admin@breeze.local works (credentials pre-filled, redirects to Dashboard).
-- ✅ Dashboard renders: Fleet Status 0/4 online (4 seeded devices SEED-CRIT-NODE/SEED-NORMAL-NODE/SEED-WARM-NODE/WIN-DHQNR1F8LO2), Recent Activity feed, Breeze AI panel, alerts list.
+- ✅ Dashboard renders: Fleet Status 0/4 online (4 seeded devices SEED-CRIT-NODE/SEED-NORMAL-NODE/SEED-WARM-NODE/lab-windows-server-vm-2), Recent Activity feed, Breeze AI panel, alerts list.
 - ⚠️ Pre-login console shows ~14x 401 on /api/v1/* (devices/alerts/audit-logs/auth/refresh) — expected pre-auth race; clears after login. Note once, not chased.
 - Sidebar groups present: AI & FLEET, MONITORING, SECURITY, OPERATIONS, plus Integrations/Backup/Reports/admin Settings. All 50 nav destinations enumerated.
 
@@ -3253,7 +3253,7 @@ http://localhost, login admin@breeze.local. Run mode: background agent owns brow
 - BLOCKED: single seeded admin user; no non-privileged role session available to verify gating vs blank 403.
 
 ### [7 / #1907 #1921] Reliability — capped counts, age-aware windows, offender drill-down — PASS
-- ✅ Device reliability card (WIN-DHQNR1F8LO2): Score 72, Trend "Improving", age-aware label "since enroll · 6d uptime" (young device — windows labeled by enroll age, not faked to 30d).
+- ✅ Device reliability card (lab-windows-server-vm-2): Score 72, Trend "Improving", age-aware label "since enroll · 6d uptime" (young device — windows labeled by enroll age, not faked to 30d).
 - ✅ Factor breakdown with weights: Hardware errors 15% (Health 0/100, count 22), Service failures 15% (Health 10/100, count 6), Uptime 30% (Health 100/100, 100.0%). Counts look capped/sane (no runaway inflation).
 - ✅ Offender drill-down toggle ("Hide offending services & components"): TOP SERVICES (Service Control Manager Jun 20 6×) + TOP HARDWARE COMPONENTS (Server 12×, DNS-Client 2×, etc.) with "Distinct events from the since enroll (6d)." Clean.
 
@@ -3362,7 +3362,7 @@ http://localhost, login admin@breeze.local. Run mode: background agent owns brow
 ### [40 / #1883] Ticket requester selectable/editable + device link — PASS
 - ✅ Ticket detail (T-2026-0002): Requester field "Breeze Admin" + Edit. Edit reveals contact select ("Unknown" / "Someone else…") + Name + Email inputs + Save/Cancel.
 - ✅ Set requester to custom "QA Requester" → field updates to "QA Requester" + activity-log entry recorded (no toast, but clear state change).
-- ✅ Device link "WIN-DHQNR1F8LO2" → clicking navigates to /devices/<id> (device detail). Device also has Unlink control.
+- ✅ Device link "lab-windows-server-vm-2" → clicking navigates to /devices/<id> (device detail). Device also has Unlink control.
 
 ### Bonus observation — Script editor unsaved-changes guard — POSITIVE
 - ✅ The Edit Script page fires a beforeunload guard when navigating away with unsaved changes. Good safety UX (prevents accidental loss).
@@ -3796,7 +3796,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 **Result:** PASS (backend E2E; UI badge display is an unblocked follow-up)
 
 ### What was tested
-- [x] Agent: `system_image` backup_run on the live Windows VM (`WIN-DHQNR1F8LO2`) collects OS system state (registry hives, BCD, drivers, services, tasks, firewall, features) and uploads it as a snapshot.
+- [x] Agent: `system_image` backup_run on the live Windows VM (`lab-windows-server-vm-2`) collects OS system state (registry hives, BCD, drivers, services, tasks, firewall, features) and uploads it as a snapshot.
 - [x] API: server labels the snapshot `backup_type=system_image` and persists `system_state_manifest` + `hardware_profile`; snapshots list DTO surfaces `backupType`.
 - [x] Full-stack fan-out: manual run creates one `file` + one `system_image` job; both complete.
 

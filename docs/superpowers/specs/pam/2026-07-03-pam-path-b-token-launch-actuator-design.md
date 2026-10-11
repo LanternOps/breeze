@@ -171,7 +171,7 @@ implementing the existing `Actuator` interface. Everything else — discovery, d
   `pamactuator` test seams (`swapActuatorForTest`): assert LogonUser→SetSession→grant→
   CreateProcessAsUser call ordering, target/cmdline plumbed through, demote-on-failure, reason codes.
 - **Config-selection test:** strategy field routes to the right actuator; default stays `sendinput`.
-- **On-hardware matrix (Windows test VM, 100.101.150.55):**
+- **On-hardware matrix (Windows test VM, `<lab-windows-test-vm-ip>`):**
   - Standard user triggers UAC → auto-approve rule → target launches elevated as `~breeze_elev` on
     the user's desktop, no native prompt survives.
   - Deny → nothing launches; consent.exe dismissed.
