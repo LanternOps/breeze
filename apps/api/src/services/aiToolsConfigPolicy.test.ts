@@ -142,7 +142,7 @@ import {
 } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
-import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction } from './aiToolMfaGate';
+import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction, isToolWhollyMfaGated, mfaGatedActionsForTool } from './aiToolMfaGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -303,6 +303,21 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
       if (gated === '*') continue;
       const actionEnum: string[] = tool.definition.input_schema.properties.action.enum;
       for (const action of gated) expect(actionEnum, `${toolName}:${action}`).toContain(action);
+    }
+  });
+
+  it('the REAL registered schemas yield the catalog shape tools/list advertises', () => {
+    // tools/list reads `input_schema.properties.action.enum` off these exact
+    // definitions (getToolDefinitions returns them unchanged); pin the result so
+    // a schema reshape can't silently drop the MFA note or un-hide a tool.
+    const registered = tools();
+    const actionEnumOf = (name: string): string[] | null =>
+      registered.get(name)!.definition.input_schema.properties.action?.enum ?? null;
+    expect(mfaGatedActionsForTool('manage_policy_feature_link', actionEnumOf('manage_policy_feature_link')))
+      .toEqual(['add', 'update', 'remove']);
+    expect(isToolWhollyMfaGated('manage_policy_feature_link', actionEnumOf('manage_policy_feature_link'))).toBe(false);
+    for (const name of ['manage_configuration_policy', 'apply_configuration_policy', 'remove_configuration_policy_assignment']) {
+      expect(isToolWhollyMfaGated(name, actionEnumOf(name)), name).toBe(true);
     }
   });
 
