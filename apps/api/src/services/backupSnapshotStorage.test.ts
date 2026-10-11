@@ -355,6 +355,37 @@ describe('backup snapshot storage', () => {
     })).rejects.toThrow(/1 object.*snapshots\/provider-snap-1\/data\.bin.*Object is locked/s);
   });
 
+  it('caps the error sample and tolerates key-less / code-only errors (#8364)', async () => {
+    const keys = Array.from({ length: 7 }, (_, i) => `snapshots/provider-snap-1/k${i}`);
+    sendMock
+      .mockImplementationOnce(async () => ({
+        Contents: keys.map((Key) => ({ Key })),
+        IsTruncated: false,
+      }))
+      .mockImplementationOnce(async () => ({
+        Errors: [
+          ...keys.slice(0, 5).map((Key) => ({ Key, Code: 'AccessDenied', Message: 'locked' })),
+          { Code: 'InternalError' },
+          {},
+        ],
+      }));
+
+    const error = await deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    }).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain('7 object(s)');
+    expect(message).toContain('+2 more');
+    expect(message).toContain('AccessDenied: locked');
+    expect(message).not.toContain('undefined');
+    expect(message).not.toContain('k5');
+  });
+
   it('still deletes later pages before throwing on per-key errors (#8364)', async () => {
     let deleteCalls = 0;
     sendMock

@@ -630,8 +630,9 @@ async function deleteS3Prefix(
   const normalizedPrefix = normalizeObjectPrefix(storagePrefix);
 
   // S3 reports per-key failures (object lock, permissions, provider quirks)
-  // inside a 200 response, and still does so with Quiet: true. Collect them
-  // across all pages (delete as much as possible), then throw so the caller
+  // inside a 200 response, and still does so with Quiet: true. Collect those
+  // per-key failures across all pages (delete as much as possible; a
+  // whole-request transport/auth error still aborts immediately), then throw so the caller
   // never treats a prefix with surviving objects as deleted (#8364).
   const failures: { key: string; error: string }[] = [];
 
@@ -661,7 +662,8 @@ async function deleteS3Prefix(
       for (const err of response?.Errors ?? []) {
         failures.push({
           key: typeof err.Key === 'string' ? err.Key : '(unknown key)',
-          error: err.Message ?? err.Code ?? 'unknown S3 delete error',
+          // Code distinguishes object-lock from IAM denials; keep both.
+          error: [err.Code, err.Message].filter(Boolean).join(': ') || 'unknown S3 delete error',
         });
       }
     }
