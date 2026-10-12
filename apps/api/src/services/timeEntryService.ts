@@ -224,6 +224,8 @@ export type TimeEntryAuditMutation = {
     | 'time_entry.deleted'
     | 'time_entry.approved'
     | 'time_entry.unapproved'
+    // #4617: held time on a denied/expired/cancelled request set to no_charge.
+    | 'time_entry.approval_written_off'
     // W06 (#3900): the suggestions ledger writes, filed under resourceType
     // 'time_suggestion' by the route audit writers — a dismissal is not a
     // time entry.
