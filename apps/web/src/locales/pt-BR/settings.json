@@ -123,7 +123,12 @@
     "copy": "Copiar",
     "copied": "Copiado",
     "oneTimeWarning": "Esta chave em texto simples é exibida apenas uma vez e não poderá ser recuperada depois.",
-    "done": "Concluído"
+    "done": "Concluído",
+    "owner": "Proprietário",
+    "unknownOwner": "Usuário desconhecido",
+    "ownerOnlyTooltip": "Somente {{owner}} pode emitir ou rotacionar chaves",
+    "ownerOnlyScopeTooltip": "Somente {{owner}} pode adicionar escopos",
+    "ownerOnlyEditNotice": "Você pode renomear, restringir ou encurtar este principal. Somente {{owner}} pode adicionar escopos, estender a expiração ou ampliar os IPs de origem."
   },
   "language": {
     "title": "Idioma",

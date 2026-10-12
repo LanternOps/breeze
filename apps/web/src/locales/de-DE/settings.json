@@ -123,7 +123,12 @@
     "copy": "Kopieren",
     "copied": "Kopiert",
     "oneTimeWarning": "Dieser Klartextschlüssel wird nur einmal angezeigt und kann später nicht abgerufen werden.",
-    "done": "Fertig"
+    "done": "Fertig",
+    "owner": "Eigentümer",
+    "unknownOwner": "Unbekannter Benutzer",
+    "ownerOnlyTooltip": "Nur {{owner}} kann Schlüssel ausstellen oder rotieren",
+    "ownerOnlyScopeTooltip": "Nur {{owner}} kann Bereiche hinzufügen",
+    "ownerOnlyEditNotice": "Sie können diesen Principal umbenennen, einschränken oder seine Laufzeit verkürzen. Nur {{owner}} kann Bereiche hinzufügen, das Ablaufdatum verlängern oder die Quell-IPs lockern."
   },
   "language": {
     "title": "Sprache",

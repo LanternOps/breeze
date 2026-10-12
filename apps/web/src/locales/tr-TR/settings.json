@@ -123,7 +123,12 @@
     "copy": "Kopyala",
     "copied": "Kopyalandı",
     "oneTimeWarning": "Bu düz metin anahtarı bir kez gösterilir ve daha sonra alınamaz.",
-    "done": "Bitti"
+    "done": "Bitti",
+    "owner": "Sahip",
+    "unknownOwner": "Bilinmeyen kullanıcı",
+    "ownerOnlyTooltip": "Yalnızca {{owner}} anahtar verebilir veya döndürebilir",
+    "ownerOnlyScopeTooltip": "Yalnızca {{owner}} kapsam ekleyebilir",
+    "ownerOnlyEditNotice": "Bu sorumluyu yeniden adlandırabilir, daraltabilir veya süresini kısaltabilirsiniz. Yalnızca {{owner}} kapsam ekleyebilir, süresini uzatabilir veya kaynak IP'lerini genişletebilir."
   },
   "language": {
     "title": "Dil",

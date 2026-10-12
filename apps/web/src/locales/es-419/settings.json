@@ -123,7 +123,12 @@
     "copy": "Copiar",
     "copied": "Copiado",
     "oneTimeWarning": "Esta clave en texto plano se muestra una sola vez y no se puede recuperar después.",
-    "done": "Listo"
+    "done": "Listo",
+    "owner": "Propietario",
+    "unknownOwner": "Usuario desconocido",
+    "ownerOnlyTooltip": "Solo {{owner}} puede emitir o rotar claves",
+    "ownerOnlyScopeTooltip": "Solo {{owner}} puede agregar alcances",
+    "ownerOnlyEditNotice": "Puedes cambiar el nombre, reducir o acortar este principal. Solo {{owner}} puede agregar alcances, extender su vencimiento o ampliar sus IP de origen."
   },
   "language": {
     "title": "Idioma",
