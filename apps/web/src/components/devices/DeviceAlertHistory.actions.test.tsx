@@ -154,7 +154,61 @@ describe('DeviceAlertHistory — actions refetch the device list', () => {
     expect(listCalls).toBe(1);
   });
 
-  it('suppress opens the duration dialog, POSTs, and refetches', async () => {
+  it('a failed post-action refetch keeps the list (no error screen)', async () => {
+    h.granted.add('alerts:acknowledge');
+    await renderIt();
+    h.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET') return Promise.resolve(json({ error: 'down' }, false, 500));
+      return Promise.resolve(json({ success: true }));
+    });
+    fireEvent.click(btn('ack', 'a1')!);
+    await waitFor(() => expect(screen.getByTestId('device-alert-status-a1')).toHaveTextContent('Acknowledged'));
+    expect(screen.queryByText(/Failed to fetch alert history/i)).toBeNull();
+    expect(screen.getByTestId('device-alert-row-a2')).toBeInTheDocument();
+  });
+
+  it('acknowledge failure toasts and does not refetch', async () => {
+    h.granted.add('alerts:acknowledge');
+    actionResponse = () => json({ error: 'nope' }, false, 500);
+    await renderIt();
+    fireEvent.click(btn('ack', 'a1')!);
+    await waitFor(() => expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(listCalls).toBe(1);
+    expect(screen.getByTestId('device-alert-status-a1')).toHaveTextContent('Active');
+  });
+
+  it('suppress failure reverts the optimistic badge and shows the server reason', async () => {
+    h.granted.add('alerts:write');
+    actionResponse = () => json({ error: 'Cannot suppress a resolved alert' }, false, 409);
+    await renderIt();
+    fireEvent.click(btn('suppress', 'a1')!);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^suppress$/i }));
+    await waitFor(() =>
+      expect(h.toast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Cannot suppress a resolved alert' }),
+      ),
+    );
+    expect(screen.getByTestId('device-alert-status-a1')).toHaveTextContent('Active');
+    await waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(2)); // 409 re-syncs from the server
+  });
+
+  it('undo reverts an optimistic suppress and the request carries an `until`', async () => {
+    h.granted.add('alerts:write');
+    await renderIt();
+    fireEvent.click(btn('suppress', 'a1')!);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^suppress$/i }));
+    await waitFor(() => expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'undo' })));
+    const post = h.fetch.mock.calls.find(([u]) => u === '/alerts/a1/suppress')!;
+    expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({ until: expect.any(String) });
+    const undo = h.toast.mock.calls.map((c) => c[0]).find((a) => a.type === 'undo');
+    undo.onUndo();
+    await waitFor(() => expect(screen.getByTestId('device-alert-status-a1')).toHaveTextContent('Active'));
+  });
+
+  it('suppress dialog confirm: happy path POSTs and refetches', async () => {
     h.granted.add('alerts:write');
     await renderIt();
     fireEvent.click(btn('suppress', 'a1')!);

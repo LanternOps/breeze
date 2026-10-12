@@ -59,6 +59,10 @@ export function useAlertActions<A extends ActionableAlert>({
         // runAction already toasted any ActionError (and 401 → login redirect).
         if (!(err instanceof ActionError)) {
           showToast({ message: t('alertsPage.failedToAcknowledgeAlert'), type: 'error' });
+        } else if (err.status === 409) {
+          // Lost a race (already resolved/acknowledged elsewhere): refresh so
+          // the row stops offering actions on a finished alert.
+          refresh();
         }
       } finally {
         setSubmitting(false);
@@ -143,8 +147,14 @@ export function useAlertActions<A extends ActionableAlert>({
           // resolved alert") rather than a generic message.
           const body = await response.json().catch(() => null);
           revert();
-          console.error('[alerts] suppress failed', alert.id, response.status);
-          showToast({ message: body?.error ?? t('alertsPage.failedToSuppressAlert'), type: 'error' });
+          console.error('[alerts] suppress failed', alert.id, response.status, body?.error);
+          showToast({
+            message: typeof body?.error === 'string' ? body.error : t('alertsPage.failedToSuppressAlert'),
+            type: 'error',
+          });
+          // The revert restores the pre-click status, which may now be stale
+          // (e.g. resolved concurrently) — re-sync from the server.
+          if (response.status === 409) refresh();
         } else {
           refresh();
         }

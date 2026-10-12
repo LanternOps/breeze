@@ -88,7 +88,7 @@ export default function DeviceAlertHistory({
       opts?: { silent?: boolean },
     ) => {
       if (!opts?.silent) setLoading(true);
-      setError(undefined);
+      if (!opts?.silent) setError(undefined);
       try {
         const params = new URLSearchParams();
         const startDate = range?.startDate ?? appliedRange.startDate;
@@ -106,13 +106,19 @@ export default function DeviceAlertHistory({
           setSiteTimezone(json.timezone ?? json.siteTimezone);
         }
       } catch (err) {
+        // A silent post-action refetch must not replace an already-patched list
+        // with the blocking error screen; the action itself succeeded.
+        if (opts?.silent) {
+          console.error("[device-alerts] post-action refetch failed", err);
+          return;
+        }
         setError(
           err instanceof Error
             ? err.message
             : t("deviceAlertHistory.failedToFetchAlertHistory"),
         );
       } finally {
-        setLoading(false);
+        if (!opts?.silent) setLoading(false);
       }
     },
     [appliedRange.endDate, appliedRange.startDate, deviceId],
