@@ -1,4 +1,4 @@
-package patching
+package systemrestore
 
 import "testing"
 

@@ -44,8 +44,3 @@ func RunPreflight(_ PreflightOptions) PreflightResult {
 func (r PreflightResult) FirstError() error {
 	return nil
 }
-
-// CreateRestorePoint is a no-op on non-Windows.
-func CreateRestorePoint(_ string) error {
-	return nil
-}

@@ -3,7 +3,6 @@
 package patching
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -313,56 +312,4 @@ func checkMaintenanceWindow(startStr, endStr string, days []string) PreflightChe
 	check.Passed = true
 	check.Message = fmt.Sprintf("within maintenance window %s-%s", startStr, endStr)
 	return check
-}
-
-// CreateRestorePoint creates a Windows System Restore point.
-// Best-effort: returns error but callers should not block on failure.
-func CreateRestorePoint(description string) error {
-	var (
-		srclientDLL           = windows.NewLazySystemDLL("srclient.dll")
-		procSRSetRestorePoint = srclientDLL.NewProc("SRSetRestorePointW")
-	)
-
-	if err := procSRSetRestorePoint.Find(); err != nil {
-		return fmt.Errorf("SRSetRestorePoint not available: %w", err)
-	}
-
-	// restorePointInfo / statemgrStatus are package-level (restorepoint_abi.go)
-	// so their SDK layout is pinned by a platform-neutral test (#4752).
-	const (
-		beginSystemChange  = 100
-		applicationInstall = 0
-	)
-
-	rpi := restorePointInfo{
-		EventType:        beginSystemChange,
-		RestorePointType: applicationInstall,
-	}
-
-	// Convert description to UTF-16, truncate to fit the fixed 256-element array
-	descUTF16, err := windows.UTF16FromString(description)
-	if err != nil {
-		return fmt.Errorf("failed to convert description: %w", err)
-	}
-	if len(descUTF16) > len(rpi.Description) {
-		descUTF16 = descUTF16[:len(rpi.Description)-1]
-		descUTF16 = append(descUTF16, 0) // null terminator
-	}
-	copy(rpi.Description[:], descUTF16)
-
-	var status statemgrStatus
-	r, _, callErr := procSRSetRestorePoint.Call(
-		uintptr(unsafe.Pointer(&rpi)),
-		uintptr(unsafe.Pointer(&status)),
-	)
-	// BEGIN_SYSTEM_CHANGE without a matching END_SYSTEM_CHANGE is the existing
-	// behaviour; W02 of #4751 replaces this function with one that closes it.
-	if msg, failed := restorePointCallFailed(r, status.Status); failed {
-		if errno, ok := callErr.(windows.Errno); ok && errno != 0 {
-			return fmt.Errorf("%s: %w", msg, callErr)
-		}
-		return errors.New(msg)
-	}
-
-	return nil
 }

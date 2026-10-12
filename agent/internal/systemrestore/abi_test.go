@@ -1,7 +1,9 @@
-package patching
+package systemrestore
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -74,5 +76,77 @@ func TestStatemgrStatusSequenceDecode(t *testing.T) {
 	copy((*[12]byte)(unsafe.Pointer(&st))[:], raw[:])
 	if got, want := st.sequence(), int64(1<<32|0x2a); got != want {
 		t.Fatalf("statemgrStatus.sequence() = %d, want %d", got, want)
+	}
+}
+
+func TestNewStatemgrStatusIsCanaryFilled(t *testing.T) {
+	// An untouched buffer must read as a failure: if the DLL never writes
+	// nStatus, the canary is nonzero and restorePointCallFailed rejects it.
+	st := newStatemgrStatus()
+	raw := (*[12]byte)(unsafe.Pointer(&st))
+	for i, b := range raw {
+		if b != statusCanary {
+			t.Fatalf("byte %d = %#x, want canary %#x", i, b, statusCanary)
+		}
+	}
+	if _, failed := restorePointCallFailed(1, st.Status); !failed {
+		t.Fatal("a status buffer the DLL never wrote was accepted as success")
+	}
+}
+
+func TestRestorePointInfoFor(t *testing.T) {
+	rpi, err := restorePointInfoFor(beginSystemChange, 0, "Before install: KB1 [abcd1234]")
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if rpi.EventType != 100 || rpi.RestorePointType != 0 || rpi.SequenceNumber != 0 {
+		t.Fatalf("header = %+v", rpi)
+	}
+	want := utf16.Encode([]rune("Before install: KB1 [abcd1234]"))
+	for i, u := range want {
+		if rpi.Description[i] != u {
+			t.Fatalf("Description[%d] = %#x, want %#x", i, rpi.Description[i], u)
+		}
+	}
+	if rpi.Description[len(want)] != 0 {
+		t.Fatal("description is not NUL-terminated")
+	}
+
+	end, err := restorePointInfoFor(endSystemChange, 1<<40, "")
+	if err != nil || end.EventType != 101 || end.SequenceNumber != 1<<40 || end.Description[0] != 0 {
+		t.Fatalf("END struct = %+v, err = %v", end, err)
+	}
+
+	if _, err := restorePointInfoFor(beginSystemChange, 0, "nul\x00inside"); err == nil {
+		t.Fatal("a description with an embedded NUL must be rejected, not silently truncated")
+	}
+
+	long, err := restorePointInfoFor(beginSystemChange, 0, strings.Repeat("x", 400))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if long.Description[255] != 0 {
+		t.Fatal("an over-long description must be truncated with a terminator in the last slot")
+	}
+}
+
+func TestComInitDisposition(t *testing.T) {
+	tests := []struct {
+		name            string
+		hr              uintptr
+		proceed, uninit bool
+	}{
+		{"S_OK", 0, true, true},
+		{"S_FALSE: already initialised, still owes CoUninitialize", 1, true, true},
+		{"RPC_E_CHANGED_MODE: usable, must NOT be uninitialised", 0x80010106, true, false},
+		{"E_OUTOFMEMORY", 0x8007000E, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proceed, uninit := comInitDisposition(tc.hr)
+			if proceed != tc.proceed || uninit != tc.uninit {
+				t.Fatalf("comInitDisposition(%#x) = (%v, %v), want (%v, %v)", tc.hr, proceed, uninit, tc.proceed, tc.uninit)
+			}
+		})
 	}
 }
