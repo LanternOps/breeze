@@ -95,6 +95,7 @@ import {
   type CommentMode,
 } from './commentMode';
 import { startForTicket, stopRunningTimer } from './timerActions';
+import { SitePinButton } from '../time/SitePinButton';
 import {
   startOutcomeEffects,
   stopComposerTicketId,
@@ -874,6 +875,9 @@ export function TicketDetailScreen() {
                 {timerBusy ? 'Working…' : running ? 'Stop timer' : 'Start timer'}
               </Text>
             </Pressable>
+            {/* #8211: renders nothing unless the partner flag is on, this user may
+                pin sites, and the ticket's org has an unpinned site. */}
+            <SitePinButton orgId={ticket?.orgId ?? null} />
             {running && running.ticketId !== ticketId ? (
               // `startTimer` auto-stops the caller's previous timer before
               // inserting (timeEntryService.ts), so starting here silently

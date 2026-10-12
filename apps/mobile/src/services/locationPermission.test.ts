@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { canReadForArrival, toLocationPermissionState } from './locationPermission';
+import {
+  canReadForArrival,
+  createPrecisionTracker,
+  toLocationPermissionState,
+} from './locationPermission';
 
 type Perm = Parameters<typeof toLocationPermissionState>[0];
 const granted: Perm = { status: 'granted', canAskAgain: true };
@@ -52,6 +56,34 @@ describe('toLocationPermissionState', () => {
     expect(toLocationPermissionState({ status: 'denied', canAskAgain: true }, true, false)).toBe(
       'denied-can-ask'
     );
+  });
+});
+
+describe('createPrecisionTracker', () => {
+  it('flags reduced precision after two consecutive poor fixes, and recovers on a good one', () => {
+    const t = createPrecisionTracker();
+    expect(t.observedReducedPrecision()).toBe(false);
+    t.note(900);
+    expect(t.observedReducedPrecision()).toBe(false);
+    t.note(900);
+    expect(t.observedReducedPrecision()).toBe(true);
+    t.note(30);
+    expect(t.observedReducedPrecision()).toBe(false);
+  });
+
+  it('treats a null accuracy as poor', () => {
+    const t = createPrecisionTracker();
+    t.note(null);
+    t.note(null);
+    expect(t.observedReducedPrecision()).toBe(true);
+  });
+
+  it('a good fix between two poor ones resets the run', () => {
+    const t = createPrecisionTracker();
+    t.note(900);
+    t.note(30);
+    t.note(900);
+    expect(t.observedReducedPrecision()).toBe(false);
   });
 });
 

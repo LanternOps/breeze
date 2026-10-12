@@ -9,6 +9,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * are dropped on every write, and a corrupted blob reads as empty.
  */
 export const ARRIVAL_MEMORY_KEY = 'breeze.arrival.v1';
+/** When the technician last tapped "Not now" on the first-run explainer card. */
+export const EXPLAINER_DISMISSED_KEY = 'breeze.location.explainerDismissedAt';
 const RETENTION_MS = 24 * 3600_000;
 const FAR_READS_KEPT = 3;
 
@@ -164,4 +166,5 @@ export async function clearFarReads(entryKey: string): Promise<void> {
 /** Sign-out: the memory is account-scoped (site ids the previous technician dismissed). */
 export async function clearArrivalMemory(): Promise<void> {
   await AsyncStorage.removeItem(ARRIVAL_MEMORY_KEY);
+  await AsyncStorage.removeItem(EXPLAINER_DISMISSED_KEY);
 }

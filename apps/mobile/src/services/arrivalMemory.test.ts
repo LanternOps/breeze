@@ -15,6 +15,8 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 
 import {
   ARRIVAL_MEMORY_KEY,
+  EXPLAINER_DISMISSED_KEY,
+  clearArrivalMemory,
   clearFarReads,
   readArrivalMemory,
   readFarReads,
@@ -72,6 +74,16 @@ describe('arrivalMemory', () => {
       lastStopAt: {},
       lastPick: {},
     });
+  });
+});
+
+describe('clearArrivalMemory (sign-out)', () => {
+  it('removes the memory blob and the explainer dismissal', async () => {
+    await recordDismiss(['a'], NOW);
+    store.set(EXPLAINER_DISMISSED_KEY, String(NOW));
+    await clearArrivalMemory();
+    expect(store.has(ARRIVAL_MEMORY_KEY)).toBe(false);
+    expect(store.has(EXPLAINER_DISMISSED_KEY)).toBe(false);
   });
 });
 

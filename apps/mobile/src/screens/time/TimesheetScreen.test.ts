@@ -38,6 +38,10 @@ vi.mock('../../services/timeSuggestions', () => ({ getSuggestions: vi.fn() }));
 vi.mock('../../components/toast/ToastHost', () => ({ useToast: () => ({ show: vi.fn() }) }));
 vi.mock('../../lib/errorReporting', () => ({ reportInternalError: vi.fn() }));
 vi.mock('../../lib/analytics', () => ({ track: vi.fn() }));
+// #8211: location UI pulls expo-location (and so `expo`, which needs RN's __DEV__
+// global) into the graph. Neither is under test here.
+vi.mock('./SitePinButton', () => ({ SitePinButton: () => null }));
+vi.mock('../settings/LocationExplainerCard', () => ({ LocationExplainerCard: () => null }));
 import { TimesheetScreen } from './TimesheetScreen';
 
 type Element = ReactElement<Record<string, any>>;
