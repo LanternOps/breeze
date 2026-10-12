@@ -28,6 +28,14 @@ func TestValidateInputEvent(t *testing.T) {
 		// The viewer's keystroke-fallback paste sends a space as the key " ".
 		{"space key ok", InputEvent{Type: "key_press", Key: " "}, false},
 		{"key too long", InputEvent{Type: "key_press", Key: strings.Repeat("a", MaxInputKeyBytes+1)}, true},
+		{"input_reset ok", InputEvent{Type: "input_reset", Seq: 1, Epoch: 1}, false},
+		{"input_reset needs seq", InputEvent{Type: "input_reset", Epoch: 1}, true},
+		{"input_reset needs epoch", InputEvent{Type: "input_reset", Seq: 1}, true},
+		{"sequenced move ok", InputEvent{Type: "mouse_move", Seq: 5, After: 4}, false},
+		{"sequenced move before any discrete event ok", InputEvent{Type: "mouse_move", Seq: 1, After: 0}, false},
+		{"move cannot depend on a later event", InputEvent{Type: "mouse_move", Seq: 5, After: 5}, true},
+		{"seq beyond a JS safe integer", InputEvent{Type: "key_down", Key: "a", Seq: MaxInputSeq + 1}, true},
+		{"after beyond a JS safe integer", InputEvent{Type: "mouse_move", Seq: 1, After: MaxInputSeq + 1}, true},
 		{"too many modifiers", InputEvent{Type: "key_press", Key: "a", Modifiers: make([]string, MaxInputModifiers+1)}, true},
 	}
 	for _, tc := range cases {

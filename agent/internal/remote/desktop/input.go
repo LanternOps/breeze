@@ -17,6 +17,16 @@ type InputEvent struct {
 	// predate issue #3595 never set it, and those sessions keep the platform
 	// handler's original behaviour.
 	CapsLock *bool `json:"capsLock,omitempty"`
+
+	// W2b ordering fields (spec §1–2). All zero for viewers that predate them.
+	// A zero Seq means "legacy": the event is handled exactly as before W2b
+	// (see inputOrder). The WebSocket relay (heartbeat/handlers_desktop.go)
+	// rebuilds events field by field and deliberately does not copy these, so WS
+	// input always stays legacy.
+	Seq      uint64 `json:"seq,omitempty"`      // per-session, strictly increasing across both channels
+	After    uint64 `json:"after,omitempty"`    // mouse_move only: seq of the last discrete event sent before it
+	Epoch    uint32 `json:"epoch,omitempty"`    // reset epoch the viewer believes is current
+	GeoEpoch uint32 `json:"geoEpoch,omitempty"` // geometry epoch from the last monitor_switched
 }
 
 // InputHandler processes input events
