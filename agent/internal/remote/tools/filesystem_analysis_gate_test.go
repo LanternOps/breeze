@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +101,56 @@ func TestFilesystemScanGateReportsElapsed(t *testing.T) {
 	err := scanInProgressError(running, time.Now())
 	if !strings.Contains(err.Error(), "running for 1m35s") {
 		t.Fatalf("elapsed not reported in whole seconds: %q", err.Error())
+	}
+}
+
+// #8509: on Windows the agent runs as SYSTEM and so walked
+// `System Volume Information` — the volume shadow copy diff area — on every
+// baseline scan of a volume root. The walker must not descend into it.
+func TestAnalyzeFilesystemSkipsSystemVolumeInformation(t *testing.T) {
+	root := t.TempDir()
+	svi := filepath.Join(root, "System Volume Information")
+	if err := os.MkdirAll(filepath.Join(svi, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for _, p := range []string{
+		filepath.Join(svi, "{3808876b-c176-4e48-b7ae-04046e6cc752}"),
+		filepath.Join(svi, "nested", "diff.bin"),
+	} {
+		if err := os.WriteFile(p, make([]byte, 4096), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "kept.txt"), make([]byte, 16), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result := AnalyzeFilesystem(map[string]any{"path": root, "timeoutSeconds": 30, "workers": 2})
+	if result.Status != "completed" {
+		t.Fatalf("scan failed: %s", result.Error)
+	}
+	var response FilesystemAnalysisResponse
+	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.Summary.FilesScanned != 1 || response.Summary.BytesScanned != 16 {
+		t.Fatalf("System Volume Information was walked: files=%d bytes=%d (want 1 file, 16 bytes)",
+			response.Summary.FilesScanned, response.Summary.BytesScanned)
+	}
+	if response.Summary.DirsScanned != 1 {
+		t.Fatalf("expected only the root to be scanned, got dirsScanned=%d", response.Summary.DirsScanned)
+	}
+}
+
+func TestIsVolumeShadowMetadataDirIsCaseInsensitive(t *testing.T) {
+	for _, name := range []string{"System Volume Information", "SYSTEM VOLUME INFORMATION", "system volume information"} {
+		if !isVolumeShadowMetadataDir(name) {
+			t.Fatalf("%q should be skipped", name)
+		}
+	}
+	for _, name := range []string{"System Volume", "NTDS", "SYSVOL", "$RECYCLE.BIN", "System Volume Information.bak"} {
+		if isVolumeShadowMetadataDir(name) {
+			t.Fatalf("%q must not be skipped", name)
+		}
 	}
 }
