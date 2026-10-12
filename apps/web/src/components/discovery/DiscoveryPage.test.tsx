@@ -216,6 +216,26 @@ describe('DiscoveryPage', () => {
       expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({ siteId: 'site-1', moveDiscoveredAssets: false });
     });
 
+    it('#7969: a new profile POST carries the chosen scan agent', async () => {
+      orgStoreState.sites = [{ id: 'site-1', name: 'HQ' }];
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
+      render(<DiscoveryPage />);
+      await screen.findAllByText('HQ sweep');
+      fireEvent.click(screen.getAllByRole('button', { name: /New Profile/ })[0]!);
+      await screen.findByTestId('mock-form-submit');
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ ...profilesPayload.data[0], id: 'profile-new' }));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
+      mockFormValues.current = { ...editFormValues, pinnedDeviceId: 'dev-1' };
+
+      fireEvent.click(screen.getByTestId('mock-form-submit'));
+
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles', expect.objectContaining({ method: 'POST' }));
+      });
+      const postCall = fetchWithAuthMock.mock.calls.find(([url, init]) => url === '/discovery/profiles' && init?.method === 'POST');
+      expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({ pinnedDeviceId: 'dev-1', siteId: 'site-1' });
+    });
+
     it('#7969: sends the chosen scan agent, and null for Automatic', async () => {
       await openEditor();
       fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload.data[0]));

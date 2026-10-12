@@ -836,17 +836,19 @@ discoveryRoutes.patch(
     // #7969: the pin is checked against the site the profile will have AFTER
     // this update. A site move that leaves a stored pin behind is refused
     // rather than silently carried (it could never run) or silently cleared.
+    // An unchanged pin re-sent by the form on an unrelated edit (rename,
+    // schedule) is NOT re-validated: a pin gone stale since it was set fails
+    // the scan visibly at run time, and must not lock the rest of the profile.
     const effectiveSiteId = siteMoveTarget?.toSiteId ?? existing.siteId;
-    const pinToValidate = updates.pinnedDeviceId !== undefined
-      ? updates.pinnedDeviceId
-      : (siteMoveTarget ? existing.pinnedDeviceId : null);
-    if (pinToValidate) {
-      const pin = await validatePinnedDiscoveryDevice(pinToValidate, { orgId: existing.orgId, siteId: effectiveSiteId });
+    const nextPin = updates.pinnedDeviceId !== undefined ? updates.pinnedDeviceId : existing.pinnedDeviceId;
+    const pinChanged = updates.pinnedDeviceId !== undefined && updates.pinnedDeviceId !== existing.pinnedDeviceId;
+    if (nextPin && (pinChanged || siteMoveTarget)) {
+      const pin = await validatePinnedDiscoveryDevice(nextPin, { orgId: existing.orgId, siteId: effectiveSiteId });
       if (!pin.ok) {
         return c.json({
-          error: updates.pinnedDeviceId === undefined
-            ? "This profile's pinned scan agent is not in the new site. Choose a scan agent in that site, or set it to automatic."
-            : pin.error,
+          error: pinChanged
+            ? pin.error
+            : "This profile's pinned scan agent is not in the new site. Choose a scan agent in that site, or set it to automatic.",
         }, 400);
       }
     }

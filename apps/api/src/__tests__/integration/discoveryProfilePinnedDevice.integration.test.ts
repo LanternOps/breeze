@@ -14,6 +14,9 @@
  *  3. The constraint is DEFERRABLE INITIALLY IMMEDIATE (org merge defers it).
  *  4. A real device move-org clears the source-org pin before the org flip
  *     (otherwise the immediate FK check would abort the move with 23503).
+ *  5. The selection module's SQL predicates (online, non-ephemeral, not
+ *     parked, same org + site, agent-backed) hold against real rows — the
+ *     unit tests mock the query builder and cannot see them.
  *
  * Fixtures are written with the superuser handle; the cases ABOUT the app role
  * use `db` under `withDbAccessContext`.
@@ -22,8 +25,9 @@ import './setup';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { devices, discoveryProfiles } from '../../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { loadSiteDiscoveryAgentCandidates, resolvePinnedDiscoveryAgent } from '../../jobs/discoveryAgentSelection';
+import { deviceNetwork, devices, discoveryProfiles } from '../../db/schema';
 import { Hono } from 'hono';
 import { createDevice, createOrganization, createPartner, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -189,5 +193,60 @@ describe('device move-org with a pinned discovery profile (#7969)', () => {
       .where(eq(discoveryProfiles.id, profile.id));
     // The profile stays in the source org and reverts to automatic selection.
     expect(row).toEqual({ pinnedDeviceId: null, orgId: orgA.id });
+  });
+});
+
+describe('discovery agent selection predicates against real Postgres (#7969)', () => {
+  async function setDevice(id: string, values: Record<string, unknown>) {
+    await admin().update(devices).set(values).where(eq(devices.id, id));
+  }
+
+  it('site candidates exclude offline, ephemeral, other-site and other-org devices', async () => {
+    const otherSite = await createSite({ orgId: fx.orgA });
+    const valid = fx.deviceA;
+    const offline = (await createDevice({ orgId: fx.orgA, siteId: fx.siteA })).id;
+    const ephemeral = (await createDevice({ orgId: fx.orgA, siteId: fx.siteA })).id;
+    const elsewhere = (await createDevice({ orgId: fx.orgA, siteId: otherSite.id })).id;
+    for (const id of [valid, ephemeral, elsewhere, fx.deviceB]) await setDevice(id, { status: 'online' });
+    await setDevice(offline, { status: 'offline' });
+    await setDevice(ephemeral, { isEphemeral: true });
+    await admin().insert(deviceNetwork).values({ deviceId: valid, orgId: fx.orgA, interfaceName: 'eth0', ipAddress: '10.0.0.7' });
+
+    const candidates = await withSystemDbAccessContext(() => loadSiteDiscoveryAgentCandidates(fx.orgA, fx.siteA));
+
+    expect(candidates.map((c) => c.deviceId)).toEqual([valid]);
+    expect(candidates[0]!.addresses).toEqual(['10.0.0.7']);
+  });
+
+  it('a pinned device parked in a holding org never resolves, and holding-org site candidates are empty', async () => {
+    const partner = await createPartner();
+    const holding = await createOrganization({ partnerId: partner.id, type: 'unassigned_pool' });
+    const holdingSite = await createSite({ orgId: holding.id });
+    // Only enrollment admission may create a device in a holding org.
+    const parked = await admin().transaction(async (tx: any) => {
+      await tx.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
+      const [row] = await tx.execute(sql`
+        INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status)
+        VALUES (${holding.id}, ${holdingSite.id}, ${`agent-parked-${Date.now()}`}, 'parked-host', 'windows', '11', 'amd64', '2.0.0', 'online')
+        RETURNING id`);
+      return row.id as string;
+    });
+
+    const resolved = await withSystemDbAccessContext(() => resolvePinnedDiscoveryAgent(parked, holding.id, holdingSite.id));
+    expect(resolved).toMatchObject({ ok: false, agentId: null });
+
+    const candidates = await withSystemDbAccessContext(() => loadSiteDiscoveryAgentCandidates(holding.id, holdingSite.id));
+    expect(candidates).toEqual([]);
+  });
+
+  it('an online pinned device in the profile site resolves to its agent; offline names it', async () => {
+    await setDevice(fx.deviceA, { status: 'online' });
+    const ok = await withSystemDbAccessContext(() => resolvePinnedDiscoveryAgent(fx.deviceA, fx.orgA, fx.siteA));
+    expect(ok).toMatchObject({ ok: true });
+
+    await setDevice(fx.deviceA, { status: 'offline' });
+    const offline = await withSystemDbAccessContext(() => resolvePinnedDiscoveryAgent(fx.deviceA, fx.orgA, fx.siteA));
+    expect(offline).toMatchObject({ ok: false, message: expect.stringMatching(/offline/) });
+    expect(offline.ok ? null : offline.agentId).toEqual(expect.any(String));
   });
 });

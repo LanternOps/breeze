@@ -3497,6 +3497,65 @@ describe('discovery routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    it('PATCH: an unrelated edit that re-sends an unchanged (now stale) pin saves without re-validating it', async () => {
+      // The form always re-sends the current pin. A pin whose device has since
+      // moved site must not lock renames/schedule edits; the scan fails at run time.
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, name: 'Renamed', pinnedDeviceId: DEVICE });
+
+      const res = await patch({ name: 'Renamed', pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(1); // no device lookup
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'Renamed' }));
+    });
+
+    it('PATCH site move carries a stored pin that is valid in the new site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, siteId: SITE_TO }]));
+      mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('PATCH site move with pinnedDeviceId null clears the pin without a device lookup', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: null });
+
+      const res = await patch({ siteId: SITE_TO, pinnedDeviceId: null });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, pinnedDeviceId: null }));
+    });
+
+    it('GET /profiles projects pinnedDeviceId (a dropped field would make the form save null and silently unpin)', async () => {
+      const now = new Date();
+      const base = {
+        orgId: ORG, siteId: SITE, name: 'p', description: null, enabled: true, subnets: [], methods: [],
+        schedule: null, deepScan: false, resolveHostnames: false, alertSettings: null, createdAt: now, updatedAt: now,
+      };
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([
+          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE }, lastRunAt: null },
+          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null }, lastRunAt: null },
+        ]) }) }),
+      });
+
+      const res = await app.request('/discovery/profiles', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((p: any) => [p.id, p.pinnedDeviceId])).toEqual([['p-pinned', DEVICE], ['p-auto', null]]);
+    });
+
     it('PATCH site move with an explicit pin in the new site validates the NEW pin against the new site', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))

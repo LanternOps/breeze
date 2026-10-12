@@ -194,6 +194,28 @@ describe('DiscoveryProfileForm scan agent (#7969)', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ siteId: 'site-2', pinnedDeviceId: '' }));
   });
 
+  it('restores the stored pin when the user switches back to the original site', async () => {
+    const loadSiteAgents = vi.fn(async (siteId: string) => siteId === 'site-1'
+      ? [{ id: 'dev-1', name: 'scanner-01', online: true }]
+      : [{ id: 'dev-9', name: 'branch-pc', online: true }]);
+    render(
+      <DiscoveryProfileForm
+        initialValues={{ ...baseProfile, pinnedDeviceId: 'dev-1' }}
+        sites={sites}
+        onSubmit={vi.fn()}
+        loadSiteAgents={loadSiteAgents}
+      />
+    );
+    await waitFor(() => expect(agentSelect().value).toBe('dev-1'));
+    const siteSelect = screen.getByTestId('discovery-profile-site-select');
+
+    fireEvent.change(siteSelect, { target: { value: 'site-2' } });
+    await waitFor(() => expect(agentSelect().value).toBe(''));
+    fireEvent.change(siteSelect, { target: { value: 'site-1' } });
+
+    await waitFor(() => expect(agentSelect().value).toBe('dev-1'));
+  });
+
   it('keeps a stored pin that is not in the loaded list visible instead of silently showing Automatic', async () => {
     const loadSiteAgents = vi.fn().mockResolvedValue([{ id: 'dev-1', name: 'scanner-01', online: true }]);
     render(
@@ -211,10 +233,13 @@ describe('DiscoveryProfileForm scan agent (#7969)', () => {
 
   it('shows a load error and still allows Automatic', async () => {
     const loadSiteAgents = vi.fn().mockRejectedValue(new Error('boom'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     render(<DiscoveryProfileForm initialValues={baseProfile} sites={sites} onSubmit={vi.fn()} loadSiteAgents={loadSiteAgents} />);
 
     expect(await screen.findByTestId('discovery-profile-scan-agent-error')).toBeInTheDocument();
     expect(agentSelect().value).toBe('');
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });
 

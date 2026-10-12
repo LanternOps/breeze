@@ -211,7 +211,10 @@ export default function DiscoveryProfileForm({
     let cancelled = false;
     loadSiteAgents(formValues.siteId)
       .then(agents => { if (!cancelled) setSiteAgents(agents); })
-      .catch(() => { if (!cancelled) setSiteAgentsError(true); }); // Automatic still selectable
+      .catch(err => {
+        console.error('[DiscoveryProfileForm] Failed to load scan agents', err);
+        if (!cancelled) setSiteAgentsError(true); // Automatic still selectable
+      });
     return () => { cancelled = true; };
   }, [loadSiteAgents, formValues.siteId]);
 
@@ -298,8 +301,16 @@ export default function DiscoveryProfileForm({
             <select
               value={formValues.siteId}
               // A pin is only valid inside its site (#7969): changing the site
-              // clears it so the user re-picks from the new site's agents.
-              onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value, pinnedDeviceId: '' }))}
+              // clears it so the user re-picks from the new site's agents;
+              // returning to the original site restores the stored pin.
+              onChange={event => {
+                const siteId = event.target.value;
+                setFormValues(prev => ({
+                  ...prev,
+                  siteId,
+                  pinnedDeviceId: siteId === originalSiteId ? (initialValues?.pinnedDeviceId ?? '') : ''
+                }));
+              }}
               data-testid="discovery-profile-site-select"
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >

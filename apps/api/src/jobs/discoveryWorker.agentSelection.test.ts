@@ -240,6 +240,21 @@ describe('pinned profile (#7969)', () => {
     warn.mockRestore();
   });
 
+  it('a send failure to the pinned agent names it, records it, and does not try another agent', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [PROFILE_PINNED]);
+    selectionMock.resolvePinned.mockResolvedValue({ ok: true, agentId: 'agent-pinned', label: 'scanner-01' });
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toMatchObject({ dispatched: false, agentId: 'agent-pinned' });
+    expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(failure()).toMatchObject({
+      agentId: 'agent-pinned',
+      errors: { message: expect.stringMatching(/pinned scan agent "scanner-01".*not run from any other agent/) },
+    });
+  });
+
   it('an explicit agent on a manual scan wins over the pin', async () => {
     queueSelects([JOB_ROW_SCHEDULED], [PROFILE_PINNED], [{ agentId: 'agent-manual', orgId: 'org-1', siteId: 'site-1', status: 'online' }]);
 
@@ -283,6 +298,8 @@ describe('unpinned profile (#7969)', () => {
     expect(topologyMock.prepare.mock.calls.map((c) => (c[0] as { agentId: string }).agentId)).toEqual(['agent-1', 'agent-2']);
     // Both snapshot writes ran inside a DB context; connectivity checks did not.
     expect(ctxState.events.filter((e) => e.startsWith('topologyPersist'))).toEqual(['topologyPersist@depth1', 'topologyPersist@depth1']);
+    // No snapshot for agent-2: the stale phase-1 snapshot (agent-1) is cleared.
+    expect(updates).toContainEqual(expect.objectContaining({ topologyDispatch: null, topologyDeadlineAt: null, topologyConfigGeneration: null }));
   });
 
   it('keeps today\'s message when no site agent is connected', async () => {

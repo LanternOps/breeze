@@ -786,6 +786,11 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   // paths walk the ranked list past agents whose DB row says online but whose
   // websocket is gone, so a stale top pick cannot fail every scheduled run.
   let chosen: DispatchAgentCandidate | null = null;
+  if (candidates.length > MAX_CONNECTIVITY_PROBES) {
+    console.warn(
+      `[DiscoveryWorker] Probing only the top ${MAX_CONNECTIVITY_PROBES} of ${candidates.length} candidate agents for job ${data.jobId} (source=${selectionSource})`
+    );
+  }
   for (const candidate of candidates.slice(0, MAX_CONNECTIVITY_PROBES)) {
     if (await isAgentConnectedAnywhere(candidate.agentId)) {
       chosen = candidate;
@@ -807,9 +812,22 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   const agentId = chosen.agentId;
   // The phase-1 snapshot names candidates[0]'s device; re-bind it to the
   // agent actually used, in its own short context.
-  const topology = chosen === candidates[0]
-    ? inputs.topology
-    : await runWithSystemDbAccess(() => prepareTopologyForAgent(data, profile, agentId));
+  let topology = inputs.topology;
+  if (chosen !== candidates[0]) {
+    topology = await runWithSystemDbAccess(async () => {
+      const rebound = await prepareTopologyForAgent(data, profile, agentId);
+      if (!rebound) {
+        // No snapshot for the agent actually used: drop the one phase 1 wrote
+        // for the skipped agent so the job row does not name a device that
+        // never ran it.
+        await db
+          .update(discoveryJobs)
+          .set({ topologyDispatch: null, topologyDeadlineAt: null, topologyConfigGeneration: null, updatedAt: new Date() })
+          .where(eq(discoveryJobs.id, data.jobId));
+      }
+      return rebound;
+    });
+  }
 
   console.log(
     `[DiscoveryWorker] Selected agent ${agentId} (${chosen.label}) for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
@@ -843,9 +861,12 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     await runWithSystemDbAccess(() =>
       markJobFailed(
         data.jobId,
-        outcome.status === 'offline'
-          ? 'Failed to send command to agent'
-          : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+        selectionSource === 'pinned'
+          ? `Failed to send command to pinned scan agent "${chosen.label}" (dispatch outcome ${outcome.status}); the scan was not run from any other agent.`
+          : outcome.status === 'offline'
+            ? 'Failed to send command to agent'
+            : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+        agentId,
       )
     );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
