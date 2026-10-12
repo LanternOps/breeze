@@ -1,4 +1,4 @@
-import { buildMonitoringConfigUpdate } from '../routes/agents/helpers';
+import { resolveMonitoringConfigForDisplay } from '../routes/agents/helpers';
 import { captureException } from './sentry';
 
 /**
@@ -9,7 +9,7 @@ import { captureException } from './sentry';
  *
  * Read-side fix: the device-facing views only show results for watches in the
  * device's CURRENTLY RESOLVED monitoring config — the same set delivered to the
- * agent (`buildMonitoringConfigUpdate`, 2-minute cached). No data is deleted;
+ * agent (`resolveMonitoringConfigForDisplay`: system-scope, cache read-only). No data is deleted;
  * raw history (`GET /monitoring/results`, retention) is unchanged.
  */
 
@@ -26,12 +26,15 @@ export function watchKey(watchType: string, name: string): string {
  */
 export async function loadActiveWatchKeys(deviceId: string): Promise<Set<string> | null> {
   try {
-    const config = await buildMonitoringConfigUpdate(deviceId);
-    if (!config) return null;
+    const config = await resolveMonitoringConfigForDisplay(deviceId);
+    if (!config) {
+      console.warn('[monitoring] active watches unresolved; showing unfiltered results', { deviceId });
+      return null;
+    }
     return new Set(config.watches.map((w) => watchKey(w.watch_type, w.name)));
   } catch (err) {
     console.error('[monitoring] could not resolve active watches; showing unfiltered results', { deviceId, error: err });
-    captureException(err);
+    captureException(err, undefined, { area: 'monitoring', op: 'active-watches' }, { fingerprint: ['monitoring', 'active-watches'] });
     return null;
   }
 }

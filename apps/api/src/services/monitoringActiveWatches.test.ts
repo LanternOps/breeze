@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { buildMonitoringConfigUpdate, captureException } = vi.hoisted(() => ({ buildMonitoringConfigUpdate: vi.fn(), captureException: vi.fn() }));
-vi.mock('../routes/agents/helpers', () => ({ buildMonitoringConfigUpdate }));
+const { resolveMonitoringConfigForDisplay, captureException } = vi.hoisted(() => ({ resolveMonitoringConfigForDisplay: vi.fn(), captureException: vi.fn() }));
+vi.mock('../routes/agents/helpers', () => ({ resolveMonitoringConfigForDisplay }));
 vi.mock('./sentry', () => ({ captureException }));
 
 import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from './monitoringActiveWatches';
@@ -15,7 +15,7 @@ describe('monitoringActiveWatches (#8287)', () => {
   });
 
   it('returns the keys of the currently resolved watches', async () => {
-    buildMonitoringConfigUpdate.mockResolvedValue({
+    resolveMonitoringConfigForDisplay.mockResolvedValue({
       check_interval_seconds: 60,
       watches: [{ watch_type: 'service', name: 'Spooler' }, { watch_type: 'process', name: 'node' }],
     });
@@ -24,17 +24,17 @@ describe('monitoringActiveWatches (#8287)', () => {
   });
 
   it('returns an empty set when resolution authoritatively finds no watches', async () => {
-    buildMonitoringConfigUpdate.mockResolvedValue({ check_interval_seconds: 60, watches: [] });
+    resolveMonitoringConfigForDisplay.mockResolvedValue({ check_interval_seconds: 60, watches: [] });
     expect(await loadActiveWatchKeys('dev-1')).toEqual(new Set());
   });
 
   it('returns null (unknown → do not filter) when resolution is unresolved', async () => {
-    buildMonitoringConfigUpdate.mockResolvedValue(null);
+    resolveMonitoringConfigForDisplay.mockResolvedValue(null);
     expect(await loadActiveWatchKeys('dev-1')).toBeNull();
   });
 
   it('returns null and reports when the resolver throws', async () => {
-    buildMonitoringConfigUpdate.mockRejectedValue(new Error('boom'));
+    resolveMonitoringConfigForDisplay.mockRejectedValue(new Error('boom'));
     expect(await loadActiveWatchKeys('dev-1')).toBeNull();
     expect(captureException).toHaveBeenCalled();
   });

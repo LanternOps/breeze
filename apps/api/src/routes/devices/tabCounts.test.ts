@@ -19,8 +19,8 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 // Real monitoringActiveWatches; only the agent-config resolver is faked.
-const { buildMonitoringConfigUpdate } = vi.hoisted(() => ({ buildMonitoringConfigUpdate: vi.fn() }));
-vi.mock('../agents/helpers', () => ({ buildMonitoringConfigUpdate }));
+const { resolveMonitoringConfigForDisplay } = vi.hoisted(() => ({ resolveMonitoringConfigForDisplay: vi.fn() }));
+vi.mock('../agents/helpers', () => ({ resolveMonitoringConfigForDisplay }));
 
 vi.mock('../../db', () => ({ db: { select: selectMock, selectDistinctOn: selectDistinctOnMock } }));
 
@@ -86,7 +86,7 @@ describe('GET /devices/:id/tab-counts', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    buildMonitoringConfigUpdate.mockResolvedValue(null); // unknown → unfiltered
+    resolveMonitoringConfigForDisplay.mockResolvedValue(null); // unknown → unfiltered
     getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(device);
     app = new Hono();
     app.route('/devices', tabCountsRoutes);
@@ -115,17 +115,19 @@ describe('GET /devices/:id/tab-counts', () => {
   });
 
   it('does not count a failing result for a watch removed from the policy (#8287)', async () => {
-    buildMonitoringConfigUpdate.mockResolvedValue({
+    resolveMonitoringConfigForDisplay.mockResolvedValue({
       check_interval_seconds: 60,
-      watches: [{ watch_type: 'process', name: 'agent' }],
+      watches: [{ watch_type: 'process', name: 'Agent' }],
     });
     queueSelects([[{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }]], [
       { watchType: 'service', name: 'removed-svc', status: 'not_found' },
-      { watchType: 'process', name: 'agent', status: 'running' },
+      // positive control: still-configured watch (case differs) that is failing
+      { watchType: 'process', name: 'agent', status: 'not_found' },
     ]);
 
     const res = await app.request(`/devices/${device.id}/tab-counts`);
-    expect((await res.json()).data.monitoring).toBe(0);
+    expect((await res.json()).data.monitoring).toBe(1);
+    expect(resolveMonitoringConfigForDisplay).toHaveBeenCalledWith(device.id);
   });
 
   it('counts OPEN anomaly episodes, not raw metric_anomalies rows (#6650)', async () => {

@@ -15,7 +15,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
 import { enqueueSnmpPoll } from '../jobs/snmpWorker';
 import { captureException } from '../services/sentry';
-import { filterToActiveWatches, loadActiveWatchKeys } from '../services/monitoringActiveWatches';
+import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from '../services/monitoringActiveWatches';
 
 import {
   resolveOrgIdForAuth as resolveOrgId,
@@ -1205,7 +1205,7 @@ monitoringRoutes.get(
     // Deduplicate to latest per (watchType, name)
     const seen = new Set<string>();
     const deduped = allResults.filter(r => {
-      const key = `${r.watchType}:${r.name}`;
+      const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -1272,7 +1272,7 @@ monitoringRoutes.get(
     // #8287: only watches still in the device's resolved config count.
     const activeResults = filterToActiveWatches(allResults, await loadActiveWatchKeys(deviceId));
     for (const r of activeResults) {
-      const key = `${r.watchType}:${r.name}`;
+      const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) continue;
       seen.add(key);
       latestStatuses.push(r.status);

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -2765,11 +2765,39 @@ async function resolvePolicyCheckInterval(deviceId: string, opts?: DevicePolicyS
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
+const monitoringSettingsCacheKey = (deviceId: string) => `monitoring:settings:device:${deviceId}`;
+
+/**
+ * #8287: the device's CURRENT watch set for DISPLAY filtering from a user
+ * request. Same answer the agent gets, but:
+ *  - resolved in system scope — a user's RLS view can be narrower than the
+ *    device's (e.g. no `current_partner_id`, so partner-wide monitors are
+ *    invisible) and a truncated list would hide live alerts;
+ *  - never writes `monitoring:settings:device:*`, so a user-scoped result can
+ *    never poison the cache the agent heartbeat reads.
+ * Returns null when resolution is unknown (device vanished).
+ */
+export async function resolveMonitoringConfigForDisplay(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const cached = await redis.get(monitoringSettingsCacheKey(deviceId));
+      if (cached) return JSON.parse(cached) as MonitoringConfigUpdate;
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+  const resolution = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => resolveDeviceMonitoringSettings(deviceId)),
+  );
+  return resolution.kind === 'unresolved' ? null : resolution.settings;
+}
+
 export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitoringConfigUpdate | null> {
   hierarchyFor(deviceId, opts);
   policySetFor(deviceId, opts);
   const redis = getRedis();
-  const cacheKey = `monitoring:settings:device:${deviceId}`;
+  const cacheKey = monitoringSettingsCacheKey(deviceId);
 
   // Try cache first
   if (redis) {

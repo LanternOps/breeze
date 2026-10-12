@@ -112,11 +112,11 @@ vi.mock('../middleware/auth', () => ({
 
 // The real monitoringActiveWatches runs; only the agent-config resolver it
 // wraps is faked. `null` = "resolution omitted" (fail open, no filtering).
-const { buildMonitoringConfigUpdate } = vi.hoisted(() => ({ buildMonitoringConfigUpdate: vi.fn() }));
-vi.mock('./agents/helpers', () => ({ buildMonitoringConfigUpdate }));
+const { resolveMonitoringConfigForDisplay } = vi.hoisted(() => ({ resolveMonitoringConfigForDisplay: vi.fn() }));
+vi.mock('./agents/helpers', () => ({ resolveMonitoringConfigForDisplay }));
 const loadActiveWatchKeys = {
   mockResolvedValue: (keys: Set<string> | null) =>
-    buildMonitoringConfigUpdate.mockResolvedValue(
+    resolveMonitoringConfigForDisplay.mockResolvedValue(
       keys === null
         ? null
         : { check_interval_seconds: 60, watches: [...keys].map((k) => { const [t, ...n] = k.split(':'); return { watch_type: t, name: n.join(':') }; }) },
@@ -495,6 +495,41 @@ describe('monitoring routes', () => {
       expect(body.healthStatus).toBe('healthy');
       expect(body.totalCount).toBe(1);
       expect(body.notRunningCount).toBe(0);
+    });
+
+    it('still answers (unfiltered) when the resolver throws (#8287)', async () => {
+      resolveMonitoringConfigForDisplay.mockRejectedValue(new Error('resolver down'));
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]) }) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ watchType: 'service', name: 'nginx', status: 'stopped' }]),
+        }) }) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).totalCount).toBe(1);
+    });
+
+    it('shows no results once the last watch is removed (empty resolved set) (#8287)', async () => {
+      loadActiveWatchKeys.mockResolvedValue(new Set());
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]) }) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ watchType: 'service', name: 'removed-svc', status: 'not_found' }]),
+        }) }) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      const body = await res.json();
+      expect(body.totalCount).toBe(0);
+      expect(body.healthStatus).toBe('unknown');
     });
 
     it('returns healthy status when all services are running', async () => {
