@@ -22,8 +22,11 @@ import (
 // serializes differently in 5.1 and 7). -InputObject @(...) prints an array for
 // zero and one VM as well. Exit codes: hypervExitCmdletMissing when the Hyper-V
 // module is not installed, hypervExitPermissionDenied when Get-VM is refused,
-// 1 for any other failure.
+// 1 for any other failure. Redirected stdout of Windows PowerShell uses the
+// OEM code page unless switched to UTF-8 first, which would mangle non-ASCII VM
+// names; a host where the switch fails keeps going with the default.
 const hypervScript = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; ` +
+	`try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }; ` +
 	`try { $vms = @(Get-VM) } ` +
 	`catch [System.Management.Automation.CommandNotFoundException] { exit 3 } ` +
 	`catch { if ($_.CategoryInfo.Category -eq 'PermissionDenied') { exit 5 }; exit 1 }; ` +
@@ -119,13 +122,24 @@ func (d *hypervDriver) Collect(ctx context.Context, det Detection) Result {
 	}
 	now := d.now()
 	ws := make([]Workload, 0, len(vms))
+	invalid := 0
 	for _, vm := range vms {
+		if strings.TrimSpace(vm.ID) == "" {
+			// A VM without an id cannot be keyed. It is not reported, and the
+			// snapshot is incomplete so the server deletes nothing by absence.
+			invalid++
+			continue
+		}
 		ws = append(ws, mapHyperVVM(vm, now))
 	}
 	observed := len(ws)
 	ws, truncated := orderAndCap(ws)
-	if truncated {
+	switch {
+	case truncated:
 		return Result{Collection: CollectionOK, Complete: false, Workloads: ws, ObservedCount: observed, Error: "truncated"}
+	case invalid > 0:
+		slog.Warn("workloads: Get-VM returned entries without an id", "count", invalid)
+		return Result{Collection: CollectionOK, Complete: false, Workloads: ws, ObservedCount: observed, Error: "invalid_entry"}
 	}
 	return Result{Collection: CollectionOK, Complete: true, Workloads: ws, ObservedCount: observed}
 }
@@ -139,6 +153,10 @@ func decodePSVMs(raw []byte) ([]psVM, string) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return nil, "empty_output"
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		// Decodes without error into nothing; never an empty host.
+		return nil, "decode_failed"
 	}
 	var vms []psVM
 	if raw[0] == '[' {

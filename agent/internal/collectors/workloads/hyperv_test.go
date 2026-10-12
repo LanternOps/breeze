@@ -157,6 +157,11 @@ func TestHyperVCollectFailures(t *testing.T) {
 		complete   bool
 	}{
 		{"empty host", stdout("[]"), CollectionOK, "", true},
+		// null decodes without error; it must never read as an empty host
+		{"null", stdout("null"), CollectionError, "decode_failed", false},
+		{"null array entry", stdout("[null]"), CollectionOK, "invalid_entry", false},
+		{"object without id", stdout("{}"), CollectionOK, "invalid_entry", false},
+		{"entry without id", stdout(`[{"Name":"x","State":2}]`), CollectionOK, "invalid_entry", false},
 		{"empty host, whitespace", stdout(" []\r\n"), CollectionOK, "", true},
 		{"no output at all", stdout(""), CollectionError, "empty_output", false},
 		{"malformed json", stdout(`[{"Id":`), CollectionError, "decode_failed", false},
@@ -253,6 +258,11 @@ func TestHyperVScriptIsSingleLineAndSingleQuoted(t *testing.T) {
 	}
 	if !strings.Contains(hypervScript, "Get-VM") || !strings.Contains(hypervScript, "ConvertTo-Json") {
 		t.Fatal("script lost its cmdlets")
+	}
+	// Windows PowerShell writes redirected stdout in the OEM code page unless
+	// told otherwise, which would mangle non-ASCII VM names.
+	if !strings.Contains(hypervScript, "[Console]::OutputEncoding") || !strings.Contains(hypervScript, "UTF8Encoding") {
+		t.Fatal("script does not switch stdout to UTF-8")
 	}
 	if !allowedCommand(testPowerShell, hypervArgs) {
 		t.Fatal("the production argv is not on the allowlist")

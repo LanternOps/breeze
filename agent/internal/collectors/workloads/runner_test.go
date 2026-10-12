@@ -21,7 +21,12 @@ func TestAllowedCommandAcceptsOnlyTheFixedReadOnlyCommands(t *testing.T) {
 		want bool
 	}{
 		{"hyper-v script", testPowerShell, hypervArgs, true},
-		{"hyper-v script, other Windows dir", `D:\WinNT\System32\WindowsPowerShell\v1.0\powershell.exe`, hypervArgs, true},
+		{"hyper-v script, upper case", strings.ToUpper(testPowerShell), hypervArgs, true},
+		// Only the host's own System32 copy: a look-alike tree elsewhere is refused.
+		{"powershell in another Windows dir", `D:\WinNT\System32\WindowsPowerShell\v1.0\powershell.exe`, hypervArgs, false},
+		{"powershell look-alike tree", `C:\Users\Public\System32\WindowsPowerShell\v1.0\powershell.exe`, hypervArgs, false},
+		{"powershell via dot-dot", `C:\x\..\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, hypervArgs, false},
+		{"powershell UNC", `\\server\share\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, hypervArgs, false},
 		{"proxmox qemu list", proxmoxPvesh, pvesh("get", "/nodes/pve-a/qemu", "--output-format", "json"), true},
 		{"proxmox lxc list", proxmoxPvesh, pvesh("get", "/nodes/pve-a/lxc", "--output-format", "json"), true},
 
@@ -93,6 +98,27 @@ func TestExecBounded(t *testing.T) {
 		_, err := execBounded(ctx, time.Second, 1024, "/nonexistent/tool")
 		if !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("err = %v, want ErrNotExist", err)
+		}
+	})
+	// A grandchild that inherits the pipes keeps them open after the child is
+	// killed; WaitDelay must still make the run return promptly.
+	t.Run("grandchild holds the pipes", func(t *testing.T) {
+		orig := cmdWaitDelay
+		cmdWaitDelay = 300 * time.Millisecond
+		t.Cleanup(func() { cmdWaitDelay = orig })
+		start := time.Now()
+		_, err := execBounded(ctx, 200*time.Millisecond, 1024, "/bin/sh", "-c", "(sleep 30) & sleep 30")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want DeadlineExceeded", err)
+		}
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("run held by grandchild for %s", d)
+		}
+	})
+	t.Run("noisy stderr is not an error", func(t *testing.T) {
+		out, err := execBounded(ctx, 5*time.Second, 1024, "/bin/sh", "-c", "head -c 40000 /dev/zero | tr '\\0' e >&2; printf ok")
+		if err != nil || string(out.Stdout) != "ok" || len(out.Stderr) != maxCmdStderr {
+			t.Fatalf("out=%q stderr=%d err=%v", out.Stdout, len(out.Stderr), err)
 		}
 	})
 	t.Run("cancelled parent", func(t *testing.T) {

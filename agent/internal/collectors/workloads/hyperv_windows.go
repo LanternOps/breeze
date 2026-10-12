@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/backup/hosttool"
 	"golang.org/x/sys/windows"
 )
 
@@ -16,7 +15,7 @@ func newHyperVDriver() Driver {
 	return &hypervDriver{
 		service:    func() serviceState { return queryServiceState("vmms") },
 		version:    windowsBuild,
-		powershell: hosttool.SystemTool(`WindowsPowerShell\v1.0\powershell.exe`),
+		powershell: systemPowerShell,
 		run:        runReadOnly,
 		now:        time.Now,
 	}

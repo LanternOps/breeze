@@ -52,13 +52,17 @@ type proxmoxDriver struct {
 
 func (d *proxmoxDriver) Runtime() Runtime { return RuntimeProxmox }
 
-var errPmxcfsNotMounted = errors.New("workloads: pmxcfs not mounted")
+var (
+	errPmxcfsNotMounted = errors.New("workloads: pmxcfs not mounted")
+	errPmxcfsUnreadable = errors.New("workloads: /etc/pve/local not readable")
+)
 
 // Detect, without running anything:
 //
 //	no /usr/bin/pvesh                 -> absent
 //	pvesh present, /etc/pve/local     -> present
 //	pvesh present, no /etc/pve/local  -> present, Reason not_running (pmxcfs is down)
+//	/etc/pve/local unreadable         -> unknown (a fault, not a stopped service)
 //
 // pmxcfs provides /etc/pve/local as a symlink to the local node's directory;
 // with pve-cluster stopped /etc/pve is an empty directory.
@@ -77,8 +81,11 @@ func (d *proxmoxDriver) Detect(context.Context) Detection {
 	if v := dpkgPackageVersion(d.dpkgStatus, "pve-manager"); v != "" {
 		version = "pve-manager/" + v
 	}
-	if _, err := d.localNode(); errors.Is(err, errPmxcfsNotMounted) {
+	switch _, err := d.localNode(); {
+	case errors.Is(err, errPmxcfsNotMounted):
 		return Detection{State: DetectionPresent, Version: version, Reason: ReasonNotRunning}
+	case errors.Is(err, errPmxcfsUnreadable):
+		return Detection{State: DetectionUnknown, Reason: ReasonUnreachable}
 	}
 	return Detection{State: DetectionPresent, Version: version}
 }
@@ -87,8 +94,12 @@ func (d *proxmoxDriver) Detect(context.Context) Detection {
 // ("nodes/<name>"), which is the node name the API uses for this host.
 func (d *proxmoxDriver) localNode() (string, error) {
 	target, err := d.readlink(path.Join(d.pveDir, "local"))
-	if err != nil {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return "", errPmxcfsNotMounted
+	case err != nil:
+		slog.Warn("workloads: /etc/pve/local not readable", "error", err.Error())
+		return "", errPmxcfsUnreadable
 	}
 	name, ok := strings.CutPrefix(target, "nodes/")
 	if !ok || !validNodeName.MatchString(name) {
@@ -121,6 +132,8 @@ func (d *proxmoxDriver) Collect(ctx context.Context, det Detection) Result {
 	switch {
 	case errors.Is(err, errPmxcfsNotMounted):
 		return Result{Collection: CollectionUnavailable, Error: ReasonNotRunning}
+	case errors.Is(err, errPmxcfsUnreadable):
+		return Result{Collection: CollectionError, Error: "pmxcfs_unreadable"}
 	case err != nil:
 		slog.Warn("workloads: proxmox local node name rejected")
 		return Result{Collection: CollectionError, Error: "invalid_node"}
@@ -143,8 +156,21 @@ func (d *proxmoxDriver) Collect(ctx context.Context, det Detection) Result {
 
 	now := d.now()
 	ws := make([]Workload, 0, len(qemu)+len(lxc))
-	ws = d.appendGuests(ws, qemu, KindVM, node, "qemu-server", now)
-	ws = d.appendGuests(ws, lxc, KindLXC, node, "lxc", now)
+	ws, qbad := d.appendGuests(ctx, ws, qemu, KindVM, node, "qemu-server", now)
+	ws, lbad := d.appendGuests(ctx, ws, lxc, KindLXC, node, "lxc", now)
+	if ctx.Err() != nil {
+		// Mapping stopped part-way; a partial list must never read as complete.
+		return Result{Collection: CollectionUnavailable, Error: ReasonTimeout}
+	}
+	if qbad+lbad > 0 {
+		// A guest that cannot be keyed is not reported; without it the snapshot
+		// is not authoritative, so the server must not delete by absence.
+		slog.Warn("workloads: pvesh returned guests without a usable vmid", "count", qbad+lbad)
+		complete = false
+		if code == "" {
+			code = "invalid_entry"
+		}
+	}
 	observed := len(ws)
 	ws, truncated := orderAndCap(ws)
 	if truncated {
@@ -174,19 +200,30 @@ func (d *proxmoxDriver) list(ctx context.Context, node, kind string) ([]pveGuest
 		return nil, &Result{Collection: CollectionError, Error: "empty_output"}
 	}
 	var guests []pveGuest
-	if err := json.Unmarshal(raw, &guests); err != nil {
+	// `null` decodes into a nil slice without error; it is not an empty node.
+	if err := json.Unmarshal(raw, &guests); err != nil || guests == nil {
 		slog.Warn("workloads: pvesh list not decodable", "kind", kind, "bytes", len(raw))
 		return nil, &Result{Collection: CollectionError, Error: "decode_failed"}
 	}
 	return guests, nil
 }
 
-// appendGuests maps guests, skipping templates (they never run) and entries
-// without a usable numeric vmid.
-func (d *proxmoxDriver) appendGuests(ws []Workload, guests []pveGuest, kind, node, confDir string, now time.Time) []Workload {
+// appendGuests maps guests, skipping templates (they never run). Entries
+// without a usable numeric vmid are skipped and counted in the second result.
+// It stops early when ctx ends: the config reads go through the pmxcfs FUSE
+// mount, which can stall, and the collector discards a cancelled report anyway.
+func (d *proxmoxDriver) appendGuests(ctx context.Context, ws []Workload, guests []pveGuest, kind, node, confDir string, now time.Time) ([]Workload, int) {
+	invalid := 0
 	for _, g := range guests {
+		if ctx.Err() != nil {
+			break
+		}
+		if pveTruthy(g.Template) {
+			continue
+		}
 		vmid, ok := pveVMID(g.VMID)
-		if !ok || pveTruthy(g.Template) {
+		if !ok {
+			invalid++
 			continue
 		}
 		id := strconv.FormatUint(vmid, 10)
@@ -210,11 +247,13 @@ func (d *proxmoxDriver) appendGuests(ws []Workload, guests []pveGuest, kind, nod
 		conf := path.Join(d.pveDir, "nodes", node, confDir, id+".conf")
 		if b, err := d.readConf(conf, maxGuestConfBytes); err == nil {
 			w.RestartPolicy = onbootPolicy(b)
+		} else {
+			slog.Debug("workloads: guest config not readable; restart policy unknown", "vmid", id, "error", err.Error())
 		}
 		w.Bound()
 		ws = append(ws, w)
 	}
-	return ws
+	return ws, invalid
 }
 
 func pveState(status string) string {
@@ -269,8 +308,12 @@ func pveTruthy(raw json.RawMessage) bool {
 // onbootPolicy maps a guest config's onboot to restart_policy: "always" when
 // the guest starts with the node, "no" when it does not (the default when the
 // key is absent). Only the current configuration counts: it ends at the first
-// "[section]" (snapshots, pending changes). An unreadable value is unknown.
+// "[section]" (snapshots, pending changes). An unreadable value, or an empty
+// read (a config always has keys), is unknown.
 func onbootPolicy(conf []byte) *string {
+	if len(bytes.TrimSpace(conf)) == 0 {
+		return nil
+	}
 	for _, line := range strings.Split(string(conf), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") {

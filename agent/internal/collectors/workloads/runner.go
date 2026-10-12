@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/hosttool"
 )
 
 // This file is the package's only process runner and the only file allowed to
@@ -28,10 +30,16 @@ const (
 	maxCmdStdout = 16 << 20
 	// maxCmdStderr keeps a little diagnostic text; it is never reported.
 	maxCmdStderr = 16 << 10
-	// cmdWaitDelay bounds how long a killed command's output pipes may stay
-	// open (held by a grandchild) before Wait gives up on them.
-	cmdWaitDelay = 5 * time.Second
 )
+
+// cmdWaitDelay bounds how long a killed command's output pipes may stay open
+// (held by a grandchild) before Wait gives up on them. A variable for tests.
+var cmdWaitDelay = 5 * time.Second
+
+// systemPowerShell is the host's own Windows PowerShell, resolved from the
+// Windows directory the OS reports (never PATH or %SystemRoot%). It is the
+// only PowerShell allowedCommand accepts and the one the Hyper-V driver runs.
+var systemPowerShell = hosttool.SystemTool(`WindowsPowerShell\v1.0\powershell.exe`)
 
 var errCommandRefused = errors.New("workloads: command is not on the read-only allowlist")
 
@@ -70,13 +78,11 @@ func allowedCommand(path string, args []string) bool {
 	return false
 }
 
-// isSystemPowerShell accepts only an absolute, drive-rooted path ending in the
-// System32 Windows PowerShell; never a bare name resolved through PATH.
+// isSystemPowerShell accepts exactly the host's System32 PowerShell (Windows
+// paths compare case-insensitively); a look-alike tree elsewhere, a relative
+// name or a UNC path is refused.
 func isSystemPowerShell(path string) bool {
-	if len(path) < 3 || path[1] != ':' || path[2] != '\\' {
-		return false
-	}
-	return strings.HasSuffix(strings.ToLower(path), `\system32\windowspowershell\v1.0\powershell.exe`)
+	return systemPowerShell != "" && strings.EqualFold(path, systemPowerShell)
 }
 
 // runReadOnly is the production cmdRunner.

@@ -222,8 +222,78 @@ func TestProxmoxSkipsGuestsWithoutAUsableVMID(t *testing.T) {
 	qemu := stdout(`[{"vmid":"abc","name":"x","status":"running"},{"vmid":-1,"name":"y"},{"vmid":0,"name":"z"},{"name":"no-id"},{"vmid":102,"status":"paused"},{"vmid":1e3,"name":"float"}]`)
 	r := pveListRunner(t, qemu, stdout("[]"))
 	res := newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, r).Collect(context.Background(), Detection{State: DetectionPresent})
-	if res.Collection != CollectionOK || len(res.Workloads) != 1 || res.Workloads[0].WorkloadID != "102" || res.Workloads[0].State != StatePaused {
+	// A guest that cannot be keyed is not reported, and the snapshot is not
+	// complete: the server must not delete a row by its absence.
+	if res.Collection != CollectionOK || res.Complete || res.Error != "invalid_entry" ||
+		len(res.Workloads) != 1 || res.Workloads[0].WorkloadID != "102" || res.Workloads[0].State != StatePaused {
 		t.Fatalf("result = %s", mustJSON(res))
+	}
+}
+
+// `null` decodes into a nil slice without error; it must never read as an
+// authoritative empty node.
+func TestProxmoxNullListIsNotAnEmptyNode(t *testing.T) {
+	r := pveListRunner(t, stdout("null"), stdout(string(fixture(t, "proxmox_lxc.json"))))
+	res := newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, r).Collect(context.Background(), Detection{State: DetectionPresent})
+	if res.Collection != CollectionOK || res.Complete || res.Error != "qemu_list_failed" {
+		t.Fatalf("result = %+v", res)
+	}
+	r = pveListRunner(t, stdout("null"), stdout(" null\n"))
+	res = newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, r).Collect(context.Background(), Detection{State: DetectionPresent})
+	if res.Collection != CollectionError || res.Error != "decode_failed" {
+		t.Fatalf("both null: %+v", res)
+	}
+}
+
+// Only a missing /etc/pve/local means pmxcfs is down; any other readlink error
+// is a fault to report, not a stopped service.
+func TestProxmoxUnreadableLocalLinkIsNotNotRunning(t *testing.T) {
+	r := &fakeRunner{fn: stdout("[]")}
+	d := newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, r)
+	d.readlink = func(p string) (string, error) {
+		return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrPermission}
+	}
+	if det := d.Detect(context.Background()); det.State != DetectionUnknown || det.Reason != ReasonUnreachable {
+		t.Fatalf("Detect = %+v", det)
+	}
+	res := d.Collect(context.Background(), Detection{State: DetectionPresent})
+	if res.Collection != CollectionError || res.Error != "pmxcfs_unreadable" || r.calls.Load() != 0 {
+		t.Fatalf("Collect = %+v, execs = %d", res, r.calls.Load())
+	}
+}
+
+func TestProxmoxStopsMappingWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, &fakeRunner{})
+	reads := 0
+	d.readConf = func(string, int64) ([]byte, error) {
+		reads++
+		cancel()
+		return []byte("onboot: 1\n"), nil
+	}
+	var guests []pveGuest
+	if err := json.Unmarshal(fixture(t, "proxmox_qemu.json"), &guests); err != nil {
+		t.Fatal(err)
+	}
+	d.appendGuests(ctx, nil, guests, KindVM, "pve-a", "qemu-server", hvNow())
+	if reads != 1 {
+		t.Fatalf("read %d configs after cancellation, want 1", reads)
+	}
+}
+
+// The collector's per-driver timeout is not a parent cancellation, so the
+// collector keeps the result: a Collect cut short must not look complete.
+func TestProxmoxCollectCutShortIsNotOK(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := pveListRunner(t, stdout(string(fixture(t, "proxmox_qemu.json"))), stdout(string(fixture(t, "proxmox_lxc.json"))))
+	d := newTestProxmox(t, pveHost{pvesh: true, local: "nodes/pve-a"}, r)
+	d.readConf = func(string, int64) ([]byte, error) {
+		cancel()
+		return nil, fs.ErrNotExist
+	}
+	res := d.Collect(ctx, Detection{State: DetectionPresent})
+	if res.Collection == CollectionOK || len(res.Workloads) != 0 || res.Error != ReasonTimeout {
+		t.Fatalf("result = %+v", res)
 	}
 }
 
@@ -268,6 +338,9 @@ func TestOnbootFromConf(t *testing.T) {
 		{"cores: 2\n[snap]\nonboot: 1\n", "no"},
 		{"#onboot: 1\n", "no"},
 		{"onboot: maybe\n", ""},
+		// an empty read (a pmxcfs hiccup) is unknown, not "never starts"
+		{"", ""},
+		{"\n", ""},
 	}
 	for _, tc := range cases {
 		if got := deref(onbootPolicy([]byte(tc.conf))); got != tc.want {
