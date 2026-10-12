@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import { gzipSync } from 'node:zlib';
 
-vi.mock('../db', () => ({ db: {}, withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()) }));
-vi.mock('../db/schema', () => ({ tunnelSessions: {}, devices: {} }));
+const { whereMock } = vi.hoisted(() => ({
+  whereMock: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'x' }]) })),
+}));
+vi.mock('../db', () => ({
+  db: { update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereMock })) })) },
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
+vi.mock('../db/schema', () => ({ tunnelSessions: { id: 'ts.id', status: 'ts.status' }, devices: {} }));
+vi.mock('drizzle-orm', async (importActual) => {
+  const actual = await importActual<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    eq: vi.fn((...a: unknown[]) => ({ op: 'eq', a })),
+    inArray: vi.fn((...a: unknown[]) => ({ op: 'inArray', a })),
+    and: vi.fn((...a: unknown[]) => ({ op: 'and', a })),
+  };
+});
 vi.mock('./agentWs', () => ({ isAgentConnected: vi.fn(() => true) }));
 vi.mock('../services/agentCommandAwait', () => ({ sendCommandToAgentAwaitResult: vi.fn() }));
 vi.mock('../services/remoteAccessPolicy', () => ({ checkRemoteAccess: vi.fn() }));
@@ -10,6 +25,8 @@ vi.mock('../services/remoteWsAuthorization', () => ({ authorizeRemoteSessionCont
 vi.mock('../services/tunnelAllowlist', () => ({ getActiveAllowlistPatterns: vi.fn() }));
 
 import {
+  CONNECTABLE_TUNNEL_STATUSES,
+  activateTunnelSessionOnExchange,
   HOST_COOKIE_AUDIENCE,
   collectForwardableHeaders,
   decodeUpstreamBody,
@@ -55,5 +72,13 @@ describe('tunnelHttpCore', () => {
     expect(await verifyTunnelCookie(frame, TUNNEL_ID, { audience: HOST_COOKIE_AUDIENCE, context: 'frame' })).toBe(USER_ID);
     expect(await verifyTunnelCookie(frame, TUNNEL_ID, { audience: HOST_COOKIE_AUDIENCE, context: 'tab' })).toBeNull();
     expect(await verifyTunnelCookie(frame, TUNNEL_ID)).toBeNull();
+  });
+
+  it('activation constrains the UPDATE to the id AND connectable statuses', async () => {
+    await expect(activateTunnelSessionOnExchange(TUNNEL_ID, true)).resolves.toBe(true);
+    const cond = (whereMock.mock.calls as unknown as unknown[][])[0]![0] as { op: string; a: Array<{ op: string; a: unknown[] }> };
+    expect(cond.op).toBe('and');
+    expect(cond.a).toContainEqual({ op: 'eq', a: ['ts.id', TUNNEL_ID] });
+    expect(cond.a).toContainEqual({ op: 'inArray', a: ['ts.status', [...CONNECTABLE_TUNNEL_STATUSES]] });
   });
 });

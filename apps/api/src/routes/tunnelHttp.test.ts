@@ -108,12 +108,15 @@ vi.mock('../services/remoteSessionAuth', () => ({
 }));
 
 const { isAgentConnectedMock } = vi.hoisted(() => ({ isAgentConnectedMock: vi.fn(() => true) }));
+const { agentSendMock } = vi.hoisted(() => ({ agentSendMock: vi.fn(() => true) }));
 vi.mock('./agentWs', () => ({
   isAgentConnected: isAgentConnectedMock,
+  sendCommandToAgent: agentSendMock,
 }));
 
 const { sendCommandMock } = vi.hoisted(() => ({ sendCommandMock: vi.fn() }));
-vi.mock('../services/agentCommandAwait', () => ({
+vi.mock('../services/agentCommandAwait', async (importActual) => ({
+  ...(await importActual<typeof import('../services/agentCommandAwait')>()),
   sendCommandToAgentAwaitResult: sendCommandMock,
 }));
 
@@ -1183,6 +1186,24 @@ it('401s a cookie-less request for a non-UUID tunnel id without querying the ses
 });
 
 describe('ticket exchange vs Close (spec §4 revocation)', () => {
+  it('a Close landing between the gates and dispatch yields 502 "Tunnel closed" with no agent send', async () => {
+    const actual = await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait');
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    // Gates have passed by the time the allowlist lookup runs; Close sweeps there.
+    vi.mocked(getActiveAllowlistPatterns).mockImplementationOnce(async () => {
+      actual.cancelPendingAgentCommandsByPrefix(`http-req-${TUNNEL_ID}-`, 'tunnel_closed');
+      return ['192.168.1.0/24'];
+    });
+    sendCommandMock.mockImplementationOnce((...args: Parameters<typeof actual.sendCommandToAgentAwaitResult>) =>
+      actual.sendCommandToAgentAwaitResult(...args));
+    agentSendMock.mockClear();
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(502);
+    expect(await res.text()).toBe('Tunnel closed');
+    expect(agentSendMock).not.toHaveBeenCalled();
+  });
+
   it('does not reopen a session that Close ended between the ownership read and activation', async () => {
     activationRows = []; // the conditional UPDATE … WHERE status IN (connectable) matched nothing
     consumeWsTicketMock.mockResolvedValueOnce({

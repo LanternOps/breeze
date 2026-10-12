@@ -43,6 +43,27 @@ type PendingEntry = {
 const pending = new Map<string, PendingEntry>();
 
 /**
+ * Cancellation tombstones: a prefix cancelled by `cancelPendingAgentCommandsByPrefix`
+ * keeps refusing NEW sends with that prefix for a while. Closes the window where
+ * a request passed its gates, but had not yet registered in `pending` (body read,
+ * allowlist lookup) when Close swept. 60s = the 25s proxied-request timeout plus
+ * generous slack for a slow body upload / DB lookup between gate and dispatch;
+ * after that the request would have timed out anyway.
+ */
+export const CANCELLED_PREFIX_TOMBSTONE_TTL_MS = 60_000;
+const cancelledPrefixes = new Map<string, { error: string; expiresAt: number }>();
+
+function findCancelledPrefix(commandId: string): string | null {
+  const now = Date.now();
+  let found: string | null = null;
+  for (const [prefix, t] of cancelledPrefixes) {
+    if (t.expiresAt <= now) { cancelledPrefixes.delete(prefix); continue; }
+    if (found === null && commandId.startsWith(prefix)) found = t.error;
+  }
+  return found;
+}
+
+/**
  * Send a command to an agent and await its result.
  *
  * Resolves with the result payload when `resolvePendingAgentCommand` is called
@@ -64,6 +85,10 @@ export function sendCommandToAgentAwaitResult(
       '[BREEZE_ROLE] sendCommandToAgentAwaitResult is socket-local and api-role-affine '
       + '(its correlation map cannot resolve cross-process) — it cannot run in the worker role',
     );
+  }
+  const cancelledError = findCancelledPrefix(command.id);
+  if (cancelledError !== null) {
+    return Promise.resolve({ status: 'failed', error: cancelledError });
   }
   const sent = sendCommandToAgent(agentId, command);
   if (!sent) {
@@ -108,12 +133,15 @@ export function resolvePendingAgentCommand(
 
 /**
  * Resolve every in-flight awaited command whose id starts with `prefix` as
- * `{status:'failed', error}`. Used by tunnel Close (spec 2026-10-06 §4) to
+ * `{status:'failed', error}`, and tombstone the prefix so sends racing this call
+ * (not yet registered in `pending`) are refused too. Used by tunnel Close (spec 2026-10-06 §4) to
  * cancel that tunnel's proxied requests. Process-local like the rest of this
  * module: a request in flight on ANOTHER api replica is not reached (single
  * api replica per region today — plan G9).
  */
 export function cancelPendingAgentCommandsByPrefix(prefix: string, error: string): number {
+  findCancelledPrefix(''); // lazy prune of expired tombstones
+  cancelledPrefixes.set(prefix, { error, expiresAt: Date.now() + CANCELLED_PREFIX_TOMBSTONE_TTL_MS });
   let cancelled = 0;
   for (const [id, entry] of pending) {
     if (!id.startsWith(prefix)) continue;
