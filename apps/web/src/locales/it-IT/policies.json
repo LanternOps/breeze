@@ -1117,6 +1117,22 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Questo criterio controlla solo se i dispositivi vengono sottoposti a scansione. CVE rilevati, punteggi di rischio e azioni di correzione vengono gestiti nella",
         "vulnerabilitiesConsole": "console Vulnerabilità"
       },
+      "systemProtectionTab": {
+        "title": "Protezione sistema",
+        "description": "Tentare un punto di ripristino di Windows prima di patch, script e installazioni software",
+        "beforePatching": "Prima dell’installazione delle patch",
+        "beforePatchingHelp": "Tentare un punto di ripristino prima di installare gli aggiornamenti del sistema operativo.",
+        "beforeScripts": "Prima degli script",
+        "beforeScriptsHelp": "Tentare un punto di ripristino prima di eseguire uno script sul dispositivo.",
+        "beforeSoftwareInstall": "Prima delle installazioni software",
+        "beforeSoftwareInstallHelp": "Tentare un punto di ripristino prima di installare o aggiornare software.",
+        "labelPrefix": "Prefisso dell’etichetta",
+        "labelPrefixHelp": "Mostrato all’inizio della descrizione di ogni punto di ripristino in Windows. Massimo 64 caratteri.",
+        "platformDefaultNote": "Nessun criterio assegnato. Impostazione predefinita della piattaforma: un punto di ripristino viene tentato solo prima dell’installazione delle patch.",
+        "legacyAgentWarning": "La disattivazione ha effetto solo sugli agenti che segnalano il supporto di Ripristino configurazione di sistema. Gli agenti meno recenti continueranno a tentare un punto di ripristino prima dell’installazione delle patch.",
+        "aboutTitle": "Informazioni su Ripristino configurazione di sistema",
+        "aboutBody": "Si applica solo ai dispositivi Windows. Ripristino configurazione di sistema copre file di sistema, registro, programmi installati e impostazioni. Non è un backup e non copre i file personali. Per impostazione predefinita Windows limita la creazione dei punti di ripristino a uno ogni 24 ore, e un punto creato può essere rimosso in seguito da Windows o diventare inutilizzabile."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",
         "enableWarrantyExpiryAlerts": "Abilita avvisi di scadenza garanzia",

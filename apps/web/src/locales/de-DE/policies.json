@@ -1117,6 +1117,22 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Diese Richtlinie steuert nur, ob Geräte gescannt werden. Erkannte CVEs, Risikobewertungen und Abhilfemaßnahmen werden im verwaltet",
         "vulnerabilitiesConsole": "Schwachstellenkonsole"
       },
+      "systemProtectionTab": {
+        "title": "Systemschutz",
+        "description": "Vor Patches, Skripten und Softwareinstallationen einen Windows-Systemwiederherstellungspunkt versuchen",
+        "beforePatching": "Vor Patch-Installationen",
+        "beforePatchingHelp": "Vor der Installation von Betriebssystem-Updates einen Wiederherstellungspunkt versuchen.",
+        "beforeScripts": "Vor Skripten",
+        "beforeScriptsHelp": "Vor dem Ausführen eines Skripts auf dem Gerät einen Wiederherstellungspunkt versuchen.",
+        "beforeSoftwareInstall": "Vor Softwareinstallationen",
+        "beforeSoftwareInstallHelp": "Vor dem Installieren oder Aktualisieren von Software einen Wiederherstellungspunkt versuchen.",
+        "labelPrefix": "Präfix für die Bezeichnung",
+        "labelPrefixHelp": "Wird in Windows am Anfang der Beschreibung jedes Wiederherstellungspunkts angezeigt. Höchstens 64 Zeichen.",
+        "platformDefaultNote": "Keine Richtlinie zugewiesen. Plattformstandard: Ein Wiederherstellungspunkt wird nur vor Patch-Installationen versucht.",
+        "legacyAgentWarning": "Das Deaktivieren wirkt nur bei Agents, die Unterstützung für die Systemwiederherstellung melden. Ältere Agents versuchen weiterhin vor Patch-Installationen einen Wiederherstellungspunkt.",
+        "aboutTitle": "Über die Systemwiederherstellung",
+        "aboutBody": "Gilt nur für Windows-Geräte. Die Systemwiederherstellung umfasst Systemdateien, die Registrierung, installierte Programme und Einstellungen. Sie ist keine Sicherung und umfasst keine persönlichen Dateien. Windows erlaubt standardmäßig höchstens einen Wiederherstellungspunkt pro 24 Stunden, und ein erstellter Punkt kann später von Windows entfernt werden oder unbrauchbar werden."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",
         "enableWarrantyExpiryAlerts": "Aktivieren Sie Garantieablaufwarnungen",

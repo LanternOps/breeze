@@ -1117,6 +1117,22 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Esta política controla apenas se os dispositivos são verificados. Os CVEs detectados, as pontuações de risco e as ações de correção são gerenciados no",
         "vulnerabilitiesConsole": "console de Vulnerabilidades"
       },
+      "systemProtectionTab": {
+        "title": "Proteção do sistema",
+        "description": "Tentar um ponto de restauração do Windows antes de patches, scripts e instalações de software",
+        "beforePatching": "Antes de instalar patches",
+        "beforePatchingHelp": "Tentar um ponto de restauração antes de instalar atualizações do sistema operacional.",
+        "beforeScripts": "Antes de scripts",
+        "beforeScriptsHelp": "Tentar um ponto de restauração antes de executar um script no dispositivo.",
+        "beforeSoftwareInstall": "Antes de instalar software",
+        "beforeSoftwareInstallHelp": "Tentar um ponto de restauração antes de instalar ou atualizar software.",
+        "labelPrefix": "Prefixo do rótulo",
+        "labelPrefixHelp": "Exibido no início da descrição de cada ponto de restauração no Windows. Até 64 caracteres.",
+        "platformDefaultNote": "Nenhuma política atribuída. Padrão da plataforma: um ponto de restauração é tentado apenas antes de instalar patches.",
+        "legacyAgentWarning": "Desativar esta opção só tem efeito em agentes que informam suporte à Restauração do Sistema. Agentes mais antigos continuarão tentando um ponto de restauração antes de instalar patches.",
+        "aboutTitle": "Sobre a Restauração do Sistema",
+        "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Os alertas de garantia são opcionais: dispositivos sem uma política de garantia atribuída nunca geram alertas. Os limites abaixo se aplicam somente à cobertura por prazo determinado — assinaturas ativas do AppleCare são renovadas em vez de expirar, portanto seus alertas de vencimento são sempre suprimidos.",
         "enableWarrantyExpiryAlerts": "Ativar alertas de vencimento da garantia",

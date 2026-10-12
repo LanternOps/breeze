@@ -25,6 +25,7 @@ import {
   Cloud,
   Info,
   Trash2,
+  History,
 } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { cn } from "@/lib/utils";
@@ -65,6 +66,7 @@ import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
 import HardwareMonitoringTab from './featureTabs/HardwareMonitoringTab';
 import TimeSyncTab from './featureTabs/TimeSyncTab';
 import WorkloadInventoryTab from './featureTabs/WorkloadInventoryTab';
+import SystemProtectionTab from './featureTabs/SystemProtectionTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 import { usePageItemName } from '../layout/usePageItemName';
 
@@ -131,6 +133,7 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   hardware_monitoring: <HardDrive className="h-4 w-4" />,
   time_sync: <Clock className="h-4 w-4" />,
   workload_inventory: <Container className="h-4 w-4" />,
+  system_protection: <History className="h-4 w-4" />,
 };
 // Which feature tabs the editor renders, in display order. Derived from
 // FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
@@ -482,6 +485,7 @@ export default function ConfigPolicyDetailPage({
       case 'hardware_monitoring': return <HardwareMonitoringTab {...props} />;
       case 'time_sync': return <TimeSyncTab {...props} />;
       case 'workload_inventory': return <WorkloadInventoryTab {...props} />;
+      case 'system_protection': return <SystemProtectionTab {...props} />;
     }
   };
   return (
