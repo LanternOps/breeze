@@ -119,6 +119,36 @@ func configuredVault(t *testing.T) (string, *vaultManagerRef) {
 	return vaultPath, vaultState
 }
 
+// The API sends {"enabled":false} when a device's last active vault is
+// deactivated or deleted (#8385).
+func TestExecuteCommandVaultConfigureDisableTearsDownVault(t *testing.T) {
+	_, vaultState := configuredVault(t)
+
+	payload, _ := json.Marshal(map[string]any{"enabled": false})
+	result := executeCommand(backupipc.BackupCommandRequest{CommandID: "vd", CommandType: "vault_configure", Payload: payload},
+		nil, vaultState, nil, newActiveCommandCanceller())
+	if !result.Success {
+		t.Fatalf("vault_configure enabled:false failed: %q", result.Stderr)
+	}
+	if vaultState.Get() != nil {
+		t.Fatal("expected the vault manager to be cleared")
+	}
+	cfg, err := config.Reload()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.VaultEnabled {
+		t.Fatal("expected vault_enabled to be persisted as false")
+	}
+
+	sync, _ := json.Marshal(map[string]any{"vaultId": "v1", "snapshotId": "snap-1"})
+	result = executeCommand(backupipc.BackupCommandRequest{CommandID: "vs2", CommandType: "vault_sync", Payload: sync},
+		nil, vaultState, nil, newActiveCommandCanceller())
+	if result.Success || !strings.Contains(result.Stderr, "vault is not configured") {
+		t.Fatalf("expected a sync after disable to fail as not configured, got success=%v stderr=%q", result.Success, result.Stderr)
+	}
+}
+
 func TestExecuteCommandVaultSyncWithoutBackupManagerReachesVault(t *testing.T) {
 	vaultPath, vaultState := configuredVault(t)
 

@@ -38,6 +38,7 @@ import { isRedisAvailable } from './redis';
 import { processBackupVerificationResult } from '../routes/backup/verificationService';
 import { applyBackupCommandResultToJob } from './backupResultPersistence';
 import { applyVaultSyncCommandResult } from './vaultSyncPersistence';
+import { applyVaultConfigureCommandResult } from './vaultDeviceCommands';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
@@ -318,6 +319,16 @@ async function handleProviderBackedBackupResult({ command, result, resolvedDevic
       }
     }
   }
+}
+
+async function handleVaultConfigureResult({ command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await applyVaultConfigureCommandResult({
+    deviceId: resolvedDeviceId,
+    command,
+    resultStatus: result.status,
+    stderr: result.stderr,
+    error: result.error,
+  });
 }
 
 async function handleVaultSyncResult({ command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
@@ -1190,6 +1201,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,
+  // #8385: a configuration the helper could not apply shows on the vault.
+  vault_configure: handleVaultConfigureResult,
   snmp_poll: handleSnmpPollResult,
   script: handleScriptResult,
   script_cancel: handleScriptCancelResult,

@@ -388,6 +388,19 @@ describe('aiToolsVault handlers', () => {
     );
   });
 
+  it('does not push vault_configure when the AI update matched no vault', async () => {
+    prepareHandlerMocks('configure_vault');
+    mockUpdateSequence([[]]);
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' },
+      makeAuth(),
+    ));
+
+    expect(result.error).toMatch(/not found/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
   it('pushes vault_configure after an AI vault create and reports a failed push', async () => {
     mockSelectSequence([[{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]]);
     vi.mocked(db.insert).mockImplementation(() => createInsertChain([{ id: VAULT_ID, deviceId: DEVICE_ID, orgId: ORG_ID }]) as any);

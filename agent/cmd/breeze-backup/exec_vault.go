@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -160,8 +161,10 @@ func emitVaultAutoSyncResult(conn *ipc.Conn, snapshotID string, syncResult *back
 }
 
 // autoSyncToVault parses the backup_run result to extract the snapshot ID and
-// syncs to vault in the background.
-func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc.Conn) {
+// syncs to vault in the background. source is the provider the backup wrote
+// the snapshot through: on a policy-managed device that is a payload-built
+// provider, not the vault's startup primary, which would never find it (#8385).
+func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc.Conn, source providers.BackupProvider) {
 	if vaultState == nil {
 		return
 	}
@@ -183,7 +186,13 @@ func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc
 		return
 	}
 	slog.Info("vault auto-sync starting", "snapshotId", result.Snapshot.ID)
-	syncResult, err := vaultMgr.SyncAfterBackup(result.Snapshot.ID)
+	var syncResult *backup.VaultSyncResult
+	var err error
+	if source != nil {
+		syncResult, err = vaultMgr.SyncAfterBackupFrom(source, result.Snapshot.ID)
+	} else {
+		syncResult, err = vaultMgr.SyncAfterBackup(result.Snapshot.ID)
+	}
 	if err != nil {
 		slog.Warn("vault auto-sync failed", "snapshotId", result.Snapshot.ID, "error", err.Error())
 		emitVaultAutoSyncResult(conn, result.Snapshot.ID, syncResult, err)

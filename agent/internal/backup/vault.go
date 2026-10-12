@@ -74,6 +74,13 @@ func NewVaultManager(cfg VaultConfig, primary providers.BackupProvider) (*VaultM
 //  3. Download missing files from primary -> vault
 //  4. Copy manifest to vault
 func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error) {
+	return v.syncSnapshotFrom(v.primary, snapshotID)
+}
+
+func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
+	if primary == nil {
+		return nil, errors.New("primary provider is required")
+	}
 	prefix := path.Join(snapshotRootDir, snapshotID)
 	manifestKey := path.Join(prefix, snapshotManifestKey)
 	syncResult := &VaultSyncResult{
@@ -90,12 +97,12 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error)
 	_ = manifestTmp.Close()
 	defer os.Remove(manifestTmpPath)
 
-	if err := v.primary.Download(manifestKey, manifestTmpPath); err != nil {
+	if err := primary.Download(manifestKey, manifestTmpPath); err != nil {
 		return nil, fmt.Errorf("failed to download manifest from primary: %w", err)
 	}
 
 	// 2. List all files in the primary snapshot
-	primaryFiles, err := v.primary.List(prefix)
+	primaryFiles, err := primary.List(prefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list primary snapshot files: %w", err)
 	}
@@ -127,7 +134,7 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error)
 		tmpPath := tmpFile.Name()
 		_ = tmpFile.Close()
 
-		if dlErr := v.primary.Download(file, tmpPath); dlErr != nil {
+		if dlErr := primary.Download(file, tmpPath); dlErr != nil {
 			os.Remove(tmpPath)
 			errs = append(errs, fmt.Errorf("download %s: %w", file, dlErr))
 			slog.Warn("vault sync: failed to download from primary", "file", file, "error", dlErr.Error())
@@ -210,7 +217,15 @@ func (v *VaultManager) EnforceRetention() error {
 
 // SyncAfterBackup syncs a snapshot to vault and enforces retention.
 func (v *VaultManager) SyncAfterBackup(snapshotID string) (*VaultSyncResult, error) {
-	result, err := v.SyncSnapshot(snapshotID)
+	return v.SyncAfterBackupFrom(v.primary, snapshotID)
+}
+
+// SyncAfterBackupFrom is SyncAfterBackup reading the snapshot from primary
+// instead of the vault's startup primary: a backup written through a
+// command-built provider (a policy-managed device has no agent.yaml manager)
+// lives only there.
+func (v *VaultManager) SyncAfterBackupFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
+	result, err := v.syncSnapshotFrom(primary, snapshotID)
 	if err != nil {
 		return result, err
 	}

@@ -623,6 +623,23 @@ describe('vault routes', () => {
       );
     });
 
+    it.each([
+      ['PATCH', { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' }, body: JSON.stringify({ retentionCount: 4 }) }],
+      ['DELETE', { method: 'DELETE', headers: { Authorization: 'Bearer token' } }],
+    ])('%s still succeeds and reports deviceConfig failed when building the push throws', async (_m, init) => {
+      updateMock.mockReturnValueOnce(chainMock([makeVault()]));
+      buildVaultConfigurePayloadMock.mockRejectedValueOnce(new Error('db hiccup'));
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}`, init as RequestInit);
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).deviceConfig).toEqual({
+        status: 'failed',
+        error: 'Failed to send the vault configuration to the device',
+      });
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
     it('does not queue vault_configure when the update matched no vault', async () => {
       updateMock.mockReturnValueOnce(chainMock([]));
 

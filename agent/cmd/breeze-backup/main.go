@@ -1010,7 +1010,7 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 	// Auto-sync to vault after successful backup (async — don't block command response)
 	if result.Success {
-		go autoSyncToVault(result.Stdout, vaultState, conn)
+		go autoSyncToVault(result.Stdout, vaultState, conn, mgr.GetProvider())
 	}
 	return result
 }

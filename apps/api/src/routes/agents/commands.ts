@@ -112,6 +112,9 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // than through the inline restore branch below (which would only do the
   // first half and, if listed in both, do it twice).
   'bare_metal_rebuild',
+  // #8385: a vault configuration the helper could not apply is recorded on
+  // the vault. Registry-only, like system_cleanup_run.
+  'vault_configure',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
