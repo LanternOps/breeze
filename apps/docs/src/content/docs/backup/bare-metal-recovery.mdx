@@ -91,7 +91,7 @@ If a phase fails or the snapshot is refused, the reason stays on screen with a `
 - **Linux only today.** There is no Windows or macOS recovery media. For those, use [reinstall-then-recover](#alternative-recover-into-a-freshly-installed-os), or rebuild a Windows snapshot onto a VHDX with [Restore as VM](#restore-as-vm) or a [DR rehearsal](/backup/disaster-recovery/).
 - **One blank UEFI/GPT disk** at least as large as the source disk, from a snapshot marked **Bare-metal restorable**. Multi-disk, BIOS/MBR, LVM, LUKS, RAID, btrfs and ZFS layouts are named at backup time and not rebuilt.
 - **No driver injection.** The rebuilt system boots with the drivers its own image carries; see [Windows fidelity](#windows-fidelity) for the Windows side.
-- **Rehearsal is not production.** Recoveries with the **New device** identity, DR rehearsals and Restore as VM prove the snapshot can be rebuilt; only **Original device** recovery brings the real machine back, and it counts as done once the machine checks in.
+- **Rehearsal is not production.** DR rehearsals and Restore as VM rebuild into a disk image on a rebuild host and prove the snapshot can be rebuilt; only a recovery from the media brings a real machine back (with **Original device** it counts as done once the machine checks in).
 
 Every rebuild outcome, with its measured duration, also feeds the device's [recovery readiness](/backup/verification/#bare-metal-rebuild-evidence) — a failed or stale rebuild shows up as a risk factor on the Verification tab.
 

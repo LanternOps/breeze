@@ -139,13 +139,15 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
   }, []);
 
   const loadInitialData = useCallback(async () => {
+    setSnapshotsState('loading');
     try {
       const [snapshotsRes, recoveriesRes] = await Promise.all([
         fetchWithAuth(`/backup/snapshots?${orgQuery}bareMetalRestorable=true`),
         fetchWithAuth(`/backup/bmr/recoveries?${orgQuery}limit=20`),
       ]);
-      if (snapshotsRes.ok) {
-        setSnapshots(parseSnapshotOptions(await snapshotsRes.json().catch(() => null)));
+      const snapshotsBody = snapshotsRes.ok ? await snapshotsRes.json().catch(() => null) : null;
+      if (snapshotsRes.ok && isRecord(snapshotsBody)) {
+        setSnapshots(parseSnapshotOptions(snapshotsBody));
         setSnapshotsState('loaded');
       } else {
         setSnapshotsState('error');
@@ -159,10 +161,11 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
         const mostRecent = recoveries[0];
         if (mostRecent) setActive(mostRecent);
       }
-    } catch {
+    } catch (err) {
       // Best-effort background load — the create form still renders, but the
       // user is told the snapshot list did not load rather than being left
       // with an unexplained empty select.
+      console.error('[BareMetalRecoveryPanel] initial load failed', err);
       setSnapshotsState('error');
     }
   }, [orgQuery]);

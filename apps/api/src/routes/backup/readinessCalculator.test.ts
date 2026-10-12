@@ -216,10 +216,24 @@ describe('recomputeRecoveryReadinessForDevice — bare-metal rebuild evidence (W
     expect(r.riskFactors.map((f) => f.code)).toContain('bare_metal_recovery_failed');
   });
 
-  it('an evidence lookup failure leaves the generic result untouched', async () => {
+  it('an evidence lookup failure keeps the generic score and says the evidence was unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    evidenceMock.mockResolvedValue(none);
+    const baseline = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    const baseScore = baseline.readinessScore;
+    const baseRto = baseline.estimatedRtoMinutes;
     evidenceMock.mockRejectedValue(new Error('db down'));
     const r = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
-    expect(r.readinessScore).toBeGreaterThan(0);
-    expect(r.riskFactors.map((f) => f.code)).not.toContain('bare_metal_recovery_failed');
+    expect(r.readinessScore).toBe(baseScore);
+    expect(r.estimatedRtoMinutes).toBe(baseRto);
+    expect(r.riskFactors.map((f) => f.code)).toContain('bare_metal_evidence_unavailable');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keeps the slower verification RTO when the measured rebuild is faster', async () => {
+    evidenceMock.mockResolvedValue({ ...none, hasEvidence: true, successCount: 1, measuredRtoMinutes: 2, lastSuccessAt: new Date() });
+    const r = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    expect(r.estimatedRtoMinutes).toBe(4); // 240 s test restore
   });
 });

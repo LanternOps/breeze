@@ -113,7 +113,7 @@ When a device has been through a real [bare-metal rebuild](/backup/bare-metal-re
 | Last successful rebuild is old | Medium (orange) | The last successful rebuild is more than 90 days old. |
 | Rebuild slower than 60 minutes | Medium (orange) | The slowest recent successful rebuild exceeded 60 minutes. |
 
-A rebuild that finishes (or checks in) or fails refreshes the device's readiness straight away; you do not have to wait for the daily recalculation. A device with no rebuild history is not penalized: rebuild evidence only adds information, it never replaces the verification-based score.
+A rebuild that finishes (or checks in) or fails refreshes the device's readiness straight away; you do not have to wait for the daily recalculation. A device with no rebuild history is not penalized: rebuild evidence only adds information, it never replaces the verification-based score. If the rebuild history cannot be read when readiness is calculated, the score reflects verification only and shows a low-severity "evidence unavailable" risk factor until the next recalculation.
 
 <Aside type="note">
   A **DR rehearsal** and a **Restore as VM** rebuild into a disk image on a rebuild host, so they prove the snapshot can be rebuilt and how long it takes; they do not prove the physical machine's hardware. A recovery from recovery media with the **Original device** identity is the production path and is only counted as successful once the restored machine has checked in.

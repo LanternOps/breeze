@@ -480,4 +480,33 @@ describe('BareMetalRecoveryPanel', () => {
     expect(screen.getByTestId('bare-metal-recovery-load-error')).toBeInTheDocument();
     expect(screen.queryByTestId('bare-metal-recovery-no-snapshots')).toBeNull();
   });
+
+  it('a network failure loading snapshots also shows the load error (W08)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockRejectedValue(new Error('offline'));
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    expect(screen.getByTestId('bare-metal-recovery-load-error')).toBeInTheDocument();
+    err.mockRestore();
+  });
+
+  it("a 'checked_in' recovery still labels the last step Checked in (W08)", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') {
+        return makeJsonResponse({
+          data: [{
+            id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+            status: 'checked_in', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z', failureReason: null,
+          }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    expect(screen.getByTestId('bare-metal-recovery-timeline-checked_in')).toHaveTextContent('Checked in');
+  });
 });

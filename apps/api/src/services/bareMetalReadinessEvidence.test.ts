@@ -64,12 +64,36 @@ describe('summarizeBareMetalEvidence', () => {
   });
 
   it('puts a latest failure first even when an older success exists', () => {
+    // Newest row deliberately listed last: ordering must come from createdAt.
     const s = summarizeBareMetalEvidence([
-      row({ status: 'failed', validatedAt: null, completedAt: null, createdAt: new Date(NOW - day(1)), restoringAt: new Date(NOW - day(1)) }),
       row({}),
+      row({ status: 'failed', validatedAt: null, completedAt: null, createdAt: new Date(NOW - day(1)), restoringAt: new Date(NOW - day(1)) }),
     ], NOW);
     expect(s.latestFailed).toBe(true);
     expect(s.riskFactors[0]?.code).toBe('bare_metal_recovery_failed');
+    expect(s.riskFactors[0]?.severity).toBe('high');
+  });
+
+  it('a failure followed by a later success is medium, not latestFailed', () => {
+    const s = summarizeBareMetalEvidence([
+      row({ status: 'failed', validatedAt: null, completedAt: null, createdAt: new Date(NOW - day(5)), restoringAt: new Date(NOW - day(5)) }),
+      row({}),
+    ], NOW);
+    expect(s.latestFailed).toBe(false);
+    expect(s.riskFactors[0]).toMatchObject({ code: 'bare_metal_recovery_failed', severity: 'medium' });
+  });
+
+  it('only refused rows is no evidence', () => {
+    const s = summarizeBareMetalEvidence([row({ status: 'refused', validatedAt: null, completedAt: null })], NOW);
+    expect(s.hasEvidence).toBe(false);
+  });
+
+  it('exactly 60 minutes is not above target', () => {
+    const s = summarizeBareMetalEvidence([
+      row({ validatedAt: new Date(NOW - day(2) + min(60)), completedAt: new Date(NOW - day(2) + min(60)) }),
+    ], NOW);
+    expect(s.measuredRtoMinutes).toBe(60);
+    expect(s.riskFactors.map((r) => r.code)).not.toContain('bare_metal_rto_above_target');
   });
 
   it('classifies rebuild-host/DR rehearsals separately from boot-media production', () => {

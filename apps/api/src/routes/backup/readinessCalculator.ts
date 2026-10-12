@@ -36,15 +36,32 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const BARE_METAL_FAILED_PENALTY = 10;
 
-/** Evidence is additive: a lookup failure must never block the generic readiness write. */
-async function loadBareMetalEvidenceSafe(orgId: string, deviceId: string, now: number): Promise<BareMetalEvidenceSummary | null> {
-  if (!isUuid(orgId) || !isUuid(deviceId)) return null;
+const BARE_METAL_EVIDENCE_UNAVAILABLE: RecoveryRiskFactor = {
+  code: 'bare_metal_evidence_unavailable',
+  severity: 'low',
+  message: 'Bare-metal rebuild history could not be read; this score reflects verification results only.',
+};
+
+/**
+ * Evidence is additive: a lookup failure must never block the generic readiness
+ * write, but the persisted row says so (`unavailable`) instead of silently
+ * dropping a failed-rebuild penalty.
+ */
+async function loadBareMetalEvidenceSafe(
+  orgId: string,
+  deviceId: string,
+  now: number,
+): Promise<{ summary: BareMetalEvidenceSummary | null; unavailable: boolean }> {
+  if (!isUuid(orgId) || !isUuid(deviceId)) return { summary: null, unavailable: false };
   try {
     const summary = await loadBareMetalEvidence(orgId, deviceId, now);
-    return summary.hasEvidence ? summary : null;
+    return { summary: summary.hasEvidence ? summary : null, unavailable: false };
   } catch (error) {
-    console.warn('[BackupReadiness] Bare-metal evidence lookup failed; using verification-only readiness:', error instanceof Error ? error.message : error);
-    return null;
+    console.warn(
+      `[BackupReadiness] Bare-metal evidence lookup failed (org ${orgId}, device ${deviceId}); using verification-only readiness:`,
+      error instanceof Error ? (error.stack ?? error.message) : error,
+    );
+    return { summary: null, unavailable: true };
   }
 }
 
@@ -496,7 +513,8 @@ export async function recomputeRecoveryReadinessForDevice(
   // W08: real bare-metal rebuild outcomes. A measured full rebuild is stronger
   // RTO evidence than a file-level test restore, so take the slower of the two;
   // a failed latest rebuild is a recovery-proof failure and costs 10 points.
-  const bareMetal = await loadBareMetalEvidenceSafe(orgId, deviceId, now);
+  const { summary: bareMetal, unavailable: bareMetalUnavailable } = await loadBareMetalEvidenceSafe(orgId, deviceId, now);
+  if (bareMetalUnavailable) riskFactors.push(BARE_METAL_EVIDENCE_UNAVAILABLE);
   const verificationRtoMinutes = avgRestoreSeconds ? Math.ceil(avgRestoreSeconds / 60) : null;
   const measuredRto = bareMetal?.measuredRtoMinutes ?? null;
   const estimatedRtoMinutes = verificationRtoMinutes !== null && measuredRto !== null
