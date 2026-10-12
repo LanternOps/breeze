@@ -1178,6 +1178,11 @@ describe('GET /install.sh — generated installer script', () => {
     expect(backupStepIdx).toBeGreaterThan(agentInstalledIdx);
   });
 
+  it('never appends the deprecated --site-id to the enroll command (#8474)', async () => {
+    const script = await fetchScript();
+    expect(script).not.toContain('ENROLL_ARGS+=(--site-id');
+  });
+
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
     // Argument parser handles --token; the script's own $BREEZE_ENROLL_TOKEN

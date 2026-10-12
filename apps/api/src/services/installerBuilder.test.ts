@@ -1091,6 +1091,20 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     expect(script).toContain('enrollment.json');
   });
 
+  it('install.sh does not pass the deprecated --site-id to enroll (#8474)', async () => {
+    const zipBuffer = await buildMacosInstallerZip({
+      serverUrl: 'https://x.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const script = await zip.files['install.sh']!.async('string');
+    expect(script).toContain('breeze-agent enroll');
+    expect(script).not.toContain('--site-id');
+  });
+
   it('install.sh detects CPU arch and downloads the matching pkg', async () => {
     const zipBuffer = await buildMacosInstallerZip({
       serverUrl: 'https://x.com',

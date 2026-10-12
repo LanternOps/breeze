@@ -257,7 +257,6 @@ sudo installer -pkg "$TMPPKG" -target /
 # Build enrollment command
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$ENROLLMENT_SECRET" ] && ENROLL_ARGS+=(--enrollment-secret "$ENROLLMENT_SECRET")
-[ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
 
 echo "Enrolling agent..."
 sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
