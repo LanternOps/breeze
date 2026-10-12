@@ -13,8 +13,8 @@
  * contract. Entries are added only with Todd's sign-off.
  */
 export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, string>([
-  // Empty at W01 (spec 2026-09-23 W01-D4): no registered tool is a standing
-  // exclusion yet.
+  // Empty at W01 (spec 2026-09-23 W01-D4) until the AI Operator plan approval.
+  ['operator_plan', 'Plan-approval carrier minted only by the AI Operator coordinator under the task requester; releasing it executes nothing but marks the approved plan, so it must never be declared to chat, Helper or agents (Recipe Library spec 6.4).'],
 ]);
 
 /**
@@ -39,6 +39,12 @@ export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, str
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
+  // not produce and never edits plan arguments. A model that could raise an
+  // operator_plan intent could author the set a human then approves in one
+  // click (the §11 four-eyes bypass). The COORDINATOR raises it, under the
+  // task's human requester.
+  'operator_plan',
   // Diagnostic read grants are bound to a human session or an MCP credential
   // (services/diagnosticAccess/grants.ts beneficiaryOf); an operator agent can
   // never request, hold, use or revoke one.

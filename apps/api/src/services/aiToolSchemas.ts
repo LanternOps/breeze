@@ -599,6 +599,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
   }),
 
+  // operator_plan (Recipe Library spec 6.4): never model-callable; the schema
+  // bounds what the coordinator mints. Effect bounds mirror the CHECKs on
+  // ai_operator_plan_approval_effects.
+  operator_plan: z.object({
+    taskId: uuid,
+    planRevision: z.number().int().min(0),
+    effectSetDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    effects: z.array(z.object({
+      ordinal: z.number().int().min(0),
+      provider: z.enum(['breeze', 'm365', 'google']),
+      toolName: z.string().min(1).max(100),
+      targetLabel: z.string().min(1).max(200),
+      principalLabel: z.string().max(320).nullable().optional(),
+      rendering: z.string().min(1).max(500),
+    })).max(64),
+    reason: z.string().max(500).optional(),
+  }),
+
   manage_organizations: z.object({
     action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
     orgId: uuid.optional(),
