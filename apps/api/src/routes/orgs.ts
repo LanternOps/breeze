@@ -982,6 +982,10 @@ const partnerSettingsSchema = z.object({
   // only the feature block it owns (`ml.anomalies`, `ml.remediation_suggestions`)
   // and must send that block COMPLETE.
   ml: mlSettingsSchema.optional(),
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({

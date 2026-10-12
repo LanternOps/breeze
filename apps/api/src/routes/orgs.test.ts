@@ -2050,6 +2050,19 @@ describe('org routes', () => {
       const res = await patchMe({ settings: { ml: { anomalies: { enabled: 'yes' } } } });
       expect(res.status).toBe(400);
     });
+
+    it('persists settings.networkProxy.dedicatedTunnelOrigin and rejects a non-boolean value (#8155)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { rca: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const ok = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: true } } });
+      expect(ok.status).toBe(200);
+      expect(getCaptured().settings.networkProxy).toEqual({ dedicatedTunnelOrigin: true });
+
+      const bad = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: 'yes' } } });
+      expect(bad.status).toBe(400);
+    });
   });
 
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
