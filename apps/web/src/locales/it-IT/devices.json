@@ -2300,9 +2300,13 @@
     "updatesAvailable_other": "{{count}} aggiornamenti disponibili"
   },
   "deviceUserIdleStat": {
+    "active": "Attivo",
+    "asOf": "alle {{time}}",
     "label": "Inattività utente",
+    "locked": "Bloccato",
     "retryAria": "Impossibile caricare lo stato di inattività — riprova",
-    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare"
+    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare",
+    "unknown": "Sconosciuto"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {

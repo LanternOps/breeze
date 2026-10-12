@@ -2300,9 +2300,13 @@
     "updatesAvailable_other": "{{count}} Updates verfügbar"
   },
   "deviceUserIdleStat": {
+    "active": "Aktiv",
+    "asOf": "Stand: {{time}}",
     "label": "Benutzer im Leerlauf",
+    "locked": "Gesperrt",
     "retryAria": "Der Ruhezustand konnte nicht geladen werden – versuchen Sie es erneut",
-    "retryTitle": "Der Ruhezustand konnte nicht geladen werden – klicken Sie, um es erneut zu versuchen"
+    "retryTitle": "Der Ruhezustand konnte nicht geladen werden – klicken Sie, um es erneut zu versuchen",
+    "unknown": "Unbekannt"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {

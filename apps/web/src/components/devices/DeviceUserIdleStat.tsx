@@ -27,21 +27,21 @@ export function selectIdleSession(sessions: ActiveSession[]): ActiveSession | nu
   )[0];
 }
 
-export function formatIdle(session: ActiveSession | null, translate?: (key: string) => string): string {
+export function formatIdle(session: ActiveSession | null, t?: (key: string) => string): string {
   if (!session) return '—';
-  if (session.activityState === 'locked') return translate?.('deviceUserIdleStat.locked') ?? 'Locked';
+  if (session.activityState === 'locked') return t?.('deviceUserIdleStat.locked') ?? 'Locked';
   if (session.idleMinutes === null || session.idleMinutes === undefined) return '—';
-  if (session.idleMinutes < 1) return translate?.('deviceUserIdleStat.active') ?? 'Active';
+  if (session.idleMinutes < 1) return t?.('deviceUserIdleStat.active') ?? 'Active';
   const hours = Math.floor(session.idleMinutes / 60);
   const minutes = Math.floor(session.idleMinutes % 60);
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   return `${minutes}m`;
 }
 
-function tooltip(sessions: ActiveSession[], translate: (key: string, options?: Record<string, unknown>) => string): string | undefined {
+function tooltip(sessions: ActiveSession[], t: (key: string, options?: Record<string, unknown>) => string): string | undefined {
   if (sessions.length === 0) return undefined;
   const lines = sessions.map(
-    (s) => `${s.username} (${s.sessionType ?? translate('deviceUserIdleStat.unknown')}): ${formatIdle(s, translate)}`
+    (s) => `${s.username} (${s.sessionType ?? t('deviceUserIdleStat.unknown')}): ${formatIdle(s, t)}`
   );
   const updatedAt = sessions
     .map((s) => s.updatedAt)
@@ -51,7 +51,7 @@ function tooltip(sessions: ActiveSession[], translate: (key: string, options?: R
   if (updatedAt) {
     const d = new Date(updatedAt);
     if (!isNaN(d.getTime())) {
-      lines.push(translate('deviceUserIdleStat.asOf', { time: formatTime(d, { hour: '2-digit', minute: '2-digit' }) }));
+      lines.push(t('deviceUserIdleStat.asOf', { time: formatTime(d, { hour: '2-digit', minute: '2-digit' }) }));
     }
   }
   return lines.join('\n');

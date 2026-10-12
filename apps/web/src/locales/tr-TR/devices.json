@@ -2300,9 +2300,13 @@
     "updatesAvailable_other": "{{count}} güncellemeler mevcut"
   },
   "deviceUserIdleStat": {
+    "active": "Aktif",
+    "asOf": "{{time}} itibarıyla",
     "label": "Kullanıcı Boşta",
+    "locked": "Kilitli",
     "retryAria": "Bekleme durumu yüklenemedi — tekrar deneyin",
-    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın"
+    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın",
+    "unknown": "Bilinmiyor"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {

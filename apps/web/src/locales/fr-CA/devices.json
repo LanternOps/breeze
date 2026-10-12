@@ -2300,9 +2300,13 @@
     "updatesAvailable_other": "{{count}} mises à jour disponibles"
   },
   "deviceUserIdleStat": {
+    "active": "Actif",
+    "asOf": "à {{time}}",
     "label": "Inactivité utilisateur",
+    "locked": "Verrouillé",
     "retryAria": "Impossible de charger l’état d’inactivité — réessayer",
-    "retryTitle": "Impossible de charger l’état d’inactivité — cliquez pour réessayer"
+    "retryTitle": "Impossible de charger l’état d’inactivité — cliquez pour réessayer",
+    "unknown": "Inconnu"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {

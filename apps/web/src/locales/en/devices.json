@@ -2300,9 +2300,13 @@
     "updatesAvailable_other": "{{count}} updates available"
   },
   "deviceUserIdleStat": {
+    "active": "Active",
+    "asOf": "as of {{time}}",
     "label": "User Idle",
+    "locked": "Locked",
     "retryAria": "Couldn't load idle status — retry",
-    "retryTitle": "Couldn't load idle status — click to retry"
+    "retryTitle": "Couldn't load idle status — click to retry",
+    "unknown": "Unknown"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
