@@ -1934,6 +1934,10 @@
         "enableNetworkAlerts": {
           "label": "Alertes réseau",
           "description": "Affiche dans le portail client le nombre d'alertes actives et les tickets ouverts liés aux actifs réseau."
+        },
+        "enableHourBlock": {
+          "label": "Heures de support",
+          "description": "Affiche les heures prépayées du forfait consommées et restantes dans la section Utilisation du support du client. Nécessite Utilisation du support. Non activé lorsque vous activez toute la visibilité."
         }
       }
     },

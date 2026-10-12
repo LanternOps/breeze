@@ -1934,6 +1934,10 @@
         "enableNetworkAlerts": {
           "label": "Ağ uyarıları",
           "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."
+        },
+        "enableHourBlock": {
+          "label": "Destek saatleri",
+          "description": "Müşterinin destek kullanımı bölümünde ön ödemeli saat paketinin kullanılan ve kalan saatlerini gösterir. Destek kullanımı gerektirir. Tüm görünürlüğü etkinleştirdiğinizde açılmaz."
         }
       }
     },

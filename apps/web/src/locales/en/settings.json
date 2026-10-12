@@ -1934,6 +1934,10 @@
         "enableNetworkAlerts": {
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
+        },
+        "enableHourBlock": {
+          "label": "Support hours",
+          "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."
         }
       }
     },

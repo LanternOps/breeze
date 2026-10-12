@@ -1934,6 +1934,10 @@
         "enableNetworkAlerts": {
           "label": "Netzwerkwarnungen",
           "description": "Zeigt im Kundenportal die Anzahl aktiver Warnungen und verknüpfter offener Tickets für Netzwerk-Assets an."
+        },
+        "enableHourBlock": {
+          "label": "Support-Stunden",
+          "description": "Zeigt im Bereich Support-Nutzung des Kunden die verbrauchten und verbleibenden Stunden des vorausbezahlten Stundenkontingents an. Erfordert Support-Nutzung. Wird durch „Alle Sichtbarkeiten aktivieren“ nicht eingeschaltet."
         }
       }
     },

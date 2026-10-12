@@ -1934,6 +1934,10 @@
         "enableNetworkAlerts": {
           "label": "Alertas de rede",
           "description": "Exibe no portal do cliente a contagem de alertas ativos e os chamados abertos vinculados aos ativos de rede."
+        },
+        "enableHourBlock": {
+          "label": "Horas de suporte",
+          "description": "Mostra as horas pré-pagas do pacote usadas e restantes dentro da seção de uso de suporte do cliente. Requer Uso de suporte. Não é ativado ao habilitar toda a visibilidade."
         }
       }
     },

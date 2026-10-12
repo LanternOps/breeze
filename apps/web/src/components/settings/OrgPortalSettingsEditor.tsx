@@ -32,6 +32,7 @@ type PortalSettings = {
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
   enableNetworkAlerts: boolean;
+  enableHourBlock: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -79,12 +80,14 @@ type VisibilityToggleKey =
   | 'enablePerformanceMetrics'
   | 'enableSoftwareInventory'
   | 'enableNetworkVisibility'
-  | 'enableNetworkAlerts';
+  | 'enableNetworkAlerts'
+  | 'enableHourBlock';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
   labelKey: string;
   descriptionKey: string;
+  requires?: VisibilityToggleKey;
 }> = [
   {
     key: 'enableDevices',
@@ -164,6 +167,16 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableNetworkAlerts',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.description',
+  },
+  // Billing-sensitive (a prepaid-hours balance) and only meaningful inside the
+  // Support usage section, so it has its own fail-closed flag and is
+  // deliberately left out of enableAllVisibility() below (block hours W04,
+  // #8179; same pattern as enableNetworkAlerts above).
+  {
+    key: 'enableHourBlock',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.description',
+    requires: 'enableSupportUsage',
   },
 ];
 
@@ -260,6 +273,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableSoftwareInventory: draft.enableSoftwareInventory,
             enableNetworkVisibility: draft.enableNetworkVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
+            enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
@@ -348,6 +362,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             key,
             labelKey,
             descriptionKey,
+            requires,
           }) => (
             <label
               key={key}
@@ -356,8 +371,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               <input
                 type="checkbox"
                 checked={draft[key]}
+                disabled={requires !== undefined && !draft[requires]}
                 onChange={(e) => update({
                   [key]: e.target.checked,
+                  // Turning Support usage off also turns off what lives inside it.
+                  ...(key === 'enableSupportUsage' && !e.target.checked ? { enableHourBlock: false } : {}),
                 } as Partial<PortalSettings>)}
                 className="mt-0.5"
                 data-testid={`org-portal-toggle-${key}`}
