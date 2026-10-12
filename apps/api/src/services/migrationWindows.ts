@@ -85,7 +85,8 @@ export type MigrationWindowView = {
   openedAt: string;
   endsAt: string;
   writesPerHour: number;
-  openedBy: string;
+  /** Null once the opener's user row is deleted. */
+  openedBy: string | null;
   closedBy: string | null;
   closedReason: MigrationWindowClosedReason | null;
   closedAt: string | null;

@@ -22,6 +22,11 @@
 -- UPDATE to system-only would turn each one into a 409. An integration test
 -- pins it (migrationWindowsRls.integration.test.ts).
 --
+-- opened_by / closed_by are ON DELETE SET NULL: org erasure and user deletion
+-- must never abort on a window (orgCascadeFkOnDelete contract). A window whose
+-- opener is gone loses opened_by and is closed as opener_inactive by the
+-- sweep; the audit rows keep who opened and closed it.
+--
 -- Fully idempotent — safe to re-run. Nothing here writes rows.
 
 CREATE TABLE IF NOT EXISTS migration_windows (
@@ -33,10 +38,10 @@ CREATE TABLE IF NOT EXISTS migration_windows (
   opened_at timestamptz NOT NULL DEFAULT now(),
   ends_at timestamptz NOT NULL,
   writes_per_hour integer NOT NULL,
-  opened_by uuid NOT NULL REFERENCES users(id),
+  opened_by uuid REFERENCES users(id) ON DELETE SET NULL,
   opener_credential_epoch integer NOT NULL,
   opener_mfa_epoch integer NOT NULL,
-  closed_by uuid REFERENCES users(id),
+  closed_by uuid REFERENCES users(id) ON DELETE SET NULL,
   closed_reason text,
   closed_at timestamptz,
   summary jsonb,

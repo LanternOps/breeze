@@ -330,6 +330,20 @@ describe('migration windows (real Postgres, as breeze_app)', () => {
     expect(again).toMatchObject({ alreadyClosed: true, window: { closedReason: 'closed_by_admin' } });
   });
 
+  runDb('deleting the user who closed a window does not abort; the window keeps its history with closed_by null', async () => {
+    const fx = await seed();
+    const window = await open(fx);
+    const closer = await partnerAdmin(fx.partner.id);
+    await withDbAccessContext(fx.context(closer.id), () => db.transaction((tx) => closeMigrationWindow(tx, {
+      windowId: window.id, partnerId: fx.partner.id, reason: 'closed_by_admin', closedBy: closer.id,
+    })));
+    // ON DELETE SET NULL: org erasure and user deletion never abort on a window
+    // (orgCascadeFkOnDelete contract).
+    await getTestDb().delete(users).where(eq(users.id, closer.id));
+    const [row] = await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.id, window.id));
+    expect(row).toMatchObject({ status: 'closed', closedReason: 'closed_by_admin', closedBy: null, openedBy: fx.owner.id });
+  });
+
   runDb('the sweep closes on every condition and publishes one migration.window_closed per org, once', async () => {
     const expired = await seed();
     const disabled = await seed();

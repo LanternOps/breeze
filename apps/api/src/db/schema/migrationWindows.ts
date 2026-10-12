@@ -37,12 +37,14 @@ export const migrationWindows = pgTable('migration_windows', {
   openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
   endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
   writesPerHour: integer('writes_per_hour').notNull(),
-  openedBy: uuid('opened_by').notNull().references(() => users.id),
+  // ON DELETE SET NULL (both): org erasure and user deletion never abort on a
+  // window. A window whose opener is gone is closed as opener_inactive.
+  openedBy: uuid('opened_by').references(() => users.id, { onDelete: 'set null' }),
   // The opener's credential state at open (#8332): a window ends when either
   // epoch moves, the same rule partner service principal keys follow.
   openerCredentialEpoch: integer('opener_credential_epoch').notNull(),
   openerMfaEpoch: integer('opener_mfa_epoch').notNull(),
-  closedBy: uuid('closed_by').references(() => users.id),
+  closedBy: uuid('closed_by').references(() => users.id, { onDelete: 'set null' }),
   closedReason: text('closed_reason').$type<MigrationWindowClosedReason>(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
   summary: jsonb('summary').$type<MigrationWindowSummary>(),
