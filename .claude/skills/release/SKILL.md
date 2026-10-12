@@ -37,6 +37,12 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 - **Full release of everything on main** (the normal case): tag off `main` HEAD.
 - **True surgical hotfix**: branch + tag off `$PREV`, cherry-pick *only* the fix. Do **not** tag off main HEAD if you don't intend to ship all of main.
 
+**Candidate / hotfix prerelease tags (commit not on main): register first, then tag.** The Release workflow's Validate Release Lineage step reads `.github/release-provenance/candidate-tags.tsv` from `origin/main`, so the row must be on main before the tag build runs:
+
+1. Open a PR adding the row `<tag>\t<exact candidate commit SHA>\t<integration ref>\t<note>`. CI's Check Migrations passes with the tag not yet pushed — it skips registry rows whose tag doesn't exist (#8132).
+2. Merge it.
+3. Push the tag at exactly that SHA. From then on Check Migrations enforces the row: a tag that peels to a different commit fails CI with `candidate registry SHA mismatch`.
+
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.

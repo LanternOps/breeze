@@ -52,6 +52,8 @@ CANDIDATE_REGISTRY_LOADED=false
 CANDIDATE_TAGS=()
 CANDIDATE_SHAS=()
 CANDIDATE_COUNT=0
+SEEN_CANDIDATE_TAGS=()
+SEEN_CANDIDATE_COUNT=0
 
 load_candidate_registry() {
   [ "$CANDIDATE_REGISTRY_LOADED" = false ] || return 0
@@ -79,10 +81,22 @@ EOF
     if [[ ! "$row_sha" =~ ^[0-9a-f]{40}$ ]]; then
       fail "invalid candidate SHA '$row_sha' at registry row $line_number"
     fi
-    for ((seen_index = 0; seen_index < CANDIDATE_COUNT; seen_index++)); do
-      [ "${CANDIDATE_TAGS[$seen_index]}" != "$row_tag" ] || \
+    for ((seen_index = 0; seen_index < SEEN_CANDIDATE_COUNT; seen_index++)); do
+      [ "${SEEN_CANDIDATE_TAGS[$seen_index]}" != "$row_tag" ] || \
         fail "duplicate candidate tag '$row_tag' in registry"
     done
+    SEEN_CANDIDATE_TAGS[$SEEN_CANDIDATE_COUNT]="$row_tag"
+    SEEN_CANDIDATE_COUNT=$((SEEN_CANDIDATE_COUNT + 1))
+    # A row may land on main before its tag is pushed: the Release workflow's
+    # lineage gate requires the row on main before the tag build runs (#8132).
+    # Such a row classifies nothing — only existing tags are ever looked up
+    # here — so skip it. Once the tag exists, the SHA check below applies.
+    # stderr only: this runs inside $(candidate_sha_for_tag), whose stdout is
+    # the looked-up SHA.
+    if ! git rev-parse --verify --quiet "refs/tags/$row_tag" >/dev/null; then
+      echo "check-migration-immutability: candidate registry row '$row_tag' has no tag yet; skipping it" >&2
+      continue
+    fi
     actual_sha=$(tag_commit "$row_tag")
     [ "$actual_sha" = "$row_sha" ] || \
       fail "candidate registry SHA mismatch for '$row_tag': recorded $row_sha, tag peels to $actual_sha"
