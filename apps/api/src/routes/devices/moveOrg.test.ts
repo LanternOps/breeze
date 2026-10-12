@@ -1084,7 +1084,12 @@ describe('POST /devices/:id/move-org', () => {
         timeEntryRewrites,
         `Expected exactly one time_entries org_id rewrite.\nStatements:\n${statements.join('\n')}`,
       ).toEqual([
-        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid ` +
+        // #8356: site_id follows the device to its target site in the SAME
+        // statement (an entry with no site link keeps none) — a second
+        // UPDATE would change the statement sequence the lock-order contract
+        // pins. Without it the moved entry kept a site in the source org.
+        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid, ` +
+          `site_id = CASE WHEN site_id IS NOT NULL THEN ${TARGET_SITE}::uuid END ` +
           `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
     });

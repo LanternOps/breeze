@@ -4271,6 +4271,17 @@ describe('moveTicketOrg', () => {
     // Compared against the shared constant so the two stay coupled.
     expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
 
+    // #8356: time_entries.site_id is a plain FK to sites and tickets carry no
+    // site, so the moved entries must drop their source-org site link in the
+    // SAME statement that re-stamps org_id (one UPDATE keeps the shared lock
+    // order unchanged). Every other child table keeps the org_id-only rewrite.
+    const rewrites = executedSqlTexts().filter((t) => t.startsWith('UPDATE '));
+    const timeEntryRewrites = rewrites.filter((t) => t.startsWith('UPDATE time_entries '));
+    expect(timeEntryRewrites).toEqual(['UPDATE time_entries SET org_id = ::uuid, site_id = NULL WHERE ticket_id = ::uuid']);
+    for (const t of rewrites.filter((r) => !r.startsWith('UPDATE time_entries '))) {
+      expect(t, 'only time_entries carries a site_id to re-point').not.toContain('site_id');
+    }
+
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       ticketId: 't1',

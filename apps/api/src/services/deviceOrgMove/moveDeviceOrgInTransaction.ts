@@ -932,8 +932,15 @@ export async function moveDeviceOrgInTransaction(
     targetOrgName: input.targetOrgName,
     acceptCurrencyMismatch: acceptCurrencyMismatch === true,
   });
+  // #8356: time_entries.site_id is a plain FK to sites (no tenant FK), so an
+  // org_id-only rewrite left the moved entry pointing at a SOURCE-org site.
+  // It follows the device to its target site in the SAME statement — one
+  // UPDATE, so the shared lock order (services/ticketOrgMoveLockOrder.ts) and the
+  // statement sequence moveOrg.test.ts pins are unchanged. An entry with no
+  // site link keeps none (CASE without ELSE → NULL); the ticket axis
+  // (moveTicketOrg) has no site to follow and nulls it instead.
   await tx.execute(
-    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid, site_id = CASE WHEN site_id IS NOT NULL THEN ${targetSiteId}::uuid END WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
