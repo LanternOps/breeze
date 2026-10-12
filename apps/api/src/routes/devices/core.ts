@@ -693,8 +693,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // agent_id only), so it needs no entry in this device-cascade list.
   'ai_agent_fix_watches',
   // AI Suggested Fixes W1 — attempt history for a deleted device goes with it
-  // (no device FK; leaf table). The org-cascade + rebuild keeps partner memory
-  // consistent on the next rebuild.
+  // (no device FK; leaf table). deleteDeviceCascade deletes these rows first
+  // through fixMemory/store deleteDeviceFixOutcomes, which stale-marks the
+  // aggregates they fed so the sweeper rebuilds them (#7278); this generic
+  // entry then finds nothing. Listed for the coverage contract.
   'fix_outcomes',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability_baselines', 'device_reliability',

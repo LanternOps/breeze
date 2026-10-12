@@ -11,6 +11,7 @@ import { devices } from '../db/schema';
 import { extractRowCount } from '../db/rowCount';
 import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
+import { deleteDeviceFixOutcomes } from './fixMemory/store';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -372,6 +373,14 @@ export async function deleteDeviceCascade(
   // device selects no row, preserving idempotent deletion.
   await tx.execute(sql`SELECT breeze_detach_topology_inventory_binding(
     'device', d.id, d.org_id, d.site_id) FROM devices d WHERE d.id = ${deviceId}`);
+
+  // AI Suggested Fixes (#7278): fix_outcomes is fix_memory's proof. A bare
+  // DELETE would leave the derived aggregates counting attempts that no longer
+  // exist, so the store deletes them AND stale-marks every identity a counted
+  // one fed, in this transaction; the sweeper rebuilds. fix_outcomes stays in
+  // getDeviceCascadeDeleteTables() for the coverage contract; its generic
+  // DELETE below then finds nothing.
+  await deleteDeviceFixOutcomes(tx, deviceId);
 
   for (const table of getDeviceCascadeDeleteTables()) {
     if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {

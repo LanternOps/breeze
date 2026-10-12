@@ -10,6 +10,17 @@ vi.mock('./sentry', () => ({
   captureMessage: (...a: unknown[]) => sentry.captureMessage(...a),
 }));
 
+// The fix-memory side of the cascade (#7278) is unit-tested in
+// fixMemory/store.test.ts; here it only has to run in THIS transaction, at the
+// right point. The stand-in records a marker statement through the same tx.
+const fixMemoryStore = vi.hoisted(() => ({
+  deleteDeviceFixOutcomes: vi.fn(async (tx: { execute(q: unknown): Promise<unknown> }, deviceId: string) => {
+    await tx.execute(`__FIX_OUTCOMES_DELETE_AND_STALE_MARK__:${deviceId}`);
+    return { deleted: 0, identitiesMarked: 0 };
+  }),
+}));
+vi.mock('./fixMemory/store', () => fixMemoryStore);
+
 /**
  * Captures the SQL this cascade issues, in order, so the lock-ordering
  * regression is testable without a database. Follows the `ops` pattern from
@@ -277,6 +288,19 @@ describe('deleteDeviceCascade lock ordering', () => {
     expect(sets.length).toBe(2);
     expect(sets[0]).toContain('3000');
     expect(sets[1]).toContain('7000ms');
+  });
+
+  it('deletes fix_outcomes through the fix-memory store, which stale-marks their aggregates, before the generic child deletes (#7278)', async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+    expect(fixMemoryStore.deleteDeviceFixOutcomes).toHaveBeenCalledWith(tx, 'device-1');
+    const marker = statements.indexOf('"__FIX_OUTCOMES_DELETE_AND_STALE_MARK__:device-1"');
+    expect(marker).toBeGreaterThan(statements.findIndex((s) => s.includes('FOR UPDATE')));
+    // A bare DELETE would drop the proof without marking fix_memory stale; the
+    // generic loop's statement must come after (and find nothing left).
+    const generic = statements.findIndex((s) => s.includes('DELETE FROM') && s.includes('"fix_outcomes"'));
+    expect(generic === -1 || generic > marker).toBe(true);
+    expect(marker).toBeLessThan(statements.indexOf('__DELETE_DEVICES_ROW__'));
   });
 
   it('deletes the devices row last, after the child tables', async () => {

@@ -4,6 +4,7 @@ import type { SQL } from 'drizzle-orm';
 const m=vi.hoisted(()=>({retire:vi.fn(),keys:['collector:storcli','storcli:c0'],order:[] as string[]}));
 vi.mock('./hardwareHealth/retire',()=>({resolveAlertsForRemovedComponents:m.retire}));
 vi.mock('./sentry',()=>({captureMessage:vi.fn()}));
+vi.mock('./fixMemory/store',()=>({deleteDeviceFixOutcomes:vi.fn(async()=>({deleted:0,identitiesMarked:0}))}));
 vi.mock('../db/lockTimeout',()=>({tightenLockTimeout:vi.fn(async()=>null),lockTimeoutWasChanged:()=>false}));
 vi.mock('../routes/devices/core',()=>({DEVICE_DETACH_DEVICE_ID_TABLES:[],DEVICE_LINKED_DEVICE_ID_TABLES:[],DEVICE_LINK_DEPENDENT_COLUMNS:[],getDeviceCascadeDeleteTables:()=>['alerts','device_hardware_components','device_hardware_events','device_hardware_health']}));
 import { deleteDeviceCascade,type DeviceDeletionTx } from './deviceDeletion';
