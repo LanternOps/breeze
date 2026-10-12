@@ -130,6 +130,7 @@ export interface SeedBlockOrgArgs {
   includedHours?: string;      // default '10.00'
   overageRate?: string;        // default '150.00'
   createdBy?: string | null;
+  rolloverPolicy?: 'none' | 'carry_forward';   // default 'none'
   entries?: FixtureEntry[];
 }
 
@@ -184,7 +185,7 @@ export async function seedBlockOrg(args: SeedBlockOrgArgs): Promise<SeededBlockO
       includedQuantity: args.includedHours ?? '10.00',
       overageMode: 'bill',
       overageUnitPrice: args.overageRate ?? '150.00',
-      rolloverPolicy: 'none',
+      rolloverPolicy: args.rolloverPolicy ?? 'none',
       hourBlockAlertPct: args.alertPct === undefined ? 80 : args.alertPct,
       hourBlockFirstPeriodStart: '2026-12-01',
       hourBlockRetiredAt: args.retired ? new Date('2026-12-05T00:00:00Z') : null,
