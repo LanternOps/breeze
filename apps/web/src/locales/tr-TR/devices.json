@@ -358,7 +358,9 @@
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
-    "toADifferentSite": "farklı bir siteye taşı."
+    "toADifferentSite": "farklı bir siteye taşı.",
+    "deviceMovedByOther": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin",
+    "policyNote": "Taşıma, {{device}} cihazına uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onu otomatik olarak geri taşımaz."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Grup oluşturulamadı",
@@ -2243,7 +2245,8 @@
     "displayName": "Görünen Ad",
     "errors": {
       "loadSites": "Siteler yüklenemedi",
-      "saveSettings": "Ayarlar kaydedilemedi"
+      "saveSettings": "Ayarlar kaydedilemedi",
+      "siteChanged": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin"
     },
     "hostname": "Ana bilgisayar adı: {{hostname}}",
     "saved": "Cihaz ayarları kaydedildi",

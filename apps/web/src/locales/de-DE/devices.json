@@ -358,7 +358,9 @@
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
-    "toADifferentSite": "an einen anderen Standort."
+    "toADifferentSite": "an einen anderen Standort.",
+    "deviceMovedByOther": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen",
+    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -2243,7 +2245,8 @@
     "displayName": "Anzeigename",
     "errors": {
       "loadSites": "Die Standorte konnten nicht geladen werden",
-      "saveSettings": "Einstellungen konnten nicht gespeichert werden"
+      "saveSettings": "Einstellungen konnten nicht gespeichert werden",
+      "siteChanged": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Geräteeinstellungen gespeichert",

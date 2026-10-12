@@ -358,7 +358,9 @@
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
-    "toADifferentSite": "to a different site."
+    "toADifferentSite": "to a different site.",
+    "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -2243,7 +2245,8 @@
     "displayName": "Display Name",
     "errors": {
       "loadSites": "Failed to load sites",
-      "saveSettings": "Failed to save settings"
+      "saveSettings": "Failed to save settings",
+      "siteChanged": "This device was moved by someone else — reload to see its current site"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Device settings saved",

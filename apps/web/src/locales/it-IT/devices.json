@@ -358,7 +358,9 @@
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
-    "toADifferentSite": "in un sito diverso."
+    "toADifferentSite": "in un sito diverso.",
+    "deviceMovedByOther": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale",
+    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -2243,7 +2245,8 @@
     "displayName": "Nome visualizzato",
     "errors": {
       "loadSites": "Impossibile caricare i siti",
-      "saveSettings": "Impossibile salvare le impostazioni"
+      "saveSettings": "Impossibile salvare le impostazioni",
+      "siteChanged": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale"
     },
     "hostname": "Nome host: {{hostname}}",
     "saved": "Impostazioni del dispositivo salvate",
