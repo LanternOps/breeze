@@ -66,7 +66,7 @@ Evidence, to be re-run at implementation time:
 
 **Partner-wide automations (headline decision).** A group id exists in exactly one org. Today a partner-wide (`org_id` NULL) automation with a `groups` target silently matches only the org that owns the id (the per-org loop's `filterOutExecutionRefusedGroups(orgId, ids)` drops other orgs' ids). Recommended: **reject `groups` and `devices` targets on partner-wide automations at validation time** with a clear message, and keep `all` and `filter`, which already fan out per org. By-name resolution is attractive but group names are unique only per org and a same-named group in another org can be an unrelated set, so it needs its own design (Open Decisions 1 and 9). A stored partner-wide `groups` automation that predates the validator fails its run visibly (Task 6).
 
-**AI surface (W3).** `run_script` caps `deviceIds` at 10 on every declaration and the handler slices to 10. The approval snapshot (`actionIntents/runScriptSnapshot.ts`, the `run_script` resolver in `actionIntents/effectDigest.ts`) pins `{scriptId, deviceIds}`, so a group must be resolved to a concrete list before `createIntent`, otherwise the approved set diverges from the executed set. The approver sees the count and a hash of the resolved ids. Because 10 is far below a typical group, the AI path rejects a group whose resolved set exceeds its cap, naming the count (Open Decision 11).
+**AI surface (W3).** `run_script` caps `deviceIds` at 10 on every declaration and the handler slices to 10. The approval snapshot (`actionIntents/runScriptSnapshot.ts`, the `run_script` resolver in `actionIntents/effectDigest.ts`) pins `{scriptId, deviceIds}`, so a group must be resolved to a concrete list before `createIntent`, otherwise the approved set diverges from the executed set. The intent stores the frozen list, so there is no re-resolution at release: the approved set is the executed set. The approver sees the count and a hash of the resolved ids as of resolution. Because 10 is far below a typical group, the AI path rejects a group whose resolved set exceeds its cap, naming the count (Open Decision 11).
 
 ## Review Focus
 
@@ -81,7 +81,7 @@ Input classes the spec implies but no single task would exercise; each has a tes
 7. Execution-refused group mixed with an allowed group: allowed members run, refusal shown as a warning and audited (Task 3).
 8. Same device in two groups: runs once (Task 3).
 9. Group target together with `targetSessionId`: rejected (Task 2).
-10. Membership changes between AI approval and release: digest mismatch fails closed (Task 10).
+10. Membership changes between AI approval and release: the executed set stays exactly the approved, frozen list; the approval shows the count and id hash as of resolution (Task 10).
 
 ## File Structure
 
@@ -284,6 +284,28 @@ it('applies the site allowlist to the resolved set', async () => {
 - Test: `apps/api/src/routes/scripts.execute.groupTarget.test.ts` (new; model on the existing execute-route tests)
 
 - [ ] **Step 1: Write the failing tests:** (a) `{ target: {type:'groups', groupIds:[G]} }` calls `executeScriptOnDevices` with the resolved `deviceIds` and returns 201; (b) the `script.execute` audit `details` contains `target` and `resolvedGroups`; (c) `TOO_MANY_TARGETS` returns 400 with `count` and does NOT call `executeScriptOnDevices`; (d) `GROUP_NOT_FOUND` returns 404 with `groupIds`; (e) the 201 body carries `warnings` when a group was refused; (f) a `deviceIds` request calls the service with exactly those ids (regression guard); (g) the audited device set equals the resolved set even when the mocked membership differs on a second resolve (Review Focus 4).
+```ts
+it('audits target + resolvedGroups and dispatches exactly the resolved ids', async () => {
+  resolveScriptRunTargets.mockResolvedValue({ ok: true, deviceIds: [D1, D2], warnings: [],
+    resolvedGroups: [{ id: G1, orgId: O1, memberCount: 2, refused: false }] });
+  const res = await app.request(`/scripts/${S}/execute`, post({ target: { type: 'groups', groupIds: [G1] } }));
+  expect(res.status).toBe(201);
+  expect(executeScriptOnDevices).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [D1, D2] }));
+  expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+    action: 'script.execute',
+    details: expect.objectContaining({ target: { type: 'groups', groupIds: [G1] },
+      resolvedGroups: [expect.objectContaining({ id: G1, memberCount: 2 })] }),
+  }));
+});
+it('returns 400 with the count and never dispatches when the group is over the cap', async () => {
+  resolveScriptRunTargets.mockResolvedValue({ ok: false, status: 400, code: 'TOO_MANY_TARGETS', count: 501, error: '501 devices exceeds 500' });
+  const res = await app.request(`/scripts/${S}/execute`, post({ target: { type: 'groups', groupIds: [G1] } }));
+  expect(res.status).toBe(400);
+  expect(await res.json()).toMatchObject({ code: 'TOO_MANY_TARGETS', count: 501 });
+  expect(executeScriptOnDevices).not.toHaveBeenCalled();
+});
+```
+
 - [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/routes/scripts.execute.groupTarget.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** When `data.target` is set, call `resolveScriptRunTargets` via `withAuthDbAccessContext(auth, ...)` (short context, committed before dispatch, as #7103), map `ok:false` to `c.json({ error, code, groupIds, count }, status)`, pass the resolved ids to `executeScriptOnDevices`, add `target` / `resolvedGroups` to the audit `details`, and add `warnings` (additive) to the 201 body.
 - [ ] **Step 4: Run** the new test, `src/services/scriptExecution.test.ts`, `src/services/scriptExecution.admission.test.ts`; then under `pnpm test-stack up`: `cd apps/api && npx vitest run src/__tests__/integration/runScriptNoHeldTransaction.integration.test.ts`; then `pnpm test-stack down`. Expected: PASS.
@@ -304,18 +326,41 @@ it('applies the site allowlist to the resolved set', async () => {
 - [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/services/automationTargetValidation.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Parse with `automationTargetConfigSchema` only when the value is an object whose `type` is one of the four target types; then one `select id, org_id from device_groups where id in (...)` (and `devices` likewise) in the caller's context, comparing each org to `owner.orgId`. Call it in create and update before the site-scope gate; respond 400 `{ error, code: 'INVALID_TARGET', groupIds }`.
 - [ ] **Step 4: Run** both test files, then under the test stack `automationsPartnerRls.integration.test.ts` (partner-wide behaviour); tear the stack down. Expected: PASS.
+- [ ] **Step 4b: Existing-data pre-check.** Rejecting `groups`/`devices` on partner-wide automations changes behaviour for stored rows that currently "work" by matching one org. At wave time run, against prod-like data: `SELECT id FROM automations WHERE org_id IS NULL AND conditions->>'type' IN ('groups','devices');` and report the count in the W1 PR body. Handling: such rows are not rewritten; they fail visibly on their next run (Task 6) and the editor shows a blocking notice (Task 7). The check is a read-only operator query, not a migration.
 - [ ] **Step 5: Commit** `feat(automations): validate target config on write, reject partner-wide group targets (#5237)`
 
 ### Task 6: Runtime fails visibly; close the site-scope gap
 
 **Files:**
-- Modify: `apps/api/src/services/automationRuntime.ts` (`resolveAutomationTargetDeviceIds` ~1058, `isUnboundedOrgWideTarget` ~1100, run start ~4050)
+- Modify: `apps/api/src/services/automationRuntime.ts` (`resolveAutomationTargetDeviceIds` ~1058, `checkAutomationTargetsWithinSiteScope` ~1140, run start ~4050)
 - Test: `apps/api/src/services/automationRuntime.groupTargets.test.ts` (new; model on `automationRuntime.runScript.test.ts`), `apps/api/src/__tests__/integration/automationGroupTargetFanout.integration.test.ts` (new)
 
-- [ ] **Step 1: Write the failing tests (unit):** (a) a run whose `groups` target references a deleted group, or resolves to zero, ends `failed` with a log entry naming the group id and reason, not `completed` with 0 devices; (b) a refused group's warning is in the run log; (c) `isUnboundedOrgWideTarget` is true for a `groups` target containing a dynamic group or a group whose `siteId` is outside a restricted creator's allowlist; (d) a stored partner-wide `groups` automation fails with the "group targets are not supported on partner-wide automations" reason.
+- [ ] **Step 1: Write the failing tests (unit):** (a) a run whose `groups` target references a deleted group, or resolves to zero, ends `failed` with a log entry naming the group id and reason, not `completed` with 0 devices; (b) a refused group's warning is in the run log; (c) `checkAutomationTargetsWithinSiteScope` returns `unbounded: true` (not ok) for a restricted creator whose `groups` target contains a dynamic group or a group whose `siteId` is outside the allowlist, and stays ok for static in-allowlist groups; (d) a stored partner-wide `groups` automation fails with the "group targets are not supported on partner-wide automations" reason.
   **Integration (real Postgres):** two orgs under one partner, each with a group; an org-owned automation targeting org A's group resolves only org A's devices; a partner-wide `all` target fans out to both orgs; a partner-wide automation holding org A's group id never resolves org B's devices (proves `eq(devices.orgId, orgId)` holds per owner org).
+```ts
+it('fails the run visibly when the group no longer exists', async () => {
+  seedAutomation({ orgId: O1, conditions: { type: 'groups', groupIds: [GONE] } }); // no such group row
+  const run = await executeAutomation(automationId);
+  expect(run.status).toBe('failed');
+  expect(runLog(run)).toContain(GONE);
+});
+it('treats a dynamic group as unbounded for a site-restricted creator', async () => {
+  seedGroup({ id: G1, orgId: O1, type: 'dynamic', siteId: null });
+  const r = await checkAutomationTargetsWithinSiteScope(
+    { orgId: O1, conditions: { type: 'groups', groupIds: [G1] }, trigger: {} } as never,
+    { allowedSiteIds: [S1] });
+  expect(r).toMatchObject({ ok: false, unbounded: true });
+});
+it('rejects at run time a stored partner-wide groups target', async () => {
+  seedAutomation({ orgId: null, partnerId: P1, conditions: { type: 'groups', groupIds: [G1] } });
+  const run = await executeAutomation(automationId);
+  expect(run.status).toBe('failed');
+  expect(runLog(run)).toMatch(/not supported on partner-wide/);
+});
+```
+
 - [ ] **Step 2: Run:** unit `cd apps/api && npx vitest run src/services/automationRuntime.groupTargets.test.ts` (FAIL); integration after `pnpm test-stack up`: `cd apps/api && npx vitest run src/__tests__/integration/automationGroupTargetFanout.integration.test.ts` (FAIL).
-- [ ] **Step 3: Implement.** Add `resolveAutomationTargetsDetailed` returning `{ deviceIds, warnings, problems }`; `resolveAutomationTargetDeviceIds` becomes a thin wrapper so every existing caller is unchanged. At run start, non-empty `problems` finishes the run `failed` with those reasons. Verify `loadAutomationTargetAdmission` already moves out-of-scope devices out at execution time; add the site partition if not. Leave `onFailure` (`stop|continue|notify`) semantics untouched. No new dispatch cap for automations in this wave (Open Decision 5).
+- [ ] **Step 3: Implement.** Add `resolveAutomationTargetsDetailed` returning `{ deviceIds, warnings, problems }`; `resolveAutomationTargetDeviceIds` becomes a thin wrapper so every existing caller is unchanged. At run start, non-empty `problems` finishes the run `failed` with those reasons. Verify `loadAutomationTargetAdmission` already moves out-of-scope devices out at execution time; add the site partition if not. `isUnboundedOrgWideTarget` is synchronous and pure (no DB), so it is NOT changed: the group classification lives inside `checkAutomationTargetsWithinSiteScope` (already async), which before the unbounded check queries `device_groups.type, site_id` for the `groups` ids when `perms.allowedSiteIds` is set and returns `unbounded: true` for any dynamic or out-of-allowlist group. Leave `onFailure` (`stop|continue|notify`) semantics untouched. No new dispatch cap for automations in this wave (Open Decision 5).
 - [ ] **Step 4: Run** unit and integration; `pnpm test-stack down`. Expected: PASS.
 - [ ] **Step 5: Commit** `fix(automations): fail group-target runs visibly, treat dynamic groups as unbounded for site-restricted owners (#5237)`
 
@@ -370,7 +415,7 @@ Depends on W1. **If W3 never ships:** AI `run_script` keeps explicit `deviceIds`
 - Modify: `apps/api/src/services/aiToolsScripts.ts` (definition ~784-807, proposal path ~257, library path ~362, `deviceArgs`), `aiToolSchemas.ts` (~1012), `aiAgentSdkTools.ts` (~1820), `scriptBuilderTools.ts` (`execute_script_on_device`), `actionIntents/runScriptSnapshot.ts`, `actionIntents/effectDigest.ts` (`run_script` resolver ~208), `mcpCoverage.ts` (~412, ~586), `aiGuardrails.ts`
 - Test: `aiToolsScripts.runScript.orgEquality.test.ts`, `aiToolSchemas.runScriptProposal.test.ts`, `aiAgentSdkTools.mcpCoverage.test.ts`, `actionIntents/effectDigest.test.ts`, and new `aiToolsScripts.runScript.groupTarget.test.ts`
 
-- [ ] **Step 1: Write the failing tests:** (a) all four declarations accept an optional `groupId` (UUID) and enforce exactly one of `deviceIds`/`groupId` (no `z.undefined()`); (b) the group is resolved to concrete ids at intent creation, the digest material pins the resolved ids and a count, and the approval summary shows the count and a short hash of the ids; (c) a resolved set above the AI cap (10) is rejected with the count, not truncated; (d) org equality: a group outside the caller's org access is refused (extend the orgEquality test); (e) release recomputes the digest and fails closed when membership changed between approval and release; (f) `mcpCoverage` still maps `run_script` for both route files; (g) the SAFE_WRITE_SITES line-keyed contract tests stay green after the edit.
+- [ ] **Step 1: Write the failing tests:** (a) all four declarations accept an optional `groupId` (UUID) and enforce exactly one of `deviceIds`/`groupId` (no `z.undefined()`); (b) the group is resolved to concrete ids at intent creation, the digest material pins the resolved ids and a count, and the approval summary shows the count and a short hash of the ids; (c) a resolved set above the AI cap (10) is rejected with the count, not truncated; (d) org equality: a group outside the caller's org access is refused (extend the orgEquality test); (e) the group is frozen at resolution: after the intent is created, changing the group's membership does not alter the executed device set, and the approval summary still shows the count and id hash as of resolution (drift visibility, if wanted, is a release-time warning, never a digest mismatch); (f) `mcpCoverage` still maps `run_script` for both route files; (g) the SAFE_WRITE_SITES line-keyed contract tests stay green after the edit.
 - [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/services/aiToolsScripts.runScript.groupTarget.test.ts src/services/aiToolsScripts.runScript.orgEquality.test.ts src/services/aiToolSchemas.runScriptProposal.test.ts src/services/aiAgentSdkTools.mcpCoverage.test.ts src/services/actionIntents/effectDigest.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Resolve in the pre-approval step with `resolveScriptRunTargets` (the same service as the route) so the intent's `args.deviceIds` is always the resolved list and the existing digest, `deviceArgs` org-equality and `.slice(0, 10)` logic apply unchanged. `manage_automations` follows Open Decision 10 (default: no change; add a test proving it cannot bypass Task 5 validation).
 - [ ] **Step 4: Run** the files above plus the guardrail tests (`cd apps/api && npx vitest run src/services/aiGuardrails`) and typecheck (exit code). Expected: PASS.
@@ -406,3 +451,4 @@ Depends on W1. **If W3 never ships:** AI `run_script` keeps explicit `deviceIds`
 11. **AI `run_script` cap (10) vs group size.** Options: reject groups resolving above 10; raise the AI cap; resolve and truncate with the count shown. **Recommend reject above the AI cap**: never inherit the 500 cap silently, and raising an unattended-execution cap is a separate safety decision.
 12. **Site-scope handling of group targets for restricted creators.** Options: treat dynamic/out-of-site groups as unbounded (reject at save); allow and re-check at run time only. **Recommend both**: reject at save when a group is dynamic or outside the allowlist, and re-check at run time through the existing admission partitioning.
 13. **Wave cut.** Options: W1 API / W2 web / W3 AI+docs (this plan); API+web in one wave; web-only client expansion first. **Recommend this cut**: each wave merges alone, W1 carries the tenancy risk with the least UI churn, and W3 can slip without stranding anything.
+14. **Group deletion while automations target it.** `deviceGroupDelete.ts` already refuses deletion for active contracts and live quotes. Options: refuse; warn listing referencing enabled automations; do nothing. **Recommend warn, do not block**: automations are cheap to edit and a block strands cleanup, while the fail-visible run (Task 6) is the backstop.
