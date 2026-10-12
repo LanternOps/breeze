@@ -240,7 +240,7 @@ describe('DeviceInfoTab — stuck agent update (#4073)', () => {
   });
 });
 
-describe('DeviceInfoTab — logs silent (#7067)', () => {
+describe('DeviceInfoTab — no logs-silent notice (#7067)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -257,37 +257,17 @@ describe('DeviceInfoTab — logs silent (#7067)', () => {
     });
   }
 
-  it('shows the logs-silent notice for an online device quiet past the threshold', async () => {
+  // Agents ship warn+ by default, so log quiet is normal — no notice from
+  // last_log_at recency alone, whether stale or never set.
+  it('shows no notice for an online device log-quiet past six hours', async () => {
     load({ lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
-  });
-
-  it('formats the logs-silent date without seconds, like the stuck-update notice', async () => {
-    const d = new Date(Date.now() - 7 * 60 * 60_000);
-    d.setSeconds(37, 0);
-    load({ lastLogAt: d.toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    const notice = await screen.findByTestId('logs-silent');
-    expect(notice.textContent).not.toMatch(/\d:\d\d:37/);
-    expect(notice.textContent).toMatch(/\d:\d\d/);
-  });
-
-  it('shows the never-shipped variant when the device has no last_log_at but has been enrolled long enough', async () => {
-    load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
-  });
-
-  it('shows no notice for an online device with recent logs', async () => {
-    load({ lastLogAt: new Date(Date.now() - 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('logs-silent')).toBeNull();
   });
 
-  it('shows no notice for an offline device with a stale last_log_at', async () => {
-    load({ status: 'offline', lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
+  it('shows no notice for a long-enrolled device that has never shipped a log', async () => {
+    load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('logs-silent')).toBeNull();
