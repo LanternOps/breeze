@@ -24,6 +24,7 @@ import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
 import { portalNetworkRoutes } from './network';
+import { portalHourBlockRoutes } from './hourBlock';
 
 export const portalRoutes = new Hono();
 
@@ -97,6 +98,15 @@ portalRoutes.use('/documents/*', async (c, next) =>
 portalRoutes.use('/tickets/usage', portalAuthMiddleware);
 portalRoutes.use('/tickets/usage', createPortalFeatureGateStrict('enableSupportUsage'));
 
+// Block hours W04: the "Support hours" card lives inside the Support usage
+// section, so its endpoint requires BOTH fail-closed flags — auth first, then
+// enableSupportUsage, then its own enableHourBlock. A separate prefix on
+// purpose: nesting under `/tickets/*` would inherit the enable_tickets gate
+// that Support usage deliberately opts out of (see the exact-path wrappers above).
+portalRoutes.use('/support-usage/*', portalAuthMiddleware);
+portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableSupportUsage'));
+portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableHourBlock'));
+
 portalRoutes.use('/tickets/*', async (c, next) => {
   if (isTicketsUsagePath(c)) {
     return next();
@@ -130,3 +140,4 @@ portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
+portalRoutes.route('/', portalHourBlockRoutes);
