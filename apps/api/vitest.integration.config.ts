@@ -245,6 +245,9 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // One-time legacy token/child cutover and replay proof.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // v0.122.0 EU deploy: the quarantine execution-authority migration on a
+      // table with security links (deferred parity trigger + ALTER TABLE).
+      'src/db/securityQuarantineExecutionAuthorityMigration.integration.test.ts',
       // Hardware & RAID monitoring (W03): disposable-database replay proof for
       // the monitor-kind enum and alert subject-identity migrations.
       'src/db/hardwareAlertMigrations.integration.test.ts',

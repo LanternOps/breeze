@@ -204,6 +204,8 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // Disposable-database credential cutover proof uses the integration runner.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Disposable-database proof for the quarantine execution-authority migration.
+      'src/db/securityQuarantineExecutionAuthorityMigration.integration.test.ts',
       // Hardware & RAID monitoring (W03): disposable-database replay proof for
       // the monitor-kind enum and alert subject-identity migrations. Belongs to
       // vitest.integration.config.ts (registered in its include list).
