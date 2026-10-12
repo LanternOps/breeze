@@ -25,34 +25,71 @@ scope, how we disclose, response timelines). This file adds what an automated au
 | `packages/extension-*`, `ee/workspace` | Extension SDK and the first-party `workspace` extension compiled into the API | Runs in the API process when enabled |
 | `apps/mobile`, `apps/docs`, `load-tests`, `e2e-tests`, `scripts/` | Mobile app, documentation site, tooling | Low priority / out of scope |
 
-## Where untrusted input enters
+## Who the attackers are
 
-1. **Unauthenticated HTTP/WebSocket to the API**: login, SSO/OIDC callbacks, signup, password
-   reset, agent enrollment, public webhooks (billing, email, integrations), the portal's
-   anonymous surfaces. Treat every byte as attacker-controlled.
-2. **Authenticated technician/customer traffic**: a legitimate user of one partner or organization
-   is an attacker against every other partner/organization, and a low-role user is an attacker
-   against higher roles. Cross-tenant reads or writes are the most important class of bug.
-3. **The agent connection**: an enrolled agent is semi-trusted. A compromised endpoint holds that
-   agent's credentials; it must not be able to read or affect other devices, other organizations,
-   or the server, and must not be able to impersonate another device.
-4. **Device-reported data**: inventory, logs, script output, file listings, process lists,
-   metrics, event logs. All of it is attacker-controlled (a hostile endpoint) and flows into the
-   database, the UI, AI tooling, alerting, and reports. Stored XSS, injection into queries or
-   shell commands, and resource exhaustion from oversized or malformed payloads are in scope.
-5. **Third-party integrations**: Microsoft 365/Graph, PSA/ticketing, billing, email, SSO
-   providers, EDR vendors. Data from them is untrusted; secrets for them must not leak.
-6. **AI features**: chat and automation backed by an LLM with tool access. Prompt injection
-   through device-reported data or ticket text that causes the model to invoke a privileged tool
-   (run a script, change a monitor, read another tenant) is in scope and rated as the action it
-   enables.
-7. **Server-to-agent commands**: scripts, remote shell, file transfer, software installation,
-   remote desktop (WebRTC), backup/restore, patching. On the agent side, the server is trusted,
-   but anything that lets a *local* unprivileged user on the endpoint reach the agent's
-   privileges (IPC, named pipes/sockets, file permissions, temp files, update/install paths,
-   helper process boundaries) is in scope.
-8. **Self-update and software distribution**: agent updates, installer packages, release
-   artifacts. Supply-chain and verification bypasses are in scope.
+Grade every finding by the weakest position from which it works:
+
+1. **Anonymous network caller**: no credential. Login, SSO/OIDC callbacks, signup, password
+   reset, agent enrollment, public webhooks (billing, email, integrations), public pay/quote/
+   short links, and any route that acts on a tenant from a token in the URL.
+2. **Capability-link holder**: someone holding one emailed or shared link (invoice pay link,
+   verification link, portal invite). They must reach exactly the object the link names.
+3. **Customer-side user**: an organization admin, a site-restricted or device-group-scoped
+   technician, or a contact-scoped portal user. They must not reach another organization, nor
+   anything above their own ceiling inside their tenant.
+4. **Partner-side user or key**: an MSP technician, a partner API key, or a service-principal
+   key. A partner sees many organizations; a *stolen* partner credential is the most damaging
+   single asset in the system, so controls that bound what one credential can do fleet-wide
+   (step-up authentication, second-person approval, reach reduction taking effect promptly)
+   are in scope.
+5. **Third-party OAuth or MCP client**: an integration or AI client granted a scope. It must
+   not exceed the scope the granting user could give, nor outlive that user's access.
+6. **Compromised enrolled agent**: a hostile endpoint holding valid agent credentials. It must
+   not read or affect other devices, other tenants, or the server; must not bind itself to
+   another organization's device record; and must not write outside its own storage area.
+7. **Local unprivileged endpoint user**: a non-admin user on a managed machine. Anything that
+   lets them reach the agent's root/SYSTEM privileges (IPC, local sockets or named pipes, file
+   and directory permissions, installer/update paths, the per-user helper, the remote-desktop
+   path) is in scope. The inverse also matters: a local admin disabling or redirecting the agent
+   while the server still believes it is healthy.
+8. **Integration counterparty or mail sender**: a third-party service (Microsoft 365, PSA,
+   billing, EDR, SSO provider) or an inbound email. Their data is untrusted and their credentials
+   must not be redirected.
+9. **Lower-trust data reaching the AI features**: device-reported text (hostnames, inventory,
+   event logs, script output), ticket and mail bodies, Office documents. Prompt injection that
+   causes the model to invoke a privileged tool (run a script, open a session, change a monitor,
+   read another tenant) is rated as the action it enables.
+10. **Release and distribution identities** (supply chain): a repository writer or automation
+    token must not be able to ship or re-sign a malicious or downgraded agent update, and an
+    agent must not accept an update, server, or command it cannot authenticate.
+
+## Attacker outcomes we care about most
+
+These are the goals a finding should be mapped to. Any single finding that achieves one of them
+end to end is Critical.
+
+- Money moves (a charge, a payment cap or payee change) without the step-up the design requires.
+- One stolen MSP account or key runs commands on every device it can see.
+- A malicious or downgraded agent update reaches the fleet, or an agent trusts a server it
+  should not.
+- A compromised enrolled agent reaches another device or another tenant.
+- A local unprivileged endpoint user becomes SYSTEM or root through the agent, helper, or a
+  backup restore.
+- A customer-side user reads or writes another tenant's data, or escapes their site/device-group/
+  role ceiling inside their own tenant.
+- A third-party OAuth/MCP client reaches a device action beyond its grant.
+- Untrusted data steers the AI agent into a privileged tool.
+- A remote-desktop or remote-shell session starts, or is joined, without the consent or the
+  human approver the design requires, or watches the end user without the on-screen indicator.
+- Backup tamper leads to a privileged restore, or recovery is destroyed or blocked ahead of an
+  attack (hold release, snapshot delete, destination rebind, retention shortening).
+- A server-side fetch reaches internal hosts, cloud metadata, or an attacker's listener (SSRF),
+  or a stored credential is sent to an attacker-chosen destination.
+- An anonymous caller causes a tenant action or cost, or exhausts a limiter or audit sink.
+- Portal, ticket, or inbound-mail content leads to staff phishing or ticket takeover.
+- A privileged action is approved without the second person or second factor the design requires.
+- A tenant lifecycle event (device/site/org transfer, org merge, partner suspension) leaves a
+  pre-event credential, cached authorization, or link able to reach data that moved.
 
 ## How to exercise it
 
@@ -71,28 +108,37 @@ scope, how we disclose, response timelines). This file adds what an automated au
 
 ## How we rate severity
 
-- **Critical**: unauthenticated remote code execution on the API or the agent; any cross-tenant
-  read or write (one partner or organization reaching another's data, devices, or actions);
-  authentication or authorization bypass that yields admin or technician capability; agent
-  impersonation or enrollment forgery; anything that lets the server or a web user execute
-  code on a device they are not authorized to manage; agent-update / installer verification
-  bypass; local privilege escalation on an endpoint via the agent or helper.
-- **High**: post-authentication vulnerabilities confined to the attacker's own tenant that cross
-  a role boundary or reach another user's session; stored XSS in the technician dashboard;
-  SQL or command injection reachable by an authenticated user or by a hostile agent; secret or
-  credential disclosure (integration tokens, API keys, agent keys); SSRF from the API into
+Severity is the *self-hoster's* exposure. Hosted tenants are patched on deploy; a self-hosted
+install stays vulnerable until its operator upgrades, so grade for them.
+
+- **Critical**: exploitable without insider access and yields unauthenticated remote code
+  execution (API or agent), cross-tenant data access or action, authentication bypass, or
+  fleet-wide agent compromise (including update/manifest verification bypass). Any end-to-end
+  realization of an outcome in the list above.
+- **High**: requires a credential, an adjacent network position, or insider access, but yields a
+  tenant-boundary break, privilege escalation (role ceiling escape, local user to root/SYSTEM),
+  or code execution on the agent or server. Also: stored XSS in the technician dashboard; SQL or
+  command injection reachable by an authenticated user or a hostile agent; disclosure of
+  secrets (integration tokens, API keys, agent or signing keys, recovery keys); SSRF into
   internal networks; memory-safety bugs in the agent reachable from the network or from
-  device-reported data.
-- **Medium**: denial of service against the API or an agent from authenticated or agent-level
-  input; CSRF on state-changing endpoints; information disclosure without secrets; missing rate
-  limits on sensitive flows; logic bugs that let a user exceed their tenant's quota or plan.
-- **Low**: anything requiring an already-compromised administrator; hardening gaps with no
-  demonstrated impact.
+  device-reported data; a step-up or second-person control that can be skipped on a money or
+  destructive-restore action.
+- **Medium**: defense-in-depth gaps, audit or containment weaknesses, information disclosure
+  without direct escalation, CSRF on state-changing endpoints, denial of service of the API or an
+  agent from authenticated or agent-level input, missing rate limits on sensitive flows, quota or
+  plan bypass within the attacker's own tenant.
+- **Low**: best-practice hardening with no realistic attack, or anything requiring an already-
+  compromised administrator or hosting operator.
+
+Reachability moves severity more than defect class: a missing row-level-security policy on a
+table that no route can reach is Low; the same gap behind an authenticated route is Critical.
+When severity depends on deployment or configuration, say "<base>, <raised> if <fact>" rather
+than picking one silently.
 
 Prefer a reproducer that shows the boundary crossing (a request from tenant A that returns tenant
-B's row; an agent-scoped token that reads another device) over a theoretical argument. For
-agent findings, a Go test or a small program that demonstrates the bug on Linux is ideal; we can
-confirm Windows/macOS behaviour ourselves.
+B's row; an agent-scoped token that reads another device) over a theoretical argument. For agent
+findings, a Go test or a small program that demonstrates the bug on Linux is ideal; we can confirm
+Windows/macOS behaviour ourselves.
 
 ## Reports and patches
 
