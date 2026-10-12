@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Yalnızca {{owner}} anahtar verebilir veya döndürebilir",
     "ownerOnlyScopeTooltip": "Yalnızca {{owner}} kapsam ekleyebilir",
     "ownerOnlyEditNotice": "Bu sorumluyu yeniden adlandırabilir, daraltabilir veya süresini kısaltabilirsiniz. Yalnızca {{owner}} kapsam ekleyebilir, süresini uzatabilir veya kaynak IP'lerini genişletebilir.",
-    "ownerOnlyWidening": "Yalnızca {{owner}} süreyi uzatabilir veya kaynak IP'lerini genişletebilir. Kaydetmek için bu değişiklikleri geri alın."
+    "ownerOnlyWidening": "Yalnızca {{owner}} süreyi uzatabilir veya kaynak IP'lerini genişletebilir. Kaydetmek için bu değişiklikleri geri alın.",
+    "presetsHint": "Bir ön ayarla başlayın, ardından aşağıdaki kapsamları düzenleyin. Ön ayarlar yalnızca onay kutularını doldurur.",
+    "presets": {
+      "docs-sync": {
+        "label": "Salt okunur dokümantasyon / varlık eşitleme",
+        "description": "Kuruluşlara, sitelere, cihazlara, envantere, yapılandırmaya, betiklere, yedekleme yapılandırmasına ve özel alanlara okuma erişimi."
+      },
+      "provisioning": {
+        "label": "Kiracı sağlama",
+        "description": "Okuma kümesine ek olarak kuruluşları, siteleri ve kayıt anahtarlarını oluşturma ve güncelleme. Kayıt anahtarları için son kullanma tarihi ve kaynak IP'ler gerekir."
+      },
+      "alert-feed": {
+        "label": "Uyarı akışı",
+        "description": "Kuruluşları ve uyarıları okuma."
+      },
+      "ticketing": {
+        "label": "Destek talebi entegrasyonu",
+        "description": "Kuruluşları okuma ile destek taleplerini okuma ve yazma."
+      },
+      "ai-mcp": {
+        "label": "AI / MCP istemcisi",
+        "description": "ai:read ile MCP erişimi. ai:write veya ai:execute kapsamlarını yalnızca istemcinin ihtiyacı varsa ekleyin."
+      },
+      "custom": {
+        "label": "Özel",
+        "description": "Seçimi temizleyin ve her kapsamı kendiniz seçin."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Sorumlunun erişebildiği tüm kuruluşların adları ve ayarları.",
+      "sites_read": "Siteler (konumlar) ve ayrıntıları.",
+      "devices_read": "Cihaz kayıtları: ana bilgisayar adı, işletim sistemi, donanım ve grup üyeliği.",
+      "inventory_read": "Cihazlardan toplanan donanım ve yazılım envanteri.",
+      "configuration_read": "Yapılandırma ilkeleri ve atamaları.",
+      "scripts_read": "Betik içerikleri dahil betik kitaplığı girdileri.",
+      "backup-configuration_read": "Yedekleme yapılandırması ve zamanlamaları (yedek verileri değil).",
+      "custom-fields_read": "Özel alan tanımları ve cihazlarda ayarlanan değerler.",
+      "alerts_read": "Sorumlunun erişebildiği tüm kuruluşların uyarı başlıkları ve iletileri.",
+      "tickets_read": "Sorumlunun erişebildiği tüm kuruluşlardaki, müşteriler tarafından yazılan destek talebi konuları, açıklamaları ve yorumları.",
+      "device-status_read": "Canlı heartbeat durumu: çevrimiçi/çevrimdışı, son görülme zamanı ve aracı sürümü. devices:read içinde yer almaz.",
+      "organizations_write": "Kuruluş oluşturma ve güncelleme. Silme yapılamaz.",
+      "sites_write": "Site oluşturma ve güncelleme. Silme yapılamaz.",
+      "enrollment-keys_write": "Cihaz kayıt anahtarları oluşturma. Son kullanma tarihi ve en az bir kaynak IP veya CIDR gerekir.",
+      "contracts_write": "Sözleşme ve sözleşme satırı oluşturma ve düzenleme. Etkinleştirme, duraklatma veya iptal yapılamaz.",
+      "tickets_write": "Destek taleplerini oluşturma, güncelleme, atama, durumunu değiştirme ve yorum ekleme. Talepler silinemez veya taşınamaz.",
+      "ai_read": "MCP uç noktasına bağlanma ve salt okunur araçları kullanma. Diğer tüm ai:* kapsamları için gereklidir.",
+      "ai_write": "Verileri değiştiren MCP araçları.",
+      "ai_execute": "Cihazlarda eylem çalıştıran MCP araçları.",
+      "ai_execute_admin": "Yönetim eylemleri çalıştıran MCP araçları. Yalnızca tamamen güvendiğiniz bir istemciye verin."
+    }
   },
   "language": {
     "title": "Dil",

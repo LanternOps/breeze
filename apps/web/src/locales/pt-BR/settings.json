@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Somente {{owner}} pode emitir ou rotacionar chaves",
     "ownerOnlyScopeTooltip": "Somente {{owner}} pode adicionar escopos",
     "ownerOnlyEditNotice": "Você pode renomear, restringir ou encurtar este principal. Somente {{owner}} pode adicionar escopos, estender a expiração ou ampliar os IPs de origem.",
-    "ownerOnlyWidening": "Somente {{owner}} pode estender a expiração ou ampliar os IPs de origem. Desfaça essas alterações para salvar."
+    "ownerOnlyWidening": "Somente {{owner}} pode estender a expiração ou ampliar os IPs de origem. Desfaça essas alterações para salvar.",
+    "presetsHint": "Comece com uma predefinição e depois ajuste os escopos abaixo. As predefinições apenas marcam as caixas de seleção.",
+    "presets": {
+      "docs-sync": {
+        "label": "Sincronização somente leitura de documentação e ativos",
+        "description": "Acesso de leitura a organizações, sites, dispositivos, inventário, configuração, scripts, configuração de backup e campos personalizados."
+      },
+      "provisioning": {
+        "label": "Provisionamento de tenants",
+        "description": "O conjunto de leitura mais a criação e atualização de organizações, sites e chaves de registro. As chaves de registro exigem validade e IPs de origem."
+      },
+      "alert-feed": {
+        "label": "Feed de alertas",
+        "description": "Ler organizações e alertas."
+      },
+      "ticketing": {
+        "label": "Integração de tickets",
+        "description": "Ler organizações e ler e gravar tickets."
+      },
+      "ai-mcp": {
+        "label": "Cliente de IA / MCP",
+        "description": "Acesso ao MCP com ai:read. Adicione ai:write ou ai:execute somente se o cliente precisar deles."
+      },
+      "custom": {
+        "label": "Personalizado",
+        "description": "Limpe a seleção e escolha cada escopo manualmente."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Nomes e configurações das organizações, em todas as organizações que o principal pode acessar.",
+      "sites_read": "Sites (locais) e seus detalhes.",
+      "devices_read": "Registros de dispositivos: nome do host, SO, hardware e associação a grupos.",
+      "inventory_read": "Inventário de hardware e software coletado dos dispositivos.",
+      "configuration_read": "Políticas de configuração e suas atribuições.",
+      "scripts_read": "Entradas da biblioteca de scripts, incluindo o conteúdo dos scripts.",
+      "backup-configuration_read": "Configuração e agendamentos de backup (não os dados do backup).",
+      "custom-fields_read": "Definições de campos personalizados e os valores definidos nos dispositivos.",
+      "alerts_read": "Títulos e mensagens de alertas em todas as organizações que o principal pode acessar.",
+      "tickets_read": "Assuntos, descrições e comentários de tickets, escritos pelos clientes, em todas as organizações que o principal pode acessar.",
+      "device-status_read": "Estado de heartbeat em tempo real: online/offline, último contato e versão do agente. Não incluído em devices:read.",
+      "organizations_write": "Criar e atualizar organizações. Não pode excluir.",
+      "sites_write": "Criar e atualizar sites. Não pode excluir.",
+      "enrollment-keys_write": "Gerar chaves de registro de dispositivos. Exige validade e pelo menos um IP de origem ou CIDR.",
+      "contracts_write": "Criar e editar contratos e linhas de contrato. Não pode ativar, pausar nem cancelar.",
+      "tickets_write": "Criar, atualizar, atribuir, alterar o status e comentar tickets. Não pode excluir nem mover tickets.",
+      "ai_read": "Conectar-se ao endpoint MCP e usar ferramentas somente leitura. Exigido por todos os outros escopos ai:*.",
+      "ai_write": "Ferramentas MCP que alteram dados.",
+      "ai_execute": "Ferramentas MCP que executam ações nos dispositivos.",
+      "ai_execute_admin": "Ferramentas MCP que executam ações administrativas. Conceda somente a um cliente em quem você confie totalmente."
+    }
   },
   "language": {
     "title": "Idioma",

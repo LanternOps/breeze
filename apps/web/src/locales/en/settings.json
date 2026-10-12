@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Only {{owner}} can issue or rotate keys",
     "ownerOnlyScopeTooltip": "Only {{owner}} can add scopes",
     "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs.",
-    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save."
+    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save.",
+    "presetsHint": "Start from a preset, then adjust the scopes below. Presets only fill in the checkboxes.",
+    "presets": {
+      "docs-sync": {
+        "label": "Read-only documentation / asset sync",
+        "description": "Read access to organizations, sites, devices, inventory, configuration, scripts, backup configuration and custom fields."
+      },
+      "provisioning": {
+        "label": "Tenant provisioning",
+        "description": "The read set plus creating and updating organizations, sites and enrollment keys. Enrollment keys require an expiry and source IPs."
+      },
+      "alert-feed": {
+        "label": "Alert feed",
+        "description": "Read organizations and alerts."
+      },
+      "ticketing": {
+        "label": "Ticketing integration",
+        "description": "Read organizations, and read and write tickets."
+      },
+      "ai-mcp": {
+        "label": "AI / MCP client",
+        "description": "MCP access with ai:read. Add ai:write or ai:execute only if the client needs them."
+      },
+      "custom": {
+        "label": "Custom",
+        "description": "Clear the selection and choose each scope yourself."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Organization names and settings across every org the principal can reach.",
+      "sites_read": "Sites (locations) and their details.",
+      "devices_read": "Device records: hostname, OS, hardware and group membership.",
+      "inventory_read": "Hardware and software inventory collected from devices.",
+      "configuration_read": "Configuration policies and their assignments.",
+      "scripts_read": "Script library entries, including script contents.",
+      "backup-configuration_read": "Backup configuration and schedules (not backup data).",
+      "custom-fields_read": "Custom field definitions and the values set on devices.",
+      "alerts_read": "Alert titles and messages across every org the principal can reach.",
+      "tickets_read": "Ticket subjects, descriptions and comments, which are customer-authored, across every org the principal can reach.",
+      "device-status_read": "Live heartbeat state: online/offline, last-seen time and agent version. Not implied by devices:read.",
+      "organizations_write": "Create and update organizations. Cannot delete.",
+      "sites_write": "Create and update sites. Cannot delete.",
+      "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
+      "contracts_write": "Create and edit contracts and contract lines. Cannot activate, pause or cancel.",
+      "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
+      "ai_write": "MCP tools that change data.",
+      "ai_execute": "MCP tools that run actions on devices.",
+      "ai_execute_admin": "MCP tools that run administrative actions. Grant only to a client you fully trust."
+    }
   },
   "language": {
     "title": "Language",

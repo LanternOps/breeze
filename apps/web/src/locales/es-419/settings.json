@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Solo {{owner}} puede emitir o rotar claves",
     "ownerOnlyScopeTooltip": "Solo {{owner}} puede agregar alcances",
     "ownerOnlyEditNotice": "Puedes cambiar el nombre, reducir o acortar este principal. Solo {{owner}} puede agregar alcances, extender su vencimiento o ampliar sus IP de origen.",
-    "ownerOnlyWidening": "Solo {{owner}} puede extender el vencimiento o ampliar las IP de origen. Deshaz esos cambios para guardar."
+    "ownerOnlyWidening": "Solo {{owner}} puede extender el vencimiento o ampliar las IP de origen. Deshaz esos cambios para guardar.",
+    "presetsHint": "Comience con un ajuste preestablecido y luego modifique los permisos de abajo. Los ajustes preestablecidos solo marcan las casillas.",
+    "presets": {
+      "docs-sync": {
+        "label": "Sincronización de documentación y activos de solo lectura",
+        "description": "Acceso de lectura a organizaciones, sitios, dispositivos, inventario, configuración, scripts, configuración de copias de seguridad y campos personalizados."
+      },
+      "provisioning": {
+        "label": "Aprovisionamiento de inquilinos",
+        "description": "El conjunto de lectura más la creación y actualización de organizaciones, sitios y claves de inscripción. Las claves de inscripción requieren una fecha de vencimiento e IP de origen."
+      },
+      "alert-feed": {
+        "label": "Feed de alertas",
+        "description": "Leer organizaciones y alertas."
+      },
+      "ticketing": {
+        "label": "Integración de tickets",
+        "description": "Leer organizaciones, y leer y escribir tickets."
+      },
+      "ai-mcp": {
+        "label": "Cliente de IA / MCP",
+        "description": "Acceso a MCP con ai:read. Agregue ai:write o ai:execute solo si el cliente los necesita."
+      },
+      "custom": {
+        "label": "Personalizado",
+        "description": "Borre la selección y elija cada permiso usted mismo."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Nombres y configuración de las organizaciones, en todas las organizaciones a las que puede acceder la entidad.",
+      "sites_read": "Sitios (ubicaciones) y sus detalles.",
+      "devices_read": "Registros de dispositivos: nombre de host, SO, hardware y pertenencia a grupos.",
+      "inventory_read": "Inventario de hardware y software recopilado de los dispositivos.",
+      "configuration_read": "Políticas de configuración y sus asignaciones.",
+      "scripts_read": "Entradas de la biblioteca de scripts, incluido el contenido de los scripts.",
+      "backup-configuration_read": "Configuración y programaciones de copias de seguridad (no los datos de las copias).",
+      "custom-fields_read": "Definiciones de campos personalizados y los valores establecidos en los dispositivos.",
+      "alerts_read": "Títulos y mensajes de alertas en todas las organizaciones a las que puede acceder la entidad.",
+      "tickets_read": "Asuntos, descripciones y comentarios de tickets, redactados por los clientes, en todas las organizaciones a las que puede acceder la entidad.",
+      "device-status_read": "Estado de latido en vivo: en línea/sin conexión, hora de la última conexión y versión del agente. No está incluido en devices:read.",
+      "organizations_write": "Crear y actualizar organizaciones. No puede eliminar.",
+      "sites_write": "Crear y actualizar sitios. No puede eliminar.",
+      "enrollment-keys_write": "Generar claves de inscripción de dispositivos. Requiere una fecha de vencimiento y al menos una IP de origen o CIDR.",
+      "contracts_write": "Crear y editar contratos y líneas de contrato. No puede activar, pausar ni cancelar.",
+      "tickets_write": "Crear, actualizar, asignar, cambiar el estado y comentar tickets. No puede eliminar ni mover tickets.",
+      "ai_read": "Conectarse al endpoint de MCP y usar herramientas de solo lectura. Lo requieren todos los demás permisos ai:*.",
+      "ai_write": "Herramientas de MCP que modifican datos.",
+      "ai_execute": "Herramientas de MCP que ejecutan acciones en los dispositivos.",
+      "ai_execute_admin": "Herramientas de MCP que ejecutan acciones administrativas. Otorgue solo a un cliente en el que confíe plenamente."
+    }
   },
   "language": {
     "title": "Idioma",

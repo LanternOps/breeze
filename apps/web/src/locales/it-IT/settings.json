@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Solo {{owner}} può emettere o ruotare le chiavi",
     "ownerOnlyScopeTooltip": "Solo {{owner}} può aggiungere ambiti",
     "ownerOnlyEditNotice": "Puoi rinominare, restringere o accorciare questo principal. Solo {{owner}} può aggiungere ambiti, estenderne la scadenza o allentare gli IP di origine.",
-    "ownerOnlyWidening": "Solo {{owner}} può estendere la scadenza o allentare gli IP di origine. Annulla queste modifiche per salvare."
+    "ownerOnlyWidening": "Solo {{owner}} può estendere la scadenza o allentare gli IP di origine. Annulla queste modifiche per salvare.",
+    "presetsHint": "Parti da un preset, poi modifica gli ambiti qui sotto. I preset compilano solo le caselle di controllo.",
+    "presets": {
+      "docs-sync": {
+        "label": "Sincronizzazione di documentazione e asset in sola lettura",
+        "description": "Accesso in lettura a organizzazioni, siti, dispositivi, inventario, configurazione, script, configurazione dei backup e campi personalizzati."
+      },
+      "provisioning": {
+        "label": "Provisioning dei tenant",
+        "description": "L'insieme di lettura più la creazione e l'aggiornamento di organizzazioni, siti e chiavi di registrazione. Le chiavi di registrazione richiedono una scadenza e IP di origine."
+      },
+      "alert-feed": {
+        "label": "Feed degli avvisi",
+        "description": "Lettura di organizzazioni e avvisi."
+      },
+      "ticketing": {
+        "label": "Integrazione ticketing",
+        "description": "Lettura delle organizzazioni, lettura e scrittura dei ticket."
+      },
+      "ai-mcp": {
+        "label": "Client AI / MCP",
+        "description": "Accesso MCP con ai:read. Aggiungi ai:write o ai:execute solo se il client ne ha bisogno."
+      },
+      "custom": {
+        "label": "Personalizzato",
+        "description": "Cancella la selezione e scegli ogni ambito manualmente."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Nomi e impostazioni delle organizzazioni, per tutte le organizzazioni raggiungibili dal principal.",
+      "sites_read": "Siti (sedi) e relativi dettagli.",
+      "devices_read": "Record dei dispositivi: nome host, sistema operativo, hardware e appartenenza ai gruppi.",
+      "inventory_read": "Inventario hardware e software raccolto dai dispositivi.",
+      "configuration_read": "Policy di configurazione e relative assegnazioni.",
+      "scripts_read": "Voci della libreria di script, compreso il contenuto degli script.",
+      "backup-configuration_read": "Configurazione e pianificazioni dei backup (non i dati di backup).",
+      "custom-fields_read": "Definizioni dei campi personalizzati e valori impostati sui dispositivi.",
+      "alerts_read": "Titoli e messaggi degli avvisi, per tutte le organizzazioni raggiungibili dal principal.",
+      "tickets_read": "Oggetti, descrizioni e commenti dei ticket, scritti dai clienti, per tutte le organizzazioni raggiungibili dal principal.",
+      "device-status_read": "Stato heartbeat in tempo reale: online/offline, ultimo accesso e versione dell'agente. Non incluso in devices:read.",
+      "organizations_write": "Creazione e aggiornamento di organizzazioni. Impossibile eliminare.",
+      "sites_write": "Creazione e aggiornamento di siti. Impossibile eliminare.",
+      "enrollment-keys_write": "Generazione di chiavi di registrazione dei dispositivi. Richiede una scadenza e almeno un IP di origine o CIDR.",
+      "contracts_write": "Creazione e modifica di contratti e righe di contratto. Impossibile attivare, sospendere o annullare.",
+      "tickets_write": "Creazione, aggiornamento, assegnazione, cambio di stato e commento dei ticket. Impossibile eliminare o spostare i ticket.",
+      "ai_read": "Connessione all'endpoint MCP e uso di strumenti in sola lettura. Richiesto da ogni altro ambito ai:*.",
+      "ai_write": "Strumenti MCP che modificano i dati.",
+      "ai_execute": "Strumenti MCP che eseguono azioni sui dispositivi.",
+      "ai_execute_admin": "Strumenti MCP che eseguono azioni amministrative. Concedi solo a un client di cui ti fidi completamente."
+    }
   },
   "language": {
     "title": "Lingua",

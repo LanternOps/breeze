@@ -129,7 +129,56 @@
     "ownerOnlyTooltip": "Nur {{owner}} kann Schlüssel ausstellen oder rotieren",
     "ownerOnlyScopeTooltip": "Nur {{owner}} kann Bereiche hinzufügen",
     "ownerOnlyEditNotice": "Sie können diesen Principal umbenennen, einschränken oder seine Laufzeit verkürzen. Nur {{owner}} kann Bereiche hinzufügen, das Ablaufdatum verlängern oder die Quell-IPs lockern.",
-    "ownerOnlyWidening": "Nur {{owner}} kann das Ablaufdatum verlängern oder die Quell-IPs lockern. Machen Sie diese Änderungen rückgängig, um zu speichern."
+    "ownerOnlyWidening": "Nur {{owner}} kann das Ablaufdatum verlängern oder die Quell-IPs lockern. Machen Sie diese Änderungen rückgängig, um zu speichern.",
+    "presetsHint": "Beginnen Sie mit einer Vorlage und passen Sie dann die Bereiche unten an. Vorlagen füllen nur die Kontrollkästchen aus.",
+    "presets": {
+      "docs-sync": {
+        "label": "Schreibgeschützte Dokumentations-/Asset-Synchronisierung",
+        "description": "Lesezugriff auf Organisationen, Standorte, Geräte, Inventar, Konfiguration, Skripte, Backup-Konfiguration und benutzerdefinierte Felder."
+      },
+      "provisioning": {
+        "label": "Mandantenbereitstellung",
+        "description": "Die Lesebereiche sowie das Erstellen und Aktualisieren von Organisationen, Standorten und Registrierungsschlüsseln. Registrierungsschlüssel erfordern ein Ablaufdatum und Quell-IPs."
+      },
+      "alert-feed": {
+        "label": "Alarm-Feed",
+        "description": "Organisationen und Alarme lesen."
+      },
+      "ticketing": {
+        "label": "Ticketing-Integration",
+        "description": "Organisationen lesen sowie Tickets lesen und schreiben."
+      },
+      "ai-mcp": {
+        "label": "KI-/MCP-Client",
+        "description": "MCP-Zugriff mit ai:read. Fügen Sie ai:write oder ai:execute nur hinzu, wenn der Client sie benötigt."
+      },
+      "custom": {
+        "label": "Benutzerdefiniert",
+        "description": "Auswahl aufheben und jeden Bereich selbst wählen."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Namen und Einstellungen von Organisationen für alle Organisationen, die der Principal erreichen kann.",
+      "sites_read": "Standorte und ihre Details.",
+      "devices_read": "Geräteeinträge: Hostname, Betriebssystem, Hardware und Gruppenzugehörigkeit.",
+      "inventory_read": "Von Geräten erfasstes Hardware- und Software-Inventar.",
+      "configuration_read": "Konfigurationsrichtlinien und ihre Zuweisungen.",
+      "scripts_read": "Einträge der Skriptbibliothek, einschließlich der Skriptinhalte.",
+      "backup-configuration_read": "Backup-Konfiguration und Zeitpläne (keine Backup-Daten).",
+      "custom-fields_read": "Definitionen benutzerdefinierter Felder und die auf Geräten gesetzten Werte.",
+      "alerts_read": "Alarmtitel und -meldungen für alle Organisationen, die der Principal erreichen kann.",
+      "tickets_read": "Ticketbetreffs, -beschreibungen und -kommentare, die von Kunden verfasst werden, für alle Organisationen, die der Principal erreichen kann.",
+      "device-status_read": "Live-Heartbeat-Status: online/offline, Zeitpunkt der letzten Sichtung und Agent-Version. Nicht in devices:read enthalten.",
+      "organizations_write": "Organisationen erstellen und aktualisieren. Löschen nicht möglich.",
+      "sites_write": "Standorte erstellen und aktualisieren. Löschen nicht möglich.",
+      "enrollment-keys_write": "Geräte-Registrierungsschlüssel erstellen. Erfordert ein Ablaufdatum und mindestens eine Quell-IP oder einen CIDR-Bereich.",
+      "contracts_write": "Verträge und Vertragspositionen erstellen und bearbeiten. Aktivieren, Pausieren oder Kündigen nicht möglich.",
+      "tickets_write": "Tickets erstellen, aktualisieren, zuweisen, deren Status ändern und kommentieren. Löschen oder Verschieben von Tickets nicht möglich.",
+      "ai_read": "Verbindung zum MCP-Endpunkt herstellen und schreibgeschützte Tools verwenden. Für jeden anderen ai:*-Bereich erforderlich.",
+      "ai_write": "MCP-Tools, die Daten ändern.",
+      "ai_execute": "MCP-Tools, die Aktionen auf Geräten ausführen.",
+      "ai_execute_admin": "MCP-Tools, die administrative Aktionen ausführen. Nur an einen Client vergeben, dem Sie voll vertrauen."
+    }
   },
   "language": {
     "title": "Sprache",

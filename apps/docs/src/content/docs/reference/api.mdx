@@ -201,6 +201,23 @@ is in the repository's
 Open-source projects that already use these routes are listed in the
 [Community Ecosystem](/features/community-ecosystem/).
 
+### Scope presets
+
+When you create a service principal (**Settings → Service principals**), the
+dialog offers task-named presets. A preset only fills in the scope checkboxes;
+you can still add or remove scopes before saving, and the principal does not
+record which preset you started from. Each scope is listed with a one-line
+description of what it exposes.
+
+| Preset | Scopes selected |
+|---|---|
+| Read-only documentation / asset sync (the default) | `organizations:read`, `sites:read`, `devices:read`, `inventory:read`, `configuration:read`, `scripts:read`, `backup-configuration:read`, `custom-fields:read` |
+| Tenant provisioning | The read-only set above, plus `organizations:write`, `sites:write`, `enrollment-keys:write`. `enrollment-keys:write` requires an expiry and at least one source IP or CIDR. |
+| Alert feed | `organizations:read`, `alerts:read` |
+| Ticketing integration | `organizations:read`, `tickets:read`, `tickets:write` |
+| AI / MCP client | `ai:read`. Add `ai:write` or `ai:execute` only if the client needs them; `ai:execute_admin` is never pre-selected. |
+| Custom | None. Choose each scope yourself. |
+
 | Method | Path | Scope | Description |
 |---|---|---|---|
 | `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations |
