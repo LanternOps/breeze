@@ -23,7 +23,7 @@
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -54,8 +54,16 @@ type Role = 'workstation' | 'server';
 type Os = 'windows' | 'linux' | 'macos';
 
 /** One device per transaction — see updateRingPartnerDeviceCount's seedDevice note. */
-async function seedDevice(orgId: string, siteId: string, deviceRole: Role, osType: Os = 'windows'): Promise<string> {
+async function seedDevice(
+  orgId: string,
+  siteId: string,
+  deviceRole: Role,
+  osType: Os = 'windows',
+  opts: { parked?: boolean } = {},
+): Promise<string> {
   return withSystemDbAccessContext(async () => {
+    // A device lands in a holding (unassigned_pool) org only through enrollment admission.
+    if (opts.parked) await db.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
     const [d] = await db
       .insert(devices)
       .values({
@@ -343,5 +351,70 @@ describe('update-ring device count / list honour the assignment role filter (#84
     expect(counts.get(ringId)).toBe(2);
     const ids = await withSystemDbAccessContext(() => resolveRingDeviceIds(ringId));
     expect([...ids].sort()).toEqual([wsA, wsB].sort());
+  });
+});
+
+/**
+ * The shared resolver keeps the parked-device exclusion both callers had on
+ * main (parkedFanout.contract.test.ts pins the guard sites). A device parked
+ * in its partner's holding org (`type = 'unassigned_pool'`) is not managed:
+ * a partner-wide fan-out must not schedule or count it, and the update-ring
+ * clamp leaves it out of every subset level. devices_site_org_fk means a
+ * parked device can only sit in a site of the holding org itself, so the
+ * subset case targets that site.
+ */
+describe('parked devices stay out of patch targeting (#8442)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  runDb('a partner-level assignment neither schedules nor counts a device parked in the holding org', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const holding = await createOrganization({ partnerId: partner.id, type: 'unassigned_pool' });
+    const site = await createSite({ orgId: org.id });
+    const holdingSite = await createSite({ orgId: holding.id });
+    const managed = await seedDevice(org.id, site.id, 'workstation');
+    const parked = await seedDevice(holding.id, holdingSite.id, 'workstation', 'windows', { parked: true });
+
+    const { policyId, ringId } = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: null,
+      assignment: { level: 'partner', targetId: partner.id },
+    });
+
+    await scanAndCreateJobs();
+    const jobs = await jobsForPolicy(policyId);
+    expect(jobs.map((j) => j.orgId)).toEqual([org.id]);
+    expect(targetIds(jobs[0]!)).toEqual([managed]);
+    expect(jobs.flatMap(targetIds)).not.toContain(parked);
+
+    const ids = await withSystemDbAccessContext(() => resolveRingDeviceIds(ringId));
+    expect(ids).toEqual([managed]);
+    const counts = await withSystemDbAccessContext(() => resolveRingDeviceCounts([ringId]));
+    expect(counts.get(ringId)).toBe(1);
+  });
+
+  runDb('the update-ring partner clamp leaves a parked device out of a site-level assignment on the holding site', async () => {
+    const partner = await createPartner();
+    const holding = await createOrganization({ partnerId: partner.id, type: 'unassigned_pool' });
+    const holdingSite = await createSite({ orgId: holding.id });
+    const parked = await seedDevice(holding.id, holdingSite.id, 'workstation', 'windows', { parked: true });
+
+    const { ringId } = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: null,
+      assignment: { level: 'site', targetId: holdingSite.id },
+    });
+
+    const ids = await withSystemDbAccessContext(() => resolveRingDeviceIds(ringId));
+    expect(ids).not.toContain(parked);
+    expect(ids).toEqual([]);
+    const counts = await withSystemDbAccessContext(() => resolveRingDeviceCounts([ringId]));
+    expect(counts.get(ringId) ?? 0).toBe(0);
   });
 });

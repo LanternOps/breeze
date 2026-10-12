@@ -195,6 +195,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/huntressSync.ts': 'partner-scoped integration; devices are matched only inside orgs named by huntress_org_mappings, which only a person sets (PATCH /huntress/mappings, gated on canAccessOrg, never true for the holding org outside system scope)',
   'jobs/offlineDetector.ts': 'status transition only; its event and alert effects are gated in services/offlineEffectsStore.ts',
   'jobs/patchJobExecutor.ts': 'executes patch jobs already created for selected devices; command delivery refuses parked devices',
+  'jobs/patchSchedulerWorker.ts': 'selects no targets itself: assignment devices come from services/configPolicyAssignmentDevices.ts (a FANOUT module, #8442); its only devices read loads scheduling context for those resolved ids',
   'jobs/parkedDeviceExpiry.ts': 'lifecycle removal: expires parked devices past the parking window; must reach them',
   'jobs/parkedDevicePurge.ts': 'lifecycle removal: hard-purges expired parked devices; must reach them',
   'jobs/quickSupportReaper.ts': 'Quick Support session lifecycle',
@@ -446,7 +447,6 @@ describe('contract: background selectors leave parked devices out', () => {
     expect(gone).toEqual([]);
     // Explicit extras are selectors the discovery patterns do not catch.
     const extras = new Set([
-      'routes/updateRingsHelpers.ts',
       'services/configurationPolicy.ts',
       'services/offlineEffectsStore.ts',
       'services/warrantyAlertEvaluator.ts',
