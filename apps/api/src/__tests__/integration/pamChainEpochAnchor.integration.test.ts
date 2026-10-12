@@ -29,7 +29,7 @@ import { seedMovedDeviceWithHistory } from './ownershipEpochFixture';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
-const MIGRATION = '2026-12-23-120000-pam-chain-epoch-anchor.sql';
+const MIGRATION = '2026-12-23-150000-pam-chain-epoch-anchor.sql';
 const DATABASE_URL = process.env.DATABASE_URL
   ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 const HASH = 'a'.repeat(64);

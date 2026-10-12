@@ -97,7 +97,7 @@ export const elevationRequests = pgTable(
     // lifts the PAM move guard no actuated request can sit in an earlier
     // epoch, and an un-actuated one follows its device). The FK and the epoch guard
     // trigger (breeze_pam_chain_epoch_guard) are declared in
-    // migrations/2026-12-23-120000-pam-chain-epoch-anchor.sql.
+    // migrations/2026-12-23-150000-pam-chain-epoch-anchor.sql.
     deviceId: uuid('device_id').notNull(),
     // Set to the device's current ownership epoch on insert (the guard rejects
     // any other value); re-anchored with the device only while no actuation
