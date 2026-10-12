@@ -91,6 +91,11 @@ x-api-env: &api-env
   PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://${BREEZE_DOMAIN}}
   DASHBOARD_URL: ${DASHBOARD_URL:-https://${BREEZE_DOMAIN}}
   PUBLIC_API_URL: ${PUBLIC_API_URL:-https://${BREEZE_DOMAIN}}
+  # Network Proxy host mode (optional; unset = path mode). See
+  # docs/deploy/network-proxy-tunnel-origin. Never infer from BREEZE_DOMAIN:
+  # the tunnel domain must be a different registrable domain.
+  TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
+  TUNNEL_FRAME_ANCESTOR: ${TUNNEL_FRAME_ANCESTOR:-}
   # Public origin for customer-portal links (e.g. quote accept emails). The
   # portal is served under /portal on the main domain; falls back to PUBLIC_APP_URL.
   PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}
