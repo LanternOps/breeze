@@ -59,6 +59,6 @@ func TestUnavailableInputDoesNotFreezeTheBarrier(t *testing.T) {
 	si.sync()
 
 	if got := lastCall(inner.workerRecorder); got != "mouse_move:7,7:" {
-		t.Fatalf("pointer frozen behind an event dropped while input was unavailable: %v", inner.workerRecorder.snapshot())
+		t.Fatalf("pointer frozen behind an event dropped while input was unavailable: %v", inner.snapshot())
 	}
 }
