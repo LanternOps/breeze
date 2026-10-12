@@ -110,4 +110,28 @@ describe('processPolicySync full reconcile (#8404)', () => {
 
     expect(provider.addBlocklistDomain.mock.calls.map((c) => c[0])).toEqual(['a.example']);
   });
+  it('normalizes the removal filter (case/whitespace) so an in-policy domain is never removed', async () => {
+    const provider = setup('blocklist', ['keep.example']);
+
+    await processPolicySync({
+      type: 'sync-policy',
+      policyId: 'pol-1',
+      operations: { add: [], remove: ['KEEP.Example '] },
+    });
+
+    expect(provider.removeBlocklistDomain).not.toHaveBeenCalled();
+  });
+
+  it('leaves the policy in error (not synced) when a previously-pending domain fails to push', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const provider = setup('blocklist', ['old-pending.example', 'new.example']);
+    provider.addBlocklistDomain.mockRejectedValueOnce(new Error('provider down'));
+
+    await expect(
+      processPolicySync({ type: 'sync-policy', policyId: 'pol-1', operations: { add: ['new.example'], remove: [] } }),
+    ).rejects.toThrow();
+
+    expect(setCalls.some((p) => p.syncStatus === 'error')).toBe(true);
+    expect(setCalls.some((p) => p.syncStatus === 'synced')).toBe(false);
+  });
 });
