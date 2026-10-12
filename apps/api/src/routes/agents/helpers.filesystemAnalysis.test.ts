@@ -430,7 +430,13 @@ describe('filesystem analysis for a device parked in a holding org', () => {
 
 describe('automatic filesystem_analysis triggers honour the remote-tools policy (#8509)', () => {
   const DENIED = { allowed: false, reason: 'Remote tools are disabled by configuration policy' } as const;
-  const device = { id: DEVICE_ID, osType: 'windows', orgId: ORG_ID } as never;
+  // The refusal memo is module-level state: give every test its own device.
+  let seq = 0;
+  let device: never;
+  beforeEach(() => {
+    seq += 1;
+    device = { id: `00000000-0000-4000-8000-0000000001${String(seq).padStart(2, '0')}`, osType: 'windows', orgId: ORG_ID } as never;
+  });
 
   function pendingBaseline() {
     vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
@@ -451,8 +457,17 @@ describe('automatic filesystem_analysis triggers honour the remote-tools policy 
     const out = await maybeQueueThresholdFilesystemAnalysis(device, 99);
     expect(out).toEqual({ queued: false });
     expect(insertValuesMock).not.toHaveBeenCalled();
-    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledWith(DEVICE_ID);
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledWith((device as { id: string }).id);
     expect(recordFilesystemAutoTriggerSkipped).toHaveBeenCalledWith('threshold');
+  });
+
+  it('threshold scan: a refused device is not re-looked-up on the next heartbeat', async () => {
+    const other = device;
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue(DENIED);
+    await maybeQueueThresholdFilesystemAnalysis(other, 99);
+    await maybeQueueThresholdFilesystemAnalysis(other, 99);
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledTimes(1);
+    expect(recordFilesystemAutoTriggerSkipped).toHaveBeenCalledTimes(1);
   });
 
   it('threshold scan: policy on -> queues as before', async () => {

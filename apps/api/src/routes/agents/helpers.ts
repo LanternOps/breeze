@@ -1599,6 +1599,12 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
 
 const FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS = 60 * 60 * 1000;
 const filesystemPolicySkipLoggedAt = new Map<string, number>();
+// A refused threshold scan writes no snapshot/command row, so the DB cooldown
+// never engages for that device. Remember the refusal briefly so a locked-down
+// device at >= threshold does not repeat the cooldown selects and policy lookup
+// on every heartbeat.
+const FILESYSTEM_POLICY_DENY_TTL_MS = 5 * 60 * 1000;
+const filesystemThresholdDeniedUntil = new Map<string, number>();
 
 /**
  * The automatic triggers (disk-threshold scan, auto-resume continuation) must
@@ -1629,6 +1635,9 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
+    return { queued: false };
+  }
+  if ((filesystemThresholdDeniedUntil.get(device.id) ?? 0) > Date.now()) {
     return { queued: false };
   }
   // A device parked in a holding org receives lifecycle removal only.
@@ -1670,10 +1679,13 @@ export async function maybeQueueThresholdFilesystemAnalysis(
     return { queued: false };
   }
 
-  // Last, so the policy lookup runs at most once per cooldown, not per heartbeat.
+  // Last, so an allowed device looks the policy up at most once per cooldown;
+  // a refused one is remembered for FILESYSTEM_POLICY_DENY_TTL_MS.
   if (!(await automaticFilesystemScanAllowed(device.id, 'threshold'))) {
+    filesystemThresholdDeniedUntil.set(device.id, Date.now() + FILESYSTEM_POLICY_DENY_TTL_MS);
     return { queued: false };
   }
+  filesystemThresholdDeniedUntil.delete(device.id);
 
   const path = getFilesystemThresholdScanPath(device.osType);
   const [thresholdCommand] = await db.insert(deviceCommands).values({
