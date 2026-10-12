@@ -205,21 +205,29 @@ $wixVersion = ([string]$wixVersionLine).Trim() -replace '\+.*$', ''
 if ($wixVersion -notmatch '^\d+\.\d+\.\d+') {
     throw "unexpected wix --version output '$wixVersionLine'; cannot pick a matching WixToolset.Util.wixext version"
 }
-$utilExtension = "WixToolset.Util.wixext/$wixVersion"
-$installedExtensionsOutput = @(& wix extension list -g)
-$installedExtensionsExit = $LASTEXITCODE
-if ($installedExtensionsExit -ne 0) {
-    throw "wix extension list -g failed with exit code $installedExtensionsExit"
-}
-$utilExtensionInstalled = $installedExtensionsOutput | Where-Object {
-    ([string]$_).Trim() -eq "WixToolset.Util.wixext $wixVersion"
-}
-if (-not $utilExtensionInstalled) {
-    & wix extension add -g $utilExtension
-    if ($LASTEXITCODE -ne 0) {
-        throw "wix extension add $utilExtension failed with exit code $LASTEXITCODE"
+function Install-WixUtilExtension {
+    param([string]$WixVersion)
+    $utilExtension = "WixToolset.Util.wixext/$WixVersion"
+    # The list only saves a redundant add. WiX v7 exits 2 with no output when
+    # no global extension has been installed yet (a fresh CI runner), so a
+    # failed list means "none installed": fall through to the add, whose own
+    # exit code is the real check.
+    $installedExtensionsOutput = @(& wix extension list -g)
+    $utilExtensionInstalled = $null
+    if ($LASTEXITCODE -eq 0) {
+        $utilExtensionInstalled = $installedExtensionsOutput | Where-Object {
+            ([string]$_).Trim() -eq "WixToolset.Util.wixext $WixVersion"
+        }
+    }
+    if (-not $utilExtensionInstalled) {
+        & wix extension add -g $utilExtension
+        if ($LASTEXITCODE -ne 0) {
+            throw "wix extension add $utilExtension failed with exit code $LASTEXITCODE"
+        }
     }
 }
+$utilExtension = "WixToolset.Util.wixext/$wixVersion"
+Install-WixUtilExtension -WixVersion $wixVersion
 
 $wixArgs = @(
     "build",
