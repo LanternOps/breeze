@@ -11,6 +11,11 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: { VAULT_SYNC: 'vault_sync' },
 }));
 
+vi.mock('./vaultDeviceCommands', () => ({
+  buildVaultConfigurePayload: vi.fn(async () => ({ enabled: false })),
+  resolveLatestVaultSyncSnapshotId: vi.fn(async () => 'snap-latest'),
+}));
+
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));

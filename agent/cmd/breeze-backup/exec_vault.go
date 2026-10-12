@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -21,6 +23,7 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 	}
 	var p struct {
 		VaultID    string `json:"vaultId"`
+		VaultPath  string `json:"vaultPath"`
 		SnapshotID string `json:"snapshotId"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -28,6 +31,15 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 	}
 	if p.SnapshotID == "" {
 		return fail("snapshotId is required for vault sync")
+	}
+	// The helper holds one vault (agent.yaml vault_path), while the server can
+	// list several per device. Refuse a sync aimed at a different vault rather
+	// than copy into this one and report success for the other.
+	if p.VaultPath != "" {
+		configured := vaultMgr.Path()
+		if !sameVaultPath(configured, p.VaultPath) {
+			return fail(fmt.Sprintf("this device is configured for vault path %q, not %q; save the vault again to send its configuration to the device", configured, p.VaultPath))
+		}
 	}
 	syncResult, err := vaultMgr.SyncAfterBackup(p.SnapshotID)
 	if err != nil {
@@ -42,6 +54,16 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 		"manifestVerified": syncResult.ManifestVerified,
 		"vaultPath":        syncResult.VaultPath,
 	}, nil)
+}
+
+// sameVaultPath compares two vault paths after cleaning them. Windows paths
+// are compared case-insensitively.
+func sameVaultPath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func execVaultStatus(vaultState *vaultManagerRef) backupipc.BackupCommandResult {

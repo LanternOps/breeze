@@ -190,6 +190,11 @@ const (
 	CmdBackupTestRestore = "backup_test_restore"
 	CmdBackupCleanup     = "backup_cleanup"
 
+	// Local vault (backup helper)
+	CmdVaultSync      = "vault_sync"
+	CmdVaultStatus    = "vault_status"
+	CmdVaultConfigure = "vault_configure"
+
 	// VSS backup management
 	CmdVSSStatus     = "vss_status"
 	CmdVSSWriterList = "vss_writer_list"

@@ -258,6 +258,11 @@ func (v *VaultManager) GetStatus() (*VaultStatus, error) {
 	return status, nil
 }
 
+// Path returns the configured vault path.
+func (v *VaultManager) Path() string {
+	return v.config.VaultPath
+}
+
 // GetProvider returns the vault's LocalProvider, useful for constructing
 // a FallbackProvider that tries vault before cloud.
 func (v *VaultManager) GetProvider() providers.BackupProvider {
