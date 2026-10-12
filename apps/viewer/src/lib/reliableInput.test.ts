@@ -109,6 +109,19 @@ describe('ReliableInputRouter — handshake', () => {
     expect(router.isReliable()).toBe(false);
   });
 
+  it('input sent while input-r is connecting neither closes it nor raises a fallback', () => {
+    const { router, reliable, onNotice, reconcileHeld } = setup();
+    router.onCapabilities(CAPS);
+    router.send({ type: 'mouse_move', x: 1, y: 1 });
+    router.send({ type: 'key_down', key: 'a' });
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(reconcileHeld).not.toHaveBeenCalled();
+    expect(reliable!.readyState).toBe('connecting');
+    reliable!.open();
+    expect(reliable!.sent[0]).toEqual({ type: 'input_reset', seq: 1, epoch: 4 });
+    expect(router.isReliable()).toBe(true);
+  });
+
   it('on open: reconciles held state, sends input_reset with the advertised epoch, then sequences', () => {
     const { router, lossy, reliable, reconcileHeld } = setup();
     router.onCapabilities(CAPS);

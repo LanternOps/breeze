@@ -152,8 +152,11 @@ export class ReliableInputRouter {
         return 'dropped';
       }
     }
+    const wasReliable = this.sequencer.isReliable();
     const routed = this.sequencer.route(event);
-    if (this.channel && !this.sequencer.isReliable()) {
+    // Only a reliable → legacy flip inside route() counts; while input-r is
+    // still connecting the sequencer is legacy and that is expected.
+    if (wasReliable && !this.sequencer.isReliable()) {
       // The sequencer gave up (seq range exhausted): leave W2b properly.
       this.fallback(true);
     }
