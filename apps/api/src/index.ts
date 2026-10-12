@@ -333,6 +333,7 @@ import { webhookDeliveries } from './db/schema';
 import { resolveFallbackOrgId } from './services/auditFallbackOrg';
 import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import { registerAllEffectProbes } from './services/aiOperator/effectProbes/bootstrap';
 import {
   createReadinessEvaluator,
   type WorkerInitPhase
@@ -1727,6 +1728,8 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
   }
+
+  registerAllEffectProbes(); // Recipe Library E4: provider effect probes, registered once
 
   await runStartupChecks();
 
