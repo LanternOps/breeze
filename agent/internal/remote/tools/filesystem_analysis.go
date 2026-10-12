@@ -489,6 +489,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
+			// Walk at background I/O priority on Windows (#8509); no-op elsewhere.
+			endBackgroundIO := beginBackgroundIO()
+			defer endBackgroundIO()
 			for {
 				queueMu.Lock()
 				for len(dirStack) == 0 && !done && !stopping {
