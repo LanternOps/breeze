@@ -1994,6 +1994,10 @@
           "label": "Patch detail",
           "description": "Show every portal login of this organization each device's pending, installed and failed patches (title, severity, version, KB link). This reveals which machines are missing patches. Not turned on by Enable all visibility."
         },
+        "enableVulnerabilityDetail": {
+          "label": "Vulnerability detail",
+          "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
+        },
         "enableHourBlock": {
           "label": "Support hours",
           "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."

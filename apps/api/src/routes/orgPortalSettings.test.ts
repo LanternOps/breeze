@@ -91,6 +91,7 @@ vi.mock('../db/schema', () => ({
     enableNetworkVisibility: 'enableNetworkVisibility',
     enableHourBlock: 'enableHourBlock',
     enablePatchDetail: 'enablePatchDetail',
+    enableVulnerabilityDetail: 'enableVulnerabilityDetail',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -235,6 +236,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableNetworkAlerts: false,
       enableHourBlock: false,
       enablePatchDetail: false,
+      enableVulnerabilityDetail: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
@@ -327,6 +329,23 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       expect.anything(),
       expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableHourBlock'] }) }),
     );
+  });
+
+  it('persists the sensitive vulnerability detail flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableVulnerabilityDetail: true }]);
+
+    const res = await patch({ enableVulnerabilityDetail: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableVulnerabilityDetail: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableVulnerabilityDetail: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableVulnerabilityDetail', 'enableVulnerabilityDetail');
   });
 
   it('persists the sensitive patch detail flag without treating it as a visibility flag', async () => {

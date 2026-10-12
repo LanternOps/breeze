@@ -1994,6 +1994,10 @@
           "label": "Yama ayrıntısı",
           "description": "Bu kuruluşun tüm portal girişlerine her cihazın bekleyen, yüklenen ve başarısız yamalarını (başlık, önem derecesi, sürüm, KB bağlantısı) gösterir. Hangi makinelerde yama eksik olduğunu açığa çıkarır. Tüm görünürlüğü etkinleştir seçeneğiyle açılmaz."
         },
+        "enableVulnerabilityDetail": {
+          "label": "Güvenlik açığı ayrıntısı",
+          "description": "Bu kuruluşun her portal girişine, her cihazın CVE bulgularını ve önem derecesini gösterir (CVE kimliği, açıklama, önem derecesi, CVSS puanı, yama durumu, durum). Bu, hangi makinelerin savunmasız olduğunu ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
+        },
         "enableHourBlock": {
           "label": "Destek saatleri",
           "description": "Müşterinin destek kullanımı bölümünde ön ödemeli saat paketinin kullanılan ve kalan saatlerini gösterir. Destek kullanımı gerektirir. Tüm görünürlüğü etkinleştirdiğinizde açılmaz."

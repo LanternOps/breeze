@@ -73,6 +73,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableSoftwareInventory', 'PORTAL_SOFTWARE_INVENTORY_DISABLED'],
     ['enableHourBlock', 'PORTAL_HOUR_BLOCK_DISABLED'],
     ['enablePatchDetail', 'PORTAL_PATCH_DETAIL_DISABLED'],
+    ['enableVulnerabilityDetail', 'PORTAL_VULNERABILITY_DETAIL_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -115,6 +116,15 @@ describe('createPortalFeatureGateStrict', () => {
     expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
     dbState.rows = [{ enablePatchDetail: null }];
     expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+  });
+
+  it('enableVulnerabilityDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enableVulnerabilityDetail: true }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enableVulnerabilityDetail: 'true' }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enableVulnerabilityDetail: null }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
   });
 
   it('enableHourBlock: continues only when the flag is strictly true', async () => {

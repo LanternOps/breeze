@@ -47,6 +47,8 @@ const GATED_API_METHODS: Record<string, string> = {
   getDeviceSoftware: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
   getPatchSummary: 'PORTAL_PATCH_DETAIL_DISABLED',
   getDevicePatches: 'PORTAL_PATCH_DETAIL_DISABLED',
+  getVulnerabilitySummary: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  getVulnerabilityFindings: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
   getHardwareLifecycleLatest: 'PORTAL_LIFECYCLE_DISABLED',
 };
 

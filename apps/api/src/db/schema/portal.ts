@@ -87,6 +87,10 @@ export const portalBranding = pgTable('portal_branding', {
   // Sensitive (points at patch gaps): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
   // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
   enablePatchDetail: boolean('enable_patch_detail').notNull().default(false),
+  // Portal Advanced Visibility W06 (#7736): read-only per-host CVE findings.
+  // Sensitive (points at vulnerabilities): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
+  // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enableVulnerabilityDetail: boolean('enable_vulnerability_detail').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

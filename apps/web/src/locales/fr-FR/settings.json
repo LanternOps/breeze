@@ -1994,6 +1994,10 @@
           "label": "Détail des correctifs",
           "description": "Affiche à toutes les connexions au portail de cette organisation les correctifs en attente, installés et en échec de chaque appareil (titre, gravité, version, lien KB). Cela révèle quels postes n'ont pas leurs correctifs. Non activé par « Activer toute la visibilité »."
         },
+        "enableVulnerabilityDetail": {
+          "label": "Détail des vulnérabilités",
+          "description": "Affiche à chaque connexion au portail de cette organisation les constats CVE de chaque appareil et leur gravité (ID CVE, description, gravité, score CVSS, disponibilité d’un correctif, statut). Cela révèle quelles machines sont vulnérables. N’est pas activé par Activer toute la visibilité."
+        },
         "enableHourBlock": {
           "label": "Heures de support",
           "description": "Affiche les heures prépayées du forfait consommées et restantes dans la section Utilisation du support du client. Nécessite Utilisation du support. Non activé lorsque vous activez toute la visibilité."

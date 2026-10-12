@@ -34,6 +34,7 @@ type PortalSettings = {
   enableNetworkAlerts: boolean;
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -83,7 +84,8 @@ type VisibilityToggleKey =
   | 'enableNetworkVisibility'
   | 'enableNetworkAlerts'
   | 'enableHourBlock'
-  | 'enablePatchDetail';
+  | 'enablePatchDetail'
+  | 'enableVulnerabilityDetail';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -188,6 +190,14 @@ const VISIBILITY_TOGGLES: Array<{
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.description',
   },
+  // Sensitive (visibility W06, #7736): shows every portal login of the org which
+  // devices have which CVEs. Deliberately left out of enableAllVisibility(); listed
+  // in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enableVulnerabilityDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.description',
+  },
 ];
 
 type OrgPortalSettingsEditorProps = {
@@ -285,6 +295,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableNetworkAlerts: draft.enableNetworkAlerts,
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             enablePatchDetail: draft.enablePatchDetail,
+            enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

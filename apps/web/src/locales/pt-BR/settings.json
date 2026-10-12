@@ -1994,6 +1994,10 @@
           "label": "Detalhes de patches",
           "description": "Mostra a todos os logins do portal desta organização os patches pendentes, instalados e com falha de cada dispositivo (título, gravidade, versão, link KB). Isso revela quais máquinas estão sem patches. Não é ativado por Ativar toda a visibilidade."
         },
+        "enableVulnerabilityDetail": {
+          "label": "Detalhes de vulnerabilidades",
+          "description": "Mostra a cada login do portal desta organização os achados de CVE de cada dispositivo e sua gravidade (ID do CVE, descrição, gravidade, pontuação CVSS, disponibilidade de patch, status). Isso revela quais máquinas estão vulneráveis. Não é ativado por Ativar toda a visibilidade."
+        },
         "enableHourBlock": {
           "label": "Horas de suporte",
           "description": "Mostra as horas pré-pagas do pacote usadas e restantes dentro da seção de uso de suporte do cliente. Requer Uso de suporte. Não é ativado ao habilitar toda a visibilidade."

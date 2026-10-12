@@ -58,6 +58,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableNetworkAlerts: false,
   enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
   enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
+  enableVulnerabilityDetail: false, // visibility W06: sensitive, fail-closed, never in "Enable all"
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -88,6 +89,7 @@ type PortalSettingsRow = {
   enableNetworkAlerts: boolean;
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -126,6 +128,7 @@ const portalSettingsColumns = () => ({
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
   enableHourBlock: portalBranding.enableHourBlock,
   enablePatchDetail: portalBranding.enablePatchDetail,
+  enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -159,6 +162,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableNetworkAlerts: row.enableNetworkAlerts,
     enableHourBlock: row.enableHourBlock,
     enablePatchDetail: row.enablePatchDetail,
+    enableVulnerabilityDetail: row.enableVulnerabilityDetail,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,

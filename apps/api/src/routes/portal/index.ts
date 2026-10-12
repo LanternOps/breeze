@@ -20,6 +20,7 @@ import { portalHardwareInventoryRoutes } from './hardwareInventory';
 import { portalPerformanceRoutes } from './performance';
 import { portalSoftwareRoutes } from './software';
 import { portalPatchRoutes } from './patches';
+import { portalVulnerabilityRoutes } from './vulnerabilities';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
@@ -86,6 +87,9 @@ portalRoutes.use('/software/*', createPortalFeatureGateStrict('enableSoftwareInv
 // W05 (#7735): patch detail, sensitive (outside "Enable all"), fail-closed.
 portalRoutes.use('/patches/*', portalAuthMiddleware);
 portalRoutes.use('/patches/*', createPortalFeatureGateStrict('enablePatchDetail'));
+// W06 (#7736): vulnerability detail, sensitive (outside "Enable all"), fail-closed.
+portalRoutes.use('/vulnerabilities/*', portalAuthMiddleware);
+portalRoutes.use('/vulnerabilities/*', createPortalFeatureGateStrict('enableVulnerabilityDetail'));
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
@@ -140,6 +144,7 @@ portalRoutes.route('/', portalHardwareInventoryRoutes);
 portalRoutes.route('/', portalPerformanceRoutes);
 portalRoutes.route('/', portalSoftwareRoutes);
 portalRoutes.route('/', portalPatchRoutes);
+portalRoutes.route('/', portalVulnerabilityRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);

@@ -834,6 +834,8 @@ export interface BrandingConfig {
   enableHourBlock?: boolean;
   /** Visibility W05 (#7735): MSP turned sensitive per-host patch detail on for this org. */
   enablePatchDetail?: boolean;
+  /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
+  enableVulnerabilityDetail?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -901,7 +903,35 @@ export interface PortalDevicePatchItem {
   lastCheckedAt: string | null;
 }
 
+export type PortalVulnerabilityStatus = 'open' | 'patched' | 'mitigated' | 'accepted';
+export interface PortalVulnerabilitySummaryItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  affectedDevices: number;
+}
+export interface PortalVulnerabilityFindingItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  status: PortalVulnerabilityStatus;
+  detectedAt: string;
+  resolvedAt: string | null;
+  deviceId: string;
+  deviceName: string;
+}
+
 export const portalApi = {
+  getVulnerabilitySummary: (params: ListParams & { status?: PortalVulnerabilityStatus } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>('/portal/vulnerabilities/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open' }), config),
+  getVulnerabilityFindings: (params: ListParams & { status?: PortalVulnerabilityStatus; deviceId?: string } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilityFindingItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilityFindingItem>>('/portal/vulnerabilities/findings' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open', deviceId: params.deviceId }), config),
   getPatchSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalPatchSummaryItem>>> =>
     apiGet<PortalSoftwarePage<PortalPatchSummaryItem>>('/portal/patches/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getDevicePatches: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalDevicePatchItem>>> =>

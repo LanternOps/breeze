@@ -1994,6 +1994,10 @@
           "label": "Patch-Details",
           "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die ausstehenden, installierten und fehlgeschlagenen Patches jedes Geräts (Titel, Schweregrad, Version, KB-Link). Dadurch ist sichtbar, auf welchen Rechnern Patches fehlen. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
         },
+        "enableVulnerabilityDetail": {
+          "label": "Schwachstellen-Details",
+          "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die CVE-Funde jedes Geräts und deren Schweregrad (CVE-ID, Beschreibung, Schweregrad, CVSS-Wert, Patch-Verfügbarkeit, Status). Dadurch ist sichtbar, welche Rechner angreifbar sind. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
+        },
         "enableHourBlock": {
           "label": "Support-Stunden",
           "description": "Zeigt im Bereich Support-Nutzung des Kunden die verbrauchten und verbleibenden Stunden des vorausbezahlten Stundenkontingents an. Erfordert Support-Nutzung. Wird durch „Alle Sichtbarkeiten aktivieren“ nicht eingeschaltet."
