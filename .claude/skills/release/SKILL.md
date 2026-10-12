@@ -39,9 +39,9 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 
 **Candidate / hotfix prerelease tags (commit not on main): register first, then tag.** The Release workflow's Validate Release Lineage step reads `.github/release-provenance/candidate-tags.tsv` from `origin/main`, so the row must be on main before the tag build runs:
 
-1. Open a PR adding the row `<tag>\t<exact candidate commit SHA>\t<integration ref>\t<note>`. CI's Check Migrations passes with the tag not yet pushed — it skips registry rows whose tag doesn't exist (#8132).
+1. Open a PR adding the row `<tag>\t<exact candidate commit SHA>\t<integration ref>\t<note>`. A row whose tag does not exist yet is skipped by both CI's Check Migrations and other candidates' Validate Release Lineage (#8132), so it does not block anything while pending.
 2. Merge it.
-3. Push the tag at exactly that SHA. From then on Check Migrations enforces the row: a tag that peels to a different commit fails CI with `candidate registry SHA mismatch`.
+3. Push the tag at exactly that SHA. Once the tag exists, both scripts check the row whenever they read the registry: a tag that peels to a different commit fails with `candidate registry SHA mismatch`. If a candidate is abandoned before tagging, remove its row.
 
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 

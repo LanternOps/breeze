@@ -132,6 +132,14 @@ EOF
   esac
   SEEN_TAGS="${SEEN_TAGS}${row_tag}"$'\n'
 
+  # A row is merged to main before its tag is pushed (#8132), so a row whose
+  # tag does not exist yet must not fail another candidate's build. It cannot
+  # match $TAG, which resolved above; once its tag exists the SHA check applies.
+  if ! git rev-parse --verify --quiet "refs/tags/$row_tag" >/dev/null; then
+    echo "release-lineage: candidate registry row '$row_tag' has no tag yet; skipping it" >&2
+    continue
+  fi
+
   row_actual_sha=$(git rev-parse "$row_tag^{commit}" 2>/dev/null) || \
     fail "candidate registry tag '$row_tag' cannot be resolved"
   if [ "$row_actual_sha" != "$row_sha" ]; then
