@@ -174,16 +174,14 @@ export async function loadTaskAgentToolAllowlists(orgId: string, taskId: string)
     const snapshot = readAllowlist(
       (run?.policySnapshot as { effective?: { toolAllowlist?: unknown } } | undefined)?.effective?.toolAllowlist,
     );
-    let live: string[] | null = null;
-    try {
-      const resolved = await resolveEffectiveAgentSystem(orgId, task.agentKind as never);
-      // A disabled agent grants nothing; fail closed exactly like a missing one.
-      live = resolved && resolved.effective?.enabled !== false
-        ? readAllowlist(resolved.effective?.toolAllowlist)
-        : null;
-    } catch {
-      live = null;
-    }
+    // A missing or disabled agent grants nothing (fail closed, `live: null`).
+    // A resolver FAULT is not a policy answer and propagates: reporting it as
+    // "no current policy" would turn a DB blip into a permanent
+    // tool_not_in_agent_allowlist refusal at mint or release.
+    const resolved = await resolveEffectiveAgentSystem(orgId, task.agentKind as never);
+    const live = resolved && resolved.effective?.enabled !== false
+      ? readAllowlist(resolved.effective?.toolAllowlist)
+      : null;
     return { snapshot, live };
   }));
 }
@@ -563,8 +561,8 @@ export async function proposePlanApproval(input: ProposePlanApprovalInput): Prom
     };
   });
   let intentId: string;
+  const { createActionIntent, ActionIntentError } = await import('../actionIntents/intentService');
   try {
-    const { createActionIntent } = await import('../actionIntents/intentService');
     const snap = await createActionIntent(requesterAuth, {
       toolName: OPERATOR_PLAN_TOOL,
       source: 'mcp_api',
@@ -580,7 +578,14 @@ export async function proposePlanApproval(input: ProposePlanApprovalInput): Prom
     });
     intentId = snap.id;
   } catch (err) {
-    return { ok: false, reason: 'mint_failed', detail: err instanceof Error ? err.message : String(err) };
+    // A deliberate refusal (no eligible approvers, site ceiling, digest not
+    // pinnable) is a typed result carrying its code. An infrastructure fault
+    // propagates so the wake retries; the rows above are reused on re-entry
+    // and the explicit idempotency key converges on one intent.
+    if (err instanceof ActionIntentError) {
+      return { ok: false, reason: 'mint_failed', detail: `${err.code}: ${err.message}` };
+    }
+    throw err;
   }
 
   // tx2: the one-shot link. Zero rows means the approval CAS already linked

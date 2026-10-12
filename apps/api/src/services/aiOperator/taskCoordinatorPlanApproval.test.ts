@@ -100,10 +100,10 @@ describe('advanceEffect', () => {
     expect(openStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ stepKey: 'verify_outcome' }));
   });
 
-  it('SETTLES (never throws) when the planner throws', async () => {
+  it('a planner THROW (infrastructure fault) propagates for retry and writes nothing — it never terminalizes the task', async () => {
     planEffect.mockRejectedValue(new Error('db down'));
-    await expect(advanceEffect(args())).resolves.toMatch(/failed/);
-    expect(lastPatch()).toMatchObject({ outcome: 'unresolved' });
+    await expect(advanceEffect(args())).rejects.toThrow('db down');
+    expect(dbState.taskPatches).toHaveLength(0);
   });
 });
 

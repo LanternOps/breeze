@@ -1567,11 +1567,9 @@ export async function advanceWait(args: {
 
 /**
  * `effect` / `probe` (Recipe Library E4, #6169). The planner decides from rows
- * and returns ONE directive; this applies it as exactly one leased write. A
- * planner throw (a transient DB fault mid-read) settles instead of escaping:
- * an escaped throw leaves the wake job retrying against a row that cannot
- * advance — and nothing the planner wrote before throwing is undone, because
- * every such write is idempotent by its own unique key.
+ * and returns ONE directive; this applies it as exactly one leased write.
+ * Refusals are directives and settle; a planner THROW is an infrastructure
+ * fault and propagates so the wake retries (see the catch below).
  */
 export async function advanceEffect(args: Parameters<StepAdvancer>[0]): Promise<string> {
   return applyEffectDirective(args, 'effect', () => planEffectStep(args));
@@ -1588,13 +1586,20 @@ async function applyEffectDirective(
 ): Promise<string> {
   const { task, leaseEpoch, checkpoint, recipe, now } = args;
   const stepKey = task.currentStepKey ?? '';
+  // A planner THROW is an infrastructure fault (pool timeout, serialization
+  // failure), never a refusal — every refusal is a typed directive. It is
+  // rethrown, not settled: the wake job retries and the reconciler re-wakes,
+  // and every write the planner made before failing is idempotent by its own
+  // unique key. Settling would turn a transient blip into a permanent
+  // failure of a destructive identity plan, possibly after a write went out.
   let directive: EffectStepDirective;
   try {
     directive = await plan();
   } catch (err) {
-    const detail = `${kind} step '${stepKey}' could not be planned: ${err instanceof Error ? err.message : String(err)}`;
-    await settle({ task, leaseEpoch, event: 'fail', outcome: 'unresolved', detail, checkpoint });
-    return `failed: ${detail}`;
+    console.error(`[aiOperator] ${kind} step '${stepKey}' planner failed; leaving the task for retry`, {
+      taskId: task.id, orgId: task.orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
   switch (directive.action) {
     case 'wait':

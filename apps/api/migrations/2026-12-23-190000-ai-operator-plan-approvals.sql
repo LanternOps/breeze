@@ -71,9 +71,14 @@ CREATE TABLE IF NOT EXISTS ai_operator_plan_approvals (
     CHECK (plan_revision >= 0),
   CONSTRAINT ai_operator_plan_approvals_digest_chk
     CHECK (effect_set_digest ~ '^[0-9a-f]{64}$'),
-  -- An `approved` row without an approver is the shape a bypass would take.
+  -- `approved` always carries its stamp time. The APPROVER is written by the
+  -- approval CAS (markPlanApproved) but cannot be required here: the
+  -- approver FK is ON DELETE SET NULL, so a user hard-delete nulls it on an
+  -- approved row. That is safe by design — membership refuses an approved
+  -- plan whose approver is gone (plan_not_approved), so a deleted approver
+  -- revokes every undispatched effect rather than leaving them authorized.
   CONSTRAINT ai_operator_plan_approvals_approved_chk
-    CHECK (state <> 'approved' OR (approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL)),
+    CHECK (state <> 'approved' OR approved_at IS NOT NULL),
   CONSTRAINT ai_operator_plan_approvals_superseded_chk
     CHECK (state <> 'superseded' OR superseded_by_revision IS NOT NULL),
   CONSTRAINT ai_operator_plan_approvals_step_key_len_chk

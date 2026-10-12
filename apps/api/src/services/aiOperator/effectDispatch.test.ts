@@ -26,7 +26,12 @@ vi.mock('./planApproval', async (orig) => ({
   ...(await orig<typeof import('./planApproval')>()),
   checkPlanEffectMembershipSystem,
 }));
-vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
+vi.mock('../actionIntents/intentService', () => ({
+  createActionIntent,
+  ActionIntentError: class ActionIntentError extends Error {
+    constructor(message: string, public code: string) { super(message); }
+  },
+}));
 vi.mock('../actionIntents/actorContext', () => ({ buildTaskActorAuthContext }));
 vi.mock('./eventService', () => ({ appendTaskEvent }));
 vi.mock('../../db', () => ({
@@ -129,8 +134,15 @@ describe('dispatchPlannedEffect — membership and the mint', () => {
 
   it('a mint refusal surfaces its code instead of throwing', async () => {
     probeEffect.mockResolvedValue({ state: 'unsatisfied', observedAt: new Date(), detail: '' });
-    createActionIntent.mockRejectedValueOnce(Object.assign(new Error('nope'), { code: 'tool_not_in_agent_allowlist' }));
+    const { ActionIntentError } = await import('../actionIntents/intentService');
+    createActionIntent.mockRejectedValueOnce(new ActionIntentError('nope', 'tool_not_in_agent_allowlist'));
     await expect(dispatch()).resolves.toMatchObject({ kind: 'refused', refusal: 'tool_not_in_agent_allowlist' });
+  });
+
+  it('an infrastructure fault from the mint PROPAGATES (retry), never becomes a refusal', async () => {
+    probeEffect.mockResolvedValue({ state: 'unsatisfied', observedAt: new Date(), detail: '' });
+    createActionIntent.mockRejectedValueOnce(Object.assign(new Error('could not serialize access'), { code: '40001' }));
+    await expect(dispatch()).rejects.toThrow('could not serialize access');
   });
 });
 

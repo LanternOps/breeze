@@ -160,8 +160,8 @@ export async function dispatchPlannedEffect(args: {
       detail: 'the plan approver is inactive or can no longer reach this organization',
     };
   }
+  const { createActionIntent, ActionIntentError } = await import('../actionIntents/intentService');
   try {
-    const { createActionIntent } = await import('../actionIntents/intentService');
     const snap = await createActionIntent(approverAuth, {
       toolName: effect.toolName,
       input: effect.canonicalArguments as Record<string, unknown>,
@@ -173,8 +173,14 @@ export async function dispatchPlannedEffect(args: {
     });
     return { kind: 'dispatching', intentId: snap.id, detail: `dispatching ${effect.toolName} (ordinal ${effect.ordinal})` };
   } catch (err) {
-    const code = (err as { code?: string }).code ?? 'mint_failed';
-    return { kind: 'refused', refusal: code, detail: err instanceof Error ? err.message : String(err) };
+    // Only a deliberate refusal becomes a typed outcome. Anything else (a pool
+    // timeout, a serialization failure — whose pg SQLSTATE would otherwise
+    // masquerade as a "refusal") propagates so the wake retries; the mint is
+    // idempotent by its task-derived key.
+    if (err instanceof ActionIntentError) {
+      return { kind: 'refused', refusal: err.code, detail: err.message };
+    }
+    throw err;
   }
 }
 
@@ -365,14 +371,14 @@ async function readPlanLabels(
   }));
 }
 
-async function readIntentStatus(orgId: string, intentId: string): Promise<string | null> {
+async function readIntentOutcome(orgId: string, intentId: string): Promise<{ status: string | null; errorCode: string | null }> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [row] = await db
-      .select({ status: actionIntents.status })
+      .select({ status: actionIntents.status, errorCode: actionIntents.errorCode })
       .from(actionIntents)
       .where(and(eq(actionIntents.id, intentId), eq(actionIntents.orgId, orgId)))
       .limit(1);
-    return row?.status ?? null;
+    return { status: row?.status ?? null, errorCode: row?.errorCode ?? null };
   }));
 }
 
@@ -460,18 +466,23 @@ export async function planEffectStep(args: {
   }
 
   if (approval.state === 'pending') {
-    const status = await readIntentStatus(task.orgId, approval.intentId!);
+    const { status, errorCode } = await readIntentOutcome(task.orgId, approval.intentId!);
     if (status === 'pending_approval' || status === 'approved' || status === 'executing') {
       return {
         action: 'wait', reason: 'approval', dependency: { kind: 'intent', id: approval.intentId! },
         wakeAfterMs: PLAN_POLL_WAKE_MS, detail: `plan revision ${task.revision} still awaiting approval (${status})`,
       };
     }
-    // Terminal without the handler having approved the plan: rejected,
-    // expired, cancelled, or the release itself failed closed.
-    await closePendingPlan({ orgId: task.orgId, approvalId: approval.id, state: status === 'rejected' ? 'rejected' : 'expired' });
-    return handOff('unresolved', `plan approval ended as ${status ?? 'missing'}`,
-      `The plan for this task was not approved (${status ?? 'the request is gone'}). Nothing was changed.`);
+    // Terminal without the handler having approved the plan. Only a lapsed
+    // approval window is `expired`; a human rejection, a cancellation, or a
+    // release that failed closed (markPlanApproved refused, revalidation
+    // stopped it) all mean "this plan was not approved" -> `rejected`. The
+    // intent's own error_code is the reason, and it is carried into the
+    // handoff so the technician sees WHY rather than a generic "not approved".
+    await closePendingPlan({ orgId: task.orgId, approvalId: approval.id, state: status === 'expired' ? 'expired' : 'rejected' });
+    const why = `${status ?? 'missing'}${errorCode ? `: ${errorCode}` : ''}`;
+    return handOff('unresolved', `plan approval ended as ${why}`,
+      `The plan for this task was not approved (${why}). Nothing was changed.`);
   }
   if (approval.state !== 'approved' || !approval.approvedByUserId) {
     return handOff('unresolved', `the plan is ${approval.state}`,
