@@ -130,7 +130,7 @@ describe('security quarantine execution-authority migration', () => {
       const [replayed] = await db<{ execution_authority_legacy: string | null }[]>`
         SELECT execution_authority_legacy FROM config_policy_feature_links WHERE id = ${grandfatheredId}
       `;
-      expect(replayed.execution_authority_legacy).toBeNull();
+      expect(replayed?.execution_authority_legacy).toBeNull();
     });
   });
 });

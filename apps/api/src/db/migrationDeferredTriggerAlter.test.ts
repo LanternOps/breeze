@@ -32,7 +32,7 @@ function deferredTriggerTables(sql: string): { table: string; at: number }[] {
     const body = m[1] ?? '';
     if (!/INITIALLY\s+DEFERRED/i.test(body)) continue;
     const on = /\bON\s+(?:public\.)?(\w+)/i.exec(body);
-    if (on) out.push({ table: on[1].toLowerCase(), at: m.index ?? 0 });
+    if (on?.[1]) out.push({ table: on[1].toLowerCase(), at: m.index ?? 0 });
   }
   return out;
 }
