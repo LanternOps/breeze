@@ -187,6 +187,13 @@ describe('probeTelemetryFreshness on unaligned windows (current lenient behaviou
       .resolves.toMatchObject({ fresh: false, reason: 'metric_gap', coverage: 0 });
   });
 
+  it('a sub-bucket window with one sampled bucket is full coverage (Math.max(1, ...) pinned)', async () => {
+    seen('2026-11-01T00:10:00Z');
+    executeRows.push([{ buckets: 1 }]);
+    await expect(probeTelemetryFreshness({ deviceId: 'd', from, to: new Date('2026-11-01T00:10:00Z'), probe: CPU }))
+      .resolves.toEqual({ fresh: true, reason: 'ok', coverage: 1 });
+  });
+
   it('coverage is clamped to 1 when an unaligned window touches more buckets than the floored expectation', async () => {
     seen('2026-11-01T01:10:00Z');
     executeRows.push([{ buckets: 3 }]); // 00:15-01:15 straddles 3 half-hour buckets, expected floor(60/30)=2
@@ -240,10 +247,15 @@ describe('readAlertRecovery', () => {
   it('selects only the four recovery columns, filtered by one where and limited to one row', async () => {
     rows.push([]);
     vi.mocked(db.select).mockClear();
+    const chain = db as unknown as { where: ReturnType<typeof vi.fn>; limit: ReturnType<typeof vi.fn> };
+    chain.where.mockClear();
+    chain.limit.mockClear();
     await readAlertRecovery('a1');
     const arg = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(arg).sort()).toEqual(['resolutionReason', 'resolvedAt', 'resolvedBy', 'status']);
-    expect((db as unknown as { limit: unknown }).limit).toHaveBeenCalledWith(1);
+    expect(chain.where).toHaveBeenCalledTimes(1);
+    expect(chain.limit).toHaveBeenCalledTimes(1);
+    expect(chain.limit).toHaveBeenCalledWith(1);
   });
 });
 

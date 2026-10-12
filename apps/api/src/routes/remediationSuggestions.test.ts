@@ -787,7 +787,7 @@ describe('remediation suggestion routes', () => {
       expect(depths.record).toBeGreaterThan(0);
     });
 
-    it('#7280: the claim, dispatch and phase 3 run in three DISTINCT contexts; link + record share phase 3\'s', async () => {
+    it('#7280: the claim and phase 3 are separate committed contexts; dispatch runs outside any; link + record share phase 3\'s', async () => {
       withDevicesExecute();
       const seen: Record<string, number | null> = {};
       mockSuggestionLoad(builtinRow);
