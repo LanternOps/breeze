@@ -458,13 +458,18 @@ results, event logs, token rotation and uninstall are never refused.
 refuses nothing. Switch to `enforce` once those counters look right for your
 fleet. `off` disables it.
 
+Any database pool-acquire timeout or RLS-prologue timeout in the last 30
+seconds holds the level at 2 or higher and blocks recovery below it. Only
+agent WebSocket requests that carry `Upgrade: websocket` are paced; other
+requests to the WebSocket path are not counted against the connection budget.
+
 | Variable | Default | Description |
 |---|---|---|
 | `BREEZE_ADMISSION_MODE` | `observe` | `off`, `observe` or `enforce`. |
 | `BREEZE_ADMISSION_LAG_MS` | `100,250,600` | Median event-loop lag (ms) that raises the level to 1, 2 and 3. |
 | `BREEZE_ADMISSION_DB_WAIT_MS` | `75,200,600` | Time requests wait for a database connection (ms) that raises the level to 1, 2 and 3. |
 | `BREEZE_ADMISSION_EMERGENCY_MS` | `1000` | A single stall, or a database wait, this long jumps straight to level 3. |
-| `BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT` | `15` | Inventory-type uploads processed at once, at every level. |
+| `BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT` | `15` | Inventory-type uploads processed at once. Applies in `enforce` mode only; `observe` counts but never refuses. |
 | `BREEZE_ADMISSION_WS_RATE_PER_SEC` | `10` | Agent WebSocket connections accepted per second at level 0 (halved at 1, a fifth at 2, a twentieth at 3). |
 | `BREEZE_ADMISSION_WS_BURST` | `20` | How many WebSocket connections can arrive at once before pacing starts. |
 | `BREEZE_ADMISSION_WS_MAX_SETUPS` | `8` | WebSocket connections being set up at the same time. |

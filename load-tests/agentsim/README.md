@@ -91,7 +91,7 @@ sleep 240; docker restart "$(svc api)"                # t+12: kill the API (cold
 sleep 360; docker update --cpus 0 "$(svc api)"        # t+18: lift the throttle (0 = unlimited)
 ```
 
-Gates (both runs below):
+Gates (the enforce run must pass all; the observe control run is expected to fail at least one):
 
 | Gate | How |
 |---|---|

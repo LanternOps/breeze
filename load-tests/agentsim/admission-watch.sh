@@ -21,10 +21,12 @@ watch)
   [ -n "$API" ] || { echo "admission-watch: no api container for $PROJECT" >&2; exit 1; }
   OUT="$REPO/load-tests/agentsim/reports/admission-$(date -u +%Y%m%dT%H%M%SZ).csv"
   mkdir -p "$(dirname "$OUT")"
-  echo "ts,level,mode,shed_total,would_shed_total,db_waiting,db_in_use,db_wait_s,lag_s,ws_tokens,api_backends,stuck_backends,max_heartbeat_gap_s" >"$OUT"
+  echo "ts,level,mode,shed_total,would_shed_total,db_waiting,db_in_use,db_wait_s,lag_s,ws_tokens,api_backends,stuck_backends,max_heartbeat_gap_s,scrape_ok" >"$OUT"
   echo "admission-watch: writing $OUT" >&2
   while true; do
     SCRAPE="$(docker exec "$API" node -e "fetch('http://127.0.0.1:'+(process.env.API_PORT||3001)+'/metrics/scrape',{headers:{authorization:'Bearer '+process.env.METRICS_SCRAPE_TOKEN}}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>{})" 2>/dev/null || true)"
+    # A failed/empty scrape must not read as healthy: mark the row so `summarize` FAILs it.
+    case "$SCRAPE" in *breeze_admission_level*) SCRAPE_OK=1 ;; *) SCRAPE_OK=0 ;; esac
     m() { awk -v n="$1" '$1==n {print $2; f=1} END {if(!f) print "NaN"}' <<<"$SCRAPE"; }
     msum() { awk -v n="$1" -v want="$2" 'index($1, n"{")==1 && index($1, want)>0 {s+=$2} END {print s+0}' <<<"$SCRAPE"; }
     MODE="$(awk 'index($1,"breeze_admission_mode{")==1 && $2==1 {match($1,/mode="[a-z]+"/); print substr($1,RSTART+6,RLENGTH-7)}' <<<"$SCRAPE")"
@@ -38,24 +40,31 @@ SELECT
      WHERE hostname LIKE :'base' || '-%' AND status <> 'decommissioned');
 SQL
 )"
-    echo "$(date -u +%FT%TZ),$(m breeze_admission_level),${MODE:-unknown},$(msum breeze_admission_decisions_total 'outcome="shed"'),$(msum breeze_admission_decisions_total 'outcome="would_shed"'),$(m breeze_db_pool_admission_waiting),$(m breeze_db_pool_admission_in_use),$(m breeze_admission_signal_db_wait_seconds),$(m breeze_admission_signal_lag_seconds),$(m breeze_admission_ws_bucket_tokens),$PGROW" >>"$OUT"
+    echo "$(date -u +%FT%TZ),$(m breeze_admission_level),${MODE:-unknown},$(msum breeze_admission_decisions_total 'outcome="shed"'),$(msum breeze_admission_decisions_total 'outcome="would_shed"'),$(m breeze_db_pool_admission_waiting),$(m breeze_db_pool_admission_in_use),$(m breeze_admission_signal_db_wait_seconds),$(m breeze_admission_signal_lag_seconds),$(m breeze_admission_ws_bucket_tokens),$PGROW,$SCRAPE_OK" >>"$OUT"
     sleep "${INTERVAL:-5}"
   done
   ;;
 summarize)
   CSV="${2:?usage: admission-watch.sh summarize <csv> <poolMax>}"; POOL="${3:?poolMax (DB_POOL_MAX, default 30)}"
   awk -F, -v pool="$POOL" '
+    function isnum(v) { return v ~ /^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/ }
     NR==1 {next}
-    { rows++; if ($2+0 > maxlvl) maxlvl=$2+0
+    { rows++
+      # A failed scrape (scrape_ok=0), a short row or a non-numeric field (NaN) is never healthy.
+      bad_row = (NF != 14 || $14 != 1)
+      for (i = 2; i <= 13 && !bad_row; i++) if (i != 3 && !isnum($i)) bad_row = 1
+      if (bad_row) invalid++
+      if ($2+0 > maxlvl) maxlvl=$2+0
       if ($6+0 > 0) { waiting++; if ($11+0 < 0.8*pool) short++ }
       if ($12+0 > 0) stuck++
       if ($13+0 > maxgap) maxgap=$13+0 }
     END {
       printf "rows=%d max_level=%d rows_with_waiters=%d\n", rows, maxlvl, waiting
+      printf "%s  every row has a successful scrape and numeric fields: %d bad rows\n", (invalid==0 && rows>0?"PASS":"FAIL"), invalid
       printf "%s  usable pool: rows with waiters and < 80%% of %d backends = %d\n", (short==0?"PASS":"FAIL"), pool, short
       printf "%s  no stuck backends (idle-in-tx > 5 s / ClientRead > 15 s): %d rows\n", (stuck==0?"PASS":"FAIL"), stuck
       printf "%s  max heartbeat gap %ds < 180 s (agent watchdog threshold)\n", (maxgap<180?"PASS":"FAIL"), maxgap
-      exit (short>0 || stuck>0 || maxgap>=180) }' "$CSV"
+      exit (invalid>0 || rows==0 || short>0 || stuck>0 || maxgap>=180) }' "$CSV"
   ;;
 *)
   echo "usage: $0 watch | summarize <csv> <poolMax>" >&2; exit 2 ;;
