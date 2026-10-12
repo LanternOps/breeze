@@ -118,6 +118,38 @@ describe('DeviceScriptHistory per-script latest-result view (#7413)', () => {
     expect(screen.getByTestId('device-execution-status-inv-old')).toBeTruthy();
   });
 
+  it('shows the empty state when there is no history', async () => {
+    mockHistory([]);
+    await renderTab();
+    expect(screen.getByText(/No script executions reported/i)).toBeTruthy();
+    expect(screen.queryAllByTestId(/^device-script-latest-row-/)).toHaveLength(0);
+  });
+
+  it('keeps a script expanded and updates its latest result after a refresh', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByTestId('device-script-latest-toggle-script-inv'));
+
+    mockHistory([
+      { id: 'inv-newest', scriptId: 'script-inv', scriptName: 'Collect Inventory', status: 'completed', stdout: 'recovered', startedAt: '2026-02-11T00:00:00.000Z' },
+      ...rows,
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => expect(screen.getByTestId('device-script-latest-excerpt-script-inv').textContent).toBe('recovered'));
+    expect(screen.getByTestId('device-script-latest-status-script-inv').textContent).toMatch(/completed/i);
+    expect(screen.getByTestId('device-script-history-row-inv-newest')).toBeTruthy();
+    expect(screen.getByTestId('device-script-history-row-inv-old')).toBeTruthy();
+  });
+
+  it('does not merge unnamed runs without a script identity', async () => {
+    mockHistory([
+      { id: 'u1', status: 'completed', stdout: 'one', startedAt: '2026-02-02T00:00:00.000Z' },
+      { id: 'u2', status: 'failed', stdout: 'two', startedAt: '2026-02-01T00:00:00.000Z' },
+    ]);
+    await renderTab();
+    expect(screen.getAllByTestId(/^device-script-latest-row-/)).toHaveLength(2);
+  });
+
   it('groups runs without a scriptId by script name', async () => {
     mockHistory([
       { id: 'a', scriptName: 'Adhoc', status: 'completed', stdout: 'first', startedAt: '2026-02-01T00:00:00.000Z' },

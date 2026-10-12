@@ -9,15 +9,22 @@ describe('groupExecutionsByScript (#7413)', () => {
         { scriptId: 'b', startedAt: '2026-01-03T00:00:00Z' },
         { scriptId: 'a', startedAt: '2026-01-02T00:00:00Z' },
       ],
-      'Unnamed',
     );
     expect(groups.map(g => g.key)).toEqual(['b', 'a']);
     expect(groups[1]!.runs.map(r => r.startedAt)).toEqual(['2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z']);
     expect(groups[1]!.latest).toBe(groups[1]!.runs[0]);
   });
 
+  it('never merges runs that carry no script identity', () => {
+    const groups = groupExecutionsByScript([
+      { id: 'x', startedAt: '2026-01-02T00:00:00Z' },
+      { id: 'y', startedAt: '2026-01-01T00:00:00Z' },
+    ]);
+    expect(groups.map(g => g.key)).toEqual(['run:x', 'run:y']);
+  });
+
   it('keeps API order for runs without a usable timestamp', () => {
-    const groups = groupExecutionsByScript([{ scriptId: 'a', stdout: 'first' }, { scriptId: 'a', stdout: 'second' }], 'Unnamed');
+    const groups = groupExecutionsByScript([{ scriptId: 'a', stdout: 'first' }, { scriptId: 'a', stdout: 'second' }]);
     expect(groups[0]!.latest.stdout).toBe('first');
   });
 });

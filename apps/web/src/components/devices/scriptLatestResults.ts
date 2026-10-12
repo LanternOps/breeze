@@ -5,6 +5,7 @@
  */
 
 export type GroupableExecution = {
+  id?: string;
   scriptId?: string;
   scriptName?: string;
   name?: string;
@@ -30,8 +31,10 @@ function startedMs(item: GroupableExecution): number {
   return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
 }
 
-function groupKey(item: GroupableExecution, fallbackName: string): string {
-  return item.scriptId ?? item.scriptName ?? item.name ?? fallbackName;
+function groupKey(item: GroupableExecution, index: number): string {
+  // Runs with no script identity must never merge into one fake script, and the
+  // key must not depend on the UI language.
+  return item.scriptId ?? item.scriptName ?? item.name ?? `run:${item.id ?? index}`;
 }
 
 /**
@@ -41,11 +44,10 @@ function groupKey(item: GroupableExecution, fallbackName: string): string {
  */
 export function groupExecutionsByScript<T extends GroupableExecution>(
   executions: T[],
-  fallbackName: string,
 ): ScriptRunGroup<T>[] {
   const byKey = new Map<string, T[]>();
-  for (const item of executions) {
-    const key = groupKey(item, fallbackName);
+  for (const [index, item] of executions.entries()) {
+    const key = groupKey(item, index);
     const bucket = byKey.get(key);
     if (bucket) bucket.push(item);
     else byKey.set(key, [item]);

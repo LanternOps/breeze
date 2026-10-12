@@ -413,12 +413,12 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   // #7413 — one entry per script (latest run + full history), as formatted rows.
   const scriptGroups = useMemo(() => {
     const rowByRaw = new Map(rows.map(row => [row.raw, row]));
-    return groupExecutionsByScript(executions, t('deviceScriptHistory.unnamedScript')).flatMap(group => {
+    return groupExecutionsByScript(executions).flatMap(group => {
       const groupRows = group.runs.flatMap(run => rowByRaw.get(run) ?? []);
       const latest = groupRows[0];
       return latest ? [{ key: group.key, name: latest.name, latest, runs: groupRows, excerpt: outputExcerpt(latest.raw) }] : [];
     });
-  }, [executions, rows, t]);
+  }, [executions, rows]);
 
   // #4886 — once the highlighted execution shows up in the fetched list, open
   // its details automatically so a post-run redirect actually lands the
