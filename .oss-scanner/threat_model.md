@@ -40,18 +40,16 @@ Grade every finding by the weakest position from which it works:
 4. **Partner-side user or key**: an MSP technician, a partner API key, or a service-principal
    key. A partner sees many organizations; a *stolen* partner credential is the most damaging
    single asset in the system, so controls that bound what one credential can do fleet-wide
-   (step-up authentication, second-person approval, reach reduction taking effect promptly)
-   are in scope.
+   (step-up authentication, second-person approval) are in scope.
 5. **Third-party OAuth or MCP client**: an integration or AI client granted a scope. It must
    not exceed the scope the granting user could give, nor outlive that user's access.
 6. **Compromised enrolled agent**: a hostile endpoint holding valid agent credentials. It must
-   not read or affect other devices, other tenants, or the server; must not bind itself to
-   another organization's device record; and must not write outside its own storage area.
+   not read or affect other devices, other tenants, or the server; must not impersonate another
+   device; and must not write outside its own storage area.
 7. **Local unprivileged endpoint user**: a non-admin user on a managed machine. Anything that
    lets them reach the agent's root/SYSTEM privileges (IPC, local sockets or named pipes, file
    and directory permissions, installer/update paths, the per-user helper, the remote-desktop
-   path) is in scope. The inverse also matters: a local admin disabling or redirecting the agent
-   while the server still believes it is healthy.
+   path) is in scope.
 8. **Integration counterparty or mail sender**: a third-party service (Microsoft 365, PSA,
    billing, EDR, SSO provider) or an inbound email. Their data is untrusted and their credentials
    must not be redirected.
@@ -68,7 +66,7 @@ Grade every finding by the weakest position from which it works:
 These are the goals a finding should be mapped to. Any single finding that achieves one of them
 end to end is Critical.
 
-- Money moves (a charge, a payment cap or payee change) without the step-up the design requires.
+- A billing action completes without the step-up authentication the design requires.
 - One stolen MSP account or key runs commands on every device it can see.
 - A malicious or downgraded agent update reaches the fleet, or an agent trusts a server it
   should not.
@@ -79,17 +77,15 @@ end to end is Critical.
   role ceiling inside their own tenant.
 - A third-party OAuth/MCP client reaches a device action beyond its grant.
 - Untrusted data steers the AI agent into a privileged tool.
-- A remote-desktop or remote-shell session starts, or is joined, without the consent or the
-  human approver the design requires, or watches the end user without the on-screen indicator.
-- Backup tamper leads to a privileged restore, or recovery is destroyed or blocked ahead of an
-  attack (hold release, snapshot delete, destination rebind, retention shortening).
+- A remote-desktop or remote-shell session starts without the consent or the human approver the
+  design requires.
+- Backup tamper leads to a privileged restore, or backups are destroyed ahead of an attack.
 - A server-side fetch reaches internal hosts, cloud metadata, or an attacker's listener (SSRF),
   or a stored credential is sent to an attacker-chosen destination.
-- An anonymous caller causes a tenant action or cost, or exhausts a limiter or audit sink.
+- An anonymous caller causes a tenant action or cost, or resource exhaustion.
 - Portal, ticket, or inbound-mail content leads to staff phishing or ticket takeover.
 - A privileged action is approved without the second person or second factor the design requires.
-- A tenant lifecycle event (device/site/org transfer, org merge, partner suspension) leaves a
-  pre-event credential, cached authorization, or link able to reach data that moved.
+- Revoked or reduced access keeps working somewhere.
 
 ## How to exercise it
 
@@ -130,9 +126,8 @@ install stays vulnerable until its operator upgrades, so grade for them.
 - **Low**: best-practice hardening with no realistic attack, or anything requiring an already-
   compromised administrator or hosting operator.
 
-Reachability moves severity more than defect class: a missing row-level-security policy on a
-table that no route can reach is Low; the same gap behind an authenticated route is Critical.
-When severity depends on deployment or configuration, say "<base>, <raised> if <fact>" rather
+Reachability moves severity more than defect class: the same defect is graded by the weakest
+position from which an attacker can actually trigger it. When severity depends on deployment or configuration, say "<base>, <raised> if <fact>" rather
 than picking one silently.
 
 Prefer a reproducer that shows the boundary crossing (a request from tenant A that returns tenant

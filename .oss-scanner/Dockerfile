@@ -21,19 +21,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git python3 build-essential pkg-config curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Go toolchain for agent/ (version must match agent/go.mod and GO_VERSION in .github/workflows/ci.yml).
-ARG GO_VERSION=1.26.6
-RUN arch="$(dpkg --print-architecture)" \
-    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o /tmp/go.tgz \
-    && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz \
-    && go version
-
 # pnpm version must match packageManager in package.json.
 RUN npm install -g pnpm@10.34.5
 
 # scanner contract: the checkout lives inside the image, at /src
 COPY . /src
 WORKDIR /src
+
+# Go toolchain for agent/, at exactly the version agent/go.mod requires.
+RUN set -e; ver="$(sed -n 's/^go \([0-9.]*\).*/\1/p' agent/go.mod)"; arch="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://go.dev/dl/go${ver}.linux-${arch}.tar.gz" -o /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz \
+    && go version
 
 # --- JavaScript/TypeScript workspace (API, web, portal, shared packages, ee/ extensions) ---
 # Same as CI: one frozen install for the whole workspace.
