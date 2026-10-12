@@ -298,6 +298,28 @@ func TestCreateWaitsForAPointThatLagsInWMI(t *testing.T) {
 	}
 }
 
+func TestCreateDoesNotPollForASequenceZero(t *testing.T) {
+	// A success with no sequence identifies nothing to wait for. Polling for
+	// it would add the whole verify budget to every update on the legacy
+	// per-update patch path.
+	prevBudget := verifyBudget
+	verifyBudget = 5 * time.Second
+	t.Cleanup(func() { verifyBudget = prevBudget })
+
+	f := &fakeNative{beginSeq: 0}
+	start := time.Now()
+	out := createWith(context.Background(), Request{RequestID: "r1"}, newTestEnvironment(), f.api())
+	if out.Status != StatusVerificationFailed {
+		t.Fatalf("Status = %q, want %q", out.Status, StatusVerificationFailed)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("took %v: sequence 0 must not wait out the verify budget", elapsed)
+	}
+	if len(f.ended) != 0 {
+		t.Fatalf("END_SYSTEM_CHANGE sent for sequence 0: %v", f.ended)
+	}
+}
+
 func TestCreateMakesNoAttemptWithoutAPreCallSnapshot(t *testing.T) {
 	env := newTestEnvironment()
 	env.listPoints = func() ([]restorePointRow, error) { return nil, errors.New("WMI quota violation") }

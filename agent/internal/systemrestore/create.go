@@ -133,8 +133,14 @@ func createWith(ctx context.Context, req Request, env environment, native native
 		}
 
 		verifyEnv := env
-		verifyEnv.listPoints = func() ([]restorePointRow, error) {
-			return pollForPoint(ctx, list, candidate, desc, verifyBudget, verifyPollInterval)
+		verifyEnv.listPoints = list
+		if candidate != 0 {
+			// Only a real sequence is worth waiting for. Sequence 0 identifies
+			// nothing; one read lets classify report it without adding the
+			// whole budget to every update on the per-update patch path.
+			verifyEnv.listPoints = func() ([]restorePointRow, error) {
+				return pollForPoint(ctx, list, candidate, desc, verifyBudget, verifyPollInterval)
+			}
 		}
 		return classify(verifyEnv, req, desc, before, candidate, callErr)
 	}))
