@@ -32,6 +32,42 @@ async function addRel(s: Scope, from: string, to: string, lifecycle: 'active' | 
   return key;
 }
 const exists = (id: string) => system(async () => (await db.execute(sql`SELECT 1 FROM topology_nodes WHERE id=${id}::uuid`)).length === 1);
+const count = (from: ReturnType<typeof sql>) => system(async () => Number((await db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM ${from}`))[0]!.n));
+async function addPolicy(s: Scope, subjectNodeId: string | null) {
+  const id = crypto.randomUUID();
+  await system(() => db.execute(sql`INSERT INTO topology_monitoring_policies (id, org_id, site_id, key, definition, subject_node_id)
+    VALUES (${id}::uuid, ${s.orgId}::uuid, ${s.siteId}::uuid, ${'k-' + id.slice(0, 8)}, '{}'::jsonb, ${subjectNodeId}::uuid)`));
+  return id;
+}
+async function addArm(s: Scope & { deviceId: string }, nodeId: string, profileId: string, state: 'armed' | 'revoked') {
+  await system(() => db.execute(sql`INSERT INTO topology_telemetry_arms (org_id, site_id, target_node_id, collector_device_id, credential_profile_id, authority_key,
+      target_address, credential_digest, interfaces, state, revoked_at, armed_by, authority_actor, authority_permission_version, effect_digest, expires_at)
+    VALUES (${s.orgId}::uuid, ${s.siteId}::uuid, ${nodeId}::uuid, ${s.deviceId}::uuid, ${profileId}::uuid, ${'snmp:' + nodeId}, '192.0.2.9', ${'a'.repeat(64)},
+      '[{"ifIndex":1}]'::jsonb, ${state}, ${state === 'revoked' ? sql`now()` : null}, ${crypto.randomUUID()}::uuid, '{}'::jsonb, 'v1', ${'b'.repeat(64)}, now() + interval '1 day')`));
+}
+async function addRun(s: Scope, o: { subject: string; origin: string; state: string; queuedDaysAgo: number }) {
+  const at = agedAt(o.queuedDaysAgo);
+  await system(() => db.execute(sql`INSERT INTO topology_diagnostic_runs (org_id, site_id, recipe_id, recipe_version, requester_id, subject_node_id, origin_node_id,
+      origin_snapshot, plan, plan_digest, idempotency_key, body_hash, attempt_id, state, queued_at, queue_deadline, deadline, created_at, updated_at)
+    VALUES (${s.orgId}::uuid, ${s.siteId}::uuid, 'ping', 1, ${crypto.randomUUID()}::uuid, ${o.subject}::uuid, ${o.origin}::uuid, '{}'::jsonb, '{}'::jsonb,
+      ${'c'.repeat(64)}, ${crypto.randomUUID()}, ${'d'.repeat(64)}, ${crypto.randomUUID()}::uuid, ${o.state}, ${at}::timestamptz, ${at}::timestamptz + interval '1 minute', ${at}::timestamptz + interval '2 minutes', ${at}::timestamptz, ${at}::timestamptz)`));
+}
+/** Every FK onto topology_nodes (confdeltype c=CASCADE, a=NO ACTION). A new one fails this test until it is classified in
+ * unboundNodeRetention.ts: add a keeper predicate if deleting the node would lose operator intent, else list it here as accepted. */
+const KNOWN_NODE_FKS = [
+  'topology_nodes.alias_target_id:a',            // keeper: alias source/target
+  'topology_node_bindings.node_id:c',            // keeper: bound node is not unbound
+  'topology_node_positions.node_id:c',           // keeper when pinned; unpinned layout positions are derived
+  'topology_monitoring_policies.subject_node_id:c', // keeper
+  'topology_monitor_bindings.node_id:c',         // keeper
+  'topology_telemetry_arms.target_node_id:c',    // keeper while not revoked
+  'topology_diagnostic_runs.subject_node_id:c',  // keeper while in flight or inside the window
+  'topology_diagnostic_runs.origin_node_id:c',   // keeper while in flight or inside the window
+  'topology_relationships.source_node_id:c',     // keeper while active/recent; dead ones cascade by design
+  'topology_relationships.target_node_id:c',
+  'topology_observations.subject_node_id:c',     // derived evidence, cascades by design (support pointer released first)
+  'topology_interfaces.owner_node_id:c',         // derived inventory of the node itself, cascades by design
+];
 const purge = (s: Scope, limit?: number) => system(() => db.transaction(() => purgeAgedUnboundStubNodes(s, new Date(), limit)));
 
 describe('unbound topology stub node retention (#7267)', () => {
@@ -105,6 +141,67 @@ describe('unbound topology stub node retention (#7267)', () => {
       VALUES (${g.orgId}::uuid, ${g.siteId}::uuid, ${g.layoutId}::uuid, ${id}::uuid, 1, 1, true)`));
     expect((await purge(g)).deleted).toBe(0);
     expect(await exists(id)).toBe(true);
+  });
+
+  it('keeps a stub referenced by a monitoring policy and leaves the policy and its relationships intact', async () => {
+    const g = await createTopologyGraph();
+    const id = await addNode(g, 'lldp-chassis:mac:policy');
+    await addRel(g, g.nodeId, id, 'withdrawn');
+    const policyId = await addPolicy(g, id);
+    expect((await purge(g)).deleted).toBe(0);
+    expect(await exists(id)).toBe(true);
+    expect(await count(sql`topology_monitoring_policies WHERE id=${policyId}::uuid`)).toBe(1);
+    expect(await count(sql`topology_relationships WHERE source_node_id=${id}::uuid OR target_node_id=${id}::uuid`)).toBe(1);
+  });
+
+  it('keeps a stub referenced by a monitor binding and leaves the binding and its relationships intact', async () => {
+    const g = await createTopologyGraph();
+    const id = await addNode(g, 'mac-endpoint:aa:bb:cc:04:00:01');
+    await addRel(g, g.nodeId, id, 'archived');
+    const policyId = await addPolicy(g, null); // owner for the binding; deliberately NOT attached to the stub
+    await system(() => db.execute(sql`INSERT INTO topology_monitor_bindings (org_id, site_id, node_id, policy_id, context_key, family, metric_role)
+      VALUES (${g.orgId}::uuid, ${g.siteId}::uuid, ${id}::uuid, ${policyId}::uuid, 'ctx', 'ipv4', 'reachability')`));
+    expect((await purge(g)).deleted).toBe(0);
+    expect(await exists(id)).toBe(true);
+    expect(await count(sql`topology_monitor_bindings WHERE node_id=${id}::uuid`)).toBe(1);
+    expect(await count(sql`topology_relationships WHERE source_node_id=${id}::uuid OR target_node_id=${id}::uuid`)).toBe(1);
+  });
+
+  it('keeps a stub that is the target of a live telemetry arm, but not one whose arm was revoked', async () => {
+    const g = await createTopologyGraph();
+    const armed = await addNode(g, 'lldp-chassis:mac:armed');
+    const revoked = await addNode(g, 'lldp-chassis:mac:revoked');
+    const profileId = crypto.randomUUID();
+    await system(() => db.execute(sql`INSERT INTO discovery_profiles (id, org_id, site_id, name) VALUES (${profileId}::uuid, ${g.orgId}::uuid, ${g.siteId}::uuid, 'p')`));
+    await addArm(g, armed, profileId, 'armed');
+    await addArm(g, revoked, profileId, 'revoked');
+    expect((await purge(g)).deleted).toBe(1);
+    expect(await exists(armed)).toBe(true);
+    expect(await exists(revoked)).toBe(false);
+    expect(await count(sql`topology_telemetry_arms WHERE target_node_id=${armed}::uuid`)).toBe(1);
+  });
+
+  it('keeps a stub with an in-flight or recent diagnostic run (as subject or origin); drops it once the runs are old and terminal', async () => {
+    const g = await createTopologyGraph();
+    const inflight = await addNode(g, 'lldp-chassis:mac:diag-inflight');
+    const recentOrigin = await addNode(g, 'lldp-chassis:mac:diag-origin');
+    const oldDone = await addNode(g, 'lldp-chassis:mac:diag-old');
+    await addRun(g, { subject: inflight, origin: g.nodeId, state: 'running', queuedDaysAgo: OLD });
+    await addRun(g, { subject: g.nodeId, origin: recentOrigin, state: 'completed', queuedDaysAgo: 1 });
+    await addRun(g, { subject: oldDone, origin: g.nodeId, state: 'completed', queuedDaysAgo: OLD });
+    expect((await purge(g)).deleted).toBe(1);
+    expect(await exists(inflight)).toBe(true);
+    expect(await exists(recentOrigin)).toBe(true);
+    expect(await exists(oldDone)).toBe(false);
+  });
+
+  it('accounts for every foreign key onto topology_nodes: each is either a keeper rule or an accepted cascade', async () => {
+    const fks = await system(() => db.execute<{ tbl: string; col: string; del: string }>(sql`
+      SELECT c.conrelid::regclass::text AS tbl, a.attname AS col, c.confdeltype::text AS del
+      FROM pg_constraint c JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=c.conkey[1]
+      WHERE c.contype='f' AND c.confrelid='topology_nodes'::regclass ORDER BY 1,2`));
+    const seen = fks.map(r => `${r.tbl}.${r.col}:${r.del}`).sort();
+    expect(seen).toEqual([...KNOWN_NODE_FKS].sort());
   });
 
   it('removes the dead relationships and positions with the node, and never touches another site', async () => {

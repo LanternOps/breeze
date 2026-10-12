@@ -26,6 +26,10 @@ export function agedUnboundStubNodes(scope: TopologyScope, now: Date) {
       AND NOT EXISTS (SELECT 1 FROM topology_node_positions p WHERE p.org_id=n.org_id AND p.site_id=n.site_id AND p.node_id=n.id AND p.pinned)
       AND NOT EXISTS (SELECT 1 FROM topology_monitoring_policies m WHERE m.org_id=n.org_id AND m.site_id=n.site_id AND m.subject_node_id=n.id)
       AND NOT EXISTS (SELECT 1 FROM topology_monitor_bindings mb WHERE mb.org_id=n.org_id AND mb.site_id=n.site_id AND mb.node_id=n.id)
+      AND NOT EXISTS (SELECT 1 FROM topology_telemetry_arms ta WHERE ta.org_id=n.org_id AND ta.site_id=n.site_id AND ta.target_node_id=n.id AND ta.state<>'revoked')
+      AND NOT EXISTS (SELECT 1 FROM topology_diagnostic_runs dr WHERE dr.org_id=n.org_id AND dr.site_id=n.site_id
+        AND (dr.subject_node_id=n.id OR dr.origin_node_id=n.id)
+        AND (dr.state IN ('queued','running') OR dr.queued_at >= ${cutoff}::timestamptz OR dr.finished_at >= ${cutoff}::timestamptz))
       AND NOT EXISTS (SELECT 1 FROM topology_relationships r WHERE r.org_id=n.org_id AND r.site_id=n.site_id
         AND (r.source_node_id=n.id OR r.target_node_id=n.id)
         AND (r.lifecycle='active' OR r.updated_at >= ${cutoff}::timestamptz OR r.last_supported_at >= ${cutoff}::timestamptz))`;
@@ -40,8 +44,11 @@ export function agedUnboundStubNodes(scope: TopologyScope, now: Date) {
  * a re-sighting simply re-creates the stub from its identity key.
  *
  * Kept: any node with a binding (not unbound), a user label, a pinned
- * position, a monitoring policy/binding, or an alias relationship in either
+ * position, a monitoring policy/binding, a non-revoked telemetry arm, an
+ * in-flight or in-window diagnostic run, or an alias relationship in either
  * direction. Those carry operator intent, or would trip the NO ACTION alias FK.
+ * Every FK onto topology_nodes is classified in the integration test's
+ * KNOWN_NODE_FKS; a new one fails it until it is handled here.
  */
 export async function purgeAgedUnboundStubNodes(scope: TopologyScope, now = new Date(), limit = UNBOUND_STUB_BATCH): Promise<{ deleted: number; more: boolean }> {
   assertInTransaction('purgeAgedUnboundStubNodes');
