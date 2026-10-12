@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext, getCurrentDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -2799,7 +2799,9 @@ export async function resolveMonitoringConfigForDisplay(deviceId: string): Promi
   }
   const ctx = getCurrentDbAccessContext();
   if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) return null;
-  const resolution = await resolveDeviceMonitoringSettings(deviceId);
+  // Savepoint: a SQL error here is caught upstream (fail open), but on the bare
+  // request transaction it would abort/poison the caller's commit (25P02).
+  const resolution = await withDbTransaction(() => resolveDeviceMonitoringSettings(deviceId));
   return resolution.kind === 'unresolved' ? null : resolution.settings;
 }
 

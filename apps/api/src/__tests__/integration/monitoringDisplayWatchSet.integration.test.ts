@@ -186,9 +186,11 @@ describe('monitoring display watch set resolves in the caller context (#8287)', 
     const f = await seedFixture();
     await purgeCache(f.deviceId);
     const redis = getRedis();
+    expect(redis).not.toBeNull(); // test-stack provides Redis; a null client would make this vacuous
 
-    await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId);
+    const { keys } = await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId);
 
-    if (redis) expect(await redis.get(cacheKey(f.deviceId))).toBeNull();
+    expect(keys).not.toBeNull(); // the resolver actually ran (cache miss → resolved)
+    expect(await redis!.get(cacheKey(f.deviceId))).toBeNull();
   });
 });
