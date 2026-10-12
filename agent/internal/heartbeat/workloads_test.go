@@ -150,6 +150,24 @@ func TestApplyConfigUpdateDispatchesWorkloadSettings(t *testing.T) {
 	}
 }
 
+// The exact bytes the API puts in configUpdate (toWorkloadInventoryConfigUpdate
+// in apps/api/src/services/workloads/configUpdate.ts), decoded the way a
+// heartbeat response is. Every runtime flag is set opposite to its default so a
+// renamed key cannot pass by falling back to the default.
+func TestApplyConfigUpdateDecodesTheAPIWireShape(t *testing.T) {
+	const wire = `{"workload_inventory_settings":{"enabled":true,"docker_enabled":false,"podman_enabled":false,"hyperv_enabled":false,"proxmox_enabled":false,"interval_minutes":15}}`
+	var update map[string]any
+	if err := json.Unmarshal([]byte(wire), &update); err != nil {
+		t.Fatal(err)
+	}
+	h, r, _ := newWorkloadsHeartbeat(t, fixedCollector())
+	h.applyConfigUpdate(update)
+	want := workloads.Settings{Enabled: true, IntervalMinutes: 15}
+	if r.settings != want {
+		t.Fatalf("settings = %+v, want %+v", r.settings, want)
+	}
+}
+
 func TestWorkloadsCycleSendsToTheContractEndpoint(t *testing.T) {
 	h, r, sent := newWorkloadsHeartbeat(t, fixedCollector("a"))
 	h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 60.0})
@@ -401,5 +419,26 @@ func TestHeartbeatDeclaresWorkloadInventoryCapability(t *testing.T) {
 	}
 	if v, ok := decoded.SecurityCapabilities["workloadInventoryProtocolVersion"]; !ok || v != float64(1) {
 		t.Fatalf("capabilities on the wire = %v", decoded.SecurityCapabilities)
+	}
+}
+
+// A permanent rejection (a 4xx other than 408/429: schema mismatch, a server
+// without the route, an agent not authorized) waits the full interval instead
+// of re-collecting and re-uploading every retry period; transient failures
+// keep the short retry.
+func TestWorkloadsPermanentRejectionWaitsTheFullInterval(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		retry  bool
+	}{{400, false}, {404, false}, {403, false}, {413, false}, {408, true}, {429, true}, {500, true}, {503, true}} {
+		h, r, _ := newWorkloadsHeartbeat(t, fixedCollector("a"), tc.status)
+		h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 1440.0})
+		next := h.workloadsCycle(r, time.Now())
+		if r.lastHash != "" {
+			t.Fatalf("status %d advanced the hash", tc.status)
+		}
+		if got := next == workloadsRetryDelay; got != tc.retry {
+			t.Errorf("status %d: next = %v, want short retry %v", tc.status, next, tc.retry)
+		}
 	}
 }

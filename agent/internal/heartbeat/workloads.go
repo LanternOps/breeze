@@ -3,6 +3,8 @@ package heartbeat
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"hash/fnv"
 	"math"
 	"strconv"
@@ -56,6 +58,19 @@ type workloadsUpload struct {
 }
 
 func (p workloadsUpload) MarshalJSON() ([]byte, error) { return json.Marshal(p.data) }
+
+// workloadsSubmissionError is a non-2xx answer to PUT /agents/{id}/workloads.
+type workloadsSubmissionError struct{ status int }
+
+func (e *workloadsSubmissionError) Error() string {
+	return fmt.Sprintf("inventory send failed for workloads: status %d", e.status)
+}
+
+// permanent reports a rejection that resending the same report cannot fix
+// soon: a 4xx other than 408 (timeout) and 429 (rate limited).
+func (e *workloadsSubmissionError) permanent() bool {
+	return e.status >= 400 && e.status < 500 && e.status != 408 && e.status != 429
+}
 
 func (h *Heartbeat) initWorkloads() {
 	col := workloads.New(workloads.DefaultDrivers())
@@ -282,7 +297,13 @@ func (h *Heartbeat) workloadsCycle(r *workloadsRuntime, now time.Time) time.Dura
 		return next
 	}
 	if err := h.sendInventoryData("workloads", workloadsUpload{ctx: r.ctx, data: report}, "workloads"); err != nil {
-		log.Warn("workload inventory submission failed", "error", err)
+		// sendInventoryData has already logged the failure and its status.
+		var subErr *workloadsSubmissionError
+		if errors.As(err, &subErr) && subErr.permanent() {
+			// Re-sending the same report would be rejected the same way; wait
+			// for the next scheduled cycle rather than re-uploading every retry.
+			return next
+		}
 		if next > workloadsRetryDelay {
 			return workloadsRetryDelay
 		}

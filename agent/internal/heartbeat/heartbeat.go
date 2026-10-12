@@ -2522,6 +2522,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	if endpoint == "time-status" {
 		return &timeSyncSubmissionError{status: resp.StatusCode}
 	}
+	if endpoint == "workloads" {
+		return &workloadsSubmissionError{status: resp.StatusCode}
+	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
 

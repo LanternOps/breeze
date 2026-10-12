@@ -105,3 +105,19 @@ func TestCollectorNeverReportsOKOutsidePresentEnumeratedRuntimes(t *testing.T) {
 		t.Fatalf("Collect ran without a present detection: unknown=%d absent=%d", unknown.collected, absent.collected)
 	}
 }
+
+// A shutdown that lands while the last driver runs turns its in-flight requests
+// into errors; that report describes the cancellation, not the host, and must
+// not be returned.
+func TestCollectorReturnsNilWhenCancelledDuringTheLastDriver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	last := presentDriver(RuntimePodman)
+	last.collect = func(context.Context, Detection) Result {
+		cancel()
+		return Result{Collection: CollectionError, Error: "request_failed"}
+	}
+	if rep := New([]Driver{presentDriver(RuntimeDocker, wl("a")), last}, WithClock(fixedNow)).Collect(ctx, enabled()); rep != nil {
+		t.Fatalf("report built during shutdown was returned: %+v", rep.Runtimes)
+	}
+}

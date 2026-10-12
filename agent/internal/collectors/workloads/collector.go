@@ -66,6 +66,10 @@ func (c *Collector) Collect(ctx context.Context, s Settings) *Report {
 		}
 		report.Runtimes = append(report.Runtimes, c.collectOne(ctx, d, s))
 	}
+	if ctx.Err() != nil {
+		// Cancelled mid-driver: its errors describe the shutdown, not the host.
+		return nil
+	}
 	report.fitPayload(MaxPayloadBytes)
 	return report
 }

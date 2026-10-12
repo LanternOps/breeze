@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -148,8 +149,15 @@ func (d *engineDriver) Detect(ctx context.Context) Detection {
 	}
 	var v engineVersion
 	vs, vb, verr := d.get(ctx, "/version", maxSmallBytes)
-	if verr == nil && vs == http.StatusOK {
-		_ = json.Unmarshal(vb, &v)
+	switch {
+	case verr != nil:
+		slog.Debug("workloads: engine version probe failed", "runtime", d.runtime, "error", verr.Error())
+	case vs != http.StatusOK:
+		slog.Debug("workloads: engine version probe failed", "runtime", d.runtime, "status", vs)
+	default:
+		if err := json.Unmarshal(vb, &v); err != nil {
+			slog.Debug("workloads: engine version not decodable", "runtime", d.runtime, "error", err.Error())
+		}
 	}
 	if v.known() && v.isPodman() != (d.runtime == RuntimePodman) {
 		return Detection{State: DetectionAbsent}
@@ -237,18 +245,27 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 	}
 	status, body, err := d.get(ctx, "/containers/json?all=1", maxListBytes)
 	if res, failed := failureResult(status, err); failed {
+		// The report carries only a code; the cause stays in the local log.
+		slog.Warn("workloads: container list failed", "runtime", d.runtime, "code", res.Error, "status", status, "error", errString(err))
 		return res
 	}
 	var containers []apiContainer
 	if err := json.Unmarshal(body, &containers); err != nil {
+		slog.Warn("workloads: container list not decodable", "runtime", d.runtime, "error", err.Error())
 		return Result{Collection: CollectionError, Error: "decode_failed"}
 	}
 
+	// Without the image list, containers still report but lose digest and tag
+	// recovery, so the snapshot is marked incomplete rather than failed.
 	complete, code := true, ""
 	images := map[string]apiImage{}
 	istatus, ibody, ierr := d.get(ctx, "/images/json", maxListBytes)
 	var list []apiImage
-	if ierr != nil || istatus != http.StatusOK || json.Unmarshal(ibody, &list) != nil {
+	if ierr == nil && istatus == http.StatusOK {
+		ierr = json.Unmarshal(ibody, &list)
+	}
+	if ierr != nil || istatus != http.StatusOK {
+		slog.Warn("workloads: image list failed", "runtime", d.runtime, "status", istatus, "error", errString(ierr))
 		complete, code = false, "images_list_failed"
 	}
 	for _, img := range list {
@@ -423,4 +440,11 @@ func orderAndCap(ws []Workload) ([]Workload, bool) {
 		return ws[:MaxWorkloadsPerRuntime:MaxWorkloadsPerRuntime], true
 	}
 	return ws, false
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
