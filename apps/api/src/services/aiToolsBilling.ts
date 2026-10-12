@@ -382,7 +382,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
 
             const deviceEvidence = new Map<string, readonly DeviceSnapshotRow[]>();
-            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence);
+            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence, { includeHourBlock: false });
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
 

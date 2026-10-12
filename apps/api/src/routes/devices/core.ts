@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, asc, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
@@ -1904,6 +1904,29 @@ coreRoutes.get(
   }
 );
 
+/**
+ * Site-move hardening (topology site location W1, spec S§12). A 409 names the device's current
+ * site only when the caller may see that site; otherwise it says nothing about where it went.
+ */
+function siteChangedConflict(c: Context, currentSiteId: string | null | undefined) {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const visible = !!currentSiteId && (!perms || canAccessSite(perms, currentSiteId));
+  return c.json({ error: 'device_site_changed' as const, ...(visible ? { currentSiteId } : {}) }, 409);
+}
+/** Thrown inside the site-move savepoint when the guarded UPDATE matches no row, so nothing in it commits. */
+class SiteMoveConflict extends Error {
+  constructor() { super('device site changed during the move'); }
+}
+export type SiteMoveAuditInput = {
+  from: string; fromName: string | null; to: string; toName: string | null;
+  expectedSiteId: string | null; trigger: 'manual' | 'topology_suggestion';
+};
+/** `device.site_move` audit details (S§12.4). W3 adds server-derived suggestion evidence here. */
+export function siteMoveAuditDetails(input: SiteMoveAuditInput): Record<string, unknown> {
+  return { fromSiteId: input.from, fromSiteName: input.fromName, toSiteId: input.to, toSiteName: input.toName,
+    expectedSiteId: input.expectedSiteId, trigger: input.trigger };
+}
+
 // PATCH /devices/:id - Update device
 coreRoutes.patch(
   '/:id',
@@ -1914,7 +1937,7 @@ coreRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
-    const data = c.req.valid('json');
+    const { expectedSiteId, siteMoveTrigger, ...data } = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -1927,12 +1950,17 @@ coreRoutes.patch(
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // The caller acted on a stale view of the device's site: refuse before any write (S§12.2).
+    if (expectedSiteId !== undefined && expectedSiteId.toLowerCase() !== device.siteId.toLowerCase()) {
+      return siteChangedConflict(c, device.siteId);
+    }
 
     // If moving to a different site, verify it's in the same org AND that a
     // site-restricted caller is allowed to place a device into the TARGET site.
     // The source device is already site-gated by getDeviceWithOrgAndSiteCheck
     // above; without this the caller could move a device into a site outside
     // their `allowedSiteIds` allowlist. Mirrors the gate in provision.ts.
+    let targetSiteName: string | null = null;
     if (data.siteId && data.siteId !== device.siteId) {
       const [targetSite] = await db
         .select()
@@ -1948,6 +1976,7 @@ coreRoutes.patch(
       if (!targetSite) {
         return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
       }
+      targetSiteName = targetSite.name ?? null;
 
       const perms = c.get('permissions') as UserPermissions | undefined;
       if (perms?.allowedSiteIds && !canAccessSite(perms, data.siteId)) {
@@ -1977,6 +2006,28 @@ coreRoutes.patch(
       customFieldWrites = validation.writes;
     }
 
+    // Site-move concurrency guard (S§12.1), before ANY write of this request: lock the device row
+    // and re-read its site. A concurrent move that committed after the access check above makes
+    // this read return the new site (READ COMMITTED re-reads the latest version once the lock is
+    // granted), so the loser gets a 409 instead of silently overwriting the winner — and none of
+    // this request's writes (custom fields included) happen. The lock is held until the request
+    // transaction commits, so the guarded UPDATE below cannot lose the row in between.
+    const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
+    let sourceSiteName: string | null = null;
+    if (siteChanged) {
+      // devices alone: a joined relation would keep its pre-wait row in the post-lock recheck and drop the row.
+      const [locked] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .for('update');
+      if (!locked || locked.siteId !== device.siteId) {
+        return siteChangedConflict(c, locked?.siteId);
+      }
+      const [sourceSite] = await db.select({ name: sites.name }).from(sites).where(eq(sites.id, device.siteId)).limit(1);
+      sourceSiteName = sourceSite?.name ?? null;
+    }
+
     // Values go to `device_custom_field_values`; `devices.custom_fields` is a
     // trigger-maintained projection of that table now (#3257 W05), so this
     // PATCH must NOT put `customFields` in its own `updates` set — the write
@@ -1985,13 +2036,16 @@ coreRoutes.patch(
     // BEFORE the devices UPDATE below so that statement's RETURNING already
     // carries the rebuilt projection; the whole handler runs inside the
     // request transaction, so a later failure rolls both back together.
-    if (customFieldWrites.length > 0) {
+    // A site move persists them inside its savepoint instead (below), so a guarded-UPDATE conflict
+    // rolls them back with the move.
+    if (customFieldWrites.length > 0 && !siteChanged) {
       await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.displayName !== undefined) updates.displayName = data.displayName;
-    if (data.siteId !== undefined) updates.siteId = data.siteId;
+    // Only a real move writes site_id: echoing the current site must not rewrite a concurrent move back.
+    if (siteChanged) updates.siteId = data.siteId;
     if (data.tags !== undefined) updates.tags = data.tags;
     if (data.deviceRole !== undefined) {
       updates.deviceRole = data.deviceRole;
@@ -2017,24 +2071,35 @@ coreRoutes.patch(
     // breeze_topology_inventory_lifecycle detaches the old current binding
     // BEFORE the device UPDATE, so the generic loop cannot drag historical
     // topology nodes, manual facts or pins into the destination site.
-    const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
-
+    // The UPDATE is guarded on the site read at the access check (S§12.1): zero rows means the
+    // device moved under us, and the savepoint rolls back before the denormalized loop runs.
     let updated: typeof devices.$inferSelect | undefined;
     if (siteChanged) {
-      await db.transaction(async (tx) => {
-        const [row] = await tx
-          .update(devices)
-          .set(updates)
-          .where(eq(devices.id, deviceId))
-          .returning();
-        updated = row;
+      try {
+        await db.transaction(async (tx) => {
+          // Same connection as the savepoint, so a SiteMoveConflict below rolls these back too.
+          if (customFieldWrites.length > 0) {
+            await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
+          }
+          const [row] = await tx
+            .update(devices)
+            .set(updates)
+            .where(and(eq(devices.id, deviceId), eq(devices.siteId, device.siteId)))
+            .returning();
+          if (!row) throw new SiteMoveConflict();
+          updated = row;
 
-        for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
-          await tx.execute(
-            sql`UPDATE ${sql.identifier(table)} SET site_id = ${data.siteId}::uuid WHERE device_id = ${deviceId}::uuid`,
-          );
-        }
-      });
+          for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
+            await tx.execute(
+              sql`UPDATE ${sql.identifier(table)} SET site_id = ${data.siteId}::uuid WHERE device_id = ${deviceId}::uuid`,
+            );
+          }
+        });
+      } catch (error) {
+        if (!(error instanceof SiteMoveConflict)) throw error;
+        const [current] = await db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
+        return siteChangedConflict(c, current?.siteId);
+      }
     } else {
       const [row] = await db
         .update(devices)
@@ -2058,6 +2123,18 @@ coreRoutes.patch(
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
       details: { changedFields: Object.keys(data) }
     });
+    if (siteChanged) {
+      // Post-commit audit via the route audit queue, like moveOrg.ts (S§12.4).
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'device.site_move',
+        resourceType: 'device',
+        resourceId: updated?.id ?? deviceId,
+        resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+        details: siteMoveAuditDetails({ from: device.siteId, fromName: sourceSiteName, to: data.siteId!, toName: targetSiteName,
+          expectedSiteId: expectedSiteId ?? null, trigger: siteMoveTrigger ?? 'manual' }),
+      });
+    }
 
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle

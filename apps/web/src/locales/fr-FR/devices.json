@@ -358,7 +358,9 @@
     "current": "(actuel)",
     "cancel": "Annuler",
     "moving": "En mouvement...",
-    "toADifferentSite": "vers un autre site."
+    "toADifferentSite": "vers un autre site.",
+    "deviceMovedByOther": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel",
+    "policyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s'appliquent à {{device}}. Breeze ne le remettra pas en place automatiquement."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossible de créer un groupe",
@@ -2243,7 +2245,8 @@
     "displayName": "Nom d’affichage",
     "errors": {
       "loadSites": "Impossible de charger les sites",
-      "saveSettings": "Impossible d’enregistrer les paramètres"
+      "saveSettings": "Impossible d’enregistrer les paramètres",
+      "siteChanged": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel"
     },
     "hostname": "Nom d’hôte : {{hostname}}",
     "saved": "Paramètres de l’appareil enregistrés",
@@ -3696,7 +3699,15 @@
     "cancelled": "Action en file d'attente annulée",
     "cancelFailed": "Échec de l'annulation de l'action en file d'attente",
     "loadFailed": "Impossible de charger les actions en file d'attente.",
-    "empty": "Aucune action en file d'attente"
+    "empty": "Aucune action en file d'attente",
+    "powerHold": {
+      "title": "{{action}} attend la fin d’une commande en cours",
+      "body": "{{action}} sera envoyé une fois que l’appareil aura terminé ses commandes en cours. {{command}} est en cours depuis {{minutes}} min sans résultat.",
+      "markFailed": "Marquer en échec",
+      "markFailedIn": "Vous pourrez la marquer en échec dans {{minutes}} min.",
+      "markedFailed": "Commande marquée en échec",
+      "markFailedFailed": "Impossible de marquer la commande en échec"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Ajouter un actif manuel",

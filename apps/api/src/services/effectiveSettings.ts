@@ -6,6 +6,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
 import { aiBudgets } from '../db/schema/ai';
 import { keepsStoredSettingsSecret } from './settingsSecretMasking';
+import { clampSessionTimeoutInSettings } from './sessionTimeoutLimits';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,6 +191,12 @@ export async function getEffectiveOrgSettings(
     ) {
       effective[category] = mergeCategory(category, partnerCat, orgCat, locked);
     }
+  }
+
+  // #6111 — a stored session timeout above the 720-minute ceiling (written
+  // before the cap existed) is reported clamped, partner-locked or not.
+  if (effective.security) {
+    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
   }
 
   // Merge AI budget

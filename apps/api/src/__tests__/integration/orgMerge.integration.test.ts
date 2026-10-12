@@ -1728,3 +1728,53 @@ describe('blocks-merge: durable PAM evidence refuses the merge', () => {
     ).resolves.toEqual({ moved: 0, dropped: 0, notes: [] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// blocks-merge: both organizations hold a live block of hours
+// ---------------------------------------------------------------------------
+
+describe('blocks-merge: both organizations hold a live block of hours (#4547 W03, Open Decision 14)', () => {
+  let f: Fixture;
+  beforeEach(async () => {
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    f = await seedFixture();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** One draft contract with one live (or retired) block line for `orgId`. */
+  async function seedBlock(orgId: string, opts: { retired?: boolean } = {}): Promise<string> {
+    const contractId = randomUUID();
+    const lineId = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO contracts (id, partner_id, org_id, name, status, billing_timing, interval_months, start_date, currency_code)
+      VALUES (${contractId}::uuid, ${f.partner}::uuid, ${orgId}::uuid, 'Block contract', 'draft', 'advance', 1, '2026-12-01', 'USD')`);
+    await getTestDb().execute(sql`
+      INSERT INTO contract_lines (id, contract_id, org_id, line_type, description, unit_price, taxable,
+        included_quantity, overage_mode, overage_unit_price, rollover_policy, hour_block_first_period_start, hour_block_retired_at)
+      VALUES (${lineId}::uuid, ${contractId}::uuid, ${orgId}::uuid, 'hour_block', 'Support block', '1000.00', false,
+        '10.00', 'bill', '150.00', 'none', '2026-12-01', ${opts.retired ? sql`now()` : sql`NULL`})`);
+    return lineId;
+  }
+
+  it('preview and execute refuse the pair with the typed message; the loser is never fenced', async () => {
+    await seedBlock(f.loser);
+    await seedBlock(f.survivor);
+    const before = await snapshotOrgState(f.loser);
+    await expect(orgMergeModule.previewOrgMerge(f.loser, f.survivor, f.partner))
+      .rejects.toMatchObject({ name: 'MergeValidationError', message: expect.stringContaining('live block of hours') });
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser');
+    await expect(orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
+      performedBy: f.actor, performedByEmail: f.actorEmail,
+    })).rejects.toMatchObject({ name: 'MergeValidationError', message: expect.stringContaining('retire one first') });
+    expect(fence).not.toHaveBeenCalled();
+    expect(await snapshotOrgState(f.loser)).toEqual(before);
+  });
+
+  it('is allowed when only one side holds a live block, or when the other side is retired', async () => {
+    await seedBlock(f.loser);
+    await expect(orgMergeModule.previewOrgMerge(f.loser, f.survivor, f.partner)).resolves.toBeDefined();
+    await seedBlock(f.survivor, { retired: true });
+    await expect(orgMergeModule.previewOrgMerge(f.loser, f.survivor, f.partner)).resolves.toBeDefined();
+  });
+});

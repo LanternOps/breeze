@@ -451,7 +451,9 @@
       "allMissingRate": "Nada pôde ser faturado: todos os lançamentos de tempo faturáveis deste ticket estão sem valor por hora.",
       "missingRateHeading": "Lançamentos de tempo sem valor por hora (não faturados — defina um valor e crie a fatura novamente):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Definir um valor na folha de horas"
+      "setRate": "Definir um valor na folha de horas",
+      "heldForHourBlock_one": "{{count}} lançamento de tempo ({{hours}} horas) está retido para o banco de horas desta organização e será cobrado quando o período do banco for encerrado.",
+      "heldForHourBlock_other": "{{count}} lançamentos de tempo ({{hours}} horas) estão retidos para o banco de horas desta organização e serão cobrados quando o período do banco for encerrado."
     },
     "move": {
       "open": "Mover para outra org…",

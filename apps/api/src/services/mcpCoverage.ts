@@ -353,6 +353,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
   'contracts/documents.ts': { gap: '#6784' },
   'contracts/generate.ts': { gap: '#6784' },
+  'contracts/hourPeriods.ts': { tools: ['get_contract'] },
   'contracts/lifecycle.ts': { tools: ['manage_contracts'] },
   'contracts/lines.ts': { tools: ['manage_contracts'] },
   'contracts/periods.ts': { gap: '#6784' },

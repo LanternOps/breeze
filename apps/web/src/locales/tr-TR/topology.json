@@ -730,6 +730,22 @@
     "linkVia": "{{name}} üzerinden",
     "siteNetworks_one": "{{count}} ağ",
     "siteNetworks_other": "{{count}} ağ",
-    "noObservedLink": "{{network}} ile {{primary}} arasında gözlemlenen bağlantı yok"
+    "noObservedLink": "{{network}} ile {{primary}} arasında gözlemlenen bağlantı yok",
+    "rosterHeading": "Diğer / tanımlanmamış ağlar ({{count}})",
+    "rosterNetworkVia": "{{prefix}} ({{gateways}} üzerinden)",
+    "rosterUnidentified": "Ağ tanımlanamadı",
+    "notDeclared": "{{site}} için bildirilmemiş",
+    "showOtherNetworks": "Diğer ağları haritada göster",
+    "declareHint": "{{site}} için bildirilmiş ağ yok. Cihazlar bildirdikleri ağlara göre gruplanır. Breeze'in ziyaretçileri ve yanlış atanmış cihazları ayırt edebilmesi için bu sitenin ağlarını bir keşif profilinde bildirin.",
+    "declareHintLink": "Keşif profillerini aç",
+    "siteIntro": "{{site}} sitesine atanan cihazlar, her birinin bildirdiği ağa göre gruplanmış",
+    "thisSite": "bu site",
+    "declaredDiscovery": "Bu site için bildirilmiş (keşif profili)",
+    "declaredBaseline": "Bu site için bildirilmiş (ağ temel çizgisi)",
+    "declaredBoth": "Bu site için bildirilmiş (keşif profili ve ağ temel çizgisi)",
+    "declaredEmpty": "{{site}} için bildirilmiş — hiçbir cihaz bu ağı bildirmiyor",
+    "declaredColumn": "Bildirilmiş",
+    "declaredYes": "Evet",
+    "declaredNo": "Hayır"
   }
 }

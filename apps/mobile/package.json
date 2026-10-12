@@ -35,6 +35,7 @@
     "expo-image-picker": "~57.0.20",
     "expo-linking": "~57.0.11",
     "expo-local-authentication": "~57.0.3",
+    "expo-location": "~57.0.20",
     "expo-modules-core": "~57.0.20",
     "expo-notifications": "~57.0.21",
     "expo-secure-store": "~57.0.4",

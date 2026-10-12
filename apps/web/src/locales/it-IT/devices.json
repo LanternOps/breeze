@@ -358,7 +358,9 @@
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
-    "toADifferentSite": "in un sito diverso."
+    "toADifferentSite": "in un sito diverso.",
+    "deviceMovedByOther": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale",
+    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -2243,7 +2245,8 @@
     "displayName": "Nome visualizzato",
     "errors": {
       "loadSites": "Impossibile caricare i siti",
-      "saveSettings": "Impossibile salvare le impostazioni"
+      "saveSettings": "Impossibile salvare le impostazioni",
+      "siteChanged": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale"
     },
     "hostname": "Nome host: {{hostname}}",
     "saved": "Impostazioni del dispositivo salvate",
@@ -3696,7 +3699,15 @@
     "cancelled": "Azione in coda annullata",
     "cancelFailed": "Impossibile annullare l'azione in coda",
     "loadFailed": "Impossibile caricare le azioni in coda.",
-    "empty": "Nessuna azione in coda"
+    "empty": "Nessuna azione in coda",
+    "powerHold": {
+      "title": "{{action}} è in attesa di un comando in esecuzione",
+      "body": "{{action}} verrà inviato quando il dispositivo avrà terminato i comandi in esecuzione. {{command}} è in esecuzione da {{minutes}} min senza risultato.",
+      "markFailed": "Segna come non riuscito",
+      "markFailedIn": "Potrai segnarlo come non riuscito tra {{minutes}} min.",
+      "markedFailed": "Comando segnato come non riuscito",
+      "markFailedFailed": "Impossibile segnare il comando come non riuscito"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Aggiungi risorsa manuale",

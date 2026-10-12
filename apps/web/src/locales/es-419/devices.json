@@ -358,7 +358,9 @@
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
-    "toADifferentSite": "a un sitio diferente."
+    "toADifferentSite": "a un sitio diferente.",
+    "deviceMovedByOther": "Alguien más movió este dispositivo: recarga para ver su sitio actual",
+    "policyNote": "Al moverlo cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a {{device}}. Breeze no lo devolverá automáticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "No se pudo crear el grupo",
@@ -2243,7 +2245,8 @@
     "displayName": "Nombre para mostrar",
     "errors": {
       "loadSites": "No se pudieron cargar los sitios",
-      "saveSettings": "No se pudo guardar la configuración"
+      "saveSettings": "No se pudo guardar la configuración",
+      "siteChanged": "Alguien más movió este dispositivo: recarga para ver su sitio actual"
     },
     "hostname": "Nombre de host: {{hostname}}",
     "saved": "Configuración del dispositivo guardada",
@@ -3696,7 +3699,15 @@
     "cancelled": "Acción en cola cancelada",
     "cancelFailed": "No se pudo cancelar la acción en cola",
     "loadFailed": "No se pudieron cargar las acciones en cola.",
-    "empty": "No hay acciones en cola"
+    "empty": "No hay acciones en cola",
+    "powerHold": {
+      "title": "{{action}} está esperando un comando en ejecución",
+      "body": "{{action}} se enviará cuando el dispositivo termine los comandos en ejecución. {{command}} lleva {{minutes}} min en ejecución sin resultado.",
+      "markFailed": "Marcar como fallido",
+      "markFailedIn": "Podrás marcarlo como fallido en {{minutes}} min.",
+      "markedFailed": "Comando marcado como fallido",
+      "markFailedFailed": "No se pudo marcar el comando como fallido"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Agregar activo manual",

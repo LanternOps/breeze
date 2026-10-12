@@ -112,10 +112,23 @@ export interface AcquireOptions {
   signal?: AbortSignal;
 }
 
+/** W08: window for the grant-wait p95 that admission control reads. */
+export const POOL_WAIT_STATS_WINDOW_MS = 3_000;
+
+/** W08 admission-control inputs. Separate from snapshot() so W04's snapshot shape is unchanged. */
+export interface PoolWaitStats {
+  /** Age of the oldest waiter in either queue, ms; 0 when nobody waits. */
+  oldestWaitMs: number;
+  /** p95 wait of permits granted in the last POOL_WAIT_STATS_WINDOW_MS, ms (fast-path grants count as 0). */
+  grantWaitP95Ms: number;
+  grantsInWindow: number;
+}
+
 export interface PoolAdmission {
   acquire(label: string, options?: AcquireOptions): Promise<PoolSlot>;
   snapshot(): PoolAdmissionSnapshot;
   totals(): PoolAdmissionTotals;
+  waitStats(): PoolWaitStats;
 }
 
 interface Waiter {
@@ -123,9 +136,16 @@ interface Waiter {
   nested: boolean;
   resolve: (slot: PoolSlot) => void;
   detach: () => void;
+  enqueuedAtMs: number;
 }
 
-export function createPoolAdmission(input: { permits: number; nestedReserve?: number }): PoolAdmission {
+export function createPoolAdmission(input: {
+  permits: number;
+  nestedReserve?: number;
+  /** Monotonic clock in ms; tests inject one. Used only for wait statistics. */
+  now?: () => number;
+}): PoolAdmission {
+  const now = input.now ?? (() => performance.now());
   const permits = input.permits;
   if (!Number.isInteger(permits) || permits < 1) {
     throw new RangeError(`pool admission permits must be an integer >= 1, got ${permits}`);
@@ -146,6 +166,30 @@ export function createPoolAdmission(input: { permits: number; nestedReserve?: nu
     abandoned: 0,
     abandonedReturned: { rollback: 0, 'connection-closed': 0 },
     cancelledWaiters: 0,
+  };
+
+  let grantWaits: Array<{ atMs: number; waitMs: number }> = [];
+  const recordGrant = (waitMs: number): void => {
+    grantWaits.push({ atMs: now(), waitMs });
+    if (grantWaits.length > 8_192) grantWaits = grantWaits.slice(-4_096);
+  };
+  const waitStats = (): PoolWaitStats => {
+    const nowMs = now();
+    const cutoff = nowMs - POOL_WAIT_STATS_WINDOW_MS;
+    let first = 0;
+    while (first < grantWaits.length && grantWaits[first]!.atMs < cutoff) first += 1;
+    if (first > 0) grantWaits = grantWaits.slice(first);
+    const waits = grantWaits.map((grant) => grant.waitMs).sort((a, b) => a - b);
+    // Both queues are FIFO, so each head is that queue's oldest waiter.
+    let oldestWaitMs = 0;
+    for (const head of [topWaiters[0], nestedWaiters[0]]) {
+      if (head) oldestWaitMs = Math.max(oldestWaitMs, nowMs - head.enqueuedAtMs);
+    }
+    return {
+      oldestWaitMs,
+      grantWaitP95Ms: waits.length === 0 ? 0 : waits[Math.max(0, Math.ceil(waits.length * 0.95) - 1)]!,
+      grantsInWindow: waits.length,
+    };
   };
 
   const canGrant = (nested: boolean): boolean =>
@@ -212,6 +256,7 @@ export function createPoolAdmission(input: { permits: number; nestedReserve?: nu
       if (!waiter) return;
       // Detach BEFORE resolving: a granted waiter can never also be cancelled.
       waiter.detach();
+      recordGrant(now() - waiter.enqueuedAtMs);
       waiter.resolve(makeSlot(waiter.label, waiter.nested));
     }
   }
@@ -228,7 +273,10 @@ export function createPoolAdmission(input: { permits: number; nestedReserve?: nu
     const nobodyAhead = nested
       ? nestedWaiters.length === 0
       : nestedWaiters.length === 0 && topWaiters.length === 0;
-    if (nobodyAhead && canGrant(nested)) return Promise.resolve(makeSlot(label, nested));
+    if (nobodyAhead && canGrant(nested)) {
+      recordGrant(0);
+      return Promise.resolve(makeSlot(label, nested));
+    }
 
     return new Promise<PoolSlot>((resolve, reject) => {
       const onAbort = (): void => {
@@ -243,6 +291,7 @@ export function createPoolAdmission(input: { permits: number; nestedReserve?: nu
         nested,
         resolve,
         detach: () => signal?.removeEventListener('abort', onAbort),
+        enqueuedAtMs: now(),
       };
       queue.push(waiter);
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -252,6 +301,7 @@ export function createPoolAdmission(input: { permits: number; nestedReserve?: nu
   return {
     acquire,
     snapshot,
+    waitStats,
     totals: () => ({
       abandoned: totals.abandoned,
       abandonedReturned: { ...totals.abandonedReturned },

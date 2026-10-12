@@ -17,8 +17,12 @@ import { secureHeaders } from 'hono/secure-headers';
 import { securityMiddleware } from './middleware/security';
 import { exceptPathPrefix } from './middleware/pathExemption';
 import { requestPathLogger } from './middleware/requestPathLogger';
+import { agentAdmission } from './middleware/agentAdmission';
+import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
+import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
+import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
 import { configRoutes } from './routes/config';
@@ -334,6 +338,7 @@ import {
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { dbSaturationResponse } from './middleware/dbSaturationResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -451,6 +456,17 @@ const resolveCorsOrigin = createCorsOriginResolver({
 // but was never mounted, so neither series appeared in a production scrape.
 app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
+// W08 (#8147): agent admission control. Directly after the request logger so a
+// refusal is still counted (metricsMiddleware) and logged with its reason, and
+// before everything that costs: secure headers, the body-limit gate, the Redis
+// round trip in globalRateLimit, the partner guard, agent auth's DB transaction
+// and any body read. O(1), no I/O, never inside a DB context. A pass-through
+// until the admission controller starts, and in BREEZE_ADMISSION_MODE=off.
+app.use('*', agentAdmission());
+// Network Proxy host mode (spec 2026-10-06 §3): classify by Host + the Caddy
+// tunnel-site assertion. Runs after metrics/logging (they cover tunnel traffic)
+// and before every app header/CORS middleware (those skip tunnel surfaces).
+app.use('*', tunnelHostClassifier());
 
 // The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
 // headers on every request — a restrictive sandboxed CSP that intentionally
@@ -461,7 +477,9 @@ app.use('*', requestPathLogger());
 // wrong for that one route: applied on top, they silently won the merge over
 // the route's own response and broke iframe embedding entirely (the route's
 // sandbox CSP never reached the browser). Skip only the conflicting header
-// output for that path prefix; every other route keeps it unchanged.
+// output for that path prefix; every other route keeps it unchanged. Tunnel
+// hosts (host mode) are exempted the same way via `exceptTunnelSurface` /
+// `skipHeadersWhen`.
 //
 // `securityMiddleware()` also enforces FORCE_HTTPS redirect and
 // canonical-Host rejection, which have nothing to do with the CSP conflict
@@ -469,7 +487,7 @@ app.use('*', requestPathLogger());
 // its own `skipHeadersPathPrefix` option (headers only), not via
 // `exceptTunnelHttp`, which would drop that transport enforcement as well.
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
-const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, mw);
+const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
 app.use(
   '*',
@@ -485,7 +503,7 @@ app.use(
     })
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -494,6 +512,9 @@ app.use(
   })
 );
 app.use('*', globalRateLimit());
+// Tunnel hosts end here: the body limit (fixed policy on tunnel surfaces, not
+// path-keyed), rate limit (tunnel bucket, no path skips), metrics and logging ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
+app.use('*', tunnelHostDispatch(tunnelHostRoutes));
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -1103,6 +1124,13 @@ app.onError((err, c) => {
     );
   }
 
+  // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue
+  // timeout means the caller's work never ran — answer 503 + Retry-After so
+  // agents make one attempt per cycle instead of four, and keep saturation out
+  // of Sentry (see middleware/dbSaturationResponse.ts).
+  const saturated = dbSaturationResponse(err, c);
+  if (saturated) return saturated;
+
   // #3022 — say out loud what a CONNECT_TIMEOUT actually means before the raw
   // error is logged. The driver's own message is `write CONNECT_TIMEOUT
   // <host>:<port>`, which reads as a database or network fault and sent the
@@ -1330,6 +1358,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
   stopEventLoopMonitor();
+  stopAdmissionControl();
   // #3214. Also already unref'd, so this is tidiness — but it additionally stops
   // the watchdog opening a fresh probe connection while the pool is draining,
   // which would report `database-unreachable` about a process that is simply
@@ -1866,6 +1895,9 @@ async function bootstrap(): Promise<void> {
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
 
+  // W08: start sampling only after migrations and boot work, so their stalls
+  // never enter the controller's history. Admission never affects /ready.
+  startAdmissionControl();
   server = serve({
     fetch: app.fetch,
     port

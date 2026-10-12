@@ -15,6 +15,7 @@ export * from './backupHealth';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
+export * from './hourBlock';
 
 // ============================================
 // Multi-Tenancy Types

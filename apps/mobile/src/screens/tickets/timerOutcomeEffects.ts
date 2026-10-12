@@ -85,6 +85,9 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
         ticketSubject: outcome.entry.ticketSubject ?? null,
         startedAt: outcome.entry.startedAt,
         description: outcome.entry.description,
+        ...(outcome.entry.orgId !== undefined ? { orgId: outcome.entry.orgId } : {}),
+        ...(outcome.entry.siteId !== undefined ? { siteId: outcome.entry.siteId } : {}),
+        ...(outcome.entry.source !== undefined ? { source: outcome.entry.source } : {}),
       },
       toast: { kind: 'success', text: 'Timer started' },
     };
@@ -108,6 +111,9 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
         ticketId: outcome.timer.ticketId,
         startedAt: outcome.timer.startedAtWall,
         description: outcome.timer.description,
+        ...(outcome.timer.orgId !== undefined ? { orgId: outcome.timer.orgId } : {}),
+        ...(outcome.timer.siteId !== undefined ? { siteId: outcome.timer.siteId } : {}),
+        ...(outcome.timer.source !== undefined ? { source: outcome.timer.source } : {}),
       },
       toast: { kind: 'success', text: LOCAL_START_TOAST },
     };

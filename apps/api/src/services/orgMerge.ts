@@ -346,6 +346,30 @@ export function validateMergePair(loser: OrgMergeCandidate, survivor: OrgMergeCa
   return null;
 }
 
+export const DUAL_LIVE_HOUR_BLOCK_MESSAGE = 'Both organizations have a live block of hours; retire one first';
+
+/**
+ * #4547 W03 (index Open Decision 14). `contract_lines` merges by plain repoint and
+ * contract_lines_one_live_hour_block_per_org_uq is on (org_id): two orgs that each
+ * hold a live block would 23505 mid-walk, after the loser was fenced. A PAIR
+ * property (loser-only collectMergeBlockers cannot see it), so it joins the pair
+ * validators. One side live, or one side retired, is fine. Runs in a system
+ * context (contract_lines is org-axis; the caller wraps it or is already in the
+ * merge transaction).
+ */
+export async function assertNotBothHaveLiveHourBlock(loserOrgId: string, survivorOrgId: string): Promise<void> {
+  const result = (await dbModule.db.execute(sql`
+    SELECT DISTINCT org_id
+      FROM contract_lines
+     WHERE line_type = 'hour_block'
+       AND hour_block_retired_at IS NULL
+       AND org_id IN (${uuid(loserOrgId)}, ${uuid(survivorOrgId)})`)) as unknown;
+  // Fail CLOSED: a result shape we cannot read must never be taken as "no live blocks".
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown } | null | undefined)?.rows;
+  if (!Array.isArray(rows)) throw new Error('Unreadable result from the live hour-block check; refusing to merge');
+  if (rows.length >= 2) throw new MergeValidationError(DUAL_LIVE_HOUR_BLOCK_MESSAGE);
+}
+
 /** Load both orgs under a system context and validate the pair. Throws `MergeValidationError`. */
 export async function loadAndValidate(
   input: Pick<ExecuteOrgMergeInput, 'loserOrgId' | 'survivorOrgId' | 'partnerId'>,
@@ -380,6 +404,9 @@ export async function loadAndValidate(
 
   const reason = validateMergePair(loser, survivor);
   if (reason) throw new MergeValidationError(reason);
+  await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() => assertNotBothHaveLiveHourBlock(loser.id, survivor.id)),
+  );
   return { loser, survivor };
 }
 
@@ -665,6 +692,7 @@ export async function assertPairStillMergeable(
   if (reason) {
     throw new MergeValidationError(`${reason} (re-checked inside the merge transaction)`);
   }
+  await assertNotBothHaveLiveHourBlock(loser.id, survivor.id);
 }
 
 async function exec(statement: SQL): Promise<number> {

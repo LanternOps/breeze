@@ -18,4 +18,6 @@ Last release: **v0.122.1** (2026-10-12). v0.122.0 was tagged but never released.
 
 ## Features / API
 
+- **Mobile: arrival suggestions (#8209, W2).** With the partner's *Location suggestions* setting on (off by default) and the technician's own opt-in, the app suggests starting a timer when opened at a pinned client site. Foreground only; the phone's position is compared on the device and never sent. Adds the `expo-location` dependency and iOS/Android location permission strings, so it ships with the next **mobile app build** (not an API/web deploy). Technicians with the *Set site location* permission can pin a site from the phone. Docs: Mobile app > Arrival suggestions.
+
 ## Migrations

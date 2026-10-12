@@ -269,6 +269,11 @@ vi.mock('./helpers', () => ({
     reported !== 'server' || current === 'server'),
 }));
 
+const refreshReadinessMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/bareMetalReadinessRefresh', () => ({
+  refreshReadinessAfterRecovery: refreshReadinessMock,
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
@@ -7787,9 +7792,11 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(recoverySetCalls[0]!.checkedInAt).toBeInstanceOf(Date);
     expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
     expect(deviceSetCalls[0]!.recoveredFromSnapshotId).toBe('snap-1');
+    expect(refreshReadinessMock).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
+    refreshReadinessMock.mockClear();
     arrange([recoveryRow({ nonceHash: hashRecoveryNonce('b'.repeat(64)) })]);
 
     const res = await beatWithMarker();
@@ -7803,6 +7810,7 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
       (c) => (c[1] as { action?: string })?.action === 'bmr.recovery.checked_in',
     );
     expect(failureCall?.[1]).toMatchObject({ result: 'failure' });
+    expect(refreshReadinessMock).not.toHaveBeenCalled();
   });
 
   it('ignores a marker for a recovery in a terminal failed state', async () => {

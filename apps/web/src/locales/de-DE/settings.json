@@ -6061,6 +6061,7 @@
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Benutzern.",
     "title": "Benutzer",
     "description": "Verwalten Sie Benutzerzugriff, Rollen und Berechtigungen.",
+    "sessionTimeoutPointer": "Das Sitzungs-Leerlauf-Timeout wird unter Sicherheit konfiguriert",
     "never": "Niemals",
     "actions": {
       "tryAgain": "Versuchen Sie es erneut",

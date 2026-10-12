@@ -120,6 +120,7 @@ import {
 } from './orgMerge';
 import * as orgMergeModule from './orgMerge';
 import { createAuditLog } from './auditService';
+import { db as mockedDb } from '../db';
 
 const org = (over: Partial<Record<string, unknown>>) => ({
   id: 'a',
@@ -351,7 +352,7 @@ describe('assertPairStillMergeable (in-transaction TOCTOU re-check)', () => {
   });
 
   it('locks both rows FOR NO KEY UPDATE and passes when nothing changed', async () => {
-    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })]];
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], []];
     await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
     expect(mockState.executedSql.join(' ')).toMatch(/FOR NO KEY UPDATE/);
   });
@@ -369,6 +370,47 @@ describe('assertPairStillMergeable (in-transaction TOCTOU re-check)', () => {
   it('rejects when the loser is no longer fenced (a sweeper unfenced it)', async () => {
     mockState.executeResponses = [[row({ status: 'active' }), row({ id: S, status: 'active' })]];
     await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/no longer fenced/i);
+  });
+
+  it('rejects when BOTH organizations hold a live block of hours (the live-block index is per org)', async () => {
+    mockState.executeResponses = [
+      [row({}), row({ id: S, status: 'active' })],   // the pair lock read
+      [{ org_id: L }, { org_id: S }],                // live hour_block lines: one per org
+    ];
+    await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/live block of hours/i);
+  });
+
+  it('passes when only one side holds a live block (the repoint leaves exactly one)', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], [{ org_id: L }]];
+    await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
+  });
+
+  it('passes when neither does', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], []];
+    await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
+  });
+
+  it('fails CLOSED when the live-block query resolves to undefined (the fixture maps a missing queue entry to [], so force it)', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })]];
+    const exec = vi.mocked(mockedDb.execute);
+    const real = exec.getMockImplementation()!;
+    exec.mockImplementationOnce(real);                       // the pair lock read
+    exec.mockImplementationOnce((() => Promise.resolve(undefined)) as never); // the live-block read
+    await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/live hour-block check/i);
+  });
+
+  it('reads a { rows } result the same way as an array (both orgs live rejects; one passes)', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], { rows: [{ org_id: L }, { org_id: S }] }];
+    await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/live block of hours/i);
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], { rows: [{ org_id: L }] }];
+    await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
+  });
+
+  it('fails CLOSED when the live-block query returns a shape it cannot read', async () => {
+    for (const bad of [null, {}, { rows: 'nope' }, 'x']) {
+      mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], bad];
+      await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/live hour-block check/i);
+    }
   });
 
   it('rejects when the loser was already stamped deleted by a concurrent merge', async () => {

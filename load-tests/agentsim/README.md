@@ -61,6 +61,51 @@ Re-runs reuse `$AGENTSIM_STORE`; only missing indices enroll. After
 `pnpm wt-stack down && up` the stored tokens are stale: each agent gets one 401,
 re-enrolls under a fresh hostname, and carries on (`agents.reenrolled`).
 
+## Admission-control acceptance (W08)
+
+Spec W1c: under a storm, p95 heartbeat ≤ 1 s and the pool never below 80 % of
+max — measured as *usable* pool (whenever requests wait, at least 80 % of
+`DB_POOL_MAX` backends exist and none is stuck). Heartbeat latency comes from
+the simulator (client side), never from the API's own histogram.
+
+```bash
+export AGENT_ENROLL_RATE_LIMIT=5000 BREEZE_ADMISSION_MODE=enforce
+export METRICS_SCRAPE_TOKEN="$(openssl rand -hex 24)"     # lab-only, shell only
+pnpm wt-stack up
+mkdir -p load-tests/agentsim/.state
+( umask 077; load-tests/agentsim/lab-setup.sh > load-tests/agentsim/.state/lab.env )
+# run.sh and admission-watch.sh source .state/lab.env themselves (incl. AGENTSIM_STORE),
+# so every terminal sees the same env and only one enrollment key is minted.
+ulimit -n 16384   # in terminal A, before run.sh
+PROJECT="$(jq -r .project .breeze-stack.json)"
+svc() { docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" --format '{{.Names}}' | head -n1; }
+
+# terminal A — 400 agents, cold start, 25-minute window
+load-tests/agentsim/run.sh --agents 400 --ramp 20 --warmup 2m --duration 25m --start cold
+# terminal B — sampler
+load-tests/agentsim/admission-watch.sh watch
+# terminal C — the storm schedule (minutes from the window opening)
+sleep 300; docker update --cpus 0.75 "$(svc api)"     # t+5: overload (one slow core)
+sleep 180; docker restart "$(svc caddy)"              # t+8: drop every agent socket at once
+sleep 240; docker restart "$(svc api)"                # t+12: kill the API (cold start, all agents redial)
+sleep 360; docker update --cpus 0 "$(svc api)"        # t+18: lift the throttle (0 = unlimited)
+```
+
+Gates (the enforce run must pass all; the observe control run is expected to fail at least one):
+
+| Gate | How |
+|---|---|
+| heartbeat p95 ≤ 1 s | `jq '.routes[] | select(.route=="POST /agents/:id/heartbeat") | .latencyMs.p95' reports/<run>.json` |
+| heartbeats never refused or lost | same object: `.statusTotal` has no 503 and `.transportErrors == 0` |
+| usable pool, no stuck backends, gap < 180 s | `admission-watch.sh summarize reports/admission-<UTC>.csv 30` exits 0 |
+| WS pacing | `.ws.connectFailures > 0` during the storms, and the CSV `ws_tokens` column never stuck at 0 after t+20 |
+| recovery | CSV `level` back to 0, and `db_wait_s` < 0.075, within 2 min of t+18 |
+
+Run it twice: once as above, and once with `BREEZE_ADMISSION_MODE=observe` as
+the control. The observe run is expected to FAIL at least one gate. If it
+does not, the storm was too gentle to prove anything; raise `--agents` or
+lower `--cpus` and repeat both.
+
 ## What is modelled
 
 | Stream | Cadence | Source in the agent |

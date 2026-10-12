@@ -6109,6 +6109,7 @@
     "accessDenied": "You don't have permission to view users.",
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
+    "sessionTimeoutPointer": "Session idle timeout is configured under Security",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",

@@ -6109,6 +6109,7 @@
     "accessDenied": "Non hai l'autorizzazione per visualizzare gli utenti.",
     "title": "Utenti",
     "description": "Gestisci accessi, ruoli e autorizzazioni degli utenti.",
+    "sessionTimeoutPointer": "Il timeout di inattività della sessione si configura in Sicurezza",
     "never": "Mai",
     "actions": {
       "tryAgain": "Riprova",

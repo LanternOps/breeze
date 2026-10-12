@@ -226,7 +226,7 @@ const CLASSIFICATION: Record<string, Classification> = {
   'routes/desktopWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/tunnelWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/tunnels.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
-  'routes/tunnelHttp.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
+  'routes/tunnelHttpCore.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/remote/sessions.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
 
   // --- socket_only: rowless probes over the live socket ---------------------

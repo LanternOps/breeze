@@ -121,6 +121,9 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
+import { shouldDeferOfflineTransition } from '../services/admission/admissionRuntime';
+import { recordOfflineDeferred } from '../services/admission/admissionMetrics';
+import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
@@ -2655,7 +2658,7 @@ async function processCommandResult(
  * Authentication is done BEFORE the WebSocket upgrade in the HTTP middleware,
  * so onOpen no longer needs to validate the token.
  */
-export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
+function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
   const agentDb = preValidatedAgent;
 
   /**
@@ -4096,7 +4099,15 @@ onClose: async (_event: unknown, ws: WSContext) => {
 
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
-        if (agentDb) {
+        //
+        // W08: while admission is shedding (enforce, level 1+), leave the
+        // offline flip to the offline detector — lastSeenAt still ages out
+        // within 5 min — instead of one transaction per socket at the moment
+        // thousands drop at once. Presence was cleared above, so command
+        // routing already treats the agent as gone.
+        if (agentDb && shouldDeferOfflineTransition()) {
+          recordOfflineDeferred('close');
+        } else if (agentDb) {
           // #6836: the inner try/catch below only covers the query/transition
           // body. When the context PROLOGUE itself fails (observed: a
           // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
@@ -4162,7 +4173,9 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }
         void clearAgentPresence(agentId, connectionToken);
       }
-      if (agentDb) {
+      if (agentDb && shouldDeferOfflineTransition()) {
+        recordOfflineDeferred('error');
+      } else if (agentDb) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await db
@@ -4188,6 +4201,40 @@ if (activeConnections.get(agentId)?.ws === ws) {
         });
       }
     }
+  };
+}
+
+/**
+ * W08: the agent WS handlers, optionally holding an admission setup slot
+ * (middleware/agentAdmission.ts) that bounds how many upgrades are between
+ * admission and the end of onOpen at once. The slot is returned when onOpen
+ * finishes — however it exits — or on close/error if onOpen never ran; release
+ * is idempotent, and the slot's own 30 s backstop covers handlers that never fire.
+ */
+export function createAgentWsHandlers(
+  agentId: string,
+  preValidatedAgent: AgentDbContext,
+  setupSlot?: WsSetupSlot,
+): ReturnType<typeof buildAgentWsHandlers> {
+  const handlers = buildAgentWsHandlers(agentId, preValidatedAgent);
+  if (!setupSlot) return handlers;
+  return {
+    ...handlers,
+    onOpen: async (event: unknown, ws: WSContext) => {
+      try {
+        await handlers.onOpen(event, ws);
+      } finally {
+        setupSlot.release();
+      }
+    },
+    onClose: async (event: unknown, ws: WSContext) => {
+      setupSlot.release();
+      await handlers.onClose(event, ws);
+    },
+    onError: (event: unknown, ws: WSContext) => {
+      setupSlot.release();
+      handlers.onError(event, ws);
+    },
   };
 }
 
@@ -4755,7 +4802,8 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {
       const agentId = c.req.param('id');
       const agentCtx = c.get('agentDb') as AgentDbContext;
-      return createAgentWsHandlers(agentId, agentCtx);
+      const setupSlot = c.get('admissionWsSetupSlot') as WsSetupSlot | undefined;
+      return createAgentWsHandlers(agentId, agentCtx, setupSlot);
     })
   );
 

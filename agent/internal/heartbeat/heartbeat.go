@@ -29,6 +29,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/collectors/hwhealth"
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
+	"github.com/breeze-rmm/agent/internal/collectors/workloads"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
@@ -288,8 +289,13 @@ type SecurityCapabilities struct {
 	// IdentitySyncProtocolVersion (#8317) declares that this build verifies a
 	// signed identity assertion and adopts the row's org/site. The API sends
 	// none to an agent reporting 0.
-	IdentitySyncProtocolVersion int                      `json:"identitySyncProtocolVersion,omitempty"`
-	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	IdentitySyncProtocolVersion int `json:"identitySyncProtocolVersion,omitempty"`
+	// WorkloadInventoryProtocolVersion declares that this build speaks
+	// protocol 1 of PUT /agents/{id}/workloads (container and VM inventory).
+	// The API stores it non-sticky like the others so the device page can say
+	// "agent too old" instead of "no data".
+	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
+	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -479,6 +485,7 @@ type Heartbeat struct {
 	hwDisabledQueued   bool
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
+	workloads          *workloadsRuntime
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -1083,6 +1090,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.commandJournal.Recover(h.backupOutbox)
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
+	h.initWorkloads()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1991,6 +1999,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
 	h.startTimeSync()
+	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
@@ -2302,6 +2311,7 @@ func (h *Heartbeat) StopAcceptingCommands() {
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
+	h.stopWorkloads()
 	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
@@ -2324,6 +2334,7 @@ func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
+		h.stopWorkloads()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2498,6 +2509,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 			parent = upload.ctx
 		}
 	}
+	if endpoint == "workloads" {
+		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
@@ -2524,6 +2540,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "time-status" {
 		return &timeSyncSubmissionError{status: resp.StatusCode}
+	}
+	if endpoint == "workloads" {
+		return &workloadsSubmissionError{status: resp.StatusCode}
 	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
@@ -3373,6 +3392,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasTS {
 		h.applyTimeSyncSettings(tsRaw)
+	}
+
+	// Apply workload_inventory_settings. Same rule as warranty and time sync:
+	// this must stay above the policy-probe early return or it never runs.
+	wiRaw, hasWI := update["workload_inventory_settings"]
+	if !hasWI {
+		wiRaw, hasWI = update["workloadInventorySettings"]
+	}
+	if hasWI {
+		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -8189,5 +8218,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		DesktopWsFenceProtocolVersion:         1,
 		ConsentPromptProtocolVersion:          2,
 		IdentitySyncProtocolVersion:           identitySyncProtocolVersion,
+		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 	}
 }

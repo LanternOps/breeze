@@ -2754,6 +2754,25 @@ describe('TicketWorkbench create-invoice blocked by currency (#3776)', () => {
     expect(screen.queryByTestId('ticket-invoice-blocked')).toBeNull();
   });
 
+  it('warns about hours held for the organization block, then opens the draft', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({ data: { invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [], missingRate: [], heldForHourBlock: { count: 1, hours: 0.5 } } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-1'));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning', message: expect.stringContaining('1 time entry (0.5 hours) is held'),
+    }));
+  });
+
   // Review #1 (#3776): rate-less entries are never billed at zero; the response
   // lists them under missingRate so the tech can set a rate and try again.
   it('lists missingRate entries from a partial success with a link to set a rate', async () => {

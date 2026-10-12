@@ -451,7 +451,9 @@
       "allMissingRate": "Nothing could be invoiced: every billable time entry on this ticket is missing an hourly rate.",
       "missingRateHeading": "Time entries with no hourly rate (not invoiced — set a rate and create the invoice again):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Set a rate on the timesheet"
+      "setRate": "Set a rate on the timesheet",
+      "heldForHourBlock_one": "{{count}} time entry ({{hours}} hours) is held for this organization's block hours and will be billed when the block period closes.",
+      "heldForHourBlock_other": "{{count}} time entries ({{hours}} hours) are held for this organization's block hours and will be billed when the block period closes."
     },
     "move": {
       "open": "Move to another org…",

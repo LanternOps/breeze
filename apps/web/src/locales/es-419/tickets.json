@@ -451,7 +451,9 @@
       "allMissingRate": "No se pudo facturar nada: a todas las entradas de tiempo facturables de este ticket les falta la tarifa por hora.",
       "missingRateHeading": "Entradas de tiempo sin tarifa por hora (no facturadas; defina una tarifa y vuelva a crear la factura):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Definir una tarifa en la hoja de horas"
+      "setRate": "Definir una tarifa en la hoja de horas",
+      "heldForHourBlock_one": "{{count}} registro de tiempo ({{hours}} horas) está retenido para la bolsa de horas de esta organización y se facturará cuando se cierre el período de la bolsa.",
+      "heldForHourBlock_other": "{{count}} registros de tiempo ({{hours}} horas) están retenidos para la bolsa de horas de esta organización y se facturarán cuando se cierre el período de la bolsa."
     },
     "move": {
       "open": "Mover a otra organización...",

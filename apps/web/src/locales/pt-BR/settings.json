@@ -6114,6 +6114,7 @@
     "accessDenied": "Você não tem permissão para visualizar usuários.",
     "title": "Usuários",
     "description": "Gerencie o acesso, as funções e as permissões do usuário.",
+    "sessionTimeoutPointer": "O tempo limite de inatividade da sessão é configurado em Segurança",
     "never": "Nunca",
     "actions": {
       "tryAgain": "Tente novamente",

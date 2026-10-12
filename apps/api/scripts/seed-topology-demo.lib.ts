@@ -45,8 +45,13 @@ export const DEMO_SITE_ID = '7090106e-de70-4a00-8000-00000000517e';
 export const DEMO_ORG_NAME = 'Topology Demo — Harbor Dental';
 export const DEMO_ORG_SLUG = 'topology-demo-harbor-dental';
 export const DEMO_SITE_NAME = 'Harbor Dental — Main Office';
+/** Sister site of the same org. It owns 10.1.5.0/24 (the second LAN); Main Office does not. */
+export const DEMO_LAKESIDE_SITE_ID = '7090106e-de70-4a00-8000-00000000517f';
+export const DEMO_LAKESIDE_SITE_NAME = 'Harbor Dental — Lakeside';
 export const MAIN_LAN = { prefix: '10.1.2.0/24', base: '10.1.2.', gateway: '10.1.2.100' } as const;
 export const SECOND_LAN = { prefix: '10.1.5.0/24', base: '10.1.5.', gateway: '10.1.5.1' } as const;
+/** A home network (typical consumer router) a Main Office laptop sometimes reports from. */
+export const HOME_LAN = { prefix: '192.168.1.0/24', base: '192.168.1.', gateway: '192.168.1.1' } as const;
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 
@@ -67,7 +72,7 @@ export function demoMac(group: number, index: number): string {
 export type DemoCapture = { mode: 'fresh' | 'stale' | 'aged'; ageMs: number };
 export type DemoExtra = 'tailscale' | 'vpn_full_tunnel' | 'apipa_nic' | 'apipa_only' | 'neighbors' | 'neighbors_truncated' | 'neighbor_mac_conflicts';
 export type DemoDevice = {
-  key: string; hostname: string; ip: string; mac: string; lan: 'main' | 'second'; role: 'workstation' | 'server';
+  key: string; hostname: string; ip: string; mac: string; siteId: 'main' | 'lakeside'; lan: 'main' | 'second' | 'home'; role: 'workstation' | 'server';
   status: 'online' | 'offline' | 'decommissioned'; lastSeenAgoMs: number;
   /** A discovered asset with the same IP/MAC exists and is auto-linked to this device. */
   linked: boolean;
@@ -81,18 +86,20 @@ export type DemoDevice = {
 
 const m = (n: number) => `${MAIN_LAN.base}${n}`;
 const s = (n: number) => `${SECOND_LAN.base}${n}`;
+const h = (n: number) => `${HOME_LAN.base}${n}`;
 let deviceIndex = 0;
-function device(hostname: string, ip: string, lan: 'main' | 'second', status: DemoDevice['status'], lastSeenAgoMs: number, linked: boolean,
-  capture: DemoCapture | null, extras: DemoExtra[] = [], role: DemoDevice['role'] = 'workstation', linkLocal = capture !== null): DemoDevice {
+function device(hostname: string, ip: string, lan: DemoDevice['lan'], status: DemoDevice['status'], lastSeenAgoMs: number, linked: boolean,
+  capture: DemoCapture | null, extras: DemoExtra[] = [], role: DemoDevice['role'] = 'workstation', linkLocal = capture !== null,
+  siteId: DemoDevice['siteId'] = 'main'): DemoDevice {
   deviceIndex += 1;
-  return { key: hostname.toLowerCase().replace(/[^a-z0-9]+/g, '-'), hostname, ip, mac: demoMac(1, deviceIndex), lan, role, status, lastSeenAgoMs,
+  return { key: hostname.toLowerCase().replace(/[^a-z0-9]+/g, '-'), hostname, ip, mac: demoMac(1, deviceIndex), siteId, lan, role, status, lastSeenAgoMs,
     linked, capture, linkLocal, extras, agentVersion: capture ? '0.121.0' : '0.98.1' };
 }
 const fresh: DemoCapture = { mode: 'fresh', ageMs: 0 };
 const stale = (ageMs: number): DemoCapture => ({ mode: 'stale', ageMs });
 const aged = (ageMs: number): DemoCapture => ({ mode: 'aged', ageMs });
 
-/** 32 managed devices: 12 online / 20 offline (4 decommissioned); 24 linked to a discovered asset, 8 managed-only. */
+/** 37 managed devices: 17 online / 20 offline (4 decommissioned); 24 linked to a discovered asset, 8 managed-only. */
 export function demoDevices(): DemoDevice[] {
   deviceIndex = 0;
   return [
@@ -132,10 +139,18 @@ export function demoDevices(): DemoDevice[] {
     device('DR-OFFICE-01', m(14), 'main', 'offline', 3 * DAY, true, null),
     device('BREAK-01', m(90), 'main', 'offline', 12 * DAY, false, null),
     device('TRAINING-01', m(91), 'main', 'offline', 30 * DAY, false, null),
-    // Second LAN 10.1.5.0/24 via 10.1.5.1 (not in the discovery profile).
-    device('SURGERY-01', s(21), 'second', 'online', 0, false, fresh, ['neighbors']),
-    device('SURGERY-02', s(22), 'second', 'offline', 1 * DAY, false, aged(1 * DAY)),
-    device('CBCT-01', s(30), 'second', 'offline', 3 * DAY, false, aged(3 * DAY), [], 'server'),
+    // Second LAN 10.1.5.0/24 via 10.1.5.1 (not in the Main Office discovery profile). It belongs to the
+    // Lakeside site; exactly two online desktops are ASSIGNED to Main Office but sit on it (misassigned).
+    device('DESKTOP-HD7K2QF', s(21), 'second', 'online', 0, false, fresh, ['neighbors']),
+    device('SURGERY-02', s(22), 'second', 'offline', 1 * DAY, false, aged(1 * DAY), [], 'workstation', undefined, 'lakeside'),
+    device('CBCT-01', s(30), 'second', 'offline', 3 * DAY, false, aged(3 * DAY), [], 'server', undefined, 'lakeside'),
+    device('WIN-HD4M8T2C9', s(23), 'second', 'online', 0, false, fresh, ['neighbors']),
+    // Lakeside's own observers: two fresh agents corroborate the gateway MAC.
+    device('LAKESIDE-FD-01', s(41), 'second', 'online', 0, false, fresh, ['neighbors'], 'workstation', undefined, 'lakeside'),
+    device('LAKESIDE-OP-01', s(42), 'second', 'online', 0, false, fresh, ['neighbors'], 'workstation', undefined, 'lakeside'),
+    // A Lakeside laptop visiting the Main Office LAN, and a Main Office laptop on a home network.
+    device('LAPTOP-LOV-01', m(58), 'main', 'online', 0, false, fresh, ['neighbors'], 'workstation', undefined, 'lakeside'),
+    device('LAPTOP-HOME-01', h(34), 'home', 'online', 0, false, fresh, ['neighbors']),
   ];
 }
 
@@ -200,4 +215,14 @@ export function demoLegacyPins(assets: DemoAsset[]): { assetKey: string; x: numb
   const linked = assets.filter(a => a.linkedDeviceKey).slice(0, 20);
   const discovered = assets.filter(a => !a.linkedDeviceKey).slice(0, 17);
   return [...linked, ...discovered].map(asset => ({ assetKey: asset.key, x: Math.round(40 + next() * 1360), y: Math.round(30 + next() * 870) }));
+}
+
+export type DemoDiscoveryProfile = { name: string; siteId: string; subnets: string[] };
+
+/** One discovery profile per site: Main Office sweeps its LAN, Lakeside sweeps the second LAN. */
+export function demoDiscoveryProfiles(): DemoDiscoveryProfile[] {
+  return [
+    { name: 'Main LAN sweep', siteId: DEMO_SITE_ID, subnets: [MAIN_LAN.prefix] },
+    { name: 'Lakeside LAN sweep', siteId: DEMO_LAKESIDE_SITE_ID, subnets: [SECOND_LAN.prefix] },
+  ];
 }

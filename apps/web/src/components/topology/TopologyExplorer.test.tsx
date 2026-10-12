@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import TopologyExplorer from './TopologyExplorer';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from './topologyFixtures';
+import { groupedGraphFixture } from './groupedGraphFixture';
 import { fetchWithAuth } from '../../stores/auth';
 import { packTopologyLayout } from './layoutAdapter';
 import type { LayoutPosition, LayoutRequest } from './layoutTypes';
@@ -288,4 +289,37 @@ it('collapses an expansion back to the base read (#7818)', async () => {
   await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toBeNull());
   expect(screen.queryByTestId('topology-collapse')).not.toBeInTheDocument();
   expect(screen.getByTestId('topology-frontier')).toBeVisible();
+});
+
+it('moves undeclared networks to the roster, offers the toggle, and keeps its state in the hash', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([
+    { prefix: '10.1.2.0/24', declaration: 'declared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]))));
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  expect(await screen.findByTestId('topology-site-intro')).toHaveTextContent('Devices assigned to Main Office, grouped by the network each one reports');
+  expect(screen.queryByTestId('topology-declare-hint')).toBeNull();
+  const roster = screen.getByTestId('topology-site-roster');
+  expect(roster).toHaveTextContent('Other / unidentified networks (2)');
+  const toggle = screen.getByTestId('topology-show-other-networks');
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(screen.getByTestId('topology-show-other-networks')).toBeChecked());
+  expect(window.location.hash).toContain('/others/1');
+  expect(screen.queryByTestId('topology-site-roster')).toBeNull();
+});
+
+it('hints at declaring networks, and offers no toggle, when the site declares none', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([
+    { prefix: '10.1.2.0/24', declaration: 'undeclared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]))));
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  const hint = await screen.findByTestId('topology-declare-hint');
+  expect(hint).toHaveTextContent('No networks are declared for Main Office.');
+  expect(hint.querySelector('a')).toHaveAttribute('href', '/discovery#profiles');
+  expect(screen.queryByTestId('topology-show-other-networks')).toBeNull();
+  expect(screen.queryByTestId('topology-site-roster')).toBeNull();
+});
+
+it('falls back to "this site" when no site name is known', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'undeclared', members: 3 }]))));
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  expect(await screen.findByTestId('topology-declare-hint')).toHaveTextContent('No networks are declared for this site.');
 });

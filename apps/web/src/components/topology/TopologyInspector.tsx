@@ -52,7 +52,7 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount, siteName }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean; sharedAddressCount?: number;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
@@ -63,6 +63,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   explain?: TopologyExplainOptions;
   /** The server has no model provider (`ai_not_configured`): say so where "Explain this" would be. */
   aiNotConfigured?: boolean;
+  /** Names the site in a network card's declaration note (site location W1). */ siteName?: string;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -81,7 +82,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
     <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{'label' in entity ? entity.label : entity.meaning}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
     {schematic && !('group' in entity && entity.group) && <p>{t('schematicExplanation')}</p>}
-    {'group' in entity && entity.group && <GroupSummary graph={graph} group={entity} onSelectNode={onSelectNode} />}
+    {'group' in entity && entity.group && <GroupSummary graph={graph} group={entity} onSelectNode={onSelectNode} siteName={siteName} />}
     {'kind' in entity && !('inventory' in entity && entity.inventory) && <p className="text-sm text-muted-foreground">{entity.kind.replaceAll('_', ' ')}</p>}
     {'inventory' in entity && entity.inventory && <NodeIdentity graph={graph} node={entity} onSelectNode={onSelectNode} sharedAddressCount={sharedAddressCount} />}
     {'evidence' in entity && <details className="rounded border px-3 py-2 text-sm" open={!('inventory' in entity && entity.inventory)}><summary className="cursor-pointer font-medium">{t('grouped.evidenceSection')}</summary><dl className="mt-2 space-y-3 text-sm">

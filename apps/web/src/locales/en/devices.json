@@ -358,7 +358,9 @@
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
-    "toADifferentSite": "to a different site."
+    "toADifferentSite": "to a different site.",
+    "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -2243,7 +2245,8 @@
     "displayName": "Display Name",
     "errors": {
       "loadSites": "Failed to load sites",
-      "saveSettings": "Failed to save settings"
+      "saveSettings": "Failed to save settings",
+      "siteChanged": "This device was moved by someone else — reload to see its current site"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Device settings saved",
@@ -3420,7 +3423,15 @@
     "cancelled": "Queued action cancelled",
     "cancelFailed": "Failed to cancel queued action",
     "loadFailed": "Couldn't load queued actions.",
-    "empty": "No queued actions"
+    "empty": "No queued actions",
+    "powerHold": {
+      "title": "{{action}} is waiting for a running command",
+      "body": "{{action}} goes out once the device finishes the commands it is running. {{command}} has been running for {{minutes}} min with no result.",
+      "markFailed": "Mark failed",
+      "markFailedIn": "You can mark it failed in {{minutes}} min.",
+      "markedFailed": "Command marked failed",
+      "markFailedFailed": "Failed to mark the command failed"
+    }
   },
   "savedViewsMenu": {
     "applyTitle": "Apply \"{{name}}\"",
