@@ -37,6 +37,8 @@ import { evaluateCapability, partnerIdForDevice, trustDenyBody, unresolvedPartne
 import { cancelPendingAgentCommandsByPrefix } from '../services/agentCommandAwait';
 import { TUNNEL_CLOSED_ERROR, tunnelHttpCommandPrefix } from './tunnelHttpCore';
 import { partnerTrustMode } from '../config/partnerTrustMode';
+import { buildPathModeTicketUrl, buildTunnelEnterUrl, getTunnelOriginConfig } from '../config/tunnelOrigin';
+import { isTunnelOriginEnabledForOrg } from '../services/tunnelOriginOptIn';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { teardownDisconnectedSessions } from '../services/remoteSessionTeardown';
 import {
@@ -1301,14 +1303,18 @@ tunnelRoutes.post(
 );
 
 // POST /tunnels/:id/http-ticket — Issue a one-time HTTP proxy ticket (5-min TTL for proxy page load)
+const httpTicketQuerySchema = z.object({ mode: z.enum(['frame', 'tab']).optional() });
+
 tunnelRoutes.post(
   '/:id/http-ticket',
   requireScope('organization', 'partner', 'system'),
   requireMfa(),
   zValidator('param', idParamSchema),
+  zValidator('query', httpTicketQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
+    const context = c.req.valid('query').mode ?? 'frame';
 
     const conditions = [eq(tunnelSessions.id, id)];
     if (auth.orgId) {
@@ -1360,17 +1366,26 @@ tunnelRoutes.post(
       ttlMs: HTTP_TICKET_TTL_MS,
     });
 
+    // Host mode needs the regional tunnel origin AND the owning partner's opt-in.
+    // orgId comes from the verified session row, never from client input.
+    const tunnelOrigin = getTunnelOriginConfig();
+    const hostMode = tunnelOrigin !== null && await isTunnelOriginEnabledForOrg(session.orgId);
+    const mode = hostMode ? 'host' : 'path';
+    const url = tunnelOrigin && hostMode
+      ? buildTunnelEnterUrl(tunnelOrigin, id, ticket.ticket, context)
+      : buildPathModeTicketUrl(id, ticket.ticket);
+
     await logTunnelAudit(
       'tunnel.http_ticket.mint',
       'tunnel_session',
       id,
       auth.user.id,
       session.orgId,
-      { deviceId: session.deviceId, type: session.type },
+      { deviceId: session.deviceId, type: session.type, mode, context },
       getClientIp(c),
     );
 
-    return c.json({ ticket });
+    return c.json({ ticket, url, mode });
   }
 );
 
