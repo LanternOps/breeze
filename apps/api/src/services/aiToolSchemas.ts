@@ -191,7 +191,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     from: z.string().optional(),
     to: z.string().optional(),
     running: z.boolean().optional(),
-    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']).optional(),
     approved: z.boolean().optional(),
     limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).optional(),

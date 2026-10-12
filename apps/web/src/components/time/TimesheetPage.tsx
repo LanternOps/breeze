@@ -42,7 +42,7 @@ interface TsEntry extends BillingOutcomeStamp {
   currencyCode: string | null;
   /** `billed` locks startedAt/endedAt/isBillable/hourlyRate server-side (409 ENTRY_BILLED
    *  if any of them is PRESENT in a PATCH) — only the description may change. */
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
   /** W06 (#3900) server-stamped provenance. Absent on an API predating the
    *  column — render nothing rather than guessing 'manual'. */
   source?: string | null;

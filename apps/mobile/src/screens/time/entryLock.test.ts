@@ -58,7 +58,7 @@ describe('entryLock', () => {
     });
   });
 
-  it.each<BillingStatus>(['not_billed', 'no_charge', 'contract'])(
+  it.each<BillingStatus>(['not_billed', 'no_charge', 'contract', 'awaiting_approval'])(
     'does not lock billingStatus %s — only an issued invoice freezes an entry',
     (billingStatus) => {
       const lock = entryLock(entry({ billingStatus }));

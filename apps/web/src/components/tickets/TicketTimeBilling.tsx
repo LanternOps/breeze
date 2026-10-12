@@ -49,7 +49,7 @@ interface EntryRow {
   /** W06 (#3900) server-stamped provenance; absent on an older API. */
   source?: string | null;
   /** #8133: an invoiced entry is not offered for deletion (the API refuses it). */
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
 }
 
 /** #8133: localized copy for the API's refusals of a time-entry DELETE. */

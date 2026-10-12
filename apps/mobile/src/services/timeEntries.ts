@@ -13,7 +13,7 @@ import { coreRequest } from './api';
  * from `CreateTimeEntryInput` — rates are never computed on the phone.
  */
 
-export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract';
+export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
 
 /**
  * #8211 — where an entry came from. The server returns all three on every
