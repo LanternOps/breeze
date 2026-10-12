@@ -42,4 +42,11 @@ ignore = [
   # this crate's perspective.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  # unsafe-libyaml is unmaintained (informational, no known vulnerability). It
+  # comes from serde_yaml 0.9, also archived, a direct dependency that
+  # src/lib.rs uses to parse the helper's local YAML config files. Unlike the
+  # entries above, this one is fixable here by moving off serde_yaml. That is
+  # a follow-up, kept separate because it changes the config parser of a
+  # binary shipped to endpoints.
+  "RUSTSEC-2024-0449",
 ]
