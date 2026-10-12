@@ -4105,6 +4105,51 @@ describe('W09 run failover', () => {
     expect(finalTransition()!.to).toBe('completed');
   });
 
+  it('#7787: a run-start re-resolution that moves again records ITS provenance, not admission\'s', async () => {
+    seedRows({
+      admittedOfferingId: 'h', fundingSource: 'platform',
+      servedOfferingId: 'h', servedFundingSource: 'platform', servedFailoverHop: 2, servedFailoverCause: 'cooldown',
+      servedFailoverFromOfferingId: 'p',
+    });
+    // 'h' went ineligible while queued: the resolver walked to 'g' on the same funding.
+    resolveModel.mockResolvedValueOnce(makeResolvedModel('platform', {
+      surface: 'ai_agents', role: 'analysis', offering: { id: 'g', displayName: 'G' },
+      failover: { fromOfferingId: 'h', hop: 1, cause: 'ineligible' }, failoverRemaining: [],
+    }));
+    scriptQueries([[successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}`, 'platform']]);
+    expect(settles().map((s) => s.binding.failover)).toEqual([{ fromOfferingId: 'h', hop: 1, cause: 'ineligible' }]);
+  });
+
+  it('#7787: a run admitted on the fallback that then fails over opens hop 1 on its own key; hop 1 carries its own provenance', async () => {
+    seedRows({
+      admittedOfferingId: 'h', fundingSource: 'platform',
+      servedOfferingId: 'h', servedFundingSource: 'platform', servedFailoverHop: 2, servedFailoverCause: 'cooldown',
+      servedFailoverFromOfferingId: 'p',
+    });
+    resolveModel.mockResolvedValueOnce(makeResolvedModel('platform', {
+      surface: 'ai_agents', role: 'analysis', offering: { id: 'h', displayName: 'H' }, failover: null, failoverRemaining: ['k'],
+    }));
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup({ failover: { fromOfferingId: 'h', hop: 1, cause: 'overloaded' } }) });
+    scriptQueries([
+      [retry(1), retry(2)],     // hop 0 on 'h': aborted
+      [successResult()],        // hop 1 on 'k' serves
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({
+      tried: ['h'], hop: 1, origin: { offeringId: 'h', funding: 'platform', connectionId: null },
+    }));
+    expect(reserveKeys()).toEqual([
+      [`ai-agent-run:${RUN_ID}`, 'platform'],
+      [`ai-agent-run:${RUN_ID}:hop:1`, 'partner_key'],
+    ]);
+    expect(settles().map((s) => [s.binding.offeringId, s.binding.failover])).toEqual([
+      ['h', { fromOfferingId: 'p', hop: 2, cause: 'cooldown' }],
+      ['k', { fromOfferingId: 'h', hop: 1, cause: 'overloaded' }],
+    ]);
+  });
+
   it('#7787: a run admitted on its primary records no failover on its ledger row', async () => {
     seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
     resolveModel.mockResolvedValueOnce({ ...primary(), failoverRemaining: [] });
