@@ -465,4 +465,82 @@ describe('PatchTab', () => {
       expect(await screen.findByText('Failed to create update ring')).toBeInTheDocument();
     });
   });
+
+  // #8030: custom restart-prompt text. Blank keeps the agent's built-in copy.
+  describe('restart-prompt text', () => {
+    it('renders empty title, body and button fields by default and saves them as null', async () => {
+      render(<PatchTab {...baseProps} />);
+      expect(await screen.findByTestId('patch-reboot-prompt-title')).toHaveValue('');
+      expect(screen.getByTestId('patch-reboot-prompt-body')).toHaveValue('');
+      expect(screen.getByTestId('patch-reboot-prompt-button')).toHaveValue('');
+
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0];
+      expect(payload.inlineSettings.rebootPromptTitle).toBeNull();
+      expect(payload.inlineSettings.rebootPromptBody).toBeNull();
+      expect(payload.inlineSettings.rebootPromptButton).toBeNull();
+    });
+
+    it('persists custom text in the save payload', async () => {
+      render(<PatchTab {...baseProps} />);
+      fireEvent.change(await screen.findByTestId('patch-reboot-prompt-title'), { target: { value: 'Neustart' } });
+      fireEvent.change(screen.getByTestId('patch-reboot-prompt-body'), {
+        target: { value: 'Neustart in {{countdown}}.' },
+      });
+      fireEvent.change(screen.getByTestId('patch-reboot-prompt-button'), { target: { value: 'Jetzt' } });
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0];
+      expect(payload.inlineSettings.rebootPromptTitle).toBe('Neustart');
+      expect(payload.inlineSettings.rebootPromptBody).toBe('Neustart in {{countdown}}.');
+      expect(payload.inlineSettings.rebootPromptButton).toBe('Jetzt');
+    });
+
+    it('hydrates the fields from stored values', async () => {
+      render(
+        <PatchTab
+          {...baseProps}
+          existingLink={{
+            id: 'link-1',
+            featureType: 'patch',
+            featurePolicyId: null,
+            inlineSettings: { sources: ['os'], rebootPromptTitle: 'Titel', rebootPromptBody: null },
+          }}
+        />
+      );
+      expect(await screen.findByTestId('patch-reboot-prompt-title')).toHaveValue('Titel');
+      expect(screen.getByTestId('patch-reboot-prompt-body')).toHaveValue('');
+    });
+
+    it('blocks save on markup or an unknown placeholder, then proceeds once fixed', async () => {
+      render(<PatchTab {...baseProps} />);
+      const body = await screen.findByTestId('patch-reboot-prompt-body');
+      fireEvent.change(body, { target: { value: 'Restart in {{countdwon}}' } });
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      expect(await screen.findByTestId('patch-reboot-prompt-error')).toBeInTheDocument();
+      expect(saveMock).not.toHaveBeenCalled();
+
+      fireEvent.change(body, { target: { value: 'Restart in {{countdown}}' } });
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    });
+
+    it('hides the prompt-text fields when the reboot policy is never', async () => {
+      render(
+        <PatchTab
+          {...baseProps}
+          existingLink={{
+            id: 'link-1',
+            featureType: 'patch',
+            featurePolicyId: null,
+            inlineSettings: { sources: ['os'], rebootPolicy: 'never' },
+          }}
+        />
+      );
+      await screen.findByText('Approval Ring');
+      expect(screen.queryByTestId('patch-reboot-prompt-title')).toBeNull();
+    });
+  });
 });

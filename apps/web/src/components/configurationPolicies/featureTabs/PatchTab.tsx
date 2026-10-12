@@ -18,6 +18,13 @@ import { normalizeRing } from "../../patches/patchHelpers";
 import { showToast } from "../../shared/Toast";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import {
+  rebootPromptTextSchemas,
+  REBOOT_PROMPT_TITLE_MAX,
+  REBOOT_PROMPT_BODY_MAX,
+  REBOOT_PROMPT_BUTTON_MAX,
+  REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER,
+} from "@breeze/shared/validators";
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
 type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
 /** #5128 W3 — what a scheduled install does when the device is offline. */
@@ -41,6 +48,11 @@ type PatchDeploymentSettings = {
   rebootAllowDeferral: boolean;
   rebootMaxDeferrals: number;
   rebootDeferralMinutes: number;
+  // #8030: optional end-user restart-prompt text. null keeps the agent's
+  // built-in copy; `{{countdown}}` is filled in by the agent.
+  rebootPromptTitle: string | null;
+  rebootPromptBody: string | null;
+  rebootPromptButton: string | null;
   exclusiveWindowsUpdate: boolean;
 };
 const defaults: PatchDeploymentSettings = {
@@ -59,8 +71,15 @@ const defaults: PatchDeploymentSettings = {
   rebootAllowDeferral: false,
   rebootMaxDeferrals: 3,
   rebootDeferralMinutes: 60,
+  rebootPromptTitle: null,
+  rebootPromptBody: null,
+  rebootPromptButton: null,
   exclusiveWindowsUpdate: false,
 };
+/** Blank input means "use the built-in text", stored as null. */
+function promptTextOrNull(value: string): string | null {
+  return value.trim() === "" ? null : value;
+}
 const OS_VALUE_ALIASES = new Set(["os", "microsoft", "apple", "linux"]);
 const THIRD_PARTY_VALUE_ALIASES = new Set(["third_party", "custom"]);
 function normalizeSources(raw: unknown): PatchSourceOption[] {
@@ -229,6 +248,7 @@ export default function PatchTab({
     };
   });
   const [validationError, setValidationError] = useState<string>();
+  const [promptError, setPromptError] = useState<string>();
   // Inline ring create/edit — the same editor as /patches, so an admin never
   // has to leave the policy to author the ring it links to.
   const [ringEditorOpen, setRingEditorOpen] = useState(false);
@@ -293,6 +313,25 @@ export default function PatchTab({
   // Client-side mirror of the server-side Zod checks so users get inline
   // feedback instead of a round-trip rejection.
   const validateSettings = (): string | null => {
+    // #8030: same schema the API applies, so plain-text / length / placeholder
+    // problems surface inline instead of as a rejected save.
+    const promptInvalid =
+      settings.rebootPolicy !== "never" &&
+      (!rebootPromptTextSchemas.title.safeParse(settings.rebootPromptTitle)
+        .success ||
+        !rebootPromptTextSchemas.body.safeParse(settings.rebootPromptBody)
+          .success ||
+        !rebootPromptTextSchemas.button.safeParse(settings.rebootPromptButton)
+          .success);
+    if (promptInvalid) {
+      const message = i18n.t(
+        "policies:configurationPolicies.featureTabs.patchTab.rebootPromptInvalid",
+        { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
+      );
+      setPromptError(message);
+      return message;
+    }
+    setPromptError(undefined);
     if (
       settings.apps.some(
         (app) => app.action === "pin" && !app.pinnedVersion?.trim(),
@@ -929,6 +968,101 @@ export default function PatchTab({
                   </p>
                 </div>
               </div>
+            )}
+          </div>
+        )}
+        {/* Custom restart-prompt text (#8030). Blank keeps the built-in copy. */}
+        {settings.rebootPolicy !== "never" && (
+          <div className="mt-4 rounded-md border bg-background px-4 py-3">
+            <p className="text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootPromptText",
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootPromptTextDescription",
+              )}
+            </p>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="patch-reboot-prompt-title"
+                  className="text-xs text-muted-foreground"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootPromptTitle",
+                  )}
+                </label>
+                <input
+                  id="patch-reboot-prompt-title"
+                  data-testid="patch-reboot-prompt-title"
+                  type="text"
+                  maxLength={REBOOT_PROMPT_TITLE_MAX}
+                  value={settings.rebootPromptTitle ?? ""}
+                  onChange={(e) =>
+                    update("rebootPromptTitle", promptTextOrNull(e.target.value))
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="patch-reboot-prompt-button"
+                  className="text-xs text-muted-foreground"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootPromptButton",
+                  )}
+                </label>
+                <input
+                  id="patch-reboot-prompt-button"
+                  data-testid="patch-reboot-prompt-button"
+                  type="text"
+                  maxLength={REBOOT_PROMPT_BUTTON_MAX}
+                  value={settings.rebootPromptButton ?? ""}
+                  onChange={(e) =>
+                    update("rebootPromptButton", promptTextOrNull(e.target.value))
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label
+                htmlFor="patch-reboot-prompt-body"
+                className="text-xs text-muted-foreground"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.rebootPromptBody",
+                )}
+              </label>
+              <textarea
+                id="patch-reboot-prompt-body"
+                data-testid="patch-reboot-prompt-body"
+                rows={3}
+                maxLength={REBOOT_PROMPT_BODY_MAX}
+                value={settings.rebootPromptBody ?? ""}
+                onChange={(e) =>
+                  update("rebootPromptBody", promptTextOrNull(e.target.value))
+                }
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.rebootPromptBodyDescription",
+                  { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
+                )}
+              </p>
+            </div>
+            {promptError && (
+              <p
+                data-testid="patch-reboot-prompt-error"
+                role="alert"
+                className="mt-2 text-xs text-destructive"
+              >
+                {promptError}
+              </p>
             )}
           </div>
         )}
