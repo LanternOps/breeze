@@ -645,8 +645,10 @@ export function __resetRegularMsiCache(): void {
 // expired) so the cache's expiry keeps rolling forward and never lapses
 // between ticks.
 function refreshRegularMsiCache(): Promise<Buffer> {
-  const value = fetchRegularMsiUncached().catch((err) => {
-    regularMsiCache = null;
+  const value: Promise<Buffer> = fetchRegularMsiUncached().catch((err) => {
+    // Only clear our own entry: a slow failing refresh must not wipe a newer
+    // entry a later refresh (e.g. the next warmer tick) has already stored.
+    if (regularMsiCache?.value === value) regularMsiCache = null;
     throw err;
   });
   regularMsiCache = { expiresAt: Date.now() + REGULAR_MSI_CACHE_MS, value };

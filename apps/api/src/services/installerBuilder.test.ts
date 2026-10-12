@@ -343,7 +343,6 @@ describe('fetchRegularMsi', () => {
   it('passes a bounded abort signal so a hung origin cannot hold the fetch open indefinitely', async () => {
     process.env.BINARY_SOURCE = 'github';
     process.env.BINARY_VERSION = '1.2.3';
-    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
 
     const asset = Buffer.from('bounded-msi');
     const signed = signedReleaseManifest('breeze-agent.msi', asset);
@@ -914,7 +913,26 @@ describe('fetchRegularMsi: local source verifies against the signed manifest', (
     const signed = signedReleaseManifest('breeze-agent-windows-amd64.exe', asset, msiEntry);
     stage({ servedBytes: asset, signed });
 
-    await expect(fetchRegularMsi()).rejects.toThrow(/breeze-agent\.msi/);
+    await expect(fetchRegularMsi()).rejects.toThrow(/does not include breeze-agent\.msi/);
+  });
+
+  it('refuses a manifest signed by a key that is not trusted', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signedReleaseManifest('x', Buffer.from('x')).publicKey;
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/signature/i);
+  });
+
+  it('refuses an MSI whose manifest edition differs from BINARY_EDITION', async () => {
+    const asset = Buffer.from('self-host-unsigned-msi');
+    stage({
+      servedBytes: asset,
+      edition: 'hosted',
+      signed: signedReleaseManifest('breeze-agent.msi', asset, { platformTrust: 'none', edition: 'self-host' }),
+    });
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/edition mismatch/);
   });
 
   it('refuses to serve when no signed manifest pair is staged', async () => {
