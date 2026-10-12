@@ -326,6 +326,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',
   get_invite_funnel: 'automations_reports', // deployment/enrollment funnel report
+  get_fleet_device_stats: 'automations_reports', // exact fleet device counts by status
   get_fleet_health: 'automations_reports', // device reliability scoring/reporting
   analyze_metrics: 'automations_reports',
   analyze_fleet_metrics: 'automations_reports',

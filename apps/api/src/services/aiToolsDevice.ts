@@ -9,6 +9,7 @@
  * - resolve_device_context (Tier 2): Mark context entry as resolved
  * - manage_tags (Tier 2): List/add/remove device tags
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
+ * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status
  */
 
 import {
@@ -33,7 +34,8 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
-import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
+import { queryDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
@@ -358,6 +360,40 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       JSON.stringify(
         await listFleetTimeStatus(fleetTimeFiltersSchema.parse(input), auth),
       ),
+  });
+
+  // get_fleet_device_stats - Tier 1 (auto-execute). #6797
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    searchHint: 'how many devices, device count, online offline totals, fleet size, devices by status',
+    definition: {
+      name: 'get_fleet_device_stats',
+      description:
+        'Exact live device counts by status (total, online, offline, byStatus, migrationRequiredCount) across every accessible device. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      // Same tenant narrowing as GET /devices/stats (routes/devices/scope.ts):
+      // org axis + optional orgId (denied when inaccessible), plus the site and
+      // exact-device axes that only the AI surface carries.
+      if (orgId && !auth.canAccessOrg(orgId)) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+      const scope = and(
+        auth.orgCondition(devices.orgId),
+        siteScopeCondition(auth, devices.siteId),
+        deviceScopeCondition(auth, devices.id),
+        orgId ? eq(devices.orgId, orgId) : undefined,
+      );
+      return JSON.stringify(await queryDeviceStats(scope));
+    },
   });
 
   // get_device_hardware_health - Tier 1 (auto-execute)

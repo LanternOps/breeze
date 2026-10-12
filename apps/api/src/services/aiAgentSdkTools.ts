@@ -237,6 +237,7 @@ export const TOOL_TIERS = {
   get_cis_device_report: 1,
   apply_cis_remediation: 3,
   get_fleet_health: 1,
+  get_fleet_device_stats: 1,
   // Fleet hygiene (Task 8) — read-only fleet-wide aggregation.
   get_fleet_findings: 1,
   analyze_fleet_metrics: 1,
@@ -2001,6 +2002,13 @@ export function buildBreezeSdkTools(
         reason: z.string().max(1000).optional(),
       },
       makeHandler('apply_cis_remediation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_device_stats',
+      registryDescription('get_fleet_device_stats'),
+      { orgId: uuid.optional() },
+      makeHandler('get_fleet_device_stats', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

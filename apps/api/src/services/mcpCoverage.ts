@@ -413,7 +413,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/sessions.ts': { tools: ['get_active_users', 'get_user_experience_metrics'] },
   'devices/software.ts': { gap: '#6782' },
   'devices/softwareActions.ts': { gap: '#6782' },
-  'devices/stats.ts': { gap: '#6797' },
+  'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { gap: '#6783' },
   'devices/watchdogLogs.ts': { gap: '#6783' },

@@ -1,14 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
-import { devices } from '../../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { buildDeviceScope } from './scope';
 import { z } from 'zod';
+import { queryDeviceStats, EMPTY_DEVICE_STATS } from '../../services/deviceStats';
 
-import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 export const statsRoutes = new Hono();
 
 statsRoutes.use('*', authMiddleware);
@@ -52,56 +49,11 @@ statsRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
     if ('emptyAllowlist' in scoped) {
-      return c.json({
-        data: { total: 0, online: 0, offline: 0, byStatus: {}, migrationRequiredCount: 0 },
-      });
+      return c.json({ data: { ...EMPTY_DEVICE_STATS, byStatus: {} } });
     }
 
-    // Ephemeral Quick Support devices live in the hidden 'quick_support' org,
-    // which stays in accessibleOrgIds for RLS — exclude them from tech-facing counts.
-    const conditions: SQL[] = [
-      sql`${devices.status} != 'decommissioned'`,
-      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-    ];
-    if (scoped.scope) {
-      conditions.push(scoped.scope);
-    }
-
-    const rows = await db
-      .select({
-        status: devices.status,
-        count: sql<number>`count(*)`,
-        // Filtered within the same per-status group; summed across groups
-        // below this yields the tenant-wide migration-required total.
-        migrationRequiredCount: sql<number>`count(*) filter (where ${devices.migrationRequired})`,
-      })
-      .from(devices)
-      .where(and(...conditions))
-      .groupBy(devices.status);
-
-    const byStatus: Record<string, number> = {};
-    let total = 0;
-    let migrationRequiredCount = 0;
-    for (const row of rows) {
-      const n = Number(row.count);
-      byStatus[row.status] = n;
-      total += n;
-      migrationRequiredCount += Number(row.migrationRequiredCount ?? 0);
-    }
-
-    const online = byStatus.online ?? 0;
-
-    return c.json({
-      data: {
-        total,
-        online,
-        // "offline" here means "not currently online" (offline, maintenance,
-        // updating, quarantined, pending) — the tech-facing complement of the
-        // online count, not just status='offline'. byStatus has the raw split.
-        offline: total - online,
-        byStatus,
-        migrationRequiredCount,
-      },
-    });
+    // Decommissioned / ephemeral Quick Support / parked exclusions live in
+    // queryDeviceStats so the AI tool gets identical counts.
+    return c.json({ data: await queryDeviceStats(scoped.scope) });
   }
 );
