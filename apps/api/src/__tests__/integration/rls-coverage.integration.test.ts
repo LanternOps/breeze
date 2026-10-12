@@ -399,6 +399,15 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // org_evidence_holds (PAM ownership epochs W5, #8207): a merged-away org kept
+  // as a held shell because it still owns PAM-chain evidence. Partner-axis
+  // (Shape 3), mirrors org_merge_events: no org_id column (loser_org_id has no
+  // FK; survivor_org_id and merge_event_id are ON DELETE RESTRICT), so no org
+  // cascade / merge registry / export entry. RESTRICTIVE system-only policies
+  // for INSERT/UPDATE/DELETE sit on top of the partner-axis policy asserted
+  // here. GRANT includes DELETE for the erasure path and cascadeDeletePartner's
+  // partner_id sweep. Functional proof: orgEvidenceHold.integration.test.ts.
+  ['org_evidence_holds', 'partner_id'],
   // device_pool_assignment_events: the
   // holding-area ledger. Partner-axis (Shape 3), no org_id column — from/to org
   // ids are historical snapshots, not tenancy keys — so no cascade / export /

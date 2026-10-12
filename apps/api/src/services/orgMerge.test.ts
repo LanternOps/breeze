@@ -747,6 +747,27 @@ describe('stampTerminalShell', () => {
     }
   });
 
+  it('writes the evidence hold once, with the merge event id, after the event insert', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    const hold = vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockResolvedValue(null);
+
+    await orgMergeModule.executeOrgMerge(input);
+
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledWith({
+      loserOrgId: loser.id,
+      survivorOrgId: survivor.id,
+      partnerId: input.partnerId,
+      mergeEventId: 'merge-event-1',
+    });
+  });
+
   it('a failing stamp still resolves executeOrgMerge and never unfences', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
@@ -792,6 +813,30 @@ describe('blocks-merge refusal', () => {
 
     expect(fence).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'org.merge.failed' }));
+  });
+
+  it('refuses a too-deep held lineage before fencing and audits reason lineage_depth', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: { id: 'a', partnerId: 'p', name: 'Loser', type: 'standard', status: 'active', deletedAt: null },
+      survivor: { id: 'b', partnerId: 'p', name: 'Survivor', type: 'standard', status: 'active', deletedAt: null },
+    } as never);
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined as never);
+    vi.spyOn(orgMergeModule, 'collectMergeBlockers').mockResolvedValue([]);
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockRejectedValue(new orgMergeModule.OrgMergeBlockedError([], 'lineage_depth'));
+    const audit = vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined as never);
+
+    await expect(
+      orgMergeModule.executeOrgMerge({ loserOrgId: 'a', survivorOrgId: 'b', partnerId: 'p', performedBy: 'u' }),
+    ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED', reason: 'lineage_depth' });
+
+    expect(fence).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'org.merge.failed',
+        details: expect.objectContaining({ reason: 'lineage_depth' }),
+      }),
+    );
   });
 
   it('builds the operator refusal text with per-table counts', () => {

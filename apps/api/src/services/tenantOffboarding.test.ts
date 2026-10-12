@@ -12,6 +12,8 @@ const {
   getEmailServiceMock,
   sendEmailMock,
   releaseSendingDomainsForPartnerMock,
+  findEvidenceHoldMock,
+  releaseEmptyEvidenceHoldsMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
@@ -31,6 +33,9 @@ const {
   sendEmailMock: vi.fn(),
   // Partner sending domains W02 (spec §3.5) — see the vi.mock below.
   releaseSendingDomainsForPartnerMock: vi.fn(async () => 0),
+  // PAM ownership epochs W5 (#8207) — evidence holds default to "none".
+  findEvidenceHoldMock: vi.fn(),
+  releaseEmptyEvidenceHoldsMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
@@ -115,6 +120,12 @@ vi.mock('./auditEvents', () => ({
   writeAuditEvent: vi.fn(),
   requestLikeFromSnapshot: vi.fn(() => ({})),
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+}));
+
+vi.mock('./orgEvidenceHold', async (importActual) => ({
+  ...(await importActual<typeof import('./orgEvidenceHold')>()),
+  findEvidenceHold: (...args: unknown[]) => findEvidenceHoldMock(...(args as [])),
+  releaseEmptyEvidenceHolds: () => releaseEmptyEvidenceHoldsMock(),
 }));
 
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -1180,6 +1191,9 @@ describe('sweepOffboardingTenants', () => {
     // Task 4 defaults: no committed-merge erasure backlog, no stuck fences,
     // and (when a case does reach the liveness check) no live BullMQ job.
     enqueueTenantErasureMock.mockResolvedValue({ id: 'tenant-erasure-org-x' });
+    // PAM ownership epochs W5 (#8207): no evidence holds unless a test says so.
+    findEvidenceHoldMock.mockResolvedValue(null);
+    releaseEmptyEvidenceHoldsMock.mockResolvedValue([]);
     getMergeJobMock.mockResolvedValue(null);
     getOrgMergeQueueMock.mockReturnValue({ getJob: getMergeJobMock });
     sendEmailMock.mockResolvedValue(undefined);
@@ -1806,6 +1820,38 @@ describe('sweepOffboardingTenants', () => {
           actorType: 'system',
           result: 'success',
           details: expect.objectContaining({ orgId: candidate.id, days: 1, bucketDays: 1 }),
+        })
+      );
+    });
+  });
+
+  describe('evidence-hold release (PAM ownership epochs W5)', () => {
+    it('hands a released hold shell to erasure and writes a chain_empty release audit', async () => {
+      queueCandidates([], [], [], []);
+      releaseEmptyEvidenceHoldsMock.mockResolvedValueOnce([
+        {
+          loserOrgId: 'org-held-loser',
+          partnerId: 'partner-1',
+          survivorOrgId: 'org-survivor',
+          mergeEventId: 'merge-event-1',
+          reason: 'pam_evidence',
+        },
+      ]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: 'org-held-loser' })
+      );
+      expect(result.evidenceHoldsReleased).toBe(1);
+      expect(result.failures).toBe(0);
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'tenant.erasure.evidence_hold_released',
+          resourceId: 'org-held-loser',
+          details: expect.objectContaining({ trigger: 'chain_empty', survivorOrgId: 'org-survivor' }),
         })
       );
     });

@@ -128,6 +128,15 @@ const authLifecycleMocks = vi.hoisted(() => ({
 }));
 vi.mock('./authLifecycle', () => authLifecycleMocks);
 
+// PAM ownership epochs W5 (#8207): evidence holds are exercised in
+// orgEvidenceHold's own tests; here every org is un-held so the lookups do not
+// consume the queued db.execute row-count fixtures below.
+vi.mock('./orgEvidenceHold', async (importActual) => ({
+  ...(await importActual<typeof import('./orgEvidenceHold')>()),
+  findEvidenceHold: vi.fn(async () => null),
+  listHoldsBySurvivor: vi.fn(async () => []),
+}));
+
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));
 vi.mock('./ticketAttachmentStorage', () => ({
   deleteObjectKeys: deleteObjectKeysMock,
