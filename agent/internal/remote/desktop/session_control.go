@@ -97,22 +97,44 @@ func (s *Session) recordInputActivity() {
 
 // onViewerDataChannelMessage routes an inbound viewer data-channel message by
 // label and applies the idle-watchdog policy in one place. Idle is reset on
-// "input" traffic only: control-channel traffic (e.g. the viewer's automated
+// operator input only: control-channel traffic (e.g. the viewer's automated
 // ~1s viewer_stats heartbeat) is not a signal of operator presence, so letting
 // it reset the idle clock would defeat the idle timeout for any open-but-
 // unattended viewer (finding #1).
+//
+// input-r carries a W3 viewer's keys and buttons, so it counts. Otherwise a
+// keyboard-only session idles out. input_reset does not count: the viewer sends
+// it on its own (focus loss, handshakes), not because the operator acted.
 func (s *Session) onViewerDataChannelMessage(label string, data []byte) {
 	switch label {
 	case "input":
 		s.recordInputActivity()
-		s.handleInputMessage(data)
+		s.handleInputMessageFrom("input", data)
+	case "input-r":
+		if !isInputResetFrame(data) {
+			s.recordInputActivity()
+		}
+		s.handleInputMessageFrom("input-r", data)
 	case "control":
 		s.handleControlMessage(data)
 	}
 }
 
-// handleInputMessage processes input events from the data channel
-func (s *Session) handleInputMessage(data []byte) {
+func isInputResetFrame(data []byte) bool {
+	if len(data) > maxInputMessageBytes {
+		return false
+	}
+	var peek struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(data, &peek) == nil && peek.Type == "input_reset"
+}
+
+// handleInputMessage processes an event from the legacy "input" channel.
+func (s *Session) handleInputMessage(data []byte) { s.handleInputMessageFrom("input", data) }
+
+// handleInputMessageFrom processes an input event that arrived on label.
+func (s *Session) handleInputMessageFrom(label string, data []byte) {
 	// Drop input events early when the handler cannot inject them (e.g. macOS
 	// login window without IOHIDSystem). The viewer is notified once via
 	// sendInputStatus(); no need to log per-event.
@@ -121,17 +143,25 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 
 	if len(data) > maxInputMessageBytes {
-		slog.Warn("Rejected oversized input event", "session", s.id, "size", len(data))
+		slog.Warn("Rejected oversized input event", "session", s.id, "channel", label, "size", len(data))
 		return
 	}
 
 	var event InputEvent
 	if err := json.Unmarshal(data, &event); err != nil {
-		slog.Warn("Failed to parse input event", "session", s.id, "error", err.Error())
+		slog.Warn("Failed to parse input event", "session", s.id, "channel", label, "error", err.Error())
+		// A type error still decodes the other fields, seq included.
+		s.skipRejectedSeq(label, event)
 		return
 	}
 	if err := ValidateInputEvent(event); err != nil {
-		slog.Warn("Rejected invalid input event", "session", s.id, "type", event.Type, "error", err.Error())
+		slog.Warn("Rejected invalid input event", "session", s.id, "channel", label, "type", event.Type, "error", err.Error())
+		s.skipRejectedSeq(label, event)
+		return
+	}
+	if reason := inputChannelRejects(label, event); reason != "" {
+		slog.Debug("Rejected input event on the wrong channel", "session", s.id, "channel", label, "reason", reason)
+		s.skipRejectedSeq(label, event)
 		return
 	}
 
@@ -150,10 +180,49 @@ func (s *Session) handleInputMessage(data []byte) {
 	// }
 
 	if err := s.inputHandler.HandleEvent(event); err != nil {
-		if errors.Is(err, errInputReset) || errors.Is(err, errInputClosed) {
-			return // discarded by a release or teardown; expected
+		if errors.Is(err, errInputReset) || errors.Is(err, errInputClosed) || errors.Is(err, errInputDropped) {
+			return // discarded by a release, teardown or the ordering layer; expected
 		}
 		slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
+	}
+}
+
+// inputChannelRejects enforces which channel may carry what (spec §1). The
+// ordering barrier assumes that no sequenced discrete event is lost or
+// reordered, so only the reliable input-r may carry them, and input_reset.
+// The lossy input channel carries legacy events and sequenced pointer motion.
+// input-r is W2b-only, so an unsequenced event there is a viewer bug.
+func inputChannelRejects(label string, ev InputEvent) string {
+	switch label {
+	case "input-r":
+		if ev.Seq == 0 {
+			return "unsequenced_on_input_r"
+		}
+	case "input":
+		if ev.Type == "input_reset" {
+			return "input_reset_on_lossy_channel"
+		}
+		if ev.Seq > 0 && ev.Type != "mouse_move" {
+			return "sequenced_discrete_on_lossy_channel"
+		}
+	}
+	return ""
+}
+
+// skipRejectedSeq keeps the ordering barrier moving past a discrete event that
+// never reaches the worker. Without it, every later move waits for that seq and
+// the pointer freezes until the next key or click.
+//
+// Only for input-r. It is ordered and reliable, so its seqs arrive in order.
+// Skipping a seq that rode the lossy channel could move the barrier past an
+// input-r event still in flight. That event would then be dropped as a
+// duplicate, and if it were a key_up, the key would stay latched.
+func (s *Session) skipRejectedSeq(label string, ev InputEvent) {
+	if label != "input-r" || ev.Seq == 0 || ev.Seq > MaxInputSeq || ev.Type == "mouse_move" {
+		return
+	}
+	if si := s.safeInput(); si != nil {
+		si.SkipSeq(ev.Seq)
 	}
 }
 
@@ -175,6 +244,23 @@ func buildInputCapabilities() map[string]any {
 		"typeText":          true,
 		"releasesHeldInput": true,
 	}
+}
+
+// inputCapabilities is this session's input_capabilities reply.
+//
+// reliableInput (W2b) says this agent routes the input-r channel and honours
+// seq/after and the reset and geometry epochs. inputEpoch and geoEpoch are
+// where a viewer starts. Agents without the input worker never send these
+// keys, and a viewer that does not see them stays on the legacy protocol.
+func (s *Session) inputCapabilities() map[string]any {
+	body := buildInputCapabilities()
+	if si := s.safeInput(); si != nil {
+		epoch, geo := si.Epochs()
+		body["reliableInput"] = true
+		body["inputEpoch"] = epoch
+		body["geoEpoch"] = geo
+	}
+	return body
 }
 
 // typeTextResult reports a paste that did not fully land. There is no success
@@ -443,7 +529,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			dc.SendText(string(resp))
 		}
 	case "input_capabilities":
-		s.sendControlJSON(buildInputCapabilities())
+		s.sendControlJSON(s.inputCapabilities())
 	case "type_text":
 		s.handleTypeText(data)
 	case "toggle_audio":
