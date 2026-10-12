@@ -30,20 +30,22 @@ export interface EntryPeek {
   approvalRequestId: string | null;
 }
 
-const peekColumns = {
+// A function, not a module-level object: many unit suites partially mock
+// db/schema, and reading a column at import time would break them.
+const peekColumns = () => ({
   id: timeEntries.id, ticketId: timeEntries.ticketId, endedAt: timeEntries.endedAt,
   approvalRequestId: timeEntries.approvalRequestId,
-};
+});
 
 /** UNLOCKED read of the entry's ticket, so the writer can lock the ticket BEFORE the entry (spec §5.2). */
 export async function peekEntry(id: string): Promise<EntryPeek | null> {
-  const [row] = await db.select(peekColumns).from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
+  const [row] = await db.select(peekColumns()).from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
   return row ?? null;
 }
 
 /** UNLOCKED read of the user's running timer (stop / auto-stop lock its ticket first). */
 export async function peekRunningEntry(userId: string): Promise<EntryPeek | null> {
-  const [row] = await db.select(peekColumns).from(timeEntries)
+  const [row] = await db.select(peekColumns()).from(timeEntries)
     .where(and(eq(timeEntries.userId, userId), isNull(timeEntries.endedAt))).limit(1);
   return row ?? null;
 }
