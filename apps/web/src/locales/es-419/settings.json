@@ -6061,6 +6061,7 @@
     "accessDenied": "No tiene permiso para ver usuarios.",
     "title": "Usuarios",
     "description": "Administre el acceso, los roles y los permisos de los usuarios.",
+    "sessionTimeoutPointer": "El tiempo de inactividad de la sesión se configura en Seguridad",
     "never": "Nunca",
     "actions": {
       "tryAgain": "Intentar otra vez",

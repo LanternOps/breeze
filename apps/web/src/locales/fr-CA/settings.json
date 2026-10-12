@@ -6109,6 +6109,7 @@
     "accessDenied": "Vous n’avez pas la permission de voir les utilisateurs.",
     "title": "Utilisateurs",
     "description": "Gérer l’accès des utilisateurs, les rôles et les permissions.",
+    "sessionTimeoutPointer": "Le délai d’inactivité de la session se configure sous Sécurité",
     "never": "Jamais",
     "actions": {
       "tryAgain": "Réessayer",

@@ -404,3 +404,40 @@ describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {
     ).rejects.toBeInstanceOf(HTTPException);
   });
 });
+
+describe('getEffectiveOrgSettings security.sessionTimeout clamp (#6111)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clamps a stored partner value above 720 down to 720 (partner still locks)', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ security: { sessionTimeout: 1440 } }),
+      [],
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect(effective.security?.sessionTimeout).toBe(720);
+    expect(locked).toContain('security.sessionTimeout');
+  });
+
+  it('clamps a stored org value above 720 when the partner has not set one', async () => {
+    primeSelectSeq(
+      [{ partnerId: 'p1', settings: { security: { sessionTimeout: 99999 } } }],
+      mockPartnerSettings({}),
+      [],
+    );
+    const { effective } = await getEffectiveOrgSettings('org1');
+    expect(effective.security?.sessionTimeout).toBe(720);
+  });
+
+  it('leaves values at or below 720 untouched', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ security: { sessionTimeout: 720 } }),
+      [],
+    );
+    const { effective } = await getEffectiveOrgSettings('org1');
+    expect(effective.security?.sessionTimeout).toBe(720);
+  });
+});

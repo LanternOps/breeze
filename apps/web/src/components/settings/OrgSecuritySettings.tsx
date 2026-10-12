@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Lock, Save, ShieldCheck, ShieldOff, Timer, Fingerprint } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
 
 type SecurityData = {
   minLength?: number;
@@ -262,7 +263,7 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
               <input
                 type="number"
                 min={15}
-                max={240}
+                max={SESSION_TIMEOUT_MAX_MINUTES}
                 value={sessionTimeout}
                 disabled={isLocked('sessionTimeout')}
                 onChange={event => {

@@ -6114,6 +6114,7 @@
     "accessDenied": "Kullanıcıları görüntüleme izniniz yok.",
     "title": "Kullanıcılar",
     "description": "Kullanıcı erişimini, rollerini ve izinlerini yönetin.",
+    "sessionTimeoutPointer": "Oturum boşta kalma zaman aşımı Güvenlik bölümünden yapılandırılır",
     "never": "Hiçbir zaman",
     "actions": {
       "tryAgain": "Tekrar deneyin",
