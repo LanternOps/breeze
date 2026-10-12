@@ -212,6 +212,10 @@ function Install-WixUtilExtension {
     # no global extension has been installed yet (a fresh CI runner), so a
     # failed list means "none installed": fall through to the add, whose own
     # exit code is the real check.
+    # PowerShell 7.3+ can turn a native non-zero exit into an exception
+    # (PSNativeCommandUseErrorActionPreference); keep it off for this call so
+    # the fallback below runs.
+    $PSNativeCommandUseErrorActionPreference = $false
     $installedExtensionsOutput = @(& wix extension list -g)
     $utilExtensionInstalled = $null
     if ($LASTEXITCODE -eq 0) {
