@@ -107,6 +107,15 @@ The config validator (`apps/api/src/config/validate.ts`) refuses to boot when
   `allowPrivateDomains` set explicitly in both directions: a private-PSL suffix must not mask
   a shared parent.
 
+**Opt-in is per partner (decided 2026-10-12).** The region env var makes host mode
+*available*. The partner setting `networkProxy.dedicatedTunnelOrigin` decides whether that
+partner's sessions *use* it:
+- Home: Partner Settings → Remote Access.
+- Level: partner only, with no org override.
+- Resolver: `isTunnelOriginEnabledForOrg`, used by the ticket route and re-checked by
+  `/__bz/enter`.
+- Default: off, until PSL inclusion is verified (§1).
+
 The server alone builds tunnel URLs. `POST /tunnels/:id/http-ticket` returns
 `{ ticket, url }`, and the web client stops composing the iframe URL itself.
 
