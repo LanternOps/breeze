@@ -20,13 +20,20 @@
 --    All DEFERRABLE INITIALLY IMMEDIATE (org merge defers constraints). The
 --    existing (actuation_id, org_id) and (elevation_request_id, org_id) FKs
 --    are kept unchanged.
--- 3. Rows written after a W1 epoch advance (device moved with no PAM history,
---    then gained a chain) carry the column default 1, which names the wrong
---    org's epoch. elevation_requests and pam_actuations are re-anchored to the
---    epoch of their own org that was current when they were created. Results
---    are never updated; if one ends up under a re-anchored actuation its FK is
---    left NOT VALID (still enforced for new rows) with a WARNING, rather than
---    failing the boot.
+-- 3. One-time bootstrap, on the run that adds the columns only. W1 shipped
+--    first, so a device may already be past epoch 1 and every existing row
+--    takes the column default 1. Until this migration no PAM chain row could
+--    sit in an earlier epoch of its device: a device with any pam_actuations
+--    row cannot change org (devices_pam_history_move_guard), and an
+--    un-actuated request is restamped with its device. So a row whose org is
+--    its device's current org belongs to the device's CURRENT epoch, and that
+--    is what elevation_requests and pam_actuations are anchored to. Rows in
+--    any other org (not expected) keep 1 and are reported by validation.
+--    Results are never updated; one under a re-anchored actuation leaves its
+--    FK NOT VALID (still enforced for new rows) with a WARNING, rather than
+--    failing the boot. A replay never re-runs the bootstrap: from this
+--    migration on, anchors are set by the guard and an earlier-epoch row is
+--    legitimate history that must not be moved.
 -- 4. Guards (breeze_pam_chain_epoch_guard): an INSERT must be in the device's
 --    current org and epoch (23514), read FOR SHARE so it serializes against an
 --    org change; an omitted device_epoch is anchored to the current epoch. On
@@ -39,10 +46,21 @@
 --    state in pam_actuations_transition_guard.
 --
 -- Idempotent: the guard triggers are dropped first and re-created last, the
--- FKs are dropped and re-added, and the backfill only touches rows whose
--- anchor differs from the computed one.
+-- FKs are dropped and re-added, and the bootstrap runs only on the first
+-- application (when the columns did not exist yet).
 
 SELECT set_config('breeze.scope', 'system', true);
+
+-- First application? (One file, one transaction: the three columns appear
+-- together.) Read before the ADD COLUMNs below.
+SELECT set_config(
+  'breeze.pam_chain_epoch_bootstrap',
+  CASE WHEN EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'elevation_requests' AND column_name = 'device_epoch'
+  ) THEN 'off' ELSE 'on' END,
+  true
+);
 
 DROP TRIGGER IF EXISTS elevation_requests_epoch_guard ON public.elevation_requests;
 DROP TRIGGER IF EXISTS pam_actuations_epoch_guard ON public.pam_actuations;
@@ -66,55 +84,35 @@ ALTER TABLE public.elevation_requests    DROP CONSTRAINT IF EXISTS elevation_req
 ALTER TABLE public.elevation_requests    DROP CONSTRAINT IF EXISTS elevation_requests_device_epoch_fkey;
 
 -- ---------------------------------------------------------------------------
--- 3. Backfill. The anchor of a row is the latest epoch of the row's own
---    (device, org) that had started when the row was created; rows older than
---    every such epoch (the W1 backfill stamped epoch 1 at migration time) take
---    the earliest one. Rows whose (device, org) has no epoch at all are left
---    alone and reported by the validation step.
+-- 3. Bootstrap (first application only; see header item 3).
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
-  n_requests integer;
-  n_actuations integer;
+  n_requests integer := 0;
+  n_actuations integer := 0;
 BEGIN
-  WITH anchor AS (
-    SELECT r.id,
-           COALESCE(
-             (SELECT max(e.epoch) FROM public.device_ownership_epochs e
-               WHERE e.device_id = r.device_id AND e.org_id = r.org_id AND e.started_at <= r.created_at),
-             (SELECT min(e.epoch) FROM public.device_ownership_epochs e
-               WHERE e.device_id = r.device_id AND e.org_id = r.org_id)
-           ) AS epoch
-    FROM public.elevation_requests r
-  )
+  IF current_setting('breeze.pam_chain_epoch_bootstrap', true) IS DISTINCT FROM 'on' THEN
+    RETURN;
+  END IF;
+
   UPDATE public.elevation_requests r
-     SET device_epoch = anchor.epoch
-    FROM anchor
-   WHERE anchor.id = r.id
-     AND anchor.epoch IS NOT NULL
-     AND anchor.epoch <> r.device_epoch;
+     SET device_epoch = d.ownership_epoch
+    FROM public.devices d
+   WHERE d.id = r.device_id
+     AND d.org_id = r.org_id
+     AND r.device_epoch <> d.ownership_epoch;
   GET DIAGNOSTICS n_requests = ROW_COUNT;
 
-  WITH anchor AS (
-    SELECT a.id,
-           COALESCE(
-             (SELECT max(e.epoch) FROM public.device_ownership_epochs e
-               WHERE e.device_id = a.device_id AND e.org_id = a.org_id AND e.started_at <= a.created_at),
-             (SELECT min(e.epoch) FROM public.device_ownership_epochs e
-               WHERE e.device_id = a.device_id AND e.org_id = a.org_id)
-           ) AS epoch
-    FROM public.pam_actuations a
-  )
   UPDATE public.pam_actuations a
-     SET device_epoch = anchor.epoch
-    FROM anchor
-   WHERE anchor.id = a.id
-     AND anchor.epoch IS NOT NULL
-     AND anchor.epoch <> a.device_epoch;
+     SET device_epoch = d.ownership_epoch
+    FROM public.devices d
+   WHERE d.id = a.device_id
+     AND d.org_id = a.org_id
+     AND a.device_epoch <> d.ownership_epoch;
   GET DIAGNOSTICS n_actuations = ROW_COUNT;
 
   IF n_requests > 0 OR n_actuations > 0 THEN
-    RAISE WARNING 'pam chain epoch anchor: re-anchored % elevation_requests and % pam_actuations', n_requests, n_actuations;
+    RAISE WARNING 'pam chain epoch anchor: anchored % elevation_requests and % pam_actuations to their device current epoch', n_requests, n_actuations;
   END IF;
 END
 $$;

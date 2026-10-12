@@ -17,6 +17,7 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
 import postgres, { type Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
@@ -199,58 +200,102 @@ describe('PAM chain epoch anchor — schema (W2 Task 2.1)', () => {
     expect(r?.device_epoch).toBe(1);
   });
 
-  it('backfill re-anchors rows written after an epoch advance and never touches results', async () => {
-    // A device that moved A -> B after W1 shipped (no PAM history, so the move
-    // was legal), then gained a PAM chain in B. Pre-W2 those rows carried the
-    // column default (epoch 1 = org A), which no epoch row matches. Seeded with
-    // triggers off to reproduce exactly that pre-W2 state.
+  it('first application anchors existing rows to their device current epoch and never touches results', async () => {
+    // W1 shipped first: a device moved A -> B with no PAM history (legal), then
+    // gained a chain in B. Reproduce the pre-W2 database inside one rolled-back
+    // transaction — W2's guards, FKs and columns removed — and apply the
+    // migration exactly as a first boot would.
     const fx = await seedMovedDeviceWithHistory({ path: ['A', 'B'] });
     const b = fx.orgs.B!;
     const requestId = randomUUID();
     const actuationId = randomUUID();
+    const migrationSql = await readFile(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
+    const ROLLBACK = new Error('rollback sentinel');
     const client = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let observed: Record<string, unknown> | undefined;
     try {
       await client.begin(async (tx) => {
-        await tx`SET LOCAL session_replication_role = replica`;
+        await tx.unsafe(`
+          DROP TRIGGER elevation_requests_epoch_guard ON elevation_requests;
+          DROP TRIGGER pam_actuations_epoch_guard ON pam_actuations;
+          ALTER TABLE pam_actuation_results DROP CONSTRAINT pam_actuation_results_actuation_epoch_fkey;
+          ALTER TABLE pam_actuations DROP CONSTRAINT pam_actuations_device_epoch_fkey;
+          ALTER TABLE pam_actuations DROP CONSTRAINT pam_actuations_id_device_org_epoch_key;
+          ALTER TABLE elevation_requests DROP CONSTRAINT elevation_requests_device_epoch_fkey;
+          ALTER TABLE elevation_requests DROP COLUMN device_epoch;
+          ALTER TABLE pam_actuations DROP COLUMN device_epoch;
+          ALTER TABLE pam_actuation_results DROP COLUMN device_epoch;`);
         await tx`
-          INSERT INTO elevation_requests (id, org_id, site_id, partner_id, device_id, device_epoch, flow_type,
+          INSERT INTO elevation_requests (id, org_id, site_id, partner_id, device_id, flow_type,
             subject_username, reason, target_executable_path, target_executable_hash, status, approved_at)
-          VALUES (${requestId}, ${b.id}, ${b.siteId}, ${fx.partnerId}, ${fx.deviceId}, 1, 'uac_intercept',
+          VALUES (${requestId}, ${b.id}, ${b.siteId}, ${fx.partnerId}, ${fx.deviceId}, 'uac_intercept',
             'fixture-user', 'pre-W2 row', ${EXE}, ${HASH}, 'approved', now())`;
         await tx`
-          INSERT INTO pam_actuations (id, org_id, device_id, device_epoch, elevation_request_id, request_revision,
+          INSERT INTO pam_actuations (id, org_id, device_id, elevation_request_id, request_revision,
             generation, desired_state, observed_state, target_executable_path, target_executable_hash, subject_username)
-          VALUES (${actuationId}, ${b.id}, ${fx.deviceId}, 1, ${requestId}, 1, 1, 'active', 'verified_active',
+          VALUES (${actuationId}, ${b.id}, ${fx.deviceId}, ${requestId}, 1, 1, 'active', 'verified_active',
             ${EXE}, ${HASH}, 'fixture-user')`;
+        await tx`
+          INSERT INTO pam_actuation_results (observation_id, org_id, device_id, actuation_id, generation,
+            result_kind, evidence, observed_at)
+          VALUES (${randomUUID()}, ${b.id}, ${fx.deviceId}, ${actuationId}, 1, 'received', '{}'::jsonb, now())`;
+        const digest = async () => (await tx<{ n: number; h: string }[]>`
+          SELECT count(*)::int AS n, md5(string_agg(t::text, '|' ORDER BY id)) AS h
+          FROM (SELECT id, observation_id, org_id, device_id, actuation_id, generation, result_kind,
+                       failure_code, evidence, observed_at, received_at FROM pam_actuation_results) t`)[0];
+        const before = await digest();
+        // Flush the INITIALLY DEFERRED FK checks the inserts queued: ALTER TABLE
+        // refuses a table with pending trigger events, and a real boot applies
+        // the migration in a transaction of its own.
+        await tx`SET CONSTRAINTS ALL IMMEDIATE`;
+
+        await tx.unsafe(migrationSql);
+
+        const [anchors] = await tx<{ req: number; act: number; hreq: number; hact: number }[]>`
+          SELECT (SELECT device_epoch FROM elevation_requests WHERE id = ${requestId}) AS req,
+                 (SELECT device_epoch FROM pam_actuations WHERE id = ${actuationId}) AS act,
+                 (SELECT device_epoch FROM elevation_requests WHERE id = ${fx.epoch1.requestId}) AS hreq,
+                 (SELECT device_epoch FROM pam_actuations WHERE id = ${fx.epoch1.actuationId}) AS hact`;
+        const constraints = await tx<{ conname: string; convalidated: boolean }[]>`
+          SELECT conname::text AS conname, convalidated FROM pg_constraint
+          WHERE conname IN ('elevation_requests_device_epoch_fkey', 'pam_actuations_device_epoch_fkey',
+                            'pam_actuation_results_actuation_epoch_fkey')
+          ORDER BY conname`;
+        observed = { anchors, constraints: [...constraints], resultsUnchanged: (await digest())?.h === before?.h };
+        throw ROLLBACK;
       });
+    } catch (error) {
+      if (error !== ROLLBACK) throw error;
     } finally {
       await client.end({ timeout: 1 });
     }
 
-    try {
-      await replayMigration(MIGRATION);
-      const [anchored] = await getTestDb().execute<{ req: number; act: number }>(sql`
-        SELECT (SELECT device_epoch FROM elevation_requests WHERE id = ${requestId}) AS req,
-               (SELECT device_epoch FROM pam_actuations WHERE id = ${actuationId}) AS act`);
-      expect(anchored).toEqual({ req: 2, act: 2 });
-      // The epoch-1 chain from the fixture (org A) is already valid and stays put.
-      const [historical] = await getTestDb().execute<{ req: number; act: number }>(sql`
-        SELECT (SELECT device_epoch FROM elevation_requests WHERE id = ${fx.epoch1.requestId}) AS req,
-               (SELECT device_epoch FROM pam_actuations WHERE id = ${fx.epoch1.actuationId}) AS act`);
-      expect(historical).toEqual({ req: 1, act: 1 });
-      const validated = await getTestDb().execute<{ conname: string; convalidated: boolean }>(sql`
-        SELECT conname::text AS conname, convalidated FROM pg_constraint
-        WHERE conname IN ('elevation_requests_device_epoch_fkey', 'pam_actuations_device_epoch_fkey')
-        ORDER BY conname`);
-      expect(validated).toEqual([
+    expect(observed).toEqual({
+      // Current-org rows move to the current epoch; the org-A chain (its
+      // device has since left A) keeps epoch 1, which is A's epoch.
+      anchors: { req: 2, act: 2, hreq: 1, hact: 1 },
+      constraints: [
         { conname: 'elevation_requests_device_epoch_fkey', convalidated: true },
+        { conname: 'pam_actuation_results_actuation_epoch_fkey', convalidated: false },
         { conname: 'pam_actuations_device_epoch_fkey', convalidated: true },
-      ]);
-    } finally {
-      // Leave the database exactly as a fresh migrate would.
-      await getTestDb().execute(sql`DELETE FROM pam_actuations WHERE id = ${actuationId}`);
-      await getTestDb().execute(sql`DELETE FROM elevation_requests WHERE id = ${requestId}`);
-    }
+      ],
+      resultsUnchanged: true,
+    });
+    // Rolled back: W2 is intact.
+    const [fk] = await getTestDb().execute<{ convalidated: boolean }>(sql`
+      SELECT convalidated FROM pg_constraint WHERE conname = 'pam_actuation_results_actuation_epoch_fkey'`);
+    expect(fk?.convalidated).toBe(true);
+  });
+
+  it('a replay never re-anchors an earlier-epoch row (A -> B -> A)', async () => {
+    // The epoch-1 chain is org A's and the device is back in A (epoch 3): the
+    // first-application bootstrap would move it to 3. A replay must not.
+    const fx = await seedMovedDeviceWithHistory({ path: ['A', 'B', 'A'] });
+    await replayMigration(MIGRATION);
+    const [row] = await getTestDb().execute<{ req: number; act: number }>(sql`
+      SELECT (SELECT device_epoch FROM elevation_requests WHERE id = ${fx.epoch1.requestId}) AS req,
+             (SELECT device_epoch FROM pam_actuations WHERE id = ${fx.epoch1.actuationId}) AS act`);
+    expect(row).toEqual({ req: 1, act: 1 });
   });
 });
 

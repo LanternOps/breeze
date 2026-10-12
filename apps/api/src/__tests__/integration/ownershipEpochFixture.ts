@@ -15,9 +15,7 @@
  * The epoch-1 PAM rows carry an explicit `device_epoch = 1` (W2, #8204): with
  * triggers suppressed the insert guard cannot anchor them. Their FK target is
  * `(device_id, org_id, device_epoch) -> device_ownership_epochs`; the
- * post-commit check asserts that epoch row exists. Their created_at predates
- * every epoch's started_at, as real pre-move evidence would, so a replay of
- * the W2 anchoring migration keeps them in epoch 1.
+ * post-commit check asserts that epoch row exists.
  */
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -103,23 +101,21 @@ export async function seedMovedDeviceWithHistory(options: SeedMovedDeviceOptions
       await tx`
         INSERT INTO elevation_requests (
           id, org_id, site_id, partner_id, device_id, device_epoch, flow_type, subject_username, reason,
-          target_executable_path, target_executable_hash, status, approved_at, expired_at,
-          requested_at, created_at
+          target_executable_path, target_executable_hash, status, approved_at, expired_at
         ) VALUES (
           ${requestId}, ${first.id}, ${first.siteId}, ${partner.id}, ${deviceId}, 1, 'uac_intercept',
           'fixture-user', 'ownership epoch fixture', ${exe}, ${hash}, 'expired',
-          now() - interval '10 days', now() - interval '9 days',
-          now() - interval '10 days', now() - interval '10 days'
+          now() - interval '10 days', now() - interval '9 days'
         )`;
       await tx`
         INSERT INTO pam_actuations (
           id, org_id, device_id, device_epoch, elevation_request_id, request_revision, generation,
           desired_state, observed_state, target_executable_path, target_executable_hash,
-          subject_username, cleanup_requested_at, cleaned_at, created_at
+          subject_username, cleanup_requested_at, cleaned_at
         ) VALUES (
           ${actuationId}, ${first.id}, ${deviceId}, 1, ${requestId}, 1, 1,
           'cleanup', 'cleaned', ${exe}, ${hash}, 'fixture-user',
-          now() - interval '9 days', now() - interval '9 days', now() - interval '10 days'
+          now() - interval '9 days', now() - interval '9 days'
         )`;
       await tx`
         INSERT INTO pam_actuation_results (

@@ -485,11 +485,14 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
   //    to its epoch). A loser with such a row is refused by blocks-merge.
   //  - no actuation: the row is re-anchored to its device's current epoch,
   //    which requires the device to already be in the new org (else 23514).
-  //    The merge walk reaches that state first: repointing devices fires
-  //    breeze_cascade_device_org_id, which restamps the device's requests in
-  //    the same statement, so the later elevation_requests repoint matches
-  //    no row. Pinned end to end by orgMerge.integration.test.ts ('an
-  //    un-actuated elevation request follows its device into the survivor').
+  //    The walk guarantees it even though elevation_requests sorts BEFORE
+  //    devices: the `sites` repoint (near the head of the walk) moves every
+  //    loser device through devices_site_org_fk ON UPDATE CASCADE (site_id is
+  //    NOT NULL, and PostgreSQL never defers a referential action), and that
+  //    devices UPDATE fires breeze_cascade_device_org_id, which restamps the
+  //    device's requests in the same statement. Pinned end to end by
+  //    orgMerge.integration.test.ts ('an un-actuated elevation request
+  //    follows its device into the survivor epoch').
   'elevation_requests.elevation_requests_epoch_guard': {
     dischargedBy: 'pam_actuations',
     requiredPolicyKind: 'blocks-merge',
