@@ -117,6 +117,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
   'services/backupHealthReadModel.ts': 'read model: backup health',
   'services/contractQuantities.ts': 'billing: contract quantities',
+  'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
   'services/portal/backupReadModel.ts': 'read model: portal backups',

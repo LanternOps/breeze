@@ -219,6 +219,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
   'get_huntress_incidents',
