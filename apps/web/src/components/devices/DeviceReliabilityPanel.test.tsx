@@ -65,7 +65,8 @@ const routeFetch = ({
       return next;
     }
     if (url.endsWith('/baselines')) return makeJsonResponse({ baselines: [] });
-    return makeJsonResponse(snapshot);
+    if (url === '/reliability/dev-1') return makeJsonResponse(snapshot);
+    throw new Error(`unexpected request: ${url}`);
   });
 };
 
@@ -700,6 +701,8 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(screen.getByTestId('reliability-offenders-toggle'));
     expect(await screen.findByText('Spooler')).toBeInTheDocument();
     expect(callsTo('/reliability/dev-1/offenders')).toHaveLength(1);
+    // Toggling the drill-down must not refetch the score either.
+    expect(callsTo('/reliability/dev-1')).toHaveLength(1);
   });
 
   it('surfaces an offenders load failure with a working Retry (issue #1907)', async () => {
