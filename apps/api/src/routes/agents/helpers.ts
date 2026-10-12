@@ -82,6 +82,8 @@ import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type G
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
+import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
@@ -1595,6 +1597,33 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
   return osRootScanPath(osType);
 }
 
+const FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const filesystemPolicySkipLoggedAt = new Map<string, number>();
+
+/**
+ * The automatic triggers (disk-threshold scan, auto-resume continuation) must
+ * honour the same per-device remote-tools policy the REST route and AI tools
+ * enforce (#8509). Fail-closed via `checkDeviceRemoteToolsPolicy`. A refusal
+ * is counted and logged at most once an hour per device+trigger; not Sentry.
+ */
+async function automaticFilesystemScanAllowed(
+  deviceId: string,
+  trigger: FilesystemAutoTrigger,
+): Promise<boolean> {
+  const decision = await checkDeviceRemoteToolsPolicy(deviceId);
+  if (decision.allowed) return true;
+  recordFilesystemAutoTriggerSkipped(trigger);
+  const key = `${deviceId}:${trigger}`;
+  const now = Date.now();
+  if (now - (filesystemPolicySkipLoggedAt.get(key) ?? 0) >= FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS) {
+    filesystemPolicySkipLoggedAt.set(key, now);
+    console.warn(
+      `[agents/helpers] skipping automatic filesystem_analysis (${trigger}) for device ${deviceId}: ${decision.reason}`
+    );
+  }
+  return false;
+}
+
 export async function maybeQueueThresholdFilesystemAnalysis(
   device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
@@ -1638,6 +1667,11 @@ export async function maybeQueueThresholdFilesystemAnalysis(
     .limit(1);
 
   if (recentCommand) {
+    return { queued: false };
+  }
+
+  // Last, so the policy lookup runs at most once per cooldown, not per heartbeat.
+  if (!(await automaticFilesystemScanAllowed(device.id, 'threshold'))) {
     return { queued: false };
   }
 
@@ -1839,6 +1873,12 @@ export async function handleFilesystemAnalysisCommandResult(
     .limit(1);
 
   if (inFlightScan) {
+    return;
+  }
+
+  // An operator who turned remote tools off stops the chain at its next step
+  // (no retroactive cancel of a scan already running on the device).
+  if (!(await automaticFilesystemScanAllowed(command.deviceId, 'auto_resume'))) {
     return;
   }
 
