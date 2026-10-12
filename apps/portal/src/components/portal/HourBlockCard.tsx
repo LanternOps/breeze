@@ -50,10 +50,21 @@ export function HourBlockCard({ hourBlock }: { hourBlock: PortalHourBlockDto }) 
         aria-valuenow={percent}
         className="mt-2 h-2 w-full overflow-hidden rounded-full bg-border/70"
       >
-        <div
-          className={cn('h-full rounded-full', over ? 'bg-destructive' : 'bg-foreground/70')}
-          style={{ width: `${percent}%` }}
-        />
+        {/* CSP style-src-attr 'none' refuses a style="width:N%" attribute, so the
+            fill is an SVG rect: width is a presentational attribute, not CSS. */}
+        <svg
+          className="h-full w-full"
+          viewBox="0 0 100 1"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect
+            width={percent}
+            height="1"
+            className={over ? 'fill-destructive' : 'fill-foreground/70'}
+          />
+        </svg>
       </div>
 
       <p

@@ -29,6 +29,8 @@ export const PORTAL_DISABLED_CODES = [
   'PORTAL_HARDWARE_INVENTORY_DISABLED',
   'PORTAL_PERFORMANCE_METRICS_DISABLED',
   'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  // Block-hours (#8183): strict fail-closed support-hours card.
+  'PORTAL_HOUR_BLOCK_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);
