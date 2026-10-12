@@ -68,12 +68,22 @@ export function toV1Disposition(
  * caller's ambient DB context must have access to the device's live org;
  * otherwise every candidate is `unresolved`.
  */
-export async function resolvePamReconciliationBindings(input: {
+type ResolveInput<V extends PamReconciliationProtocolVersion> = {
   agentId: string;
   deviceId: string;
-  protocolVersion: PamReconciliationProtocolVersion;
+  protocolVersion: V;
   candidates: readonly PamReconciliationCandidate[];
-}): Promise<PamReconciliationBindingDisposition[]> {
+};
+
+export function resolvePamReconciliationBindings(
+  input: ResolveInput<1>,
+): Promise<PamReconciliationBindingDispositionV1[]>;
+export function resolvePamReconciliationBindings(
+  input: ResolveInput<PamReconciliationProtocolVersion>,
+): Promise<PamReconciliationBindingDisposition[]>;
+export async function resolvePamReconciliationBindings(
+  input: ResolveInput<PamReconciliationProtocolVersion>,
+): Promise<PamReconciliationBindingDisposition[]> {
   if (input.candidates.length === 0) return [];
 
   const encodedCandidates = JSON.stringify(input.candidates.map((candidate, index) => ({
@@ -97,7 +107,15 @@ export async function resolvePamReconciliationBindings(input: {
   `);
 
   const resultRows = rows<ResolverRow>(result);
-  if (resultRows.length !== input.candidates.length) return unresolved(input.candidates);
+  if (resultRows.length !== input.candidates.length) {
+    // Fail closed (admission stays shut), but loudly: a malformed lineage
+    // answer would otherwise wedge the device with no signal.
+    console.warn(
+      `[pamReconciliationBinding] lineage resolver returned ${resultRows.length} rows for `
+      + `${input.candidates.length} candidates on device ${input.deviceId}; reporting all unresolved`,
+    );
+    return unresolved(input.candidates);
+  }
 
   const dispositions: PamReconciliationBindingDisposition[] = [];
   const seenOrdinals = new Set<number>();
@@ -114,6 +132,10 @@ export async function resolvePamReconciliationBindings(input: {
       || (row.status === 'bound' && !row.command_id)
       || (row.status !== 'bound' && row.command_id !== null)
     ) {
+      console.warn(
+        `[pamReconciliationBinding] lineage resolver returned a contradictory row `
+        + `(ordinal ${row.ordinal}, status ${row.status}) on device ${input.deviceId}; reporting all unresolved`,
+      );
       return unresolved(input.candidates);
     }
     seenOrdinals.add(ordinal);

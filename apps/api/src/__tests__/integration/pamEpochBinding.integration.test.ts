@@ -319,6 +319,137 @@ describe('breeze_pam_epoch_binding — function contract', () => {
   });
 });
 
+
+async function seedCurrentEpochActuation(seed: SeededMovedDevice, orgLabel: string): Promise<{ actuationId: string; commandId: string }> {
+  const org = seed.orgs[orgLabel]!;
+  const [row] = await getTestDb().execute<{ actuationId: string; commandId: string }>(sql`
+    WITH request AS (
+      INSERT INTO elevation_requests (
+        org_id, site_id, partner_id, device_id, flow_type, subject_username, reason,
+        target_executable_path, status, approved_at, expires_at
+      ) VALUES (
+        ${org.id}, ${org.siteId}, ${seed.partnerId}, ${seed.deviceId}, 'uac_intercept', 'fixture-user',
+        'current epoch', 'C:\\Fixture\\fixture.exe', 'approved', now(), now() + interval '15 minutes'
+      ) RETURNING id
+    ), command AS (
+      INSERT INTO device_commands (device_id, type, target_role, payload, status)
+      VALUES (${seed.deviceId}, 'pam_apply_v2', 'agent', '{}'::jsonb, 'sent')
+      RETURNING id
+    ), actuation AS (
+      INSERT INTO pam_actuations (
+        org_id, device_id, elevation_request_id, request_revision, generation,
+        desired_state, observed_state, current_command_id, target_executable_path, subject_username
+      )
+      SELECT ${org.id}, ${seed.deviceId}, request.id, 1, 2, 'active', 'dispatched', command.id,
+             'C:\\Fixture\\fixture.exe', 'fixture-user'
+      FROM request, command
+      RETURNING id
+    )
+    SELECT actuation.id AS "actuationId", command.id AS "commandId" FROM actuation, command`);
+  return row!;
+}
+
+describe('breeze_pam_epoch_binding — review follow-ups', () => {
+  it('an erased actuation\'s marker answers only for its own device', async () => {
+    const path = ['A', 'B'] as const;
+    const seed = await seedMovedDeviceWithHistory({ path });
+    const other = await seedMovedDeviceWithHistory({ path });
+    await cascadeDeleteOrg(seed.orgs.A!.id, randomUUID(), 'erasure@epoch-binding.test');
+
+    for (const version of [1, 2]) {
+      const item = historicalCandidate(seed);
+      const { body } = await bindViaRoute(other, currentOrg(other, path), version, [item]);
+      expect(body).toEqual({
+        protocolVersion: version,
+        dispositions: [{ status: 'unresolved', observationId: item.observationId }],
+      });
+    }
+  }, 120_000);
+
+  it('a historical non-closed, unmarked actuation result is rejected and writes nothing', async () => {
+    const path = ['A', 'B'] as const;
+    const seed = await seedMovedDeviceWithHistory({ path });
+    await reopenEpoch1(seed);
+    await dropRetirementMarker(seed);
+    const before = await sourceChainDigest(seed);
+    const commandId = await insertCleanupCommand(seed.deviceId);
+    await expect(withDbAccessContext(orgContext(currentOrg(seed, path)), () => recordPamActuationResult({
+      agentId: agentIdOf(seed), deviceId: seed.deviceId, commandId, result: cleanedResult(seed),
+    }))).resolves.toBe('rejected');
+    expect(await sourceChainDigest(seed)).toEqual(before);
+  });
+
+  it('a failure inside the elevated phase leaves the caller\'s scope intact', async () => {
+    const path = ['A', 'B'] as const;
+    const seed = await seedMovedDeviceWithHistory({ path });
+    const bad = JSON.stringify([{ ordinal: 1, observation_id: randomUUID(), actuation_id: 'not-a-uuid', generation: 1 }]);
+    const ROLLBACK = new Error('rollback');
+    const observed: Record<string, unknown> = {};
+    const client = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    try {
+      await client.begin(async (tx) => {
+        await tx`SET LOCAL ROLE breeze_app`;
+        const orgId = currentOrg(seed, path);
+        await tx`
+          SELECT set_config('breeze.scope', 'organization', true),
+                 set_config('breeze.org_id', ${orgId}, true),
+                 set_config('breeze.accessible_org_ids', ${orgId}, true),
+                 set_config('breeze.accessible_partner_ids', '', true),
+                 set_config('breeze.user_id', '', true)`;
+        try {
+          await tx.savepoint(async (sp) => {
+            await sp`SELECT * FROM public.breeze_pam_epoch_binding(
+              ${agentIdOf(seed)}, ${seed.deviceId}::uuid, ${bad}::text::jsonb)`;
+          });
+          observed.error = null;
+        } catch (error) {
+          observed.error = (error as { code?: string }).code;
+        }
+        const [scope] = await tx<{ scope: string }[]>`SELECT current_setting('breeze.scope', true) AS scope`;
+        observed.scopeAfter = scope!.scope;
+        throw ROLLBACK;
+      });
+    } catch (error) {
+      if (error !== ROLLBACK) throw error;
+    } finally {
+      await client.end({ timeout: 1 });
+    }
+    // 22P02 = invalid_text_representation, raised after the elevation.
+    expect(observed).toEqual({ error: '22P02', scopeAfter: 'organization' });
+  });
+
+  it('a mixed batch keeps per-candidate dispositions and order through the route (v1 and v2)', async () => {
+    const path = ['A', 'B'] as const;
+    const seed = await seedMovedDeviceWithHistory({ path });
+    const current = await seedCurrentEpochActuation(seed, 'B');
+    const bound = { observationId: randomUUID(), actuationId: current.actuationId, generation: 2 };
+    const stale = { observationId: randomUUID(), actuationId: current.actuationId, generation: 1 };
+    const historical = historicalCandidate(seed);
+    const unknown = { observationId: randomUUID(), actuationId: randomUUID(), generation: 1 };
+
+    const v2 = await bindViaRoute(seed, currentOrg(seed, path), 2, [historical, bound, unknown, stale]);
+    expect(v2.body).toEqual({
+      protocolVersion: 2,
+      dispositions: [
+        { status: 'retired', observationId: historical.observationId },
+        { status: 'bound', observationId: bound.observationId, commandId: current.commandId },
+        { status: 'unresolved', observationId: unknown.observationId },
+        { status: 'stale', observationId: stale.observationId },
+      ],
+    });
+    const v1 = await bindViaRoute(seed, currentOrg(seed, path), 1, [historical, bound, unknown, stale]);
+    expect(v1.body).toEqual({
+      protocolVersion: 1,
+      dispositions: [
+        { status: 'stale', observationId: historical.observationId },
+        { status: 'bound', observationId: bound.observationId, commandId: current.commandId },
+        { status: 'unresolved', observationId: unknown.observationId },
+        { status: 'stale', observationId: stale.observationId },
+      ],
+    });
+  });
+});
+
 describe('reconciliation binding — historical candidates (v1 / v2)', () => {
   it('v1 historical candidate is stale, never unresolved', async () => {
     const path = ['A', 'B'] as const;

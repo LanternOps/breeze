@@ -116,6 +116,11 @@ export async function recordPamActuationResult(input: {
       // and hidden by RLS here. A closed or marker-retired historical
       // actuation acknowledges `retired` and writes NOTHING, so the source
       // org's evidence stays byte-identical. Anything else stays `rejected`.
+      // The answer deliberately does not check `commandId`: the function
+      // already proves the agent owns the device and the actuation is in this
+      // device's lineage, and nothing is written, so the only effect is that
+      // the agent disposes an observation for a finished earlier-epoch
+      // actuation.
       const lineage = rows<{ status: string }>(await tx.execute<{ status: string }>(sql`
         SELECT status
         FROM public.breeze_pam_epoch_binding(
