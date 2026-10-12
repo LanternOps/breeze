@@ -343,8 +343,14 @@ The design sections above are left unchanged. These need a decision before W02.
    resolution works: a 200 bootstrap page that pings `/__bz/ping` and then calls
    `location.replace('/')` produced `same-origin` on `/` in every engine.
 2. **§4 fallback and the Goals ("SPAs using web storage") miss a Chrome case.** This is
-   Chrome 154 with "Block third-party cookies" on. The control cookie confirms the block was in
-   effect: an unpartitioned `SameSite=None` cookie was dropped. The `Partitioned`
+   Chrome 154 with third-party cookies blocked. The block was applied three ways at once, so
+   the effect cannot be attributed to any one of them:
+   - the profile prefs `cookie_controls_mode=1` and `block_third_party_cookies=true`, which
+     is how the settings UI stores the setting;
+   - CDP `Network.setCookieControls`;
+   - `--test-third-party-cookie-phaseout`.
+   The control cookie confirms the block was in effect: an unpartitioned `SameSite=None`
+   cookie was dropped. The `Partitioned`
    `__Host-bzt` still worked, so `/__bz/ping` returned 204 and no cookie-blocked notice fired.
    But `localStorage` threw `SecurityError` inside the tunnel iframe, both with and without
    the §6 sandbox attribute. A device SPA that uses web storage will fail in the iframe, and
@@ -437,7 +443,7 @@ In every engine, the sandboxed run matched the unsandboxed run.
 |---|---|---|---|---|---|---|---|---|---|
 | Chromium 151 (Playwright) | yes | cross-site | same-origin | ok | yes | yes | yes / sent (3PC allowed) | yes / yes | same-site / yes / yes |
 | Chrome 154 stable (default, headless, temp profile) | yes | cross-site | same-origin | ok | yes | yes | yes / sent (3PC allowed) | yes / yes | same-site / yes / yes |
-| Chrome 154 stable (3PC blocked) | yes | cross-site | same-origin | **throws `SecurityError`** | yes | yes | yes / **blocked**, so blocking was in effect | yes / yes (tab `localStorage` ok) | same-site / yes / yes (`Partitioned` toss only; unpartitioned toss blocked) |
+| Chrome 154 stable (3PC blocked: profile prefs + CDP cookie controls + phaseout flag, the same recipe as contradiction 2) | yes | cross-site | same-origin | **throws `SecurityError`** | yes | yes | yes / **blocked**, so blocking was in effect | yes / yes (tab `localStorage` ok) | same-site / yes / yes (`Partitioned` toss only; unpartitioned toss blocked) |
 | Chromium 151 (3PC blocked) | n/a: blocking was not in effect (3P control still sent with the profile pref, the CDP cookie controls and `--test-third-party-cookie-phaseout`), so this row is not a result | | | | | | | | |
 | Chrome stable−1 | n/a: not available in this run | | | | | | | | |
 | Firefox 157.0.1 stock (headless, fresh profile; shipped `cookieBehavior=5` read from `omni.ja`) | yes | cross-site | same-origin | ok | yes | yes | yes / sent, but partitioned (TCP) | yes / yes | same-site / yes / yes |
