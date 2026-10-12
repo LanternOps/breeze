@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({ db: {} }));
+
+const auditMock = vi.hoisted(() => ({ createAuditLogAsync: vi.fn(async () => undefined) }));
+vi.mock('./auditService', () => auditMock);
 
 // Field-map mock (house pattern): drizzle's real `eq`/`and` build conditions over
 // plain strings instead of pulling in the full schema module.
@@ -24,8 +27,11 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+import { db } from '../db';
 import {
   findLinkPlacementConflict,
+  PlacementConcurrentUpdateError,
+  savePlacement,
   isEmptyPlacement,
   PlacementLinkConflictError,
   placementBodySchema,
@@ -244,5 +250,91 @@ describe('reconcilePlacementOnLinkOrThrow', () => {
     await expect(
       reconcilePlacementOnLinkOrThrow({ discoveredAssetId: ASSET_ID, deviceId: DEVICE_ID, mode: 'automatic', executor }),
     ).resolves.toBe('moved');
+  });
+});
+
+
+function uniqueViolation(constraint: string) {
+  return Object.assign(new Error('duplicate key value violates unique constraint'), {
+    code: '23505',
+    constraint_name: constraint,
+  });
+}
+
+describe('savePlacement concurrent-write mapping (#8359)', () => {
+  const subject = { kind: 'device' as const, id: DEVICE_ID, orgId: ORG_ID, siteId: 'site-1' };
+  const fields = { room: 'MDF', rack: 'R1', rackUnit: 4, heightU: 1 };
+
+  function stubInsert(failWith?: unknown) {
+    const returning = vi.fn(async () => {
+      if (failWith) throw failWith;
+      return [row({ deviceId: DEVICE_ID, room: 'MDF', rack: 'R1', rackUnit: 4, heightU: 1 })];
+    });
+    const tx = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => ({ returning }) }) }),
+    };
+    (db as any).transaction = vi.fn(async (fn: (t: unknown) => unknown) => fn(tx));
+  }
+
+  it('maps a 23505 from the upsert to PlacementConcurrentUpdateError', async () => {
+    stubInsert(uniqueViolation('asset_physical_placements_device_uniq'));
+    await expect(savePlacement(subject, fields)).rejects.toBeInstanceOf(PlacementConcurrentUpdateError);
+  });
+
+  it('rethrows non-unique errors untouched', async () => {
+    const boom = new Error('connection reset');
+    stubInsert(boom);
+    await expect(savePlacement(subject, fields)).rejects.toBe(boom);
+  });
+
+  it('returns the saved fields on success', async () => {
+    stubInsert();
+    await expect(savePlacement(subject, fields)).resolves.toEqual(fields);
+  });
+});
+
+describe('reconcilePlacementOnLink audit + race mapping (#8359)', () => {
+  beforeEach(() => auditMock.createAuditLogAsync.mockClear());
+  const discoveredRow = row({ id: 'disc-row', discoveredAssetId: ASSET_ID });
+
+  it('audits the discarded placement when the device wins an automatic link', async () => {
+    const differing = row({ id: 'dev-row', deviceId: DEVICE_ID, rack: 'B' });
+    const { executor } = fakeExecutor([[discoveredRow], [differing]]);
+    await reconcilePlacementOnLink({ discoveredAssetId: ASSET_ID, deviceId: DEVICE_ID, mode: 'automatic', executor });
+    expect(auditMock.createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(auditMock.createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_ID,
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        action: 'asset.placement.device_wins',
+        resourceType: 'discovered_asset',
+        resourceId: ASSET_ID,
+        details: expect.objectContaining({
+          deviceId: DEVICE_ID,
+          discarded: { room: 'Room 1', rack: 'A', rackUnit: 3, heightU: 2 },
+          kept: { room: 'Room 1', rack: 'B', rackUnit: 3, heightU: 2 },
+        }),
+      }),
+    );
+  });
+
+  it('writes no device_wins audit for moved / deduplicated / noop outcomes', async () => {
+    const same = row({ id: 'dev-row', deviceId: DEVICE_ID });
+    for (const results of [[[discoveredRow], []], [[discoveredRow], [same]], [[], []]]) {
+      const { executor } = fakeExecutor(results as unknown[][]);
+      await reconcilePlacementOnLink({ discoveredAssetId: ASSET_ID, deviceId: DEVICE_ID, mode: 'automatic', executor });
+    }
+    expect(auditMock.createAuditLogAsync).not.toHaveBeenCalled();
+  });
+
+  it('maps a 23505 on the move-to-device update to PlacementConcurrentUpdateError', async () => {
+    const { executor } = fakeExecutor([[discoveredRow], []]);
+    (executor as any).update = () => ({
+      set: () => ({ where: () => Promise.reject(uniqueViolation('asset_physical_placements_device_uniq')) }),
+    });
+    await expect(
+      reconcilePlacementOnLink({ discoveredAssetId: ASSET_ID, deviceId: DEVICE_ID, mode: 'manual', executor }),
+    ).rejects.toBeInstanceOf(PlacementConcurrentUpdateError);
   });
 });

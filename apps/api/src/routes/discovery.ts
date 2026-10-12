@@ -35,6 +35,7 @@ import { DiscoveredAssetSiteMoveError, moveDiscoveredAssetsToSite } from '../ser
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import {
   findLinkPlacementConflict,
+  PlacementConcurrentUpdateError,
   PlacementLinkConflictError,
   reconcilePlacementOnLinkOrThrow,
 } from '../services/assetPlacement';
@@ -1832,6 +1833,17 @@ discoveryRoutes.post(
             error: 'The asset and the device have different physical placements; resolve them before linking.',
             code: 'PLACEMENT_CONFLICT',
             conflict: err.conflict,
+          },
+          409,
+        );
+      }
+      if (err instanceof PlacementConcurrentUpdateError) {
+        // A concurrent placement PUT committed first (unique index on the
+        // device's placement). The link tx rolled back; nothing was written.
+        return c.json(
+          {
+            error: 'The device placement was changed by a concurrent update; reload and try again.',
+            code: 'PLACEMENT_CONCURRENT_UPDATE',
           },
           409,
         );

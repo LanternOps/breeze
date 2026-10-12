@@ -11,6 +11,12 @@ import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 import { withHostTimeZone } from '../testUtils/hostTimeZone';
+import {
+  findLinkPlacementConflict,
+  PlacementConcurrentUpdateError,
+  PlacementLinkConflictError,
+  reconcilePlacementOnLinkOrThrow,
+} from '../services/assetPlacement';
 
 // W01 (spec §4.4): the route now derives `reachability` through the batched
 // loader. The derivation is pinned by services/assetReachability.test.ts; this
@@ -63,7 +69,10 @@ vi.mock('../jobs/discoveryWorker', () => ({
 vi.mock('../services/assetPlacement', () => ({
   findLinkPlacementConflict: vi.fn(async () => null),
   reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
-  PlacementLinkConflictError: class PlacementLinkConflictError extends Error {},
+  PlacementLinkConflictError: class PlacementLinkConflictError extends Error {
+    constructor(public conflict: unknown = null) { super('placement_link_conflict'); }
+  },
+  PlacementConcurrentUpdateError: class PlacementConcurrentUpdateError extends Error {},
 }));
 
 vi.mock('../services/discoveryJobCreation', () => ({
@@ -2178,6 +2187,93 @@ describe('discovery routes', () => {
         expect(res.status).toBe(200);
         expect(capturedSetPayload).toMatchObject({
           autoLinkSuppressedAt: null
+        });
+      });
+
+      describe('placement authority on link (#8359)', () => {
+        const linkReq = () => app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+        function arrangeLinkWrite() {
+          setSiteRestrictedAuth([SITE_IN]);
+          mockAssetThenDevice(
+            { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+            { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+          );
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+              })
+            })
+          } as any);
+        }
+
+        it('409 PLACEMENT_CONFLICT from the pre-check, before any write', async () => {
+          setSiteRestrictedAuth([SITE_IN]);
+          mockAssetThenDevice(
+            { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+            { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+          );
+          const conflict = { device: { room: 'A' }, discovered: { room: 'B' } };
+          vi.mocked(findLinkPlacementConflict).mockResolvedValueOnce(conflict as any);
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONFLICT', conflict });
+          expect(db.transaction).not.toHaveBeenCalled();
+          expect(db.update).not.toHaveBeenCalled();
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('409 and no link audit when a conflict appears after the pre-check (rollback path)', async () => {
+          arrangeLinkWrite();
+          const conflict = { device: { room: 'A' }, discovered: { room: 'B' } };
+          vi.mocked(reconcilePlacementOnLinkOrThrow).mockRejectedValueOnce(new PlacementLinkConflictError(conflict as any));
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONFLICT', conflict });
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('409 PLACEMENT_CONCURRENT_UPDATE (not 500) when a concurrent placement write wins the unique index', async () => {
+          arrangeLinkWrite();
+          vi.mocked(reconcilePlacementOnLinkOrThrow).mockRejectedValueOnce(new PlacementConcurrentUpdateError());
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONCURRENT_UPDATE' });
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('unlink never reconciles or clones placement back onto the asset', async () => {
+          setSiteRestrictedAuth([SITE_IN]);
+          vi.mocked(db.select).mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: ASSET_IN, orgId: ORG, siteId: SITE_IN, linkedDeviceId: DEVICE_ID, linkSource: 'manual'
+                }]),
+              }),
+            }),
+          } as any);
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: null }])
+              })
+            })
+          } as any);
+
+          const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer token' }
+          });
+          expect(res.status).toBe(200);
+          expect(reconcilePlacementOnLinkOrThrow).not.toHaveBeenCalled();
         });
       });
 

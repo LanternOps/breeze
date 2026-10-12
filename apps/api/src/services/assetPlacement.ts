@@ -16,6 +16,9 @@ import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { assetPhysicalPlacements, devices, discoveredAssets } from '../db/schema';
+import { isPgUniqueViolation } from '../utils/pgErrors';
+import { createAuditLogAsync } from './auditService';
+import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -71,6 +74,27 @@ export const placementBodySchema = z
   })
   .strict();
 
+/**
+ * A concurrent writer (a PUT racing a manual/auto link that moves a placement
+ * onto the same device) lost a unique-index race. Nothing was written; the
+ * caller should answer 409 so the client can re-read and retry.
+ */
+export class PlacementConcurrentUpdateError extends Error {
+  constructor() {
+    super('placement_concurrent_update');
+    this.name = 'PlacementConcurrentUpdateError';
+  }
+}
+
+const PLACEMENT_UNIQUE_INDEXES = [
+  'asset_physical_placements_device_uniq',
+  'asset_physical_placements_discovered_asset_uniq',
+];
+
+function isPlacementUniqueViolation(err: unknown): boolean {
+  return PLACEMENT_UNIQUE_INDEXES.some((name) => isPgUniqueViolation(err, name));
+}
+
 export function isEmptyPlacement(fields: PlacementFields): boolean {
   return fields.room === null && fields.rack === null && fields.rackUnit === null && fields.heightU === null;
 }
@@ -117,21 +141,33 @@ export async function savePlacement(
   }
   const column = subjectColumn(subject.kind);
   const now = new Date();
-  const [row] = await db
-    .insert(assetPhysicalPlacements)
-    .values({
-      orgId: subject.orgId,
-      deviceId: subject.kind === 'device' ? subject.id : null,
-      discoveredAssetId: subject.kind === 'discovered' ? subject.id : null,
-      ...fields,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: column,
-      targetWhere: sql`${column} is not null`,
-      set: { ...fields, updatedAt: now },
-    })
-    .returning();
+  // Savepoint: a lost unique-index race (23505) must not poison the ambient
+  // request transaction, so the caller can still answer a clean 409. No row
+  // lock on `devices` (it would contend with heartbeats); the unique index is
+  // the arbiter and the loser retries.
+  let row: PlacementRow | undefined;
+  try {
+    [row] = await db.transaction((tx) =>
+      tx
+        .insert(assetPhysicalPlacements)
+        .values({
+          orgId: subject.orgId,
+          deviceId: subject.kind === 'device' ? subject.id : null,
+          discoveredAssetId: subject.kind === 'discovered' ? subject.id : null,
+          ...fields,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: column,
+          targetWhere: sql`${column} is not null`,
+          set: { ...fields, updatedAt: now },
+        })
+        .returning(),
+    );
+  } catch (err) {
+    if (isPlacementUniqueViolation(err)) throw new PlacementConcurrentUpdateError();
+    throw err;
+  }
   if (!row) throw new Error('Failed to save asset placement');
   return toFields(row);
 }
@@ -237,10 +273,16 @@ export async function reconcilePlacementOnLink(args: {
   if (!discovered) return 'noop';
 
   if (!device) {
-    await ex
-      .update(assetPhysicalPlacements)
-      .set({ deviceId: args.deviceId, discoveredAssetId: null, updatedAt: new Date() })
-      .where(eq(assetPhysicalPlacements.id, discovered.id));
+    try {
+      await ex
+        .update(assetPhysicalPlacements)
+        .set({ deviceId: args.deviceId, discoveredAssetId: null, updatedAt: new Date() })
+        .where(eq(assetPhysicalPlacements.id, discovered.id));
+    } catch (err) {
+      // A device placement committed between loadPair and this write.
+      if (isPlacementUniqueViolation(err)) throw new PlacementConcurrentUpdateError();
+      throw err;
+    }
     return 'moved';
   }
 
@@ -252,6 +294,23 @@ export async function reconcilePlacementOnLink(args: {
   if (args.mode === 'manual') return 'conflict';
 
   await ex.delete(assetPhysicalPlacements).where(eq(assetPhysicalPlacements.id, discovered.id));
+  // The discovered asset's differing values are discarded; leave a trail.
+  // Fire-and-forget on its own connection (never throws, never aborts the link).
+  void createAuditLogAsync({
+    orgId: discovered.orgId,
+    actorType: 'system',
+    actorId: ANONYMOUS_ACTOR_ID,
+    action: 'asset.placement.device_wins',
+    resourceType: 'discovered_asset',
+    resourceId: args.discoveredAssetId,
+    details: {
+      deviceId: args.deviceId,
+      mode: args.mode,
+      discarded: toFields(discovered),
+      kept: toFields(device),
+    },
+    result: 'success',
+  });
   return 'device_wins';
 }
 

@@ -82,6 +82,7 @@ import { discoveryAssetPlacementRoutes } from './discoveryAssetPlacement';
 import { resolveAssetForMutation, resolveOrgIdForAsset } from '../services/assetAccessScope';
 import {
   deletePlacement,
+  PlacementConcurrentUpdateError,
   readPlacement,
   resolvePlacementAuthority,
   savePlacement,
@@ -196,6 +197,15 @@ describe('PUT /discovery/assets/:id/placement', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('answers 409 PLACEMENT_CONCURRENT_UPDATE on a lost unique-index race, with no audit row', async () => {
+    vi.mocked(readPlacement).mockResolvedValue(null);
+    vi.mocked(savePlacement).mockRejectedValue(new PlacementConcurrentUpdateError());
+    const res = await app().request(url, put({ room: 'MDF' }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONCURRENT_UPDATE' });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
   it('surfaces a resolver failure (site denied) without writing', async () => {
     vi.mocked(resolveAssetForMutation).mockResolvedValue({ error: 'Access to this site denied', status: 403 } as any);
     const res = await app().request(url, put({ room: 'MDF' }));
@@ -229,9 +239,16 @@ describe('DELETE /discovery/assets/:id/placement', () => {
     expect(deletePlacement).not.toHaveBeenCalled();
   });
 
-  it('writes no audit when there was nothing to delete', async () => {
+  it('still audits a no-op delete (marked noop)', async () => {
     vi.mocked(readPlacement).mockResolvedValue(null);
     expect((await app().request(url, { method: 'DELETE' })).status).toBe(200);
-    expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'asset.placement.delete',
+        resourceType: 'discovered_asset',
+        details: { before: null, after: null, noop: true },
+      }),
+    );
   });
 });
