@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
+import { db, withSystemDbAccessContext, getCurrentDbAccessContext } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -2769,13 +2769,23 @@ const monitoringSettingsCacheKey = (deviceId: string) => `monitoring:settings:de
 
 /**
  * #8287: the device's CURRENT watch set for DISPLAY filtering from a user
- * request. Same answer the agent gets, but:
- *  - resolved in system scope — a user's RLS view can be narrower than the
- *    device's (e.g. no `current_partner_id`, so partner-wide monitors are
- *    invisible) and a truncated list would hide live alerts;
- *  - never writes `monitoring:settings:device:*`, so a user-scoped result can
- *    never poison the cache the agent heartbeat reads.
- * Returns null when resolution is unknown (device vanished).
+ * request (summary, status, tab-counts). Same resolver the agent heartbeat
+ * uses, but:
+ *  - runs in the CALLER'S OWN DB context — no system escalation (#2417) and no
+ *    second pooled connection under the request transaction (#1105). Partner-
+ *    wide policies/monitors are legible because their tables carry the
+ *    SELECT-only `org_id IS NULL AND partner_id = breeze_current_partner_id()`
+ *    branch, fed by `currentPartnerId` from `buildDbAccessContext`;
+ *  - never writes `monitoring:settings:device:*` (only reads it), so a
+ *    user-scoped answer can never poison the cache the agent heartbeat reads.
+ *
+ * Returns null — "unknown, do not filter" — when:
+ *  - the device vanished mid-resolution;
+ *  - there is no ambient context, or a non-system context has no
+ *    `currentPartnerId` (e.g. organization-scope SSO sessions mint
+ *    `partnerId: null`). There, partner-wide rows are invisible and the
+ *    resolver would answer a TRUNCATED set (often `watches: []`), which would
+ *    hide live alerts. Failing open shows possibly-stale rows instead.
  */
 export async function resolveMonitoringConfigForDisplay(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   const redis = getRedis();
@@ -2787,9 +2797,9 @@ export async function resolveMonitoringConfigForDisplay(deviceId: string): Promi
       console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
     }
   }
-  const resolution = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => resolveDeviceMonitoringSettings(deviceId)),
-  );
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) return null;
+  const resolution = await resolveDeviceMonitoringSettings(deviceId);
   return resolution.kind === 'unresolved' ? null : resolution.settings;
 }
 

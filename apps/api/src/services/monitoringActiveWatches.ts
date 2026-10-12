@@ -9,7 +9,7 @@ import { captureException } from './sentry';
  *
  * Read-side fix: the device-facing views only show results for watches in the
  * device's CURRENTLY RESOLVED monitoring config — the same set delivered to the
- * agent (`resolveMonitoringConfigForDisplay`: system-scope, cache read-only). No data is deleted;
+ * agent (`resolveMonitoringConfigForDisplay`: caller's own RLS context, cache read-only). No data is deleted;
  * raw history (`GET /monitoring/results`, retention) is unchanged.
  */
 
