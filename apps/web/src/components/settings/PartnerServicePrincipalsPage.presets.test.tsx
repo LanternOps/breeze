@@ -77,6 +77,28 @@ describe('PartnerServicePrincipalsPage scope presets (#8173)', () => {
     expect(screen.getByTestId('save-principal')).toBeDisabled();
   });
 
+  it('re-enables Save once the provisioning preset has an expiry and source CIDR', async () => {
+    await openCreate();
+    fireEvent.click(screen.getByTestId('scope-preset-provisioning'));
+    fireEvent.change(screen.getByText('partnerServicePrincipals.sourceCidrs').querySelector('textarea')!, {
+      target: { value: '203.0.113.0/24' },
+    });
+    fireEvent.change(screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')!, {
+      target: { value: new Date(Date.now() + 86_400_000).toISOString().slice(0, 16) },
+    });
+    expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-principal')).not.toBeDisabled();
+  });
+
+  it('replaces (not merges with) a hand-ticked selection when a preset is chosen', async () => {
+    await openCreate();
+    fireEvent.click(screen.getByTestId('scope-checkbox-ai:execute_admin'));
+    expect(screen.getByTestId('scope-checkbox-ai:execute_admin')).toBeChecked();
+    fireEvent.click(screen.getByTestId('scope-preset-alert-feed'));
+    expect(screen.getByTestId('scope-checkbox-ai:execute_admin')).not.toBeChecked();
+    expect(checkedScopes()).toEqual(['alerts:read', 'organizations:read']);
+  });
+
   it('shows a description next to every scope', async () => {
     await openCreate();
     for (const scope of PARTNER_SERVICE_PRINCIPAL_SCOPES) {
@@ -117,6 +139,6 @@ describe('scope preset + description copy', () => {
       expect(copy?.label, preset.id).toBeTruthy();
       expect(copy?.description, preset.id).toBeTruthy();
     }
-    expect(JSON.stringify(presets)).not.toMatch(/weavestream/i);
+    expect(JSON.stringify([presets, descriptions])).not.toMatch(/weavestream/i);
   });
 });

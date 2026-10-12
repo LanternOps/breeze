@@ -138,7 +138,7 @@
       },
       "provisioning": {
         "label": "Aprovisionamiento de inquilinos",
-        "description": "El conjunto de lectura más la creación y actualización de organizaciones, sitios y claves de inscripción. Las claves de inscripción requieren una fecha de vencimiento e IP de origen."
+        "description": "El conjunto de lectura más la creación de organizaciones y sitios y la generación de claves de inscripción. Las claves de inscripción requieren una fecha de vencimiento e IP de origen."
       },
       "alert-feed": {
         "label": "Feed de alertas",
@@ -158,7 +158,7 @@
       }
     },
     "scopeDescriptions": {
-      "organizations_read": "Nombres y configuración de las organizaciones, en todas las organizaciones a las que puede acceder la entidad.",
+      "organizations_read": "Nombres, slugs y tipos de las organizaciones, en todas las organizaciones a las que puede acceder la entidad.",
       "sites_read": "Sitios (ubicaciones) y sus detalles.",
       "devices_read": "Registros de dispositivos: nombre de host, SO, hardware y pertenencia a grupos.",
       "inventory_read": "Inventario de hardware y software recopilado de los dispositivos.",
@@ -169,10 +169,10 @@
       "alerts_read": "Títulos y mensajes de alertas en todas las organizaciones a las que puede acceder la entidad.",
       "tickets_read": "Asuntos, descripciones y comentarios de tickets, redactados por los clientes, en todas las organizaciones a las que puede acceder la entidad.",
       "device-status_read": "Estado de latido en vivo: en línea/sin conexión, hora de la última conexión y versión del agente. No está incluido en devices:read.",
-      "organizations_write": "Crear y actualizar organizaciones. No puede eliminar.",
-      "sites_write": "Crear y actualizar sitios. No puede eliminar.",
+      "organizations_write": "Crear organizaciones. No puede actualizar ni eliminar.",
+      "sites_write": "Crear sitios. No puede actualizar ni eliminar.",
       "enrollment-keys_write": "Generar claves de inscripción de dispositivos. Requiere una fecha de vencimiento y al menos una IP de origen o CIDR.",
-      "contracts_write": "Crear y editar contratos y líneas de contrato. No puede activar, pausar ni cancelar.",
+      "contracts_write": "Leer, crear y editar contratos y líneas de contrato, y eliminar líneas. No puede activar, pausar ni cancelar.",
       "tickets_write": "Crear, actualizar, asignar, cambiar el estado y comentar tickets. No puede eliminar ni mover tickets.",
       "ai_read": "Conectarse al endpoint de MCP y usar herramientas de solo lectura. Lo requieren todos los demás permisos ai:*.",
       "ai_write": "Herramientas de MCP que modifican datos.",

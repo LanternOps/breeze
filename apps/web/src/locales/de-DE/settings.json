@@ -138,7 +138,7 @@
       },
       "provisioning": {
         "label": "Mandantenbereitstellung",
-        "description": "Die Lesebereiche sowie das Erstellen und Aktualisieren von Organisationen, Standorten und Registrierungsschlüsseln. Registrierungsschlüssel erfordern ein Ablaufdatum und Quell-IPs."
+        "description": "Die Lesebereiche sowie das Erstellen von Organisationen und Standorten und das Ausstellen von Registrierungsschlüsseln. Registrierungsschlüssel erfordern ein Ablaufdatum und Quell-IPs."
       },
       "alert-feed": {
         "label": "Alarm-Feed",
@@ -158,7 +158,7 @@
       }
     },
     "scopeDescriptions": {
-      "organizations_read": "Namen und Einstellungen von Organisationen für alle Organisationen, die der Principal erreichen kann.",
+      "organizations_read": "Namen, Slugs und Typen von Organisationen für alle Organisationen, die der Principal erreichen kann.",
       "sites_read": "Standorte und ihre Details.",
       "devices_read": "Geräteeinträge: Hostname, Betriebssystem, Hardware und Gruppenzugehörigkeit.",
       "inventory_read": "Von Geräten erfasstes Hardware- und Software-Inventar.",
@@ -169,10 +169,10 @@
       "alerts_read": "Alarmtitel und -meldungen für alle Organisationen, die der Principal erreichen kann.",
       "tickets_read": "Ticketbetreffs, -beschreibungen und -kommentare, die von Kunden verfasst werden, für alle Organisationen, die der Principal erreichen kann.",
       "device-status_read": "Live-Heartbeat-Status: online/offline, Zeitpunkt der letzten Sichtung und Agent-Version. Nicht in devices:read enthalten.",
-      "organizations_write": "Organisationen erstellen und aktualisieren. Löschen nicht möglich.",
-      "sites_write": "Standorte erstellen und aktualisieren. Löschen nicht möglich.",
+      "organizations_write": "Organisationen erstellen. Aktualisieren und Löschen nicht möglich.",
+      "sites_write": "Standorte erstellen. Aktualisieren und Löschen nicht möglich.",
       "enrollment-keys_write": "Geräte-Registrierungsschlüssel erstellen. Erfordert ein Ablaufdatum und mindestens eine Quell-IP oder einen CIDR-Bereich.",
-      "contracts_write": "Verträge und Vertragspositionen erstellen und bearbeiten. Aktivieren, Pausieren oder Kündigen nicht möglich.",
+      "contracts_write": "Verträge und Vertragspositionen lesen, erstellen und bearbeiten sowie Positionen entfernen. Aktivieren, Pausieren oder Kündigen nicht möglich.",
       "tickets_write": "Tickets erstellen, aktualisieren, zuweisen, deren Status ändern und kommentieren. Löschen oder Verschieben von Tickets nicht möglich.",
       "ai_read": "Verbindung zum MCP-Endpunkt herstellen und schreibgeschützte Tools verwenden. Für jeden anderen ai:*-Bereich erforderlich.",
       "ai_write": "MCP-Tools, die Daten ändern.",

@@ -138,7 +138,7 @@
       },
       "provisioning": {
         "label": "Tenant provisioning",
-        "description": "The read set plus creating and updating organizations, sites and enrollment keys. Enrollment keys require an expiry and source IPs."
+        "description": "The read set plus creating organizations and sites and minting enrollment keys. Enrollment keys require an expiry and source IPs."
       },
       "alert-feed": {
         "label": "Alert feed",
@@ -158,7 +158,7 @@
       }
     },
     "scopeDescriptions": {
-      "organizations_read": "Organization names and settings across every org the principal can reach.",
+      "organizations_read": "Organization names, slugs and types across every org the principal can reach.",
       "sites_read": "Sites (locations) and their details.",
       "devices_read": "Device records: hostname, OS, hardware and group membership.",
       "inventory_read": "Hardware and software inventory collected from devices.",
@@ -169,10 +169,10 @@
       "alerts_read": "Alert titles and messages across every org the principal can reach.",
       "tickets_read": "Ticket subjects, descriptions and comments, which are customer-authored, across every org the principal can reach.",
       "device-status_read": "Live heartbeat state: online/offline, last-seen time and agent version. Not implied by devices:read.",
-      "organizations_write": "Create and update organizations. Cannot delete.",
-      "sites_write": "Create and update sites. Cannot delete.",
+      "organizations_write": "Create organizations. Cannot update or delete.",
+      "sites_write": "Create sites. Cannot update or delete.",
       "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
-      "contracts_write": "Create and edit contracts and contract lines. Cannot activate, pause or cancel.",
+      "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
       "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
       "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
       "ai_write": "MCP tools that change data.",

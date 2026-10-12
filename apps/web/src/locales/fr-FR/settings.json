@@ -138,7 +138,7 @@
       },
       "provisioning": {
         "label": "Provisionnement de locataires",
-        "description": "L'ensemble en lecture, plus la création et la mise à jour des organisations, sites et clés d'inscription. Les clés d'inscription exigent une date d'expiration et des adresses IP sources."
+        "description": "L'ensemble en lecture, plus la création d'organisations et de sites et la génération de clés d'inscription. Les clés d'inscription exigent une date d'expiration et des adresses IP sources."
       },
       "alert-feed": {
         "label": "Flux d'alertes",
@@ -158,7 +158,7 @@
       }
     },
     "scopeDescriptions": {
-      "organizations_read": "Noms et paramètres des organisations, pour toutes les organisations accessibles au principal.",
+      "organizations_read": "Noms, slugs et types des organisations, pour toutes les organisations accessibles au principal.",
       "sites_read": "Sites (emplacements) et leurs détails.",
       "devices_read": "Fiches d'appareils : nom d'hôte, système d'exploitation, matériel et appartenance aux groupes.",
       "inventory_read": "Inventaire matériel et logiciel collecté depuis les appareils.",
@@ -169,10 +169,10 @@
       "alerts_read": "Titres et messages des alertes, pour toutes les organisations accessibles au principal.",
       "tickets_read": "Objets, descriptions et commentaires des tickets, rédigés par les clients, pour toutes les organisations accessibles au principal.",
       "device-status_read": "État de pulsation en direct : en ligne/hors ligne, dernière activité et version de l'agent. Non inclus dans devices:read.",
-      "organizations_write": "Créer et mettre à jour des organisations. Suppression impossible.",
-      "sites_write": "Créer et mettre à jour des sites. Suppression impossible.",
+      "organizations_write": "Créer des organisations. Mise à jour et suppression impossibles.",
+      "sites_write": "Créer des sites. Mise à jour et suppression impossibles.",
       "enrollment-keys_write": "Générer des clés d'inscription d'appareils. Exige une date d'expiration et au moins une adresse IP source ou un CIDR.",
-      "contracts_write": "Créer et modifier des contrats et des lignes de contrat. Activation, mise en pause et annulation impossibles.",
+      "contracts_write": "Lire, créer et modifier des contrats et des lignes de contrat, et supprimer des lignes. Activation, mise en pause et annulation impossibles.",
       "tickets_write": "Créer, mettre à jour, assigner, changer le statut et commenter des tickets. Suppression et déplacement de tickets impossibles.",
       "ai_read": "Se connecter au point de terminaison MCP et utiliser les outils en lecture seule. Requis par toutes les autres portées ai:*.",
       "ai_write": "Outils MCP qui modifient des données.",

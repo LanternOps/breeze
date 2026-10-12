@@ -138,7 +138,7 @@
       },
       "provisioning": {
         "label": "Kiracı sağlama",
-        "description": "Okuma kümesine ek olarak kuruluşları, siteleri ve kayıt anahtarlarını oluşturma ve güncelleme. Kayıt anahtarları için son kullanma tarihi ve kaynak IP'ler gerekir."
+        "description": "Okuma kümesine ek olarak kuruluşları ve siteleri oluşturma ve kayıt anahtarları üretme. Kayıt anahtarları için son kullanma tarihi ve kaynak IP'ler gerekir."
       },
       "alert-feed": {
         "label": "Uyarı akışı",
@@ -158,7 +158,7 @@
       }
     },
     "scopeDescriptions": {
-      "organizations_read": "Sorumlunun erişebildiği tüm kuruluşların adları ve ayarları.",
+      "organizations_read": "Sorumlunun erişebildiği tüm kuruluşların adları, slug'ları ve türleri.",
       "sites_read": "Siteler (konumlar) ve ayrıntıları.",
       "devices_read": "Cihaz kayıtları: ana bilgisayar adı, işletim sistemi, donanım ve grup üyeliği.",
       "inventory_read": "Cihazlardan toplanan donanım ve yazılım envanteri.",
@@ -169,10 +169,10 @@
       "alerts_read": "Sorumlunun erişebildiği tüm kuruluşların uyarı başlıkları ve iletileri.",
       "tickets_read": "Sorumlunun erişebildiği tüm kuruluşlardaki, müşteriler tarafından yazılan destek talebi konuları, açıklamaları ve yorumları.",
       "device-status_read": "Canlı heartbeat durumu: çevrimiçi/çevrimdışı, son görülme zamanı ve aracı sürümü. devices:read içinde yer almaz.",
-      "organizations_write": "Kuruluş oluşturma ve güncelleme. Silme yapılamaz.",
-      "sites_write": "Site oluşturma ve güncelleme. Silme yapılamaz.",
+      "organizations_write": "Kuruluş oluşturma. Güncelleme ve silme yapılamaz.",
+      "sites_write": "Site oluşturma. Güncelleme ve silme yapılamaz.",
       "enrollment-keys_write": "Cihaz kayıt anahtarları oluşturma. Son kullanma tarihi ve en az bir kaynak IP veya CIDR gerekir.",
-      "contracts_write": "Sözleşme ve sözleşme satırı oluşturma ve düzenleme. Etkinleştirme, duraklatma veya iptal yapılamaz.",
+      "contracts_write": "Sözleşme ve sözleşme satırlarını okuma, oluşturma ve düzenleme; satırları kaldırma. Etkinleştirme, duraklatma veya iptal yapılamaz.",
       "tickets_write": "Destek taleplerini oluşturma, güncelleme, atama, durumunu değiştirme ve yorum ekleme. Talepler silinemez veya taşınamaz.",
       "ai_read": "MCP uç noktasına bağlanma ve salt okunur araçları kullanma. Diğer tüm ai:* kapsamları için gereklidir.",
       "ai_write": "Verileri değiştiren MCP araçları.",

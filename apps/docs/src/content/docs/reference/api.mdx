@@ -218,6 +218,10 @@ description of what it exposes.
 | AI / MCP client | `ai:read`. Add `ai:write` or `ai:execute` only if the client needs them; `ai:execute_admin` is never pre-selected. |
 | Custom | None. Choose each scope yourself. |
 
+### Endpoints
+
+Each route requires the listed scope on the principal.
+
 | Method | Path | Scope | Description |
 |---|---|---|---|
 | `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations |
