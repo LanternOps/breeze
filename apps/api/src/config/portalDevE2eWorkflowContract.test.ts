@@ -37,7 +37,51 @@ describe('portal-dev-e2e CI job contract', () => {
   it('stands the rate limiters down for the dev stack it brings up', () => {
     expect(job).toContain('E2E_MODE=true');
   });
+
+  /**
+   * #5786 — `intent-self-approve` and `ai-operator-approve-after-browser-close`
+   * drive real WebAuthn ceremonies and were in no job's spec list, so they
+   * could not go red (#5273 sat stale for weeks that way). The stack side is
+   * already handled: wt-stack pins WEBAUTHN_ORIGIN/WEBAUTHN_RP_ID to caddy's
+   * published port after `up` (#6443), the specs self-seed over `docker exec
+   * psql` via `.breeze-stack.json`, and `wt-stack test` forwards
+   * REDIS_PASSWORD. What CI must still supply is the spec list itself and
+   * `E2E_MACOS_DEVICE_ID`: the operator spec `test.skip`s without it, and a
+   * skipped spec reports green — the exact blind spot this step closes.
+   */
+  describe('webauthn approval specs (#5786)', () => {
+    const stepStart = job.indexOf('- name: Run the WebAuthn approval specs');
+    const step = stepStart === -1 ? '' : job.slice(stepStart, nextStepIndex(job, stepStart));
+
+    it('has a dedicated step that runs both specs through wt-stack test', () => {
+      expect(stepStart).toBeGreaterThan(-1);
+      expect(step).toMatch(/wt-stack\/cli\.ts test -- [^\n]*tests\/intent-self-approve\.spec\.ts/);
+      expect(step).toMatch(
+        /wt-stack\/cli\.ts test -- [^\n]*tests\/ai-operator-approve-after-browser-close\.spec\.ts/,
+      );
+    });
+
+    it('still runs when the hydration specs fail, so one red cannot hide the other', () => {
+      expect(step).toContain('if: ${{ !cancelled() }}');
+    });
+
+    it('supplies the seeded macOS device id the operator spec skips without', () => {
+      const seed = readFileSync(
+        fileURLToPath(new URL('../../../../e2e-tests/seed-fixtures.sql', import.meta.url)),
+        'utf8',
+      );
+      const id = /v_macos_device_id\s+UUID := '([0-9a-f-]{36})'/.exec(seed)?.[1];
+      expect(id).toBeTruthy();
+      expect(step).toContain(`E2E_MACOS_DEVICE_ID: ${id}`);
+    });
+  });
 });
+
+/** Index of the next step (or comment block) at step indentation after `from`. */
+function nextStepIndex(job: string, from: number): number {
+  const found = /\n {6}(?:- name:|# )/.exec(job.slice(from + 1));
+  return found ? from + 1 + found.index : job.length;
+}
 
 /**
  * Index of the next top-level job key after `from`, so the slice stops at the

@@ -4290,6 +4290,25 @@ jobs:
       - name: Run the portal hydration specs
         run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts tests/partner-sending-domains.spec.ts
 
+      # #5786 — the two WebAuthn approval specs (real ceremonies via Chrome's
+      # virtual authenticator). A spec no job runs cannot go red; #5273 stayed
+      # stale for weeks that way. What they need from the stack is already
+      # provided: `wt-stack up` pins WEBAUTHN_ORIGIN / WEBAUTHN_RP_ID to caddy's
+      # published port (#6443), so the production-valued PUBLIC_APP_URL RP-ID
+      # trap in e2e-tests/README.md does not apply; both specs self-seed over
+      # `docker exec psql` using pgContainer from .breeze-stack.json; and
+      # `wt-stack test` forwards REDIS_PASSWORD to globalSetup.
+      # E2E_MACOS_DEVICE_ID is the one thing CI must supply: the operator spec
+      # `test.skip`s without it and a skipped spec reports green. It is the
+      # fixed id of the macOS device in e2e-tests/seed-fixtures.sql (pinned by
+      # portalDevE2eWorkflowContract.test.ts). `!cancelled()` so a red hydration
+      # spec above cannot hide these.
+      - name: Run the WebAuthn approval specs
+        if: ${{ !cancelled() }}
+        env:
+          E2E_MACOS_DEVICE_ID: 42fc7de0-48f5-48f2-846b-6dd95924baf9
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/intent-self-approve.spec.ts tests/ai-operator-approve-after-browser-close.spec.ts
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
