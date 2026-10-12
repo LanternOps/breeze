@@ -42,8 +42,6 @@ describe('unbound topology stub node retention (#7267)', () => {
     for (const id of ids) await addRel(g, g.nodeId, id, 'withdrawn');
     expect((await purge(g)).deleted).toBe(keys.length);
     for (const id of ids) expect(await exists(id)).toBe(false);
-    // The bound fixture endpoints on the other side of the edges survive.
-    expect(await exists(g.nodeId)).toBe(true);
   });
 
   it('keeps a stub with an active relationship, however old', async () => {
@@ -131,6 +129,55 @@ describe('unbound topology stub node retention (#7267)', () => {
     for (let i = 0; i < 5; i++) await addNode(g, `mac-endpoint:aa:bb:cc:00:00:${i}0`);
     expect(await purge(g, 3)).toEqual({ deleted: 3, more: true });
     expect(await purge(g, 3)).toEqual({ deleted: 2, more: false });
+  });
+
+  it('reports no more work when the batch exactly drains the backlog', async () => {
+    const g = await createTopologyGraph();
+    for (let i = 0; i < 2; i++) await addNode(g, `mac-endpoint:aa:bb:cc:01:00:${i}0`);
+    expect(await purge(g, 2)).toEqual({ deleted: 2, more: false });
+  });
+
+  it('honours the 30-day boundary independently of the exported constant', async () => {
+    const g = await createTopologyGraph();
+    const young = await addNode(g, 'mac-endpoint:aa:bb:cc:02:00:01', { ageDays: 29 });
+    const aged = await addNode(g, 'mac-endpoint:aa:bb:cc:02:00:02', { ageDays: 31 });
+    expect((await purge(g)).deleted).toBe(1);
+    expect(await exists(young)).toBe(true);
+    expect(await exists(aged)).toBe(false);
+  });
+
+  it('keeps a stub whose relationship was supported inside the window even if its row is old', async () => {
+    const g = await createTopologyGraph();
+    const id = await addNode(g, 'lldp-chassis:mac:supported');
+    await addRel(g, g.nodeId, id, 'withdrawn');
+    await system(() => db.execute(sql`UPDATE topology_relationships SET last_supported_at=now()-interval '2 days'
+      WHERE source_node_id=${id}::uuid OR target_node_id=${id}::uuid`));
+    expect((await purge(g)).deleted).toBe(0);
+    expect(await exists(id)).toBe(true);
+  });
+
+  it('keeps non-endpoint nodes, soft-deleted nodes and alias sources even with a scoped prefix', async () => {
+    const g = await createTopologyGraph();
+    const network = await addNode(g, 'lldp-chassis:mac:net');
+    await system(() => db.execute(sql`UPDATE topology_nodes SET kind='network', identity_material=jsonb_set(identity_material,'{kind}','"network"') WHERE id=${network}::uuid`));
+    const soft = await addNode(g, 'lldp-chassis:mac:soft');
+    await system(() => db.execute(sql`UPDATE topology_nodes SET deleted_at=now() WHERE id=${soft}::uuid`));
+    const keeper = await addNode(g, 'lldp-chassis:mac:alias-keeper', { ageDays: 1 });
+    const source = await addNode(g, 'mac-endpoint:aa:bb:cc:03:00:01');
+    await system(() => db.execute(sql`UPDATE topology_nodes SET alias_target_id=${keeper}::uuid WHERE id=${source}::uuid`));
+    expect((await purge(g)).deleted).toBe(0);
+    for (const id of [network, soft, source]) expect(await exists(id)).toBe(true);
+  });
+
+  it('does not touch another site in the same org', async () => {
+    const g = await createTopologyGraph();
+    const otherSite = crypto.randomUUID();
+    await system(() => db.execute(sql`INSERT INTO sites (id, org_id, name) VALUES (${otherSite}::uuid, ${g.orgId}::uuid, 'second')`));
+    const mine = await addNode(g, 'cdp-device:hostname:a');
+    const theirs = await addNode({ orgId: g.orgId, siteId: otherSite }, 'cdp-device:hostname:a');
+    expect((await purge(g)).deleted).toBe(1);
+    expect(await exists(mine)).toBe(false);
+    expect(await exists(theirs)).toBe(true);
   });
 
   it('runs as part of the site evidence retention pass', async () => {

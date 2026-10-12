@@ -49,6 +49,11 @@ export async function purgeAgedUnboundStubNodes(scope: TopologyScope, now = new 
     ORDER BY n.updated_at, n.id LIMIT ${limit + 1} FOR UPDATE OF n SKIP LOCKED`);
   if (!candidates.length) return { deleted: 0, more: false };
   const ids = sql.join(candidates.slice(0, limit).map(row => sql`${row.id}::uuid`), sql`,`);
+  // `latest_observation_id` is NO ACTION and the node's observations cascade, so
+  // release any support pointer at them first (same as purgeDeletedProducerEvidence).
+  await db.execute(sql`UPDATE topology_relationship_support SET latest_observation_id=NULL, updated_at=now()
+    WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid AND latest_observation_id IN (
+      SELECT o.id FROM topology_observations o WHERE o.org_id=${scope.orgId}::uuid AND o.site_id=${scope.siteId}::uuid AND o.subject_node_id IN (${ids}))`);
   await db.execute(sql`DELETE FROM topology_nodes WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid AND id IN (${ids})`);
   return { deleted: Math.min(candidates.length, limit), more: candidates.length > limit };
 }
