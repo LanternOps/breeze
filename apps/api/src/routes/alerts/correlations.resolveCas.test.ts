@@ -31,6 +31,7 @@ const {
   dbMock,
   selectQueues,
   alertsUpdateWheres,
+  alertsUpdateSets,
   alertsUpdateReturns,
   groupRow,
   alertWin,
@@ -38,6 +39,7 @@ const {
 } = vi.hoisted(() => {
   const selectQueues = new Map<string, unknown[][]>();
   const alertsUpdateWheres: unknown[] = [];
+  const alertsUpdateSets: Record<string, unknown>[] = [];
   const alertsUpdateReturns: unknown[][] = [];
 
   const groupId = '22222222-2222-4222-8222-222222222222';
@@ -112,12 +114,15 @@ const {
     update: (table: unknown) => {
       if (tableName(table) === 'alerts') {
         return {
-          set: () => ({
-            where: (predicate: unknown) => {
-              alertsUpdateWheres.push(predicate);
-              return { returning: () => Promise.resolve(alertsUpdateReturns.shift() ?? []) };
-            },
-          }),
+          set: (values: Record<string, unknown>) => {
+            alertsUpdateSets.push(values);
+            return {
+              where: (predicate: unknown) => {
+                alertsUpdateWheres.push(predicate);
+                return { returning: () => Promise.resolve(alertsUpdateReturns.shift() ?? []) };
+              },
+            };
+          },
         };
       }
       // alert_correlation_groups status mirror (updatePersistedGroupStatus): not
@@ -130,7 +135,7 @@ const {
     },
   };
 
-  return { dbMock, selectQueues, alertsUpdateWheres, alertsUpdateReturns, groupRow, alertWin, alertLose };
+  return { dbMock, selectQueues, alertsUpdateWheres, alertsUpdateSets, alertsUpdateReturns, groupRow, alertWin, alertLose };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -199,6 +204,7 @@ const dialect = new PgDialect();
 const seedGroup = (statusWin: string, statusLose: string, reReadRows: unknown[] = []) => {
   selectQueues.clear();
   alertsUpdateWheres.length = 0;
+  alertsUpdateSets.length = 0;
   alertsUpdateReturns.length = 0;
   selectQueues.set('alert_correlation_groups', [[groupRow]]);
   selectQueues.set('alert_correlation_members', [[{ alertId: alertWin.id }, { alertId: alertLose.id }]]);
@@ -238,6 +244,19 @@ describe('POST /correlations/:groupId/resolve — mixed CAS outcome within one g
 
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
     expect(emitAlertStateFeedback.mock.calls[0]?.[0]).toMatchObject({ alertId: alertWin.id });
+  });
+
+  it("stamps resolution_reason 'manual' on resolve but not on acknowledge (#7281)", async () => {
+    seedGroup('active', 'active');
+    alertsUpdateReturns.push([{ id: alertWin.id }]);
+    await resolveGroupRequest();
+    expect(alertsUpdateSets[0]).toMatchObject({ status: 'resolved', resolutionReason: 'manual' });
+
+    seedGroup('active', 'active');
+    alertsUpdateReturns.push([{ id: alertWin.id }]);
+    await acknowledgeGroupRequest();
+    expect(alertsUpdateSets[0]).toMatchObject({ status: 'acknowledged' });
+    expect(alertsUpdateSets[0]).not.toHaveProperty('resolutionReason');
   });
 
   it('does NOT page when the re-read shows the member simply lost the race', async () => {

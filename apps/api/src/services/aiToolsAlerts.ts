@@ -397,7 +397,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             status: 'resolved',
             resolvedAt,
             resolvedBy: auth.user.id,
-        resolutionReason: 'manual',
+            resolutionReason: 'manual',
             resolutionNote
           })
           .where(buildResolveAlertCas(input.alertId as string))
