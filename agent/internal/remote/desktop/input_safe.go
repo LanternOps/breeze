@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,10 @@ var (
 const (
 	safeInputQueueDepth   = 64
 	safeInputCloseTimeout = 2 * time.Second
+
+	// inputResyncInterval bounds how often a viewer that keeps sending a stale
+	// reset epoch is told the current one.
+	inputResyncInterval = 500 * time.Millisecond
 )
 
 // SafeInput wraps a platform InputHandler so that one worker goroutine owns
@@ -58,12 +63,25 @@ type SafeInput struct {
 	orderMu sync.Mutex
 	order   *inputOrder
 	drops   map[string]uint64 // worker goroutine only; keyed by drop reason
+
+	resetGen      atomic.Uint64 // +1 per reset, before the epochs are published
+	pubResetEpoch atomic.Uint32 // mirrors order.resetEpoch for other goroutines
+	pubGeoEpoch   atomic.Uint32 // mirrors order.geoEpoch
+	hooks         atomic.Pointer[safeInputHooks]
+	now           func() time.Time // worker reads; tests may replace before first use
+	lastResync    time.Time        // worker goroutine only
+	discardBelow  uint64           // worker goroutine only
 }
 
 type safeInputJob struct {
 	run    func() error
 	result chan error // buffered(1); nil for fire-and-forget
+	gen    uint64     // resetGen at submission; older than discardBelow → discarded
 }
+
+// urgentGen tags urgent jobs so a reset never discards them: a release only
+// discards queued input, never another release or a login-window change.
+const urgentGen = ^uint64(0)
 
 var _ InputHandler = (*SafeInput)(nil)
 
@@ -80,7 +98,10 @@ func NewSafeInput(inner InputHandler, label string) *SafeInput {
 		held:         newHeldInput(),
 		order:        newInputOrder(),
 		drops:        map[string]uint64{},
+		now:          time.Now,
 	}
+	s.pubResetEpoch.Store(s.order.resetEpoch)
+	s.pubGeoEpoch.Store(s.order.geoEpoch)
 	go s.loop()
 	return s
 }
@@ -114,6 +135,13 @@ func (s *SafeInput) loop() {
 }
 
 func (s *SafeInput) run(j safeInputJob) {
+	if j.gen < s.discardBelow {
+		// Submitted before a reset whose release has already run.
+		if j.result != nil {
+			j.result <- errInputReset
+		}
+		return
+	}
 	err := j.run()
 	if j.result != nil {
 		j.result <- err
@@ -224,6 +252,17 @@ func (s *SafeInput) flushMove() {
 func (s *SafeInput) noteDrop(reason string) {
 	s.drops[reason]++
 	slog.Debug("Dropped input event", "session", s.label, "reason", reason)
+	if !resyncNeeded(reason) {
+		return
+	}
+	now := s.now()
+	if !s.lastResync.IsZero() && now.Sub(s.lastResync) < inputResyncInterval {
+		return
+	}
+	s.lastResync = now
+	if h := s.hooks.Load(); h != nil && h.onResync != nil {
+		h.onResync()
+	}
 }
 
 // droppedCount reports how many events were dropped for reason. For tests.
@@ -276,14 +315,18 @@ func (s *SafeInput) submitJob(urgent, flushLegacyMove bool, timeout time.Duratio
 		defer t.Stop()
 		expire = t.C
 	}
-	job := safeInputJob{run: run, result: make(chan error, 1)}
+	gen := s.resetGen.Load()
+	if urgent {
+		gen = urgentGen
+	}
+	job := safeInputJob{run: run, result: make(chan error, 1), gen: gen}
 	q := s.jobs
 	if urgent {
 		q = s.urgent
 	} else if flushLegacyMove {
 		if mv := s.takeLegacyMove(); mv != nil {
 			move := *mv
-			if err := s.enqueue(q, safeInputJob{run: func() error { s.injectMoveNow(move); return nil }}, expire); err != nil {
+			if err := s.enqueue(q, safeInputJob{run: func() error { s.injectMoveNow(move); return nil }, gen: gen}, expire); err != nil {
 				return err
 			}
 		}
@@ -397,13 +440,51 @@ func (s *SafeInput) SkipSeq(seq uint64) {
 	})
 }
 
-// ReleaseAll releases every key and button the agent holds on the remote and
-// discards input queued before it, which would otherwise press keys again
-// right after they were released. Safe to call at any time, including after
-// Close; it never blocks longer than the close timeout.
-func (s *SafeInput) ReleaseAll(reason string) {
+// safeInputHooks must not block and must not call back into SafeInput.
+// onReset runs on the goroutine that triggered the reset; onResync runs on the
+// worker. The Session's hooks only spawn a goroutine.
+type safeInputHooks struct {
+	onReset  func(reason string) // an agent-side reset started a new epoch
+	onResync func()              // sequenced input arrived with a stale epoch
+}
+
+func (s *SafeInput) SetHooks(h safeInputHooks) { s.hooks.Store(&h) }
+
+// Epochs returns the current reset and geometry epochs. Any goroutine.
+func (s *SafeInput) Epochs() (reset, geo uint32) {
+	return s.pubResetEpoch.Load(), s.pubGeoEpoch.Load()
+}
+
+// ReleaseAll releases every key and button the agent holds on the remote,
+// discards input queued before it, and starts a new reset epoch so that
+// sequenced input sent before it (queued, or retransmitted and delivered late)
+// cannot press anything again. Legacy input is unaffected by the epoch. Safe to
+// call at any time, including after Close. It never blocks longer than the
+// close timeout, and the epoch has moved by the time it returns, even if the
+// release itself timed out.
+func (s *SafeInput) ReleaseAll(reason string) { s.reset(reason, false, true) }
+
+// ResetGeometry is ReleaseAll plus a new geometry epoch, in one step. The
+// monitor and desktop switches call it before the display offset changes.
+func (s *SafeInput) ResetGeometry(reason string) { s.reset(reason, true, true) }
+
+func (s *SafeInput) reset(reason string, geometry, announce bool) {
+	s.orderMu.Lock()
+	s.order.agentReset(geometry)
+	epoch, geo := s.order.resetEpoch, s.order.geoEpoch
+	gen := s.resetGen.Add(1) // before publishing: a reader that sees the new epoch sees gen too
+	s.pubResetEpoch.Store(epoch)
+	s.pubGeoEpoch.Store(geo)
+	s.orderMu.Unlock()
+
+	slog.Info("Input reset", "session", s.label, "reason", reason, "epoch", epoch, "geoEpoch", geo)
+	if h := s.hooks.Load(); announce && h != nil && h.onReset != nil {
+		h.onReset(reason)
+	}
 	err := s.submit(true, s.closeTimeout, func() error {
-		s.discardQueued()
+		if gen > s.discardBelow {
+			s.discardBelow = gen
+		}
 		s.takeMove()
 		s.releaseHeld(reason)
 		return nil
@@ -430,19 +511,6 @@ func (s *SafeInput) releaseHeld(reason string) {
 	}
 }
 
-func (s *SafeInput) discardQueued() {
-	for {
-		select {
-		case j := <-s.jobs:
-			if j.result != nil {
-				j.result <- errInputReset
-			}
-		default:
-			return
-		}
-	}
-}
-
 // InjectText types text on the worker, so it never interleaves with keys.
 func (s *SafeInput) InjectText(text string) error {
 	return s.submit(false, 0, func() error { return InjectText(s.inner, text) })
@@ -454,7 +522,7 @@ func (s *SafeInput) InjectText(text string) error {
 // handler returns.
 func (s *SafeInput) Close() {
 	s.closeOnce.Do(func() {
-		s.ReleaseAll("closed")
+		s.reset("closed", false, false)
 		close(s.done)
 		select {
 		case <-s.exited:
