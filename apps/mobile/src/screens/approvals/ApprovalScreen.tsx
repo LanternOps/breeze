@@ -37,6 +37,8 @@ import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { UacInterceptDetails } from './components/UacInterceptDetails';
 import { ScriptProposalDetails } from './components/ScriptProposalDetails';
+import { OperatorPlanDetails } from './components/OperatorPlanDetails';
+import { isOperatorPlanApproval } from '../../services/approvals';
 import { RiskBand } from './components/RiskBand';
 import { CustomerTenantBadge } from './components/CustomerTenantBadge';
 import { ApprovalButtons } from './components/ApprovalButtons';
@@ -469,6 +471,8 @@ export function ApprovalScreen() {
               onAcknowledgementsChange={setAcknowledgedPatterns}
               onApproveBlockedChange={setProposalApproveBlocked}
             />
+          ) : isOperatorPlanApproval(focused) ? (
+            <OperatorPlanDetails args={focused.actionArguments} />
           ) : (
             <DetailsCollapse toolName={focused.actionToolName} args={focused.actionArguments} />
           )}
