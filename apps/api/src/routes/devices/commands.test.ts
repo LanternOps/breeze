@@ -47,6 +47,7 @@ vi.mock('../../routes/auth/schemas', async (importOriginal) => {
 });
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  runAfterDbContextCommit: vi.fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -189,7 +190,7 @@ vi.mock('../../services/authEpochs', () => ({
 }));
 
 import { commandsRoutes } from './commands';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
@@ -2110,6 +2111,13 @@ describe('device commands routes', () => {
           deviceId: DEVICE_ID,
         }),
       );
+      // The automation ledger opens its own system-scope connection; doing that
+      // while this request still holds its transaction deadlocks the pool
+      // (#1105), and a rolled-back mark must not time the action out. So it
+      // is deferred until the request's transaction commits.
+      expect(applyAutomationActionTerminal).not.toHaveBeenCalled();
+      expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
+      await (vi.mocked(runAfterDbContextCommit).mock.calls[0]![1] as () => Promise<void>)();
       // Same ledger transition as a reaper timeout, so a late real result can
       // still repair the automation action (REAL_TERMINAL_SOURCES repair path).
       expect(applyAutomationActionTerminal).toHaveBeenCalledWith(

@@ -11,6 +11,7 @@ type QueuedCommand = {
   type: string;
   createdAt: string;
   executedAt?: string | null;
+  targetRole?: string;
   deliverBy: string | null;
   createdBy: string | null;
 };
@@ -131,7 +132,13 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
   }, [load]);
 
   const heldPowerRow = rows.find((row) => POWER_COMMAND_TYPES.has(row.type));
-  const showHold = !loadError && !!heldPowerRow && runningRows.length > 0;
+  // The barrier counts only running commands for the SAME target role
+  // (commandDispatch.ts in-flight count), so only those are holding it.
+  const heldRole = heldPowerRow?.targetRole ?? "agent";
+  const holdingRows = heldPowerRow
+    ? runningRows.filter((row) => (row.targetRole ?? "agent") === heldRole)
+    : [];
+  const showHold = !loadError && !!heldPowerRow && holdingRows.length > 0;
 
   // Keep the "running for N min" age and the Mark failed eligibility current
   // while the banner is on screen.
@@ -219,7 +226,7 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
             {t("queuedActions.powerHold.title", { action: humanizeCommandType(heldPowerRow.type) })}
           </p>
           <ul className="mt-2 space-y-2">
-            {runningRows.map((running) => {
+            {holdingRows.map((running) => {
               const minutes = runningMinutes(running, now);
               const eligible = minutes >= MARK_FAILED_MIN_AGE_MINUTES;
               return (

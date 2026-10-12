@@ -318,6 +318,18 @@ describe('DeviceQueuedActions', () => {
       expect(banner.textContent).toMatch(/7 min/);
     });
 
+    it('ignores running commands for a different target role (the barrier counts only the same role)', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'reboot', targetRole: 'agent' })],
+        sent: [sentCommand({ targetRole: 'backup' })],
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('queued-action-row');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+    });
+
     it('shows no banner when nothing is running on the device', async () => {
       routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [] });
 

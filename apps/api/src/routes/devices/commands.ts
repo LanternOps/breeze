@@ -4,7 +4,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -1241,23 +1241,29 @@ commandsRoutes.post(
       commandType: outcome.type,
       deviceId,
     });
-    // The automation ledger commits on its own system-scope connection
-    // (automationActionResults.ts `inDeliberateSystemContext`), so a failure
-    // there can't poison this request and is contained like the reaper does.
-    // Recorded as a reaper timeout on purpose: that is the transition a late
-    // real agent result is allowed to repair.
-    try {
-      await applyAutomationActionTerminal({
-        source: 'reaper',
-        commandId: outcome.id,
-        terminalStatus: 'timed_out',
-        error: outcome.errorMsg,
-        completedAt: outcome.completedAt,
-      });
-    } catch (error) {
-      console.error(`[commands] mark-failed: automation action terminal failed for ${outcome.id}:`, error);
-      captureException(error instanceof Error ? error : new Error(String(error)));
-    }
+    // The automation ledger writes on its own system-scope connection
+    // (automationActionResults.ts `inDeliberateSystemContext`). Opening that
+    // second pooled connection while this request still holds its transaction
+    // deadlocks the pool under load (#1105 — the cancel path defers it for the
+    // same reason), and a mark that rolls back must not time the action out.
+    // So it runs once the request's transaction has committed, contained like
+    // the reaper's. Recorded as a reaper timeout on purpose: that is the
+    // transition a late real agent result is allowed to repair.
+    const { id: markedId, errorMsg, completedAt } = outcome;
+    runAfterDbContextCommit('commands.markFailed.automationActionTerminal', async () => {
+      try {
+        await applyAutomationActionTerminal({
+          source: 'reaper',
+          commandId: markedId,
+          terminalStatus: 'timed_out',
+          error: errorMsg,
+          completedAt,
+        });
+      } catch (error) {
+        console.error(`[commands] mark-failed: automation action terminal failed for ${markedId}:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
 
     writeRouteAudit(c, {
       orgId: device.orgId,
