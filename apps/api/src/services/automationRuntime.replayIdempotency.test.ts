@@ -29,6 +29,7 @@ const {
   executeMock,
   selectMock,
   sendWebhookNotificationMock,
+  claimFailureNotificationMock,
 } = vi.hoisted(() => ({
   dispatchMock: vi.fn(),
   resolveOwnedAutomationReferencesMock: vi.fn(),
@@ -43,6 +44,7 @@ const {
   executeMock: vi.fn(),
   selectMock: vi.fn(),
   sendWebhookNotificationMock: vi.fn(),
+  claimFailureNotificationMock: vi.fn(),
 }));
 
 vi.mock('./automationReferenceAuthorization', () => ({
@@ -110,6 +112,7 @@ vi.mock('./automationActionResults', () => ({
   claimAutomationActionDispatches: vi.fn(),
   stampClaimedAutomationActionOutcome: stampActionMock,
   readAutomationActionState: readActionStateMock,
+  claimAutomationFailureNotification: claimFailureNotificationMock,
 }));
 
 vi.mock('./scriptCancellation', () => ({
@@ -239,6 +242,7 @@ beforeEach(() => {
   readActionStateMock.mockResolvedValue(null);
   claimActionMock.mockResolvedValue({ kind: 'claimed' });
   sendWebhookNotificationMock.mockResolvedValue({ success: true });
+  claimFailureNotificationMock.mockResolvedValue(true);
   executeMock.mockResolvedValue([]);
   selectMock.mockImplementation(() => ({
     from: vi.fn().mockReturnValue({
@@ -335,11 +339,13 @@ describe('executeAutomationActionsInOrder — per-action claim (#3189)', () => {
     expect(out.devicesFailed).toBe(0);
   });
 
-  it('a replayed failure stops the device but does not re-send the on-failure notification', async () => {
+  it('a replayed failure stops the device but does not re-send an on-failure notification already sent', async () => {
     claimActionMock.mockResolvedValue({
       kind: 'already_claimed',
       state: ledger({ status: 'failed', message: 'Script not found' }),
     });
+    // #7188 — an earlier attempt already stamped failure_notified_at.
+    claimFailureNotificationMock.mockResolvedValue(false);
 
     const out = await __testOnly.executeAutomationActionsInOrder(args([
       { type: 'run_script', scriptId: 'script-1' },
@@ -355,6 +361,72 @@ describe('executeAutomationActionsInOrder — per-action claim (#3189)', () => {
       status: 'skipped',
       onlyFromPending: true,
     }));
+  });
+
+  // #7188 — the on-failure notification is gated on a CAS of the failing
+  // action row's failure_notified_at, not on whether this attempt is a replay.
+  it('a replayed failure whose notification the first attempt never sent sends it once', async () => {
+    claimActionMock.mockResolvedValue({
+      kind: 'already_claimed',
+      state: ledger({ status: 'failed', message: 'Script not found' }),
+    });
+    claimFailureNotificationMock.mockResolvedValue(true);
+
+    const out = await __testOnly.executeAutomationActionsInOrder(args([
+      { type: 'run_script', scriptId: 'script-1' },
+      { type: 'run_script', scriptId: 'script-1' },
+    ], 'notify'));
+
+    expect(out.devicesFailed).toBe(1);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(claimFailureNotificationMock).toHaveBeenCalledTimes(1);
+    expect(claimFailureNotificationMock).toHaveBeenCalledWith({ runId: RUN_ID, deviceId: DEVICE.id, actionIndex: 0 });
+    expect(sendWebhookNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a first-attempt failure claims the notification before sending it', async () => {
+    const order: string[] = [];
+    claimFailureNotificationMock.mockImplementation(async () => {
+      order.push('claim');
+      return true;
+    });
+    sendWebhookNotificationMock.mockImplementation(async () => {
+      order.push('send');
+      return { success: true };
+    });
+    dispatchMock.mockResolvedValue({ ok: false, error: 'Script not found' });
+
+    const out = await __testOnly.executeAutomationActionsInOrder(args([
+      { type: 'run_script', scriptId: 'script-1' },
+    ], 'notify'));
+
+    expect(out.devicesFailed).toBe(1);
+    expect(claimFailureNotificationMock).toHaveBeenCalledWith({ runId: RUN_ID, deviceId: DEVICE.id, actionIndex: 0 });
+    expect(order).toEqual(['claim', 'send']);
+  });
+
+  it('a first-attempt failure whose notification another attempt already claimed sends nothing', async () => {
+    claimFailureNotificationMock.mockResolvedValue(false);
+    dispatchMock.mockResolvedValue({ ok: false, error: 'Script not found' });
+
+    const out = await __testOnly.executeAutomationActionsInOrder(args([
+      { type: 'run_script', scriptId: 'script-1' },
+    ], 'notify'));
+
+    expect(out.devicesFailed).toBe(1);
+    expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('a failure under onFailure=stop never claims a notification', async () => {
+    dispatchMock.mockResolvedValue({ ok: false, error: 'Script not found' });
+
+    const out = await __testOnly.executeAutomationActionsInOrder(args([
+      { type: 'run_script', scriptId: 'script-1' },
+    ], 'stop'));
+
+    expect(out.devicesFailed).toBe(1);
+    expect(claimFailureNotificationMock).not.toHaveBeenCalled();
+    expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
   });
 
   it('a claim refused because the run was cancelled stops quietly, recording no failure', async () => {

@@ -877,6 +877,45 @@ export async function claimAutomationActionDispatches(input: {
   return claims;
 }
 
+/**
+ * #7188 — claim the on-failure notification for one failed action.
+ *
+ * A single compare-and-swap: the UPDATE that sets `failure_notified_at` is the
+ * statement that decides to send, so of any number of attempts of the same run
+ * (a first attempt, a stalled-job replay, two of them racing) exactly one wins
+ * and sends. Returns true when this caller won and must send.
+ *
+ * Claimed before sending: a worker that dies after this commits but before the
+ * channel accepts the message still loses that alert. That window is the claim
+ * statement to the send, not (as before) everything between recording the
+ * failure and sending.
+ *
+ * Always runs in its own system-scoped transaction (never an ambient one), and
+ * locks only this one action row, so it cannot join the run-then-action lock
+ * order described at `lockRunForLedgerWrite`. Callers invoke it after the
+ * dispatch transaction that held this row's lock has committed. Deliberately
+ * leaves `updated_at` alone: it orders the action reaper, and a notification
+ * claim is not a ledger state change.
+ */
+export async function claimAutomationFailureNotification(input: {
+  runId: string;
+  deviceId: string;
+  actionIndex: number;
+}): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const won = await db.update(automationActionResults)
+      .set({ failureNotifiedAt: new Date() })
+      .where(and(
+        eq(automationActionResults.runId, input.runId),
+        eq(automationActionResults.deviceId, input.deviceId),
+        eq(automationActionResults.actionIndex, input.actionIndex),
+        isNull(automationActionResults.failureNotifiedAt),
+      ))
+      .returning({ id: automationActionResults.id });
+    return won.length === 1;
+  }));
+}
+
 /** #3189 — single-device form of `claimAutomationActionDispatches`. */
 export async function claimAutomationActionDispatch(input: {
   runId: string;
