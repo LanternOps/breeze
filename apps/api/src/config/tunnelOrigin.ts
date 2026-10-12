@@ -5,6 +5,7 @@
  * any issue returned here, so the runtime getter's error branch is defensive.
  * The tunnel domain itself is NEVER written in code — only derived from env.
  */
+import { isIP } from 'node:net';
 import { getDomain } from 'tldts';
 import { UUID_REGEX } from '../utils/uuid';
 
@@ -47,6 +48,12 @@ const TEMPLATE_SHAPE =
 
 function isLocalhostName(host: string): boolean {
   return host === 'localhost' || host.endsWith('.localhost');
+}
+
+/** `URL.hostname` keeps the brackets on an IPv6 literal (`[::1]`); strip them before `isIP`. */
+function isIpLiteralHost(host: string): boolean {
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  return isIP(bare) !== 0;
 }
 
 function safeUrl(raw: string | undefined): URL | null {
@@ -149,6 +156,9 @@ export function parseTunnelOriginConfig(
     }
     const host = parsed.hostname;
     if (!production && isLocalhostName(host)) continue;
+    // An IP literal has no registrable domain and can never share one with a
+    // DNS suffix, so it is separate by construction rather than unverifiable.
+    if (isIpLiteralHost(host)) continue;
     const appDomains = registrableDomains(host);
     if (appDomains.size === 0) {
       issues.push({ path: 'TUNNEL_ORIGIN_TEMPLATE', message: `cannot verify separation from ${source} entry "${raw}": host has no registrable domain` });

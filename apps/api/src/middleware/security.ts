@@ -268,7 +268,9 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
       }
     }
 
-    const skipHeaders = (skipHeadersPathPrefix !== undefined && path.startsWith(skipHeadersPathPrefix))
+    // Truthiness guard: an empty prefix means "skip nothing" (every path
+    // startsWith ''), matching the pre-predicate behaviour of this option.
+    const skipHeaders = (!!skipHeadersPathPrefix && path.startsWith(skipHeadersPathPrefix))
       || options?.skipHeadersWhen?.(c) === true;
     if (!skipHeaders) {
       // --- Content Security Policy ---

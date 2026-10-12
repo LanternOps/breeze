@@ -92,8 +92,9 @@ x-api-env: &api-env
   DASHBOARD_URL: ${DASHBOARD_URL:-https://${BREEZE_DOMAIN}}
   PUBLIC_API_URL: ${PUBLIC_API_URL:-https://${BREEZE_DOMAIN}}
   # Network Proxy host mode (optional; unset = path mode). See
-  # docs/deploy/network-proxy-tunnel-origin. Never infer from BREEZE_DOMAIN:
-  # the tunnel domain must be a different registrable domain.
+  # docs/superpowers/specs/monitoring/2026-10-06-network-proxy-tunnel-origin-design.md
+  # (§2). Never infer from BREEZE_DOMAIN: the tunnel domain must be a
+  # different registrable domain.
   TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
   TUNNEL_FRAME_ANCESTOR: ${TUNNEL_FRAME_ANCESTOR:-}
   # Public origin for customer-portal links (e.g. quote accept emails). The

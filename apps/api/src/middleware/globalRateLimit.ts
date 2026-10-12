@@ -44,6 +44,15 @@ export interface IsolatedBucket {
 }
 
 /**
+ * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
+ * so the path-prefix buckets below can't isolate them: one device admin page
+ * loading 100 subresources would otherwise drain the shared dashboard budget
+ * of every user behind the same IP (plan G7). The per-user/tunnel/agent
+ * budgets that sit on top of this per-IP bucket land in W02.
+ */
+export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
+
+/**
  * Remote-desktop viewer traffic gets its own bucket (issue #3041).
  *
  * While waiting for the agent's WebRTC answer the viewer polls
@@ -62,15 +71,6 @@ export interface IsolatedBucket {
  * so one runaway viewer can still throttle other remote sessions from the same
  * IP; it just can no longer touch the dashboard or auth budget.
  */
-/**
- * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
- * so the path-prefix buckets below can't isolate them: one device admin page
- * loading 100 subresources would otherwise drain the shared dashboard budget
- * of every user behind the same IP (plan G7). The tunnel route adds its own
- * per-user/tunnel/agent budgets on top (tunnelHttpBudget.ts).
- */
-export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
-
 export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/desktop-ws/', name: 'desktopws', limit: 600 },
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,

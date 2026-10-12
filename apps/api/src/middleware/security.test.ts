@@ -230,6 +230,13 @@ describe('securityMiddleware', () => {
       expect(res.headers.get('Permissions-Policy')).toBeTruthy();
     });
 
+    it('treats an empty prefix as "skip nothing", not "skip every path"', async () => {
+      const app = createApp({ skipHeadersPathPrefix: '' });
+      const res = await app.request('/test');
+      expect(res.headers.get('Content-Security-Policy')).toBeTruthy();
+      expect(res.headers.get('Permissions-Policy')).toBeTruthy();
+    });
+
     it('still redirects HTTP to HTTPS for a path under the skipped prefix', async () => {
       const app = createApp({
         forceHttps: 'true',

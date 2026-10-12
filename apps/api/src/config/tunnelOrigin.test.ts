@@ -91,8 +91,15 @@ describe('parseTunnelOriginConfig', () => {
   });
 
   it('fails closed on an origin host with no registrable domain', () => {
-    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://10.0.0.5', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
+    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://intranet', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
       .toMatch(/no registrable domain/);
+  });
+
+  it('treats IP-literal origins as separate from any DNS suffix', () => {
+    expect(config({
+      ...PROD, CORS_ALLOWED_ORIGINS: 'http://192.168.1.10:4321', PUBLIC_API_URL: 'http://[::1]:3001',
+      TUNNEL_ORIGIN_TEMPLATE: TEMPLATE,
+    })).toEqual({ scheme: 'https', suffix: 'us.breezetunnel.test', port: '', frameAncestor: 'https://us.breeze-app.test' });
   });
 
   it.each(['PUBLIC_PORTAL_URL', 'PUBLIC_WEB_URL', 'PUBLIC_URL', 'API_URL', 'WEBAUTHN_ORIGIN'] as const)(
