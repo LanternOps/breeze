@@ -79,6 +79,9 @@ export interface ProvisionedDb extends ProvisionedUrls {
 /** Create the DB, apply core + workspace migrations. Drops it again on failure. */
 export async function provisionTestDb(env: NodeJS.ProcessEnv = process.env): Promise<ProvisionedDb> {
   const server = resolveProvisionServer(env);
+  if ((new URL(server.adminUrl).port || '5432') === '5432') {
+    throw new Error('[ee/workspace integration] refusing to provision on :5432 — use the test stack');
+  }
   const dbName = makeProvisionedDbName();
   const urls = buildProvisionedUrls(server, dbName);
 
@@ -111,6 +114,9 @@ export async function provisionTestDb(env: NodeJS.ProcessEnv = process.env): Pro
     const res = spawnSync('pnpm', ['exec', 'tsx', 'scripts/migrate.ts'], {
       cwd: API_DIR,
       encoding: 'utf8',
+      timeout: 300_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 64 * 1024 * 1024,
       env: {
         ...env,
         DATABASE_URL: urls.databaseUrl,
@@ -119,25 +125,32 @@ export async function provisionTestDb(env: NodeJS.ProcessEnv = process.env): Pro
         POSTGRES_PASSWORD: env.POSTGRES_PASSWORD || 'breeze_test',
       },
     });
-    if (res.status !== 0) {
-      throw new Error(`core migrations failed (exit ${res.status}):\n${res.stdout}\n${res.stderr}`);
+    if (res.error || res.status !== 0) {
+      throw new Error(
+        `core migrations failed (exit ${res.status}, signal ${res.signal}${res.error ? `, ${res.error.message}` : ''}):\n${res.stdout}\n${res.stderr}`,
+        res.error ? { cause: res.error } : undefined,
+      );
     }
 
     const admin = postgres(urls.databaseUrl, { max: 1, onnotice: () => {} });
     try {
-      for (const { filename, sql } of listWorkspaceMigrationFiles()) {
+      const files = listWorkspaceMigrationFiles();
+      if (files.length === 0) throw new Error('no ee/workspace migrations found — refusing to provision an empty schema');
+      for (const { filename, sql } of files) {
         try {
           // One transaction per file, as autoMigrate does; files are idempotent.
           await admin.begin((tx) => tx.unsafe(sql));
         } catch (err) {
-          throw new Error(`workspace migration ${filename} failed: ${err instanceof Error ? err.message : String(err)}`);
+          throw new Error(`workspace migration ${filename} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
         }
       }
     } finally {
       await admin.end({ timeout: 5 });
     }
   } catch (err) {
-    await drop().catch(() => {});
+    await drop().catch((dropErr) => {
+      console.warn(`[ee/workspace integration] failed to drop ${dbName}; clean up manually: DROP DATABASE "${dbName}" WITH (FORCE) (${dropErr})`);
+    });
     throw err;
   }
 

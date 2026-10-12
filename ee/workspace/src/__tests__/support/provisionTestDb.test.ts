@@ -6,11 +6,12 @@ import {
   buildProvisionedUrls,
   listWorkspaceMigrationFiles,
   makeProvisionedDbName,
+  provisionTestDb,
   resolveProvisionServer,
 } from './provisionTestDb';
 
-// Mirrors apps/api/src/testUtils/integrationDatabaseSafety.ts — the API
-// migrator refuses any other name, so a provisioned DB must match it.
+// Mirrors apps/api/src/testUtils/integrationDatabaseSafety.ts's name rule
+// (used by the API integration setup), so a provisioned DB stays within it.
 const API_SAFE_NAME = /^breeze_test(_[a-z0-9]+)?$/u;
 
 describe('makeProvisionedDbName', () => {
@@ -40,6 +41,14 @@ describe('resolveProvisionServer', () => {
     });
     expect(s.adminUrl).toBe('postgresql://u:p@127.0.0.1:6000/breeze_test');
     expect(s.appPassword).toBe('pw');
+  });
+});
+
+describe('provisionTestDb safety', () => {
+  it('refuses to run against the default :5432 port', async () => {
+    await expect(
+      provisionTestDb({ WORKSPACE_IT_PG_ADMIN_URL: 'postgresql://u:p@localhost:5432/breeze_test' }),
+    ).rejects.toThrow(/refusing to provision on :5432/);
   });
 });
 

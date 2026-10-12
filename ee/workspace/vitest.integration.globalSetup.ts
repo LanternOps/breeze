@@ -5,6 +5,9 @@ import { provisionTestDb } from './src/__tests__/support/provisionTestDb';
 
 export default async function globalSetup(): Promise<(() => Promise<void>) | void> {
   if (process.env.DATABASE_URL) return;
+  if (process.env.DATABASE_URL_APP) {
+    throw new Error('DATABASE_URL_APP is set but DATABASE_URL is not — set both or neither');
+  }
 
   const db = await provisionTestDb();
   process.env.DATABASE_URL = db.databaseUrl;
