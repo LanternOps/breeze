@@ -54,6 +54,10 @@ export interface MailboxConnectionListItem {
   lastMessageAt: Date | null;
   /** Sanitized probe failure reason ("Mailbox verification failed: Graph 403 (…)"), else null. */
   verificationError: string | null;
+  /** Microsoft 365 poll sweeps in a row that failed transiently, and when the
+   * last one happened (#8308). Null when the last poll succeeded, and for gmail
+   * rows. A count and a time only: the Graph error text stays server-side. */
+  transientPollFailures: { count: number; lastAt: Date | null } | null;
   /** True for a `pending_consent` row whose current consent attempt has no
    * unexpired consent session left, so it can never complete on its own: the
    * user abandoned a Microsoft sign-in, Microsoft never redirected back (e.g.
@@ -105,6 +109,8 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     lastPolledAt: ticketMailboxConnections.lastPolledAt,
     lastMessageAt: ticketMailboxConnections.lastMessageAt,
     lastError: ticketMailboxConnections.lastError,
+    consecutiveTransientFailures: ticketMailboxConnections.consecutiveTransientFailures,
+    lastTransientFailureAt: ticketMailboxConnections.lastTransientFailureAt,
     gmailHandledLabel: ticketMailboxConnections.gmailHandledLabel,
     gmailArchiveOnHandle: ticketMailboxConnections.gmailArchiveOnHandle,
     gmailHandledError: ticketMailboxConnections.gmailHandledError,
@@ -142,6 +148,9 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     // Only our own sanitized reason is exposed; the poll worker also writes
     // lastError with raw upstream error text that must not reach the client.
     verificationError: row.lastError?.startsWith(MAILBOX_VERIFICATION_FAILED) ? row.lastError : null,
+    transientPollFailures: row.provider !== 'gmail' && row.consecutiveTransientFailures > 0
+      ? { count: row.consecutiveTransientFailures, lastAt: row.lastTransientFailureAt }
+      : null,
     consentExpired: row.status === 'pending_consent' && row.consentSessionLive !== true,
     gmailHandling: row.provider === 'gmail'
       ? {
@@ -559,6 +568,8 @@ export async function bindVerifiedTenant(
         tenantId: normalizedTenantId,
         status: probeFailure?.status ?? 'connected',
         lastError: probeFailure?.lastError ?? null,
+        consecutiveTransientFailures: 0,
+        lastTransientFailureAt: null,
         updatedAt: new Date(),
       })
       .where(and(
@@ -597,7 +608,7 @@ export async function restoreVerifiedConnection(
   snapshot: MailboxConnectionSnapshot,
 ): Promise<boolean> {
   const rows = await db.update(ticketMailboxConnections)
-    .set({ status: 'connected', lastError: null, updatedAt: new Date() })
+    .set({ status: 'connected', lastError: null, consecutiveTransientFailures: 0, lastTransientFailureAt: null, updatedAt: new Date() })
     .where(and(
       eq(ticketMailboxConnections.id, snapshot.id),
       eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
@@ -699,7 +710,15 @@ export async function updateDeltaCursor(
 ): Promise<boolean> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.update(ticketMailboxConnections)
-      .set({ deltaLink, lastPolledAt: polledAt, ...(lastMessageAt ? { lastMessageAt } : {}), updatedAt: new Date() })
+      .set({
+        deltaLink,
+        lastPolledAt: polledAt,
+        ...(lastMessageAt ? { lastMessageAt } : {}),
+        // A completed poll ends any run of transient failures (#8308).
+        consecutiveTransientFailures: 0,
+        lastTransientFailureAt: null,
+        updatedAt: new Date(),
+      })
       .where(connectedSnapshotPredicate(snapshot))
       .returning({ id: ticketMailboxConnections.id });
     return rows.length === 1;
@@ -725,10 +744,34 @@ export async function disableConnection(id: string, partnerId: string): Promise<
 export async function resetDeltaCursor(snapshot: MailboxConnectionSnapshot): Promise<boolean> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.update(ticketMailboxConnections)
+      // Not a completed poll, so a run of transient failures is left as is (#8308).
       .set({ deltaLink: null, updatedAt: new Date() })
       .where(connectedSnapshotPredicate(snapshot))
       .returning({ id: ticketMailboxConnections.id });
     return rows.length === 1;
+  }));
+}
+
+/** A Microsoft 365 poll failed transiently (#8308): the mailbox stays
+ *  'connected' so the next sweep retries, but the run of failures is recorded so
+ *  the mailbox no longer reads as healthy. Only a counter and a time are stored;
+ *  the Graph error text stays in server logs (#6192). Returns the new count, or
+ *  null when the snapshot is no longer the connected generation. Worker-only;
+ *  self-wraps in system context (FORCE RLS, see updateDeltaCursor). */
+export async function recordTransientPollFailure(
+  snapshot: MailboxConnectionSnapshot,
+  failedAt: Date,
+): Promise<number | null> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
+      .set({
+        consecutiveTransientFailures: sql`${ticketMailboxConnections.consecutiveTransientFailures} + 1`,
+        lastTransientFailureAt: failedAt,
+        updatedAt: new Date(),
+      })
+      .where(connectedSnapshotPredicate(snapshot))
+      .returning({ count: ticketMailboxConnections.consecutiveTransientFailures });
+    return rows[0]?.count ?? null;
   }));
 }
 

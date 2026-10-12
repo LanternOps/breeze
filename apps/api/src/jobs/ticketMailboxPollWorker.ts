@@ -6,6 +6,7 @@ import {
   listConnectedMailboxes,
   updateDeltaCursor,
   resetDeltaCursor,
+  recordTransientPollFailure,
   setConnectedMailboxStatus,
   listConnectedGmailMailboxes,
   isConnectedGmailMailboxCurrent,
@@ -17,7 +18,12 @@ import {
   type GmailMailboxSnapshot,
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
-import { classifyGraphPollError, listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
+import {
+  classifyGraphPollError,
+  GRAPH_POLL_SWEEP_BUDGET_MS,
+  listInboxDelta,
+  markRead,
+} from '../services/ticketMailbox/graphMailClient';
 import { normalizeGraphMessage } from '../services/ticketMailbox/normalizeGraphMessage';
 import {
   getStartHistoryId,
@@ -45,10 +51,15 @@ type SweepJobData = { type: 'sweep' };
 async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[number]): Promise<void> {
   if (!c.tenantId) return;
 
+  // One deadline for this mailbox's Graph calls in this sweep (#8308), shared by
+  // the delta read and the mark-read calls. Enqueue and the generation rechecks
+  // are local Redis/DB work and are not bounded by it.
+  const deadlineAt = Date.now() + GRAPH_POLL_SWEEP_BUDGET_MS;
+  let token: string;
   let page: Awaited<ReturnType<typeof listInboxDelta>>;
   try {
-    const token = await getMailboxToken(c.tenantId);
-    page = await listInboxDelta(token, c.mailboxAddress, c.deltaLink);
+    token = await getMailboxToken(c.tenantId);
+    page = await listInboxDelta(token, c.mailboxAddress, c.deltaLink, { deadlineAt });
   } catch (err) {
     const status = (err as { status?: number }).status;
     if (status === 410) {
@@ -61,9 +72,13 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     if (kind === 'transient') {
       // Leave the mailbox 'connected' so the next sweep retries. Marking it
       // 'error' would drop it from polling until a manual reconnect (#8299).
+      // Count the failure on the connection so a mailbox failing for hours does
+      // not read as healthy (#8308); the error text itself stays in this log.
+      const failures = await recordTransientPollFailure(c, new Date());
       console.warn('[mailboxPoll] transient Graph failure; will retry next sweep', {
         id: c.id,
         status,
+        consecutiveFailures: failures,
         err: err instanceof Error ? err.message : err,
       });
       return;
@@ -83,8 +98,11 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
   }
 
   let lastMessageAt: Date | null = null;
+  let markReadSkipped = 0;
   try {
-    const token = await getMailboxToken(c.tenantId);
+    // The token from the delta read is reused: getMailboxToken only returns a
+    // token with more than five minutes left, which outlasts the sweep budget,
+    // so a second token request (and an unrecorded token outage) is not needed.
     // Graph I/O may outlive a reconnect/disable. Revalidate the exact generation
     // immediately before producing any external side effects.
     if (!await isConnectedMailboxSnapshotCurrent(c)) return;
@@ -102,9 +120,16 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
       // effect. A stale result also stops this page so no later message or cursor
       // can be produced from the obsolete snapshot.
       if (!await isConnectedMailboxSnapshotCurrent(c)) return;
-      await markRead(token, c.mailboxAddress, msg.id).catch((e) => {
-        console.warn('[mailboxPoll] mark-read failed', { id: msg.id, err: e instanceof Error ? e.message : e });
-      });
+      // Mark-read is best-effort (a failure is only logged), so once the sweep
+      // budget is spent it is skipped rather than holding the sweep (#8308). The
+      // message is still enqueued and the cursor still advances.
+      if (Date.now() >= deadlineAt) {
+        markReadSkipped += 1;
+      } else {
+        await markRead(token, c.mailboxAddress, msg.id, deadlineAt).catch((e) => {
+          console.warn('[mailboxPoll] mark-read failed', { id: msg.id, err: e instanceof Error ? e.message : e });
+        });
+      }
       if (msg.receivedDateTime) lastMessageAt = new Date(msg.receivedDateTime);
     }
   } catch (err) {
@@ -113,6 +138,10 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
       err: err instanceof Error ? err.message : err,
     });
     return;
+  }
+
+  if (markReadSkipped > 0) {
+    console.warn('[mailboxPoll] sweep budget spent; left messages unread', { id: c.id, count: markReadSkipped });
   }
 
   if (page.deltaLink) {

@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Umfang dieses Postfachs (Anwendungszugriffsrichtlinie)",
     "reauthRequired": "Bevor die Microsoft 365-Abfragen und -Antworten wieder aufgenommen werden, ist eine erneute Zustimmung des Administrators erforderlich.",
+    "pollFailing": "Die letzten {{failures}} Abrufe dieses Postfachs sind mit einem vorübergehenden Microsoft 365-Fehler fehlgeschlagen. Breeze versucht es weiter; neue E-Mails werden abgerufen, sobald Microsoft 365 wieder antwortet.",
     "retest": "Erneut testen",
     "reconnect": "Wieder verbinden",
     "disconnect": "Trennen",

@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Bu posta kutusunun kapsamını belirleyin (Uygulama Erişim Politikası)",
     "reauthRequired": "Microsoft 365 yoklama ve yanıtlara devam edilmeden önce yöneticinin yeniden onayı gereklidir.",
+    "pollFailing": "Bu posta kutusunun son {{failures}} denetimi geçici bir Microsoft 365 hatasıyla başarısız oldu. Breeze yeniden denemeye devam ediyor; Microsoft 365 yeniden yanıt verdiğinde yeni postalar alınacak.",
     "retest": "Yeniden test edin",
     "reconnect": "Yeniden bağlan",
     "disconnect": "Bağlantıyı kes",

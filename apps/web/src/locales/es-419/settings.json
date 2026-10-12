@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Alcance de este buzón (Política de acceso a aplicaciones)",
     "reauthRequired": "Se requiere el nuevo consentimiento del administrador antes de que se reanuden el sondeo y las respuestas de Microsoft 365.",
+    "pollFailing": "Las últimas {{failures}} revisiones de este buzón fallaron con un error temporal de Microsoft 365. Breeze sigue reintentando; el correo nuevo se recibirá cuando Microsoft 365 vuelva a responder.",
     "retest": "Volver a probar",
     "reconnect": "Reconectar",
     "disconnect": "Desconectar",

@@ -86,6 +86,31 @@ describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no r
     expect((await readBack(snapshot.id)).status).toBe('reauth_required');
   });
 
+  // #8308: the transient-failure counter is a worker write like the cursor, so it
+  // must self-wrap in system context and honour the same generation CAS.
+  runDb('recordTransientPollFailure counts up with no DB context, and a completed poll resets it', async () => {
+    const snapshot = await seedConnectedMailbox();
+    const { recordTransientPollFailure, updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+    const failedAt = new Date('2026-10-11T12:00:00Z');
+    await expect(recordTransientPollFailure(snapshot, new Date('2026-10-11T11:58:30Z'))).resolves.toBe(1);
+    await expect(recordTransientPollFailure(snapshot, failedAt)).resolves.toBe(2);
+    await expect(recordTransientPollFailure(
+      { ...snapshot, consentAttemptId: '33333333-3333-4333-8333-333333333333' },
+      new Date(),
+    )).resolves.toBeNull();
+
+    const read = () => withSystemDbAccessContext(async () => (await db.select({
+      count: ticketMailboxConnections.consecutiveTransientFailures,
+      lastAt: ticketMailboxConnections.lastTransientFailureAt,
+      lastError: ticketMailboxConnections.lastError,
+      status: ticketMailboxConnections.status,
+    }).from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)).limit(1))[0]!);
+
+    expect(await read()).toEqual({ count: 2, lastAt: failedAt, lastError: null, status: 'connected' });
+    await updateDeltaCursor(snapshot, 'delta-after-recovery', new Date(), null);
+    expect(await read()).toMatchObject({ count: 0, lastAt: null });
+  });
+
   runDb('no-transition retest lock serializes a concurrent disable', async () => {
     const snapshot = await seedConnectedMailbox();
     const {

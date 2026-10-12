@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Scope this mailbox (Application Access Policy)",
     "reauthRequired": "Administrator re-consent is required before Microsoft 365 polling and replies resume.",
+    "pollFailing": "The last {{failures}} checks of this mailbox failed with a temporary Microsoft 365 error. Breeze keeps retrying; new mail is picked up once Microsoft 365 responds again.",
     "retest": "Re-test",
     "reconnect": "Reconnect",
     "disconnect": "Disconnect",

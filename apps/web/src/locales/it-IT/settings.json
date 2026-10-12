@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Limita l'ambito di questa cassetta postale (Application Access Policy)",
     "reauthRequired": "È richiesto un nuovo consenso dell'amministratore prima che il polling e le risposte Microsoft 365 riprendano.",
+    "pollFailing": "Gli ultimi {{failures}} controlli di questa casella di posta non sono riusciti per un errore temporaneo di Microsoft 365. Breeze continua a riprovare; i nuovi messaggi verranno recuperati quando Microsoft 365 tornerà a rispondere.",
     "retest": "Riesegui test",
     "reconnect": "Riconnetti",
     "disconnect": "Disconnetti",

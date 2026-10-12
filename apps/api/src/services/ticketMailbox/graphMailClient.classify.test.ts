@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { classifyGraphPollError, listInboxDelta, markRead, getFileAttachmentBytes, GRAPH_POLL_TIMEOUT_MS } from './graphMailClient';
+import {
+  classifyGraphPollError,
+  listInboxDelta,
+  markRead,
+  getFileAttachmentBytes,
+  GRAPH_POLL_TIMEOUT_MS,
+  GRAPH_POLL_SWEEP_BUDGET_MS,
+  GraphSweepBudgetError,
+} from './graphMailClient';
 
 const withStatus = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
 
@@ -16,8 +24,39 @@ describe('classifyGraphPollError (#8299)', () => {
     expect(classifyGraphPollError(withStatus(s))).toBe('fatal');
   });
 
-  it('a fetch transport failure (TypeError) is transient', () => {
-    expect(classifyGraphPollError(new TypeError('fetch failed'))).toBe('transient');
+  // Node's fetch puts the network reason in `cause`, with an error code (#8308).
+  it.each(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])(
+    'a fetch network failure (TypeError, cause code %s) is transient',
+    (code) => {
+      const cause = Object.assign(new Error(code), { code });
+      expect(classifyGraphPollError(new TypeError('fetch failed', { cause }))).toBe('transient');
+    },
+  );
+
+  it('a network code one level deeper in the cause chain is still transient', () => {
+    const inner = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const cause = new Error('socket failed', { cause: inner });
+    expect(classifyGraphPollError(new TypeError('fetch failed', { cause }))).toBe('transient');
+  });
+
+  it('a refused redirect (TypeError, cause with no code) is fatal, not retried forever (#8308)', () => {
+    expect(classifyGraphPollError(new TypeError('fetch failed', { cause: new Error('unexpected redirect') }))).toBe('fatal');
+  });
+
+  it.each(['ERR_INVALID_URL', 'ERR_INVALID_ARG_TYPE', 'SOMETHING_ELSE'])(
+    'a TypeError whose cause code %s is not a network failure is fatal (#8308)',
+    (code) => {
+      const cause = Object.assign(new Error(code), { code });
+      expect(classifyGraphPollError(new TypeError('fetch failed', { cause }))).toBe('fatal');
+    },
+  );
+
+  it('a TypeError with no cause (a coding bug) is fatal (#8308)', () => {
+    expect(classifyGraphPollError(new TypeError("Cannot read properties of undefined (reading 'value')"))).toBe('fatal');
+  });
+
+  it('a spent sweep budget is transient (#8308)', () => {
+    expect(classifyGraphPollError(new GraphSweepBudgetError('Graph sweep budget spent'))).toBe('transient');
   });
 
   it.each(['TimeoutError', 'AbortError'])('a %s from the request timeout is transient', (name) => {
@@ -108,5 +147,144 @@ describe('listInboxDelta error to classifier contract (#8299)', () => {
     const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
     expect((err as Error & { status?: number }).status).toBe(status);
     expect(classifyGraphPollError(err)).toBe(kind);
+  });
+});
+
+describe('real fetch failures reach the classifier correctly (#8308)', () => {
+  // Against a real local server, so the TypeError shapes are Node's own rather
+  // than hand-built ones.
+  it('a Graph redirect is refused as fatal, a dropped socket as transient', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((req, res) => {
+      if (req.url === '/redirect') {
+        res.writeHead(302, { location: '/elsewhere' });
+        res.end();
+      } else {
+        req.socket.destroy();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as { port: number };
+      const redirectErr = await listInboxDelta('tok', 'support@example.com', `http://127.0.0.1:${port}/redirect`)
+        .catch((e: unknown) => e);
+      expect(redirectErr).toBeInstanceOf(TypeError);
+      expect(classifyGraphPollError(redirectErr)).toBe('fatal');
+
+      // A malformed stored deltaLink never fixes itself (Node: ERR_INVALID_URL).
+      const invalidUrlErr = await listInboxDelta('tok', 'support@example.com', 'not a url')
+        .catch((e: unknown) => e);
+      expect(invalidUrlErr).toBeInstanceOf(TypeError);
+      expect(classifyGraphPollError(invalidUrlErr)).toBe('fatal');
+
+      const droppedErr = await listInboxDelta('tok', 'support@example.com', `http://127.0.0.1:${port}/drop`)
+        .catch((e: unknown) => e);
+      expect(droppedErr).toBeInstanceOf(TypeError);
+      expect(classifyGraphPollError(droppedErr)).toBe('transient');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('sweep budget for one mailbox (#8308)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const page = (body: Record<string, unknown>) => new Response(JSON.stringify(body), { status: 200 });
+
+  it('stops paging once the budget is spent and returns no partial read', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    let n = 0;
+    const fetchMock = vi.fn(async () => {
+      n += 1;
+      // Each page takes 50 s of wall clock, so the third request has no budget left.
+      vi.setSystemTime(Date.now() + 50_000);
+      return page({ value: [{ id: `m${n}` }], '@odata.nextLink': `https://graph.microsoft.com/next-${n}` });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const err = await listInboxDelta('tok', 'support@example.com', 'https://graph.microsoft.com/stored-delta')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(classifyGraphPollError(err)).toBe('transient');
+    // 0 s, 50 s and 100 s start a request; at 150 s the 120 s budget is spent.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('cuts the last request\'s timeout down to what is left of the budget', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      n += 1;
+      if (n === 1) {
+        vi.setSystemTime(Date.now() + 100_000);
+        return page({ value: [], '@odata.nextLink': 'https://graph.microsoft.com/next' });
+      }
+      return page({ value: [], '@odata.deltaLink': 'https://graph.microsoft.com/delta-final' });
+    }));
+
+    const result = await listInboxDelta('tok', 'support@example.com', null);
+    expect(result.deltaLink).toBe('https://graph.microsoft.com/delta-final');
+    expect(timeoutSpy.mock.calls.map((c) => c[0])).toEqual([GRAPH_POLL_TIMEOUT_MS, GRAPH_POLL_SWEEP_BUDGET_MS - 100_000]);
+  });
+
+  it('does not sleep out a Retry-After that would pass the budget', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const fetchMock = vi.fn(async () => {
+      vi.setSystemTime(Date.now() + 100_000);
+      return new Response('throttled', { status: 429, headers: { 'retry-after': '30' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const started = performance.now();
+    const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it('a request ended by the budget reports the budget, not a bare timeout', async () => {
+    const controller = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    })));
+
+    const pending = listInboxDelta('tok', 'support@example.com', null, { deadlineAt: Date.now() + 1_000 });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 5_000);
+    controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+
+    const err = await pending.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(((err as Error).cause as Error).name).toBe('TimeoutError');
+  });
+
+  it('markRead honours the sweep deadline it is given', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const err = await markRead('tok', 'support@example.com', 'msg-1', Date.now() - 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('a delta round that never ends is treated as a spent budget, not a partial success', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      n += 1;
+      return page({ value: [{ id: `m${n}` }], '@odata.nextLink': `https://graph.microsoft.com/next-${n}` });
+    }));
+
+    const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(n).toBe(1000);
   });
 });

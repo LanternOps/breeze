@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Définir cette boîte aux lettres (Politique d’accès aux applications)",
     "reauthRequired": "Un nouveau consentement de l’administrateur est nécessaire avant que le sondage Microsoft 365 ne reprenne.",
+    "pollFailing": "Les {{failures}} dernières vérifications de cette boîte aux lettres ont échoué avec une erreur temporaire de Microsoft 365. Breeze continue de réessayer; les nouveaux messages seront récupérés dès que Microsoft 365 répondra de nouveau.",
     "retest": "Retester",
     "reconnect": "Reconnecter",
     "disconnect": "Déconnecter",

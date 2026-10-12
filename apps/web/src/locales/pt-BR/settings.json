@@ -1473,6 +1473,7 @@
     },
     "scopeMailbox": "Restringir esta caixa de correio (Política de Acesso ao Aplicativo)",
     "reauthRequired": "É necessário novo consentimento do administrador antes que a consulta e as respostas do Microsoft 365 sejam retomadas.",
+    "pollFailing": "As últimas {{failures}} verificações desta caixa de correio falharam com um erro temporário do Microsoft 365. O Breeze continua tentando; os novos e-mails serão recebidos quando o Microsoft 365 voltar a responder.",
     "retest": "Testar novamente",
     "reconnect": "Reconectar",
     "disconnect": "Desconectar",

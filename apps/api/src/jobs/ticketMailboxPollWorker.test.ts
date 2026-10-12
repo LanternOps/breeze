@@ -44,12 +44,15 @@ vi.mock('../services/ticketMailbox/connectionService', () => ({
   listConnectedGmailMailboxes: vi.fn(async () => []),
   updateDeltaCursor: vi.fn(async () => {}),
   resetDeltaCursor: vi.fn(async () => {}),
+  recordTransientPollFailure: vi.fn(async () => 1),
   setConnectedMailboxStatus: vi.fn(async () => {}),
 }));
 vi.mock('../services/ticketMailbox/mailboxToken', () => ({ getMailboxToken: vi.fn(async () => 'tok') }));
 vi.mock('../services/ticketMailbox/graphMailClient', async (importOriginal) => ({
   // The real classifier: these tests assert how the sweep reacts to each failure.
   classifyGraphPollError: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).classifyGraphPollError,
+  GraphSweepBudgetError: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).GraphSweepBudgetError,
+  GRAPH_POLL_SWEEP_BUDGET_MS: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).GRAPH_POLL_SWEEP_BUDGET_MS,
   listInboxDelta: vi.fn(),
   markRead: vi.fn(async () => {}),
 }));
@@ -67,10 +70,11 @@ import {
   listConnectedMailboxes,
   updateDeltaCursor,
   resetDeltaCursor,
+  recordTransientPollFailure,
   setConnectedMailboxStatus,
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
-import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
+import { GraphSweepBudgetError, listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { enqueueInboundEmail } from '../services/inboundEmailQueue';
 import {
   runMailboxSweep,
@@ -171,7 +175,8 @@ describe('runMailboxSweep', () => {
     ['Graph 503', () => { const e: any = new Error('Graph delta 503'); e.status = 503; return e; }],
     ['Graph 429 after the client retry', () => { const e: any = new Error('Graph delta 429'); e.status = 429; return e; }],
     ['Graph 408 request timeout', () => { const e: any = new Error('Graph delta 408'); e.status = 408; return e; }],
-    ['a dropped connection', () => new TypeError('fetch failed')],
+    ['a dropped connection', () => new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) })],
+    ['a spent sweep budget (#8308)', () => new GraphSweepBudgetError('Graph sweep budget spent')],
   ])('stays connected and retries next sweep on %s', async (_label, makeErr) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
@@ -181,6 +186,63 @@ describe('runMailboxSweep', () => {
     expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
     expect(updateDeltaCursor).not.toHaveBeenCalled();
     expect(resetDeltaCursor).not.toHaveBeenCalled();
+    // #8308: the failure is counted on the connection instead of only logged.
+    expect(recordTransientPollFailure).toHaveBeenCalledTimes(1);
+    expect(recordTransientPollFailure).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), expect.any(Date));
+  });
+
+  it('keeps the Graph error text out of the stored failure record (#8308)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+      const e: any = new Error('Graph delta 503: {"error":{"message":"upstream detail"}}'); e.status = 503; throw e;
+    });
+
+    await runMailboxSweep();
+    const args = vi.mocked(recordTransientPollFailure).mock.calls[0]!;
+    expect(args).toHaveLength(2);
+    expect(JSON.stringify(args)).not.toContain('upstream detail');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('transient'), expect.objectContaining({ consecutiveFailures: 1 }));
+  });
+
+  it('gets one token per mailbox and shares one deadline across the delta read and mark-read (#8308)', async () => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({ messages: [{ id: 'm1' }, { id: 'm2' }], deltaLink: 'delta-new' } as any);
+
+    await runMailboxSweep();
+    expect(getMailboxToken).toHaveBeenCalledTimes(1);
+    const deadlineAt = (vi.mocked(listInboxDelta).mock.calls[0]![3] as { deadlineAt: number }).deadlineAt;
+    expect(typeof deadlineAt).toBe('number');
+    expect(vi.mocked(markRead).mock.calls.map((c) => c[3])).toEqual([deadlineAt, deadlineAt]);
+  });
+
+  it('skips mark-read once the sweep budget is spent but still enqueues and advances the cursor (#8308)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockImplementationOnce(async (_t, _m, _d, opts) => {
+      // The delta read used up the whole budget.
+      vi.setSystemTime((opts as { deadlineAt: number }).deadlineAt + 1);
+      return { messages: [{ id: 'm1' }, { id: 'm2' }], deltaLink: 'delta-new' } as any;
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await runMailboxSweep();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
+    expect(markRead).not.toHaveBeenCalled();
+    expect(updateDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'delta-new', expect.any(Date), expect.any(Date));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('left messages unread'), { id: 'c1', count: 2 });
+  });
+
+  it('does not count a failure when the poll succeeds', async () => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({ messages: [], deltaLink: 'delta-new' } as any);
+
+    await runMailboxSweep();
+    expect(updateDeltaCursor).toHaveBeenCalledTimes(1);
+    expect(recordTransientPollFailure).not.toHaveBeenCalled();
   });
 
   it('stays connected when the token endpoint is briefly unavailable', async () => {
@@ -208,12 +270,16 @@ describe('runMailboxSweep', () => {
   it.each([
     ['Graph 404 (mailbox not found)', () => { const e: any = new Error('Graph delta 404'); e.status = 404; return e; }],
     ['a configuration error with no HTTP status', () => new Error('TICKET_MAILBOX_M365_CLIENT_ID/SECRET not configured')],
+    // #8308: redirect: 'error' refuses a Graph redirect as a TypeError with no
+    // network error code; retrying it forever would hide it.
+    ['a refused redirect from Graph', () => new TypeError('fetch failed', { cause: new Error('unexpected redirect') })],
   ])('still marks error on %s', async (_label, makeErr) => {
     vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
     vi.mocked(listInboxDelta).mockImplementationOnce(async () => { throw makeErr(); });
 
     await runMailboxSweep();
     expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'error', expect.any(String));
+    expect(recordTransientPollFailure).not.toHaveBeenCalled();
   });
 
   it('drops a poll result when disable wins while Graph I/O is in flight', async () => {

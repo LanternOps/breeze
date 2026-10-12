@@ -58,49 +58,106 @@ function sleep(ms: number): Promise<void> {
  */
 export const GRAPH_POLL_TIMEOUT_MS = 60_000;
 
+/**
+ * Total time one mailbox's Graph work may take in one sweep: the delta read
+ * across every page, 429 Retry-After sleep and retry, then the mark-read calls
+ * (#8308). GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but
+ * responsive Graph could otherwise hold the concurrency-1 sweep for many minutes.
+ * The sweep computes one deadline from this and passes it to listInboxDelta and
+ * markRead. When it is spent during the delta read, listInboxDelta throws
+ * GraphSweepBudgetError (transient): the caller discards the partial read and
+ * keeps the stored deltaLink, so the next sweep resumes from the same point and
+ * no mail is skipped.
+ */
+export const GRAPH_POLL_SWEEP_BUDGET_MS = 120_000;
+
+/** The sweep budget for one mailbox's delta read ran out (#8308). Transient. */
+export class GraphSweepBudgetError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'GraphSweepBudgetError';
+  }
+}
+
 function graphSignal(init: RequestInit | undefined, timeoutMs: number | undefined): AbortSignal | undefined {
   if (timeoutMs === undefined) return init?.signal ?? undefined;
   const deadline = AbortSignal.timeout(timeoutMs);
   return init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
 }
 
-/** Graph fetch with one 429 retry honoring Retry-After. Never follows redirects with the bearer token. */
-async function graphFetch(url: string, token: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(url, {
+/** One request's timeout: the per-request deadline, cut down to what is left of
+ * the sweep budget when there is one. Throws once the budget is spent. */
+function requestTimeout(timeoutMs: number | undefined, deadlineAt: number | undefined): number | undefined {
+  if (deadlineAt === undefined) return timeoutMs;
+  const left = deadlineAt - Date.now();
+  if (left <= 0) throw new GraphSweepBudgetError('Graph sweep budget spent');
+  return timeoutMs === undefined ? left : Math.min(timeoutMs, left);
+}
+
+async function graphFetchOnce(
+  url: string,
+  token: string,
+  init: RequestInit | undefined,
+  timeoutMs: number | undefined,
+  deadlineAt: number | undefined,
+): Promise<Response> {
+  const timeout = requestTimeout(timeoutMs, deadlineAt);
+  try {
+    return await fetch(url, {
       ...init,
       headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
       redirect: 'error',
-      signal: graphSignal(init, timeoutMs),
+      signal: graphSignal(init, timeout),
     });
+  } catch (err) {
+    // A request cut short by the sweep budget (rather than by its own deadline)
+    // reports as the budget, so the log says which limit was hit.
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+      throw new GraphSweepBudgetError('Graph sweep budget spent', { cause: err });
+    }
+    throw err;
+  }
+}
+
+/** Graph fetch with one 429 retry honoring Retry-After. Never follows redirects with the bearer token. */
+async function graphFetch(
+  url: string,
+  token: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+  deadlineAt?: number,
+): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await graphFetchOnce(url, token, init, timeoutMs, deadlineAt);
     if (res.status !== 429) return res;
 
     const retryAfter = Number(res.headers.get?.('retry-after') ?? '1');
-    await sleep(Math.min(Number.isFinite(retryAfter) ? retryAfter : 1, 30) * 1000);
+    const waitMs = Math.min(Number.isFinite(retryAfter) ? retryAfter : 1, 30) * 1000;
+    // Sleeping past the budget would only end in GraphSweepBudgetError; stop now.
+    if (deadlineAt !== undefined && Date.now() + waitMs >= deadlineAt) {
+      throw new GraphSweepBudgetError('Graph sweep budget spent waiting out a 429');
+    }
+    await sleep(waitMs);
   }
 
-  return fetch(url, {
-    ...init,
-    headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
-    redirect: 'error',
-    signal: graphSignal(init, timeoutMs),
-  });
+  return graphFetchOnce(url, token, init, timeoutMs, deadlineAt);
 }
 
 export async function listInboxDelta(
   token: string,
   mailbox: string,
   deltaLink: string | null,
+  options: { deadlineAt?: number } = {},
 ): Promise<DeltaPage> {
+  const deadlineAt = options.deadlineAt ?? Date.now() + GRAPH_POLL_SWEEP_BUDGET_MS;
   let url =
     deltaLink ??
     `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages/delta` +
       `?${encodeURIComponent('$select')}=${encodeURIComponent(DELTA_SELECT)}`;
   const messages: GraphMessage[] = [];
-  let finalDelta: string | null = null;
 
   for (let guard = 0; guard < 1000; guard++) {
-    const res = await graphFetch(url, token, undefined, GRAPH_POLL_TIMEOUT_MS);
+    const res = await graphFetch(url, token, undefined, GRAPH_POLL_TIMEOUT_MS, deadlineAt);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
@@ -108,22 +165,30 @@ export async function listInboxDelta(
       throw err;
     }
 
-    const data = (await res.json()) as {
+    let data: {
       value?: GraphMessage[];
       '@odata.nextLink'?: string;
       '@odata.deltaLink'?: string;
     };
+    try {
+      data = (await res.json()) as typeof data;
+    } catch (err) {
+      // The body read shares the request's signal, so the budget can end it too.
+      if (Date.now() >= deadlineAt) throw new GraphSweepBudgetError('Graph sweep budget spent', { cause: err });
+      throw err;
+    }
     if (Array.isArray(data.value)) messages.push(...data.value);
     if (data['@odata.nextLink']) {
       url = data['@odata.nextLink'];
       continue;
     }
 
-    finalDelta = data['@odata.deltaLink'] ?? null;
-    break;
+    return { messages, deltaLink: data['@odata.deltaLink'] ?? null };
   }
 
-  return { messages, deltaLink: finalDelta };
+  // A round that never ends is treated like a spent budget: nothing from the
+  // partial read is used and the stored deltaLink stays put.
+  throw new GraphSweepBudgetError('Graph delta round exceeded the page limit');
 }
 
 /**
@@ -194,13 +259,14 @@ export async function getFileAttachmentBytes(
   return Buffer.from(data.contentBytes, 'base64');
 }
 
-export async function markRead(token: string, mailbox: string, messageId: string): Promise<void> {
+/** `deadlineAt` is the sweep's shared deadline (#8308); past it the call throws GraphSweepBudgetError. */
+export async function markRead(token: string, mailbox: string, messageId: string, deadlineAt?: number): Promise<void> {
   const url = `${GRAPH}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}`;
   await graphFetch(url, token, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ isRead: true }),
-  }, GRAPH_POLL_TIMEOUT_MS);
+  }, GRAPH_POLL_TIMEOUT_MS, deadlineAt);
 }
 
 /**
@@ -211,11 +277,14 @@ export async function markRead(token: string, mailbox: string, messageId: string
  * (`classifyGmailError`).
  *
  * - 'reauth': 401/403. The consent or credential is gone; a reconnect is needed.
- * - 'transient': 408, 429, 5xx, or a transport failure (fetch's TypeError, or the
- *   token request's timeout/abort). Stay connected; the next sweep retries.
+ * - 'transient': 408, 429, 5xx, a network failure (fetch's TypeError carrying a
+ *   socket/DNS error code), the token request's timeout/abort, or a spent sweep
+ *   budget. Stay connected; the next sweep retries.
  * - 'fatal': any other status, or an error with no status that is not a
- *   transport failure (for example the mailbox app is not configured). These do
- *   not fix themselves, so they keep stopping the mailbox as before.
+ *   transport failure (for example the mailbox app is not configured, or Graph
+ *   answered with a redirect, which `redirect: 'error'` refuses as a TypeError
+ *   with no error code). These do not fix themselves, so they keep stopping the
+ *   mailbox as before.
  *
  * 410 (expired delta token) is handled by the caller before this is consulted.
  */
@@ -228,8 +297,52 @@ export function classifyGraphPollError(err: unknown): GraphPollErrorKind {
     if (status === 408 || status === 429 || status >= 500) return 'transient';
     return 'fatal';
   }
-  if (err instanceof TypeError) return 'transient';
+  if (err instanceof GraphSweepBudgetError) return 'transient';
+  if (err instanceof TypeError) return isNetworkFailure(err) ? 'transient' : 'fatal';
   const name = (err as { name?: unknown } | null)?.name;
   if (name === 'TimeoutError' || name === 'AbortError') return 'transient';
   return 'fatal';
+}
+
+/**
+ * Socket, DNS and connect failures Node's fetch (undici) reports in a TypeError's
+ * `cause.code` (#8308). An allowlist, not "any code": fetch also rejects with a
+ * coded TypeError for problems that never fix themselves, such as
+ * ERR_INVALID_URL for a malformed stored deltaLink.
+ */
+const NETWORK_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'EHOSTDOWN',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+/**
+ * Whether a fetch TypeError is a network failure (#8308). Node's fetch rejects
+ * every failure as `TypeError: fetch failed` and puts the reason in `cause`. A
+ * refused redirect is a plain Error('unexpected redirect') with no code, an
+ * invalid URL carries ERR_INVALID_URL, and a coding bug has no cause at all:
+ * none of those is a blip, so they surface as mailbox state instead of retrying
+ * forever.
+ */
+function isNetworkFailure(err: TypeError): boolean {
+  let cause: unknown = err.cause;
+  for (let depth = 0; depth < 3 && cause && typeof cause === 'object'; depth++) {
+    const code = (cause as { code?: unknown }).code;
+    if (typeof code === 'string' && NETWORK_ERROR_CODES.has(code)) return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
 }
