@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   RESTORE_POINT_PAYLOAD_KEY,
   RESTORE_POINT_REQUEST_VERSION,
@@ -7,7 +7,9 @@ import {
   type RestorePointTrigger,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { deviceCommands, devices } from '../db/schema';
 import { deviceRestorePointAttempts } from '../db/schema/deviceRestorePointAttempts';
+import type { DeliveryRefreshContext } from './commandDeliveryRefusal';
 import { resolveSystemProtectionForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
 
@@ -220,5 +222,161 @@ function toggleForTrigger(
       return settings.beforeScripts;
     case 'software_install':
       return settings.beforeSoftwareInstall;
+  }
+}
+
+// ============================================
+// Stale snapshots at delivery (#4609 W05 Task 5.4)
+// ============================================
+
+const COMMAND_TYPE_TRIGGERS: Readonly<Record<string, RestorePointTrigger>> = {
+  install_patches: 'patch',
+  script: 'script',
+  software_install: 'software_install',
+};
+
+/** Stale when `validUntil` has passed, or cannot be read at all. */
+export function isRestorePointBlockStale(block: { validUntil?: unknown }, now: Date): boolean {
+  if (typeof block.validUntil !== 'string') return true;
+  const until = Date.parse(block.validUntil);
+  if (Number.isNaN(until)) return true;
+  return until <= now.getTime();
+}
+
+/** The stamped block, when it is one the agent would read (an object with v:1). */
+function readRestorePointBlock(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const raw = (payload as Record<string, unknown>)[RESTORE_POINT_PAYLOAD_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if ((raw as Record<string, unknown>).v !== RESTORE_POINT_REQUEST_VERSION) return null;
+  return raw as Record<string, unknown>;
+}
+
+/**
+ * Cheap, DB-free test for the delivery path: only a payload carrying an
+ * expired block needs the re-stamp step. Every command without the key, and
+ * every fresh block (including transport redelivery of the same command id),
+ * is delivered exactly as before.
+ */
+export function isStaleRestorePointPayload(payload: unknown, now: Date): boolean {
+  const block = readRestorePointBlock(payload);
+  return block !== null && isRestorePointBlockStale(block, now);
+}
+
+/** Terminalise a still-`requested` row whose snapshot expired before delivery. */
+export async function supersedeStaleRestorePoint(requestId: string): Promise<void> {
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      await db
+        .update(deviceRestorePointAttempts)
+        .set({ status: 'failed', message: RESTORE_POINT_SUPERSEDED_MESSAGE })
+        .where(and(
+          eq(deviceRestorePointAttempts.requestId, requestId),
+          eq(deviceRestorePointAttempts.status, 'requested'),
+        ))
+        .returning({ id: deviceRestorePointAttempts.id });
+    }),
+  );
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Delivery-time step for a claimed command whose `restorePoint` snapshot has
+ * expired (a queued command can wait up to the 7-day standard TTL; the
+ * snapshot is valid for 24 h). Supersedes the old `requested` row, re-resolves
+ * the policy NOW through the chokepoint (fresh requestId, bound to this same
+ * command), and persists ONLY the `restorePoint` key onto the command row --
+ * so a later redelivery of the same command reuses the new snapshot instead of
+ * re-resolving again, and nothing a per-type refresher minted into the
+ * outgoing payload (a presigned URL, a storage session) is ever written back.
+ *
+ * Throws on any failure, which the delivery path treats as "release the row
+ * and try again at the next check-in" -- a stale snapshot is never delivered.
+ */
+export async function refreshRestorePointForDelivery(
+  payload: Record<string, unknown>,
+  ctx: Pick<DeliveryRefreshContext, 'commandId' | 'deviceId' | 'type' | 'claimedAt'>,
+): Promise<Record<string, unknown>> {
+  const stale = readRestorePointBlock(payload);
+  if (!stale || !isRestorePointBlockStale(stale, new Date())) return payload;
+  const trigger = COMMAND_TYPE_TRIGGERS[ctx.type];
+  if (!trigger) return payload;
+
+  const oldRequestId = stringOrNull(stale.requestId);
+  if (oldRequestId) await supersedeStaleRestorePoint(oldRequestId);
+
+  const [device] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ orgId: devices.orgId, osType: devices.osType })
+        .from(devices)
+        .where(eq(devices.id, ctx.deviceId))
+        .limit(1),
+    ),
+  );
+  if (!device) throw new Error(`restore-point refresh: device ${ctx.deviceId} not found`);
+
+  const fresh = await buildRestorePointRequest({
+    deviceId: ctx.deviceId,
+    orgId: device.orgId,
+    osType: device.osType,
+    trigger,
+    label: '',
+    // The action text is not recoverable from every payload (a script's name
+    // is not on it), so the original label is kept verbatim.
+    labelOverride: typeof stale.label === 'string' ? stale.label : undefined,
+    deviceCommandId: ctx.commandId,
+    scriptExecutionId: stringOrNull(payload.executionId),
+    softwareDeploymentId: stringOrNull(payload.deploymentId),
+    patchJobId: stringOrNull(payload.patchJobId),
+  });
+
+  try {
+    await persistRestorePointKey(ctx.commandId, ctx.claimedAt, fresh);
+  } catch (err) {
+    await discardRestorePointRequest(fresh);
+    throw err;
+  }
+
+  console.warn('[restorePointRequest] restore-point snapshot expired before delivery; re-resolved', {
+    commandId: ctx.commandId,
+    supersededRequestId: oldRequestId,
+    requestId: fresh?.requestId ?? null,
+  });
+
+  const { [RESTORE_POINT_PAYLOAD_KEY]: _expired, ...rest } = payload;
+  return fresh ? { ...rest, [RESTORE_POINT_PAYLOAD_KEY]: fresh } : rest;
+}
+
+/**
+ * Single-key write onto the CLAIMED row. Joins the caller's transaction when
+ * there is one (the claim's row lock is held there; a separate connection
+ * would wait on it), and is keyed on the claim so it can never touch a row
+ * another delivery has since re-claimed or terminalised.
+ */
+async function persistRestorePointKey(
+  commandId: string,
+  claimedAt: Date | null,
+  block: RestorePointRequestBlock | null,
+): Promise<void> {
+  const nextPayload = block
+    ? sql`jsonb_set(coalesce(${deviceCommands.payload}, '{}'::jsonb), '{restorePoint}', ${JSON.stringify(block)}::jsonb)`
+    : sql`${deviceCommands.payload} - 'restorePoint'`;
+  const updated = await withSystemDbAccessContext(() =>
+    db
+      .update(deviceCommands)
+      .set({ payload: nextPayload })
+      .where(and(
+        eq(deviceCommands.id, commandId),
+        eq(deviceCommands.status, 'sent'),
+        ...(claimedAt ? [eq(deviceCommands.executedAt, claimedAt)] : []),
+      ))
+      .returning({ id: deviceCommands.id }),
+  );
+  if (updated.length === 0) {
+    throw new Error(`restore-point refresh: command ${commandId} is no longer held by this claim`);
   }
 }
