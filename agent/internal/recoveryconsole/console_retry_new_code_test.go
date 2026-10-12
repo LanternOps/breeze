@@ -3,6 +3,7 @@ package recoveryconsole
 import (
 	"context"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
@@ -213,5 +214,70 @@ func TestConsole_RetryNewCodeHasFreshRejectionBudget(t *testing.T) {
 	}
 	if strings.Join(deps.powerCalls, ",") != "poweroff" {
 		t.Fatalf("power = %v", deps.powerCalls)
+	}
+}
+
+// CI mode never prompts: a posted refusal powers off with a single exchange
+// instead of asking for a new code.
+func TestConsole_CIModeTerminalPostNeverAsksForNewCode(t *testing.T) {
+	var codes []string
+	io := &fakeIO{FailReadLine: true}
+	deps := &fakeDeps{
+		exchangeFn: twoCodeExchange(&codes),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			return &rebuild.Result{Status: "refused", Refusal: "disk /dev/sda is currently in use"}, &rebuild.RefusalError{Reason: "disk /dev/sda is currently in use"}
+		},
+	}
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=" + firstCode + " breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: cmdline}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if io.readLineCalls != 0 || len(codes) != 1 {
+		t.Fatalf("CI must not prompt or re-exchange: readLine=%d codes=%v", io.readLineCalls, codes)
+	}
+	if got := postsByToken(deps); got != "tok-1:refused" || strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("progress = %s power = %v", got, deps.powerCalls)
+	}
+}
+
+// If the server can no longer be reached when the new code is sent, the
+// operator goes back to the server prompt and can finish from there.
+func TestConsole_RetryNewCodeFallsBackToServerPrompt(t *testing.T) {
+	var codes []string
+	dryRuns := 0
+	down := true
+	inner := twoCodeExchange(&codes)
+	io := &fakeIO{Answers: []string{"https://breeze.example", firstCode, "r", secondCode, "https://breeze2.example", secondCode, "6002248"}}
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			if code == secondCode && down {
+				down = false
+				return "", nil, unreachable("breeze.example", syscall.ECONNREFUSED)
+			}
+			return inner(ctx, server, code)
+		},
+		collectFn: func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				dryRuns++
+				if dryRuns == 1 {
+					return &rebuild.Result{Status: "refused", Refusal: "disk /dev/sda is currently in use"}, &rebuild.RefusalError{Reason: "disk /dev/sda is currently in use"}
+				}
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v\n%s", err, io.transcript.String())
+	}
+	if got := postsByToken(deps); got != freshAttemptPosts {
+		t.Fatalf("progress = %s, want %s\n%s", got, freshAttemptPosts, io.transcript.String())
+	}
+	if !strings.Contains(io.transcript.String(), "Could not reach breeze.example") {
+		t.Fatalf("unreachable server not reported:\n%s", io.transcript.String())
 	}
 }
