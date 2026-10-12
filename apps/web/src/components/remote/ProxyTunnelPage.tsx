@@ -106,11 +106,6 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
     return () => clearInterval(interval);
   }, [pollStatus]);
 
-  // Mints (or re-mints) the one-time http-ticket and points the iframe at a
-  // fresh `?__bzt=` URL. Reused by the initial mount AND the idle-reconnect
-  // branch below — the ticket itself is stripped from the URL by the existing
-  // 302 (ticket -> cookie exchange), so re-minting never puts new capability
-  // material somewhere it lingers.
   // Tickets are one-time: every navigation that enters the proxy (the iframe,
   // a reconnect, a new tab) needs its own.
   const requestTicketUrl = useCallback(async (): Promise<string> => {
@@ -128,6 +123,11 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
     return buildProxyUrl(tunnelId, ticket);
   }, [tunnelId, stableT]);
 
+  // Mints (or re-mints) the one-time http-ticket and points the iframe at a
+  // fresh `?__bzt=` URL. Reused by the initial mount AND the idle-reconnect
+  // branch below — the ticket itself is stripped from the URL by the existing
+  // 302 (ticket -> cookie exchange), so re-minting never puts new capability
+  // material somewhere it lingers.
   const mintTicket = useCallback(async (): Promise<boolean> => {
     try {
       setProxyUrl(await requestTicketUrl());
