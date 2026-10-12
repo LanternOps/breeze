@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>] [--site-id <id>]` (`--site-id` is deprecated and ignored; the site comes from the enrollment key)
+    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>]` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
@@ -105,7 +105,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
 | `serverUrl` | yes | Passed as `--server` to the agent. Validated server-side at zip generation. |
 | `enrollmentKey` | yes | 64 lowercase hex chars. Server-side regex: `^[a-f0-9]{64}$`. |
 | `enrollmentSecret` | optional | Only set when `AGENT_ENROLLMENT_SECRET` is required by the server. Maps to `--enrollment-secret`. |
-| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. The macOS script still passes it as `--site-id`, which the agent ignores (deprecated). |
+| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. The installers no longer pass it as `--site-id` (deprecated and ignored by the agent). |
 
 If you write your own wrapper, you can ignore the bundled `install.bat` / `install.sh` and just feed the JSON values straight into `breeze-agent enroll` — see [Direct binary + manual enroll](#direct-binary--manual-enroll).
 
