@@ -118,6 +118,7 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
   const device = rows<{ ownership_epoch: number }>(await tx.execute<{ ownership_epoch: number }>(sql`
     SELECT ownership_epoch FROM devices WHERE id = ${input.request.deviceId} FOR SHARE
   `))[0];
+  if (!device) throw new Error('PAM request device not found');
   const lockedRequest = rows<RequestRow>(await tx.execute<RequestRow>(sql`
     SELECT id, org_id, device_id, revision
     FROM elevation_requests
@@ -185,7 +186,7 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
       desired_state, observed_state, target_executable_path,
       target_executable_hash, subject_username, expires_at, cleanup_requested_at
     ) VALUES (
-      ${input.request.orgId}, ${input.request.deviceId}, ${device?.ownership_epoch ?? null}::integer, ${input.request.id},
+      ${input.request.orgId}, ${input.request.deviceId}, ${device.ownership_epoch}::integer, ${input.request.id},
       ${input.requestRevision}, 1, ${desiredState}, ${observedState},
       ${input.request.targetExecutablePath}, ${input.request.targetExecutableHash},
       ${input.request.subjectUsername}, ${input.expiresAt?.toISOString() ?? null}::timestamptz,

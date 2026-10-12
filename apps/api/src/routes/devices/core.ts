@@ -546,9 +546,10 @@ export const ALERT_CHILD_ORG_REWRITE_TABLES = [
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
- * EVERY write path that changes devices.site_id must rewrite each row's
- * site_id in the same transaction, or those rows strand under the OLD
- * site_id. Today that is two paths:
+ * EVERY write path that changes devices.site_id must call
+ * rewriteDeviceSiteDenormalizedTables in the same transaction, or those rows
+ * strand under the OLD site_id. It rewrites the device's current-epoch rows
+ * (see DEVICE_SITE_REWRITE_FILTERS). Today that is two paths:
  *   - POST /devices/:id/move-org (moveOrg.ts — cross-org-cross-site move)
  *   - PATCH /devices/:id        (this file — same-org site change)
  * The moveOrg.coverage.test.ts drift-detector enforces that any future
@@ -594,8 +595,11 @@ export async function rewriteDeviceSiteDenormalizedTables(
 }
 
 /**
- * All tables with a direct device_id FK to devices.id, ordered so children come
- * before parents (to avoid FK violations during cascade delete).
+ * All tables with a device_id column that device deletion must reclaim,
+ * ordered so children come before parents (to avoid FK violations during
+ * cascade delete). Most FK to devices.id; the PAM chain and ownership-epoch
+ * tables have none and are deleted by exact epoch (see
+ * DEVICE_CASCADE_DELETE_PREDICATES).
  *
  * Tables whose only FK to devices is via an intermediate table with ON DELETE CASCADE
  * (e.g. vault_snapshot_inventory → local_vaults) don't need to be listed here.
@@ -2121,7 +2125,8 @@ coreRoutes.patch(
     // (device_id, definition_id) so only the requested keys are touched.
 
     // When the PATCH changes the device's site, the denormalized `site_id`
-    // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in
+    // on every table in DEVICE_SITE_DENORMALIZED_TABLES (current-epoch rows,
+    // via rewriteDeviceSiteDenormalizedTables) must be rewritten in
     // the SAME transaction as the devices row flip — otherwise child rows
     // (e.g. elevation_requests) stay pinned under the OLD site_id and drift
     // out of site-visibility scoping. Mirrors moveOrg.ts. The proxied `db`

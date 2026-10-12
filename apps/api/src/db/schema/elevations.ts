@@ -93,7 +93,9 @@ export const elevationRequests = pgTable(
     // the ownership epoch it was created in, (device_id, org_id, device_epoch)
     // -> device_ownership_epochs, DEFERRABLE INITIALLY IMMEDIATE, so it keeps
     // its original org after the device moves and survives the device's
-    // deletion when it belongs to an earlier epoch. The FK and the epoch guard
+    // deletion when it belongs to an earlier epoch (forward-looking: until W6
+    // lifts the PAM move guard no actuated request can sit in an earlier
+    // epoch, and an un-actuated one follows its device). The FK and the epoch guard
     // trigger (breeze_pam_chain_epoch_guard) are declared in
     // migrations/2026-12-23-120000-pam-chain-epoch-anchor.sql.
     deviceId: uuid('device_id').notNull(),

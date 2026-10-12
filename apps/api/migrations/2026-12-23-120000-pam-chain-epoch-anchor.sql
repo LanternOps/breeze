@@ -56,8 +56,9 @@ SELECT set_config('breeze.scope', 'system', true);
 SELECT set_config(
   'breeze.pam_chain_epoch_bootstrap',
   CASE WHEN EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = 'elevation_requests' AND column_name = 'device_epoch'
+    SELECT 1 FROM pg_catalog.pg_attribute
+     WHERE attrelid = 'public.elevation_requests'::regclass
+       AND attname = 'device_epoch' AND NOT attisdropped
   ) THEN 'off' ELSE 'on' END,
   true
 );
@@ -92,6 +93,7 @@ DECLARE
   n_actuations integer := 0;
 BEGIN
   IF current_setting('breeze.pam_chain_epoch_bootstrap', true) IS DISTINCT FROM 'on' THEN
+    RAISE NOTICE 'pam chain epoch anchor: bootstrap skipped (device_epoch already present; anchors are guard-maintained)';
     RETURN;
   END IF;
 
@@ -225,7 +227,10 @@ BEGIN
       IF NOT actuated THEN
         SELECT d.org_id, d.ownership_epoch INTO d_org, d_epoch
           FROM public.devices d WHERE d.id = NEW.device_id FOR SHARE;
-        IF FOUND AND d_org = NEW.org_id THEN
+        -- Only the re-anchor itself may move device_epoch: an explicit
+        -- write of any other epoch is refused, never silently replaced.
+        IF FOUND AND d_org = NEW.org_id
+           AND (NEW.device_epoch = OLD.device_epoch OR NEW.device_epoch = d_epoch) THEN
           NEW.device_epoch := d_epoch;
           PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
           RETURN NEW;

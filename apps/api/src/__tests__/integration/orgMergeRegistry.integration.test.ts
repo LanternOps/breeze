@@ -214,13 +214,13 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // and fire regardless.
   'pam_actuations.pam_actuations_transition_guard':
     'RAISEs 42501 iff org_id changed (apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql); generation/tombstone checks otherwise',
-  // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
-  // — no bypass exists for any app role.
   // PAM ownership epochs W2 (#8204, 2026-12-23-120000): RAISEs 42501 iff
   // (device_id, org_id, device_epoch) changes. pam_actuations is blocks-merge,
   // so a merge never writes it.
   'pam_actuations.pam_actuations_epoch_guard':
     'RAISEs 42501 iff (device_id, org_id, device_epoch) changes; blocks-merge table, never repointed',
+  // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
+  // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
     'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
   // PAM ownership-epoch lineage (#8203, 2026-12-17-130000): unconditional

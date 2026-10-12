@@ -1311,13 +1311,10 @@ export async function moveDeviceOrgInTransaction(
     ? alertChildCounts
     : null;
 
-  // Rewrite denormalized site_id on every device-scoped table that has
-  // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
-  // in core.ts). Skipping any of these strands rows under the OLD
-  // site_id. PATCH /devices/:id (core.ts) performs the same propagation
-  // for same-org site changes; keep both loops in lockstep.
-  // Current ownership epoch only (W2, #8204): earlier epochs keep their
-  // event-time site.
+  // Rewrite denormalized site_id through rewriteDeviceSiteDenormalizedTables
+  // (core.ts), the helper PATCH /devices/:id uses too, so the two paths
+  // cannot drift. Only the device's current-epoch rows follow the site;
+  // earlier epochs keep their event-time site (W2, #8204).
   await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
   return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome };

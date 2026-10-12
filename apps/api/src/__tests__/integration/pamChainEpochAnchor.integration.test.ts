@@ -367,6 +367,27 @@ describe('PAM chain epoch anchor — freeze and insert guards (W2 Task 2.2)', ()
     expect(row).toEqual({ org_id: target.orgId, device_epoch: 2, ownership_epoch: 2 });
   });
 
+  it('an un-actuated request cannot be re-homed away from its device, re-pointed, or given a foreign epoch', async () => {
+    const fx = await seedMovedDeviceWithHistory({ path: ['A', 'B'] });
+    const a = fx.orgs.A!;
+    const b = fx.orgs.B!;
+    const tb: Tenant = { partnerId: fx.partnerId, orgId: b.id, siteId: b.siteId };
+    const requestId = await insertRequest(tb, fx.deviceId, { status: 'pending' });
+    const other = await createDevice({ orgId: b.id, siteId: b.siteId });
+    // Org change while the device stays in B: there is no epoch to follow.
+    await expectPgCode(() => getTestDb().execute(sql`
+      UPDATE elevation_requests SET org_id = ${a.id} WHERE id = ${requestId}`), '23514');
+    // Re-pointing at another device is never a re-anchor.
+    await expectPgCode(() => getTestDb().execute(sql`
+      UPDATE elevation_requests SET device_id = ${other.id} WHERE id = ${requestId}`), '42501');
+    // An explicit write of a non-current epoch is refused, not silently replaced.
+    await expectPgCode(() => getTestDb().execute(sql`
+      UPDATE elevation_requests SET device_epoch = 1 WHERE id = ${requestId}`), '23514');
+    const [row] = await getTestDb().execute<{ org_id: string; device_id: string; device_epoch: number }>(sql`
+      SELECT org_id::text AS org_id, device_id::text AS device_id, device_epoch FROM elevation_requests WHERE id = ${requestId}`);
+    expect(row).toEqual({ org_id: b.id, device_id: fx.deviceId, device_epoch: 2 });
+  });
+
   it('race: a committed move makes the waiting stale-epoch actuation insert fail with 23514', async () => {
     const source = await createTenant();
     const target = await createTenant(source.partnerId);
@@ -393,13 +414,15 @@ describe('PAM chain epoch anchor — freeze and insert guards (W2 Task 2.2)', ()
             ${EXE}, ${HASH}, 'fixture-user')`;
       }).then(() => null, (error: unknown) => error);
       // The insert guard reads the device FOR SHARE, so it must wait for the move.
-      for (let i = 0; i < 100; i++) {
+      let sawWait = false;
+      for (let i = 0; i < 100 && !sawWait; i++) {
         const [w] = await getTestDb().execute<{ n: number }>(sql`
           SELECT count(*)::int AS n FROM pg_stat_activity
           WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO pam_actuations%'`);
-        if ((w?.n ?? 0) > 0) break;
-        await new Promise((r) => setTimeout(r, 20));
+        sawWait = (w?.n ?? 0) > 0;
+        if (!sawWait) await new Promise((r) => setTimeout(r, 20));
       }
+      expect(sawWait, 'the actuation insert never waited on the device row').toBe(true);
       release();
       await moveWork;
       const error = await actuationWork;
@@ -444,6 +467,24 @@ describe('PAM chain epoch anchor — exact-epoch deletion and site rewrite (W2 T
     expect(closures.map((e) => e.epoch)).toEqual([1, 2]);
     const devices = await getTestDb().execute(sql`SELECT id FROM devices WHERE id = ${fx.deviceId}`);
     expect(devices).toHaveLength(0);
+  });
+
+  it('a repeated delete of an already-deleted device leaves earlier-epoch evidence untouched', async () => {
+    const fx = await seedMovedDeviceWithHistory({ path: ['A', 'B'] });
+    const a = fx.orgs.A!;
+    await asSystem(() => db.transaction(async (tx) => {
+      await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, fx.deviceId);
+    }));
+    const before = await chainDigest(fx.deviceId, a.id, 1);
+    expect(before?.actuations).not.toBeNull();
+    // No device row: no current epoch, so the epoch-scoped tables match nothing.
+    await asSystem(() => db.transaction(async (tx) => {
+      await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, fx.deviceId);
+    }));
+    expect(await chainDigest(fx.deviceId, a.id, 1)).toEqual(before);
+    const epochs = await getTestDb().execute<{ epoch: number }>(sql`
+      SELECT epoch FROM device_ownership_epochs WHERE device_id = ${fx.deviceId} ORDER BY epoch`);
+    expect(epochs.map((e) => e.epoch)).toEqual([1]);
   });
 
   it('deleting a single-epoch device still removes its whole PAM chain and lineage', async () => {
