@@ -195,6 +195,9 @@ key (`X-API-Key: brz_sp_…`), not a user JWT. Reads are cursor-paginated
 exports; the provisioning writes let migration scripts and integrations
 create tenancy unattended — no MFA challenge is involved because no human is.
 Each route requires the listed scope on the principal.
+The full contract (response envelope, cursors, idempotency, enrollment keys)
+is in the repository's
+[Partner API guide](https://github.com/LanternOps/breeze/blob/main/docs/integrations/partner-api.md).
 Open-source projects that already use these routes are listed in the
 [Community Ecosystem](/features/community-ecosystem/).
 
