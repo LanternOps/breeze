@@ -12,7 +12,9 @@ import (
 // applicationInfoProviderAllowlist lists the Application-log providers whose
 // Warning and Information events the Windows agent collects (#8174). Every
 // other provider is collected at Error/Critical only: shipping all
-// Information events would be far too much volume.
+// Information events would be far too much volume. Collected events still pass
+// the collector's server-configured minimumLevel filter (default "info"), so a
+// policy minimum of "warning" or higher drops these Information events.
 //
 // Keep this list small and add a provider only for a specific use case.
 // MsiInstaller covers install/uninstall (1033/1034, 11707/11724).

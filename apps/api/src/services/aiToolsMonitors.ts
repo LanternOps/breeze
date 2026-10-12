@@ -114,7 +114,7 @@ const EVENT_LOG_COLLECTION_GUIDANCE =
 
 const EVENT_LOG_APP_PRESENCE_HINT =
   'Valid event_log levels are info, warning, error and critical ("information" is not a level). ' +
-  `Information-level Application events are collected only from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')}, so an info rule on any other Application source never matches. ` +
+  `Information-level Application events are collected only from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')}, so an info or warning rule on any other Application source only matches that source's error/critical events. ` +
   'To detect a missing or removed app, prefer a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName }';
 
 const EVENT_LOG_LEVELS: readonly string[] = ['info', 'warning', 'error', 'critical'];

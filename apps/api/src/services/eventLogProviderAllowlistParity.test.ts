@@ -12,9 +12,11 @@ describe('Application info provider allowlist parity (agent ↔ shared)', () => 
       resolve(__dirname, '../../../../agent/internal/collectors/eventlogs_windows_application.go'),
       'utf8',
     );
-    const block = goFile.match(/var applicationInfoProviderAllowlist = \[\]string\{([\s\S]*?)\n\}/);
+    const block = goFile.match(/var\s+applicationInfoProviderAllowlist\s*=\s*\[\]string\s*\{([\s\S]*?)\}/);
     expect(block, 'applicationInfoProviderAllowlist not found in the Go collector').not.toBeNull();
-    const goProviders = [...block![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    // Drop Go line comments so a commented-out entry is not counted.
+    const body = block![1]!.replace(/\/\/.*$/gm, '');
+    const goProviders = [...body.matchAll(/"([^"]+)"|`([^`]+)`/g)].map((m) => m[1] ?? m[2]);
     expect(goProviders.length).toBeGreaterThan(0);
     expect(goProviders).toEqual([...APPLICATION_INFO_EVENT_PROVIDERS]);
   });

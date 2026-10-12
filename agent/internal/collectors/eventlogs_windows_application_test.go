@@ -34,6 +34,12 @@ func TestApplicationInfoEventsFilterHashtable(t *testing.T) {
 			t.Errorf("filter hashtable %q missing %q", got, want)
 		}
 	}
+	// Every allowlisted provider must reach the query, not just the first.
+	for _, p := range applicationInfoProviderAllowlist {
+		if !strings.Contains(got, "'"+p+"'") {
+			t.Errorf("filter hashtable %q missing allowlisted provider %q", got, p)
+		}
+	}
 	if strings.Contains(got, "Level=1") || strings.Contains(got, "Level=2") {
 		t.Errorf("filter hashtable %q must not re-query error/critical levels", got)
 	}
