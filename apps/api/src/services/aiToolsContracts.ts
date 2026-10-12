@@ -42,6 +42,7 @@ import {
 import { ContractServiceError, type ContractActor, type ContractLineAudit } from './contractTypes';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 import { stampedKeysErrorBody } from './contractHourBlockLocked';
+import { listContractHourPeriods } from './contractHourPeriodsRead';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 
 /**
@@ -224,7 +225,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_contract',
       description:
-        "Get a recurring contract header, lines and billing-period history. Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
+        "Get a recurring contract header, lines, billing-period history and hour-block period history (hourPeriods, newest first, last 24). Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -237,8 +238,12 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       const refusal = partnerScopeRefusal(auth);
       if (refusal) return refusal;
       try {
-        const result = await getContract(String(input.contractId), actorFromAuth(auth));
-        return JSON.stringify(result);
+        const actor = actorFromAuth(auth);
+        const contractId = String(input.contractId);
+        const result = await getContract(contractId, actor);
+        // #4547 W03: same reader as GET /contracts/:id/hour-periods (routes/contracts/hourPeriods.ts).
+        const { items: hourPeriods } = await listContractHourPeriods(contractId, { limit: 24 }, actor);
+        return JSON.stringify({ ...result, hourPeriods });
       } catch (err) {
         const json = serviceErrorToJson(err);
         if (json) return json;
