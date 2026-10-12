@@ -422,7 +422,7 @@ func TestHeartbeatDeclaresWorkloadInventoryCapability(t *testing.T) {
 	}
 }
 
-// A permanent rejection (a 4xx other than 408/429: schema mismatch, a server
+// A permanent rejection (a 4xx other than 401/408/429: schema mismatch, a server
 // without the route, an agent not authorized) waits the full interval instead
 // of re-collecting and re-uploading every retry period; transient failures
 // keep the short retry.
@@ -430,7 +430,7 @@ func TestWorkloadsPermanentRejectionWaitsTheFullInterval(t *testing.T) {
 	for _, tc := range []struct {
 		status int
 		retry  bool
-	}{{400, false}, {404, false}, {403, false}, {413, false}, {408, true}, {429, true}, {500, true}, {503, true}} {
+	}{{400, false}, {401, true}, {404, false}, {403, false}, {413, false}, {408, true}, {429, true}, {500, true}, {503, true}} {
 		h, r, _ := newWorkloadsHeartbeat(t, fixedCollector("a"), tc.status)
 		h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 1440.0})
 		next := h.workloadsCycle(r, time.Now())

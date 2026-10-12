@@ -67,9 +67,10 @@ func (e *workloadsSubmissionError) Error() string {
 }
 
 // permanent reports a rejection that resending the same report cannot fix
-// soon: a 4xx other than 408 (timeout) and 429 (rate limited).
+// soon: a 4xx other than 401 (credentials are refreshed), 408 (timeout) and
+// 429 (rate limited).
 func (e *workloadsSubmissionError) permanent() bool {
-	return e.status >= 400 && e.status < 500 && e.status != 408 && e.status != 429
+	return e.status >= 400 && e.status < 500 && e.status != 401 && e.status != 408 && e.status != 429
 }
 
 func (h *Heartbeat) initWorkloads() {
