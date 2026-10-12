@@ -358,13 +358,16 @@ export const DUAL_LIVE_HOUR_BLOCK_MESSAGE = 'Both organizations have a live bloc
  * merge transaction).
  */
 export async function assertNotBothHaveLiveHourBlock(loserOrgId: string, survivorOrgId: string): Promise<void> {
-  const rows = (await dbModule.db.execute(sql`
+  const result = (await dbModule.db.execute(sql`
     SELECT DISTINCT org_id
       FROM contract_lines
      WHERE line_type = 'hour_block'
        AND hour_block_retired_at IS NULL
        AND org_id IN (${uuid(loserOrgId)}, ${uuid(survivorOrgId)})`)) as unknown;
-  if (Array.isArray(rows) && rows.length >= 2) throw new MergeValidationError(DUAL_LIVE_HOUR_BLOCK_MESSAGE);
+  // Fail CLOSED: a result shape we cannot read must never be taken as "no live blocks".
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown } | null | undefined)?.rows;
+  if (!Array.isArray(rows)) throw new Error('Unreadable result from the live hour-block check; refusing to merge');
+  if (rows.length >= 2) throw new MergeValidationError(DUAL_LIVE_HOUR_BLOCK_MESSAGE);
 }
 
 /** Load both orgs under a system context and validate the pair. Throws `MergeValidationError`. */
