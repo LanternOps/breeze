@@ -18,8 +18,9 @@ export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }
 }
-export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
-  const response = await fetchWithAuth(path, { signal });
+/** `body` turns the read into a POST with a JSON body, for reads whose ids would overflow a URL (#8307). Still a read: nothing is mutated. */
+export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal, body?: unknown): Promise<T> {
+  const response = await fetchWithAuth(path, body === undefined ? { signal } : { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
     const message = response.status === 403 ? 'Access to this topology is denied'

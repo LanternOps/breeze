@@ -55,3 +55,13 @@ topologyGraphRoutes.get(`${base}/health`, authorized, read((c) => {
     ...(query.graphRevision === undefined ? {} : { graphRevision: query.graphRevision }),
   }));
 }));
+/**
+ * Same read as the GET above, with the ids in a JSON body (#8307): a big site's
+ * node/relationship ids overflow proxy URL limits (~10 KB of query for 171 nodes).
+ * Still a read: same `read` capability, same response and caching headers.
+ */
+topologyGraphRoutes.post(`${base}/health`, authorized, read(async (c) => {
+  scopedQuery(c); // validates the ambient/foreign orgId key; the ids come only from the body
+  const body = await c.req.json().catch(() => undefined);
+  return getTopologyHealth(c.get('topologyContext'), parse(healthQuerySchema, body));
+}));

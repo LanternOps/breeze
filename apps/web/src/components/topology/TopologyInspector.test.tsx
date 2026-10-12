@@ -142,6 +142,25 @@ describe('grouped overview inspector (2026-10-02)', () => {
     expect(screen.getByTestId('topology-shared-address')).toHaveTextContent('Same IP as 2 other devices');
   });
 
+  it('omits decommissioned reporters so the list matches the "N devices report" count (#8307)', () => {
+    const graph = topologyGraphFixture();
+    const gatewayId = graph.nodes[0]!.id;
+    const live = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000c1', kind: 'endpoint' as const, label: 'LIVE-PC', inventory };
+    const retired = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000c2', kind: 'endpoint' as const, label: 'RETIRED-PC',
+      inventory: { ...inventory, presence: { ...inventory.presence, agentStatus: 'decommissioned' } } };
+    graph.nodes = [graph.nodes[0]!, live, retired];
+    const route = graph.relationships[0]!;
+    graph.relationships = [
+      { ...route, id: '40000000-0000-4000-8000-0000000000c1', kind: 'default_route', sourceNodeId: live.id, targetNodeId: gatewayId },
+      { ...route, id: '40000000-0000-4000-8000-0000000000c2', kind: 'default_route', sourceNodeId: retired.id, targetNodeId: gatewayId },
+    ];
+    graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.100', memberCount: 0, frontierToken: 't', authority: false,
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.100', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [gatewayId] } }];
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} onSelectNode={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'LIVE-PC' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'RETIRED-PC' })).not.toBeInTheDocument();
+  });
+
   it('lists each reporter of a folded gateway and selects that reporter’s own canonical gateway', () => {
     const graph = topologyGraphFixture();
     const gatewayId = graph.nodes[0]!.id;

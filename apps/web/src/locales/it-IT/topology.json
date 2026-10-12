@@ -657,6 +657,8 @@
     "diagnoseHint": "La diagnostica viene eseguita dal dispositivo che scegli, lungo la sua route.",
     "stale": "obsoleto",
     "unverified": "non verificato",
+    "decommissioned": "Dismesso",
+    "reportedByDevices": "Segnalato da {{reporters}}",
     "sharedAddress_one": "Stesso IP di {{count}} altro dispositivo",
     "sharedAddress_other": "Stesso IP di altri {{count}} dispositivi",
     "networkExplanation_one": "{{count}} dispositivo segnala un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",

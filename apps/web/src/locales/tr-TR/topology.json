@@ -657,6 +657,8 @@
     "diagnoseHint": "Tanılamalar, seçtiğiniz cihazdan, o cihazın kendi rotası üzerinden çalışır.",
     "stale": "eski",
     "unverified": "doğrulanmadı",
+    "decommissioned": "Hizmet dışı bırakıldı",
+    "reportedByDevices": "Bildiren: {{reporters}}",
     "sharedAddress_one": "{{count}} başka cihazla aynı IP",
     "sharedAddress_other": "{{count}} başka cihazla aynı IP",
     "networkExplanation_one": "{{count}} cihaz, {{prefix}} içinde bir arayüz bildiriyor. Adres aralığına göre gruplama çıkarsanmıştır: cihazların aynı anahtarı paylaştığını kanıtlamaz.",

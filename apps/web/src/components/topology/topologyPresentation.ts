@@ -6,7 +6,9 @@ export function selectedTopologyEntity(graph: GraphResponse, selection?: Topolog
     ? graph.nodes.find((node) => node.id === selection.id) ?? graph.presentation.nodes.find((node) => node.id === selection.id)
     : graph.relationships.find((edge) => edge.id === selection.id) ?? graph.presentation.edges.find((edge) => edge.id === selection.id);
 }
-export const isPresentation = (entity: object) => 'authority' in entity && entity.authority === false;
+/** A device node whose agent was decommissioned (#8307): still in the graph as history, but not a live device. */
+export const isDecommissioned = (node: { inventory?: { presence: { agentStatus: string | null } } }) => node.inventory?.presence.agentStatus === 'decommissioned';
+export const isPresentation =(entity: object) => 'authority' in entity && entity.authority === false;
 export function topologyHealthLabel(status: string, reasons: { code: string; message: string }[]) {
   // The API's vocabulary (diagnosticHealth.ts): `icmp_no_response`, not `no_icmp_response`.
   if (reasons.some((reason) => reason.code === 'icmp_no_response')) return 'No ICMP response';

@@ -657,6 +657,8 @@
     "diagnoseHint": "Os diagnósticos são executados a partir do dispositivo escolhido, pela rota dele.",
     "stale": "desatualizado",
     "unverified": "não verificado",
+    "decommissioned": "Desativado",
+    "reportedByDevices": "Informado por {{reporters}}",
     "sharedAddress_one": "Mesmo IP de mais {{count}} dispositivo",
     "sharedAddress_other": "Mesmo IP de mais {{count}} dispositivos",
     "networkExplanation_one": "{{count}} dispositivo reporta uma interface em {{prefix}}. O agrupamento por faixa de endereços é inferido: ele não prova que os dispositivos compartilham um switch.",
