@@ -32,6 +32,13 @@ vi.mock("../services/enrollmentDefaults", () => ({
   clampTtlToCap: (...args: [string, number]) => clampTtlToCapMock(...args),
 }));
 
+// Audit writes are asserted at the helper boundary (#7973); the real helper
+// would open its own system-scope transaction against the mocked db.
+vi.mock("../services/auditEvents", () => ({
+  ANONYMOUS_ACTOR_ID: "00000000-0000-0000-0000-000000000000",
+  writeAuditEvent: vi.fn(),
+}));
+
 // ============================================================
 // Imports after mocks
 // ============================================================
@@ -41,6 +48,7 @@ import { installerRoutes, childEnrollmentKeyTtlMinutes } from "./installer";
 import { db } from "../db";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { hashBootstrapToken } from "../services/installerBootstrapToken";
+import { writeAuditEvent } from "../services/auditEvents";
 
 function makeApp() {
   const app = new Hono();
@@ -122,7 +130,11 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
   vi.mocked(db.update).mockReturnValue({
     set: () => ({
       where: () => ({
-        returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+        returning: () => Promise.resolve([{
+          ...tokenRow,
+          consumedCount: tokenRow.consumedCount + 1,
+          consumedAt: new Date(),
+        }]),
       }),
     }),
   } as any);
@@ -259,6 +271,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       headers: { "X-Breeze-Bootstrap-Token": "AAAAAAAAAA" },
     });
     expect(res.status).toBe(404);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
     expect(await res.json()).toEqual({
       error: "token invalid, expired, or already used",
     });
@@ -349,6 +362,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       headers: { "X-Breeze-Bootstrap-Token": "BBBBBBBBBB" },
     });
     expect(res.status).toBe(404);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
   it("returns 404 for expired token", async () => {
@@ -379,6 +393,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       headers: { "X-Breeze-Bootstrap-Token": "CCCCCCCCCC" },
     });
     expect(res.status).toBe(404);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
   it("consumes a live token whose parent key has already expired (#2775)", async () => {
@@ -784,6 +799,35 @@ describe("POST /api/v1/installer/bootstrap", () => {
     });
     expect(res.status).toBe(404);
     expect(deleteCalled).toBe(true);
+    // A redemption that lost the consume race never happened — no audit row.
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("writes an installer.bootstrap_redeemed audit event on success (#7973)", async () => {
+    await redeemBootstrapOk();
+
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+    expect(event).toEqual(expect.objectContaining({
+      orgId: "backup-url-org",
+      action: "installer.bootstrap_redeemed",
+      resourceType: "installer_bootstrap_token",
+      resourceId: "backup-url-token",
+      actorType: "system",
+      actorId: "00000000-0000-0000-0000-000000000000",
+      result: "success",
+    }));
+    expect(event.details).toEqual(expect.objectContaining({
+      tokenId: "backup-url-token",
+      enrollmentKeyId: "backup-url-parent-key",
+      childEnrollmentKeyId: "backup-url-child-key",
+      siteId: "backup-url-site",
+      consumedCount: 1,
+      maxUsage: 1,
+      remainingUsage: 0,
+    }));
+    // The bearer token (and its log hash) must never reach the audit trail.
+    expect(JSON.stringify(event)).not.toContain("HHHHHHHHHH");
   });
 
   it("propagates installer_platform from token to child enrollment key", async () => {

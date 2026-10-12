@@ -357,6 +357,7 @@ Every enrollment key operation is recorded in the audit log:
 | `enrollment_key.installer_download` | A pre-configured installer (Windows MSI or macOS zip) was built and downloaded from the dashboard for this key. |
 | `enrollment_key.installer_build_failed` | Installer build failed after usage was already reserved; logged so the failure is traceable. |
 | `enrollment_key.public_download` | An anonymous download via a public or short installer link. Logged with the requester's IP and a sentinel anonymous actor id (no logged-in user). |
+| `installer.bootstrap_redeemed` | A downloaded installer redeemed its bootstrap token and received a child enrollment key. Logged per device with the token id, parent and child enrollment key ids, source IP, and `consumedCount` / `maxUsage` / `remainingUsage`. Failed redemptions are not audited. |
 | `agent.enroll` | Agent successfully enrolls using a key. Logged with `actorType: agent`. |
 
 ---
