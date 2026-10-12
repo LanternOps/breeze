@@ -220,3 +220,55 @@ describe('updateTimeEntry', () => {
     });
   });
 });
+
+describe('location provenance (#8211)', () => {
+  it('keeps orgId / siteId / source on the running timer, null when the row carries them as null', async () => {
+    coreRequest.mockResolvedValue({
+      data: { ...ENTRY, orgId: 'o1', siteId: 's1', source: 'location' },
+    });
+    await expect(getRunningTimer()).resolves.toMatchObject({
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+    coreRequest.mockResolvedValue({ data: { ...ENTRY, orgId: 'o1', siteId: null, source: null } });
+    await expect(getRunningTimer()).resolves.toMatchObject({ siteId: null, source: null });
+  });
+
+  it('keeps them on a narrowed entry too (start/stop responses)', async () => {
+    coreRequest.mockResolvedValue({ data: { ...ENTRY, orgId: 'o1', siteId: 's1', source: 'location' } });
+    await expect(startTimer({ orgId: 'o1', siteId: 's1', source: 'location' })).resolves.toMatchObject({
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+  });
+
+  it('startTimer sends orgId / siteId / source and omits what is absent', async () => {
+    coreRequest.mockResolvedValue({ data: ENTRY });
+    await startTimer({ orgId: 'o1', siteId: 's1', source: 'location' });
+    const [, options] = coreRequest.mock.calls[0];
+    expect(JSON.parse((options as { body: string }).body)).toEqual({
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+  });
+
+  it('createTimeEntry sends them for the offline replay path', async () => {
+    coreRequest.mockResolvedValue({ data: ENTRY });
+    await createTimeEntry({
+      startedAt: '2026-08-23T10:00:00Z',
+      endedAt: '2026-08-23T11:00:00Z',
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+    const [, options] = coreRequest.mock.calls[0];
+    expect(JSON.parse((options as { body: string }).body)).toMatchObject({
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+  });
+});

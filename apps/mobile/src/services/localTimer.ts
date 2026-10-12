@@ -37,6 +37,14 @@ export interface LocalTimer {
    * as), `null` means the technician explicitly chose none.
    */
   workTypeId?: string | null;
+  /**
+   * #8211 — set when the timer was started from an arrival prompt. They ride
+   * on the timer so an offline start still reaches the `create` its stop
+   * queues; ABSENT on every timer an older build wrote.
+   */
+  orgId?: string | null;
+  siteId?: string | null;
+  source?: 'timer' | 'location';
 }
 
 /**
@@ -91,6 +99,11 @@ function asLocalTimer(value: unknown): LocalTimer | null {
     ...(typeof candidate.workTypeId === 'string' || candidate.workTypeId === null
       ? { workTypeId: candidate.workTypeId }
       : {}),
+    ...(typeof candidate.orgId === 'string' ? { orgId: candidate.orgId } : {}),
+    ...(typeof candidate.siteId === 'string' ? { siteId: candidate.siteId } : {}),
+    ...(candidate.source === 'timer' || candidate.source === 'location'
+      ? { source: candidate.source }
+      : {}),
   };
 }
 
@@ -111,4 +124,15 @@ export async function writeLocalTimer(timer: LocalTimer): Promise<void> {
 
 export async function clearLocalTimer(): Promise<void> {
   await AsyncStorage.removeItem(LOCAL_TIMER_KEY);
+}
+
+/** The #8211 provenance of a local timer, for adopting it into the running-timer store. */
+export function localProvenance(
+  timer: Pick<LocalTimer, 'orgId' | 'siteId' | 'source'>
+): { orgId?: string | null; siteId?: string | null; source?: string | null } {
+  return {
+    ...(timer.orgId !== undefined ? { orgId: timer.orgId } : {}),
+    ...(timer.siteId !== undefined ? { siteId: timer.siteId } : {}),
+    ...(timer.source !== undefined ? { source: timer.source } : {}),
+  };
 }
