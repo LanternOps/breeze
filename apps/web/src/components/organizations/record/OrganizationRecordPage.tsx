@@ -409,7 +409,14 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         <ArchiveOrgModal
           org={modalOrg}
           onClose={() => setModal(null)}
-          onArchived={() => void loadOrg()}
+          onArchived={() => {
+            void loadOrg();
+            // Header org switcher reads the global store; refresh so it drops the archived org (#8371).
+            useOrgStore
+              .getState()
+              .fetchOrganizations()
+              .catch((storeErr: unknown) => console.warn('[OrganizationRecordPage] org store refresh failed after archive', storeErr));
+          }}
           onDoneClose={() => setModal(null)}
         />
       )}
