@@ -336,6 +336,18 @@ describe('finalizeScriptExecutionTerminal — public terminal events (#7277)', (
     });
   });
 
+  it('forwards the exit code read back from the CAS row', async () => {
+    const { exec } = executor({ execReturning: [{ ...row, exitCode: 137 }] });
+    await finalizeScriptExecutionTerminal({
+      executionId: EXEC,
+      outcome: 'failed',
+      errorMessage: 'x',
+      completedAt: new Date(),
+      executor: exec,
+    });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ exitCode: 137, status: 'failed' }));
+  });
+
   it('emits nothing when the CAS lost (another path already terminalised the row)', async () => {
     const { exec } = executor({ execReturning: [] });
     await finalizeScriptExecutionTerminal({

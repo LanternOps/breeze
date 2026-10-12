@@ -82,20 +82,6 @@ export async function finalizeScriptExecutionTerminal(params: {
 
   if (updated.length === 0) return { terminalised: false };
 
-  // #7277 — public script.completed / script.failed, only from the CAS winner
-  // and only after the surrounding transaction commits (cancelled emits none).
-  const won = updated[0]!;
-  emitScriptTerminalEvent({
-    executionId,
-    orgId: won.orgId,
-    deviceId: won.deviceId,
-    scriptId: won.scriptId ?? null,
-    triggerType: won.triggerType,
-    automationRunId: won.automationRunId ?? null,
-    exitCode: won.exitCode ?? null,
-    status: outcome,
-  });
-
   const batchId = params.batchId ?? null;
   if (batchId) {
     await applyBatchCounter(executor, batchId, outcome);
@@ -111,6 +97,22 @@ export async function finalizeScriptExecutionTerminal(params: {
     { executionId, status: outcome, neverDelivered: params.neverDelivered === true },
     params.executor,
   );
+
+  // #7277 — public script.completed / script.failed, only from the CAS winner
+  // and only after the surrounding transaction commits (cancelled emits none).
+  // Last on purpose: a caller that swallows a later throw inside its own
+  // savepoint must not have announced a state it rolled back.
+  const won = updated[0]!;
+  emitScriptTerminalEvent({
+    executionId,
+    orgId: won.orgId,
+    deviceId: won.deviceId,
+    scriptId: won.scriptId ?? null,
+    triggerType: won.triggerType,
+    automationRunId: won.automationRunId ?? null,
+    exitCode: won.exitCode ?? null,
+    status: outcome,
+  });
 
   return { terminalised: true };
 }

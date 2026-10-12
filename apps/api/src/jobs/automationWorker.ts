@@ -1414,7 +1414,8 @@ function isScriptTerminalEventRunTrigger(triggeredBy: string): boolean {
  *  - Otherwise the event is delivered, except to the automation whose own run
  *    queued the script (`originAutomationId`), so a scheduled/alert automation
  *    that also listens for script events cannot answer its own script.
- *  - The run cannot be found: fail closed; we cannot prove it is not a loop.
+ *  - The run cannot be found (automation deleted, run purged): deliver. A run
+ *    that no longer exists cannot be part of a live loop.
  *
  * Events with no `automationRunId` (manual, scheduled, API, monitor runs) are
  * unaffected. A failed lookup throws so the dispatcher retries (see
@@ -1435,8 +1436,10 @@ async function resolveScriptEventOrigin(
     .limit(1);
 
   if (!run) {
-    console.warn(`[AutomationWorker] ${event.type} ${event.id}: originating automation run ${runId} not found; not fanning out (loop guard)`);
-    return { drop: true, originAutomationId: null };
+    // Deleted automation (runs cascade) or a retention-purged run. Neither can be
+    // part of a live loop, and dropping would silence every unrelated listener.
+    console.warn(`[AutomationWorker] ${event.type} ${event.id}: originating automation run ${runId} not found; delivering (loop guard cannot apply)`);
+    return none;
   }
   if (isScriptTerminalEventRunTrigger(run.triggeredBy)) {
     console.warn(`[AutomationWorker] ${event.type} ${event.id}: script was queued by a run started by a script event (${run.triggeredBy}); not fanning out (loop guard)`);

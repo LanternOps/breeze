@@ -68,6 +68,8 @@ function scriptInput(result: Record<string, unknown>) {
 describe('script result → public terminal events (#7277)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    updateMock.mockReset();
+    selectMock.mockReset();
   });
 
   it('emits completed for the CAS winner, with the execution identity and no output', async () => {
@@ -91,13 +93,17 @@ describe('script result → public terminal events (#7277)', () => {
   });
 
   it('a non-zero exit code is a failure', async () => {
-    updateMock.mockReturnValueOnce(updateReturning([executionRow]));
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed CAS
+      .mockReturnValueOnce(updateReturning([executionRow])); // primary CAS
     await commandResultHandlers.script!(scriptInput({ status: 'completed', exitCode: 2 }));
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', exitCode: 2 }));
   });
 
   it('a timeout is emitted as timeout (published as script.failed)', async () => {
-    updateMock.mockReturnValueOnce(updateReturning([executionRow]));
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed CAS
+      .mockReturnValueOnce(updateReturning([executionRow])); // primary CAS
     await commandResultHandlers.script!(scriptInput({ status: 'timeout' }));
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'timeout', exitCode: null }));
   });
@@ -113,6 +119,27 @@ describe('script result → public terminal events (#7277)', () => {
     expect(emitMock).not.toHaveBeenCalled();
   });
 
+  it('emits the REAL outcome when a cancel is unproven (marker without a cancel command id)', async () => {
+    updateMock.mockReturnValueOnce(updateReturning([executionRow])); // cancel-unconfirmed CAS
+
+    await commandResultHandlers.script!(scriptInput({ status: 'failed', exitCode: -1, cancelled: true }));
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', exitCode: -1 }));
+  });
+
+  it('emits the real outcome when the cancel-confirm CAS loses and the unconfirmed one wins', async () => {
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // cancel-confirm CAS lost
+      .mockReturnValueOnce(updateReturning([executionRow])); // cancel-unconfirmed CAS
+
+    await commandResultHandlers.script!(
+      scriptInput({ status: 'completed', exitCode: 0, cancelled: true, cancelledByCommandId: '77777777-7777-4777-8777-777777777777' }),
+    );
+
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
   it('does NOT emit for a proven cancel (a stop is not a failure)', async () => {
     updateMock.mockReturnValueOnce(updateReturning([executionRow])); // cancel-confirm CAS
 
@@ -120,6 +147,25 @@ describe('script result → public terminal events (#7277)', () => {
       scriptInput({ status: 'failed', exitCode: -1, cancelled: true, cancelledByCommandId: '77777777-7777-4777-8777-777777777777' }),
     );
 
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT emit when a later write fails (the handler rethrows and the transaction rolls back)', async () => {
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed CAS
+      .mockReturnValueOnce(updateReturning([executionRow])) // primary CAS
+      .mockImplementationOnce(() => { throw new Error('batch counter deadlock'); }); // batch counter
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      commandResultHandlers.script!({
+        ...scriptInput({ status: 'completed', exitCode: 0 }),
+        command: { id: COMMAND_ID, payload: { executionId: EXECUTION_ID, batchId: '88888888-8888-4888-8888-888888888888' } },
+      }),
+    ).rejects.toThrow('batch counter deadlock');
+
+    // Registered after the batch counters: a REST savepoint rollback cannot leak it.
     expect(emitMock).not.toHaveBeenCalled();
   });
 

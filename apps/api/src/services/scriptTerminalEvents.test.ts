@@ -43,6 +43,7 @@ describe('scriptTerminalEvents (#7277)', () => {
     emitScriptTerminalEvent({ ...base, status: 'completed' });
     expect(publishEventMock).not.toHaveBeenCalled();
     expect(deferred).toHaveLength(1);
+    expect(deferred[0]!.label).toBe('scriptTerminalEvents.script.completed');
     await deferred[0]!.run();
     expect(publishEventMock).toHaveBeenCalledWith(
       'script.completed',

@@ -138,12 +138,22 @@ describe('queueEventTriggers — script event loop guard (#7277)', () => {
     expect(queueAddMock).not.toHaveBeenCalled();
   });
 
-  it('the same applies to script.failed and to config-policy event runs', async () => {
-    mockLimitedOnce([{ automationId: null, triggeredBy: 'config-policy-event:script.failed' }]);
+  it('also drops a script.failed whose script was queued by a run started by a script.failed event', async () => {
+    mockLimitedOnce([{ automationId: 'auto-x', triggeredBy: 'event:script.failed' }]);
 
     await queueEventTriggers(scriptEvent({ executionId: 'e1', deviceId: 'd1', automationRunId: 'run-1' }, 'script.failed'));
 
     expect(queueAddMock).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1); // dropped before the org/candidate queries
+  });
+
+  it('also drops when the originating run was a config-policy event run (automationId null)', async () => {
+    mockLimitedOnce([{ automationId: null, triggeredBy: 'config-policy-event:script.completed' }]);
+
+    await queueEventTriggers(scriptEvent({ executionId: 'e1', deviceId: 'd1', automationRunId: 'run-1' }));
+
+    expect(queueAddMock).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
   it('delivers when the originating run was started by something other than a script event (one hop is allowed)', async () => {
@@ -171,13 +181,15 @@ describe('queueEventTriggers — script event loop guard (#7277)', () => {
     );
   });
 
-  it('fails closed when the originating run cannot be found (cannot prove it is not a loop)', async () => {
+  it('delivers when the originating run no longer exists (deleted automation / purged run cannot be a live loop)', async () => {
     mockLimitedOnce([]); // run lookup: gone
+    mockLimitedOnce([{ partnerId: null }]);
+    mockCandidatesOnce([ON_COMPLETED]);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await queueEventTriggers(scriptEvent({ executionId: 'e1', deviceId: 'd1', automationRunId: 'run-gone' }));
 
-    expect(queueAddMock).not.toHaveBeenCalled();
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not touch other event types (no run lookup)', async () => {
@@ -187,5 +199,6 @@ describe('queueEventTriggers — script event loop guard (#7277)', () => {
     await queueEventTriggers(scriptEvent({ automationRunId: 'run-1' }, 'device.offline'));
 
     expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2); // org + candidates only, no run lookup
   });
 });
