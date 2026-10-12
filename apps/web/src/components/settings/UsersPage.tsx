@@ -31,6 +31,7 @@ export default function UsersPage() {
   const { t } = useTranslation('settings');
   const currentUser = useAuthStore((s) => s.user);
   const organizations = useOrgStore((s) => s.organizations);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -393,6 +394,15 @@ export default function UsersPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('usersPage.title')}</h1>
         <p className="text-muted-foreground">{t('usersPage.description')}</p>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="users-session-timeout-pointer">
+          {t('usersPage.sessionTimeoutPointer')}{' '}
+          <a
+            href={currentOrgId ? `/settings/organizations/${currentOrgId}#security` : '/settings/partner#security'}
+            className="font-medium text-primary hover:underline"
+          >
+            {t('usersPage.sessionTimeoutPointerLink')}
+          </a>
+        </p>
       </div>
 
       {error && (

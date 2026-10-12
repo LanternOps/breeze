@@ -849,6 +849,7 @@
     "customCssHelp": "Substituições de CSS aplicadas ao portal de todas as organizações filhas."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "O tempo limite da sessão não pode exceder {{max}} minutos (12 horas).",
     "notSet": "Não definido — as organizações configuram individualmente",
     "minimumLength": "Tamanho mínimo da senha",
     "complexity": "Complexidade da senha",
@@ -6110,6 +6111,8 @@
     "empty": "Nenhum usuário corresponde à sua pesquisa."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "O tempo limite de inatividade da sessão está em",
+    "sessionTimeoutPointerLink": "Segurança →",
     "loading": "Carregando usuários...",
     "accessDenied": "Você não tem permissão para visualizar usuários.",
     "title": "Usuários",

@@ -849,6 +849,7 @@
     "customCssHelp": "CSS geçersiz kılmaları portala tüm alt kuruluşlar için uygulandı."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "Oturum zaman aşımı {{max}} dakikayı (12 saat) aşamaz.",
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
     "minimumLength": "Minimum Şifre Uzunluğu",
     "complexity": "Şifre Karmaşıklığı",
@@ -6110,6 +6111,8 @@
     "empty": "Aramanızla eşleşen kullanıcı yok."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "Oturum boşta kalma zaman aşımı şurada:",
+    "sessionTimeoutPointerLink": "Güvenlik →",
     "loading": "Kullanıcılar yükleniyor...",
     "accessDenied": "Kullanıcıları görüntüleme izniniz yok.",
     "title": "Kullanıcılar",

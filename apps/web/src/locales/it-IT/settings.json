@@ -849,6 +849,7 @@
     "customCssHelp": "Override CSS applicati al portale per tutte le organizzazioni figlie."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "Il timeout della sessione non può superare {{max}} minuti (12 ore).",
     "notSet": "Non impostato — le org si configurano singolarmente",
     "minimumLength": "Lunghezza minima password",
     "complexity": "Complessità password",
@@ -6105,6 +6106,8 @@
     "empty": "Nessun utente corrisponde alla ricerca."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "Il timeout di inattività della sessione si trova in",
+    "sessionTimeoutPointerLink": "Sicurezza →",
     "loading": "Caricamento utenti...",
     "accessDenied": "Non hai l'autorizzazione per visualizzare gli utenti.",
     "title": "Utenti",

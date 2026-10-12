@@ -404,3 +404,40 @@ describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {
     ).rejects.toBeInstanceOf(HTTPException);
   });
 });
+
+describe('getEffectiveOrgSettings sessionTimeout ceiling (#6111)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clamps a stored partner value above 720 to 720', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ security: { sessionTimeout: 1440 } }),
+      [],
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.security as Record<string, unknown>).sessionTimeout).toBe(720);
+    expect(locked).toContain('security.sessionTimeout');
+  });
+
+  it('clamps a stored org value above 720 when the partner sets none', async () => {
+    primeSelectSeq(
+      [{ partnerId: 'p1', settings: { security: { sessionTimeout: 5000 } } }],
+      mockPartnerSettings({}),
+      [],
+    );
+    const { effective } = await getEffectiveOrgSettings('org1');
+    expect((effective.security as Record<string, unknown>).sessionTimeout).toBe(720);
+  });
+
+  it('leaves an in-range value untouched', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ security: { sessionTimeout: 480 } }),
+      [],
+    );
+    const { effective } = await getEffectiveOrgSettings('org1');
+    expect((effective.security as Record<string, unknown>).sessionTimeout).toBe(480);
+  });
+});

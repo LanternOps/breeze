@@ -849,6 +849,7 @@
     "customCssHelp": "CSS S’appliquent au portail pour toutes les organisations d’enfants."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "Le délai d'expiration de session ne peut pas dépasser {{max}} minutes (12 heures).",
     "notSet": "Non défini — les organisations se configurent individuellement",
     "minimumLength": "Longueur minimale du mot de passe",
     "complexity": "Complexité du mot de passe",
@@ -6057,6 +6058,8 @@
     "empty": "Aucun utilisateur ne correspond à votre recherche."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "Le délai d'inactivité de session se trouve sous",
+    "sessionTimeoutPointerLink": "Sécurité →",
     "loading": "Chargement des utilisateurs...",
     "accessDenied": "Vous n’avez pas la permission de voir les utilisateurs.",
     "title": "Utilisateurs",

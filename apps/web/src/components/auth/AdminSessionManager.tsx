@@ -8,6 +8,7 @@ import {
 } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '../../lib/authScope';
+import { clampSessionTimeoutMinutes } from '../../lib/sessionTimeout';
 import IdleWarningDialog from './IdleWarningDialog';
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 60;
@@ -209,7 +210,9 @@ export default function AdminSessionManager() {
     const settleTimeout = (configuredMinutes: number | null) => {
       if (cancelled) return;
       if (configuredMinutes !== null && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
-        const ms = Math.max(1, configuredMinutes) * 60 * 1000;
+        // #6111: defence in depth — the API clamps, but never trust a stored value
+        // above the 12h ceiling to arm the timer.
+        const ms = clampSessionTimeoutMinutes(Math.max(1, configuredMinutes)) * 60 * 1000;
         lastKnownBudgetMsRef.current = ms;
         setIdleTimeoutMs(ms);
         return;

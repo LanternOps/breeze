@@ -6,6 +6,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
 import { aiBudgets } from '../db/schema/ai';
 import { keepsStoredSettingsSecret } from './settingsSecretMasking';
+import { clampSessionTimeoutInSettings } from './sessionTimeoutPolicy';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,6 +191,11 @@ export async function getEffectiveOrgSettings(
     ) {
       effective[category] = mergeCategory(category, partnerCat, orgCat, locked);
     }
+  }
+
+  // #6111 — values stored before the 12h ceiling existed read back clamped.
+  if (effective.security) {
+    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
   }
 
   // Merge AI budget

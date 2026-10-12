@@ -849,6 +849,7 @@
     "customCssHelp": "CSS Überschreibungen wurden auf das Portal für alle untergeordneten Organisationen angewendet."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "Das Sitzungs-Zeitlimit darf {{max}} Minuten (12 Stunden) nicht überschreiten.",
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
     "minimumLength": "Mindestlänge des Passworts",
     "complexity": "Passwortkomplexität",
@@ -6057,6 +6058,8 @@
     "empty": "Keine Benutzer entsprechen Ihrer Suche."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "Das Zeitlimit für Sitzungsinaktivität finden Sie unter",
+    "sessionTimeoutPointerLink": "Sicherheit →",
     "loading": "Benutzer werden geladen...",
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Benutzern.",
     "title": "Benutzer",

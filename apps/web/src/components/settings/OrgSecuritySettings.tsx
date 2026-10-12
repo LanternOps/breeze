@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Lock, Save, ShieldCheck, ShieldOff, Timer, Fingerprint } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { SESSION_TIMEOUT_MAX_MINUTES, clampSessionTimeoutMinutes } from '@/lib/sessionTimeout';
 
 type SecurityData = {
   minLength?: number;
@@ -54,7 +55,7 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
   const [expirationDays, setExpirationDays] = useState(initialData.expirationDays || 90);
   const [requireMfa, setRequireMfa] = useState(initialData.requireMfa ?? true);
   const [allowedMethods, setAllowedMethods] = useState(initialData.allowedMethods || { totp: true, sms: false });
-  const [sessionTimeout, setSessionTimeout] = useState(initialData.sessionTimeout || 60);
+  const [sessionTimeout, setSessionTimeout] = useState(clampSessionTimeoutMinutes(initialData.sessionTimeout || 60));
   const [maxSessions, setMaxSessions] = useState(initialData.maxSessions || 3);
   const [ipAllowlist, setIpAllowlist] = useState(initialData.ipAllowlist || '');
 
@@ -262,7 +263,7 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
               <input
                 type="number"
                 min={15}
-                max={240}
+                max={SESSION_TIMEOUT_MAX_MINUTES}
                 value={sessionTimeout}
                 disabled={isLocked('sessionTimeout')}
                 onChange={event => {
@@ -271,6 +272,11 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
                 }}
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('sessionTimeout') ? 'opacity-60' : ''}`}
               />
+              {sessionTimeout > SESSION_TIMEOUT_MAX_MINUTES && (
+                <p className="text-xs text-destructive">
+                  {t('partnerSecurity.sessionTimeoutMax', { max: SESSION_TIMEOUT_MAX_MINUTES })}
+                </p>
+              )}
               {isLocked('sessionTimeout') && (
                 <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}

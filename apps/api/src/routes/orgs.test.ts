@@ -1586,6 +1586,64 @@ describe('org routes', () => {
       expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
+    describe('security.sessionTimeout ceiling (#6111)', () => {
+      function seedPartner() {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+            })
+          })
+        } as any);
+      }
+      function patchTimeout(sessionTimeout: number) {
+        return app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { sessionTimeout } } })
+        });
+      }
+
+      it('rejects 721 with 400 and never writes it', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        seedPartner();
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+        const res = await patchTimeout(721);
+        expect(res.status).toBe(400);
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      it('accepts 720', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        seedPartner();
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+            })
+          })
+        } as any);
+        const res = await patchTimeout(720);
+        expect(res.status).toBe(200);
+      });
+
+      it('org PATCH rejects 721 with a clear message and never writes it', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { sessionTimeout: 721 } } })
+        });
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toMatch(/720/);
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+    });
+
     describe('contact.website scheme allowlist', () => {
       // The website is rendered as a link in branded PDFs, invoices and email
       // footers, so an unvalidated scheme here is stored XSS that fires for

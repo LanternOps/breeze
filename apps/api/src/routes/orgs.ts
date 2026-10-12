@@ -28,6 +28,12 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import {
+  SESSION_TIMEOUT_MAX_MINUTES,
+  SESSION_TIMEOUT_MAX_MESSAGE,
+  sessionTimeoutWithinCeiling,
+  clampSessionTimeoutInSettings,
+} from '../services/sessionTimeoutPolicy';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
@@ -243,7 +249,7 @@ const createPartnerSchema = z.object({
   // plan and maxDevices are managed by the billing service (via direct DB writes).
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  settings: z.any().optional(),
+  settings: z.any().optional().refine(sessionTimeoutWithinCeiling, { message: SESSION_TIMEOUT_MAX_MESSAGE }),
   billingEmail: z.string().email().optional()
 });
 
@@ -268,7 +274,7 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   aiForOfficeEnabled: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
-  }),
+  }).refine(sessionTimeoutWithinCeiling, { message: SESSION_TIMEOUT_MAX_MESSAGE }),
 });
 
 // PATCH /partners/:id writes the settings column wholesale. A write whose
@@ -303,7 +309,7 @@ export const createOrganizationSchema = z.object({
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
-  settings: z.any().optional(),
+  settings: z.any().optional().refine(sessionTimeoutWithinCeiling, { message: SESSION_TIMEOUT_MAX_MESSAGE }),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -785,7 +791,7 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: z.number().int().min(1).optional(),
+    sessionTimeout: z.number().int().min(1).max(SESSION_TIMEOUT_MAX_MINUTES, SESSION_TIMEOUT_MAX_MESSAGE).optional(),
     maxSessions: z.number().int().min(1).optional(),
     ipAllowlist: z
       .array(z.string())
@@ -1022,7 +1028,9 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  // #6111 — a value stored before the 12h ceiling existed reads back clamped.
+  const masked = withMaskedSettings(partner);
+  return c.json({ ...masked, settings: clampSessionTimeoutInSettings(masked.settings) });
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like

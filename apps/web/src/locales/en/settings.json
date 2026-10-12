@@ -849,6 +849,7 @@
     "customCssHelp": "CSS overrides applied to the portal for all child organizations."
   },
   "partnerSecurity": {
+    "sessionTimeoutMax": "Session timeout can't exceed {{max}} minutes (12 hours).",
     "notSet": "Not set — orgs configure individually",
     "minimumLength": "Minimum Password Length",
     "complexity": "Password Complexity",
@@ -6105,6 +6106,8 @@
     "empty": "No users match your search."
   },
   "usersPage": {
+    "sessionTimeoutPointer": "Session idle timeout is under",
+    "sessionTimeoutPointerLink": "Security →",
     "loading": "Loading users...",
     "accessDenied": "You don't have permission to view users.",
     "title": "Users",
