@@ -81,6 +81,14 @@ type zfsGetFunc func(datasets []string) (string, error)
 // payload well under the API's 64 KB limit.
 const maxZfsDatasetVolumes = 64
 
+// maxUnresolvedNamesShown bounds how many unevaluated datasets one warning
+// names.
+const maxUnresolvedNamesShown = 10
+
+// zfsRetryBudget bounds the per-dataset retries after a failed batch query.
+// A variable so tests can shrink it.
+var zfsRetryBudget = 15 * time.Second
+
 // evaluateLinuxEncryption is the pure core: lsblkJSON is `lsblk -J` output
 // with NAME,TYPE,FSTYPE,LABEL,MOUNTPOINT[,MOUNTPOINTS]; procMounts is the
 // content of /proc/self/mounts; zfsGet queries ZFS dataset properties and is
@@ -209,13 +217,27 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsGet zfsGetFunc) (l
 	if len(zfsMounts) > 0 && queryErr != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("zfs datasets not evaluated: %v", queryErr))
 	} else {
+		var unresolved []string
 		for _, m := range zfsMounts {
 			p, err := zfsDatasetPropsFor(props, m.dataset, nil)
 			if err != nil {
-				report.Warnings = append(report.Warnings, fmt.Sprintf("zfs dataset %s (%s) not evaluated: %v", m.dataset, m.mount, err))
+				unresolved = append(unresolved, fmt.Sprintf("%s (%s)", m.dataset, m.mount))
 				continue
 			}
 			report.Volumes = append(report.Volumes, zfsVolume(m.mount, m.dataset, p, zfsPoolMembers))
+		}
+		if len(unresolved) > 0 {
+			// One warning, not one per dataset: a mass failure must not
+			// flood the details payload.
+			shown := unresolved
+			suffix := ""
+			if len(shown) > maxUnresolvedNamesShown {
+				suffix = fmt.Sprintf(" and %d more", len(shown)-maxUnresolvedNamesShown)
+				shown = shown[:maxUnresolvedNamesShown]
+			}
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"%d zfs datasets not evaluated (no encryption property in zfs get output: unmounted or destroyed since the mount table was read, query failed, or ZFS older than 0.8): %s%s",
+				len(unresolved), strings.Join(shown, ", "), suffix))
 		}
 	}
 	if zfsOmitted > 0 {
@@ -330,19 +352,36 @@ type zfsMount struct {
 	dataset, mount string
 }
 
-// containerStoragePrefixes hold container-runtime layers (Docker and
-// podman's zfs storage drivers mount one dataset per layer). They are clones
-// of a parent dataset, inherit its encryption, and would flood the details.
-var containerStoragePrefixes = []string{"/var/lib/docker/", "/var/lib/containers/"}
+// containerStoragePrefixes are where container runtimes' zfs storage drivers
+// mount one dataset per image layer or container. They are clones (or
+// children) of a dataset whose encryption they inherit, can number in the
+// hundreds, and would push real datasets past the cap.
+var containerStoragePrefixes = []string{
+	"/var/lib/docker/zfs/",
+	"/var/lib/containers/storage/zfs/",
+	"/var/lib/lxd/storage-pools/",
+	"/var/snap/lxd/common/lxd/storage-pools/",
+	"/var/lib/incus/storage-pools/",
+}
 
-// zfsDatasetMounts returns the effective non-root ZFS dataset mounts, at most
-// maxZfsDatasetVolumes, and how many more were left out. Snapshot automounts
-// (dataset@snap) and container-runtime layers are skipped.
+// zfsDatasetMounts returns the effective non-root ZFS dataset mounts, one per
+// dataset (its first mount path; bind mounts and repeat mounts of the same
+// dataset add nothing), at most maxZfsDatasetVolumes, and how many more
+// datasets were left out. The root dataset, snapshot automounts
+// (dataset@snap) and container-runtime storage are skipped.
 func zfsDatasetMounts(procMounts string) (mounts []zfsMount, omitted int) {
-	for _, e := range effectiveProcMounts(procMounts) {
-		if e.fstype != "zfs" || e.mount == "/" || strings.Contains(e.source, "@") {
+	entries := effectiveProcMounts(procMounts)
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.mount == "/" && e.fstype == "zfs" {
+			seen[e.source] = true
+		}
+	}
+	for _, e := range entries {
+		if e.fstype != "zfs" || e.mount == "/" || strings.Contains(e.source, "@") || seen[e.source] {
 			continue
 		}
+		seen[e.source] = true
 		container := false
 		for _, prefix := range containerStoragePrefixes {
 			if strings.HasPrefix(e.mount, prefix) {
@@ -433,7 +472,7 @@ func zfsDatasetPropsFor(props map[string]zfsDatasetProps, dataset string, queryE
 	}
 	p := props[dataset]
 	if p.encryption == "" || p.encryption == "-" {
-		return zfsDatasetProps{}, fmt.Errorf("zfs get: encryption property missing for %s", dataset)
+		return zfsDatasetProps{}, fmt.Errorf("zfs get: encryption property missing for %s (dataset gone, query failed, or ZFS older than 0.8)", dataset)
 	}
 	return p, nil
 }
@@ -441,8 +480,12 @@ func zfsDatasetPropsFor(props map[string]zfsDatasetProps, dataset string, queryE
 // queryZfsDatasets asks for every dataset in one call. `zfs get` exits
 // non-zero if any one dataset is gone (unmounted or destroyed since the
 // mount table was read), discarding the answers for the rest, so a failed
-// batch is retried one dataset at a time. A timeout is not retried.
+// batch is retried one dataset at a time. A timeout is not retried, and the
+// retries stop once zfsRetryBudget is spent, so a slow zfs cannot stall the
+// collection for one timeout per dataset. Datasets left unanswered are
+// absent from the output and reported "not evaluated" by the caller.
 func queryZfsDatasets(datasets []string, run zfsGetFunc) (string, error) {
+	start := time.Now()
 	out, err := run(datasets)
 	if err == nil || len(datasets) == 1 || errors.Is(err, context.DeadlineExceeded) {
 		return out, err
@@ -450,6 +493,9 @@ func queryZfsDatasets(datasets []string, run zfsGetFunc) (string, error) {
 	var b strings.Builder
 	answered := 0
 	for _, ds := range datasets {
+		if time.Since(start) > zfsRetryBudget {
+			break
+		}
 		o, dsErr := run([]string{ds})
 		if dsErr != nil {
 			if errors.Is(dsErr, context.DeadlineExceeded) {

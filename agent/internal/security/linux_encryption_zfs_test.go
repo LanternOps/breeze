@@ -1,7 +1,9 @@
 package security
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -329,5 +331,174 @@ func TestUnescapeMountField(t *testing.T) {
 		if got := unescapeMountField(in); got != want {
 			t.Fatalf("unescapeMountField(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestQueryZfsDatasetsRetryBookkeeping(t *testing.T) {
+	row := func(ds string) string { return ds + "\tencryption\toff\n" }
+	gone := func(calls *int) zfsGetFunc {
+		return func(datasets []string) (string, error) {
+			*calls++
+			if len(datasets) > 1 || datasets[0] == "gone/z" {
+				return "", errors.New("cannot open 'gone/z': dataset does not exist")
+			}
+			return row(datasets[0]), nil
+		}
+	}
+
+	t.Run("survivors answered, vanished dataset absent", func(t *testing.T) {
+		calls := 0
+		out, err := queryZfsDatasets([]string{"a/x", "gone/z", "b/y"}, gone(&calls))
+		if err != nil || calls != 4 {
+			t.Fatalf("err=%v calls=%d, want nil and 1 batch + 3 retries", err, calls)
+		}
+		if strings.Contains(out, "gone/z") {
+			t.Fatalf("vanished dataset must be absent: %q", out)
+		}
+	})
+	t.Run("batch timeout is not retried", func(t *testing.T) {
+		calls := 0
+		_, err := queryZfsDatasets([]string{"a/x", "b/y"}, func([]string) (string, error) {
+			calls++
+			return "", fmt.Errorf("command timed out: zfs: %w", context.DeadlineExceeded)
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+	t.Run("retry timeout stops the retries", func(t *testing.T) {
+		calls := 0
+		out, err := queryZfsDatasets([]string{"a/x", "b/y", "c/z"}, func(datasets []string) (string, error) {
+			calls++
+			switch {
+			case len(datasets) > 1:
+				return "", errors.New("batch failed")
+			case datasets[0] == "b/y":
+				return "", fmt.Errorf("command timed out: zfs: %w", context.DeadlineExceeded)
+			}
+			return row(datasets[0]), nil
+		})
+		if err != nil || calls != 3 || !strings.Contains(out, "a/x") || strings.Contains(out, "c/z") {
+			t.Fatalf("out=%q err=%v calls=%d, want a/x only after 3 calls", out, err, calls)
+		}
+	})
+	t.Run("spent budget skips the retries", func(t *testing.T) {
+		saved := zfsRetryBudget
+		zfsRetryBudget = -1
+		defer func() { zfsRetryBudget = saved }()
+		calls := 0
+		_, err := queryZfsDatasets([]string{"a/x", "gone/z"}, gone(&calls))
+		if err == nil || calls != 1 {
+			t.Fatalf("err=%v calls=%d, want the batch error and no retries", err, calls)
+		}
+	})
+}
+
+func TestEvaluateLinuxEncryptionZfsPartialBatchEndToEnd(t *testing.T) {
+	// The real composition: a batch that fails because one dataset vanished,
+	// retried per dataset, feeding the evaluation.
+	mounts := procMountsZfs + "\nrpool/USERDATA/gone /home zfs rw 0 0"
+	answer := zfsDatasetsFixture(map[string][3]string{
+		"rpool/ROOT/ubuntu_abc123": {"aes-256-gcm", "available", "rpool"},
+		"bpool/BOOT/ubuntu_abc123": {"off", "-", "-"},
+	}, nil)
+	run := func(datasets []string) (string, error) {
+		return queryZfsDatasets(datasets, func(ds []string) (string, error) {
+			for _, d := range ds {
+				if d == "rpool/USERDATA/gone" {
+					return "", errors.New("cannot open 'rpool/USERDATA/gone': dataset does not exist")
+				}
+			}
+			return answer(ds)
+		})
+	}
+	report, err := evaluateLinuxEncryption(lsblkZfsRoot, mounts, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RootErr != nil || !report.RootProtected {
+		t.Fatalf("root: protected=%v err=%v", report.RootProtected, report.RootErr)
+	}
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false, "/": true, "/boot": false})
+	if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "rpool/USERDATA/gone (/home)") {
+		t.Fatalf("warnings = %v", report.Warnings)
+	}
+}
+
+func TestEvaluateLinuxEncryptionZfsRootDatasetGoneOthersAnswer(t *testing.T) {
+	props := map[string][3]string{"bpool/BOOT/ubuntu_abc123": {"off", "-", "-"}}
+	report, err := evaluateLinuxEncryption(lsblkZfsRoot, procMountsZfs, zfsDatasetsFixture(props, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RootErr == nil || !strings.Contains(report.RootErr.Error(), "rpool/ROOT/ubuntu_abc123") {
+		t.Fatalf("RootErr = %v, want the root dataset named", report.RootErr)
+	}
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false, "/boot": false})
+	if len(report.Warnings) != 0 {
+		t.Fatalf("root failure belongs in RootErr only, got warnings %v", report.Warnings)
+	}
+}
+
+func TestEvaluateLinuxEncryptionZfsDatasetMountedTwice(t *testing.T) {
+	// A bind mount or repeat mount of a dataset adds no volume; nor does a
+	// second mount of the root dataset.
+	mounts := procMountsZfs + "\ntank/data /data zfs rw 0 0\ntank/data /srv/data zfs rw 0 0\nrpool/ROOT/ubuntu_abc123 /mnt/root zfs rw 0 0"
+	var queried []string
+	props := map[string][3]string{
+		"rpool/ROOT/ubuntu_abc123": {"aes-256-gcm", "available", "rpool"},
+		"bpool/BOOT/ubuntu_abc123": {"off", "-", "-"},
+		"tank/data":                {"aes-256-gcm", "available", "tank"},
+	}
+	report, err := evaluateLinuxEncryption(lsblkZfsRoot, mounts, zfsDatasetsFixture(props, &queried))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false, "/": true, "/boot": false, "/data": true})
+	if len(queried) != 3 {
+		t.Fatalf("queried %v, want each dataset once", queried)
+	}
+}
+
+func TestEvaluateLinuxEncryptionZfsUnresolvedWarningIsAggregated(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < maxUnresolvedNamesShown+3; i++ {
+		b.WriteString("tank/d" + strconv.Itoa(i) + " /mnt/" + strconv.Itoa(i) + " zfs rw 0 0\n")
+	}
+	report, err := evaluateLinuxEncryption(lsblkLvmOnLuksRoot, procMountsExt4+"\n"+b.String(), zfsDatasetsFixture(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "13 zfs datasets not evaluated") || !strings.HasSuffix(report.Warnings[0], "and 3 more") {
+		t.Fatalf("warnings = %v, want one aggregated warning", report.Warnings)
+	}
+}
+
+func TestEvaluateLinuxEncryptionZfsQueryFailurePlusCap(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < maxZfsDatasetVolumes+2; i++ {
+		b.WriteString("tank/d" + strconv.Itoa(i) + " /mnt/" + strconv.Itoa(i) + " zfs rw 0 0\n")
+	}
+	report, err := evaluateLinuxEncryption(lsblkLvmOnLuksRoot, procMountsExt4+"\n"+b.String(), func([]string) (string, error) {
+		return "", errors.New("zfs: command not found")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) != 2 || !strings.Contains(report.Warnings[0], "command not found") || !strings.Contains(report.Warnings[1], "2 more") {
+		t.Fatalf("warnings = %v, want the query failure and the cap", report.Warnings)
+	}
+}
+
+func TestParseZfsGetOutputMalformed(t *testing.T) {
+	for _, out := range []string{"", "rpool/a\tencryption\n", "rpool/a encryption off\n"} {
+		if got := parseZfsGetOutput(out); len(got) != 0 {
+			t.Fatalf("parseZfsGetOutput(%q) = %+v, want empty", out, got)
+		}
+	}
+	// Valid shape with "-" (pre-0.8) is parsed, then rejected as unusable.
+	got := parseZfsGetOutput("rpool/a\tencryption\t-\n")
+	if _, err := zfsDatasetPropsFor(got, "rpool/a", nil); err == nil {
+		t.Fatal("encryption \"-\" must not be usable")
 	}
 }
