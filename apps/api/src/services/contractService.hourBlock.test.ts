@@ -35,8 +35,10 @@ vi.mock('./contractHourBlockEstimate', () => ({ computeOpenHourBlockPeriod: vi.f
 
 import * as svc from './contractService';
 import { db } from '../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 type Chain = { values: { mock: { calls: unknown[][] } }; delete: { mock: { calls: unknown[][] } }; set: { mock: { calls: unknown[][] } } };
+const renderSql = (value: unknown) => new PgDialect().sqlToQuery(value as never).sql;
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
 const BLOCK_INPUT = {
@@ -392,7 +394,20 @@ describe('removeContractLine — retire vs delete (#4547 W03)', () => {
     // so the stamp must be the DATABASE's clock_timestamp() (matching retireLiveHourBlocks), never a JS Date and never now(), which predates a claim committed while the remove waited on the contract lock.
     const set = (db as unknown as Chain).set.mock.calls[0]![0] as { hourBlockRetiredAt: unknown };
     expect(set.hourBlockRetiredAt).not.toBeInstanceOf(Date);
-    expect(set.hourBlockRetiredAt).toHaveProperty('queryChunks');
+    expect(renderSql(set.hourBlockRetiredAt)).toBe('clock_timestamp()');
+  });
+
+  it('cancelContract retires its live blocks with the database clock_timestamp() too (retireLiveHourBlocks)', async () => {
+    queueResult([contractRow()]);                          // getOwnedContractOr404
+    queueResult([contractRow()]);                          // lockContractRow
+    queueResult([contractRow({ status: 'cancelled' })]);   // status update returning
+    queueResult([]);                                       // retireLiveHourBlocks update
+    await svc.cancelContract('c1', actor);
+    const sets = (db as unknown as Chain).set.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const retire = sets.find((s) => 'hourBlockRetiredAt' in s);
+    expect(retire).toBeDefined();
+    expect(retire!.hourBlockRetiredAt).not.toBeInstanceOf(Date);
+    expect(renderSql(retire!.hourBlockRetiredAt)).toBe('clock_timestamp()');
   });
 
   it('RETIRES a block with a claimed-but-unclosed period (the advance-billing window)', async () => {

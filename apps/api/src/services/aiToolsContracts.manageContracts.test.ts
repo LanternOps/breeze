@@ -480,9 +480,13 @@ describe('manage_contracts — hour_block (#4547 W03)', () => {
   });
 
   it('a client-supplied first-period start never reaches the service', async () => {
+    (contractService.addContractLineToContract as any).mockClear();
     await getTool().handler({ action: 'add_line', contractId: CID, line: { ...block, hourBlockFirstPeriodStart: '2020-01-01' } }, auth);
+    // The schema strips the unknown key (it does not reject): the add still goes through, minus that field.
     const calls = (contractService.addContractLineToContract as any).mock.calls;
-    for (const call of calls) expect(call[1]).not.toHaveProperty('hourBlockFirstPeriodStart');
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ lineType: 'hour_block', description: 'Support block' });
+    expect(calls[0][1]).not.toHaveProperty('hourBlockFirstPeriodStart');
   });
 
   it('update_line accepts the patchable block fields; the server-stamped ones are HOUR_BLOCK_FIELD_LOCKED, not a generic validation error', async () => {

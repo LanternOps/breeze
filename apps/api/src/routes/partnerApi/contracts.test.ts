@@ -332,11 +332,13 @@ describe('POST /contracts/:id/lines — hour_block (#4547 W03)', () => {
   });
 
   it('PATCH names the server-stamped columns as HOUR_BLOCK_FIELD_LOCKED', async () => {
-    const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
-      method: 'PATCH', body: JSON.stringify({ hourBlockRetiredAt: '2026-01-01' }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: ['hourBlockRetiredAt'] } });
+    for (const [key, value] of [['hourBlockRetiredAt', '2026-01-01'], ['hourBlockFirstPeriodStart', '2026-01-01']] as const) {
+      const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
+        method: 'PATCH', body: JSON.stringify({ [key]: value }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
     expect(mocks.updateContractLine).not.toHaveBeenCalled();
   });
 });
