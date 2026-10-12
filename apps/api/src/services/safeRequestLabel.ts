@@ -45,9 +45,21 @@ function matchedRouteLabel(c: Context): string {
 // Only templates agentRouteClasses can produce: a closed set, never request data.
 const ADMISSION_ROUTE_LABEL = /^\/api\/v1\/(?:agents|agent-ws)\/:id(?:\/[A-Za-z0-9:-]+)+$/;
 
-/** W08: the route template of a request agent admission refused before routing, or null. */
+/**
+ * W08: the route template of a request agent admission refused before routing, or null.
+ *
+ * Never throws: this runs on error-reporting paths (captureException, and the
+ * Sentry scrubber, which validates a route_template tag through a request-less
+ * `{ req }` context), and an error reporter must not crash. A context without a
+ * working `get` simply has no admission label.
+ */
 export function admissionRouteLabelOf(c: Context): string | null {
-  const label: unknown = c.get('admissionRouteLabel');
+  let label: unknown;
+  try {
+    label = typeof c.get === 'function' ? c.get('admissionRouteLabel') : undefined;
+  } catch {
+    return null;
+  }
   return typeof label === 'string' && label.length <= 200 && ADMISSION_ROUTE_LABEL.test(label) ? label : null;
 }
 
