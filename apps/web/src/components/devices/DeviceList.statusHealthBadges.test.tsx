@@ -113,16 +113,36 @@ describe('DeviceList — at most one secondary status pill (#8407)', () => {
     }
   });
 
-  it('orders by severity: collision beats Assist issue beats withheld', () => {
-    const dev = device('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'order', {
+  const conditions: Array<[string, string, Partial<Device>]> = [
+    ['stuck', 'status-update-stuck', stuck],
+    ['agent-silent', 'agent-silent-badge', { mainAgentSilentSince: new Date(Date.now() - 3_600_000).toISOString() }],
+    ['logs-silent', 'logs-silent-badge', { lastLogAt: new Date(Date.now() - 12 * 3_600_000).toISOString(), enrolledAt: '2020-01-01T00:00:00Z' }],
+    ['duplicate', 'possible-duplicate-badge', { possibleReplacementOfDeviceId: '99999999-9999-9999-9999-999999999999' }],
+    ['helper', 'status-helper-install-issue', { helperInstallIssue: 'awaiting_server_offer' }],
+    ['withheld', 'status-update-withheld', { updateOfferWithheldReason: 'edition_gate' }],
+  ];
+
+  it.each(conditions.slice(0, -1).map((c, i) => [c, conditions[i + 1]] as const))(
+    'severity order: %s beats the next condition',
+    (higher, lower) => {
+      const dev = device('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'order', { ...higher[2], ...lower[2] });
+      render(<DeviceList devices={[dev]} pageSize={50} />);
+      const overflow = screen.getByTestId(`device-${dev.id}-status-overflow`);
+      expect(overflow.textContent?.startsWith('+1')).toBe(true);
+      expect(overflow.contains(screen.getByTestId(`device-${dev.id}-${higher[1]}`))).toBe(false);
+      expect(overflow.contains(screen.getByTestId(`device-${dev.id}-${lower[1]}`))).toBe(true);
+    },
+  );
+
+  it('keeps the pending-reboot dot alongside the chip', () => {
+    const dev = device('cccccccc-cccc-cccc-cccc-cccccccccccc', 'reboot', {
+      ...stuck,
       updateOfferWithheldReason: 'edition_gate',
-      helperInstallIssue: 'awaiting_server_offer',
-      possibleReplacementOfDeviceId: '99999999-9999-9999-9999-999999999999',
+      pendingReboot: true,
     });
     render(<DeviceList devices={[dev]} pageSize={50} />);
-    const overflow = screen.getByTestId(`device-${dev.id}-status-overflow`);
-    expect(overflow.textContent).toContain('+2');
-    expect(overflow.contains(screen.getByTestId(`device-${dev.id}-possible-duplicate-badge`))).toBe(false);
+    expect(screen.getByTestId(`device-${dev.id}-pending-reboot-badge`)).toBeTruthy();
+    expect(screen.getByTestId(`device-${dev.id}-status-overflow`)).toBeTruthy();
   });
 
   it('renders no +N chip for a single secondary condition', () => {

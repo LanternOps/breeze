@@ -1939,6 +1939,14 @@ export default function DeviceList({
             ),
           });
         }
+        const secondaryLabels: Record<string, string> = {
+          stuck: t("deviceList.updateStuck"),
+          "agent-silent": t("deviceList.agentSilent"),
+          "logs-silent": t("deviceList.logsSilent"),
+          duplicate: t("deviceList.possibleDuplicate"),
+          helper: t("deviceList.helperNotInstalled"),
+          withheld: t("deviceList.updateWithheld"),
+        };
         const [topSecondary, ...restSecondary] = secondary;
         return (
         <td key="status" className="px-3 py-3 text-sm">
@@ -1955,16 +1963,17 @@ export default function DeviceList({
               </span>
             )}
             {restSecondary.length > 0 && (
+              // Native title tooltip for sighted users (a positioned popover
+              // would be clipped by the table's overflow-x-auto wrapper); the
+              // folded pills stay in the DOM, visually hidden, so screen
+              // readers and testids still reach every condition.
               <span
                 data-testid={`device-${device.id}-status-overflow`}
-                tabIndex={0}
-                className="group relative inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                title={restSecondary.map((s) => secondaryLabels[s.key]).join(", ")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default"
               >
-                +{restSecondary.length}
-                <span
-                  role="tooltip"
-                  className="absolute left-0 top-full z-20 mt-1 hidden flex-col items-start gap-1 rounded-md border bg-popover p-2 shadow-md group-hover:flex group-focus:flex group-focus-within:flex"
-                >
+                <span aria-hidden="true">+{restSecondary.length}</span>
+                <span className="sr-only">
                   {restSecondary.map((s) => (
                     <span key={s.key} className="contents">
                       {s.node}
