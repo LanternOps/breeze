@@ -19,9 +19,9 @@
 import '../../__tests__/integration/setup';
 
 import { randomUUID } from 'crypto';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
-import { getRedis } from '../redis';
+import { closeRedis, getRedis } from '../redis';
 import {
   releaseOrgReviewSlot,
   SCRIPT_REVIEW_ORG_CONCURRENCY,
@@ -37,6 +37,11 @@ function redis() {
 }
 
 describe('script-review per-org concurrency slot (real Redis)', () => {
+  // getRedis() is a process singleton; close it so the worker can exit.
+  afterAll(async () => {
+    await closeRedis();
+  });
+
   it('grants exactly `cap` slots and refuses cap+1', async () => {
     const orgId = randomUUID();
     for (let i = 0; i < SCRIPT_REVIEW_ORG_CONCURRENCY; i++) {
