@@ -24,7 +24,8 @@
         "perDeviceRole": "Por função do dispositivo",
         "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por assento",
-        "manual": "Quantidade manual"
+        "manual": "Quantidade manual",
+        "hourBlock": "Banco de horas"
       },
       "dynamicGroup": "dinâmico",
       "deletedGroup": "{{name}} (grupo excluído)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Versão publicada",
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Horas incluídas por período",
+        "extraRate": "Preço por hora extra",
+        "rolloverMode": "Horas não usadas no fim do período",
+        "rolloverExpire": "Expiram",
+        "rolloverCarry": "Acumulam",
+        "carryCap": "Limite de horas acumuláveis (vazio para sem limite)",
+        "alertPct": "Alertar ao usar este % do banco (opcional)",
+        "required": "Informe as horas incluídas e o preço por hora extra.",
+        "firstPeriod": "As horas contam a partir do primeiro período de cobrança ainda não faturado; em um contrato em rascunho isso é definido na ativação. O tempo anterior é cobrado normalmente.",
+        "midPeriodEdit": "As alterações valem para o período aberto atual ({{start}} – {{end}}) quando ele for encerrado.",
+        "midPeriodEditNoDates": "As alterações valem para o período aberto atual quando ele for encerrado.",
+        "onlyOne": "Esta organização já tem um banco ativo. Desative-o antes de adicionar outro."
+      },
+      "row": {
+        "perPeriod": "{{hours}} horas por período",
+        "retiredBadge": "Desativado",
+        "startsOn": "Conta a partir de {{date}}"
+      },
+      "errors": {
+        "exists": "Esta organização já tem uma linha de banco de horas ativa. Desative-a primeiro e depois adicione a nova.",
+        "locked": "Esse campo não pode ser alterado em uma linha de banco de horas."
+      },
+      "retire": {
+        "title": "Desativar banco de horas",
+        "message": "\"{{description}}\" tem histórico de cobrança, por isso é desativado em vez de excluído. Sem novos períodos; os períodos já faturados ainda são liquidados. Os períodos encerrados permanecem no contrato.",
+        "confirm": "Desativar banco",
+        "toast": "Banco de horas desativado"
+      },
+      "detail": {
+        "title": "Banco de horas",
+        "usage": "{{used}} de {{included}} horas usadas · {{remaining}} restantes · o período termina em {{end}}",
+        "carried": "Inclui {{hours}} horas acumuladas.",
+        "unapproved": "{{hours}} horas deste tempo ainda não foram aprovadas.",
+        "foreign": "{{hours}} horas foram registradas em outra moeda; elas ainda consomem o banco.",
+        "over": "{{hours}} horas acima do banco → {{amount}} no fechamento do período",
+        "advanceNote": "O excedente é cobrado na fatura seguinte.",
+        "arrearsNote": "O excedente é cobrado na fatura deste período.",
+        "lateEntry": "{{hours}} horas foram lançadas depois do fechamento do período e são cobradas separadamente.",
+        "startsLater": "O banco começa em {{date}}.",
+        "extraRate": "Horas extras: {{rate}} cada",
+        "loadFailed": "Não foi possível carregar o uso do banco."
+      },
+      "history": {
+        "title": "Períodos do banco encerrados",
+        "empty": "Nenhum período do banco foi encerrado ainda.",
+        "included": "Incluídas",
+        "carriedIn": "Acumuladas na entrada",
+        "used": "Usadas",
+        "over": "Excedente",
+        "carriedOut": "Acumuladas na saída",
+        "loadMore": "Carregar mais",
+        "invoiceRemoved": "Fatura do excedente removida — horas não cobradas"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "Origem da fatura",
       "title": "Nova fatura",
       "to": "Até",
-      "working": "Processando…"
+      "working": "Processando…",
+      "heldForHourBlock_one": "{{count}} lançamento de tempo ({{hours}} horas) está retido para o banco de horas desta organização e será cobrado quando o período do banco for encerrado.",
+      "heldForHourBlock_other": "{{count}} lançamentos de tempo ({{hours}} horas) estão retidos para o banco de horas desta organização e serão cobrados quando o período do banco for encerrado."
     },
     "empty": {
       "description": "Monte horas e peças não faturadas em um rascunho ou inicie uma fatura em branco.",

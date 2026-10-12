@@ -451,7 +451,9 @@
       "allMissingRate": "Hiçbir şey faturalanamadı: bu biletteki her faturalanabilir zaman kaydının saatlik ücreti eksik.",
       "missingRateHeading": "Saatlik ücreti olmayan zaman kayıtları (faturalanmadı — bir ücret belirleyip faturayı yeniden oluşturun):",
       "missingRateEntry": "{{description}} — {{hours}} sa",
-      "setRate": "Zaman çizelgesinde bir ücret belirle"
+      "setRate": "Zaman çizelgesinde bir ücret belirle",
+      "heldForHourBlock_one": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak.",
+      "heldForHourBlock_other": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak."
     },
     "move": {
       "open": "Başka bir kuruluşa taşıyın…",

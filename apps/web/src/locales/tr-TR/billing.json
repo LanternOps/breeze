@@ -24,7 +24,8 @@
         "perDeviceRole": "Cihaz rolüne göre",
         "perDeviceGroup": "Cihaz grubu başına",
         "perSeat": "Koltuk başına",
-        "manual": "Manuel miktar"
+        "manual": "Manuel miktar",
+        "hourBlock": "Saat paketi"
       },
       "dynamicGroup": "dinamik",
       "deletedGroup": "{{name}} (silinmiş grup)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Sürüm yayınlandı",
       "warnings": {
         "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Anlaşma gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Dönem başına dahil saat",
+        "extraRate": "Ek saat başına fiyat",
+        "rolloverMode": "Dönem sonunda kullanılmayan saatler",
+        "rolloverExpire": "Sona erer",
+        "rolloverCarry": "Sonraki döneme aktarılır",
+        "carryCap": "Aktarım sınırı (saat; sınırsız için boş bırakın)",
+        "alertPct": "Paketin bu %'si kullanıldığında uyar (isteğe bağlı)",
+        "required": "Dahil saatleri ve ek saat başına fiyatı girin.",
+        "firstPeriod": "Saatler, henüz faturalanmamış ilk faturalama döneminden itibaren sayılır; taslak sözleşmede bu, etkinleştirildiğinde belirlenir. Öncesindeki süre her zamanki gibi faturalanır.",
+        "midPeriodEdit": "Değişiklikler, mevcut açık döneme ({{start}} – {{end}}) dönem kapandığında uygulanır.",
+        "midPeriodEditNoDates": "Değişiklikler, mevcut açık döneme dönem kapandığında uygulanır.",
+        "onlyOne": "Bu kuruluşun zaten etkin bir saat paketi var. Yenisini eklemeden önce onu kullanımdan kaldırın."
+      },
+      "row": {
+        "perPeriod": "Dönem başına {{hours}} saat",
+        "retiredBadge": "Kullanımdan kaldırıldı",
+        "startsOn": "{{date}} tarihinden itibaren sayılır"
+      },
+      "errors": {
+        "exists": "Bu kuruluşun zaten etkin bir saat paketi satırı var. Önce onu kullanımdan kaldırın, ardından yenisini ekleyin.",
+        "locked": "Bu alan bir saat paketi satırında değiştirilemez."
+      },
+      "retire": {
+        "title": "Saat paketini kullanımdan kaldır",
+        "message": "\"{{description}}\" faturalama geçmişine sahip olduğundan silinmek yerine kullanımdan kaldırılır. Yeni dönem yok; zaten faturalanmış dönemler yine de kapanır. Kapanmış dönemler sözleşmede kalır.",
+        "confirm": "Paketi kaldır",
+        "toast": "Saat paketi kullanımdan kaldırıldı"
+      },
+      "detail": {
+        "title": "Saat paketi",
+        "usage": "{{included}} saatin {{used}} saati kullanıldı · {{remaining}} kaldı · dönem {{end}} tarihinde bitiyor",
+        "carried": "Aktarılan {{hours}} saati içerir.",
+        "unapproved": "Bu sürenin {{hours}} saati henüz onaylanmadı.",
+        "foreign": "{{hours}} saat başka bir para biriminde kaydedildi; yine de paketten düşer.",
+        "over": "Paketin {{hours}} saat üzerinde → dönem kapanışında {{amount}}",
+        "advanceNote": "Aşım, sonraki faturada faturalanır.",
+        "arrearsNote": "Aşım, bu dönemin faturasında faturalanır.",
+        "lateEntry": "{{hours}} saat, dönemi kapandıktan sonra girildi ve ayrıca faturalanır.",
+        "startsLater": "Paket {{date}} tarihinde başlar.",
+        "extraRate": "Ek saatler: saat başına {{rate}}",
+        "loadFailed": "Paket kullanımı yüklenemedi."
+      },
+      "history": {
+        "title": "Kapanan paket dönemleri",
+        "empty": "Henüz kapanan bir paket dönemi yok.",
+        "included": "Dahil",
+        "carriedIn": "Gelen aktarım",
+        "used": "Kullanılan",
+        "over": "Aşım",
+        "carriedOut": "Giden aktarım",
+        "loadMore": "Daha fazla yükle",
+        "invoiceRemoved": "Aşım faturası kaldırıldı — saatler faturalanmadı"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "Fatura kaynağı",
       "title": "Yeni fatura",
       "to": "Kime",
-      "working": "Çalışıyor…"
+      "working": "Çalışıyor…",
+      "heldForHourBlock_one": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak.",
+      "heldForHourBlock_other": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak."
     },
     "empty": {
       "description": "Faturalandırılmamış zamanları ve parçaları bir taslakta birleştirin veya boş bir fatura başlatın.",

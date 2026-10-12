@@ -451,7 +451,9 @@
       "allMissingRate": "Rien n’a pu être facturé : chaque entrée de temps facturable de ce ticket n’a pas de taux horaire.",
       "missingRateHeading": "Entrées de temps sans taux horaire (non facturées — définissez un taux puis recréez la facture) :",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Définir un taux dans la feuille de temps"
+      "setRate": "Définir un taux dans la feuille de temps",
+      "heldForHourBlock_one": "{{count}} saisie de temps ({{hours}} heures) est retenue pour le forfait d'heures de cette organisation et sera facturée à la clôture de la période du forfait.",
+      "heldForHourBlock_other": "{{count}} saisies de temps ({{hours}} heures) sont retenues pour le forfait d'heures de cette organisation et seront facturées à la clôture de la période du forfait."
     },
     "move": {
       "open": "Passer à une autre organisation...",

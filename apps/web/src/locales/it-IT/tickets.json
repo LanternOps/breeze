@@ -451,7 +451,9 @@
       "allMissingRate": "Non è stato possibile fatturare nulla: a ogni voce di tempo fatturabile di questo ticket manca la tariffa oraria.",
       "missingRateHeading": "Voci di tempo senza tariffa oraria (non fatturate — imposta una tariffa e crea di nuovo la fattura):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Imposta una tariffa nel foglio ore"
+      "setRate": "Imposta una tariffa nel foglio ore",
+      "heldForHourBlock_one": "{{count}} registrazione di tempo ({{hours}} ore) è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore.",
+      "heldForHourBlock_other": "{{count}} registrazioni di tempo ({{hours}} ore) sono trattenute per il monte ore di questa organizzazione e verranno fatturate alla chiusura del periodo del monte ore."
     },
     "move": {
       "open": "Sposta in un'altra org...",

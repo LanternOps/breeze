@@ -451,7 +451,9 @@
       "allMissingRate": "Es konnte nichts abgerechnet werden: Bei jedem abrechenbaren Zeiteintrag dieses Tickets fehlt der Stundensatz.",
       "missingRateHeading": "Zeiteinträge ohne Stundensatz (nicht abgerechnet — Satz festlegen und Rechnung erneut erstellen):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Satz im Stundenzettel festlegen"
+      "setRate": "Satz im Stundenzettel festlegen",
+      "heldForHourBlock_one": "{{count}} Zeiteintrag ({{hours}} Stunden) wird für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist.",
+      "heldForHourBlock_other": "{{count}} Zeiteinträge ({{hours}} Stunden) werden für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist."
     },
     "move": {
       "open": "In eine andere Organisation verschieben …",
