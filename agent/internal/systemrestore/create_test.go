@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+
+	"github.com/breeze-rmm/agent/internal/backup/vss"
 )
 
 func TestBuildDescriptionEmbedsTheRequestIDAndFitsTheFixedBuffer(t *testing.T) {
@@ -204,6 +206,46 @@ func TestCreateHappyPathSendsBeginThenEndAndReportsCreated(t *testing.T) {
 	}
 }
 
+func TestCreateHoldsTheVSSGateOnlyAroundTheNativeCalls(t *testing.T) {
+	// The gate exists so a checkpoint does not starve a backup's snapshot
+	// creation. Verification touches only WMI, so it must run after release.
+	env := newTestEnvironment()
+	var (
+		mu               sync.Mutex
+		ourDesc          string
+		busyAtBegin      bool
+		busyAtVerify     bool
+		verifyReadsTaken int
+	)
+	env.listPoints = func() ([]restorePointRow, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ourDesc == "" {
+			return nil, nil // pre-call snapshot, inside the gate by design
+		}
+		verifyReadsTaken++
+		busyAtVerify = vss.SnapshotCreationBusy()
+		return []restorePointRow{{SequenceNumber: 5, Description: ourDesc}}, nil
+	}
+	f := &fakeNative{beginSeq: 5}
+	f.onBegin = func(d string) {
+		mu.Lock()
+		defer mu.Unlock()
+		ourDesc = d
+		busyAtBegin = vss.SnapshotCreationBusy()
+	}
+	out := createWith(context.Background(), Request{RequestID: "r1"}, env, f.api())
+	if out.Status != StatusCreated {
+		t.Fatalf("Status = %q, want %q (message=%q)", out.Status, StatusCreated, out.Message)
+	}
+	if !busyAtBegin {
+		t.Fatal("BEGIN_SYSTEM_CHANGE ran without the VSS creation gate held")
+	}
+	if verifyReadsTaken == 0 || busyAtVerify {
+		t.Fatalf("verification ran with the VSS gate still held (reads=%d)", verifyReadsTaken)
+	}
+}
+
 func TestCreateSendsEndEvenWhenVerificationFails(t *testing.T) {
 	shortVerify(t)
 	f := &fakeNative{beginSeq: 50} // new sequence, but WMI never shows it
@@ -342,5 +384,40 @@ func TestCreateOnThisPlatform(t *testing.T) {
 	}
 	if out.RequestID != "r1" {
 		t.Fatalf("RequestID = %q, want r1", out.RequestID)
+	}
+}
+
+func TestCreateKeepsTheIdentityWhenEndFails(t *testing.T) {
+	env := newTestEnvironment()
+	var points []restorePointRow
+	env.listPoints = func() ([]restorePointRow, error) { return points, nil }
+	f := &fakeNative{beginSeq: 77, endErr: errors.New("SRSetRestorePointW reported nStatus=13")}
+	f.onBegin = func(d string) { points = []restorePointRow{{SequenceNumber: 77, Description: d}} }
+	out := createWith(context.Background(), Request{RequestID: "r1"}, env, f.api())
+	if out.Status != StatusFailed {
+		t.Fatalf("Status = %q, want %q", out.Status, StatusFailed)
+	}
+	if out.SequenceNumber != "77" || out.Description != f.beginDesc {
+		t.Fatalf("the opened point's identity was dropped: %+v", out)
+	}
+	if !strings.Contains(out.Message, "END_SYSTEM_CHANGE") || !strings.Contains(out.Message, "found") {
+		t.Fatalf("Message = %q, want it to name END and say the point was found", out.Message)
+	}
+}
+
+func TestCreateExplainsASequenceZero(t *testing.T) {
+	f := &fakeNative{beginSeq: 0}
+	out := createWith(context.Background(), Request{}, newTestEnvironment(), f.api())
+	if out.Status != StatusVerificationFailed || !strings.Contains(out.Message, "sequence 0") {
+		t.Fatalf("got %+v, want verification_failed naming sequence 0", out)
+	}
+}
+
+func TestCreateReportsFailedWhenTheProbeErrorsOtherwise(t *testing.T) {
+	env := newTestEnvironment()
+	env.probe = func() error { return errors.New("access denied loading srclient.dll") }
+	out := createWith(context.Background(), Request{}, env, neverCalledNative(t))
+	if out.Status != StatusFailed {
+		t.Fatalf("Status = %q, want %q", out.Status, StatusFailed)
 	}
 }

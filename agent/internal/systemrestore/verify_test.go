@@ -194,7 +194,7 @@ func TestPollForPointGivesUpAtTheBudget(t *testing.T) {
 	var calls atomic.Int32
 	list := func() ([]restorePointRow, error) { calls.Add(1); return nil, nil }
 	start := time.Now()
-	_, err := pollForPoint(context.Background(), list, 42, desc, 30*time.Millisecond, 5*time.Millisecond)
+	_, err := pollForPoint(context.Background(), list, 42, desc, 100*time.Millisecond, 5*time.Millisecond)
 	if err != nil {
 		t.Fatalf("err = %v, want nil with the last (empty) read", err)
 	}
@@ -293,6 +293,115 @@ func TestIsProviderAbsent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isProviderAbsent(tc.codes, tc.text); got != tc.want {
 				t.Fatalf("isProviderAbsent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCallBoundedFailsFastWhileAnAbandonedCallIsStillRunning(t *testing.T) {
+	// wmi.QueryNamespace holds a package-global lock for the whole query, so
+	// once one call wedges, every later call would also burn its full timeout
+	// and leak another goroutine. Fail fast instead.
+	block := make(chan struct{})
+	if _, err := callBounded(context.Background(), 10*time.Millisecond, func() (int, error) {
+		<-block
+		return 0, nil
+	}); err == nil {
+		t.Fatal("the first, hung call must time out")
+	}
+
+	var ran atomic.Bool
+	start := time.Now()
+	_, err := callBounded(context.Background(), time.Minute, func() (int, error) { ran.Store(true); return 1, nil })
+	if err == nil || ran.Load() {
+		t.Fatalf("second call: err=%v ran=%v, want an immediate error without running", err, ran.Load())
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("the second call waited instead of failing fast")
+	}
+
+	close(block) // the abandoned call finishes
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		v, err := callBounded(context.Background(), time.Second, func() (int, error) { return 2, nil })
+		if err == nil && v == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("calls never resumed after the abandoned call finished: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestCallBoundedPassesThroughAnError(t *testing.T) {
+	want := errors.New("boom")
+	if _, err := callBounded(context.Background(), time.Second, func() (int, error) { return 0, want }); !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+}
+
+func TestPollForPointStopsWhenTheContextEndsMidWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	list := func() ([]restorePointRow, error) { calls.Add(1); cancel(); return nil, nil }
+	start := time.Now()
+	if _, err := pollForPoint(ctx, list, 42, desc, time.Minute, time.Minute); err == nil {
+		t.Fatal("cancellation mid-wait must surface as an error")
+	}
+	if time.Since(start) > time.Second || calls.Load() != 1 {
+		t.Fatalf("calls=%d elapsed=%v, want 1 call and a prompt return", calls.Load(), time.Since(start))
+	}
+}
+
+func TestPollForPointErrorSequences(t *testing.T) {
+	found := []restorePointRow{{SequenceNumber: 42, Description: desc}}
+	other := []restorePointRow{{SequenceNumber: 7, Description: "x"}}
+	readErr := errors.New("WMI busy")
+	tests := []struct {
+		name     string
+		reads    []func() ([]restorePointRow, error)
+		wantRows bool
+		wantErr  bool
+	}{
+		{
+			name: "errors then the row: created after a transient failure",
+			reads: []func() ([]restorePointRow, error){
+				func() ([]restorePointRow, error) { return nil, readErr },
+				func() ([]restorePointRow, error) { return nil, readErr },
+				func() ([]restorePointRow, error) { return found, nil },
+			},
+			wantRows: true,
+		},
+		{
+			name:    "always erroring returns the error",
+			reads:   []func() ([]restorePointRow, error){func() ([]restorePointRow, error) { return nil, readErr }},
+			wantErr: true,
+		},
+		{
+			name: "a good read then errors returns the error, not stale rows",
+			reads: []func() ([]restorePointRow, error){
+				func() ([]restorePointRow, error) { return other, nil },
+				func() ([]restorePointRow, error) { return nil, readErr },
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			i := 0
+			list := func() ([]restorePointRow, error) {
+				f := tc.reads[min(i, len(tc.reads)-1)]
+				i++
+				return f()
+			}
+			rows, err := pollForPoint(context.Background(), list, 42, desc, 500*time.Millisecond, time.Millisecond)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantRows && len(rows) != 1 {
+				t.Fatalf("rows = %v, want the found row", rows)
 			}
 		})
 	}

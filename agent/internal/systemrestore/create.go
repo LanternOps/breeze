@@ -49,7 +49,8 @@ type nativeAPI struct {
 //
 // Order: probe the entry point → read the enabled state → check the token →
 // take the shared VSS snapshot-creation gate → snapshot the existing points →
-// BEGIN_SYSTEM_CHANGE → END_SYSTEM_CHANGE → confirm by identity in WMI.
+// BEGIN_SYSTEM_CHANGE → END_SYSTEM_CHANGE → release the gate → confirm by
+// identity in WMI.
 //
 // END is sent immediately after a successful BEGIN for any sequence that was
 // not already present, before verification runs, so no later failure can
@@ -105,7 +106,16 @@ func createWith(ctx context.Context, req Request, env environment, native native
 		return callBounded(ctx, wmiCallTimeout, env.listPoints)
 	}
 
-	return finish(withSnapshotGate(ctx, func() Outcome {
+	// Only the pre-call snapshot and the two native calls run under the VSS
+	// creation gate. Verification touches only WMI and can take seconds, and
+	// holding the gate through it would make a waiting backup give up on VSS.
+	var (
+		before    map[int64]restorePointRow
+		candidate int64
+		callErr   error
+		endErr    error
+	)
+	gated := withSnapshotGate(ctx, func() Outcome {
 		// Snapshot the existing points immediately before the call, so classify
 		// can tell a genuinely new sequence from one Windows reused. Without
 		// that snapshot neither reuse nor identity can be judged, so no
@@ -117,47 +127,50 @@ func createWith(ctx context.Context, req Request, env environment, native native
 			}
 			return Outcome{Status: StatusFailed, Message: "could not read existing restore points: " + err.Error()}
 		}
-		before := make(map[int64]restorePointRow, len(rows))
+		before = make(map[int64]restorePointRow, len(rows))
 		for _, r := range rows {
 			before[r.SequenceNumber] = r
 		}
 
-		candidate, callErr := native.begin(desc)
-		var endErr error
+		candidate, callErr = native.begin(desc)
 		if callErr == nil && candidate != 0 {
 			if _, reused := before[candidate]; !reused {
 				endErr = native.end(candidate)
 			}
 		}
+		return Outcome{} // empty Status: carry on to verification
+	})
+	if gated.Status != "" {
+		return finish(gated)
+	}
 
-		verifyEnv := env
-		verifyEnv.listPoints = list
-		if candidate != 0 {
-			// Only a real sequence is worth waiting for. Sequence 0 identifies
-			// nothing; one read lets classify report it without adding the
-			// whole budget to every update on the per-update patch path.
-			verifyEnv.listPoints = func() ([]restorePointRow, error) {
-				return pollForPoint(ctx, list, candidate, desc, verifyBudget, verifyPollInterval)
-			}
+	verifyEnv := env
+	verifyEnv.listPoints = list
+	if candidate != 0 {
+		// Only a real sequence is worth waiting for. Sequence 0 identifies
+		// nothing; one read lets classify report it without adding the
+		// whole budget to every update on the per-update patch path.
+		verifyEnv.listPoints = func() ([]restorePointRow, error) {
+			return pollForPoint(ctx, list, candidate, desc, verifyBudget, verifyPollInterval)
 		}
-		out := classify(verifyEnv, req, desc, before, candidate, callErr)
-		if endErr != nil {
-			// The change we opened could not be closed, so this is not a
-			// confirmed checkpoint. Still verify and keep its identity, so
-			// the console and server know which point exists and a retry
-			// does not pile up unexplained duplicates.
-			found := "was not found"
-			if out.Status == StatusCreated {
-				found = "was found"
-			}
-			out.Status = StatusFailed
-			out.SequenceNumber = formatSequence(candidate)
-			out.Description = desc
-			out.Message = "END_SYSTEM_CHANGE failed for sequence " + strconv.FormatInt(candidate, 10) +
-				" (the restore point " + found + " in WMI): " + endErr.Error()
+	}
+	out := classify(verifyEnv, req, desc, before, candidate, callErr)
+	if endErr != nil {
+		// The change we opened could not be closed, so this is not a
+		// confirmed checkpoint. Still verify and keep its identity, so the
+		// console and server know which point exists and a retry does not
+		// pile up unexplained duplicates.
+		found := "was not found"
+		if out.Status == StatusCreated {
+			found = "was found"
 		}
-		return out
-	}))
+		out.Status = StatusFailed
+		out.SequenceNumber = formatSequence(candidate)
+		out.Description = desc
+		out.Message = "END_SYSTEM_CHANGE failed for sequence " + strconv.FormatInt(candidate, 10) +
+			" (the restore point " + found + " in WMI): " + endErr.Error()
+	}
+	return finish(out)
 }
 
 // buildDescription builds a UNIQUE, length-bounded description. Uniqueness is

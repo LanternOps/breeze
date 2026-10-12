@@ -2,6 +2,7 @@ package systemrestore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,5 +42,41 @@ func TestWithSnapshotGateHoldsTheGateForTheDurationAndReleasesIt(t *testing.T) {
 	}
 	if vss.SnapshotCreationBusy() {
 		t.Fatal("the gate is still held after the checkpoint returned")
+	}
+}
+
+func TestWithSnapshotGateCapsTheWaitEvenWithABackgroundContext(t *testing.T) {
+	// The legacy patch caller passes context.Background(); gateWaitBudget is
+	// then the only bound on how long an update waits behind a backup.
+	prev := gateWaitBudget
+	gateWaitBudget = 30 * time.Millisecond
+	t.Cleanup(func() { gateWaitBudget = prev })
+
+	release, err := vss.AcquireSnapshotCreation(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	out := withSnapshotGate(context.Background(), func() Outcome { return Outcome{Status: StatusCreated} })
+	if out.Status != StatusBusy {
+		t.Fatalf("Status = %q, want %q", out.Status, StatusBusy)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("the gate wait ignored gateWaitBudget")
+	}
+}
+
+func TestWithSnapshotGateReportsACallerCancellationAsSuch(t *testing.T) {
+	prev := acquireGate
+	t.Cleanup(func() { acquireGate = prev })
+	acquireGate = func(ctx context.Context) (func(), error) { <-ctx.Done(); return nil, ctx.Err() }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := withSnapshotGate(ctx, func() Outcome { return Outcome{Status: StatusCreated} })
+	if out.Status != StatusFailed || !strings.Contains(out.Message, "cancel") {
+		t.Fatalf("a cancelled caller must not read as a busy gate: %+v", out)
 	}
 }
