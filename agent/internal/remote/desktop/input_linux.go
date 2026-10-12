@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -206,8 +207,8 @@ func (h *LinuxInputHandler) HandleEvent(event InputEvent) error {
 	// Key events. Lock state first (sequenced sessions only); a lock key whose
 	// state is asserted is not injected, or it would flip the state back.
 	if plan := lockSyncFor(event); plan.active {
-		h.syncLockKeys(plan)
-		if plan.suppressKey {
+		capsOK, numOK := h.syncLockKeys(plan)
+		if plan.suppress(capsOK, numOK) {
 			return nil
 		}
 	}
@@ -226,29 +227,44 @@ func (h *LinuxInputHandler) HandleEvent(event InputEvent) error {
 // syncLockKeys brings Caps Lock and Num Lock to the states plan asserts.
 // X autorepeats keys held through XTEST, so a W2c repeat key_down is never
 // needed here (the viewer does not forward repeats to Linux remotes).
-func (h *LinuxInputHandler) syncLockKeys(plan lockSyncPlan) {
+//
+// It reports which lock states could be read, i.e. which locks the agent
+// owns: a lock key whose state cannot be read (no X injector, or Num_Lock
+// bound to no modifier) is injected as a plain key instead of suppressed.
+func (h *LinuxInputHandler) syncLockKeys(plan lockSyncPlan) (capsOK, numOK bool) {
 	inj := h.injector()
 	if inj == nil {
+		return false, false
+	}
+	caps, num, numBound, err := inj.LockStates()
+	if err != nil {
+		slog.Debug("Lock state read failed", "error", err.Error())
+		return false, false
+	}
+	capsOK, numOK = true, numBound
+	if plan.caps != nil {
+		readCaps := func() (bool, bool) { return caps, true }
+		if h.capsSync.next(*plan.caps, readCaps) {
+			h.tapLock(inj, &h.capsSync, "capslock", *plan.caps)
+		}
+	}
+	if plan.num != nil && numBound {
+		readNum := func() (bool, bool) { return num, true }
+		if h.numSync.next(*plan.num, readNum) {
+			h.tapLock(inj, &h.numSync, "numlock", *plan.num)
+		}
+	}
+	return capsOK, numOK
+}
+
+// tapLock taps a lock key and records the new state only when the tap
+// landed; otherwise the next event retries.
+func (h *LinuxInputHandler) tapLock(inj *x11.Injector, s *lockKeySync, name string, want bool) {
+	if err := inj.TapKeyByName(name); err != nil {
+		slog.Warn("Lock key sync tap failed", "lock", name, "error", err.Error())
 		return
 	}
-	if plan.caps != nil {
-		readCaps := func() (bool, bool) {
-			caps, _, _, err := inj.LockStates()
-			return caps, err == nil
-		}
-		if h.capsSync.next(*plan.caps, readCaps) && inj.TapKeyByName("capslock") == nil {
-			h.capsSync.done(*plan.caps)
-		}
-	}
-	if plan.num != nil {
-		readNum := func() (bool, bool) {
-			_, num, numOK, err := inj.LockStates()
-			return num, err == nil && numOK
-		}
-		if h.numSync.next(*plan.num, readNum) && inj.TapKeyByName("numlock") == nil {
-			h.numSync.done(*plan.num)
-		}
-	}
+	s.done(want)
 }
 
 // canonicalModifierName maps the "win"/"lwin"/"rwin" Super aliases — accepted

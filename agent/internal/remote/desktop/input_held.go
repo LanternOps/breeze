@@ -107,6 +107,9 @@ func heldButtonName(button string) string {
 // again and release them on the way out, leaving the operator's still-held
 // Shift released on the remote (spec gotcha K5).
 func (h *heldInput) prepare(ev InputEvent) InputEvent {
+	if ev.Type == "key_up" {
+		return h.resolveKeyUp(ev)
+	}
 	if ev.Type != "key_press" || len(ev.Modifiers) == 0 {
 		return ev
 	}
@@ -119,6 +122,45 @@ func (h *heldInput) prepare(ev InputEvent) InputEvent {
 		kept = append(kept, m)
 	}
 	ev.Modifiers = kept
+	return ev
+}
+
+// resolveKeyUp makes a W2c key_up release the key its key_down pressed, so
+// the platform handler releases that physical key and observe clears that
+// record:
+//   - code held: release with the pressing key name. The browser's key_up can
+//     name another key ("!" for Digit1 once Shift is down), which the handler
+//     cannot map; the key would stay down and its record would be dropped.
+//   - code given but only the name held: release without the code, as pressed.
+//   - no code, name not held, but held by code: release by that code, or
+//     Windows would release VK_CONTROL (left) for a right Ctrl.
+//
+// A key_up with no codes on either side (every legacy viewer) is unchanged.
+func (h *heldInput) resolveKeyUp(ev InputEvent) InputEvent {
+	name := heldKeyName(ev.Key)
+	if ev.Code != "" {
+		if k, ok := h.keys[heldKeyID(name, ev.Code)]; ok {
+			ev.Key = k.name
+			return ev
+		}
+		if _, ok := h.keys[name]; ok {
+			ev.Code = ""
+		}
+		return ev
+	}
+	if _, ok := h.keys[name]; ok {
+		return ev
+	}
+	ids := make([]string, 0, 1)
+	for id, k := range h.keys {
+		if k.name == name && k.code != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > 0 {
+		sort.Strings(ids)
+		ev.Code = h.keys[ids[0]].code
+	}
 	return ev
 }
 

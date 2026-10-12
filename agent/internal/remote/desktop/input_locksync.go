@@ -16,6 +16,32 @@ type lockSyncPlan struct {
 	active      bool  // the event asserts at least one lock state
 	caps, num   *bool // nil = not asserted
 	suppressKey bool  // the event is itself a lock key whose state is asserted
+	keyLock     lockKind
+}
+
+// lockKind names the lock key an event is (lockNone for any other key).
+type lockKind int
+
+const (
+	lockNone lockKind = iota
+	lockCaps
+	lockNum
+)
+
+// suppress reports whether the lock key itself should be dropped, given
+// which lock states the platform could read (and so sync). A lock whose state
+// cannot be read is injected as a key as before, not swallowed.
+func (p lockSyncPlan) suppress(capsReadable, numReadable bool) bool {
+	if !p.suppressKey {
+		return false
+	}
+	switch p.keyLock {
+	case lockCaps:
+		return capsReadable
+	case lockNum:
+		return numReadable
+	}
+	return false
 }
 
 // lockSyncFor decides whether ev drives lock sync.
@@ -40,12 +66,14 @@ func lockSyncFor(ev InputEvent) lockSyncPlan {
 	name := heldKeyName(ev.Key)
 	isCaps := name == "capslock" || ev.Code == "CapsLock"
 	isNum := name == "numlock" || ev.Code == "NumLock"
-	return lockSyncPlan{
-		active:      true,
-		caps:        ev.CapsLock,
-		num:         ev.NumLock,
-		suppressKey: (isCaps && ev.CapsLock != nil) || (isNum && ev.NumLock != nil),
+	plan := lockSyncPlan{active: true, caps: ev.CapsLock, num: ev.NumLock}
+	switch {
+	case isCaps && ev.CapsLock != nil:
+		plan.suppressKey, plan.keyLock = true, lockCaps
+	case isNum && ev.NumLock != nil:
+		plan.suppressKey, plan.keyLock = true, lockNum
 	}
+	return plan
 }
 
 // lockKeySync is the sync state for one lock key.

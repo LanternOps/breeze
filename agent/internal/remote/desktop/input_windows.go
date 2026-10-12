@@ -463,7 +463,7 @@ func (h *WindowsInputHandler) syncLockKey(s *lockKeySync, vk uint16, want bool) 
 		s.done(want)
 		return
 	}
-	slog.Debug("Lock key sync tap failed", "vk", vk)
+	slog.Warn("Lock key sync tap failed", "vk", vk, "downOK", down, "upOK", up)
 }
 
 // windowsUnicodeChunkUnits is how many UTF-16 code units are posted per
@@ -637,7 +637,7 @@ func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
 func (h *WindowsInputHandler) handleKeyEvent(event InputEvent) error {
 	if plan := lockSyncFor(event); plan.active {
 		h.syncLockKeys(plan)
-		if plan.suppressKey {
+		if plan.suppress(true, true) { // GetKeyState always answers
 			return nil
 		}
 	}
