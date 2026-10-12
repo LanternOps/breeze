@@ -18,12 +18,14 @@ export function SegmentedControl({ options, value, onChange }: {
   const goTo = (i: number) => {
     const next = options[i];
     if (!next) return;
-    onChange(next.key);
+    if (next.key !== value) onChange(next.key);
     tabRefs.current[i]?.focus();
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (options.length === 0) return;
+    // Leave browser/OS shortcuts (Cmd+Left, Alt+Arrow history, …) alone.
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     // Navigate from the focused tab when the event came from one, else from
     // the selected tab.
     const focusedIdx = tabRefs.current.findIndex((el) => el === e.target);
