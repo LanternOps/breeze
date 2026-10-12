@@ -349,7 +349,7 @@ export const orgMergeEvents = pgTable('org_merge_events', {
 // merge Phase B, released only by the erasure path (services/orgEvidenceHold.ts).
 // survivor_org_id and merge_event_id are ON DELETE RESTRICT; loser_org_id has
 // no FK. Writes are system-only (RESTRICTIVE policies, migration
-// 2026-12-24-140000-org-evidence-holds.sql).
+// 2026-12-24-220000-org-evidence-holds.sql).
 export const orgEvidenceHolds = pgTable('org_evidence_holds', {
   loserOrgId: uuid('loser_org_id').primaryKey(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
