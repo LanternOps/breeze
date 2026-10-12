@@ -9,7 +9,11 @@ import { captureException } from '../services/sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
-import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import {
+  checkRemoteAccess,
+  resolveDesktopSessionPolicy,
+  type DesktopSessionPolicy,
+} from '../services/remoteAccessPolicy';
 import { checkVncConsentGate } from './remote/vncConsentGate';
 import {
   CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_CODE,
@@ -561,6 +565,13 @@ tunnelRoutes.post(
       sourceIp,
     );
 
+    if (isVNC) {
+      // The agent cannot filter the raw RFB stream, so the viewer gates VNC
+      // clipboard on this policy (#8269). Same resolver the WebRTC offer ships
+      // to the agent; never taken from the request.
+      const { clipboard } = await resolveDesktopSessionPolicy(device.id);
+      return c.json({ ...session, clipboard }, 201);
+    }
     return c.json(session, 201);
   }
 );
@@ -1442,6 +1453,21 @@ tunnelRoutes.post(
   }
 );
 
+/**
+ * The session's remote_access clipboard policy for a VNC tunnel handed out by a
+ * route with no request DB context (code redemption, viewer-token downgrade).
+ * The viewer gates VNC clipboard on it because the agent cannot filter the raw
+ * RFB stream (#8269). Resolved in system scope: without a DB context the policy
+ * read sees no rows under deny-default RLS and would report the baseline
+ * instead of the device's policy.
+ */
+async function resolveVncClipboardPolicyContextless(
+  deviceId: string,
+): Promise<DesktopSessionPolicy['clipboard']> {
+  const { clipboard } = await withSystemDbAccessContext(() => resolveDesktopSessionPolicy(deviceId));
+  return clipboard;
+}
+
 // --- VNC exchange route (no auth — the code IS the auth) ---
 
 export const vncExchangeRoutes = new Hono();
@@ -1549,12 +1575,15 @@ vncExchangeRoutes.post(
       getTrustedClientIp(c, 'unknown'),
     );
 
+    const clipboard = await resolveVncClipboardPolicyContextless(result.deviceId);
+
     return c.json({
       accessToken,
       expiresInSeconds: getViewerAccessTokenExpirySeconds(),
       tunnelId: record.tunnelId,
       wsUrl,
       deviceId: record.deviceId,
+      clipboard,
     });
   }
 );
@@ -1910,10 +1939,13 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     getClientIp(c),
   );
 
+  const clipboard = await resolveVncClipboardPolicyContextless(bound.deviceId);
+
   return c.json({
     tunnelId: transitionTunnelId,
     wsUrl,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+    clipboard,
   });
 });

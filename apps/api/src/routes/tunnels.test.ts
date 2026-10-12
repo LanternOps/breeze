@@ -150,8 +150,16 @@ vi.mock('./agentWs', () => ({
 }));
 
 // --- Remote access policy ---
+const { resolveDesktopSessionPolicyMock } = vi.hoisted(() => ({
+  resolveDesktopSessionPolicyMock: vi.fn(async (_deviceId: string): Promise<any> => ({
+    clipboard: { hostToViewer: true, viewerToHost: true },
+    idleTimeoutMinutes: 30,
+    maxSessionDurationHours: 8,
+  })),
+}));
 vi.mock('../services/remoteAccessPolicy', () => ({
   checkRemoteAccess: vi.fn(async () => ({ allowed: true })),
+  resolveDesktopSessionPolicy: resolveDesktopSessionPolicyMock,
 }));
 
 // --- VNC consent gate (default: the device's prompt policy allows VNC) ---
@@ -220,7 +228,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { sendCommandToAgent } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
@@ -3566,5 +3574,220 @@ describe('GET /tunnels/:id — proxy viewer presence (gates cookie-less path-tok
       await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
     }
     expect(redisSetMock).not.toHaveBeenCalledWith(`tunnel-http:viewer:${SESSION_ID}`, expect.anything(), expect.anything(), expect.anything());
+  });
+});
+
+// ─── Session clipboard policy on VNC tunnel responses (#8269) ────────────────
+//
+// The agent cannot filter the raw RFB stream, so the viewer gates VNC clipboard
+// on the policy the API reports with the tunnel. The value must come from the
+// same resolver the WebRTC path ships to the agent, never from client input.
+
+describe('VNC tunnel responses carry the session clipboard policy (#8269)', () => {
+  let app: Hono;
+  // Tracks whether the resolver ran inside withSystemDbAccessContext: the
+  // viewer-token / code-redemption routes have no request DB context, and a
+  // contextless read sees zero rows under deny-default RLS (baseline policy).
+  let systemDepth = 0;
+  let resolvedInSystemContext: boolean[] = [];
+
+  const ALLOW = { hostToViewer: true, viewerToHost: true };
+  const DENY_PASTE = { hostToViewer: true, viewerToHost: false };
+  const DENY_BOTH = { hostToViewer: false, viewerToHost: false };
+  const policyWith = (clipboard: { hostToViewer: boolean; viewerToHost: boolean }) => ({
+    clipboard,
+    idleTimeoutMinutes: 30,
+    maxSessionDurationHours: 8,
+  });
+
+  const vncCodeRecord = {
+    tunnelId: SESSION_ID,
+    deviceId: DEVICE_ID,
+    orgId: ORG_ID,
+    userId: USER_ID,
+    email: 'test@example.com',
+    expiresAt: Date.now() + 60_000,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    systemDepth = 0;
+    resolvedInSystemContext = [];
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => any) => {
+      systemDepth++;
+      try {
+        return await fn();
+      } finally {
+        systemDepth--;
+      }
+    });
+    resolveDesktopSessionPolicyMock.mockImplementation(async () => {
+      resolvedInSystemContext.push(systemDepth > 0);
+      return policyWith(ALLOW);
+    });
+    rateLimiterMock.mockResolvedValue({
+      allowed: true,
+      remaining: 19,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+    app.route('/vnc-exchange', vncExchangeRoutes);
+    app.route('/vnc-viewer', vncViewerRoutes);
+  });
+
+  function primeVncCreate() {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)  // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any);              // source-IP allowlist
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([sessionRecord]) as any);
+  }
+
+  function primeExchange() {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValueOnce('viewer-token-xyz');
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+  }
+
+  function primeDowngrade() {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-clip',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([{ id: 'new-tunnel' }]) as any);
+  }
+
+  // --- POST /tunnels (tunnel create) ---
+
+  it('POST /tunnels (vnc) returns the resolved clipboard policy for the tunnel device', async () => {
+    primeVncCreate();
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.clipboard).toEqual(ALLOW);
+    expect(body.id).toBe(SESSION_ID);
+    expect(resolveDesktopSessionPolicyMock).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('POST /tunnels (vnc) reports a direction the policy blocks as false', async () => {
+    primeVncCreate();
+    resolveDesktopSessionPolicyMock.mockResolvedValueOnce(policyWith(DENY_PASTE));
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).clipboard).toEqual(DENY_PASTE);
+  });
+
+  it('POST /tunnels (vnc) ignores a clipboard value supplied by the client', async () => {
+    primeVncCreate();
+    resolveDesktopSessionPolicyMock.mockResolvedValueOnce(policyWith(DENY_BOTH));
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc', clipboard: ALLOW }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).clipboard).toEqual(DENY_BOTH);
+  });
+
+  it('POST /tunnels (proxy) carries no clipboard policy and does not resolve one', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([{
+        id: 'r2r2r2r2-r2r2-4r2r-8r2r-r2r2r2r2r2r2',
+        orgId: ORG_ID,
+        direction: 'destination',
+        enabled: true,
+        pattern: '10.0.0.0/8:*',
+      }]) as any);
+    vi.mocked(db.insert).mockReturnValue(
+      makeAuditAwareInsertChain([{ ...sessionRecord, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }]) as any
+    );
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).not.toHaveProperty('clipboard');
+    expect(resolveDesktopSessionPolicyMock).not.toHaveBeenCalled();
+  });
+
+  // --- POST /vnc-exchange/:code (VNC deep link) ---
+
+  it('POST /vnc-exchange/:code returns the clipboard policy, resolved in system DB context', async () => {
+    primeExchange();
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).clipboard).toEqual(ALLOW);
+    expect(resolveDesktopSessionPolicyMock).toHaveBeenCalledWith(DEVICE_ID);
+    expect(resolvedInSystemContext).toEqual([true]);
+  });
+
+  it('POST /vnc-exchange/:code reports a policy that blocks both directions', async () => {
+    primeExchange();
+    resolveDesktopSessionPolicyMock.mockResolvedValueOnce(policyWith(DENY_BOTH));
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).clipboard).toEqual(DENY_BOTH);
+  });
+
+  // --- POST /vnc-viewer/downgrade-to-vnc (WebRTC → VNC) ---
+
+  it('POST /vnc-viewer/downgrade-to-vnc returns the clipboard policy, resolved in system DB context', async () => {
+    primeDowngrade();
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).clipboard).toEqual(ALLOW);
+    expect(resolveDesktopSessionPolicyMock).toHaveBeenCalledWith(DEVICE_ID);
+    expect(resolvedInSystemContext).toEqual([true]);
+  });
+
+  it('POST /vnc-viewer/downgrade-to-vnc reports a direction the policy blocks as false', async () => {
+    primeDowngrade();
+    resolveDesktopSessionPolicyMock.mockResolvedValueOnce(policyWith({ hostToViewer: false, viewerToHost: true }));
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).clipboard).toEqual({ hostToViewer: false, viewerToHost: true });
   });
 });
