@@ -20,6 +20,10 @@ export function replaceUrl(url: string): void {
  * `history.state` is null, which the router cannot cope with on its next
  * `navigate(..., { history: 'replace' })`. Seed the router's expected shape
  * when the state is missing; existing state is left untouched.
+ *
+ * `index: 0` is a placeholder: the router's own counter is module-private, so
+ * the seeded entry may later report the wrong back/forward direction to the
+ * transition animation. That is cosmetic; the alternative is the throw.
  */
 export function seedRouterHistoryState(): void {
   if (typeof window === 'undefined') return;
