@@ -7188,6 +7188,42 @@ describe('W08 admission integration', () => {
     expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
   });
 
+  async function openThenError(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+    spy.mockRestore();
+  }
+
+  it('onError leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('error');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled();
+  });
+
+  it('onError still flips offline at once when admission is not shedding', async () => {
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the admission setup slot even when onOpen throws', async () => {
+    const slot = { release: vi.fn() };
+    vi.mocked(db.update).mockImplementation(() => { throw new Error('open boom'); });
+    vi.mocked(db.select).mockImplementation(() => { throw new Error('open boom'); });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createAgentWsHandlers('agent-123', preValidatedAgent, slot).onOpen({}, wsMock() as any).catch(() => {});
+    spy.mockRestore();
+    expect(slot.release).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the admission setup slot when onOpen finishes, and on a close that skipped onOpen', async () => {
     const opened = { release: vi.fn() };
     await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent, opened), wsMock());

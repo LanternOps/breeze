@@ -88,7 +88,7 @@ const AGENT_ROUTE_MOUNT = '/api/v1/agents';
 /**
  * Retry-After ranges (seconds), jittered uniformly per response. For shipped
  * agents any value >= 30 means "one attempt this cycle" (httputil callers run
- * under a 15-30 s context); the ranges are the deferral W09 agents will honour
+ * under typical 15–30 s caller contexts); the ranges are the deferral W09 agents will honour
  * at loop level.
  */
 export const RETRY_AFTER_SECONDS: Readonly<Record<'bulk' | 'standard', readonly [number, number]>> = Object.freeze({
@@ -100,7 +100,8 @@ export const RETRY_AFTER_OVERRIDES: Readonly<Record<string, readonly [number, nu
   // The log shipper sleeps Retry-After with no context and Stop() waits for it
   // (agent/internal/logging/shipper.go:188-193, 571-575): keep it short.
   'POST /:id/logs': [2, 4] as const,
-  // Raw Do, no retry, 30 s cadence: the value only matters to W09 agents.
+  // Raw Do, no retry; cadence is 30 s while collectors exist and ~15 min when
+  // idle (agent/internal/unifi/collector_schedule.go): the value only matters to W09 agents.
   'GET /:id/unifi-collectors': [30, 45] as const,
 });
 

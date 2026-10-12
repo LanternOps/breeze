@@ -14,6 +14,17 @@ describe('TokenBucket', () => {
     expect(bucket.available(1)).toBe(20);
   });
 
+  it('refund returns a token but never exceeds the scaled capacity', () => {
+    const bucket = new TokenBucket(10, 3, () => 0);
+    expect(bucket.tryTake(1)).toBe(true);
+    expect(bucket.available(1)).toBe(2);
+    bucket.refund(1);
+    expect(bucket.available(1)).toBe(3);
+    bucket.refund(1);
+    bucket.refund(1);
+    expect(bucket.available(1)).toBe(3);
+  });
+
   it('clamps accumulated tokens when the level drops the scale', () => {
     let nowMs = 0;
     const bucket = new TokenBucket(10, 20, () => nowMs);

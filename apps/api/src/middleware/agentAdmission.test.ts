@@ -113,12 +113,38 @@ describe('agentAdmission', () => {
       return c.req.header('x-accept') ? new Response() : c.json({ error: 'Unauthorized' }, 401);
     });
 
-    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { 'x-accept': '1' } })).status).toBe(200);
+    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { 'x-accept': '1', upgrade: 'WebSocket' } })).status).toBe(200);
     expect(seenSlot).toBe(slot);
     expect(slot.release).not.toHaveBeenCalled();
 
-    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`)).status).toBe(401);
+    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { upgrade: 'websocket' } })).status).toBe(401);
     expect(slot.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('refunds the WS token when an admitted upgrade did not complete, but not when it did', async () => {
+    const refund = vi.fn();
+    const slot = { release: vi.fn() };
+    const app = new Hono();
+    app.use('*', agentAdmission(() => ({ mode: 'enforce', decide: () => ({ action: 'admit', wsSlot: slot, refund }) })));
+    app.get('/api/v1/agent-ws/:id/ws', (c) => (c.req.header('x-accept') ? new Response() : c.json({ error: 'Unauthorized' }, 401)));
+
+    await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { 'x-accept': '1', upgrade: 'websocket' } });
+    expect(refund).not.toHaveBeenCalled();
+    await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { upgrade: 'websocket' } });
+    expect(refund).toHaveBeenCalledTimes(1);
+  });
+
+  it('a WS-path request without Upgrade: websocket is unclassified: the gate is never consulted', async () => {
+    const { gate, seen } = stubGate(shed);
+    const app = new Hono();
+    app.use('*', agentAdmission(() => gate));
+    app.get('/api/v1/agent-ws/:id/ws', (c) => c.json({ error: 'Unauthorized' }, 401));
+
+    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`)).status).toBe(401);
+    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { upgrade: 'h2c' } })).status).toBe(401);
+    expect(seen).toEqual([]);
+    expect((await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { upgrade: 'WebSocket' } })).status).toBe(503);
+    expect(seen).toHaveLength(1);
   });
 
   it('a refused WS upgrade never reaches the upgrade handler (Review Focus 1)', async () => {
@@ -130,7 +156,7 @@ describe('agentAdmission', () => {
     })));
     app.get('/api/v1/agent-ws/:id/ws', upgrade);
 
-    const res = await app.request(`/api/v1/agent-ws/${AGENT}/ws`);
+    const res = await app.request(`/api/v1/agent-ws/${AGENT}/ws`, { headers: { upgrade: 'websocket' } });
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe('11');
     expect(await res.json()).toMatchObject({ code: 'WS_UPGRADE_REFUSED', retryAfterSeconds: 11 });

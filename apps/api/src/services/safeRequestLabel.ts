@@ -47,12 +47,7 @@ const ADMISSION_ROUTE_LABEL = /^\/api\/v1\/(?:agents|agent-ws)\/:id(?:\/[A-Za-z0
 
 /** W08: the route template of a request agent admission refused before routing, or null. */
 export function admissionRouteLabelOf(c: Context): string | null {
-  let label: unknown;
-  try {
-    label = c.get('admissionRouteLabel');
-  } catch {
-    return null;
-  }
+  const label: unknown = c.get('admissionRouteLabel');
   return typeof label === 'string' && label.length <= 200 && ADMISSION_ROUTE_LABEL.test(label) ? label : null;
 }
 

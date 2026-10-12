@@ -35,6 +35,11 @@ const offlineDeferred = counter(
   'Agent WS closes/errors whose immediate offline write was left to the offline detector because admission was at level 1+',
   ['event'],
 );
+const tickFailures = counter(
+  'breeze_admission_tick_failures_total',
+  'Admission controller ticks that threw (signal sampling or controller step); 5 in a row fail open to level 0',
+  [],
+);
 const level = gauge('breeze_admission_level', 'Current admission level: 0 normal, 1 shed bulk, 2 shed standard, 3 critical');
 const mode = gauge('breeze_admission_mode', '1 for the active admission mode', ['mode']);
 const lagSignal = gauge('breeze_admission_signal_lag_seconds', 'Median event-loop lag the controller used (-1 = monitor not running)');
@@ -53,6 +58,16 @@ export function recordAdmissionDecision(cls: string, route: string, outcome: 'sh
 
 export function recordAdmissionTransition(from: number, to: number, trigger: string): void {
   transitions.labels(String(from), String(to), trigger).inc();
+}
+
+export function recordAdmissionTickFailure(): void {
+  tickFailures.inc();
+}
+
+/** Fail-open after repeated tick failures: the level gauge must not keep showing a stale shedding level. */
+export function recordAdmissionFailOpen(from: number): void {
+  if (from !== 0) transitions.labels(String(from), '0', 'tick_failure').inc();
+  level.set(0);
 }
 
 export function recordOfflineDeferred(event: 'close' | 'error'): void {

@@ -15,6 +15,10 @@
  *   in the `all` role BullMQ workers legitimately push it up without hurting
  *   request latency, so it is not a trigger.
  *
+ * The first sample() call skips the monitor's retained history (boot/migration
+ * stalls) and only seeds the cursor; it reports lag 0 (the same "no samples
+ * yet" reading as an empty window) and the in-flight stall as the peak.
+ *
  * `null` lag means "the monitor is not running" — unknown, never healthy; the
  * controller then decides on the DB signal alone.
  */
@@ -62,6 +66,9 @@ export function createSignalSampler(deps: SignalSamplerDeps = {}): SignalSampler
 
   const recent: number[] = [];
   let cursorMs = 0;
+  // The monitor starts before migrations/boot; admission starts right before serve().
+  // The first call only seeds the cursor so boot stalls are never replayed as live lag.
+  let seeded = false;
   let previousElu = elu();
   let lastDbTimeoutsTotal: number | null = null;
   let lastDbTimeoutAtMs: number | null = null;
@@ -73,6 +80,10 @@ export function createSignalSampler(deps: SignalSamplerDeps = {}): SignalSampler
       if (!latest.monitored) {
         recent.length = 0;
         cursorMs = 0;
+        seeded = false;
+      } else if (!seeded) {
+        seeded = true;
+        for (const sample of readSamplesSince(0)) cursorMs = Math.max(cursorMs, sample.atMs);
       } else {
         for (const sample of readSamplesSince(cursorMs)) {
           recent.push(sample.maxLagMs);

@@ -8,6 +8,7 @@ import {
 
 function contextWithRoutePath(routePath: unknown): Context {
   return {
+    get: () => undefined,
     req: {
       get routePath() {
         return routePath;

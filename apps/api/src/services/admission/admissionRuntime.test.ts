@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { metricsRegistry } from '../metricsRegistry';
 import { ADMISSION_DEFAULTS, type AdmissionConfig } from './admissionConfig';
 import type { AdmissionSignals } from './admissionSignals';
@@ -25,9 +25,15 @@ const quiet: AdmissionSignals = {
 function make(over: Partial<AdmissionConfig> = {}, random: () => number = () => 0) {
   let signals = quiet;
   let nowMs = 0;
+  let broken = false;
   const lines: string[] = [];
   const rt = new AdmissionRuntime({ ...ADMISSION_DEFAULTS, mode: 'enforce', ...over }, {
-    sampler: { sample: () => signals },
+    sampler: {
+      sample: () => {
+        if (broken) throw new Error('sampler boom');
+        return signals;
+      },
+    },
     now: () => nowMs,
     random,
     log: (line) => lines.push(line),
@@ -38,7 +44,7 @@ function make(over: Partial<AdmissionConfig> = {}, random: () => number = () => 
     nowMs += 1_000; rt.tick();
     expect(rt.level).toBe(level);
   };
-  return { rt, lines, raiseTo, advance: (ms: number) => { nowMs += ms; } };
+  return { rt, lines, raiseTo, advance: (ms: number) => { nowMs += ms; }, setBroken: (value: boolean) => { broken = value; } };
 }
 
 async function count(name: string, labels: Record<string, string>): Promise<number> {
@@ -113,6 +119,17 @@ describe('AdmissionRuntime.decide (enforce)', () => {
     expect(ra).toBeLessThanOrEqual(120);
   });
 
+  it('WS: refund() gives the token back once (idempotent) and the slot is untouched', () => {
+    const { rt } = make({ wsBurst: 2, wsMaxSetups: 100 });
+    const a = rt.decide(WS) as { refund: () => void; wsSlot: { release(): void } };
+    const b = rt.decide(WS) as { refund: () => void; wsSlot: { release(): void } };
+    expect(rt.decide(WS)).toMatchObject({ action: 'shed', reason: 'ws_bucket' });
+    a.wsSlot.release(); a.refund(); a.refund();      // second refund is a no-op
+    expect(rt.decide(WS)).toMatchObject({ action: 'admit' });
+    expect(rt.decide(WS)).toMatchObject({ action: 'shed', reason: 'ws_bucket' });
+    b.wsSlot.release();
+  });
+
   it('counts sheds per class, route template and reason', async () => {
     const { rt, raiseTo } = make();
     raiseTo(1);
@@ -132,6 +149,16 @@ describe('AdmissionRuntime modes', () => {
     }
     expect(await count('breeze_admission_decisions_total', { outcome: 'would_shed' })).toBeGreaterThan(before);
     expect(rt.shouldDeferOfflineTransition()).toBe(false);
+  });
+
+  it('shouldDeferOfflineTransition is false in off, and in observe at level 1+', () => {
+    for (const mode of ['off', 'observe'] as const) {
+      const { rt, raiseTo } = make({ mode });
+      raiseTo(1);
+      expect(rt.shouldDeferOfflineTransition(), `${mode} level 1`).toBe(false);
+      raiseTo(3);
+      expect(rt.shouldDeferOfflineTransition(), `${mode} level 3`).toBe(false);
+    }
   });
 
   it('off admits everything, consumes no WS slot, and still ticks', () => {
@@ -159,5 +186,40 @@ describe('AdmissionRuntime tick and process helpers', () => {
     expect(shouldDeferOfflineTransition()).toBe(true);
     __setAdmissionRuntimeForTests(null);
     expect(shouldDeferOfflineTransition()).toBe(false);
+  });
+});
+
+describe('AdmissionRuntime tick failures', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('counts failures, throttles the log, fails open to level 0 after 5 in a row, and resets on success', async () => {
+    vi.useFakeTimers();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rt, lines, raiseTo, setBroken, advance } = make();
+    raiseTo(3);
+    const before = await count('breeze_admission_tick_failures_total', {});
+    const transitionsBefore = lines.length;
+    rt.start(1_000);
+    setBroken(true);
+    vi.advanceTimersByTime(4_000);
+    expect(rt.level).toBe(3);                       // 4 consecutive failures: still holding
+    expect(errors).toHaveBeenCalledTimes(1);        // first failure logged, rest throttled
+    setBroken(false);
+    vi.advanceTimersByTime(1_000);                  // a success resets the consecutive count
+    setBroken(true);
+    vi.advanceTimersByTime(4_000);
+    expect(rt.level).toBe(3);
+    vi.advanceTimersByTime(1_000);                  // 5th consecutive failure -> fail open
+    expect(rt.level).toBe(0);
+    expect(rt.decide(SOFTWARE)).toMatchObject({ action: 'admit' });
+    expect(lines.slice(transitionsBefore).filter((l) => /failing open/.test(l))).toHaveLength(1);
+    vi.advanceTimersByTime(3_000);
+    expect(lines.slice(transitionsBefore).filter((l) => /failing open/.test(l))).toHaveLength(1); // logged once
+    expect(await count('breeze_admission_tick_failures_total', {})).toBe(before + 12);
+    advance(61_000);
+    vi.advanceTimersByTime(1_000);
+    expect(errors).toHaveBeenCalledTimes(2);        // at most once per 60 s
+    rt.stop();
+    errors.mockRestore();
   });
 });

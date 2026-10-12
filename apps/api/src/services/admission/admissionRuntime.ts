@@ -25,13 +25,21 @@ import { retryAfterRange, WS_RETRY_AFTER_BOUNDS, type ClassifiedRequest } from '
 import { SetupSlots, TokenBucket, type WsSetupSlot } from './wsUpgradeGate';
 import {
   publishAdmissionTick,
+  recordAdmissionFailOpen,
+  recordAdmissionTickFailure,
   recordAdmissionDecision,
   recordAdmissionTransition,
   type ShedReason,
 } from './admissionMetrics';
 
 export type AdmissionDecision =
-  | { action: 'admit'; release?: () => void; wsSlot?: WsSetupSlot }
+  | {
+      action: 'admit';
+      release?: () => void;
+      wsSlot?: WsSetupSlot;
+      /** WS only: return the bucket token when the admitted upgrade never completed (idempotent). */
+      refund?: () => void;
+    }
   | { action: 'shed'; reason: ShedReason; retryAfterSec: number };
 
 export interface AdmissionGate {
@@ -47,6 +55,8 @@ export interface AdmissionRuntimeDeps {
 }
 
 const WS_REFUSAL_WINDOW_MS = 10_000;
+const TICK_FAILURES_FAIL_OPEN = 5;
+const TICK_FAILURE_LOG_INTERVAL_MS = 60_000;
 
 function ms(value: number | null): string {
   return value === null ? 'unknown' : `${Math.round(value)}`;
@@ -62,6 +72,8 @@ export class AdmissionRuntime implements AdmissionGate {
   private readonly random: () => number;
   private readonly log: (line: string) => void;
   private bulkInFlight = 0;
+  private consecutiveTickFailures = 0;
+  private lastTickFailureLogMs: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private wsRefusals: { windowStartMs: number; current: number; previous: number };
 
@@ -86,13 +98,34 @@ export class AdmissionRuntime implements AdmissionGate {
     const timer = setInterval(() => {
       try {
         this.tick();
+        this.consecutiveTickFailures = 0;
       } catch (err) {
-        // A broken tick must never take the process down; the level simply stops moving.
-        console.error('[admission] tick failed:', err);
+        this.onTickFailure(err);
       }
     }, tickMs);
     timer.unref?.();
     this.timer = timer;
+  }
+
+  /**
+   * A broken tick must never take the process down, and must not freeze the
+   * level either: shedding that nothing can lift is worse than no shedding, so
+   * after TICK_FAILURES_FAIL_OPEN consecutive failures the controller resets to 0.
+   */
+  private onTickFailure(err: unknown): void {
+    recordAdmissionTickFailure();
+    this.consecutiveTickFailures += 1;
+    const nowMs = this.now();
+    if (this.lastTickFailureLogMs === null || nowMs - this.lastTickFailureLogMs >= TICK_FAILURE_LOG_INTERVAL_MS) {
+      this.lastTickFailureLogMs = nowMs;
+      console.error('[admission] tick failed:', err);
+    }
+    if (this.consecutiveTickFailures === TICK_FAILURES_FAIL_OPEN) {
+      const from = this.controller.level;
+      this.controller.reset();
+      recordAdmissionFailOpen(from);
+      this.log(`[admission] ${TICK_FAILURES_FAIL_OPEN} consecutive tick failures: failing open (level ${from} -> 0)`);
+    }
   }
 
   stop(): void {
@@ -124,6 +157,7 @@ export class AdmissionRuntime implements AdmissionGate {
     let reason: ShedReason | null = null;
     let release: (() => void) | undefined;
     let wsSlot: WsSetupSlot | undefined;
+    let refund: (() => void) | undefined;
 
     if (req.cls === 'bulk') {
       if (level >= 1) reason = 'level';
@@ -145,11 +179,19 @@ export class AdmissionRuntime implements AdmissionGate {
       else if (!this.bucket.tryTake(ADMISSION_WS_LEVEL_SCALE[level])) {
         slot.release();
         reason = 'ws_bucket';
-      } else wsSlot = slot;
+      } else {
+        wsSlot = slot;
+        let refunded = false;
+        refund = () => {
+          if (refunded) return;
+          refunded = true;
+          this.bucket.refund(ADMISSION_WS_LEVEL_SCALE[this.controller.level]);
+        };
+      }
       if (reason !== null) this.noteWsRefusal();
     }
 
-    if (reason === null) return { action: 'admit', release, wsSlot };
+    if (reason === null) return { action: 'admit', release, wsSlot, refund };
     recordAdmissionDecision(req.cls, req.label, this.mode === 'enforce' ? 'shed' : 'would_shed', reason);
     if (this.mode !== 'enforce') return { action: 'admit' };
     return { action: 'shed', reason, retryAfterSec: this.retryAfterSeconds(req) };

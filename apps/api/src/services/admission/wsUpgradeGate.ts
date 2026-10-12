@@ -33,6 +33,12 @@ export class TokenBucket {
     return false;
   }
 
+  /** Give back one token (never above the scaled capacity). */
+  refund(scale: number): void {
+    this.refill(scale);
+    this.tokens = Math.min(Math.max(1, this.burst * scale), this.tokens + 1);
+  }
+
   available(scale: number): number {
     this.refill(scale);
     return this.tokens;

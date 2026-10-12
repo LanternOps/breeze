@@ -73,6 +73,13 @@ describe('agent WS refusal on the wire', () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  it.each([99_999, Number.NaN, -3, 1.5])('a Retry-After the patch cannot validate (%s) leaves the 503 status line bare', async (retryAfterSec) => {
+    const port = await start({ action: 'shed', reason: 'ws_bucket', retryAfterSec }, vi.fn());
+    const raw = await handshake(port);
+    expect(raw).toMatch(/^HTTP\/1\.1 503 /);
+    expect(raw).not.toMatch(/Retry-After/i);
+  });
+
   it('an admitted upgrade still switches protocols', async () => {
     const onOpen = vi.fn();
     const port = await start({ action: 'admit' }, onOpen);

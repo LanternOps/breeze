@@ -28,12 +28,15 @@ function harness() {
     setLatest: (r: EventLoopLagReading) => { latest = r; },
     setPool: (p: PoolSignals) => { poolSnapshot = p; },
     advance: (ms: number) => { nowMs += ms; },
+    /** First sample() call: seeds the lag cursor (boot history is skipped). */
+    prime: () => sampler.sample(),
   };
 }
 
 describe('createSignalSampler', () => {
   it('takes the lower median of the newest three samples, reading each sample once', () => {
     const h = harness();
+    h.prime();
     h.push(1_000, 30); h.push(2_000, 400); h.push(3_000, 35);
     expect(h.sampler.sample().lagMs).toBe(35);       // [30, 35, 400] -> 35: one spike is filtered
     h.push(4_000, 500); h.push(5_000, 600);
@@ -43,11 +46,25 @@ describe('createSignalSampler', () => {
 
   it('peak lag is the worst of the in-flight stall and the samples consumed this tick', () => {
     const h = harness();
+    h.prime();
     h.push(1_000, 1_200);
     h.setLatest(reading({ inFlightLagMs: 300 }));
     expect(h.sampler.sample().peakLagMs).toBe(1_200);
     h.setLatest(reading({ inFlightLagMs: 2_500 }));
     expect(h.sampler.sample().peakLagMs).toBe(2_500);
+  });
+
+  it('does not replay boot history: samples already retained at the first call are skipped, later ones consumed', () => {
+    const h = harness();
+    h.push(500, 1_500);   // boot/migration stall recorded before admission started
+    h.push(900, 1_400);
+    const first = h.sampler.sample();
+    expect(first.peakLagMs).toBe(0);
+    expect(first.lagMs).toBe(0);                    // no boot samples in the median
+    h.push(2_000, 40);
+    const second = h.sampler.sample();
+    expect(second.peakLagMs).toBe(40);
+    expect(second.lagMs).toBe(40);                  // [40] only; boot samples never entered the window
   });
 
   it('reports lag as unknown (null) when the monitor is not running', () => {

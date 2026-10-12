@@ -9,7 +9,7 @@
  *
  * Refusals are TRUTHFUL: 503 + Retry-After. A refused agent WS upgrade is an
  * HTTP 503 BEFORE the upgrade — never an accepted socket closed with 1013:
- * shipped agents (agent/internal/websocket/client.go:395-442) back off after a
+ * shipped agents (agent/internal/websocket `client.go` `reconnectLoop`) back off after a
  * failed connect but reconnect immediately after an accepted socket closes.
  */
 import type { MiddlewareHandler } from 'hono';
@@ -30,6 +30,9 @@ export function agentAdmission(getGate: () => AdmissionGate | null = getAdmissio
     if (!gate || gate.mode === 'off') return next();
     const req = classifyAgentRequest(c.req.method, c.req.path);
     if (!req || req.cls === 'protected') return next();
+    // Junk GETs on the WS path (no Upgrade header) 401/404 without ever opening a
+    // socket: they must not spend upgrade tokens or setup slots.
+    if (req.cls === 'ws_upgrade' && c.req.header('upgrade')?.toLowerCase() !== 'websocket') return next();
 
     const decision = gate.decide(req);
     if (decision.action === 'shed') {
@@ -49,7 +52,11 @@ export function agentAdmission(getGate: () => AdmissionGate | null = getAdmissio
       decision.release?.();
       // @hono/node-ws answers an accepted upgrade with a plain 200 Response;
       // anything else (401, 429, 404) never reaches onOpen, so return the slot now.
-      if (decision.wsSlot && c.res.status !== 200) decision.wsSlot.release();
+      // The token is refunded too: only completed upgrades consume rate budget.
+      if (decision.wsSlot && c.res.status !== 200) {
+        decision.wsSlot.release();
+        decision.refund?.();
+      }
     }
   };
 }

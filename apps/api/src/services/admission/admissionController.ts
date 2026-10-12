@@ -127,6 +127,13 @@ export class AdmissionController {
     return this.result(previous);
   }
 
+  /** Fail-open escape hatch: forget all state and return to level 0. */
+  reset(): void {
+    this.current = 0;
+    this.lastTrigger = 'none';
+    this.resetStreaks();
+  }
+
   private resetStreaks(): void {
     this.escalateStreak = 0;
     this.streakMin = 3;
