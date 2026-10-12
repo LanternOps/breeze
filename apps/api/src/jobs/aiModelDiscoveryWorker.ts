@@ -135,7 +135,7 @@ async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
     .select({ id: partnerAiConnections.id })
     .from(partnerAiConnections)
     .where(and(
-      // W06: gateway kinds too; a kind without a discoverer is skipped by the sync itself.
+      // Every row kind; a kind without a discoverer is skipped by the sync itself.
       inArray(partnerAiConnections.kind, [...AI_CONNECTION_ROW_KINDS]),
       eq(partnerAiConnections.status, 'active'),
     ))).map((row) => row.id), 'aiModelDiscovery.listConnections');

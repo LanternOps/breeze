@@ -63,6 +63,7 @@ describe('one source for every connection-kind list (#7779)', () => {
     expect([...AI_CONNECTION_KINDS]).toEqual(['platform', ...AI_CONNECTION_ROW_KINDS]);
   });
 
+  // W07 cloud kinds will fail this on purpose: give them their own list here rather than weakening the assertion.
   it('every row kind is exactly one of Anthropic-API or gateway (no kind falls between the lists)', () => {
     for (const k of AI_CONNECTION_ROW_KINDS) {
       expect(Number(isAnthropicApiConnectionKind(k)) + Number(isGatewayConnectionKind(k))).toBe(1);
@@ -84,6 +85,12 @@ describe('env-management state (#7779)', () => {
     expect(envManagementState({ managedBy: 'env' })).toBe('managed');
     expect(envManagementState({ managedBy: 'env', envReleasedAt: '2026-01-01T00:00:00.000Z' })).toBe('released');
     expect(envManagementState({ envReleasedAt: '2026-01-01T00:00:00.000Z' })).toBeNull();
+  });
+
+  it('only a string envReleasedAt releases; other values and managedBy values stay managed / unmanaged', () => {
+    expect(envManagementState(undefined)).toBeNull();
+    expect(envManagementState({ managedBy: 'user' })).toBeNull();
+    for (const v of [null, true, 123, undefined]) expect(envManagementState({ managedBy: 'env', envReleasedAt: v })).toBe('managed');
   });
 
   it('derives the DTO fields from the state', () => {
