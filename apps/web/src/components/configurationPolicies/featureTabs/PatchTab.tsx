@@ -24,7 +24,7 @@ import {
   REBOOT_PROMPT_BODY_MAX,
   REBOOT_PROMPT_BUTTON_MAX,
   REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER,
-} from "@breeze/shared/validators";
+} from "@breeze/shared";
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
 type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
 /** #5128 W3 — what a scheduled install does when the device is offline. */
