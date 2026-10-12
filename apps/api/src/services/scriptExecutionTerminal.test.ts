@@ -14,7 +14,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  * guard: whichever path flips the row increments; every later one is a no-op.
  */
 
-const { updateMock, selectMock, advanceMock } = vi.hoisted(() => ({
+const { updateMock, selectMock, advanceMock, emitMock } = vi.hoisted(() => ({
+  emitMock: vi.fn(),
   updateMock: vi.fn(),
   selectMock: vi.fn(),
   advanceMock: vi.fn(async () => 0),
@@ -25,6 +26,7 @@ vi.mock('../db', () => ({ db: {
   select: (...a: unknown[]) => selectMock(...(a as [])),
 } }));
 
+vi.mock('./scriptTerminalEvents', () => ({ emitScriptTerminalEvent: emitMock }));
 vi.mock('./fixMemory/scriptTerminalHook', () => ({ advanceOutcomesForTerminalExecution: advanceMock }));
 
 vi.mock('../db/schema', () => ({
@@ -296,5 +298,53 @@ describe('finalizeScriptExecutionTerminal (#5128 I)', () => {
     expect(batchIdFromPayload(null)).toBeNull();
     expect(batchIdFromPayload('nope')).toBeNull();
     expect(batchIdFromPayload([{ batchId: 'b1' }])).toBeNull();
+  });
+});
+
+describe('finalizeScriptExecutionTerminal — public terminal events (#7277)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const row = {
+    id: EXEC,
+    orgId: 'org-1',
+    deviceId: 'dev-1',
+    scriptId: 'script-1',
+    triggerType: 'automation',
+    automationRunId: 'run-1',
+    exitCode: null,
+  };
+
+  it('emits exactly once, from the writer that won the CAS, with the row identity', async () => {
+    const { exec } = executor({ execReturning: [row] });
+    await finalizeScriptExecutionTerminal({
+      executionId: EXEC,
+      outcome: 'timeout',
+      errorMessage: 'Server-side timeout: no response from agent',
+      completedAt: new Date(),
+      executor: exec,
+    });
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    expect(emitMock).toHaveBeenCalledWith({
+      executionId: EXEC,
+      orgId: 'org-1',
+      deviceId: 'dev-1',
+      scriptId: 'script-1',
+      triggerType: 'automation',
+      automationRunId: 'run-1',
+      exitCode: null,
+      status: 'timeout',
+    });
+  });
+
+  it('emits nothing when the CAS lost (another path already terminalised the row)', async () => {
+    const { exec } = executor({ execReturning: [] });
+    await finalizeScriptExecutionTerminal({
+      executionId: EXEC,
+      outcome: 'failed',
+      errorMessage: 'x',
+      completedAt: new Date(),
+      executor: exec,
+    });
+    expect(emitMock).not.toHaveBeenCalled();
   });
 });

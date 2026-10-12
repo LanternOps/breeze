@@ -2,7 +2,8 @@
  * Inline fix-outcome advance from the two script terminal-write paths (AI
  * Suggested Fixes W1, decision D-a). Deliberately NOT the public
  * script.completed/script.failed events: those feed customer automations and
- * webhooks with no loop guard (separate follow-up issue).
+ * webhooks and are emitted after commit (services/scriptTerminalEvents.ts, #7277),
+ * whereas this advances fix_outcomes inline in the caller's transaction.
  *
  * Runs in the CALLER's transaction and touches only fix_outcomes (the org's own
  * rows): the agent-result path is org-scoped and must not open a second pooled

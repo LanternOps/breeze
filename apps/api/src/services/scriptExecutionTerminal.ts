@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { scriptExecutions, scriptExecutionBatches } from '../db/schema';
 import { advanceOutcomesForTerminalExecution } from './fixMemory/scriptTerminalHook';
+import { emitScriptTerminalEvent } from './scriptTerminalEvents';
 
 /**
  * The ONE place a `script_executions` row is driven terminal by the server, and
@@ -69,9 +70,31 @@ export async function finalizeScriptExecutionTerminal(params: {
         inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
       ),
     )
-    .returning({ id: scriptExecutions.id });
+    .returning({
+      id: scriptExecutions.id,
+      orgId: scriptExecutions.orgId,
+      deviceId: scriptExecutions.deviceId,
+      scriptId: scriptExecutions.scriptId,
+      triggerType: scriptExecutions.triggerType,
+      automationRunId: scriptExecutions.automationRunId,
+      exitCode: scriptExecutions.exitCode,
+    });
 
   if (updated.length === 0) return { terminalised: false };
+
+  // #7277 — public script.completed / script.failed, only from the CAS winner
+  // and only after the surrounding transaction commits (cancelled emits none).
+  const won = updated[0]!;
+  emitScriptTerminalEvent({
+    executionId,
+    orgId: won.orgId,
+    deviceId: won.deviceId,
+    scriptId: won.scriptId ?? null,
+    triggerType: won.triggerType,
+    automationRunId: won.automationRunId ?? null,
+    exitCode: won.exitCode ?? null,
+    status: outcome,
+  });
 
   const batchId = params.batchId ?? null;
   if (batchId) {
