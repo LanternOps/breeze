@@ -6,10 +6,7 @@
 /* Workspace design tokens + Tailwind layers. This is the only stylesheet
    index.html actually loads (<link rel="stylesheet" href="/src/styles.css">),
    so the --ws-* custom properties and Tailwind's generated utility CSS must
-   be pulled in here. (src/styles/globals.css duplicates this @import +
-   @tailwind block but is not linked/imported from anywhere and stays
-   orphaned — see task-2-report.md for why its scrollbar rules were not
-   used either.) */
+   be pulled in here. */
 @import './styles/tokens.css';
 
 @tailwind base;
@@ -1153,18 +1150,6 @@ body {
 
 .helper-workspace-search-input:focus {
   border-color: var(--accent);
-}
-
-.helper-workspace-select {
-  max-width: 120px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-secondary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  outline: none;
 }
 
 /* ----------------------------------------------------------
