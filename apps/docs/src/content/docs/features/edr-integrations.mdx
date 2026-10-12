@@ -1,6 +1,6 @@
 ---
 title: EDR Integrations
-description: Connect Huntress and SentinelOne to sync agents and threats, auto-link EDR agents to Breeze devices, and run actions like device isolation.
+description: Connect Huntress, SentinelOne and (API only) Bitdefender GravityZone to sync agents and threats, auto-link EDR agents to Breeze devices, and run actions like device isolation.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -17,6 +17,7 @@ Currently supported EDR vendors:
 |--------|------------|-------------------|
 | **Huntress** | Agents, incidents | Webhook ingestion, manual sync |
 | **SentinelOne** | Agents, threats, site mappings | Device isolation, threat actions (kill, quarantine, rollback), manual sync |
+| **Bitdefender GravityZone** (v0.122.1, API only) | Endpoints, detections, company mappings | Connection test, manual sync |
 
 Both integrations are configured once at the **partner** level: with your scope selector set to **All orgs** you provide the vendor's API credentials, map each vendor's organizations/sites to your Breeze organizations, and Breeze syncs agent and threat data on a schedule. The synced data is attributed to the correct customer and matched to your existing Breeze devices. A technician whose access is restricted to specific sites only sees the synced agents and threats for devices in those sites, not the whole organization.
 
@@ -336,6 +337,28 @@ Threats can be filtered by multiple criteria:
 
 ---
 
+## Bitdefender GravityZone
+
+<Aside type="note" title="API only in v0.122.1">
+  GravityZone is the first provider on Breeze's new EDR provider framework. In v0.122.1 it is read-only and **API only**: there is no dashboard UI for it yet, and its detections do not appear on the `/security/edr` page or the device Security tab. Use the `/api/v1/edr` endpoints below.
+</Aside>
+
+A partner-wide admin (all-organization access, `orgs:write`, MFA) connects a GravityZone API key once for the partner:
+
+<Steps>
+
+1. In GravityZone, create an API key with access to the companies and endpoints you manage, and note your console's Access URL (a `*.gravityzone.bitdefender.com` address ending in `/api`).
+
+2. Create the connection: `POST /api/v1/edr/connections` with `provider: "bitdefender"`, a `name`, the Access URL as `baseUrl`, and `credentials: { "apiKey": "..." }`. The key is checked against GravityZone, stored encrypted and never returned.
+
+3. List the GravityZone companies the key can see with `GET /api/v1/edr/connections/:id/tenants`, and map each one to a Breeze organization with `PUT /api/v1/edr/tenants/:id/mapping` (`{ "orgId": "..." }`). Remapping a company keeps its earlier detections under the previous organization as history.
+
+</Steps>
+
+Once a company is mapped, Breeze syncs in the background: endpoint inventory hourly and detections every 10 minutes by default, lengthened automatically if needed to stay inside GravityZone's API request budget. `POST /api/v1/edr/connections/:id/sync` queues a sync now. Endpoints are linked to Breeze devices by **hostname** (GravityZone's fully qualified names are compared by their first label); an endpoint that matches no device, or more than one, is listed as unlinked or ambiguous and can be linked by hand with `PUT /api/v1/edr/endpoints/:id/link`.
+
+---
+
 ## Promote to Incident
 
 From the `/security/edr` fleet page or from a device's **Security** tab, you can escalate a Huntress incident or a SentinelOne threat directly into a tracked Breeze incident. Click **Promote to incident** on the item, confirm the pre-filled title and severity (mapped from the EDR severity level), and Breeze creates the incident and navigates you to it. The promotion records the source (Huntress or SentinelOne), the original title, any affected device, and the detection time as the incident's detected-at timestamp.
@@ -439,6 +462,24 @@ All endpoints require authentication. Credentials and mappings are managed at **
 | `POST` | `/sync` | Yes | Trigger a manual SentinelOne sync |
 | `GET` | `/sites` | Yes | List SentinelOne sites with agent counts and org mappings |
 | `POST` | `/organizations/map` | Yes (partner) | Map or unmap a SentinelOne site to a Breeze organization (`{ integrationId, s1SiteId, orgId }`) |
+
+### EDR provider framework (Bitdefender GravityZone)
+
+Mounted at `/api/v1/edr`. Connection, test, sync and mapping changes need partner scope, all-organization access, `orgs:write` and MFA; endpoint reads work at organization scope too and are narrowed to what the caller can see.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/providers` | Yes (partner) | List available EDR providers and their credential fields |
+| `GET` | `/connections` | Yes (partner) | List the partner's EDR connections (credentials are never returned) |
+| `POST` | `/connections` | Yes + MFA (partner) | Create a connection (`provider`, `name`, `baseUrl`, `credentials`, optional sync intervals) |
+| `PATCH` | `/connections/:id` | Yes + MFA (partner) | Rename, pause, rotate credentials or change intervals |
+| `POST` | `/connections/:id/test` | Yes + MFA (partner) | Test the stored credentials against the vendor |
+| `POST` | `/connections/:id/sync` | Yes + MFA (partner) | Queue an inventory and detection sync now |
+| `DELETE` | `/connections/:id` | Yes + MFA (partner) | Permanently delete the connection and its synced data. The first call returns `409 CONFIRM_COUNTS` with the open detection, endpoint and company counts; repeat it with `?confirm=<detections>:<endpoints>` to proceed |
+| `GET` | `/connections/:id/tenants` | Yes (partner) | List the vendor companies the connection can see, with their mapping |
+| `PUT` | `/tenants/:id/mapping` | Yes + MFA (partner) | Map a vendor company to a Breeze organization |
+| `GET` | `/endpoints` | Yes | List synced endpoints with their device link and open detection count; filter by `connectionId`, `orgId`, `state` (`unlinked`, `ambiguous`, `linked`, `all`) |
+| `PUT` | `/endpoints/:id/link` | Yes + MFA (`devices:write`) | Link an endpoint to a device, or `null` to unlink |
 
 ---
 

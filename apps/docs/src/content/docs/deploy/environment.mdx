@@ -120,6 +120,10 @@ Together, these detect and reclaim database connections stuck at session start (
 | `AGENT_ENROLL_RATE_WINDOW_SECONDS` | `60` | | Window, in seconds, for `AGENT_ENROLL_RATE_LIMIT` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
+| `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR` | `1200` | | Ticket writes (create, update, status, assign, comment) per hour per service principal on the Partner API, still capped by the key's own rate limit. Ticket writes have their own bucket, separate from the 120-per-hour provisioning writes. v0.122.1+ |
+| `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR` | `6000` | | Ticket writes per hour per partner, across all of that partner's service principals. Never lower than the per-principal limit. v0.122.1+ |
+| `PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED` | `true` | | Daily cleanup of stored `X-Idempotency-Key` claims for Partner API writes. `false` or `0` turns the cleanup off. v0.122.1+ |
+| `PARTNER_API_IDEMPOTENCY_RETENTION_DAYS` | `7` | | Days an idempotency claim is kept. A retry that arrives after the window creates a new resource instead of replaying the first response. v0.122.1+ |
 | `WEBAUTHN_RP_ID` | derived from `PUBLIC_APP_URL` | | Set only when the browser reaches the app on a different host than `PUBLIC_APP_URL` (for example `WEBAUTHN_RP_ID=localhost` on a local stack). Without a correct value, every passkey ceremony fails with "The RP ID ... is invalid for this domain." |
 | `WEBAUTHN_ORIGIN` | derived from `PUBLIC_APP_URL` | | Companion to `WEBAUTHN_RP_ID` — set together when passkeys are served from a non-default host. |
 | `WEBAUTHN_RP_NAME` | `Breeze RMM` | | Display name shown to the user during a passkey registration/sign-in ceremony. |
@@ -290,6 +294,7 @@ From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it 
 | `PROMETHEUS_PORT` | `9090` | Prometheus web UI port (monitoring stack) |
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
+| `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` | `3` | Number of 5-minute buckets a metric anomaly must span before it opens an episode; a shorter blip closes without one. The default was `2` before v0.122.1. Not mapped in the stock Compose files; add it to the `api` service `environment:` block if you set it. |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
 ### Background retention sweeps

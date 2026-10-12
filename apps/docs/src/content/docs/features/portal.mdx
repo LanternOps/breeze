@@ -52,6 +52,10 @@ The service-insight sections — Dashboard, Security, Backups, Reports, support 
 | **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
 | **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
 | **Hardware lifecycle** | Off | The live replacement plan for the customer's machines — see [Hardware Lifecycle](#hardware-lifecycle) below |
+| **Hardware health** | Off (v0.122.1+) | Component health, hardware events, disks and battery for their machines — API only for now, see [Hardware and performance data](#hardware-and-performance-data) |
+| **Hardware inventory** | Off (v0.122.1+) | Per-device make, model, processor, memory and network adapters — API only for now |
+| **Performance metrics** | Off (v0.122.1+) | Read-only CPU, memory, disk and network trends — API only for now |
+| **Software inventory** | Off (v0.122.1+) | Installed software name, version, vendor, install date and last seen — API only for now, and **not** turned on by **Enable all visibility** |
 
 To change them:
 
@@ -61,7 +65,7 @@ To change them:
 
 2. Open the **Customer Portal** tab (under **Portal & Branding**).
 
-3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once.
+3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once, except **Software inventory** and **Network alerts**, which you switch on individually.
 
 4. Save. The customer's next page load reflects the change.
 
@@ -193,6 +197,8 @@ The device list is controlled by its own **Devices** visibility toggle (v0.114.0
 
 With **Network** visibility on, the customer sees a summary of their discovered network assets: total assets, how many are verified online or offline, how many SNMP devices are being polled, and how many monitors are currently down. Online and offline counts don't have to add up to the total — an asset whose reachability hasn't been verified yet counts in neither figure. If discovery hasn't found any assets for the organization yet, the page says so instead of showing an empty table.
 
+Below the summary, the network assets table can be filtered by type and status and, when the organization's assets span more than one site, by **Site**. The selected filters are kept in the page link, so a filtered view can be bookmarked or shared.
+
 This toggle is separate from the [Network Topology](/features/discovery/#site-map) partner module — it surfaces discovery/monitoring data, not the topology map itself.
 
 ---
@@ -229,6 +235,19 @@ With Reports off, a customer who navigates to the reports URL is redirected to t
 With **Hardware lifecycle** visibility on, the customer sees a live replacement plan for the machines you manage for them: a status bar and schedule summary, then plan tables broken out by **Workstations and laptops** and, if the customer has any, **Servers**. Each table lists every device with its operating system, age, purchase date, warranty status, current status, and replacement timeline, color-coded (Replace now / Due soon / On track / Unknown) and with risk tags on devices whose OS has stopped or is about to stop receiving security updates. Below the tables, a **What we recommend** section calls out specific actions, and **Other equipment we manage** lists devices that aren't on a replacement timeline.
 
 A **Refresh** button regenerates the plan on demand. Device names link back to the device's entry in the portal's device list only when **Devices** visibility (or Self-service) is also on for that organization.
+
+---
+
+## Hardware and performance data
+
+**Hardware health**, **Hardware inventory**, **Performance metrics** and **Software inventory** are visibility toggles for the customer's hardware and performance data. In v0.122.1 each one opens a read-only portal API for that organization; the customer portal does not have pages for them yet. Turning a toggle on today does not change what the customer sees in the portal's navigation, so you can enable them ahead of the pages shipping, or leave them off until then.
+
+- **Hardware health** returns per-device component health, hardware events, disks and battery. Health is worked out from the components the customer can see; serial numbers, firmware and internal collector detail are never returned.
+- **Hardware inventory** returns per-device make, model, processor, memory, network adapters and connection counts.
+- **Performance metrics** returns CPU, memory, disk and network trends over the last 24 hours, 7 days or 30 days.
+- **Software inventory** returns installed software (name, version, vendor, install date, last seen) for the organization and per device. It is deliberately left out of **Enable all visibility**; switch it on individually for each organization that should have it.
+
+Like every other visibility toggle, each starts **off**, and an organization with the toggle off gets a **403** from the matching endpoints. See [Hardware and performance](#hardware-and-performance) in the API reference below.
 
 ---
 
@@ -433,6 +452,20 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `POST` | `/reports/generate` | Yes | Generate a report. Requires **Reports** visibility |
 | `GET` | `/reports/runs/:id/pdf` | Yes | Download a finished run as PDF |
 | `GET` | `/reports/runs/:id/csv` | Yes | Download a finished run as CSV |
+
+### Hardware and performance
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/hardware-health/overview` | Yes | Hardware health summary. Requires **Hardware health** visibility |
+| `GET` | `/hardware-health/devices` | Yes | Per-device hardware health (paginated). Requires **Hardware health** visibility |
+| `GET` | `/hardware-health/devices/:deviceId` | Yes | One device's components, events, disks and battery. Requires **Hardware health** visibility |
+| `GET` | `/hardware-inventory/devices` | Yes | Per-device hardware inventory (paginated). Requires **Hardware inventory** visibility |
+| `GET` | `/hardware-inventory/devices/:deviceId` | Yes | One device's hardware inventory. Requires **Hardware inventory** visibility |
+| `GET` | `/performance/overview` | Yes | Performance summary; `range` is `24h` (default), `7d` or `30d`. Requires **Performance metrics** visibility |
+| `GET` | `/performance/devices/:deviceId` | Yes | One device's performance series for the same ranges. Requires **Performance metrics** visibility |
+| `GET` | `/software/summary` | Yes | Software installed across the organization (paginated). Requires **Software inventory** visibility |
+| `GET` | `/software/devices/:deviceId` | Yes | Software installed on one device (paginated). Requires **Software inventory** visibility |
 
 <Aside type="note">
   Every endpoint marked "Requires … visibility" answers **403** when the organization has that section turned off — including when the organization has no portal settings saved at all. There is no partial response and no silent fallback.

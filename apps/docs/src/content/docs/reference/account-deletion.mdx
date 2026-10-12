@@ -93,6 +93,16 @@ Mounted under `/admin`. Require the `users:write` permission; the process action
 
 ---
 
+## Organization erasure
+
+Erasing a whole organization is separate from this request flow, and it affects accounts and backups as follows (v0.122.1+):
+
+- **Users.** The organization's own users are deleted with it. Partner staff whose home organization is the erased one are kept when their partner membership still gives them access elsewhere. They lose that organization's data and are signed out, but keep their account and partner access. Erasure also completes for an organization that is still in use.
+- **Backups.** The organization's restore points are removed from Breeze, but the backup files stay in the storage target. Storage cleanup never deletes them later, even past retention, and the storage is not reclaimed until an explicit backup-deletion feature ships. Permanently deleting (purging) a single device works the same way. See [What retention removes today](/backup/storage/).
+- **Legal holds.** A legal hold on a backup snapshot, a backup policy or a configuration policy's backup settings blocks erasure, and blocks purging the devices it covers (`409`, `BACKUP_PROTECTED`). Release the hold first.
+
+---
+
 ## Audit trail
 
 Deletion activity is recorded in the [audit log](/reference/audit-logs/). User actions are logged as `user.account_deletion.requested` (including denied attempts, e.g. an invalid password) and `user.account_deletion.cancelled`. Administrator approve/reject decisions are recorded against the administrator who made them, along with the decision note.

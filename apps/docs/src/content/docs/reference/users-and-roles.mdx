@@ -365,7 +365,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `scripts` | Script library and execution |
 | `variables` | Tenant script variable definitions |
 | `alerts` | Alert rules and acknowledgement |
-| `tickets` | Ticketing |
+| `tickets` | Ticketing. `record_approval` (v0.122.1) is reserved for recording a customer's approval or denial of held ticket work on their behalf; it is granted on upgrade to every role that holds `tickets:manage`, and no workflow checks it yet in this release |
 | `ticket_mailbox` | Microsoft 365 partner-wide ticket mailbox administration |
 | `catalog` | Billing product catalog |
 | `invoices` | Invoices |
@@ -374,9 +374,10 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `time_entries` | Ticket time entries |
 | `users` | User and role management |
 | `organizations` | Organisation CRUD |
-| `webhooks` | Viewing webhook configuration and delivery history (`read`). Creating, editing, testing and deleting webhooks requires `organizations:write`. Granted by default to Org Admin, Org Technician and Partner Technician |
+| `webhooks` | Viewing webhook configuration and delivery history (`read`). Creating, editing, testing and deleting webhooks requires `organizations:write`. Granted by default to Org Admin, Org Technician and Partner Technician, and on upgrade to any custom role that holds `organizations:write` |
+| `client_ai_templates` | AI for Office prompt templates: view the template manager (`read`); create, edit and delete templates (`write`, plus MFA when your MFA policy requires it). See [AI for Office](/features/ai-for-office/) |
 | `sso` | SSO provider configuration and verified domains |
-| `sites` | Site management |
+| `sites` | Site management. `set_location` pins a site's map coordinate and geofence from the field, without MFA; see [Site location](/reference/organizations-and-sites/#site-location) |
 | `automations` | Automation workflows |
 | `remote` | Remote access sessions |
 | `audit` | Audit log read, export, and retention management |
@@ -412,6 +413,8 @@ The authoritative list of assignable permissions is also available at runtime vi
 | `read_all` | Read another user's data (AI session audit) |
 | `use` | Use a capability without managing it (AI chat, external tools) |
 | `decide` | Approve or deny a pending action-intent approval |
+| `set_location` | Pin a site's coordinate and geofence radius (`sites` only) |
+| `record_approval` | Record a customer's approval or denial of held ticket work on their behalf (`tickets` only) |
 
 There is no `view` or `update` action -- read access is `read`, and a write/create/update is `write` (or `create` for the one resource, `agent_rollback`, that uses it). Additionally, the wildcard permission `*:*` grants full administrative access.
 
@@ -456,6 +459,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `TICKETS_READ` | `tickets` | `read` |
 | `TICKETS_WRITE` | `tickets` | `write` |
 | `TICKETS_MANAGE` | `tickets` | `manage` |
+| `TICKETS_RECORD_APPROVAL` | `tickets` | `record_approval` |
 | `TICKET_MAILBOX_READ` | `ticket_mailbox` | `read` |
 | `TICKET_MAILBOX_ADMIN` | `ticket_mailbox` | `admin` |
 | `CATALOG_READ` | `catalog` | `read` |
@@ -516,10 +520,18 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `WORKSPACE_EXECUTE` | `workspace` | `execute` |
 | `CONNECTED_APPS_READ` | `connected_apps` | `read` |
 | `CONNECTED_APPS_MANAGE` | `connected_apps` | `manage` |
+| `CLIENT_AI_TEMPLATES_READ` | `client_ai_templates` | `read` |
+| `CLIENT_AI_TEMPLATES_WRITE` | `client_ai_templates` | `write` |
 | `ADMIN_ALL` | `*` | `*` |
 
 <Aside type="caution" title="Permissions added in v0.112.0 replace implicit access">
   `pam:approve`, `pam:manage_policy`, `accounting:read`, `accounting:manage`, the four `workspace:*` keys and the two `connected_apps:*` keys were introduced in v0.112.0. The upgrade grants them to the built-in **Org Admin** role only; **Partner Admin** already holds them through `*:*`. Every other built-in role (Partner Technician, Partner Billing, Org Technician, …) and every custom role **loses** the access those areas previously inferred from device or billing permissions until you grant the new keys in **Settings → Roles**. In practice: QuickBooks pages and sync now need `accounting:*`; approving, denying or revoking a privileged-access elevation needs `pam:approve` and authoring PAM rules needs `pam:manage_policy` (see [Privileged Access Management](/features/pam/#who-can-approve-and-manage-pam)); Workspace sources need `workspace:*`; and the partner's connected apps (OAuth / MCP clients) need `connected_apps:*`. The keys appear in the role editor automatically.
+</Aside>
+
+<Aside type="caution" title="Permissions added in v0.122.1 change who sees webhooks and AI for Office templates">
+  **`webhooks:read`** now gates viewing webhooks and their delivery history (the Webhooks tab under Integrations, the webhook read endpoints and the AI assistant's webhook tool), which used to need only `organizations:read`. The upgrade grants it to Org Admin, Org Technician, Partner Technician and every custom role that holds `organizations:write`. **Partner Viewer** and **Partner Security Approver** no longer see webhooks, and a **custom role that holds `organizations:read` but not `organizations:write` loses webhook visibility until you add `webhooks:read` to it** in **Settings → Roles**. A user with `webhooks:read` but not `organizations:write` sees webhooks read-only, without the create, edit, delete, test, pause/resume or retry controls.
+
+  **`client_ai_templates:read` / `:write`** replace `organizations:read` / `:write` on the AI for Office template manager. On upgrade every role that holds `organizations:read` gets `client_ai_templates:read`, and every role that holds `organizations:write` gets `client_ai_templates:write`. Among the built-in roles, Partner Technician, Partner Viewer and Partner Security Approver get read; Org Admin gets read and write (new access for that role); Org Technician and Org Viewer get neither; Partner Admin is covered by `*:*`.
 </Aside>
 
 ### Role Inheritance
@@ -569,7 +581,7 @@ Roles can only be deleted when:
 - **No users** are currently assigned to the role.
 - **No child roles** inherit from the role.
 
-Attempting to delete a role with assigned users or child roles returns `400` with the count of blocking resources.
+Attempting to delete a role with assigned users or child roles returns `400` with the count of blocking resources. Deleting a role that an [access review](/reference/access-reviews/) covered returns `409` ("Role is referenced by access reviews"), so the review's evidence is kept.
 
 ---
 

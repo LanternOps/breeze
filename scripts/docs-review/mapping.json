@@ -4403,6 +4403,55 @@
       "docs": [
         "deploy/custom-sender-addresses.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/diagnosticAccess/**",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsDiagnosticAccess.ts",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/tools/diagaccess_*.go",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/edr/**",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerApi/**",
+      "docs": [
+        "reference/api.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/clipboard/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/placement.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/discoveryAssetPlacement.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
     }
   ]
 }

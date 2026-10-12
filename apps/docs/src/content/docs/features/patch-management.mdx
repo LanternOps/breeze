@@ -13,7 +13,7 @@ Patch Management gives you full control over the complete update lifecycle for e
 
 Every patch goes through an approval workflow before it can be deployed. Approvals are managed at the **partner (MSP) level**: a patch you approve, decline, or defer applies across all the organizations you manage, so you set each patch's posture once instead of repeating the decision per customer. Approvals can optionally be tied to a specific [update ring](/features/update-rings/), in which case they apply only to the devices that ring covers; a ring-less approval is a partner-wide blanket decision. Only partner-level and system administrators can approve patches — organization-scoped users cannot.
 
-Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and can be exported as CSV or PDF.
+Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and exported as CSV.
 
 ---
 
@@ -323,6 +323,8 @@ The patch agent only acts on devices and organizations it has been explicitly gr
 ## Compliance Reporting
 
 ### Generating a Report
+
+In the dashboard, open **Patches → Compliance**, select an organization (or an update ring) and click **Export**. Breeze queues the report, waits for it to finish and downloads the CSV to your browser.
 
 Compliance reports are generated asynchronously. Call the report endpoint with your desired filters — the response is immediate and contains a `reportId` to track progress:
 

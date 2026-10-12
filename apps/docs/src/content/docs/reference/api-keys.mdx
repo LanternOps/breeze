@@ -267,6 +267,13 @@ Managing partner service principals needs a partner-wide admin (all-organization
 
 If the owner leaves, create a new principal under another admin, move the integration to its key, and disable the old principal.
 
+<Aside type="caution" title="Upgrading to v0.122.1">
+  - **`tickets:*` grants take effect immediately.** Earlier versions let admins grant `tickets:read` and `tickets:write` before the ticket routes existed. After the upgrade, any principal holding them can read every ticket and comment (including internal notes) and create, update and comment on tickets, including customer-visible replies that email the requester. Review which principals hold `tickets:*` before upgrading.
+  - **Scopes granted before the upgrade are not re-checked** against the granting admin's permissions. Review principals whose scopes were granted by an admin who does not hold the matching permission.
+  - **Keys another admin issued on someone else's principal are refused over MCP** until the owner rotates them; the Partner API keeps accepting them. Have each principal's owner rotate such keys before upgrading. Existing keys are bound to their owner's current sign-in state on upgrade and keep working.
+  - **Plan for owner off-boarding:** an integration whose principal belongs to a departing admin stops when that admin is disabled or removed, so create the replacement principal first.
+</Aside>
+
 #### MCP scopes (partner-wide MCP access)
 
 A partner service principal can also authenticate the [MCP server](/features/mcp-server/#partner-service-principal-keys-partner-wide-automation) with the same `brz_sp_` key in `X-API-Key`. These scopes grant nothing on the Partner API:

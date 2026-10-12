@@ -30,7 +30,7 @@ Go to **Backup > Device Backup > Verification** to access verification controls.
 </Aside>
 
 <Aside type="note" title="Attested snapshots (v0.120.0+)">
-  For a snapshot with an attestation, a v0.120.0 or later backup helper also checks the manifest itself against the attestation, and every file must match its manifest entry exactly. A snapshot that already failed its integrity check cannot be verified or test-restored: the command fails with `This backup did not match its integrity record and cannot be read from storage.` An unattested snapshot still verifies, with an advisory **Unattested snapshot** warning. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
+  For a snapshot with an attestation, a v0.120.0 or later backup helper also checks the manifest itself against the attestation, and every file must match its manifest entry exactly. A snapshot that already failed its integrity check cannot be verified or test-restored: the command fails with `This backup did not match its integrity record and cannot be read from storage.` A new verification of such a snapshot fails straight away, and one already waiting fails as soon as the snapshot is marked. An unattested snapshot still verifies, with an advisory **Unattested snapshot** warning. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
 </Aside>
 
 ### Running a Verification
