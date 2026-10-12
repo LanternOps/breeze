@@ -1514,3 +1514,54 @@ Each fix has a regression test that failed before it:
 Accepted as-is:
 - **L3:** move failures log at Debug, to avoid 60 Hz log spam.
 - **L4:** `SetAtLoginWindow` and WS `StopSession` can wait up to the 2 s close timeout.
+
+## W2b shipped wire contract (#8246)
+
+Agent side of spec §1–2, shipped in the W2b PR. W03 (viewer) codes against exactly these names.
+Old viewers that use none of this keep the W2a behaviour unchanged.
+
+**Discovery.** The `input_capabilities` reply on `control` adds three keys:
+`reliableInput: true`, `inputEpoch: <uint32>` (current reset epoch) and `geoEpoch: <uint32>`
+(current geometry epoch). An agent that does not send `reliableInput` speaks only W2a.
+
+**Channels.**
+- `input-r`: a viewer-opened data channel. It must be ordered and fully reliable (no
+  `maxRetransmits`, no `maxPacketLifeTime`), or the agent closes it. Every event on it must carry
+  `seq > 0`. It carries all discrete events (`mouse_down`/`up`/`click`/`scroll`, `key_*`) and
+  `input_reset`. Activity on it resets the idle timer, except `input_reset`.
+- `input`: unchanged for legacy events (`seq` absent). In a W2b session it carries only sequenced
+  `mouse_move`. A sequenced discrete event or an `input_reset` on `input` is dropped.
+
+**Event fields** (on `InputEvent`, all omitted by legacy viewers):
+- `seq` (uint, 1 … 2^53−1): per session, strictly increasing across both channels.
+- `after` (`mouse_move` only): the `seq` of the last discrete event the viewer sent before this
+  move. It must be `< seq`. The move waits until that event has been handled. A move is dropped if
+  a later discrete event has already been handled, or if a newer move has replaced it. Only the
+  newest pending move is kept.
+- `epoch` (uint32): the reset epoch the viewer believes is current. Required on every sequenced
+  event.
+- `geoEpoch` (uint32): the geometry epoch. Required on pointer events (`mouse_*`). A mismatch is
+  dropped, never applied with the new monitor's offset.
+- `mouse_down`/`mouse_up` carry their own `x`,`y`.
+
+**`input_reset`** (viewer → agent, on `input-r` only):
+`{"type":"input_reset","seq":N,"epoch":E}`. Both fields are required and non-zero. `E` must equal
+the agent's current reset epoch. On acceptance the agent releases all held input, in order, and
+opens the gate. Sequenced input is dropped until then. The first accepted `input_reset` switches
+the session to W2b: legacy (`seq`-less) events are dropped from then on.
+
+**Agent-side resets.** Release-all events bump the reset epoch and close the gate. These include
+monitor/desktop switch, channel close or replacement, and peer disconnect. Queued and in-flight
+pre-reset events are then discarded. A geometry change (monitor switch, desktop switch) also bumps
+`geoEpoch` in the same step.
+
+**Epochs, agent → viewer** (on `control`):
+- `{"type":"input_epoch","epoch":E,"reason":"<string>"}`: sent after an agent-side reset. It is
+  also sent as `reason:"resync"`, rate-limited, when sequenced input arrives with a stale epoch or
+  before the handshake. It is sent only to sessions that opened `input-r`. The viewer reconciles
+  its held state, then sends `input_reset{epoch:E}`.
+- `monitor_switched` adds `inputEpoch` and `geoEpoch`. The geometry epoch is delivered only here,
+  together with the new frame size. It is also re-sent after a desktop switch, and after a
+  monitor switch whose capturer failed (same `index`, new epochs).
+
+Epochs are never 0 (0 means absent). They wrap from 2^32−1 to 1.
