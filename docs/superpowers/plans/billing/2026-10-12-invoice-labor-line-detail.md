@@ -17,7 +17,7 @@ status: draft-for-approval
 
 ## Global Constraints
 
-- Hand-written migration only; slot `2026-12-23-180000-<slug>.sql` (newest committed on `origin/main` at authoring: `2026-12-23-100000-tier1-sweep-indexes.sql`; open PR #8517 holds `…-140000-portal-branding-enable-hour-block.sql`). Re-run `git ls-tree origin/main apps/api/migrations/ --name-only | sort | tail` before writing; move up if anything newer landed; a second same-day file takes `180100`.
+- Hand-written migration only; slot `2026-12-23-180000-<slug>.sql` (newest committed on `origin/main` at authoring: `2026-12-23-100000-tier1-sweep-indexes.sql`; open PR #8517 holds `…-140000-portal-branding-enable-hour-block.sql`). Re-run `git ls-tree origin/main apps/api/migrations/ --name-only | sort | tail` before writing; move up if anything newer landed; a second same-day file takes `180100`, a third `180200` (W5). Migration order must follow wave order; re-slot if another wave lands out of order.
 - Migrations: idempotent (`ADD COLUMN IF NOT EXISTS`), no inner `BEGIN;`/`COMMIT;`, `SELECT set_config('breeze.scope','system',true);` before any row write. `invoice_lines` is hot: nullable column, no default, no NOT NULL (metadata-only add).
 - Never edit or rename a shipped migration. Then `pnpm db:check-drift`.
 - Tenancy: new columns on `invoice_lines`/`invoices` (shape 1, `org_id`) and `partners` (partner axis) need NO new policy. No new table anywhere in this plan.
@@ -33,8 +33,8 @@ status: draft-for-approval
 
 1. **Gap 1 confirmed.** `aiToolsTicketing.ts` shared property `description: 'Ticket description (create)'` (~line 614). The handlers for `log_time_entry` (~1249), `start_timer` (~1304), `stop_timer` (~1332) already read `input.description` and pass it to the service; only the schema text hides it. `aiTimeEntryProposal.ts` builds a `log_time_entry` intent from a fixed `TRIGGER_DESCRIPTION[trigger]` string, so proposals do send a description (generic text).
 2. **Gap 2 confirmed.** `invoiceAssembly.ts`: `entryDescription = r.description?.trim() || 'Labor'` (line 121, hardcoded English, stored). `gatherOrgTimeEntries` (~188) selects `endedAt` only and range-filters on `ended_at`; `startedAt` is never selected. `invoice_lines` has no date column.
-3. **Customer-visibility correction to the brief.** A `time_entry` line is built with `name` unset, and `lineTitle` is `name ?? description`. So **the technician's work note already prints as the line title on every customer invoice today** (PDF, email HTML, portal, public link). The note is not a *new* exposure. What is new is (a) MCP callers will now be told to write one (W1 must say "printed on the customer invoice"), (b) the date, which is low risk, and (c) technician identity, which is out of scope here (Open Decision 3). Making notes opt-in would regress every existing invoice, so this plan does not; the real mitigation is an optional separate customer-facing note (Open Decision 4) and the W1 wording.
-4. **Gap 3 confirmed.** No MCP action edits a time entry. REST `PATCH /time-entries/:id` → `updateTimeEntry` (`timeEntryService.ts` ~1125). `BILLED_LOCKED_ENTRY_FIELDS` (~592) omits `description`, and the service message says "only its description can change" for a billed or block-drawn entry. So a billed entry's description stays editable, **but that edit cannot change an issued line** (lines are copies, see 4).
+3. **Customer-visibility correction to the brief.** A `time_entry` line is built with `name` unset, and `lineTitle` is `name ?? description`. So **the technician's work note already prints as the line title on every customer invoice today** (PDF, email HTML, portal, public link). The note is not a *new* exposure. What is new is (a) MCP callers will now be told to write one (W1 must say "printed on the customer invoice"), (b) the date, which is low risk, and (c) technician identity, which is out of scope here (Open Decision 12). Making notes opt-in would regress every existing invoice, so this plan does not; the real mitigation is an optional separate customer-facing note (Open Decision 4) and the W1 wording.
+4. **Gap 3 confirmed.** No MCP action edits a time entry. REST `PATCH /time-entries/:id` → `updateTimeEntry` (`timeEntryService.ts` ~1125). `BILLED_LOCKED_ENTRY_FIELDS` (~592) omits `description`, and the service message says "only its description can change" for a billed or block-drawn entry. So a billed entry's description stays editable, **but that edit cannot change an issued line** (lines are copies, see 5).
 5. **Gap 4 verified end to end: drafts snapshot, nothing refreshes.** Writers of `invoice_lines` are: insert at assembly (`invoiceService.ts` ~1250), `addLine` (~294), a second insert (~380), `updateLine` (~543, a manual edit), `changeInvoiceCurrency` reprice (~641, catalog lines only), deletes (~558, ~667), issue-time stamping of ticket label/subject/category (~1604) and the reissue clone (~2434/2438). None reads `time_entries` after assembly. Editing an unissued entry's description or `startedAt` leaves the draft line stale. Draft refresh does not exist; it needs an explicit action (W5).
 6. **Timezone.** `partners.timezone varchar(64) NOT NULL DEFAULT 'UTC'` exists (`db/schema/orgs.ts` ~44). `organizations` has no timezone column (`sites.timezone` does). `invoicePdf.ts` `formatDate` forces `en-US` + `timeZone:'UTC'`, which is correct for date-only invoice dates but wrong for instants. The work date must therefore be converted **once, at assembly, in the partner timezone**, and stored as a `date`, so renderers never convert instants.
 7. **Accounting.** `buildLinePayload` (`accountingInvoicePush.ts` ~607): `description = title + accountingLineNote(line)`. Xero truncates the base to keep the suffix (`DESCRIPTION_MAX = 4000`, `xeroInvoices.ts` ~30/119). QuickBooks sends `Description: line.description` uncapped (`quickbooksProvider.ts` ~953). Xero has no per-line date field. QuickBooks `SalesItemLineDetail` has `ServiceDate` (**verify against Intuit's current API reference in W4 Task 1; do not rely on this plan**). Stripe Checkout sends a single `Invoice <number>` line item (`invoiceCheckout.ts` ~189); line descriptions never reach Stripe. Nothing to do there.
@@ -58,9 +58,9 @@ status: draft-for-approval
 | W2 | `invoice_lines.work_date` captured at assembly, copied on reissue, exported | `180000` (one nullable column) | W1 | Data is captured but nothing prints it. Harmless, additive; W3 can ship any time later with no backfill gap for new invoices. |
 | W3 | Itemization setting + render of date / per-day grouping in PDF, HTML, web, portal, public link | `180100` (partner + invoice columns) | W1 | Needs W2. If W4/W5 never ship, customers still see detail on the invoice; accounting copy lacks the date. |
 | W4 | Accounting sync (QBO `ServiceDate`, description policy, caps) | none | W1, W5 | Needs W2 **and W3** (the frozen `line_detail` gates whether the date is pushed). Accounting copies lack the date, same as today. |
-| W5 | "Refresh from time entries" for unissued drafts | none | W3, W4 | Needs W2. Drafts stay snapshots (today's behavior). Deferrable (Open Decision 9). |
+| W5 | "Refresh from time entries" for unissued drafts | `180200` (`description_edited` + draft backfill) | W3, W4 | Needs W2. Drafts stay snapshots (today's behavior). Deferrable (Open Decision 9). |
 
-W3 and W4 stay separate: W3 is a customer-facing layout change reviewed by eye; W4 is an external-API change with its own lab verification. W4 follows W3 (it consumes the frozen setting); W5 needs only W2.
+W3 and W4 stay separate: W3 is a customer-facing layout change reviewed by eye; W4 is an external-API change with its own lab verification. W4 follows W3 (it consumes the frozen setting); W5 needs only W2 but **ships after W3** so migration `180200` sorts after `180100` (re-slot at authoring time anyway).
 
 **No backfill (Open Decision 7).** Existing issued lines keep `work_date = NULL` and renderers print nothing for NULL. Issued invoices are immutable documents: back-filling would change what a customer already received on a re-render. Existing drafts get `NULL` too; W5's refresh is how an operator opts a draft in. Reissue/copy paths (`invoiceService.ts` ~2409 `cloneValues`) copy `work_date` verbatim; W3 also copies the header's `line_detail`/`line_grouping` in the reissue header (~2387) so the reissued draft keeps the original's presentation (a reissue is a draft, so the issue-time freeze re-resolves from these overrides, not the partner default).
 
@@ -78,7 +78,7 @@ W3 and W4 stay separate: W3 is a customer-facing layout change reviewed by eye; 
 ### Task 1.1: Document the time-entry `description` (customer-visibility cue)
 
 **Files:**
-- Modify: `apps/api/src/services/aiToolsTicketing.ts` (the `manage_tickets` input_schema; add a *separate* `workNote` is NOT done: keep `description`, see below)
+- Modify: `apps/api/src/services/aiToolsTicketing.ts` (the `manage_tickets` input_schema; keep the single `description` property, see below)
 - Test: `apps/api/src/services/aiToolsTicketing.schema.test.ts` (create if no schema test exists; otherwise the existing `aiToolsTicketing.*.test.ts` that reads `definition.input_schema`)
 
 **Interfaces:** Produces: `manage_tickets.input_schema.properties.description.description` mentions all of `create`, `log_time_entry`, `start_timer`, `stop_timer` and the phrase `printed on the customer invoice`.
@@ -89,11 +89,13 @@ Design note: one shared property serves ticket create and three time actions, so
 
 ```ts
 import { describe, it, expect } from 'vitest';
-import { ticketingTools } from './aiToolsTicketing'; // use the module's real export; grep `export` to confirm the name
+import { registerTicketingTools } from './aiToolsTicketing';
 
 describe('manage_tickets description property', () => {
   it('documents the time-entry work note and its customer visibility', () => {
-    const tool = [...ticketingTools.values()].find((t) => t.definition.name === 'manage_tickets')!;
+    const tools = new Map<string, any>();
+    registerTicketingTools(tools);
+    const tool = tools.get('manage_tickets')!;
     const text = (tool.definition.input_schema.properties as any).description.description as string;
     for (const a of ['create', 'log_time_entry', 'start_timer', 'stop_timer']) expect(text).toContain(a);
     expect(text).toContain('printed on the customer invoice');
@@ -113,7 +115,7 @@ Also add the same sentence to the `manage_tickets` top-level description only if
 - [ ] **Step 4: Run test + the ticketing suite**
 
 Run: `cd apps/api && npx vitest run src/services/aiToolsTicketing`
-Expected: PASS. Traps: `SAFE_WRITE_SITES` contract tests key by **line number**: if the edit shifts lines above a site, update the keyed numbers in the same commit (grep `SAFE_WRITE_SITES`).
+Expected: PASS. Trap: `SAFE_WRITE_SITES` contract tests key by **line number** (`aiTools.userOwnedRelease.contract.test.ts` ~139 currently has no `aiToolsTicketing.ts`/`aiToolsBilling.ts` entries; re-grep and re-key only if one appears).
 
 - [ ] **Step 5: Commit** `fix(ai): document manage_tickets time-entry description (#8078)`
 
@@ -128,7 +130,7 @@ Expected: PASS. Traps: `SAFE_WRITE_SITES` contract tests key by **line number**:
 - Consumes: `updateTimeEntry(id, input: UpdateTimeEntryInput, actor)` (`timeEntryService.ts` ~1125), `timeEntryActorFrom(auth)`, `TimeEntryServiceError`.
 - Produces: `manage_tickets` action `update_time_entry` with required `timeEntryId` (string uuid) and optional `description`, `startedAt`, `endedAt`, `isBillable`, `workType`. `hourlyRate` is rejected (rate edits stay REST/UI behind `time_entries:manage_billing`). Returns `{ timeEntry, currencyCode }` or `{ error }`.
 
-Guardrail tier: Tier 2, same as `log_time_entry`/`start_timer`/`stop_timer` (aiGuardrails ~404 downgraded them on 2026-07-20); a note/time edit on the caller's own entry is reversible. Agent principals: refuse like `log_time_entry` does (`agent_principal_requires_intent_release`) because an unattended agent should not rewrite human timesheets; confirm in the quorum.
+Guardrail tier: Tier 2, same as `log_time_entry`/`start_timer`/`stop_timer` (`aiGuardrails.ts` ~79-82 and the note at ~404 record the 2026-07-20 downgrade); a note/time edit on the caller's own entry is reversible. Agent principals: refuse like `log_time_entry` does (`agent_principal_requires_intent_release`) because an unattended agent should not rewrite human timesheets; confirm in the quorum.
 
 Billed lock: the service already enforces it (`ENTRY_BILLED`, `ENTRY_DRAWN_BY_BLOCK`). Do not duplicate the check in the handler; the test pins that the MCP path surfaces the 409 message.
 
@@ -140,7 +142,7 @@ Validation (quorum): reuse the REST `updateTimeEntrySchema` (`packages/shared/sr
 it('rejects an empty patch (it would clear approval)', async () => {
   expect(JSON.parse(await run({ action: 'update_time_entry', timeEntryId: ID })).error).toMatch(/at least one field/);
 });
-it('applies the REST validator (oversized description, future start)', async () => { /* both return {error}, service never called */ });
+it('applies the REST validator (oversized description, future start)', async () => { expect(updateTimeEntry).not.toHaveBeenCalled(); // after sending description of 10_001 chars and a startedAt one day in the future; both return { error } });
 it('edits only the description of a billed entry', async () => {
   // mock updateTimeEntry to throw TimeEntryServiceError('…only its description can change', 409, 'ENTRY_BILLED') when startedAt present
   const out = JSON.parse(await run({ action: 'update_time_entry', timeEntryId: ID, startedAt: '2026-09-16T10:00:00Z' }));
@@ -153,7 +155,7 @@ it('requires timeEntryId and rejects hourlyRate', async () => {
   expect(JSON.parse(await run({ action: 'update_time_entry' })).error).toMatch(/timeEntryId/);
   expect(JSON.parse(await run({ action: 'update_time_entry', timeEntryId: ID, hourlyRate: 1 })).error).toMatch(/hourlyRate/);
 });
-it('is refused for an agent principal', async () => { /* mirror the log_time_entry agent-principal test */ });
+it('is refused for an agent principal', async () => { // call with an agent-run auth context (same fixture as the log_time_entry test); expect { error: 'agent_principal_requires_intent_release' } and updateTimeEntry not called });
 ```
 
 - [ ] **Step 2:** Run `cd apps/api && npx vitest run src/services/aiToolsTicketing.updateTimeEntry.test.ts`. Expected: FAIL (`Unknown action`).
@@ -208,7 +210,7 @@ export function toPartnerLocalDate(instant: Date, timeZone: string): string {
 **Files:**
 - Create: `apps/api/migrations/2026-12-23-180000-invoice-lines-work-date.sql`
 - Modify: `apps/api/src/db/schema/invoices.ts` (`invoiceLines`, next to `workedMinutes`), `apps/api/src/services/tenantExportPolicyRegistry.ts` (line ~507, add `"work_date"` to `included`)
-- Test: `tenant-export-policy.integration.test.ts`, `tenantExportErasureRoundtrip.integration.test.ts`, `tenantCascade.integration.test.ts`, `rls-coverage.integration.test.ts`, `migrationRlsScope.test.ts`
+- Test: `tenant-export-policy.integration.test.ts`, `tenantExportErasureRoundtrip.integration.test.ts`, `tenantCascade.integration.test.ts`, `rls-coverage.integration.test.ts` (own config: run it as CI does, `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`; pointing `vitest.integration.config.ts` at it finds no files and exits 1), `migrationRlsScope.test.ts`
 
 Migration body:
 
@@ -256,13 +258,13 @@ it('stamps workDate from startedAt in the partner timezone', () => {
 it('leaves workDate null when startedAt is missing (never fabricates)', () => {
   expect(timeEntryToLineSpec(row({ startedAt: null }), 'USD', 'UTC').workDate).toBeNull();
 });
-it('does not change quantity, unitPrice or lineTotal', () => { /* snapshot equality vs a row without startedAt */ });
-it('held block-hour entries are still partitioned out (no spec, hence no workDate)', () => { /* reuse partitionHoldingBlockHours fixture */ });
-it('reissue clone copies workDate verbatim', async () => { /* clone a draft whose lines carry workDate; assert equal */ });
+it('does not change quantity, unitPrice or lineTotal', () => { const a = timeEntryToLineSpec(row({ startedAt: new Date('2026-09-16T10:00:00Z') }), 'USD', 'UTC'); const b = timeEntryToLineSpec(row({ startedAt: null }), 'USD', 'UTC'); expect({ ...a, workDate: null }).toEqual(b); });
+it('held block-hour entries are still partitioned out (no spec, hence no workDate)', () => { // feed an entry inside a hold window through partitionHoldingBlockHours; expect it in the held list and absent from `included` specs });
+it('reissue clone copies workDate verbatim', async () => { // clone via the reissue path with a source line workDate '2026-09-16'; expect every cloned line's workDate to equal its source });
 ```
 Integration: assemble an org with an entry spanning local midnight, assert the persisted `invoice_lines.work_date`; assert a non-time-entry line (manual, contract overage) has `work_date IS NULL`.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/services/invoiceAssembly.test.ts`; expect FAIL.
-- [ ] **Step 3: Implement.** Add `startedAt: timeEntries.startedAt` to both selects; third parameter `timeZone = 'UTC'` on `timeEntryToLineSpec` (callers pass the partner zone; default keeps existing call sites green); thread it through `partitionTimeEntries`/`partitionByCurrency`; set `workDate` only when `startedAt` is non-null; map `workDate` in the insert at ~1250 and `cloneValues`. Do not change `entryDescription`/`'Labor'` here (Open Decision 10).
+- [ ] **Step 3: Implement.** Add `startedAt: timeEntries.startedAt` to both selects; third parameter `timeZone = 'UTC'` on `timeEntryToLineSpec` (callers pass the partner zone; default keeps existing call sites green); add `timeZone` to `partitionTimeEntries` and `partitionHoldingBlockHours` (~228) and pass `(r, c) => timeEntryToLineSpec(r, c, timeZone)` into the **unchanged** generic `partitionByCurrency` (parts and AI-usage charges share it); set `workDate` only when `startedAt` is non-null; map `workDate` in the insert at ~1250 and `cloneValues`. Do not change `entryDescription`/`'Labor'` here (Open Decision 10).
 - [ ] **Step 4:** Run the touched unit files, the typecheck, then the integration test via test-stack (tear down after).
 - [ ] **Step 5: Commit.**
 
@@ -288,11 +290,24 @@ ALTER TABLE partners ADD COLUMN IF NOT EXISTS invoice_line_detail text NOT NULL 
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS invoice_line_grouping text NOT NULL DEFAULT 'entry';
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS line_detail text;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS line_grouping text;
--- CHECK constraints: add with DO $$ … IF NOT EXISTS (pg_constraint) $$ guards so reruns are idempotent.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partners_invoice_line_detail_check') THEN
+    ALTER TABLE partners ADD CONSTRAINT partners_invoice_line_detail_check CHECK (invoice_line_detail IN ('off','date'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partners_invoice_line_grouping_check') THEN
+    ALTER TABLE partners ADD CONSTRAINT partners_invoice_line_grouping_check CHECK (invoice_line_grouping IN ('entry','day'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'invoices_line_detail_check') THEN
+    ALTER TABLE invoices ADD CONSTRAINT invoices_line_detail_check CHECK (line_detail IS NULL OR line_detail IN ('off','date'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'invoices_line_grouping_check') THEN
+    ALTER TABLE invoices ADD CONSTRAINT invoices_line_grouping_check CHECK (line_grouping IS NULL OR line_grouping IN ('entry','day'));
+  END IF;
+END $$;
 ```
 `partners` is small: NOT NULL DEFAULT is a metadata-only add on PG ≥ 11 (constant default); `invoices` columns are nullable with no default. No row writes, so no `set_config`.
 
-Quorum additions (all verified against the code): (a) the per-invoice override is **not** in `updateInvoiceSchema` (`packages/shared/src/validators/invoices.ts` ~71) or `updateInvoice` (~577); persist it through the same path the appendix override uses (`routes/invoices/settings.ts` / `invoiceService.ts` ~1052-1100), with a route test that sending `null` resets to inherit and that an unknown value is a 400, never silently dropped. (b) `getInvoice` (~869) returns the raw draft header, so add **resolved** preview fields (`resolvedLineDetail`, `resolvedLineGrouping`) to the detail response for `InvoiceDocument`, keeping the raw nullable overrides for the editor. (c) Combination rule: grouping `day` only takes effect when detail is `date`; with detail `off` the document renders exactly as today whatever grouping says (validator accepts the pair; the resolver normalises `{off, day}` → `{off, entry}`; test all four combinations). (d) Copy both columns in the reissue header.
+Quorum additions (all verified against the code): (a) the per-invoice override is **not** in `updateInvoiceSchema` (`packages/shared/src/validators/invoices.ts` ~71) or `updateInvoice` (~577); persist it through the same path the appendix override uses (`routes/invoices/settings.ts` / `invoiceService.ts` ~1052-1100), with a route test that sending `null` resets to inherit and that an unknown value is a 400, never silently dropped. (b) `getInvoice` (~767) returns the raw draft header, so add **resolved** preview fields (`resolvedLineDetail`, `resolvedLineGrouping`) to the detail response for `InvoiceDocument`, keeping the raw nullable overrides for the editor. (c) Combination rule: grouping `day` only takes effect when detail is `date`; with detail `off` the document renders exactly as today whatever grouping says (validator accepts the pair; the resolver normalises `{off, day}` → `{off, entry}`; test all four combinations). (d) Copy both columns in the reissue header.
 
 - [ ] **Step 1: Failing tests.** Resolver: `resolveLineDetail({lineDetail:null}, {invoiceLineDetail:'date'}) → {detail:'date', grouping:'entry'}`; invoice override wins; unknown value coerces to `off`. Freeze: issue a draft with partner `date`, then set the partner back to `off`, then `loadInvoiceForRender` still returns detail `date`. Export-policy suite red because `invoices` columns are unclassified.
 - [ ] **Step 2:** Run (unit: `cd apps/api && npx vitest run src/services/invoiceLineDetail.resolve.test.ts`; integration via test-stack, then down). Expect FAIL.
@@ -351,7 +366,7 @@ UI: Partner default in `BillingDocumentsTab` beside "Billed devices" (one home p
 
 ### Task 3.6: AI billing surface
 
-**Files:** `aiToolsBilling.ts` (`update_header` input gains `lineDetail`/`lineGrouping` when the appendix override is exposed there: grep `deviceAppendix` in `aiToolsBilling.ts` and mirror exactly; if the appendix is not exposed, skip and say so in the PR), registry/test files as in Task 1.2. Line numbers in `SAFE_WRITE_SITES` tests: re-key.
+Verified: the appendix override (`deviceAppendix`) is **not** exposed in `aiToolsBilling.ts` (only `routes/invoices/lifecycle.ts` and `quoteAcceptService.ts` carry it), so there is no AI-tool change in this wave. AI callers get the partner default; an AI override is a follow-up if wanted. No task.
 
 **W3 PR:** `Refs #8078`. CI: Test API, Test Web, Integration Tests (export policy). After W3 merges, add a docs page note under the billing docs (separate docs commit in the same PR).
 
@@ -367,9 +382,9 @@ Policy (Open Decision 5, recommended): the neutral payload gains `serviceDate?: 
 
 - [ ] **Step 1: Failing tests:** payload for a dated line with detail `date` carries `serviceDate`; with `off` it is absent and description identical to a captured baseline; QuickBooks body has `ServiceDate` only when present; a 4,500-char description is truncated to the cap with the worked-vs-billed suffix intact (multi-byte safe: count UTF-16 vs characters per the provider's rule; test with emoji); Xero path unchanged for `off`.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/services/accounting/accountingInvoicePush.test.ts src/services/accounting/accountingInvoicePushCallSites.test.ts`; expect FAIL.
-- [ ] **Step 3-5:** implement, run, commit. Lab: push one dated invoice to each provider sandbox and note the result in the PR (Xero lab recipe exists in memory notes).
+- [ ] **Step 3-5:** implement, run, commit. Lab: push one dated invoice to each provider sandbox and note the result in the PR (use the existing Xero lab push procedure).
 
-**W4 PR:** `Refs #8078`. Depends only on W2. CI: Test API; the Xero integration test runs under Integration Tests.
+**W4 PR:** `Refs #8078`. Depends on W2 and W3. CI: Test API; the Xero integration test runs under Integration Tests.
 
 ---
 
@@ -377,7 +392,7 @@ Policy (Open Decision 5, recommended): the neutral payload gains `serviceDate?: 
 
 **Files:** Modify `invoiceService.ts` (new `refreshDraftTimeLines(invoiceId, actor)`), `routes/invoices/lines.ts` or the file that holds line routes (new `POST /invoices/:id/refresh-time-lines`), `aiToolsBilling.ts` (action `refresh_time_lines`; Tier 2, draft-only), web button in `InvoiceEditor.tsx` via `runAction`, all 7 locales.
 
-Semantics: only on `status='draft'`, under the invoice lock (same lock order as `changeInvoiceCurrency`: `lockDraftInvoice` first). For each `time_entry` line whose source entry is still `not_billed`, re-read the entry and refresh `work_date` and the description. A hand-edited description must not be clobbered, and the line cannot tell an edited description from an assembled one by comparison, so this wave adds `invoice_lines.description_edited boolean NOT NULL DEFAULT false` (migration `180200`, which writes rows and so elects system scope first; classified `included`), set by `updateLine` when the description changes. Because pre-existing drafts cannot say whether they were edited, the migration backfills `description_edited = true` for every existing `time_entry` line on a draft invoice (conservative: nothing existing is overwritten), and `cloneValues` copies the flag. Refresh skips edited descriptions but still refreshes `work_date`. It also refreshes `worked_minutes` and `is_unapproved_time` (both are assembly snapshots; time-entry edits clear approval), never `quantity`/`unit_price`/`line_total`. A changed billed duration would silently change totals, so such lines are reported as `quantityDrifted` and left alone. Issued/billed lines: 409.
+Semantics: only on `status='draft'`, under the invoice lock (same lock order as `changeInvoiceCurrency`: `lockDraftInvoice` first). For each `time_entry` line whose source entry is still `not_billed`, re-read the entry and refresh `work_date` and the description. A hand-edited description must not be clobbered, and the line cannot tell an edited description from an assembled one by comparison, so this wave adds `invoice_lines.description_edited boolean NOT NULL DEFAULT false` (migration `180200`, which writes rows and so elects system scope first; classified `included`), set by `updateLine` when the description changes. Because pre-existing drafts cannot say whether they were edited, the migration backfills `description_edited = true` for every existing `time_entry` line on a draft invoice (conservative: nothing existing is overwritten), and `cloneValues` copies the flag. Refresh skips edited descriptions but still refreshes `work_date`. It also refreshes `worked_minutes` and `is_unapproved_time` (both are assembly snapshots; time-entry edits clear approval), never `quantity`/`unit_price`/`line_total`. A changed billed duration would silently change totals, so such lines are reported as `quantityDrifted` and left alone. Issued/billed lines: 409. W5 also runs the `invoice_lines` grep (`tenantCascade.ts`, `tenantExportPolicyRegistry.ts`, `orgMergeRegistry.ts`) and classifies `description_edited` as `included`, then the four contract suites under Integration Tests.
 
 - [ ] **Step 1: Failing tests:** entry description edited after assembly → refresh updates the line; hand-edited line description is preserved; entry already `billed` elsewhere → skipped and reported; non-draft → 409 `INVOICE_NOT_DRAFT`; `workDate` updates when `startedAt` was edited.
 - [ ] **Step 2-5:** as above (`cd apps/api && npx vitest run src/services/invoiceRefresh.test.ts`, integration via test-stack, typecheck, `pnpm db:check-drift`, commit). Recommendation: defer until W3 is in use (operators may find re-assembly sufficient).
@@ -421,4 +436,6 @@ Entry with no description keeps `'Labor'` [2.3]; midnight-spanning entry [2.1]; 
 12. **Technician identity on invoices (added).** Options: never; opt-in per partner. **Recommend out of scope**, revisit with Decision 4. Why: it is the genuinely new PII exposure and needs its own opt-in and cue.
 13. **Agent principals and `update_time_entry` (added).** Refuse like `log_time_entry` (intent release) vs allow. **Recommend refuse.** Why: unattended agents should not rewrite human timesheets.
 
-14. **Quorum record.** Codex (medium, read-only) returned 11 findings; each was verified against the cited code and folded in above (W1 empty-patch/validator, W3 PATCH path, resolved preview fields, `{off,day}` rule, reissue presentation copy, pdf pagination and CJK font limit, W4 depends on W3, Xero/QBO suffix reservation and the QBO OFF cap exception, W5 edited-flag backfill and snapshot columns). No unresolved disagreements.
+## Quorum record
+
+Codex (medium, read-only; the repo asks for `xhigh` on consequential choices, so the orchestrator may re-run at `xhigh` before approval) returned 11 findings; each was verified against the cited code and folded in above (W1 empty-patch/validator, W3 PATCH path, resolved preview fields, `{off,day}` rule, reissue presentation copy, pdf pagination and CJK font limit, W4 depends on W3, Xero/QBO suffix reservation and the QBO OFF cap exception, W5 edited-flag backfill and snapshot columns). No unresolved disagreements.
