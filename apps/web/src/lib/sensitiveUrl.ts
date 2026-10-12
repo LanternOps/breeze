@@ -1,3 +1,4 @@
+import { replaceUrl } from './replaceUrl';
 export function scrubQueryParamsFromCurrentUrl(paramNames: string[]): void {
   if (typeof window === 'undefined' || paramNames.length === 0) return;
 
@@ -14,5 +15,5 @@ export function scrubQueryParamsFromCurrentUrl(paramNames: string[]): void {
   if (!changed) return;
 
   const scrubbed = `${url.pathname}${url.search}${url.hash}`;
-  window.history.replaceState({}, '', scrubbed);
+  replaceUrl(scrubbed);
 }

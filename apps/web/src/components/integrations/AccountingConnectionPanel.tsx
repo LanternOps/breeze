@@ -33,6 +33,7 @@ import {
   type AccountingCapability,
   type AccountingProviderId,
 } from "../../lib/accountingProviders";
+import { replaceUrl } from '../../lib/replaceUrl';
 
 type ConnectionStatus =
   | "connected"
@@ -259,7 +260,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
       params.delete("error");
       params.delete("select_tenant");
       const next = `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`;
-      window.history.replaceState({}, "", next);
+      replaceUrl(next);
     }
     void load();
   }, [isOrgScoped, load, provider, providerName]);

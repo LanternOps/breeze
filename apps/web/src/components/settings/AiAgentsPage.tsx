@@ -17,6 +17,7 @@ import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import AgentCreateFlow from './aiAgents/AgentCreateFlow';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 // Task 13 (#5051): create no longer opens this drawer at all — it opens the
 // full-width `AgentCreateFlow` in place of the list instead (see `creating`
@@ -233,7 +234,7 @@ export default function AiAgentsPage() {
     // the URL and pushes a history entry, so Back would step through empty
     // fragments instead of leaving the page.
     if (typeof window !== 'undefined' && window.location.hash.startsWith('#agent=')) {
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+      replaceUrl(`${window.location.pathname}${window.location.search}`);
     }
   }, [setHashAgentId]);
 

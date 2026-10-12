@@ -18,6 +18,7 @@ import { useHashState } from '@/lib/useHashState';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,7 +152,7 @@ function parseHash(hash: string): { week: string; tech: string | null } {
 function writeHash(week: string, tech: string | null): void {
   const parts: string[] = [`week=${week}`];
   if (tech) parts.push(`tech=${tech}`);
-  history.replaceState(null, '', `#${parts.join('&')}`);
+  replaceUrl(`#${parts.join('&')}`);
 }
 
 // ---------------------------------------------------------------------------

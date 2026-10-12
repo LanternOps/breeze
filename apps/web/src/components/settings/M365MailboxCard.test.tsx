@@ -378,7 +378,8 @@ describe('M365MailboxCard', () => {
           expect.objectContaining({ type: 'error', message: expect.stringMatching(message) }),
         ),
       );
-      expect(replaceState).toHaveBeenCalledWith({}, '', '/settings/ticketing#email');
+      // #8331: the router's history.state is passed through, never wiped with {}.
+      expect(replaceState).toHaveBeenCalledWith(window.history.state, '', '/settings/ticketing#email');
       replaceState.mockRestore();
     });
 
@@ -392,7 +393,7 @@ describe('M365MailboxCard', () => {
       await waitFor(() =>
         expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'M365 connection failed' }),
       );
-      expect(replaceState).toHaveBeenCalledWith({}, '', '/settings/ticketing#email');
+      expect(replaceState).toHaveBeenCalledWith(window.history.state, '', '/settings/ticketing#email');
       replaceState.mockRestore();
     });
   });
