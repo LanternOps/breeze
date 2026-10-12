@@ -819,11 +819,16 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
       config
     });
 
-    const addDomains = data.operations
-      ? normalizeDomainList(data.operations.add)
-      : normalizePolicyDomains(row.policy.domains);
+    // #8404: always reconcile the FULL policy list (idempotent adds), never
+    // just the queued delta. Before #8337 policy sync jobs never enqueued, so
+    // earlier edits sat `pending`; a delta-only push would reach the provider
+    // for the latest edit, then mark the whole policy `synced` while older
+    // domains were never pushed. The delta contributes only removals — minus
+    // anything still in the policy, which the full add list is authoritative for.
+    const addDomains = normalizePolicyDomains(row.policy.domains);
+    const stillPresent = new Set(addDomains);
     const removeDomains = data.operations
-      ? normalizeDomainList(data.operations.remove)
+      ? normalizeDomainList(data.operations.remove).filter((domain) => !stillPresent.has(domain))
       : [];
 
     // Phase 2 — push domain mutations to the provider with NO DB context held
