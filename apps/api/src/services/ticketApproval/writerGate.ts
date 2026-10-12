@@ -25,6 +25,8 @@ type StoredBillingStatus = typeof timeEntries.$inferSelect['billingStatus'];
 
 export interface EntryPeek {
   id: string;
+  /** The writer applies its org-axis allowlist to this BEFORE taking any lock. */
+  orgId: string | null;
   ticketId: string | null;
   endedAt: Date | null;
   approvalRequestId: string | null;
@@ -33,7 +35,7 @@ export interface EntryPeek {
 // A function, not a module-level object: many unit suites partially mock
 // db/schema, and reading a column at import time would break them.
 const peekColumns = () => ({
-  id: timeEntries.id, ticketId: timeEntries.ticketId, endedAt: timeEntries.endedAt,
+  id: timeEntries.id, orgId: timeEntries.orgId, ticketId: timeEntries.ticketId, endedAt: timeEntries.endedAt,
   approvalRequestId: timeEntries.approvalRequestId,
 });
 

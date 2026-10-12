@@ -233,6 +233,34 @@ describe.runIf(RUN)('updateTimeEntry', () => {
   });
 });
 
+describe.runIf(RUN)('org-axis allowlist runs before the new pre-lock reads', () => {
+  // A partner user with orgAccess='selected' who lacks the entry's org: the
+  // ticket/org locks taken before the entry must not turn the existing clean
+  // 404 into an RLS-hidden-org error (500).
+  const selected = (f: ApprovalFixture) => ({
+    ctx: { ...ctx(f), accessibleOrgIds: [f.otherOrgId] },
+    actor: actor(f, { accessibleOrgIds: [f.otherOrgId] }),
+  });
+
+  it('update / delete of an entry in a non-granted org is 404 ENTRY_NOT_FOUND', async () => {
+    const f = await seedApprovalFixture();
+    const e = await insertSettledEntry(f, 10);
+    const s = selected(f);
+    const upd = await rejected(withDbAccessContext(s.ctx, () => timeSvc.updateTimeEntry(e, { description: 'x' }, s.actor)));
+    expect(upd).toMatchObject({ status: 404, code: 'ENTRY_NOT_FOUND' });
+    const del = await rejected(withDbAccessContext(s.ctx, () => timeSvc.deleteTimeEntry(e, s.actor)));
+    expect(del).toMatchObject({ status: 404, code: 'ENTRY_NOT_FOUND' });
+  });
+
+  it('stopping your own timer on a ticket in an org you no longer have is a clean 403, not a 500', async () => {
+    const f = await seedApprovalFixture();
+    await asTech(f, () => timeSvc.startTimer({ ticketId: f.ticketId }, actor(f)));
+    const s = selected(f);
+    const err = await rejected(withDbAccessContext(s.ctx, () => timeSvc.stopTimer({}, s.actor)));
+    expect(err).toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  });
+});
+
 describe.runIf(RUN)('deleteTimeEntry', () => {
   it('deleting the only held entry cancels its auto request', async () => {
     const f = await seedApprovalFixture({ budgetMinutes: 60 });

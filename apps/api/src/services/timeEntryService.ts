@@ -1018,6 +1018,11 @@ async function stopRunningEntry(
 ): Promise<(typeof timeEntries.$inferSelect & { approvalHold: ApprovalHold }) | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const peek = await peekRunningEntry(actor.userId);
+    // The org-axis allowlist BEFORE the org SHARE below: RLS hides a
+    // non-granted org's row, so the lock would fail as a raw error (500).
+    if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+      throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+    }
     if (peek?.ticketId) {
       if (lockedTickets) {
         if (!lockedTickets.has(peek.ticketId)) {
@@ -1388,6 +1393,11 @@ const GATE_RELEVANT_UPDATE_FIELDS = ['startedAt', 'endedAt', 'workTypeId', 'isBi
 async function lockEntryForWrite(id: string, actor: TimeEntryActor, input: { ticketId?: string | null; workTypeId?: string | null }) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const peek = await peekEntry(id);
+    // Same answer getEntryOr404 gives, but BEFORE the org SHARE / ticket lock:
+    // RLS hides a non-granted org's row, which would surface as a 500.
+    if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+      throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
+    }
     const link = typeof input.ticketId === 'string'
       ? await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId, [peek?.ticketId])
       : null;

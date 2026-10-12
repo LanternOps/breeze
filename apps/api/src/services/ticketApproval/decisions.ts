@@ -3,6 +3,7 @@ import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { db as ambientDb, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, portalUsers, ticketApprovalRequests, tickets, timeEntries, type TicketApprovalRequest, type TicketApprovalTrigger } from '../../db/schema';
 import { readOrgStampingDefaults } from '../orgCurrencyCore';
+import { captureException } from '../sentry';
 import type { Tx } from '../autopay/types';
 import type { TimeEntryActor } from '../timeEntryService';
 import { evaluateApprovalGate } from './gate';
@@ -435,8 +436,10 @@ export async function expireDueApprovalRequests(now: Date): Promise<{ expired: n
       }));
       if (ev) events.push(ev);
     } catch (err) {
-      // One bad row must not stall the sweep; it is retried next run.
+      // One bad row must not stall the sweep; it is retried next run — and
+      // reported, since a row that fails every run would otherwise only log.
       console.error('[ticketApproval] expiry failed for request', id, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'ticketApprovalExpiry', requestId: id });
     }
   }
   if (due.length === EXPIRY_BATCH) console.warn(`[ticketApproval] expiry hit the ${EXPIRY_BATCH}-row cap — backlog may be growing`);

@@ -48,7 +48,7 @@ vi.mock('./billingProfileService', () => ({ loadCardsForOrg: cardMocks.loadCards
 // and ticketApprovalGate.concurrency.integration.test.ts; the wiring (hold /
 // refuse / release reaching the row) is pinned in timeEntryService.approvalGate.test.ts.
 vi.mock('./ticketApproval/writerGate', () => ({
-  peekEntry: vi.fn(async () => null),
+  peekEntry: vi.fn(async () => null),  // { id, orgId, ticketId, endedAt, approvalRequestId } in production
   peekRunningEntry: vi.fn(async () => null),
   planGatedWrite: vi.fn(async (i: { after: { billingStatus: string } }) => ({
     kind: 'write', billingStatus: i.after.billingStatus === 'awaiting_approval' ? 'not_billed' : i.after.billingStatus,
