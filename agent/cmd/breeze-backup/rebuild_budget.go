@@ -94,7 +94,8 @@ func (e *rebuildBudgetError) Error() string {
 // rebuildWatchdogNow is the clock the watchdog measures progress idleness
 // with. It is a var so tests can freeze it: under -race on a loaded host the
 // bootstrap before the engine's first progress report can outlast a test's
-// short stall window (#8489).
+// short stall window (#8489). It is read once, when a watchdog starts, and
+// is process-global: a test that overrides it must not run in parallel.
 var rebuildWatchdogNow = time.Now
 
 // rebuildWatchdog tracks the last progress of one rebuild and cancels its

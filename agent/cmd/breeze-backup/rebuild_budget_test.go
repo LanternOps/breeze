@@ -243,7 +243,8 @@ func TestExecBareMetalRebuild_CeilingIsADistinctReason(t *testing.T) {
 }
 
 // withFrozenWatchdogClock stops the watchdog's progress clock for one test,
-// so no idle time accrues and the stall check can never fire.
+// so no idle time accrues and the stall check can never fire. The ceiling
+// is a real-time timer and is not affected.
 func withFrozenWatchdogClock(t *testing.T) {
 	t.Helper()
 	prev := rebuildWatchdogNow
@@ -260,8 +261,9 @@ func withFrozenWatchdogClock(t *testing.T) {
 // progress report (authenticate, dry run, progress posts) counts against the
 // stall window, and under -race on a loaded CI host it could outlast it, so
 // the watchdog won and the run read "stalled" (#8489). The 1ns window and
-// 1ms tick make that ordering certain on a real clock: this test fails every
-// time if the watchdog stops reading rebuildWatchdogNow.
+// 1ms tick make the stall fire during bootstrap on a real clock, so this
+// test fails (20/20 when checked) if the watchdog stops reading
+// rebuildWatchdogNow.
 func TestExecBareMetalRebuild_ParentCancelIsNotABudgetFailure(t *testing.T) {
 	b := fastBudget()
 	b.StallWindow = time.Nanosecond
