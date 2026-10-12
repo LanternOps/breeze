@@ -156,7 +156,7 @@ describe.runIf(RUN)('approval gate concurrency (spec §5.2)', () => {
     const f = await seedApprovalFixture({ budgetMinutes: 600 });
     const aOld = await runningTimer(f, f.userId, f.ticketId, 10);   // A on X
     const bOld = await runningTimer(f, f.user2Id, f.ticket2Id, 10); // B on Y
-    const [lo, hi] = [f.ticketId, f.ticket2Id].sort();
+    const [lo, hi] = [f.ticketId, f.ticket2Id].sort() as [string, string];
 
     const settled = await raceBehindLock(
       (tx) => tx`SELECT id FROM public.tickets WHERE id IN (${lo}, ${hi}) ORDER BY id FOR UPDATE`,

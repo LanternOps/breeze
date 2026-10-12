@@ -102,6 +102,7 @@ describe('supportUsageForOrg', () => {
       toBeBilled: { minutes: 30, hours: 0.5 },
       coveredByContract: { minutes: 45, hours: 0.75 },
       pendingReview: { minutes: 60, hours: 1 },
+      awaitingApproval: { minutes: 0, hours: 0 },
     });
   });
 
@@ -171,6 +172,20 @@ describe('billed quantity in the portal buckets (#4628 W03)', () => {
     const result = await supportUsageForOrg(args);
     expect(result.totals.billed).toEqual({ minutes: 60, hours: 1 });
     expect(result.tickets[0]!.billedMinutes).toBe(60);
+  });
+
+  it('#4617: held time is "awaiting your approval" — its own bucket, never billed or to-be-billed', async () => {
+    state.rows = [
+      { ticketNumber: 'T-1', title: null, durationMinutes: 20, billableMinutes: 30, billingStatus: 'awaiting_approval', isApproved: true },
+      // Not yet staff-approved either: the customer's consent is still what it waits on.
+      { ticketNumber: 'T-1', title: null, durationMinutes: 15, billableMinutes: null, billingStatus: 'awaiting_approval', isApproved: false },
+    ];
+    const result = await supportUsageForOrg(args);
+    expect(result.totals.awaitingApproval).toEqual({ minutes: 45, hours: 0.75 });
+    expect(result.totals.billed.minutes).toBe(0);
+    expect(result.totals.toBeBilled.minutes).toBe(0);
+    expect(result.totals.pendingReview.minutes).toBe(0);
+    expect(result.tickets[0]!.awaitingApprovalMinutes).toBe(45);
   });
 
   it('toBeBilled reports the billed quantity too', async () => {

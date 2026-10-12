@@ -141,6 +141,14 @@ vi.mock('../../services/ticketMoveHourBlockGuard', async () => {
   );
   return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
 });
+// #4617: the pending-approval guard runs real Postgres in ticketApprovalRequests.integration.test.ts.
+const { approvalGuardMock } = vi.hoisted(() => ({ approvalGuardMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../services/ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveApprovalGuard')>(
+    '../../services/ticketMoveApprovalGuard',
+  );
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
 
 vi.mock('../../services/pamDeviceMoveGuard', async () => {
   const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
@@ -165,6 +173,7 @@ import { propagateCancelledDeviceCommands } from '../../services/commandCancelPr
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
@@ -1777,6 +1786,20 @@ describe('POST /devices/:id/move-org', () => {
       expect(captureExceptionMock).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('409s with code + details when a ticket has a pending customer approval request (#4617) — no Sentry, no failed-move audit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 2 }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 2 } });
+      expect(hourBlockGuardMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('409s with code + details when block-drawn time blocks the move (#8181) — no Sentry, no failed-move audit', async () => {

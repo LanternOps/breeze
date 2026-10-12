@@ -2366,6 +2366,9 @@ export async function listBillables(
   const totals = new Map<string, number>();
   for (const r of rows) {
     if (r.currencyCode == null || r.missingRate || r.amount == null) continue;
+    // #4617: held time is exported with its status and would-be amount, but it
+    // is not billable until the customer approves it — never in the totals.
+    if (r.billingStatus === 'awaiting_approval') continue;
     totals.set(r.currencyCode, (totals.get(r.currencyCode) ?? 0) + toMinorUnits(r.amount, r.currencyCode));
   }
   const totalsByCurrency: CurrencyAmount[] = [...totals].map(([currencyCode, minor]) => ({

@@ -26,7 +26,8 @@ type UsageRow = {
     | 'not_billed'
     | 'billed'
     | 'no_charge'
-    | 'contract';
+    | 'contract'
+    | 'awaiting_approval';
   isApproved: boolean;
   endedAt: Date | null;
   /** Non-null only when a block close drew this entry (billing_status = 'contract'). */
@@ -120,6 +121,7 @@ export async function supportUsageForOrg(args: {
     billedQuantity: number;
     ticket: SupportUsageDto['tickets'][number];
   }> = [];
+  let awaitingApproval = 0;
 
   const ticketsByNumber = new Map<
     string,
@@ -141,13 +143,20 @@ export async function supportUsageForOrg(args: {
       coveredByContractMinutes: 0,
       pendingReviewMinutes: 0,
       ...(coverage ? { coveredByBlockMinutes: 0, overBlockMinutes: 0 } : {}),
+      awaitingApprovalMinutes: 0,
     };
 
     // Bucket precedence: an unapproved entry always lands in pendingReview,
     // regardless of its billingStatus — approval gates billed/contract/
     // toBeBilled classification, so those three are only considered once a
     // row is approved.
-    if (!row.isApproved) {
+    // #4617: held time waits on the CUSTOMER's consent, whatever its internal
+    // review state — shown as "awaiting your approval", never as billed or
+    // to be billed. Billed quantity, like toBeBilled: it is what they approve.
+    if (row.billingStatus === 'awaiting_approval') {
+      awaitingApproval += billedQuantity;
+      ticket.awaitingApprovalMinutes = (ticket.awaitingApprovalMinutes ?? 0) + billedQuantity;
+    } else if (!row.isApproved) {
       pendingReview += minutes;
       ticket.pendingReviewMinutes += minutes;
     } else if (
@@ -202,6 +211,7 @@ export async function supportUsageForOrg(args: {
       coveredByContract: amount(coveredByContract),
       pendingReview: amount(pendingReview),
       ...(coverage ? { coveredByBlock: amount(coveredByBlock), overBlock: amount(overBlock) } : {}),
+      awaitingApproval: amount(awaitingApproval),
     },
     tickets: [...ticketsByNumber.values()],
   };

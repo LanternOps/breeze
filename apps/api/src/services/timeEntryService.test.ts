@@ -1381,6 +1381,18 @@ describe('query helpers', () => {
     expect(result.totalsByCurrency).toEqual([{ currencyCode: 'JPY', amount: '330.00' }]);
   });
 
+  it('#4617: listBillables exports held time with its status and amount, but never in the billable totals', async () => {
+    const row = (billingStatus: string, minutes: number) => ({
+      date: new Date('2026-06-10T12:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1', description: 'labor', technician: 'Tess',
+      minutes, rate: '100.00', currencyCode: 'USD', billingStatus, isApproved: true,
+    });
+    dbMocks.selectResults.push([row('not_billed', 60), row('awaiting_approval', 30)]);
+    dbMocks.selectResults.push([]);
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result.rows.map((r) => [r.billingStatus, r.amount])).toEqual([['not_billed', '100.00'], ['awaiting_approval', '50.00']]);
+    expect(result.totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+  });
+
   it('listBillables excludes running timers from billable time rows', async () => {
     dbMocks.selectResults.push([]);
     dbMocks.selectResults.push([]);

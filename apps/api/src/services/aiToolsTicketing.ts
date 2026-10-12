@@ -52,6 +52,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from './ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from './ticketMoveApprovalGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import {
@@ -168,7 +169,8 @@ function serviceErrorToJson(err: unknown): string | null {
     return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   // #8181: block-drawn time cannot change org; nothing the AI can override.
-  if (err instanceof TicketMoveHourBlockError) {
+  // #4617: a pending customer approval request blocks the move the same way.
+  if (err instanceof TicketMoveHourBlockError || err instanceof TicketMoveApprovalPendingError) {
     return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   return null;
