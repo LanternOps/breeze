@@ -83,7 +83,10 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
         .then((next) => {
           if (cancelled || !next) return;
           setStatus(next);
-          if (!isActiveResearch(next.status)) onTerminalRef.current();
+          if (!isActiveResearch(next.status)) {
+            setRequestError(null); // the run finished: show its result, not an earlier failed request
+            onTerminalRef.current();
+          }
         })
         .catch(() => undefined)
         .finally(() => { inFlight = false; });
@@ -95,6 +98,7 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
   }, [active, epoch, query]);
 
   const restartPolling = useCallback(() => {
+    setRequestError(null); // Refresh/Retry/new run: a stale request error must not mask the run's state
     setStalled(false);
     setEpoch((value) => value + 1);
   }, []);

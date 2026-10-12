@@ -1755,7 +1755,13 @@ describe('research / memory / draft-brief routes', () => {
   });
 
   // A partner-scope caller has no org of its own; ?orgId= is the only way to pick one.
-  const partnerAuth = () => { authOverride = { scope: 'partner', orgId: null, partnerId: 'p-1' }; };
+  const partnerAuth = () => {
+    authOverride = {
+      scope: 'partner', orgId: null, partnerId: 'p-1',
+      accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+    };
+  };
 
   it('POST /research resolves the org from ?orgId= when the body has none (#7940)', async () => {
     partnerAuth();
@@ -1771,6 +1777,13 @@ describe('research / memory / draft-brief routes', () => {
     const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: ORG }));
     expect(res.status).toBe(202);
     expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('POST /research: an inaccessible body org is not masked by an accessible ?orgId=', async () => {
+    partnerAuth();
+    const res = await app.request(`/remediation-suggestions/research?orgId=${ORG}`, post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: '99999999-9999-4999-8999-999999999999' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
   });
 
   it('POST /research 400s for a partner caller with neither body nor query org', async () => {
