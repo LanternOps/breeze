@@ -182,10 +182,10 @@ func detectionFromError(err error) Detection {
 }
 
 func detectionFromStatus(status int) (Detection, bool) {
-	switch {
-	case status == http.StatusOK:
+	switch status {
+	case http.StatusOK:
 		return Detection{}, false
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return Detection{State: DetectionPresent, Reason: ReasonPermissionDenied}, true
 	default:
 		return Detection{State: DetectionPresent, Reason: ReasonUnavailable}, true
@@ -300,10 +300,10 @@ func failureResult(status int, err error) (Result, bool) {
 			return Result{Collection: CollectionError, Error: "request_failed"}, true
 		}
 	}
-	switch {
-	case status == http.StatusOK:
+	switch status {
+	case http.StatusOK:
 		return Result{}, false
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return Result{Collection: CollectionPermissionDenied, Error: ReasonPermissionDenied}, true
 	default:
 		return Result{Collection: CollectionError, Error: "http_" + strconv.Itoa(status)}, true
@@ -319,7 +319,7 @@ func (d *engineDriver) get(ctx context.Context, pathAndQuery string, limit int64
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return resp.StatusCode, nil, err

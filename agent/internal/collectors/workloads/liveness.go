@@ -89,7 +89,7 @@ var podmanServiceValueFlags = map[string]bool{"-t": true, "--time": true, "--cor
 // errs toward not connecting.
 func podmanServiceServes(args []string, socket string) bool {
 	i := 0
-	for i+1 < len(args) && !(args[i] == "system" && args[i+1] == "service") {
+	for i+1 < len(args) && (args[i] != "system" || args[i+1] != "service") {
 		i++
 	}
 	for j := i + 2; j < len(args); j++ {
