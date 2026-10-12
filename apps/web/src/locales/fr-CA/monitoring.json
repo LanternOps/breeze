@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Règles d’alerte héritées",
     "description": "Règles d’alerte autonomes qui ne sont pas gérées par un moniteur. Convertissez-les pour regrouper réponses, livraison et escalade en un seul endroit.",
-    "empty": "Aucune règle héritée.",
+    "empty": "Aucune règle d’alerte autonome n’a besoin d’être convertie.",
     "columns": {
       "name": "Nom",
       "template": "Modèle",

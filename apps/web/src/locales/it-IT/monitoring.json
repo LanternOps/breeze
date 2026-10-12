@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Regole di avviso legacy",
     "description": "Regole di avviso autonome non gestite da un monitor. Convertile per ottenere risposte, consegna ed escalation in un unico posto.",
-    "empty": "Nessuna regola legacy.",
+    "empty": "Nessuna regola di avviso autonoma richiede conversione.",
     "columns": {
       "name": "Nome",
       "template": "Modello",

@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Regras de alerta legadas",
     "description": "Regras de alerta independentes que não são gerenciadas por um monitor. Converta-as para reunir respostas, entrega e escalonamento em um só lugar.",
-    "empty": "Nenhuma regra legada.",
+    "empty": "Nenhuma regra de alerta independente precisa de conversão.",
     "columns": {
       "name": "Nome",
       "template": "Modelo",

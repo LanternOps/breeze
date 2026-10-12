@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Ältere Alarmregeln",
     "description": "Eigenständige Alarmregeln, die nicht von einem Monitor verwaltet werden. Konvertieren Sie sie, um Reaktionen, Zustellung und Eskalation an einem Ort zu erhalten.",
-    "empty": "Keine älteren Regeln.",
+    "empty": "Keine eigenständigen Alarmregeln müssen konvertiert werden.",
     "columns": {
       "name": "Name",
       "template": "Vorlage",

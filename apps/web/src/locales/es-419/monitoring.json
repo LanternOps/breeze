@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Reglas de alerta heredadas",
     "description": "Reglas de alerta independientes que no son gestionadas por un monitor. Conviértalas para obtener respuestas, entrega y escalamiento en un solo lugar.",
-    "empty": "No hay reglas heredadas.",
+    "empty": "Ninguna regla de alerta independiente necesita conversión.",
     "columns": {
       "name": "Nombre",
       "template": "Plantilla",

@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Eski uyarı kuralları",
     "description": "Bir monitör tarafından yönetilmeyen bağımsız uyarı kuralları. Yanıtları, teslimatı ve yükseltmeyi bir arada almak için bunları dönüştürün.",
-    "empty": "Eski kural yok.",
+    "empty": "Dönüştürülmesi gereken bağımsız uyarı kuralı yok.",
     "columns": {
       "name": "Ad",
       "template": "Şablon",

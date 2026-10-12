@@ -451,6 +451,17 @@ describe('MonitorsTab — conversion after legacy feature retirement', () => {
   });
 });
 
+describe('MonitorsTab — monitor catalog after conversion (#6888)', () => {
+  it('refetches the monitor-definition list when the conversion panel reports a change', async () => {
+    fetchWithAuthMock.mockImplementation((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never);
+    render(<MonitorsTab {...baseProps} siblingLinks={[]} />);
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    const catalogCalls = () =>
+      fetchWithAuthMock.mock.calls.filter((c) => (c as unknown[])[0] === '/monitor-definitions').length;
+    await waitFor(() => expect(catalogCalls()).toBe(2));
+  });
+});
+
 describe('MonitorsTab — partner-owned policy (#8372)', () => {
   const rows = [
     { id: 'org-mon', name: 'Org CPU', kind: 'cpu', severity: 'warning', enabled: true, orgId: 'org-1', partnerId: null },

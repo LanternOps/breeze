@@ -362,7 +362,7 @@
   "legacy": {
     "title": "Legacy alert rules",
     "description": "Standalone alert rules that are not managed by a monitor. Convert them to get responses, delivery and escalation in one place.",
-    "empty": "No legacy rules.",
+    "empty": "No standalone alert rules need conversion.",
     "columns": {
       "name": "Name",
       "template": "Template",
