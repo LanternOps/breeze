@@ -55,10 +55,11 @@ const UNGATED_JOBS = new Set([
   // criterion — a week of green, then move it into ci-success needs: with an env var and a
   // blocking assertion — is recorded at its job definition in ci.yml.
   'portal-dev-e2e',
+  'test-agent-race', // flaky under -race: #8488 #8489 #8490 #8491 — promote when they are closed
 ]);
 // Every other job is in ci-success needs: with a result env var and an unconditional blocking
 // assertion. A NEW job must make that decision consciously: gate it, or pin it above with a reason.
-// (lint-agent, test-agent-race and agent-windows-manifest-guard were promoted in #4261.)
+// (lint-agent and agent-windows-manifest-guard were promoted in #4261; test-agent-race is deferred above.)
 
 describe('ci-success gating contract', () => {
   // Without this, a change to the `needs:` / `env:` / `run:` formatting would empty the parsed
@@ -218,10 +219,9 @@ describe('ci-success gating contract', () => {
     );
   });
 
-  it('the Go agent gates block a merge (regression guard for #4261)', () => {
+  it('lint-agent and the Windows manifest guard block a merge (regression guard for #4261)', () => {
     const expected = {
       LINT_AGENT_RESULT: 'lint-agent',
-      TEST_AGENT_RACE_RESULT: 'test-agent-race',
       AGENT_WINDOWS_MANIFEST_GUARD_RESULT: 'agent-windows-manifest-guard',
     };
     // Branch placement matters: `!= success` belongs in the APP_CHANGED == true leg, and
@@ -248,6 +248,16 @@ describe('ci-success gating contract', () => {
         `[[ "\${${envVar}}" != "success" ]]`,
       );
     }
+  });
+
+  it('test-agent-race stays non-blocking until its flakes are closed (#8488-#8491)', () => {
+    expect(UNGATED_JOBS.has('test-agent-race'), 'test-agent-race must be pinned in UNGATED_JOBS').toBe(true);
+    expect(neededJobs, 'test-agent-race must not be in ci-success needs: yet').not.toContain('test-agent-race');
+    expect(
+      [...resultEnvByName.values()],
+      'test-agent-race must not have a result env var yet',
+    ).not.toContain('test-agent-race');
+    expect(blockingCondition, 'test-agent-race must not be asserted yet').not.toContain('TEST_AGENT_RACE_RESULT');
   });
 
   it('test-mobile blocks a merge (regression guard for #3941)', () => {
