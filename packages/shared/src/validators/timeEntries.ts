@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import { optionalQueryBoolean } from './queryParams';
 
-export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
+// 'awaiting_approval' (#4617): held from billing until the customer approves.
+// Readable (list filter, responses) but never client-writable: only the
+// server-side approval gate sets or clears it.
+export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
 // `billed` is an invoice lifecycle fact, not a routine time/part disposition.
 // Invoice issue writes it internally after locking the invoice and every source;
 // public create/update inputs retain the technician-owned dispositions only.
+// `awaiting_approval` is excluded for the same reason (the approval gate owns it).
 const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract']);
 
 const CLOCK_SKEW_MS = 5 * 60_000;
