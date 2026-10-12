@@ -4181,6 +4181,11 @@ jobs:
           # tests/ai-agents.spec.ts (#5048) needs the AI agents page enabled;
           # the spec skips itself when GET /ai/agents/tool-catalog is not 200.
           BREEZE_AI_AGENTS_ENABLED=true
+          # #5786 — tests/ai-operator-approve-after-browser-close.spec.ts
+          # delegates through POST /ai/operator/tasks, which 422s unless BOTH
+          # flags are on (default false in docker-compose.yml).
+          AI_OPERATOR_TASKS_ENABLED=true
+          AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED=true
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
@@ -4297,8 +4302,12 @@ jobs:
       # published port (#6443), so the production-valued PUBLIC_APP_URL RP-ID
       # trap in e2e-tests/README.md does not apply; both specs self-seed over
       # `docker exec psql` using pgContainer from .breeze-stack.json; and
-      # `wt-stack test` forwards REDIS_PASSWORD to globalSetup.
-      # E2E_MACOS_DEVICE_ID is the one thing CI must supply: the operator spec
+      # `wt-stack test` forwards REDIS_PASSWORD to globalSetup. The operator spec
+      # additionally needs AI_OPERATOR_TASKS_ENABLED and
+      # AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED (set in the .env above).
+      # --workers=1: both specs enrol an approver on the same admin and that
+      # ceremony rotates the refresh token (README), so they must not overlap.
+      # E2E_MACOS_DEVICE_ID is also supplied here: the operator spec
       # `test.skip`s without it and a skipped spec reports green. It is the
       # fixed id of the macOS device in e2e-tests/seed-fixtures.sql (pinned by
       # portalDevE2eWorkflowContract.test.ts). `!cancelled()` so a red hydration
@@ -4307,7 +4316,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           E2E_MACOS_DEVICE_ID: 42fc7de0-48f5-48f2-846b-6dd95924baf9
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/intent-self-approve.spec.ts tests/ai-operator-approve-after-browser-close.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/intent-self-approve.spec.ts tests/ai-operator-approve-after-browser-close.spec.ts --workers=1
 
       - name: Upload Playwright report
         if: failure()

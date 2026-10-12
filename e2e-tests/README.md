@@ -210,7 +210,7 @@ restart `api`.
 
 `wt-stack up` pins this for you (`WEBAUTHN_ORIGIN`/`WEBAUTHN_RP_ID`, #6443), and the
 `portal-dev-e2e` CI job runs both specs (#5786) with `E2E_MACOS_DEVICE_ID` set to the
-seeded macOS fixture device — the operator spec silently skips without it.
+seeded macOS fixture device — the operator spec silently skips without it, and needs `AI_OPERATOR_TASKS_ENABLED` + `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` (set in the job .env).
 
 Note also that the register-and-refresh ceremony ROTATES the refresh token,
 which revokes the JTI the page's session store is holding — the browser session

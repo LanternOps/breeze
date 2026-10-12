@@ -55,14 +55,26 @@ describe('portal-dev-e2e CI job contract', () => {
 
     it('has a dedicated step that runs both specs through wt-stack test', () => {
       expect(stepStart).toBeGreaterThan(-1);
-      expect(step).toMatch(/wt-stack\/cli\.ts test -- [^\n]*tests\/intent-self-approve\.spec\.ts/);
-      expect(step).toMatch(
-        /wt-stack\/cli\.ts test -- [^\n]*tests\/ai-operator-approve-after-browser-close\.spec\.ts/,
-      );
+      // Anchored to a real, uncommented `run:` line so an echo'd or commented-out
+      // command cannot satisfy the match.
+      const run = /^ {8}run: \.\/e2e-tests\/node_modules\/\.bin\/tsx scripts\/dev\/wt-stack\/cli\.ts test -- (.*)$/m.exec(step)?.[1];
+      expect(run, 'step has no real wt-stack test run: line').toBeTruthy();
+      expect(run).toContain('tests/intent-self-approve.spec.ts');
+      expect(run).toContain('tests/ai-operator-approve-after-browser-close.spec.ts');
     });
 
     it('still runs when the hydration specs fail, so one red cannot hide the other', () => {
-      expect(step).toContain('if: ${{ !cancelled() }}');
+      expect(step).toMatch(/^ {8}if: \$\{\{ !cancelled\(\) \}\}$/m);
+      expect(step).not.toContain('continue-on-error');
+    });
+
+    it('enables the AI Operator flags the operator spec needs (admission 422s without them)', () => {
+      expect(job).toMatch(/^ {10}AI_OPERATOR_TASKS_ENABLED=true$/m);
+      expect(job).toMatch(/^ {10}AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED=true$/m);
+    });
+
+    it('runs the two specs serially: both register an approver on the same admin and the ceremony rotates its refresh token', () => {
+      expect(step).toMatch(/cli\.ts test -- .*--workers=1/);
     });
 
     it('supplies the seeded macOS device id the operator spec skips without', () => {
@@ -71,8 +83,8 @@ describe('portal-dev-e2e CI job contract', () => {
         'utf8',
       );
       const id = /v_macos_device_id\s+UUID := '([0-9a-f-]{36})'/.exec(seed)?.[1];
-      expect(id).toBeTruthy();
-      expect(step).toContain(`E2E_MACOS_DEVICE_ID: ${id}`);
+      expect(id, 'seed-fixtures.sql no longer declares v_macos_device_id').toBeTruthy();
+      expect(step).toMatch(new RegExp(`^ {10}E2E_MACOS_DEVICE_ID: ${id}$`, 'm'));
     });
   });
 });
