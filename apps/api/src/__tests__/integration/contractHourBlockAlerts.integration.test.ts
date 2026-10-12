@@ -89,6 +89,8 @@ describe('runHourBlockAlertSweep (real DB + Redis marker)', () => {
 
     const result = await runHourBlockAlertSweep(AS_OF);
 
+    // Only the below-threshold line is a candidate; the sweep ran cleanly.
+    expect(result).toMatchObject({ lines: 1, crossed: 0, errors: 0 });
     expect(result.notified).toBe(0);
     expect(await notificationsFor(s.staffId)).toHaveLength(0);
     expect(emitContractEvent).not.toHaveBeenCalled();

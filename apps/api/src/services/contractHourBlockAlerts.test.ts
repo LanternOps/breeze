@@ -225,6 +225,19 @@ describe('runHourBlockAlertSweep', () => {
     }
   });
 
+  it('a failure after the line body returned (e.g. commit/emit) releases the marker it newly set', async () => {
+    m.emit.mockRejectedValue(new Error('post-commit failure'));
+    queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ name: 'Acme' }]);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runHourBlockAlertSweep(ASOF);
+      expect(m.redisDel).toHaveBeenCalledWith(MARKER);
+      expect(result).toMatchObject({ errors: 1 });
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it('Redis unavailable: degrades to the notification dedupe_key guard and emits only if a row was newly created', async () => {
     m.getRedis.mockReturnValue(null);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

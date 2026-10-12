@@ -118,7 +118,12 @@ type LineOutcome =
   | { status: 'crossed'; created: number; emit: boolean; periodStart: string; alertPct: number };
 
 /** One block line, inside the caller's per-line system transaction. */
-async function evaluateLine(contract: ContractRow, line: LineRow, asOf: Date): Promise<LineOutcome> {
+async function evaluateLine(
+  contract: ContractRow,
+  line: LineRow,
+  asOf: Date,
+  claimedKeys: string[],
+): Promise<LineOutcome> {
   const alertPct = line.hourBlockAlertPct as number; // the candidate query guarantees non-null
   const todayISO = asOf.toISOString().slice(0, 10);
 
@@ -139,6 +144,7 @@ async function evaluateLine(contract: ContractRow, line: LineRow, asOf: Date): P
   const crossed = (created: number, emit: boolean): LineOutcome => ({
     status: 'crossed', created, emit, periodStart: estimate.periodStart, alertPct,
   });
+  if (claimed === true) claimedKeys.push(markerKey);
   if (claimed === false) return crossed(0, false); // alerted before, whether or not the inbox row still exists
 
   try {
@@ -233,9 +239,13 @@ export async function runHourBlockAlertSweep(asOf: Date = new Date()): Promise<H
   };
 
   for (const { contract, line } of candidates) {
+    // Markers this line newly set. If the line's transaction fails AFTER
+    // evaluateLine returned (e.g. at commit), its notification rows roll back,
+    // so the markers must be released or the alert is lost for the period.
+    const claimedKeys: string[] = [];
     try {
       const outcome = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() => evaluateLine(contract, line, asOf)),
+        withSystemDbAccessContext(() => evaluateLine(contract, line, asOf, claimedKeys)),
       );
       if (outcome.status === 'backlog') { result.skippedBacklog++; continue; }
       if (outcome.status === 'below') continue;
@@ -253,6 +263,7 @@ export async function runHourBlockAlertSweep(asOf: Date = new Date()): Promise<H
         });
       }
     } catch (err) {
+      for (const key of claimedKeys) await releaseMarker(key);
       result.errors++;
       console.error(
         '[HourBlockAlerts] line failed',
