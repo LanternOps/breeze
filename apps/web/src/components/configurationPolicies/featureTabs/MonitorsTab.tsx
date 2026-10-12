@@ -19,6 +19,8 @@ type MonitorCatalogEntry = {
   severity: string;
   enabled: boolean;
   builtinKey: string | null;
+  /** Owning org; null = partner-wide. */
+  orgId: string | null;
   condition: Record<string, unknown> | null;
 };
 
@@ -76,7 +78,10 @@ export default function MonitorsTab({
   linkedPolicyId,
   parentLink,
   allLinks = [],
+  orgId,
 }: FeatureTabProps) {
+  // Explicit null = partner-owned policy (#1724); undefined = unknown, so no filtering.
+  const isPartnerPolicy = orgId === null;
   const { t } = useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
   const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
@@ -154,6 +159,7 @@ export default function MonitorsTab({
             severity: String(r.severity ?? ""),
             enabled: Boolean(r.enabled),
             builtinKey: typeof r.builtinKey === "string" ? r.builtinKey : null,
+            orgId: typeof r.orgId === "string" ? r.orgId : null,
             condition: r.condition && typeof r.condition === "object" && !Array.isArray(r.condition)
               ? r.condition as Record<string, unknown>
               : null,
@@ -180,9 +186,13 @@ export default function MonitorsTab({
 
   const catalogById = new Map(catalog.map((c) => [c.id, c]));
   const attachedIds = new Set(items.map((it) => it.monitorId));
-  const availableToAttach = catalog.filter((c) => !attachedIds.has(c.id));
+  // A partner-owned policy can only attach partner-wide monitors (the API
+  // refuses org-owned ones with MONITOR_NOT_ATTACHABLE, #8372). The full
+  // catalog stays available for resolving names of already-attached items.
+  const attachable = isPartnerPolicy ? catalog.filter((c) => c.orgId === null) : catalog;
+  const availableToAttach = attachable.filter((c) => !attachedIds.has(c.id));
 
-  const builtIns = catalog.filter((c) => Boolean(c.builtinKey));
+  const builtIns = attachable.filter((c) => Boolean(c.builtinKey));
   const anyBuiltInAttached = items.some((item) => builtIns.some((b) => b.id === item.monitorId));
   const attachBuiltIns = () => setItems((previous) => {
     const attached = new Set(previous.map((item) => item.monitorId));
@@ -242,6 +252,11 @@ export default function MonitorsTab({
     if (result) {
       setCheckIntervalEdited(false);
       onLinkChanged(result, "monitors");
+    } else {
+      // Failed save (#8372): roll the optimistic selection back to the last
+      // persisted state so the list doesn't show attachments that never saved.
+      setItems(seedItems(existingLink ?? parentLink));
+      setInheritance(readInheritance(existingLink));
     }
     return !!result;
   };

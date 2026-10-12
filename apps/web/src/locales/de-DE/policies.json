@@ -769,6 +769,7 @@
         "overridesLabel": "Überschreibungen:",
         "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
         "createMonitor": "Monitor erstellen",
+        "notAttachable": "Dieser Monitor kann dieser Richtlinie nicht zugewiesen werden. Partnereigene Richtlinien können nur partnerweite Monitore verwenden.",
         "monitorDeleted": "Monitor gelöscht",
         "recommended": {
           "title": "Empfohlene Monitore",

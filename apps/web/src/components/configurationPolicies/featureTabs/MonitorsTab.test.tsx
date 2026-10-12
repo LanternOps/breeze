@@ -450,3 +450,41 @@ describe('MonitorsTab — conversion after legacy feature retirement', () => {
     expect(baseProps.onLinkChanged).toHaveBeenCalledWith(null, 'automation');
   });
 });
+
+describe('MonitorsTab — partner-owned policy (#8372)', () => {
+  const rows = [
+    { id: 'org-mon', name: 'Org CPU', kind: 'cpu', severity: 'warning', enabled: true, orgId: 'org-1', partnerId: null },
+    { id: 'wide-mon', name: 'Wide Disk', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: 'p-1' },
+  ];
+  const useRows = () =>
+    fetchWithAuthMock.mockImplementation((async () => ({ ok: true, json: async () => ({ data: rows }) })) as never);
+
+  const optionValues = (select: HTMLElement) =>
+    Array.from(select.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value).filter(Boolean);
+
+  it('offers only partner-wide monitors on a partner-owned policy', async () => {
+    useRows();
+    render(<MonitorsTab {...baseProps} orgId={null} />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['wide-mon']));
+  });
+
+  it('still offers org-owned monitors on an org policy', async () => {
+    useRows();
+    render(<MonitorsTab {...baseProps} orgId="org-1" />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['org-mon', 'wide-mon']));
+  });
+
+  it('reverts the selection when the save fails', async () => {
+    useRows();
+    saveMock.mockResolvedValueOnce(null as never);
+    render(<MonitorsTab {...baseProps} orgId="org-1" />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select).length).toBe(2));
+    fireEvent.change(select, { target: { value: 'org-mon' } });
+    expect(await screen.findByTestId('monitors-tab-item-org-mon')).toBeTruthy();
+    clickSave();
+    await waitFor(() => expect(screen.queryByTestId('monitors-tab-item-org-mon')).toBeNull());
+  });
+});

@@ -769,6 +769,7 @@
         "overridesLabel": "Overrides:",
         "failedToLoadMonitors": "Failed to load monitors",
         "createMonitor": "Create monitor",
+        "notAttachable": "This monitor can't be attached to this policy. Partner-owned policies can only use partner-wide monitors.",
         "monitorDeleted": "Monitor deleted",
         "recommended": {
           "title": "Recommended monitors",

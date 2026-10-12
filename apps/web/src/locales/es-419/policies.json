@@ -769,6 +769,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "notAttachable": "Este monitor no se puede asociar a esta política. Las políticas del partner solo pueden usar monitores a nivel de partner.",
         "monitorDeleted": "Monitor eliminado",
         "recommended": {
           "title": "Monitores recomendados",

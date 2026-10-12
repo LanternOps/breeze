@@ -33,6 +33,17 @@ describe('feature Save action feedback', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+  it('maps MONITOR_NOT_ATTACHABLE to readable copy instead of the bare code (#8372)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ error: 'MONITOR_NOT_ATTACHABLE' }), { status: 400 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
+    expect(result.current.error).toBeTruthy();
+    expect(result.current.error).not.toContain('MONITOR_NOT_ATTACHABLE');
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
+    }));
+  });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));
     const { result } = renderHook(() => useFeatureLink(POLICY));

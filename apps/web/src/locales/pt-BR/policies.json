@@ -769,6 +769,7 @@
         "overridesLabel": "Substituições:",
         "failedToLoadMonitors": "Falha ao carregar os monitores",
         "createMonitor": "Criar monitor",
+        "notAttachable": "Este monitor não pode ser anexado a esta política. Políticas do parceiro só podem usar monitores de todo o parceiro.",
         "monitorDeleted": "Monitor excluído",
         "recommended": {
           "title": "Monitores recomendados",

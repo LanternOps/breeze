@@ -769,6 +769,7 @@
         "overridesLabel": "Geçersiz kılmalar:",
         "failedToLoadMonitors": "İzleyiciler yüklenemedi",
         "createMonitor": "Monitör oluştur",
+        "notAttachable": "Bu monitör bu ilkeye eklenemez. İş ortağına ait ilkeler yalnızca iş ortağı genelindeki monitörleri kullanabilir.",
         "monitorDeleted": "Monitör silindi",
         "recommended": {
           "title": "Önerilen monitörler",

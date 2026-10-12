@@ -769,6 +769,7 @@
         "overridesLabel": "Remplacements :",
         "failedToLoadMonitors": "Échec du chargement des moniteurs",
         "createMonitor": "Créer un moniteur",
+        "notAttachable": "Ce moniteur ne peut pas être associé à cette politique. Les politiques du partenaire ne peuvent utiliser que des moniteurs à l'échelle du partenaire.",
         "monitorDeleted": "Moniteur supprimé",
         "recommended": {
           "title": "Moniteurs recommandés",

@@ -40,6 +40,10 @@ export function useFeatureLink(policyId: string) {
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
           parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
           errorFallback: i18n.t('common:states.error'),
+          friendly: (code) =>
+            code === 'MONITOR_NOT_ATTACHABLE'
+              ? i18n.t('policies:configurationPolicies.featureTabs.monitorsTab.notAttachable')
+              : undefined,
           successMessage: i18n.t('common:states.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
