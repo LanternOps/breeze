@@ -40,6 +40,7 @@ function device(id: string, hostname: string, overrides: Partial<Device> = {}): 
     siteId: 'site-1',
     siteName: 'HQ',
     agentVersion: '0.110.0',
+    lastLogAt: new Date().toISOString(),
     tags: [],
     ...overrides,
   };
@@ -82,5 +83,52 @@ describe('DeviceList — Status column agent-health badges (#7214)', () => {
     expect(screen.queryByTestId(`device-${dev.id}-status-update-stuck`)).toBeNull();
     expect(screen.queryByTestId(`device-${dev.id}-status-update-withheld`)).toBeNull();
     expect(screen.queryByTestId(`device-${dev.id}-status-helper-install-issue`)).toBeNull();
+  });
+});
+
+// #8407: a row shows the primary status plus at most ONE secondary pill,
+// chosen by severity; the rest fold into a "+N" chip whose popover keeps every
+// per-condition testid in the DOM.
+describe('DeviceList — at most one secondary status pill (#8407)', () => {
+  const stuck = {
+    updateAttemptTargetVersion: '0.120.0',
+    updateAttemptStartedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    updateAttemptLastAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  };
+
+  it('shows only the most severe pill inline and folds the rest into +N', () => {
+    const dev = device('88888888-8888-8888-8888-888888888888', 'multi', {
+      ...stuck,
+      updateOfferWithheldReason: 'edition_gate',
+      helperInstallIssue: 'awaiting_server_offer',
+      possibleReplacementOfDeviceId: '99999999-9999-9999-9999-999999999999',
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const overflow = screen.getByTestId(`device-${dev.id}-status-overflow`);
+    expect(overflow.textContent).toContain('+3');
+    const stuckEl = screen.getByTestId(`device-${dev.id}-status-update-stuck`);
+    expect(overflow.contains(stuckEl)).toBe(false);
+    for (const id of ['possible-duplicate-badge', 'status-helper-install-issue', 'status-update-withheld']) {
+      expect(overflow.contains(screen.getByTestId(`device-${dev.id}-${id}`))).toBe(true);
+    }
+  });
+
+  it('orders by severity: collision beats Assist issue beats withheld', () => {
+    const dev = device('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'order', {
+      updateOfferWithheldReason: 'edition_gate',
+      helperInstallIssue: 'awaiting_server_offer',
+      possibleReplacementOfDeviceId: '99999999-9999-9999-9999-999999999999',
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const overflow = screen.getByTestId(`device-${dev.id}-status-overflow`);
+    expect(overflow.textContent).toContain('+2');
+    expect(overflow.contains(screen.getByTestId(`device-${dev.id}-possible-duplicate-badge`))).toBe(false);
+  });
+
+  it('renders no +N chip for a single secondary condition', () => {
+    const dev = device('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'single', { ...stuck });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    expect(screen.getByTestId(`device-${dev.id}-status-update-stuck`)).toBeTruthy();
+    expect(screen.queryByTestId(`device-${dev.id}-status-overflow`)).toBeNull();
   });
 });

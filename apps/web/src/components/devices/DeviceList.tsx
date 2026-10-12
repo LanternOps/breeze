@@ -1828,7 +1828,119 @@ export default function DeviceList({
     },
     status: {
       header: () => sortHeader("status", t("deviceList.tableColumns.status"), t("deviceList.sortBy.status")),
-      cell: (device) => (
+      cell: (device) => {
+        // #8407: primary status + at most ONE secondary pill (most severe
+        // first); the rest fold into a "+N" chip whose popover keeps every
+        // per-condition testid reachable. Order: update stuck > agent silent >
+        // logs silent > collision > Assist install issue > updates withheld.
+        // Rule for new conditions: a list pill is only for something a tech
+        // must act on for this device — diagnostics go on the detail page.
+        const pillClass =
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30";
+        const secondary: Array<{ key: string; node: React.ReactNode }> = [];
+        if (
+          isAgentUpdateStuck({
+            targetVersion: device.updateAttemptTargetVersion,
+            startedAt: device.updateAttemptStartedAt,
+            lastAttemptAt: device.updateAttemptLastAt,
+          })
+        ) {
+          secondary.push({
+            key: "stuck",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-update-stuck`}
+                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
+                className={pillClass}
+              >
+                {t("deviceList.updateStuck")}
+              </span>
+            ),
+          });
+        }
+        if (shouldShowAgentSilentBadge(device)) {
+          secondary.push({
+            key: "agent-silent",
+            node: (
+              <span
+                data-testid={`device-${device.id}-agent-silent-badge`}
+                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                className={pillClass}
+              >
+                {t("deviceList.agentSilent")}{" "}
+                {formatSilentDuration(device.mainAgentSilentSince!)}
+              </span>
+            ),
+          });
+        }
+        // #7067: a heartbeating device that has shipped no logs for over 6h —
+        // distinct from agent-silent (dead main agent with a live watchdog).
+        if (
+          isDeviceLogSilent({
+            status: device.status,
+            lastLogAt: device.lastLogAt,
+            enrolledAt: device.enrolledAt,
+          })
+        ) {
+          secondary.push({
+            key: "logs-silent",
+            node: (
+              <span
+                data-testid={`device-${device.id}-logs-silent-badge`}
+                title={t("deviceList.logsSilentTooltip")}
+                className={pillClass}
+              >
+                {t("deviceList.logsSilent")}
+              </span>
+            ),
+          });
+        }
+        // Collision enrollment (#2764): NOT suppressed on an offline row — the
+        // duplicate still needs a human decision.
+        if (device.possibleReplacementOfDeviceId) {
+          secondary.push({
+            key: "duplicate",
+            node: (
+              <span
+                data-testid={`device-${device.id}-possible-duplicate-badge`}
+                title={t("deviceList.possibleDuplicateTitle")}
+                className={pillClass}
+              >
+                {t("deviceList.possibleDuplicate")}
+              </span>
+            ),
+          });
+        }
+        if (device.helperInstallIssue) {
+          secondary.push({
+            key: "helper",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-helper-install-issue`}
+                title={helperInstallIssueTooltip(device.helperInstallIssue)}
+                className={pillClass}
+              >
+                {t("deviceList.helperNotInstalled")}
+              </span>
+            ),
+          });
+        }
+        if (device.updateOfferWithheldReason) {
+          secondary.push({
+            key: "withheld",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-update-withheld`}
+                title={t("deviceList.updateWithheldTooltip")}
+                className={pillClass}
+              >
+                {t("deviceList.updateWithheld")}
+              </span>
+            ),
+          });
+        }
+        const [topSecondary, ...restSecondary] = secondary;
+        return (
         <td key="status" className="px-3 py-3 text-sm">
           <div className="flex items-center gap-1">
             <span
@@ -1837,45 +1949,28 @@ export default function DeviceList({
             >
               {t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
             </span>
-            {shouldShowAgentSilentBadge(device) && (
-              <span
-                data-testid={`device-${device.id}-agent-silent-badge`}
-                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.agentSilent")}{" "}
-                {formatSilentDuration(device.mainAgentSilentSince!)}
+            {topSecondary && (
+              <span key={topSecondary.key} className="contents">
+                {topSecondary.node}
               </span>
             )}
-            {/* #7067: a heartbeating device that has shipped no logs for over 6h —
-                distinct from agent-silent above (which fires on a dead main agent
-                with a live watchdog). This can fire even when the agent process
-                itself is healthy but its log-shipping channel is dead. */}
-            {isDeviceLogSilent({
-              status: device.status,
-              lastLogAt: device.lastLogAt,
-              enrolledAt: device.enrolledAt,
-            }) && (
+            {restSecondary.length > 0 && (
               <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                data-testid={`device-${device.id}-status-overflow`}
+                tabIndex={0}
+                className="group relative inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {t("deviceList.logsSilent")}
-              </span>
-            )}
-            {/* Collision enrollment (#2764): this row may be replacing an
-                earlier device with the same hostname. Unlike pending-reboot
-                below it is NOT suppressed on an offline row — the duplicate
-                still needs a human decision, and an offline collider is the
-                likeliest one to be the stale record. */}
-            {device.possibleReplacementOfDeviceId && (
-              <span
-                data-testid={`device-${device.id}-possible-duplicate-badge`}
-                title={t("deviceList.possibleDuplicateTitle")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.possibleDuplicate")}
+                +{restSecondary.length}
+                <span
+                  role="tooltip"
+                  className="absolute left-0 top-full z-20 mt-1 hidden flex-col items-start gap-1 rounded-md border bg-popover p-2 shadow-md group-hover:flex group-focus:flex group-focus-within:flex"
+                >
+                  {restSecondary.map((s) => (
+                    <span key={s.key} className="contents">
+                      {s.node}
+                    </span>
+                  ))}
+                </span>
               </span>
             )}
             {/* Pending-reboot is only actionable while the box is reachable. On an
@@ -1890,46 +1985,10 @@ export default function DeviceList({
                 className="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
               />
             )}
-            {/* #7214 (paper cut #23): the agent-health badges below duplicate
-                the ones in the Agent Version / Helper Version columns, which
-                are opt-in and hidden by default — most users never saw them.
-                Status is default-visible, so mirror the same three badges
-                here as compact pills, matching the agent-silent/logs-silent
-                pattern above. */}
-            {device.updateOfferWithheldReason && (
-              <span
-                data-testid={`device-${device.id}-status-update-withheld`}
-                title={t("deviceList.updateWithheldTooltip")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.updateWithheld")}
-              </span>
-            )}
-            {isAgentUpdateStuck({
-              targetVersion: device.updateAttemptTargetVersion,
-              startedAt: device.updateAttemptStartedAt,
-              lastAttemptAt: device.updateAttemptLastAt,
-            }) && (
-              <span
-                data-testid={`device-${device.id}-status-update-stuck`}
-                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.updateStuck")}
-              </span>
-            )}
-            {device.helperInstallIssue && (
-              <span
-                data-testid={`device-${device.id}-status-helper-install-issue`}
-                title={helperInstallIssueTooltip(device.helperInstallIssue)}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.helperNotInstalled")}
-              </span>
-            )}
           </div>
         </td>
-      ),
+        );
+      },
     },
     pendingReboot: {
       header: () =>
