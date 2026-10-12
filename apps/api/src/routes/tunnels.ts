@@ -34,6 +34,8 @@ import type { AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createRemoteSession, RemoteSessionDeniedError } from '../services/remoteSessionCreate';
 import { evaluateCapability, partnerIdForDevice, trustDenyBody, unresolvedPartnerDecision } from '../services/partnerTrust';
+import { cancelPendingAgentCommandsByPrefix } from '../services/agentCommandAwait';
+import { TUNNEL_CLOSED_ERROR, tunnelHttpCommandPrefix } from './tunnelHttpCore';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { teardownDisconnectedSessions } from '../services/remoteSessionTeardown';
@@ -1207,6 +1209,10 @@ tunnelRoutes.delete(
       .update(tunnelSessions)
       .set({ status: 'disconnected', endedAt: new Date() })
       .where(eq(tunnelSessions.id, id));
+
+    // Spec §4: Close cancels this tunnel's in-flight proxied requests so no
+    // device response lands after the user saw "disconnected".
+    cancelPendingAgentCommandsByPrefix(tunnelHttpCommandPrefix(id), TUNNEL_CLOSED_ERROR);
 
     // Revoke any viewer JWTs minted for this tunnel. The service logs if Redis
     // is unavailable; the check path (requireViewerToken) fails closed.

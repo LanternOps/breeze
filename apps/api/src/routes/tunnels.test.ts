@@ -18,6 +18,12 @@ const { rateLimiterMock } = vi.hoisted(() => ({
   })),
 }));
 
+const { cancelPendingMock } = vi.hoisted(() => ({ cancelPendingMock: vi.fn(() => 0) }));
+vi.mock('../services/agentCommandAwait', () => ({
+  sendCommandToAgentAwaitResult: vi.fn(),
+  cancelPendingAgentCommandsByPrefix: cancelPendingMock,
+}));
+
 const { authorizeContinuationMock } = vi.hoisted(() => ({
   authorizeContinuationMock: vi.fn(async (): Promise<any> => ({ ok: true, context: {} })),
 }));
@@ -2993,6 +2999,24 @@ describe('Audit logging — mutating tunnel endpoints', () => {
     // The session owner must be attributable when a partner tears down someone
     // else's tunnel.
     expect(audits[0].details).toEqual(expect.objectContaining({ sessionUserId: 'owner-9999' }));
+  });
+
+  it('DELETE /tunnels/:id cancels the tunnel’s in-flight proxied requests', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([sessionRecord]) as any)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.insert).mockImplementation(vi.fn().mockReturnValue(makeAuditAwareInsertChain([])) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID },
+    });
+
+    expect(res.status).toBe(200);
+    expect(cancelPendingMock).toHaveBeenCalledWith(`http-req-${SESSION_ID}-`, 'tunnel_closed');
   });
 
   it('POST /allowlist writes a tunnel.allowlist.create audit row with the rule', async () => {

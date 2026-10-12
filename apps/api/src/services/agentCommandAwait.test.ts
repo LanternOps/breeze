@@ -5,7 +5,7 @@ vi.mock('../routes/agentWs', () => ({
   sendCommandToAgent: vi.fn(),
 }));
 
-import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand } from './agentCommandAwait';
+import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand, cancelPendingAgentCommandsByPrefix } from './agentCommandAwait';
 import { sendCommandToAgent } from '../routes/agentWs';
 
 const mockSendCommandToAgent = vi.mocked(sendCommandToAgent);
@@ -96,5 +96,18 @@ describe('agentCommandAwait', () => {
     await p;
 
     expect(mockSendCommandToAgent).toHaveBeenCalledWith('my-agent-id', cmd);
+  });
+
+  it('cancelPendingAgentCommandsByPrefix resolves only the matching in-flight commands', async () => {
+    mockSendCommandToAgent.mockReturnValue(true);
+    const closing = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T1-a', type: 'http_request', payload: {} }, 60_000);
+    const other = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T2-b', type: 'http_request', payload: {} }, 60_000);
+
+    expect(cancelPendingAgentCommandsByPrefix('http-req-T1-', 'tunnel_closed')).toBe(1);
+    await expect(closing).resolves.toEqual({ status: 'failed', error: 'tunnel_closed' });
+    // A late result for the cancelled id is a no-op; the other tunnel is untouched.
+    expect(resolvePendingAgentCommand('http-req-T1-a', { status: 'completed' })).toBe(false);
+    expect(resolvePendingAgentCommand('http-req-T2-b', { status: 'completed' })).toBe(true);
+    await expect(other).resolves.toEqual({ status: 'completed' });
   });
 });

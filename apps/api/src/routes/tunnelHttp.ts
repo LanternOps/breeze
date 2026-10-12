@@ -2,9 +2,6 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
-import { tunnelSessions } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getSignKey } from '../services/jwt';
@@ -14,7 +11,7 @@ import { isSameOriginRequest } from '../services/requestTransport';
 import { UUID_REGEX } from '../utils/uuid';
 import { getRedis } from '../services/redis';
 import {
-  CONNECTABLE_TUNNEL_STATUSES, HOP_BY_HOP, HTTP_TUNNEL_COOKIE_TTL_SECONDS,
+  CONNECTABLE_TUNNEL_STATUSES, HOP_BY_HOP, activateTunnelSessionOnExchange, HTTP_TUNNEL_COOKIE_TTL_SECONDS,
   authorizeTunnelContinuation, bumpTunnelActivity, collectForwardableHeaders, decodeUpstreamBody,
   deviceTargetOrigin, dispatchTunnelHttpRequest, loadOwnedTunnelSession, loadTunnelRow,
   runTunnelRequestGates, signTunnelCookie, upstreamHeaderValue, verifyTunnelCookie,
@@ -408,16 +405,12 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       return c.text('Not found', 404);
     }
 
-    // `active` means "a client established a session" — set it at successful
-    // ticket->cookie exchange. `startedAt` only when still null so a later
-    // re-mint (session resuming after idle) doesn't reset session duration.
-    const mintUpdates: Record<string, unknown> = { status: 'active' };
-    if (!ownedAtMint.startedAt) {
-      mintUpdates.startedAt = new Date();
+    // `active` = "a client established a session"; startedAt only when still
+    // null. Conditional on the row still being connectable (spec §4): a ticket
+    // racing Close must not reopen the session.
+    if (!(await activateTunnelSessionOnExchange(tunnelId, !ownedAtMint.startedAt))) {
+      return c.text('Not found', 404);
     }
-    await withSystemDbAccessContext(async () => {
-      await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
-    });
 
     // Mint the per-request path token now — it's the first point we have an
     // authenticated userId — and fold it into both the cookie's scoping path

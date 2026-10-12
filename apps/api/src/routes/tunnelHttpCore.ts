@@ -9,7 +9,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
 import { brotliDecompress, gunzip, inflate } from 'node:zlib';
 import { promisify } from 'node:util';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
@@ -35,6 +35,12 @@ const ACTIVITY_BUMP_THROTTLE_MS = 30_000;
 export const PATH_COOKIE_AUDIENCE = 'breeze-tunnel-http';
 export const HOST_COOKIE_AUDIENCE = 'breeze-tunnel-host';
 export const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
+export const TUNNEL_CLOSED_ERROR = 'tunnel_closed';
+
+export function tunnelHttpCommandPrefix(tunnelId: string): string {
+  return `http-req-${tunnelId}-`;
+}
+
 const TUNNEL_CONTINUATION_PERMISSIONS = [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE];
 
 // Promise-based (worker-pool) zlib, not the *Sync forms — decompressing a
@@ -286,9 +292,13 @@ export interface UpstreamHttpResponse {
 export type TunnelDispatchOutcome =
   | { ok: true; upstream: UpstreamHttpResponse }
   | { ok: false; status: 502 | 504; message: string;
-      reason: 'timeout' | 'tls_cert_untrusted' | 'agent_error' | 'malformed_response' };
+      reason: 'timeout' | 'tls_cert_untrusted' | 'agent_error' | 'malformed_response' | 'tunnel_closed' };
 
-/** Allowlist lookup + http_request dispatch + error mapping. */
+/**
+ * Allowlist lookup + http_request dispatch + error mapping. Callers MUST obtain
+ * `session` from `runTunnelRequestGates` (which enforces ownership, status and
+ * policy) and must never cast an arbitrary row into `ReachableTunnel`.
+ */
 export async function dispatchTunnelHttpRequest(
   tunnelId: string,
   session: ReachableTunnel,
@@ -306,7 +316,7 @@ export async function dispatchTunnelHttpRequest(
   const awaitResult = await sendCommandToAgentAwaitResult(
     session.agentId,
     {
-      id: `http-req-${tunnelId}-${randomUUID()}`,
+      id: `${tunnelHttpCommandPrefix(tunnelId)}${randomUUID()}`,
       type: 'http_request',
       payload: {
         tunnelId,
@@ -326,6 +336,7 @@ export async function dispatchTunnelHttpRequest(
 
   if (awaitResult.status !== 'completed') {
     const err = awaitResult.error ?? '';
+    if (err === TUNNEL_CLOSED_ERROR) return { ok: false, status: 502, message: 'Tunnel closed', reason: 'tunnel_closed' };
     if (/timeout/i.test(err)) {
       return { ok: false, status: 504, message: 'Upstream timeout', reason: 'timeout' };
     }
@@ -390,4 +401,20 @@ export function upstreamHeaderValue(headers: Record<string, string[]> | undefine
     if (k.toLowerCase() === name) return values.join(', ');
   }
   return null;
+}
+
+/**
+ * Ticket-exchange activation, CONDITIONAL on the row still being connectable
+ * (spec §4): an exchange racing Close can never flip a closed row back to
+ * active. Returns false when nothing matched (caller answers 404, no cookie).
+ */
+export async function activateTunnelSessionOnExchange(tunnelId: string, setStartedAt: boolean): Promise<boolean> {
+  const updates: Record<string, unknown> = { status: 'active' };
+  if (setStartedAt) updates.startedAt = new Date();
+  const rows = await withSystemDbAccessContext(async () =>
+    db.update(tunnelSessions)
+      .set(updates)
+      .where(and(eq(tunnelSessions.id, tunnelId), inArray(tunnelSessions.status, [...CONNECTABLE_TUNNEL_STATUSES])))
+      .returning({ id: tunnelSessions.id }));
+  return rows.length > 0;
 }

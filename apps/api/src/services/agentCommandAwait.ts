@@ -105,3 +105,22 @@ export function resolvePendingAgentCommand(
   entry.resolve(result);
   return true;
 }
+
+/**
+ * Resolve every in-flight awaited command whose id starts with `prefix` as
+ * `{status:'failed', error}`. Used by tunnel Close (spec 2026-10-06 §4) to
+ * cancel that tunnel's proxied requests. Process-local like the rest of this
+ * module: a request in flight on ANOTHER api replica is not reached (single
+ * api replica per region today — plan G9).
+ */
+export function cancelPendingAgentCommandsByPrefix(prefix: string, error: string): number {
+  let cancelled = 0;
+  for (const [id, entry] of pending) {
+    if (!id.startsWith(prefix)) continue;
+    clearTimeout(entry.timer);
+    pending.delete(id);
+    entry.resolve({ status: 'failed', error });
+    cancelled += 1;
+  }
+  return cancelled;
+}

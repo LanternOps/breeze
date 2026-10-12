@@ -69,6 +69,7 @@ function defaultJoinRow(
 // last call (back-compat) and the full call list (for count/throttle tests).
 let capturedSessionUpdate: Record<string, unknown> | null = null;
 let capturedSessionUpdates: Record<string, unknown>[] = [];
+let activationRows: Array<{ id: string }> = [{ id: TUNNEL_ID }];
 
 vi.mock('../db', () => ({
   db: {
@@ -85,7 +86,11 @@ vi.mock('../db', () => ({
       set: vi.fn((values: Record<string, unknown>) => {
         capturedSessionUpdate = values;
         capturedSessionUpdates.push(values);
-        return { where: vi.fn(async () => {}) };
+        return {
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn(async () => activationRows),
+          })),
+        };
       }),
     })),
   },
@@ -93,7 +98,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  tunnelSessions: { id: 'tunnelSessions.id', deviceId: 'tunnelSessions.deviceId' },
+  tunnelSessions: { id: 'tunnelSessions.id', deviceId: 'tunnelSessions.deviceId', status: 'tunnelSessions.status' },
   devices: { id: 'devices.id' },
 }));
 
@@ -186,6 +191,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedSessionUpdate = null;
   capturedSessionUpdates = [];
+  activationRows = [{ id: TUNNEL_ID }];
   setJoinRow(defaultJoinRow());
   isAgentConnectedMock.mockReturnValue(true);
   checkRemoteAccessMock.mockResolvedValue({ allowed: true });
@@ -1174,4 +1180,35 @@ it('401s a cookie-less request for a non-UUID tunnel id without querying the ses
   const res = await app.request(`/api/v1/tunnel-http/not-a-uuid/${'a'.repeat(32)}/`);
   expect(res.status).toBe(401);
   expect(db.select).not.toHaveBeenCalled();
+});
+
+describe('ticket exchange vs Close (spec §4 revocation)', () => {
+  it('does not reopen a session that Close ended between the ownership read and activation', async () => {
+    activationRows = []; // the conditional UPDATE … WHERE status IN (connectable) matched nothing
+    consumeWsTicketMock.mockResolvedValueOnce({
+      ok: true, sessionId: TUNNEL_ID, sessionType: 'tunnel-http', userId: USER_ID, expiresAt: Date.now() + 60_000,
+    });
+    const res = await makeApp().request(`${BASE}/?__bzt=goodticket`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('refuses a still-valid ticket once the row is terminal', async () => {
+    setJoinRow(defaultJoinRow({ status: 'disconnected' }));
+    consumeWsTicketMock.mockResolvedValueOnce({
+      ok: true, sessionId: TUNNEL_ID, sessionType: 'tunnel-http', userId: USER_ID, expiresAt: Date.now() + 60_000,
+    });
+    const res = await makeApp().request(`${BASE}/?__bzt=goodticket`);
+    expect(res.status).toBe(404);
+    expect(capturedSessionUpdates).toEqual([]);
+  });
+
+  it('maps a Close-cancelled dispatch to 502 "Tunnel closed"', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    sendCommandMock.mockResolvedValueOnce({ status: 'failed', error: 'tunnel_closed' });
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(502);
+    expect(await res.text()).toBe('Tunnel closed');
+  });
 });
