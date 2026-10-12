@@ -21,6 +21,7 @@ import {
   listBackupVerifications
 } from './verificationService';
 import { isCriticalBackupDevice } from './criticality';
+import { loadBareMetalEvidence, type BareMetalEvidenceSummary } from '../../services/bareMetalReadinessEvidence';
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -32,6 +33,20 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+
+const BARE_METAL_FAILED_PENALTY = 10;
+
+/** Evidence is additive: a lookup failure must never block the generic readiness write. */
+async function loadBareMetalEvidenceSafe(orgId: string, deviceId: string, now: number): Promise<BareMetalEvidenceSummary | null> {
+  if (!isUuid(orgId) || !isUuid(deviceId)) return null;
+  try {
+    const summary = await loadBareMetalEvidence(orgId, deviceId, now);
+    return summary.hasEvidence ? summary : null;
+  } catch (error) {
+    console.warn('[BackupReadiness] Bare-metal evidence lookup failed; using verification-only readiness:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
 
 function isUuid(value?: string | null): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
@@ -478,11 +493,23 @@ export async function recomputeRecoveryReadinessForDevice(
     ? Math.max(0, Math.round((now - toEpoch(latestBackup.completedAt)) / MINUTE_MS))
     : null;
 
+  // W08: real bare-metal rebuild outcomes. A measured full rebuild is stronger
+  // RTO evidence than a file-level test restore, so take the slower of the two;
+  // a failed latest rebuild is a recovery-proof failure and costs 10 points.
+  const bareMetal = await loadBareMetalEvidenceSafe(orgId, deviceId, now);
+  const verificationRtoMinutes = avgRestoreSeconds ? Math.ceil(avgRestoreSeconds / 60) : null;
+  const measuredRto = bareMetal?.measuredRtoMinutes ?? null;
+  const estimatedRtoMinutes = verificationRtoMinutes !== null && measuredRto !== null
+    ? Math.max(verificationRtoMinutes, measuredRto)
+    : (measuredRto ?? verificationRtoMinutes);
+  if (bareMetal) riskFactors.push(...bareMetal.riskFactors);
+  const finalScore = bareMetal?.latestFailed ? clamp(readinessScore - BARE_METAL_FAILED_PENALTY, 0, 100) : readinessScore;
+
   const readiness = await writeRecoveryReadiness({
     orgId,
     deviceId,
-    readinessScore,
-    estimatedRtoMinutes: avgRestoreSeconds ? Math.ceil(avgRestoreSeconds / 60) : null,
+    readinessScore: finalScore,
+    estimatedRtoMinutes,
     estimatedRpoMinutes,
     riskFactors,
     calculatedAt: new Date().toISOString()

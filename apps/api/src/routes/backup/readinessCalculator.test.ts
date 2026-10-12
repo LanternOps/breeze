@@ -6,6 +6,11 @@ vi.mock('../../services/eventBus', () => ({
   publishEvent: (...args: any[]) => publishEventMock(...args),
 }));
 
+const evidenceMock = vi.fn();
+vi.mock('../../services/bareMetalReadinessEvidence', () => ({
+  loadBareMetalEvidence: (...args: any[]) => evidenceMock(...args),
+}));
+
 import { recomputeRecoveryReadinessForDevice } from './readinessCalculator';
 import { addBackupVerification, backupVerifications, verificationOrgById } from './store';
 
@@ -166,5 +171,55 @@ describe('recomputeRecoveryReadinessForDevice — in-flight verifications (#7495
     ]);
     expect(stuck.readinessScore).toBeLessThan(baseline.readinessScore);
     expect(stuck.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(true);
+  });
+});
+
+describe('recomputeRecoveryReadinessForDevice — bare-metal rebuild evidence (W08 #5501)', () => {
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  const deviceId = '22222222-2222-4222-8222-222222222222';
+  const none = {
+    hasEvidence: false, successCount: 0, failureCount: 0, latestFailed: false,
+    rehearsalSuccessCount: 0, productionSuccessCount: 0, measuredRtoMinutes: null, lastSuccessAt: null, riskFactors: [],
+  };
+
+  beforeEach(() => {
+    publishEventMock.mockClear();
+    evidenceMock.mockReset();
+    const completedAt = new Date().toISOString();
+    addBackupVerification({
+      orgId, deviceId, backupJobId: 'job-bm', snapshotId: 'snap-bm', verificationType: 'test_restore',
+      status: 'passed', startedAt: completedAt, completedAt, restoreTimeSeconds: 240,
+      filesVerified: 10, filesFailed: 0, details: { source: 'test' },
+    }, orgId);
+  });
+
+  it('a measured rebuild slower than the verification RTO wins, and its risk factors are merged', async () => {
+    evidenceMock.mockResolvedValue({
+      ...none, hasEvidence: true, successCount: 1, rehearsalSuccessCount: 1, measuredRtoMinutes: 75, lastSuccessAt: new Date(),
+      riskFactors: [{ code: 'bare_metal_rto_above_target', severity: 'medium', message: 'slow' }],
+    });
+    const r = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    expect(r.estimatedRtoMinutes).toBe(75);
+    expect(r.riskFactors.map((f) => f.code)).toContain('bare_metal_rto_above_target');
+  });
+
+  it('a latest failed rebuild lowers the score by 10', async () => {
+    evidenceMock.mockResolvedValue(none);
+    // Snapshot the number: the in-memory store updates the same record in place.
+    const baseScore = (await recomputeRecoveryReadinessForDevice(orgId, deviceId)).readinessScore;
+    evidenceMock.mockResolvedValue({
+      ...none, hasEvidence: true, failureCount: 1, latestFailed: true,
+      riskFactors: [{ code: 'bare_metal_recovery_failed', severity: 'high', message: 'failed' }],
+    });
+    const r = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    expect(r.readinessScore).toBe(baseScore - 10);
+    expect(r.riskFactors.map((f) => f.code)).toContain('bare_metal_recovery_failed');
+  });
+
+  it('an evidence lookup failure leaves the generic result untouched', async () => {
+    evidenceMock.mockRejectedValue(new Error('db down'));
+    const r = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    expect(r.readinessScore).toBeGreaterThan(0);
+    expect(r.riskFactors.map((f) => f.code)).not.toContain('bare_metal_recovery_failed');
   });
 });
