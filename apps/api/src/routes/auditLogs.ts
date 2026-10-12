@@ -781,8 +781,13 @@ auditLogRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgCond = auditLogReadCondition(auth);
-    const where = buildListWhere(orgCond, query);
+    // Same org scope as the list and the export: honours a pinned ?orgId=
+    // (403 when inaccessible) so search results match the exported file.
+    const scope = resolveListOrgScope(auth, query.orgId);
+    if (scope.denied) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    const where = buildListWhere(scope.orgCond, query);
 
     const [total, rows] = await Promise.all([
       countRows(where),

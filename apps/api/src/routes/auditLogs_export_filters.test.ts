@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // #8366: GET /audit-logs/export must apply the same filters as the list /
 // search endpoints, through the same condition builder, in the same tenant
@@ -13,6 +14,7 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 const queryWheres: unknown[] = [];
+const authState = vi.hoisted(() => ({ scope: 'organization' as string, partnerId: null as string | null }));
 
 vi.mock('../db', () => {
   const chain: any = {
@@ -52,11 +54,13 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com' },
-      scope: 'organization',
+      scope: authState.scope,
+      partnerId: authState.partnerId,
       orgId: '11111111-1111-4111-8111-111111111111',
       accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
       canAccessOrg: (id: string) => id === '11111111-1111-4111-8111-111111111111',
-      orgCondition: vi.fn(() => undefined)
+      // Non-empty sentinel so the tenant predicate is visible in the rendered WHERE.
+      orgCondition: vi.fn(() => sql`accessible_orgs_sentinel`)
     });
     return next();
   }),
@@ -78,10 +82,13 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     queryWheres.length = 0;
+    authState.scope = 'organization';
+    authState.partnerId = null;
     const { auditLogRoutes } = await import('./auditLogs');
     app = new Hono();
     app.route('/audit-logs', auditLogRoutes);
-  });
+    // First dynamic import of the route graph is slow on a loaded host.
+  }, 60_000);
 
   const lastWhere = () => queryWheres[queryWheres.length - 1];
 
@@ -92,6 +99,7 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     ['user', 'user=riley', '/audit-logs'],
     ['search', 'q=needle', '/audit-logs/search'],
     ['all combined', 'from=2026-10-01T00:00:00.000Z&to=2026-10-09T00:00:00.000Z&action=device&resource=dev&user=riley&q=needle', '/audit-logs/search'],
+    ['excludeActions', 'excludeActions=agent.heartbeat,agent.sessions.submit&q=x', '/audit-logs/search'],
     ['pinned org', `orgId=${ORG_A}&action=device`, '/audit-logs']
   ];
 
@@ -134,5 +142,59 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     const res = await app.request(`/audit-logs/export?orgId=${ORG_B}`);
     expect(res.status).toBe(403);
     expect(queryWheres).toHaveLength(0);
+  });
+
+  it('applies literal filter predicates (not just list parity)', async () => {
+    await app.request('/audit-logs/export?from=2026-10-01T00:00:00.000Z&to=2026-10-09T00:00:00.000Z&action=dev&resource=res&user=riley&q=needle&excludeActions=agent.heartbeat');
+    const { sql: text, params } = JSON.parse(render(lastWhere()));
+    expect(text).toContain('ilike');
+    expect(text, text).toMatch(/not.*\bin\b/);
+    expect(text).toContain('accessible_orgs_sentinel');
+    for (const p of ['%dev%', '%res%', '%riley%', '%needle%', 'agent.heartbeat']) {
+      expect(params).toContain(p);
+    }
+    expect(params.some((p: unknown) => typeof p === 'string' && p.startsWith('2026-10-01'))).toBe(true);
+    expect(params.some((p: unknown) => typeof p === 'string' && p.startsWith('2026-10-09'))).toBe(true);
+  });
+
+  it('partner scope: unpinned export carries the partner-row branch like the list; pinned org drops it', async () => {
+    const partnerId = '44444444-4444-4444-8444-444444444444';
+    authState.scope = 'partner';
+    authState.partnerId = partnerId;
+    const run = async (qs: string) => {
+      queryWheres.length = 0;
+      await app.request(`/audit-logs?${qs}`);
+      const listW = render(lastWhere());
+      queryWheres.length = 0;
+      await app.request(`/audit-logs/export?${qs}`);
+      return { listW, exportW: render(lastWhere()) };
+    };
+    const unpinned = await run('action=dev');
+    expect(unpinned.exportW).toBe(unpinned.listW);
+    expect(unpinned.exportW).toContain(partnerId);
+    const pinned = await run(`orgId=${ORG_A}&action=dev`);
+    expect(pinned.exportW).toBe(pinned.listW);
+    expect(pinned.exportW).not.toContain(partnerId);
+  });
+
+  it('records the applied filters in the export audit event', async () => {
+    const { writeRouteAudit } = await import('../services/auditEvents');
+    await app.request('/audit-logs/export?from=2026-10-01T00:00:00.000Z&to=2026-10-09T00:00:00.000Z&action=a&resource=r&user=u&q=n');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          filters: expect.objectContaining({
+            from: '2026-10-01T00:00:00.000Z', to: '2026-10-09T00:00:00.000Z',
+            action: 'a', resource: 'r', user: 'u', q: 'n'
+          })
+        })
+      })
+    );
+  });
+
+  it('search pins ?orgId= like the list and 403s an inaccessible org', async () => {
+    const res = await app.request(`/audit-logs/search?q=x&orgId=${ORG_B}`);
+    expect(res.status).toBe(403);
   });
 });

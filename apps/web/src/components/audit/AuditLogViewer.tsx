@@ -305,12 +305,14 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
   const handleExportLogs = async () => {
     // The export accepts the same filters as the list (date range, user,
     // action, resource, search) so the file matches what is on screen.
-    const params = new URLSearchParams();
-    appendFilterParams(params, activeFilters);
-    if (activeFilters?.userId) params.set('userId', activeFilters.userId);
-    const query = params.toString();
-
     try {
+      // Built inside the try: an unparseable custom date throws in
+      // computeDateRange and must surface as the export-error toast.
+      const params = new URLSearchParams();
+      appendFilterParams(params, activeFilters);
+      if (activeFilters?.userId) params.set('userId', activeFilters.userId);
+      const query = params.toString();
+
       const response = await fetchWithAuth(`/audit-logs/export${query ? `?${query}` : ''}`, {
         orgIdOverride: orgId
       });
