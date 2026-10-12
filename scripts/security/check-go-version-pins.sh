@@ -51,11 +51,41 @@ if [ -z "$pinned" ]; then
 fi
 echo "pinned Go toolchain (agent/go.mod): $pinned"
 
+# --- required declarations -------------------------------------------------
+# The loops below only compare values they FIND. A workflow that loses its
+# declaration yields zero values, nothing is compared, and the guard would
+# still report "all pins agree" — fail-open (#8283). So the files that MUST
+# carry a pin are listed explicitly and a file yielding zero values fails.
+# Add a workflow here when it starts building/scanning Go.
+GO_VERSION_ENV_FILES=(
+  .github/workflows/ci.yml
+  .github/workflows/security.yml
+  .github/workflows/release.yml
+  .github/workflows/dev-build-agent.yml
+)
+GO_VERSION_LITERAL_FILES=(
+  .github/workflows/codeql.yml
+)
+
+env_values()     { sed -nE "s/^[[:space:]]*GO_VERSION:[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" "$1"; }
+literal_values() { sed -nE "s/^[[:space:]]*go-version:[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" "$1"; }
+
+for file in "${GO_VERSION_ENV_FILES[@]}"; do
+  [ -f "$file" ] || { note "$file is missing — it must declare GO_VERSION=$pinned"; continue; }
+  [ -n "$(env_values "$file")" ] \
+    || note "$file declares no GO_VERSION — its toolchain is no longer held to agent/go.mod"
+done
+for file in "${GO_VERSION_LITERAL_FILES[@]}"; do
+  [ -f "$file" ] || { note "$file is missing — it must pin go-version: $pinned"; continue; }
+  [ -n "$(literal_values "$file" | grep -vF '{{' || true)" ] \
+    || note "$file declares no literal go-version — its toolchain is no longer held to agent/go.mod"
+done
+
 # --- every GO_VERSION env in workflows -------------------------------------
 for file in .github/workflows/*.yml; do
   while IFS= read -r v; do
     [ "$v" = "$pinned" ] || note "$file GO_VERSION=$v != $pinned (agent/go.mod)"
-  done < <(sed -nE "s/^[[:space:]]*GO_VERSION:[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" "$file")
+  done < <(env_values "$file")
 done
 
 # --- literal go-version: pins that bypass GO_VERSION entirely ---------------
@@ -64,7 +94,7 @@ for file in .github/workflows/*.yml; do
   while IFS= read -r v; do
     [[ "$v" == *'{{'* ]] && continue
     [ "$v" = "$pinned" ] || note "$file hard-codes go-version: $v != $pinned"
-  done < <(sed -nE "s/^[[:space:]]*go-version:[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" "$file")
+  done < <(literal_values "$file")
 done
 
 # --- public docs telling self-hosters which toolchain to install ------------
