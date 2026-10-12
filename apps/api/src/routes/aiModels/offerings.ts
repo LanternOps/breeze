@@ -8,6 +8,7 @@ import { CONNECTION_DISCONNECTED_MESSAGE, RegistryWriteError } from '../../servi
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
+  removeOffering,
   setOfferingEnabled,
   updateOfferingDetails,
 } from '../../services/aiModels/offeringWrites';
@@ -74,6 +75,20 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
     const { expectedUpdatedAt: _ignored, ...changed } = patch;
     auditOffering(c, partnerId, 'updated', { offeringId: offering.id, fields: Object.keys(changed) });
     return c.json({ id: offering.id, updatedAt: offering.updatedAt.toISOString() });
+  });
+});
+
+// Remove a hand-added model (#8510). Discovered/platform/catalog models are
+// disabled instead (they are re-listed on every sync); a model still used by a
+// default, fallback list, refusal fallback or agent is refused with the list.
+aiModelOfferingRoutes.delete('/:id', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
+  const { partnerId } = requirePartnerWide(c);
+  return registryWrite(c, partnerId, async () => {
+    const removed = await removeOffering({ partnerId, offeringId: c.req.valid('param').id });
+    auditOffering(c, partnerId, 'removed', {
+      offeringId: removed.id, connectionId: removed.connectionId, modelId: removed.modelId, source: removed.source,
+    });
+    return c.json({ deleted: true, id: removed.id });
   });
 });
 

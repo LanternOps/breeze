@@ -381,7 +381,8 @@
       "duplicate_model": "Cet ID de modèle existe déjà sur cette connexion.",
       "geo_not_supported": "Ce type de connexion ne peut pas définir de région d'inférence.",
       "key_required_for_new_endpoint": "Entrez la clé pour la nouvelle URL (ou retirez la clé).",
-      "too_many_models": "Cette connexion compte déjà le nombre maximal de modèles ajoutés manuellement."
+      "too_many_models": "Cette connexion compte déjà le nombre maximal de modèles ajoutés manuellement.",
+      "not_removable": "Seuls les modèles ajoutés manuellement peuvent être retirés. Désactivez plutôt celui-ci."
     },
     "org": {
       "title": "Modèles par défaut",
@@ -518,7 +519,12 @@
       "verify": "Vérifier",
       "verifyQueued": "Vérification du modèle mise en file d'attente",
       "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente.",
-      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (utilise quelques milliers de jetons)."
+      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (utilise quelques milliers de jetons).",
+      "remove": "Retirer le modèle",
+      "removeTitle": "Retirer ce modèle?",
+      "removeMessage": "« {{model}} » sera supprimé de cette connexion. L’historique d’utilisation et de coûts est conservé. Vous pourrez le rajouter plus tard.",
+      "removed": "Modèle retiré",
+      "removeFailed": "Impossible de retirer le modèle. Réessayez."
     },
     "defaults": {
       "title": "Valeurs par défaut par fonctionnalité",

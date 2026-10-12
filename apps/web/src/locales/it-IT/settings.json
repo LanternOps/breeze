@@ -381,7 +381,8 @@
       "duplicate_model": "Questo ID modello esiste già su questa connessione.",
       "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza.",
       "key_required_for_new_endpoint": "Inserisci la chiave per il nuovo URL (oppure rimuovi la chiave).",
-      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente."
+      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente.",
+      "not_removable": "Si possono rimuovere solo i modelli aggiunti manualmente. Disattiva invece questo."
     },
     "org": {
       "title": "Modelli predefiniti",
@@ -518,7 +519,12 @@
       "verify": "Verifica",
       "verifyQueued": "Verifica del modello in coda",
       "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
-      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token)."
+      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token).",
+      "remove": "Rimuovi modello",
+      "removeTitle": "Rimuovere questo modello?",
+      "removeMessage": "«{{model}}» verrà eliminato da questa connessione. La cronologia di utilizzo e costi viene conservata. Potrai aggiungerlo di nuovo in seguito.",
+      "removed": "Modello rimosso",
+      "removeFailed": "Impossibile rimuovere il modello. Riprova."
     },
     "defaults": {
       "title": "Predefiniti per funzionalità",

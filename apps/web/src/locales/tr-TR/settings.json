@@ -381,7 +381,8 @@
       "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",
       "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez.",
       "key_required_for_new_endpoint": "Yeni URL için anahtarı girin (veya anahtarı kaldırın).",
-      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde."
+      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde.",
+      "not_removable": "Yalnızca elle eklenen modeller kaldırılabilir. Bunun yerine bu modeli devre dışı bırakın."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -518,7 +519,12 @@
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
       "verifyFailed": "Model denetimi sıraya alınamadı.",
-      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır)."
+      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır).",
+      "remove": "Modeli kaldır",
+      "removeTitle": "Bu model kaldırılsın mı?",
+      "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
+      "removed": "Model kaldırıldı",
+      "removeFailed": "Model kaldırılamadı. Yeniden deneyin."
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",

@@ -15,10 +15,10 @@
  * All gates reuse W03's rule table via checkEnableEligibility, and every DB
  * failure goes through toRegistryWriteError.
  */
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import type { AiSurface, OfferingDetailsPatch, OfferingOptions } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
+import { aiAgents, aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
 import { loadOfferingCandidate, loadPartnerFacts, platformCandidateFacts, type LoadedCandidate } from './candidateLoader';
 import { checkEnableEligibility, onDisconnectedConnection, type EnableEligibilityContext } from './eligibility';
@@ -382,4 +382,79 @@ async function updateOfferingDetailsLocked(input: {
     .returning();
   if (!updated) throw new RegistryWriteError('This model was changed by someone else. Reload and try again.', 'stale_write', 409);
   return updated;
+}
+
+export interface OfferingReference extends OfferingInUse { via: 'default' | 'fallback' | 'permitted' }
+
+/**
+ * Removes a hand-added (source 'manual') offering (#8510). Refuses, never
+ * cascades: another partner's id and unknown ids are 404; discovered, platform
+ * and catalog rows are 409 not_removable (a sync would re-create them; disable
+ * instead); anything that still points at the row is 409 offering_in_use with
+ * the list. History survives by construction: invocation-ledger and agent-run
+ * offering ids carry no FK, and ai_sessions / ai_agents null their binding on
+ * delete (agents are refused above, so only closed-out session snapshots).
+ */
+export async function removeOffering(input: { partnerId: string; offeringId: string }): Promise<Offering> {
+  return inPartnerRegistryWrite(input.partnerId, 'aiModels.removeOffering', 'Could not remove the model.', async () => {
+    const current = await getOffering(input.offeringId);
+    if (!current || current.partnerId !== input.partnerId) throw new RegistryWriteError('Model not found.', 'not_found', 404);
+    if (current.source !== 'manual') {
+      throw new RegistryWriteError(
+        'Only models you added by hand can be removed. Disable this one instead; it is re-listed on every sync.',
+        'not_removable', 409,
+      );
+    }
+    if (current.connectionId) await assertNotEnvManagedConnection(input.partnerId, current.connectionId);
+
+    const id = input.offeringId;
+    const assignments = await db
+      .select({
+        surface: aiModelAssignments.surface,
+        orgId: aiModelAssignments.orgId,
+        defaultOfferingId: aiModelAssignments.defaultOfferingId,
+        fallbackOfferingIds: aiModelAssignments.fallbackOfferingIds,
+        permittedOfferingIds: aiModelAssignments.permittedOfferingIds,
+      })
+      .from(aiModelAssignments)
+      .where(and(
+        eq(aiModelAssignments.offeringPartnerId, input.partnerId),
+        or(
+          eq(aiModelAssignments.defaultOfferingId, id),
+          sql`${id}::uuid = ANY(${aiModelAssignments.fallbackOfferingIds})`,
+          sql`${id}::uuid = ANY(${aiModelAssignments.permittedOfferingIds})`,
+        ),
+      ));
+    const inUse: OfferingReference[] = [];
+    for (const a of assignments) {
+      const via = a.defaultOfferingId === id ? 'default'
+        : a.fallbackOfferingIds?.includes(id) ? 'fallback' : 'permitted';
+      inUse.push({ surface: a.surface as AiSurface, level: a.orgId === null ? 'partner' : 'org', orgId: a.orgId, via });
+    }
+    const fallbackFor = await db
+      .select({ id: partnerAiModels.id })
+      .from(partnerAiModels)
+      .where(and(eq(partnerAiModels.partnerId, input.partnerId), eq(partnerAiModels.refusalFallbackOfferingId, id)));
+    const agents = await db
+      .select({ kind: aiAgents.kind })
+      .from(aiAgents)
+      .where(and(eq(aiAgents.offeringPartnerId, input.partnerId), eq(aiAgents.offeringId, id)));
+    if (inUse.length > 0 || fallbackFor.length > 0 || agents.length > 0) {
+      throw new RegistryWriteError(
+        'This model is still used by a feature, a fallback list or an agent. Remove it from those first.',
+        'offering_in_use', 409,
+        { inUse, refusalFallbackFor: fallbackFor.map((r) => r.id), agentKinds: agents.map((r) => r.kind) },
+      );
+    }
+    const [deleted] = await db
+      .delete(partnerAiModels)
+      .where(and(
+        eq(partnerAiModels.id, id),
+        eq(partnerAiModels.partnerId, input.partnerId),
+        eq(partnerAiModels.source, 'manual'),
+      ))
+      .returning();
+    if (!deleted) throw new RegistryWriteError('Model not found.', 'not_found', 404);
+    return deleted;
+  });
 }

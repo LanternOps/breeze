@@ -381,7 +381,8 @@
       "duplicate_model": "Esse ID de modelo já existe nesta conexão.",
       "geo_not_supported": "Este tipo de conexão não pode definir uma região de inferência.",
       "key_required_for_new_endpoint": "Informe a chave para a nova URL (ou remova a chave).",
-      "too_many_models": "Esta conexão já tem o número máximo de modelos adicionados manualmente."
+      "too_many_models": "Esta conexão já tem o número máximo de modelos adicionados manualmente.",
+      "not_removable": "Somente modelos adicionados manualmente podem ser removidos. Desative este em vez disso."
     },
     "org": {
       "title": "Modelos padrão",
@@ -518,7 +519,12 @@
       "verify": "Verificar",
       "verifyQueued": "Verificação do modelo na fila",
       "verifyFailed": "Não foi possível enfileirar a verificação do modelo.",
-      "verifyGatewayHint": "Executa um breve teste de chamada de ferramentas no seu endpoint (usa alguns milhares de tokens)."
+      "verifyGatewayHint": "Executa um breve teste de chamada de ferramentas no seu endpoint (usa alguns milhares de tokens).",
+      "remove": "Remover modelo",
+      "removeTitle": "Remover este modelo?",
+      "removeMessage": "“{{model}}” será excluído desta conexão. O histórico de uso e custos é mantido. Você pode adicioná-lo novamente depois.",
+      "removed": "Modelo removido",
+      "removeFailed": "Não foi possível remover o modelo. Tente novamente."
     },
     "defaults": {
       "title": "Padrões por recurso",

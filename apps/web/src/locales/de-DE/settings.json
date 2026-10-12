@@ -381,7 +381,8 @@
       "duplicate_model": "Diese Modell-ID ist bei dieser Verbindung bereits vorhanden.",
       "geo_not_supported": "Bei dieser Verbindungsart kann keine Inferenzregion festgelegt werden.",
       "key_required_for_new_endpoint": "Geben Sie den Schlüssel für die neue URL ein (oder entfernen Sie den Schlüssel).",
-      "too_many_models": "Diese Verbindung hat bereits die maximale Anzahl manuell eingetragener Modelle."
+      "too_many_models": "Diese Verbindung hat bereits die maximale Anzahl manuell eingetragener Modelle.",
+      "not_removable": "Nur manuell hinzugefügte Modelle können entfernt werden. Deaktivieren Sie dieses Modell stattdessen."
     },
     "org": {
       "title": "Modellstandards",
@@ -518,7 +519,12 @@
       "verify": "Prüfen",
       "verifyQueued": "Modellprüfung eingeplant",
       "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden.",
-      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens)."
+      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens).",
+      "remove": "Modell entfernen",
+      "removeTitle": "Dieses Modell entfernen?",
+      "removeMessage": "„{{model}}“ wird aus dieser Verbindung gelöscht. Bisherige Nutzungs- und Kostendaten bleiben erhalten. Sie können es später erneut hinzufügen.",
+      "removed": "Modell entfernt",
+      "removeFailed": "Das Modell konnte nicht entfernt werden. Versuchen Sie es erneut."
     },
     "defaults": {
       "title": "Standards pro Funktion",

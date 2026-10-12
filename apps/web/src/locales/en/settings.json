@@ -381,7 +381,8 @@
       "duplicate_model": "That model id is already on this connection.",
       "geo_not_supported": "This kind of connection cannot set an inference region.",
       "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
-      "too_many_models": "This connection already has the maximum number of hand-entered models."
+      "too_many_models": "This connection already has the maximum number of hand-entered models.",
+      "not_removable": "Only models added by hand can be removed. Disable this one instead."
     },
     "org": {
       "title": "Model defaults",
@@ -518,7 +519,12 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "remove": "Remove model",
+      "removeTitle": "Remove this model?",
+      "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
+      "removed": "Model removed",
+      "removeFailed": "Couldn’t remove the model. Try again."
     },
     "defaults": {
       "title": "Defaults by feature",
