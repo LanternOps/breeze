@@ -78,6 +78,29 @@ describe('parseTunnelOriginConfig', () => {
     })).toMatch(/registrable domain/);
   });
 
+  it('compares a wildcard CORS entry by its parent domain', () => {
+    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://us.breeze-app.test,https://*.example.com', TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.t.example.com' }))
+      .toMatch(/registrable domain/);
+    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://us.breeze-app.test,https://*.other-brand.test', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
+      .toBe('');
+  });
+
+  it('fails closed on an unparseable origin entry', () => {
+    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://us.breeze-app.test,not a url', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
+      .toMatch(/TUNNEL_ORIGIN_TEMPLATE: cannot verify .*not a url/);
+  });
+
+  it('fails closed on an origin host with no registrable domain', () => {
+    expect(issueText({ ...PROD, CORS_ALLOWED_ORIGINS: 'https://10.0.0.5', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
+      .toMatch(/no registrable domain/);
+  });
+
+  it.each(['PUBLIC_PORTAL_URL', 'PUBLIC_WEB_URL', 'PUBLIC_URL', 'API_URL', 'WEBAUTHN_ORIGIN'] as const)(
+    'rejects a %s on the tunnel registrable domain', (key) => {
+      expect(issueText({ ...PROD, [key]: 'https://portal.breezetunnel.test', TUNNEL_ORIGIN_TEMPLATE: TEMPLATE }))
+        .toMatch(new RegExp(`${key}.*registrable domain`));
+    });
+
   it('requires TUNNEL_FRAME_ANCESTOR to be an exact https origin', () => {
     expect(issueText({ ...PROD, TUNNEL_ORIGIN_TEMPLATE: TEMPLATE, TUNNEL_FRAME_ANCESTOR: 'https://us.breeze-app.test/' }))
       .toMatch(/TUNNEL_FRAME_ANCESTOR/);

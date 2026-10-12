@@ -28,6 +28,11 @@ export interface TunnelOriginEnv {
   DASHBOARD_URL?: string;
   PUBLIC_API_URL?: string;
   CORS_ALLOWED_ORIGINS?: string;
+  PUBLIC_PORTAL_URL?: string;
+  PUBLIC_WEB_URL?: string;
+  PUBLIC_URL?: string;
+  API_URL?: string;
+  WEBAUTHN_ORIGIN?: string;
 }
 
 export interface TunnelOriginIssue {
@@ -53,13 +58,25 @@ function safeUrl(raw: string | undefined): URL | null {
   }
 }
 
-/** Every origin that authenticates Breeze users or serves the app. */
-function appOrigins(env: TunnelOriginEnv, frameAncestor: string | null): URL[] {
-  const raws = [
-    env.PUBLIC_APP_URL, env.DASHBOARD_URL, env.PUBLIC_API_URL, frameAncestor ?? undefined,
-    ...(env.CORS_ALLOWED_ORIGINS ?? '').split(','),
-  ];
-  return raws.map((r) => (r && r.trim() !== '*' ? safeUrl(r) : null)).filter((u): u is URL => u !== null);
+/** Every configured origin that authenticates Breeze users or serves the app, tagged by source. */
+function appOriginEntries(env: TunnelOriginEnv, frameAncestor: string | null): Array<{ source: string; raw: string }> {
+  const entries: Array<{ source: string; raw: string }> = [];
+  const add = (source: string, value: string | undefined) => {
+    const raw = value?.trim();
+    if (raw) entries.push({ source, raw });
+  };
+  add('PUBLIC_APP_URL', env.PUBLIC_APP_URL);
+  add('DASHBOARD_URL', env.DASHBOARD_URL);
+  add('PUBLIC_API_URL', env.PUBLIC_API_URL);
+  add('PUBLIC_PORTAL_URL', env.PUBLIC_PORTAL_URL);
+  add('PUBLIC_WEB_URL', env.PUBLIC_WEB_URL);
+  add('PUBLIC_URL', env.PUBLIC_URL);
+  add('API_URL', env.API_URL);
+  add('TUNNEL_FRAME_ANCESTOR', frameAncestor ?? undefined);
+  for (const part of (env.WEBAUTHN_ORIGIN ?? '').split(',')) add('WEBAUTHN_ORIGIN', part);
+  for (const part of (env.CORS_ALLOWED_ORIGINS ?? '').split(',')) add('CORS_ALLOWED_ORIGINS', part);
+  // A bare `*` is the CORS wildcard, rejected separately in production.
+  return entries.filter((e) => e.raw !== '*');
 }
 
 function registrableDomains(host: string): Set<string> {
@@ -122,13 +139,25 @@ export function parseTunnelOriginConfig(
   if (tunnelDomains.size === 0 && !devLocal) {
     issues.push({ path: 'TUNNEL_ORIGIN_TEMPLATE', message: `suffix "${suffix}" has no registrable domain` });
   }
-  for (const origin of appOrigins(env, frameAncestor)) {
-    const host = origin.hostname;
-    const shared = [...registrableDomains(host)].some((d) => tunnelDomains.has(d));
-    if (shared || host === suffix) {
+  // Fail closed: every configured origin must reduce to a registrable domain
+  // (a `*.x` wildcard is compared as `x`) or it is itself an issue.
+  for (const { source, raw } of appOriginEntries(env, frameAncestor)) {
+    const parsed = safeUrl(raw.replace('://*.', '://'));
+    if (!parsed) {
+      issues.push({ path: 'TUNNEL_ORIGIN_TEMPLATE', message: `cannot verify separation from ${source} entry "${raw}": not a parseable origin` });
+      continue;
+    }
+    const host = parsed.hostname;
+    if (!production && isLocalhostName(host)) continue;
+    const appDomains = registrableDomains(host);
+    if (appDomains.size === 0) {
+      issues.push({ path: 'TUNNEL_ORIGIN_TEMPLATE', message: `cannot verify separation from ${source} entry "${raw}": host has no registrable domain` });
+      continue;
+    }
+    if ([...appDomains].some((d) => tunnelDomains.has(d)) || host === suffix) {
       issues.push({
         path: 'TUNNEL_ORIGIN_TEMPLATE',
-        message: `suffix "${suffix}" shares a registrable domain with app origin ${origin.origin}; tunnel content must live on a separate registrable domain`,
+        message: `suffix "${suffix}" shares a registrable domain with ${source} origin ${raw}; tunnel content must live on a separate registrable domain`,
       });
     }
   }

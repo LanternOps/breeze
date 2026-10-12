@@ -574,6 +574,11 @@ const envObjectSchema = z
     // compare registrable domains; used unvalidated elsewhere.
     PUBLIC_APP_URL: z.string().optional(),
     DASHBOARD_URL: z.string().optional(),
+    PUBLIC_PORTAL_URL: z.string().optional(),
+    PUBLIC_WEB_URL: z.string().optional(),
+    PUBLIC_URL: z.string().optional(),
+    API_URL: z.string().optional(),
+    WEBAUTHN_ORIGIN: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
     // Whether CF-Connecting-IP is trusted for client-IP resolution
     // (services/clientIp.ts). Boolean-ish; unset/empty means off. Format is
