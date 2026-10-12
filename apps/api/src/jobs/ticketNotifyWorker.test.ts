@@ -722,6 +722,29 @@ describe('handleTicketEvent', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('ticket.approval_requested / approval_decided are explicit no-ops in W02 (#4617) — logged, never "unhandled"', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await handleTicketEvent({
+        type: 'ticket.approval_requested', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: null,
+        eventId: 'evt-apr-1', payload: { requestId: 'r-1', trigger: 'budget', revision: 1, created: true },
+      });
+      await handleTicketEvent({
+        type: 'ticket.approval_decided', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: null,
+        eventId: 'evt-apr-2', payload: { requestId: 'r-1', trigger: 'budget', status: 'expired' },
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(push.createNotification).not.toHaveBeenCalled();
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('Unhandled event type'))).toBe(false);
+      expect(log.mock.calls.some((c) => String(c[0]).includes('approval'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
   it('ticket.status_changed to pending sends no email', async () => {
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',

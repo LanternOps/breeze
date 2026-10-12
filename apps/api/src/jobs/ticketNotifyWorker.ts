@@ -895,6 +895,14 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         }
         return;
       }
+      case 'ticket.approval_requested':
+      case 'ticket.approval_decided': {
+        // #4617 W02: the approval engine emits these; W04 adds the approver /
+        // notify emails and the staff in-app notification. Logged, not mailed.
+        console.log('[TicketNotify] approval event (no notification until W04):', event.type,
+          `ticketId=${event.ticketId}`, `requestId=${event.payload.requestId}`);
+        return;
+      }
       default: {
         const _exhaustive: never = event as never;
         console.warn('[TicketNotify] Unhandled event type:', (_exhaustive as TicketEvent).type);
