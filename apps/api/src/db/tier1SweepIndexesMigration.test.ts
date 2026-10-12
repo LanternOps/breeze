@@ -39,6 +39,9 @@ describe('Tier-1 sweep indexes migration (#5020)', () => {
   it('is present and sorts after the newest migration it was authored on top of', () => {
     const files = listMigrationFilenames();
     expect(files).toContain(MIGRATION);
+    // Assert the anchor exists so a rename cannot make indexOf return -1 and
+    // pass the ordering check vacuously.
+    expect(files).toContain('2026-12-22-100000-fix-memory-rebuild-attempted-at.sql');
     expect(files.indexOf(MIGRATION)).toBeGreaterThan(
       files.indexOf('2026-12-22-100000-fix-memory-rebuild-attempted-at.sql'),
     );

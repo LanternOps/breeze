@@ -5,23 +5,28 @@
 --
 -- 1. discovery_jobs — grows one row per scan, forever.
 --    a. (profile_id, status): discoveryWorker's per-profile in-flight check
---       (`profile_id = $1 AND status IN ('scheduled','running')`) and the
---       per-profile history read (`profile_id = $1 ORDER BY scheduled_at`).
+--       (`profile_id = $1 AND status IN ('scheduled','running')`). The
+--       schedule-due latest-run lookup (`profile_id = $1 ORDER BY
+--       scheduled_at DESC NULLS LAST, created_at DESC LIMIT 1`) is narrowed
+--       to one profile's rows by the leading column; the sort still runs.
 --    b. (status, updated_at): discoveryWorker's 60 s stale-running and
 --       stale-scheduled sweeps (`status = $1 AND updated_at < $2`, the latter
 --       `ORDER BY updated_at LIMIT n`). Full, not partial: Drizzle binds the
 --       status as a parameter.
 --
 -- 2. organization_users — membership lookups app-wide.
---    a. (org_id, user_id): org-scoped member reads and userRiskJobs' org
---       enumeration; covers the org_id FK for org cascade deletes.
+--    a. (org_id, user_id): org-scoped member reads; lets userRiskJobs'
+--       `GROUP BY org_id` run as an ordered index-only scan; covers the
+--       org_id FK for the app-level org cascade delete.
 --    b. (user_id): a user's memberships (auth/login paths) and the user_id
 --       FK for user deletes.
 --    Not UNIQUE — uniqueness on existing data is a separate decision.
 --
 -- 3. automations (org_id) WHERE enabled — automationWorker's 60 s schedule
---    sweep (`enabled = $1`) and the event path (`org_id = $1 AND enabled AND
---    retired_at IS NULL`). The planner proves the bound `enabled = $1` implies
+--    sweep (`enabled = $1`) and the org branch of the event path
+--    (`(org_id = $1 OR (org_id IS NULL AND partner_id = $2)) AND enabled AND
+--    retired_at IS NULL`); the partner branch stays on
+--    automations_partner_id_idx. The planner proves the bound `enabled = $1` implies
 --    the predicate on custom plans. Config-bounded today: while most rows are
 --    enabled a seq scan stays the cheaper plan; this keeps the sweep off the
 --    full table as disabled/retired automations accumulate.

@@ -9,7 +9,8 @@
  * VALID, and lead with the columns the recurring jobs filter on.
  *
  * The EXPLAIN cases force `enable_seqscan = off` because the test tables are
- * near-empty; what they prove is that each worker's predicate — sent as a bound
+ * near-empty; what they prove is that each worker predicate shape (the org
+ * branch only for the automations event path) — sent as a bound
  * parameter, as Drizzle sends it — is *able* to use the index (for the partial
  * automations index that means the planner proves `enabled = $1` implies the
  * index predicate).
