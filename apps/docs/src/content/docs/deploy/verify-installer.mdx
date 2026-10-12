@@ -9,10 +9,12 @@ sidebar:
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Every Breeze release publishes `checksums.txt` and a signed
-`release-artifact-manifest.json` next to its installers. Breeze serves installer
-bytes unmodified (the enrollment token travels in the download **filename**, not
-inside the file), so the SHA-256 of a downloaded installer matches the release
-entry exactly.
+`release-artifact-manifest.json` next to its installers. The Windows MSI that Breeze
+serves from the dashboard is the release file, byte for byte (the enrollment token
+travels in the download **filename**, not inside the file), so its SHA-256 matches
+the release entry exactly. The macOS dashboard download is different: it is a
+bootstrap app zip (the token lives in `bootstrap.json`), so verify the
+`breeze-agent-darwin-*.pkg` release assets directly instead.
 
 ---
 
@@ -39,10 +41,9 @@ installer, then compare.
 </Tabs>
 
 <Aside type="note">
-  If the installer came from the Breeze dashboard, its filename contains an
-  enrollment token in parentheses, for example `breeze-agent(abc123).msi`. Rename
-  it to the release asset name (or look up the hash by the asset name) before
-  comparing. The hash covers the file contents only.
+  A Windows installer downloaded from the dashboard is named
+  `Breeze Agent (<token>@<host>).msi`. Compare its hash to the `breeze-agent.msi`
+  line in `checksums.txt`; the filename is not part of the hash.
 </Aside>
 
 ---
@@ -56,9 +57,11 @@ asset's `sha256`, `size`, and `platformTrust`, plus
 exact bytes of the manifest. A `.minisig` signature over the same file is also
 published. Your Breeze API performs this same check before it serves a release.
 
-Verify with the official manifest public key, which is the value of
-`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` in your deployment (base64, raw 32-byte
-or SPKI form):
+Verify with the official manifest public key (one key, base64, raw 32-byte or
+SPKI form). Get it from a source independent of the download. Your own deployment's
+`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` setting is a comma-separated list that
+you already trust; it is a convenient copy of the key, but it only proves the
+release matches what your server was configured with.
 
 ```bash
 KEY_B64='<manifest public key>' node -e '
