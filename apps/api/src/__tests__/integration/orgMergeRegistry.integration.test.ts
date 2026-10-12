@@ -216,6 +216,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
     'RAISEs 42501 iff org_id changed (apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql); generation/tombstone checks otherwise',
   // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
   // — no bypass exists for any app role.
+  // PAM ownership epochs W2 (#8204, 2026-12-23-120000): RAISEs 42501 iff
+  // (device_id, org_id, device_epoch) changes. pam_actuations is blocks-merge,
+  // so a merge never writes it.
+  'pam_actuations.pam_actuations_epoch_guard':
+    'RAISEs 42501 iff (device_id, org_id, device_epoch) changes; blocks-merge table, never repointed',
   'pam_actuation_results.pam_actuation_results_block_mutation':
     'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
   // PAM ownership-epoch lineage (#8203, 2026-12-17-130000): unconditional
@@ -474,6 +479,21 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
     dischargedBy: 'pam_actuations',
     requiredPolicyKind: 'blocks-merge',
     note: 'RAISEs 23514 on any devices.org_id change while the device has a pam_actuations row; a loser org with such rows is refused by the blocks-merge policy before the devices repoint',
+  },
+  // PAM ownership epochs W2 (#8204). Two branches on an org_id change:
+  //  - the request has a pam_actuations row: RAISE 42501 (evidence is frozen
+  //    to its epoch). A loser with such a row is refused by blocks-merge.
+  //  - no actuation: the row is re-anchored to its device's current epoch,
+  //    which requires the device to already be in the new org (else 23514).
+  //    The merge walk reaches that state first: repointing devices fires
+  //    breeze_cascade_device_org_id, which restamps the device's requests in
+  //    the same statement, so the later elevation_requests repoint matches
+  //    no row. Pinned end to end by orgMerge.integration.test.ts ('an
+  //    un-actuated elevation request follows its device into the survivor').
+  'elevation_requests.elevation_requests_epoch_guard': {
+    dischargedBy: 'pam_actuations',
+    requiredPolicyKind: 'blocks-merge',
+    note: 'RAISEs 42501 on an org_id change of an actuated request (loser refused by blocks-merge); an un-actuated request is re-anchored to its device epoch, and follows its device via the devices repoint cascade',
   },
 };
 

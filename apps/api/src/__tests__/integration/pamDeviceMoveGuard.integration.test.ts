@@ -191,7 +191,8 @@ async function insertRaceActuation(tx: Sql, fixture: MoveFixture): Promise<void>
       ${'a'.repeat(64)}, 'fixture-user'
     )
   `;
-  await tx`SET CONSTRAINTS pam_actuations_device_id_org_id_fkey IMMEDIATE`;
+  // W2 (#8204): the device FK is gone; the epoch FK is INITIALLY IMMEDIATE,
+  // and the insert guard has already read the device FOR SHARE by now.
 }
 
 async function createRouteFixture(): Promise<RouteFixture> {
@@ -429,7 +430,10 @@ describe('PAM device organization-move database guard', () => {
       releaseMove.resolve();
       await moveWork;
 
-      expect(await actuationWork).toMatchObject({ code: '23503' });
+      // W2 (#8204): the insert guard reads the moved device and refuses the
+      // stale-epoch row (23514) before the FK is checked; the source epoch row
+      // still exists, so the FK alone would no longer catch it.
+      expect(await actuationWork).toMatchObject({ code: '23514' });
       const [device] = await getTestDb().execute<{ orgId: string }>(sql`
         SELECT org_id AS "orgId" FROM devices WHERE id = ${fixture.deviceId}
       `);
