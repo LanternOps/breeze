@@ -178,6 +178,17 @@ describe('device_restore_point_attempts tenancy contract', () => {
     expect(still).toEqual([{ status: 'requested' }]);
   });
 
+  runDb('rejects re-tenanting an own row to another org with 42501 (UPDATE WITH CHECK)', async () => {
+    // The UPDATE policy's WITH CHECK fires before the (after-trigger) FK, so a
+    // missing WITH CHECK would surface here as 23503 instead of 42501.
+    const { orgA, orgB, deviceA } = await seedFixture();
+    const id = await insertAttemptAs(orgA.id, { orgId: orgA.id, deviceId: deviceA.id });
+    const moved = await causeOf(() => withDbAccessContext(orgContext(orgA.id), () => db.execute(sql`
+      UPDATE device_restore_point_attempts SET org_id = ${orgB.id}::uuid WHERE id = ${id}::uuid
+    `)));
+    expect(moved?.code).toBe('42501');
+  });
+
   runDb('enforces one ledger row per request_id with 23505', async () => {
     const { orgA, deviceA } = await seedFixture();
     const requestId = randomUUID();
@@ -208,9 +219,13 @@ describe('device_restore_point_attempts tenancy contract', () => {
     expect(remaining).toHaveLength(0);
   });
 
-  runDb('follows the device org via the composite FK ON UPDATE CASCADE', async () => {
+  runDb('follows the device org when the device row changes org', async () => {
     // Why the table is in DEVICE_ORG_FK_CASCADE_TABLES: move-org does not
-    // issue an app-role UPDATE against it; PostgreSQL restamps org_id.
+    // issue an app-role UPDATE against it; the database restamps org_id.
+    // NOTE: this asserts the outcome, not the mechanism -- the composite FK's
+    // ON UPDATE CASCADE and the breeze_cascade_device_org_id() trigger would
+    // both produce it. The FK's cascade action itself is pinned by the
+    // confupdtype = 'c' assertion in the FK-declaration case above.
     const { orgA, orgB, siteB, deviceA } = await seedFixture();
     const id = await insertAttemptAs(orgA.id, { orgId: orgA.id, deviceId: deviceA.id });
 
