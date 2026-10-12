@@ -54,6 +54,7 @@ func TestAdditionalRMMAndRemoteAccessSignatures(t *testing.T) {
 				{Type: CheckServiceRunning, Value: "tvnserver", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "tvnserver.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files\TightVNC\tvnserver.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\TightVNC\tvnserver.exe`, OS: "windows"},
 			},
 		},
 		{
@@ -76,6 +77,7 @@ func TestAdditionalRMMAndRemoteAccessSignatures(t *testing.T) {
 				{Type: CheckServiceRunning, Value: "uvnc_service", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "winvnc.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
 			},
 		},
 		{

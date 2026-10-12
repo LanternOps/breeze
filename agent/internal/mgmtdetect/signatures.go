@@ -274,7 +274,8 @@ func AllSignatures() []Signature {
 			},
 		},
 
-		// MeshCentral (Mesh Agent)
+		// MeshCentral (Mesh Agent). Tactical RMM bundles the stock Mesh Agent,
+		// so Tactical hosts report both rows; that is accurate, not a dupe.
 		{
 			Name: "MeshCentral", Category: CategoryRemoteAccess,
 			OS: []string{"windows", "darwin"},
@@ -295,6 +296,7 @@ func AllSignatures() []Signature {
 				{Type: CheckServiceRunning, Value: "tvnserver", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "tvnserver.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files\TightVNC\tvnserver.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\TightVNC\tvnserver.exe`, OS: "windows"},
 			},
 		},
 
@@ -319,6 +321,7 @@ func AllSignatures() []Signature {
 				{Type: CheckServiceRunning, Value: "uvnc_service", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "winvnc.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
 			},
 		},
 
