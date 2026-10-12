@@ -35,14 +35,16 @@ area: agent / api / heartbeat
    | Uninstall-drain branch (`agent.deviceUninstallDraining`) | early return | payload omitted → `helperEnabled`/`manageRemoteManagement` false, PAM off |
    | Watchdog-role branch | early return | response consumed by the watchdog, not the main agent; out of scope |
 
-   Not "no decision": a Redis cache **hit** (`readCachedHelperSettings`, per-device PAM key, per-org `orgHelperSettingsCache`/`orgPamFallbackCache`). Those hold values that were produced by a *successful* resolution (builders throw before caching; `DeferredCacheFills` flushes only after a real COMMIT) and expire in ≤120 s. A hit is a decision; a fill that fails throws and becomes RETAIN. The retain decision is derived from "did the resolver return a value", never from where the value came from.
+   **Resolvers that default instead of throwing (verified in the quorum pass; narrow).** If the hierarchy load *errors* (`hierarchyOutcome === 'error'`) each resolver re-reads on its own, and for a device that has become invisible `resolveDevicePamSettings` returns `PAM_DEFAULTS` (`routes/agents/helpers.ts` ~3337), `resolveDeviceHelperSettings` returns `null` and falls through to the org flag (`services/helperSettings.ts` ~133, ~253) whose invisible-org result is `{enabled:false}`, and a `null` effective config makes `resolveRemoteAccessForDevice` return defaults (`services/remoteAccessPolicy.ts` ~255-291). These look like decisions but are not. Rule for W2: **a PAM/helper decision is trusted only when `hierarchyOutcome === 'loaded'`**; otherwise PAM and helper are both `retain` (safe direction; costs freshness only on a beat whose hierarchy read failed). For remote management, `resolveRemoteAccessForDevice` gains an additive `resolved: boolean` (false when the effective config was `null`), and only `resolved === true` counts as a decision.
+
+Not "no decision": a Redis cache **hit** (`readCachedHelperSettings`, per-device PAM key, per-org `orgHelperSettingsCache`/`orgPamFallbackCache`). Those hold values that were produced by a *successful* resolution (builders throw before caching; `DeferredCacheFills` flushes only after a real COMMIT) and expire in ≤120 s. A hit is a decision; a fill that fails throws and becomes RETAIN. The retain decision is derived from "did the resolver return a value", never from where the value came from.
 3. **Capability mechanism.** `securityCapabilities` keys are parsed tolerantly in `routes/agents/schemas.ts` (`z.number().int().optional().catch(undefined)`) and normalised by exported `normalizeXProtocolVersion` helpers in `heartbeat.ts`. Most are persisted non-sticky as device columns; `desktopWsFenceProtocolVersion` is precedent for **parse-only, no column**. The agent declares them in `compiledSecurityCapabilities()` (`heartbeat.go` ~8152) with a `*_capability_test.go` pinning the JSON key. This plan needs same-beat truth only, so it follows the parse-only precedent: **no migration, no new column, no cascade/export/org-move registration, no new RLS surface.**
 4. **State across agent restart.** `helperEnabled` and `uacInterceptionEnabled` are in-memory atomics defaulting to `false`; helper install state lives on disk (the manager is idempotent), the PAM lifetime ledger persists lifecycle but not the enable flag. So "retain" after restart means *stay at the boot default* (PAM off, no helper change) until the first beat that carries a real decision. That matches today's boot behaviour and never enables anything unverified.
 5. **Response decode hazard.** `HeartbeatResponse` is decoded with `json.NewDecoder(...).Decode`. A typed `[]string` field would fail the **whole** response decode on a non-string element and drop the beat's commands. The new field must use a tolerant type whose `UnmarshalJSON` never errors.
 
 ## Wire design
 
-Response (new API → new agent), only when the beat advertised `securityCapabilities.retainStateProtocolVersion >= 1`:
+Response (new API → new agent), only when the beat advertised `securityCapabilities.retainStateProtocolVersion` exactly `1`:
 
 ```json
 { "retainState": ["pam", "helper", "remoteManagement"], "commands": [], "...": "..." }
@@ -50,19 +52,20 @@ Response (new API → new agent), only when the beat advertised `securityCapabil
 
 - Names are a closed set: `pam`, `helper`, `remoteManagement`. The API emits a feature name only when it has **no decision** for it, and in that case **omits that feature's legacy keys** (`uacInterceptionEnabled`; `helperEnabled` + `helperSettings`; `manageRemoteManagement`). The agent also ignores a retained feature's legacy keys if both arrive (retain wins).
 - A decided "off" is still sent explicitly as today (`uacInterceptionEnabled:false`, `helperSettings:{enabled:false,...}`) and is **not** in the list. Representability of "explicit false vs absent" is therefore never needed on a plain Go bool: the list carries the third state.
-- Agent bounds: only a JSON array is read; at most 16 entries; each entry a string ≤ 32 bytes; unknown names ignored; any other shape → empty set (= today's semantics). Never panics, never errors the decode.
+- Agent bounds: only a JSON array is read (token-streamed, stopping after 16 entries, so parse work is bounded by the cap; the whole response body is already decoded in memory by the existing decoder, so this bounds semantics and CPU, not allocation); each entry a string ≤ 32 bytes; unknown names ignored; any other shape → empty set (= today's semantics). Never panics, never errors the decode.
 
 ### Protocol-compat matrix
 
 | Agent \ API | Old API (no `retainState`) | New API |
 |---|---|---|
-| **Old agent** (no capability, ignores unknown field) | Today. Failure beats send explicit `uac:false`, `helperEnabled:false`, `manageRemoteManagement` absent. | Capability absent/0 → API sends **the identical legacy shape**, including on failure. Residual risk remains for un-upgraded agents (see OD7); omitting keys does **not** help them because absent PAM also means "disable + cleanup". |
+| **Old agent** (no capability, ignores unknown field) | Today. Failure beats send explicit `uac:false`, `helperEnabled:false`, `manageRemoteManagement` absent. | Capability absent or not exactly 1 → API sends **the identical legacy shape**, including on failure. Residual risk remains for un-upgraded agents (see OD7); omitting keys does **not** help them because absent PAM also means "disable + cleanup". |
 | **New agent** (advertises v1) | Agent never sees `retainState`, so nothing changes: absent legacy keys mean what they mean today. The agent never infers "retain" from absence. | Failure beats carry `retainState`; agent keeps current helper/PAM/remote-management state for the named features; decided features apply as normal. |
 
 Other cases:
 - **Rollback of the agent** (new → old build): old build stops advertising; the very next beat is served the legacy shape (capability is same-beat truth, never sticky or stored). The old build ignores `retainState` as an unknown JSON field.
 - **API rollback / mid-deploy skew:** each beat is self-contained — the API reads the capability from the request it is answering. A rolling deploy mixes old and new API instances; a new agent just sees `retainState` on some beats and not others. No stored state to go stale.
 - **Agent restarts mid-retain:** boot defaults apply (finding 4).
+- **Known residual (skew/rollback/kill switch):** a protocol-aware agent is protected only by the API instance that answers its beat. During a rolling API deploy, after an API rollback, or with the kill switch on, a failing *old* instance (or the legacy path) still sends `uac:false`, which disables PAM and runs cleanup even though a prior beat retained it. The exposure window is bounded by the deploy/rollback duration and the failing-resolver condition; it is not removable without the agent inferring retention itself, which this plan rejects (it would change legacy semantics).
 - **Kill switch:** `HEARTBEAT_RETAIN_STATE_ENABLED=false` makes the API behave as an old API for all agents (default on).
 
 ## File Structure
@@ -90,7 +93,7 @@ Other cases:
 - A response with `retainState` malformed (object, number, mixed array, 10k entries, nested) must neither fail the decode nor retain anything unintended.
 - A decided `uacInterceptionEnabled:false` (admin disabled PAM) must still turn PAM off for a protocol-aware agent — retain must not swallow explicit off.
 - `retainState` containing `pam` **and** a stray `uacInterceptionEnabled:true` must not enable PAM (retain wins).
-- First beat after agent boot with `retainState:["pam"]` must leave PAM off and not touch `pamLifetimeManager`.
+- First beat after agent boot with `retainState:["pam"]` must leave PAM off (the same idempotent disable that runs today) and never enable; an off state with unfinished disable cleanup keeps retrying it.
 - Capability value `2`, `"1"`, `true`, `-1` from a beat must be treated as 0 (legacy shape).
 - Policy context that fails *after* PAM succeeded must still send PAM's decision and retain only what is missing.
 - A long retain streak must be visible (log) and must not silently freeze a stale policy forever.
@@ -140,7 +143,8 @@ func TestRetainStateDecode(t *testing.T) {
 		{"all", `["pam","helper","remoteManagement"]`, RetainState{true, true, true}},
 		{"pam only", `["pam"]`, RetainState{PAM: true}},
 		{"unknown names ignored", `["pam","futureThing"]`, RetainState{PAM: true}},
-		{"mixed types keep valid strings", `["helper",7,null,{"a":1}]`, RetainState{Helper: true}},
+		{"mixed scalars keep valid strings", `["helper",7,null,"pam"]`, RetainState{Helper: true, PAM: true}},
+		{"nested value stops parsing", `["helper",{"a":1},"pam"]`, RetainState{Helper: true}},
 		{"object is empty", `{"pam":true}`, RetainState{}},
 		{"number is empty", `3`, RetainState{}},
 		{"string is empty", `"pam"`, RetainState{}},
@@ -186,7 +190,10 @@ Expected: FAIL to compile (`RetainState` undefined).
 ```go
 package heartbeat
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // retainStateProtocolVersion is declared in securityCapabilities. Version 1:
 // the build honours HeartbeatResponse.RetainState (#8258).
@@ -214,16 +221,23 @@ type RetainState struct {
 // beyond retainStateMaxEntries are ignored.
 func (r *RetainState) UnmarshalJSON(data []byte) error {
 	*r = RetainState{}
-	var raw []json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return nil // not an array: retain nothing
 	}
-	for i, item := range raw {
-		if i >= retainStateMaxEntries {
-			break
+	// Stream tokens and stop after retainStateMaxEntries, so parse work is
+	// bounded by the cap rather than by the array length. A nested value
+	// (object/array) ends parsing: it is not a list of names.
+	for i := 0; i < retainStateMaxEntries && dec.More(); i++ {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
 		}
-		var name string
-		if err := json.Unmarshal(item, &name); err != nil || len(name) > retainStateMaxNameLen {
+		if _, nested := tok.(json.Delim); nested {
+			return nil
+		}
+		name, ok := tok.(string)
+		if !ok || len(name) > retainStateMaxNameLen {
 			continue
 		}
 		switch name {
@@ -296,20 +310,35 @@ func TestRetainStatePAMExplicitFalseStillDisables(t *testing.T) {
 	}
 }
 
-func TestRetainStatePAMDoesNotTouchLifetimeManager(t *testing.T) {
-	// Boot state, no decision yet: retain must not call SetEnabled(false) (cleanup) either.
-	h, mgr := newPamTestHeartbeatWithRecordingManager(t) // fake pamlifetime.Manager counting SetEnabled calls
-	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{PAM: true}})
-	if mgr.setEnabledCalls != 0 {
-		t.Fatalf("retain must not call SetEnabled, got %d", mgr.setEnabledCalls)
+func TestRetainStatePAMWhileOffKeepsRetryingDisableNeverEnables(t *testing.T) {
+	// Boot state / failed-cleanup state: PAM is off. Retain must keep the
+	// idempotent disable (cleanup retry) running and must never call
+	// SetEnabled(true).
+	h, mgr := newPamTestHeartbeatWithRecordingManager(t) // fake pamlifetime.Manager recording SetEnabled(arg)
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{PAM: true}, UacInterceptionEnabled: boolPtr(true)})
+	if mgr.enableCalls != 0 {
+		t.Fatalf("retain must never enable, got %d SetEnabled(true)", mgr.enableCalls)
+	}
+	if mgr.disableCalls == 0 {
+		t.Fatal("while off, retain must keep the disable/cleanup path running (same as an absent value today)")
 	}
 	if h.IsUACInterceptionEnabled() {
 		t.Fatal("boot default stays off")
 	}
 }
 
+func TestRetainStatePAMWhileOnDoesNotTouchLifetimeManager(t *testing.T) {
+	h, mgr := newPamTestHeartbeatWithRecordingManager(t)
+	h.handleUACInterception(boolPtr(true))
+	before := mgr.disableCalls
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{PAM: true}})
+	if mgr.disableCalls != before || !h.IsUACInterceptionEnabled() {
+		t.Fatal("retain while enabled must leave PAM and the lifetime manager untouched")
+	}
+}
+
 func TestRetainStateHelperKeepsFlagAndSkipsApply(t *testing.T) {
-	h := newTestHeartbeat(nil)
+	h := newRetainTestHeartbeat()
 	h.handleHelperEnabled(true)
 	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{Helper: true}})
 	if !h.IsHelperEnabled() {
@@ -318,7 +347,7 @@ func TestRetainStateHelperKeepsFlagAndSkipsApply(t *testing.T) {
 }
 
 func TestRetainStateRemoteManagementKeepsPolicyFlag(t *testing.T) {
-	h := newTestHeartbeat(nil)
+	h := newRetainTestHeartbeat()
 	h.tunnelMgr.SetManagedByPolicy(true)
 	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
 	if !h.tunnelMgr.IsManagedByPolicy() {
@@ -329,6 +358,7 @@ func TestRetainStateRemoteManagementKeepsPolicyFlag(t *testing.T) {
 func TestLegacyShapeUnchangedWithoutRetainState(t *testing.T) {
 	// Old-API compatibility: absent keys keep meaning "off", exactly as today.
 	h := newPamEnabledTestHeartbeat(t)
+	h.tunnelMgr = tunnel.NewManager(false)
 	h.handleUACInterception(boolPtr(true))
 	h.tunnelMgr.SetManagedByPolicy(true)
 	h.handleHelperEnabled(true)
@@ -339,7 +369,7 @@ func TestLegacyShapeUnchangedWithoutRetainState(t *testing.T) {
 }
 ```
 
-Helpers `newPamEnabledTestHeartbeat` / `newPamTestHeartbeatWithRecordingManager`: build from the existing constructors; if `pamLifetimeManager` is a concrete type, introduce a minimal test double through the existing `pamlifetime.Manager` interface (check `agent/internal/pamlifetime` for the interface; do not widen production code just for the test).
+`newRetainTestHeartbeat()` returns `&Heartbeat{tunnelMgr: tunnel.NewManager(false)}` (every apply path dereferences `tunnelMgr`; `newTestHeartbeat(nil)` leaves it nil and would panic; `helperMgr` is touched only when `HelperSettings != nil`, so helper-settings cases must build `helper.NewManager` as the existing helper tests do). Helpers `newPamEnabledTestHeartbeat` / `newPamTestHeartbeatWithRecordingManager`: build from the existing constructors; if `pamLifetimeManager` is a concrete type, introduce a minimal test double through the existing `pamlifetime.Manager` interface (check `agent/internal/pamlifetime` for the interface; do not widen production code just for the test).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -356,7 +386,16 @@ Expected: FAIL (`applySettingsDecisions` undefined; once stubbed, the retain tes
 func (h *Heartbeat) applySettingsDecisions(resp *HeartbeatResponse) {
 	retain := resp.RetainState
 	h.noteRetainStreak(retain)
-	if !retain.PAM {
+	// Retain keeps an ENABLED PAM state untouched. When PAM is currently off
+	// (boot default, or a disable whose verified cleanup may still be
+	// pending — handleUACInterception retries that cleanup every beat) the
+	// disable path keeps running: it is idempotent, identical to today's
+	// behaviour for an off state, and can never enable anything.
+	if retain.PAM {
+		if !h.uacInterceptionEnabled.Load() {
+			h.handleUACInterception(boolPtr(false))
+		}
+	} else {
 		h.handleUACInterception(resp.UacInterceptionEnabled)
 	}
 	if !retain.RemoteManagement {
@@ -387,7 +426,7 @@ Expected: PASS, including every pre-existing `uac_interception_test.go` / `handl
 
 - [ ] **Step 1: Write the failing tests.** Go: `compiledSecurityCapabilities().RetainStateProtocolVersion == 1` and the marshalled JSON key is exactly `retainStateProtocolVersion` (same shape as the consent test). API: a heartbeat body with `securityCapabilities: { retainStateProtocolVersion: 1 }` parses with the field preserved (after Wave 2 adds it to the schema) **and, in this wave, with the current schema the unknown key must not 400 the beat** — add the assertion to `schemas.heartbeatTolerance.test.ts` as a pure old-schema guard before touching the schema.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/heartbeat/ -run RetainStateCapability -count=1` → FAIL; `cd apps/api && npx vitest run src/routes/agents/schemas.heartbeatTolerance.test.ts` → PASS today (proves the old API tolerates the new key; this is the W1 safety evidence).
-- [ ] **Step 3: Implement.** Add `RetainStateProtocolVersion int \`json:"retainStateProtocolVersion,omitempty"\`` with a doc comment ("this build honours HeartbeatResponse.RetainState; the API sends it only to agents declaring ≥1") and `RetainStateProtocolVersion: retainStateProtocolVersion` in `compiledSecurityCapabilities()`.
+- [ ] **Step 3: Implement.** Add `RetainStateProtocolVersion int \`json:"retainStateProtocolVersion,omitempty"\`` with a doc comment ("this build honours HeartbeatResponse.RetainState; the API sends it only to agents declaring exactly 1") and `RetainStateProtocolVersion: retainStateProtocolVersion` in `compiledSecurityCapabilities()`.
 - [ ] **Step 4: Run** both commands; Expected: PASS.
 - [ ] **Step 5: Commit** — `feat(agent): declare retainStateProtocolVersion 1 (#8258)`.
 
@@ -464,6 +503,8 @@ Behaviour: **legacy mode** (`retainProtocol !== 1 || !enabled`) reproduces today
 - Modify: `apps/api/src/routes/agents/heartbeat.ts` — org-scoped block (~2096-2108: record `remoteManagementResolved`; carry it out of the `scoped` result, which today returns `{deviceOrgId, deviceSiteId, deviceId, mainResponse}` at ~693/2168; add a field), `mainResponse.manageRemoteManagement` (~2182: stop spreading it; the decision builder owns it), final `c.json` (~2690-2703: replace the three inline `??` expressions with `...buildSettingsDecisionFields(...)`), the drain-branch comment (~461).
 - Test: `apps/api/src/routes/agents/heartbeat.test.ts` (existing cases at ~985, ~4009-4021, ~4425-4447 are the legacy oracle and must stay green **unchanged**).
 
+Also in this task: gate PAM/helper decisions on `hierarchyOutcome === 'loaded'` (retain both otherwise) and add `resolved: boolean` to `resolveRemoteAccessForDevice`'s result (`services/remoteAccessPolicy.ts`; additive — grep callers first).
+
 - [ ] **Step 1: Write failing tests** next to the existing "fails closed … when the pam resolver throws" case (~4009), using the same mocks (`buildPamConfigUpdate`, `buildHelperConfigUpdate`, hierarchy loader):
   1. beat advertises `retainStateProtocolVersion:1`, `buildPamConfigUpdate` rejects → `body.retainState` contains `'pam'`, `'uacInterceptionEnabled' in body === false`.
   2. same failure, beat without the capability → `body.uacInterceptionEnabled === false` and no `retainState` key (the existing test, kept).
@@ -474,6 +515,7 @@ Behaviour: **legacy mode** (`retainProtocol !== 1 || !enabled`) reproduces today
   7. `resolveRemoteAccessForDevice` throws + v1 → `retainState` has `remoteManagement`, no `manageRemoteManagement`; legacy beat keeps today's absent key.
   8. `HEARTBEAT_RETAIN_STATE_ENABLED=false` + v1 → legacy shape.
   9. Sentry: `captureException` still called once per failure (assert the existing calls are not removed); add `captureException` to the remote-access catch (today `console.error` only).
+  11. hierarchy load *errors* (`hierarchyOutcome==='error'`) while the resolver mocks would return defaults (PAM mock returns `{uacInterceptionEnabled:false}`) + v1 → `retainState` ⊇ `['pam','helper']`, not a decided false; remote-access `resolved:false` + v1 → `remoteManagement` retained.
   10. cache-hit path: `readCachedHelperSettings` returns a value → decided, not retained.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/agents/heartbeat.test.ts` → FAIL on 1, 4, 5, 7, 8, 9.
 - [ ] **Step 3: Implement.** Also correct the drain-branch comment: absence of `uacInterceptionEnabled` disables PAM (and runs cleanup), and note the drain branch intentionally does not emit `retainState` (OD6).
@@ -524,18 +566,22 @@ Each: options, **recommendation**, one-line why. "Quorum" notes record where the
    (b) A separate `retainState: [...]` list. Pro: additive, self-describing, new-agent/old-API is unchanged by construction, extensible, "explicit false" never needs to be distinguished from absent on a plain bool.
    (c) `configUpdate` map keys like OneDrive. Pro: has a precedent. Con: OneDrive's "omitted = keep" works because that key was *always* `configUpdate`-only; PAM/helper/remote-management are top-level fields with legacy semantics, so a configUpdate key would sit beside contradictory top-level values and still need a gate.
    **Recommend (b)** — it is the only option that cannot change meaning for any old/new pairing.
-2. **Protocol key, location, floor.** Options: new `securityCapabilities.retainStateProtocolVersion` (parse-only, no column) / reuse `pamLifetimeProtocolVersion` / agent-version string comparison. **Recommend the new key, floor 1**, declared in `compiledSecurityCapabilities()`, normalised to exactly-1, read from the same beat — reusing an unrelated version couples two rollouts, and version-string gating is what the capability mechanism exists to avoid.
+2. **Protocol key, location, floor.** Options: new `securityCapabilities.retainStateProtocolVersion` (parse-only, no column) / reuse `pamLifetimeProtocolVersion` / agent-version string comparison. **Recommend the new key, floor 1, matched as exactly `1`** (the existing normaliser convention: a future v2 is spoken only after the API learns it, as with consent v2), declared in `compiledSecurityCapabilities()`, normalised to exactly-1, read from the same beat — reusing an unrelated version couples two rollouts, and version-string gating is what the capability mechanism exists to avoid.
 3. **Ordering.** Agent-first (W1 then W2) vs API-first. **Recommend agent-first, confirmed necessary**: an API-first rollout is inert (nothing advertises v1) and an API that emitted unconditionally would be sending an unknown field to old agents; with capability gating agent-first is also the only order in which the first emitted `retainState` is already honoured.
-4. **Meaning of "retain" after agent restart.** Options: persisted last state / boot default. **Recommend boot default (PAM off, helper untouched on disk)** — PAM enable needs reconciliation + verification before it may turn on, so persisting "on" would bypass that gate; boot default equals today's behaviour.
+4. **Meaning of "retain" after agent restart.** Options: persisted last state / boot default. **Recommend boot default (PAM off with the same idempotent disable-cleanup retry that runs today; helper untouched on disk)** — PAM enable needs reconciliation + verification before it may turn on, so persisting "on" would bypass that gate; boot default equals today's behaviour.
 5. **`manageRemoteManagement` and other plain bools.** Options: fix now with the same list / follow-up. **Recommend fix now for `manageRemoteManagement` only** — it is a real instance of the same defect (thrown resolver → `SetManagedByPolicy(false)`), the list encoding makes it nearly free, and the other plain bools are one-shot triggers where absent is correct. Fallback if the reviewer wants W1 smaller: ship `pam` + `helper` and add `remoteManagement` in a later agent release.
 6. **Uninstall-drain branch.** Options: leave / send `retainState` for all three to protocol-aware agents. **Recommend leave unchanged** — that branch's documented invariant is "claim the uninstall and return nothing else"; the machine is being removed, PAM capture stopping there is benign, and keeping the branch minimal is its security property. Only fix the false comment.
 7. **Server-side mitigation for old agents.** Options: none / omit keys / last-known-decision fallback (W3). Omitting keys was checked and is **ineffective** (absent PAM still disables). **Recommend none in W2; W3 only if adoption data shows a material tail**, because last-known adds Redis writes on the hot path that #8139 is trying to shrink.
 8. **Adoption gate before emission.** Options: none (per-beat capability self-gates) / fleet percentage threshold / env kill switch. **Recommend no threshold plus `HEARTBEAT_RETAIN_STATE_ENABLED` kill switch (default on)** — emission is safe at any adoption level because old agents get the identical legacy shape; adoption data (devices by agent version ≥ the W1 release, from the existing agent-version rollup) decides only whether W3 is worth doing.
 9. **Wave cut.** Options: W1 agent / W2 API / W3 cleanup (suggested) vs W1 agent / W2 API / W3 legacy mitigation. **Recommend the latter**: "cleanup" has nothing safe to remove until a minimum agent version is enforced, so the third wave is the optional mitigation and removal is explicitly out of scope.
 10. **Unbounded retain.** If the API fails persistently, retained state can go stale (e.g. an admin disables PAM and the agent never hears it). Options: retain forever with a visible warning / auto-revert to off after N beats / agent reports streak to the API. **Recommend visible warning only (30 consecutive beats ≈ 30 min, log once per streak)**, because auto-revert reintroduces the exact downgrade this plan removes, and a persistent resolver outage is already a Sentry-visible incident on the API side. Server-side streak reporting is a possible follow-up.
-11. **Where "retain" is decided.** Options: derive from the resolver result being absent (this plan) / add an explicit tri-state to each builder. **Recommend derive from absence** — builders already throw instead of returning defaults on failure (and never cache failures), so `null` in the response assembly is exactly "no decision"; the pure builder keeps that rule in one tested place.
+11. **Where "retain" is decided.** Options: derive from the resolver result being absent (this plan) / add an explicit tri-state to each builder. **Recommend derive from absence** — the main builders throw on failure (and never cache failures), with the exceptions listed in Finding 2, so `null` in the response assembly is "no decision" — **plus** the hierarchy-loaded gate and the remote-access `resolved` flag for the resolvers that default instead of throwing (see Finding 2); the pure builder keeps that rule in one tested place.
 12. **Integration-test forcing method.** The integration test forces failure by spying on the resolver rather than inducing a real DB fault (a mid-beat org move is not deterministic). Accepted trade-off; the unit layer covers the `missing` hierarchy path.
 
 ### Quorum
 
-*(Filled in after the read-only Codex pass — see PR description.)*
+Independent read-only Codex pass (medium effort). Eight findings, each re-verified against the cited file before acting:
+
+- **Folded in (verified):** resolvers that default instead of throwing when the device/org is invisible, in the hierarchy-error fallback (PAM defaults, helper org flag `{enabled:false}`, remote-access defaults) → hierarchy-loaded gate + remote `resolved` flag (Finding 2, Task 2.3, OD11); retain must keep the idempotent PAM disable/cleanup retry while PAM is off (Task 1.2 code and tests); streaming parser to bound parse work (Task 1.1); version-contract wording made consistently "exactly 1" (OD2); test constructors must build `tunnelMgr` (Task 1.2); skew/rollback/kill-switch residual stated (compat section).
+- **Partially accepted:** "bounds do not bound allocation" — the whole response body is already decoded in memory, so the plan now says the bound is semantic/CPU only, not memory.
+- **Unresolved disagreements:** none.
