@@ -703,6 +703,13 @@ ticketsRoutes.patch(
     }
     if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
+    // #4617: the budget is the customer's spend ceiling under the approval
+    // gate — a partner-staff decision. Organization scope cannot read the
+    // time entries it is measured against (time_entries has no org-axis RLS).
+    if (auth.scope === 'organization' && (body.budgetMinutes !== undefined || body.budgetAmount !== undefined)) {
+      return c.json({ error: 'The ticket budget can only be set by partner staff', code: ERROR_CODES.ACCESS_DENIED }, 403);
+    }
+
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }

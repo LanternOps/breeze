@@ -1345,6 +1345,37 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
     );
   });
 
+  // #4617 W03: the budget is the customer's spend ceiling under the approval
+  // gate. It is a partner-staff decision; time entries (what the budget is
+  // measured against) are not visible to organization scope at all.
+  it.each([{ budgetMinutes: 60 }, { budgetAmount: '100.00' }, { budgetAmount: null }])(
+    'refuses budget field %o from an organization-scope caller with 403',
+    async (body) => {
+      authRef.current = { ...DEFAULT_AUTH, scope: 'organization', orgId: ORG_ID, partnerId: null, canAccessOrg: () => true };
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+      expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes budget fields through for a partner-scope caller', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.updateTicketFields.mockResolvedValue({ ...STUB_TICKET, budgetMinutes: 60 });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budgetMinutes: 60, budgetAmount: '250.00' }),
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.updateTicketFields).toHaveBeenCalledWith(
+      TICKET_ID, { budgetMinutes: 60, budgetAmount: '250.00' }, expect.objectContaining({ userId: 'u-1' }),
+    );
+  });
+
   it('400s on an empty body without calling the service', async () => {
     const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
       method: 'PATCH',
