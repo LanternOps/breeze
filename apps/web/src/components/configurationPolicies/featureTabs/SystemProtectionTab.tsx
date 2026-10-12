@@ -26,7 +26,7 @@ function settingsFrom(raw: Record<string, unknown> | null | undefined): Settings
   for (const key of ["beforePatching", "beforeScripts", "beforeSoftwareInstall"] as const) {
     if (typeof raw[key] === "boolean") out[key] = raw[key] as boolean;
   }
-  if (typeof raw.labelPrefix === "string" && raw.labelPrefix.length > 0) {
+  if (typeof raw.labelPrefix === "string" && raw.labelPrefix.trim().length > 0) {
     out.labelPrefix = raw.labelPrefix;
   }
   return out;
@@ -67,15 +67,21 @@ export default function SystemProtectionTab({
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<Settings>(() => settingsFrom(effectiveLink?.inlineSettings));
 
+  // Re-seed whenever the link changes — INCLUDING when it goes away (remove /
+  // revert with no parent), so the toggles never show a removed policy's values
+  // under the platform-default note.
   useEffect(() => {
-    const link = existingLink ?? parentLink;
-    if (link?.inlineSettings) setSettings(settingsFrom(link.inlineSettings));
+    setSettings(settingsFrom((existingLink ?? parentLink)?.inlineSettings));
   }, [existingLink, parentLink]);
 
+  // The API rejects a blank prefix; a cleared field means "use the default".
   const payload = () => ({
     featureType: "system_protection" as const,
     featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-    inlineSettings: { ...settings },
+    inlineSettings: {
+      ...settings,
+      labelPrefix: settings.labelPrefix.trim() || SYSTEM_PROTECTION_DEFAULTS.labelPrefix,
+    },
   });
 
   const handleSave = async () => {
@@ -178,6 +184,7 @@ export default function SystemProtectionTab({
             type="text"
             maxLength={64}
             value={settings.labelPrefix}
+            placeholder={SYSTEM_PROTECTION_DEFAULTS.labelPrefix}
             onChange={(e) => setSettings((prev) => ({ ...prev, labelPrefix: e.target.value }))}
             className="h-9 w-full max-w-sm rounded-md border bg-background px-3 text-sm"
           />

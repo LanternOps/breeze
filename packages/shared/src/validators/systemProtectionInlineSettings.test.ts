@@ -53,6 +53,8 @@ describe('systemProtectionInlineSettingsSchema', () => {
     expect(systemProtectionInlineSettingsSchema.safeParse({ labelPrefix: 'x'.repeat(64) }).success).toBe(true);
     expect(systemProtectionInlineSettingsSchema.safeParse({ labelPrefix: 'x'.repeat(65) }).success).toBe(false);
     expect(systemProtectionInlineSettingsSchema.safeParse({ labelPrefix: '' }).success).toBe(false);
+    // Whitespace-only would produce a description with no visible prefix.
+    expect(systemProtectionInlineSettingsSchema.safeParse({ labelPrefix: '   ' }).success).toBe(false);
   });
 
   it('rejects a labelPrefix containing control characters', () => {

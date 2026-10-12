@@ -109,6 +109,38 @@ describe('SystemProtectionTab', () => {
     });
   });
 
+  it('saves the default prefix when the field is cleared or blank (the API rejects an empty one)', () => {
+    render(<SystemProtectionTab {...baseProps} />);
+    fireEvent.change(screen.getByTestId('system-protection-label-prefix-input'), { target: { value: '   ' } });
+    clickSave();
+    expect((payloadFromCall(saveMock.mock.calls[0])?.inlineSettings as Record<string, unknown>).labelPrefix).toBe('Breeze');
+  });
+
+  it('trims the prefix before saving', () => {
+    render(<SystemProtectionTab {...baseProps} />);
+    fireEvent.change(screen.getByTestId('system-protection-label-prefix-input'), { target: { value: '  Ops  ' } });
+    clickSave();
+    expect((payloadFromCall(saveMock.mock.calls[0])?.inlineSettings as Record<string, unknown>).labelPrefix).toBe('Ops');
+  });
+
+  it('resets to the platform defaults when the link is removed (no stale toggles under the default note)', () => {
+    const { rerender } = render(
+      <SystemProtectionTab {...baseProps} existingLink={link({ beforePatching: false, beforeScripts: true })} />,
+    );
+    expect(screen.getByTestId('system-protection-before-scripts-toggle').getAttribute('aria-checked')).toBe('true');
+
+    rerender(<SystemProtectionTab {...baseProps} existingLink={undefined} />);
+    expect(screen.getByTestId('system-protection-platform-default-note')).toBeTruthy();
+    expect(screen.getByTestId('system-protection-before-scripts-toggle').getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByTestId('system-protection-before-patching-toggle').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('shows inherited parent settings without the platform-default note, and overrides as a new link', () => {
+    render(<SystemProtectionTab {...baseProps} parentLink={link({ beforeSoftwareInstall: true })} />);
+    expect(screen.queryByTestId('system-protection-platform-default-note')).toBeNull();
+    expect(screen.getByTestId('system-protection-before-software-toggle').getAttribute('aria-checked')).toBe('true');
+  });
+
   it('caps the label prefix input at 64 characters', () => {
     render(<SystemProtectionTab {...baseProps} />);
     expect((screen.getByTestId('system-protection-label-prefix-input') as HTMLInputElement).maxLength).toBe(64);

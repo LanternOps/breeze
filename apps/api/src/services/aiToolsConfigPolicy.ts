@@ -11,6 +11,7 @@ import {
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
+  systemProtectionInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -93,6 +94,10 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // stored JSONB keeps whatever UI-only keys (description, remediation) the
   // caller sent, exactly as the HTTP route stores it.
   compliance: { schema: complianceInlineSettingsSchema, normalize: false },
+  // #4754: strict schema, so an AI-guessed key (e.g. onFailure) is named in the
+  // error instead of surfacing as the generic tool error. Normalized so the
+  // JSONB stores the default-filled object, matching the HTTP route.
+  system_protection: { schema: systemProtectionInlineSettingsSchema, normalize: true },
 };
 
 /**

@@ -146,7 +146,15 @@ function row(
   updatedAt = new Date('2026-01-01T00:00:00Z'),
   createdAt = new Date('2026-01-01T00:00:00Z'),
 ) {
-  return { inlineSettings, assignmentLevel, assignmentPriority: 0, assignmentCreatedAt: createdAt, linkUpdatedAt: updatedAt };
+  return {
+    featureLinkId: 'link-1',
+    sourcePolicyId: 'policy-src-1',
+    inlineSettings,
+    assignmentLevel,
+    assignmentPriority: 0,
+    assignmentCreatedAt: createdAt,
+    linkUpdatedAt: updatedAt,
+  };
 }
 
 describe('resolveSystemProtectionForDevice', () => {
@@ -255,7 +263,12 @@ describe('resolveSystemProtectionForDevice', () => {
     expect(res.invalidStoredSettings).toBe(true);
     expect(res.isPlatformDefault).toBe(false);
     expect(res.policyRevision).toBe('2026-01-01T00:00:00.000Z');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('system_protection'), expect.anything());
+    // Names the offending link and the policy that owns its settings, so the
+    // bad row can be found from the log line alone.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('system_protection'),
+      expect.objectContaining({ deviceId: 'device-1', featureLinkId: 'link-1', sourcePolicyId: 'policy-src-1' }),
+    );
     warn.mockRestore();
   });
 

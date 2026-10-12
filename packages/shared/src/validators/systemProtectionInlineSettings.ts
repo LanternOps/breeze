@@ -36,6 +36,7 @@ const labelPrefixSchema = z
   .string()
   .min(1)
   .max(64)
+  .refine((s) => s.trim().length > 0, { message: 'labelPrefix must not be blank' })
   .refine((s) => !hasControlCharacters(s), {
     message: 'labelPrefix must not contain control characters',
   });

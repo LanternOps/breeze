@@ -2549,6 +2549,8 @@ export async function resolveSystemProtectionForDevice(
 
   const rows = await db
     .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
       inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       linkUpdatedAt: configPolicyEffectiveFeatureLinks.updatedAt,
       assignmentLevel: configPolicyAssignments.level,
@@ -2585,8 +2587,13 @@ export async function resolveSystemProtectionForDevice(
   const parsed = systemProtectionInlineSettingsSchema.safeParse(winner.inlineSettings ?? {});
   if (!parsed.success) {
     console.warn(
-      `[featureConfigResolver] Malformed system_protection settings for device ${deviceId}; using platform defaults`,
-      { issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`) },
+      '[featureConfigResolver] Malformed system_protection settings; using platform defaults',
+      {
+        deviceId,
+        featureLinkId: winner.featureLinkId,
+        sourcePolicyId: winner.sourcePolicyId,
+        issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+      },
     );
     return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
   }
