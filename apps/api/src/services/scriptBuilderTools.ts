@@ -13,7 +13,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
-import { scriptParameterDefinitionsSchema } from '@breeze/shared';
+import { scriptParameterDefinitionsSchema, WORKLOAD_RUNTIMES, WORKLOAD_STATES } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
@@ -47,6 +47,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_device_details: 1,
   get_device_hardware_health: 1,
   get_device_time_status: 1,
+  query_device_workloads: 1,
   list_time_sync_issues: 1,
   manage_alerts: 1,
   list_scripts: 1,
@@ -322,6 +323,18 @@ export function buildScriptBuilderTools(
       'Get Windows time health, expected timezone, findings and recent events.',
       { deviceId: uuid },
       makeExistingHandler('get_device_time_status', getAuth, onPreToolUse, onPostToolUse),
+    ),
+
+    tool(
+      'query_device_workloads',
+      'List the containers and VMs a device hosts, with per-runtime status and counts.',
+      {
+        deviceId: z.string().uuid(),
+        runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
+        state: z.enum(WORKLOAD_STATES).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeExistingHandler('query_device_workloads', getAuth, onPreToolUse, onPostToolUse),
     ),
 
     tool(

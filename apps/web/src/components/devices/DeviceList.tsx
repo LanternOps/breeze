@@ -387,6 +387,12 @@ export type Device = {
    */
   linkGroupRole?: 'host' | 'guest' | null;
   /**
+   * Workload host axis (#8193): true once the agent detects any container or
+   * VM runtime (devices.hosts_workloads). Gates the device page Workloads tab.
+   * undefined = not carried by this payload.
+   */
+  hostsWorkloads?: boolean;
+  /**
    * RDS per-session helper mode reported by the agent heartbeat
    * (devices.helper_lifecycle_mode). 'on-demand' gates Tasks 13/14's session
    * pickers (RD connect, script dialog). null/undefined = not reported

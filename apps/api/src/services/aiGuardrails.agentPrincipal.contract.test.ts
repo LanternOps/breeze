@@ -342,6 +342,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_compliance_policies',
   // W01 (#6755) follow-up
   'query_custom_fields',
+  'query_device_workloads',
   'query_devices',
   // W01 (#6755) follow-up
   'query_dr_plans',

@@ -10,7 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -213,6 +213,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_device_time_status: z.object({ deviceId: uuid }),
+  query_device_workloads: z.object({
+    deviceId: uuid,
+    runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
+    state: z.enum(WORKLOAD_STATES).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
   list_time_sync_issues: fleetTimeFiltersSchema,
   get_device_hardware_health: z.object({
     deviceId: uuid,

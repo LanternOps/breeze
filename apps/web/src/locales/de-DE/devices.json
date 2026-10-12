@@ -945,7 +945,9 @@
       "management": "Verwaltung",
       "history": "Verlauf & Netzwerk",
       "extensions": "Erweiterungen"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -3958,6 +3960,64 @@
       "pdc_emulator": "PDC-Emulator der Domäne",
       "forest_root_pdc_emulator": "PDC-Emulator der Gesamtstruktur-Stammdomäne",
       "unknown": "Unbekannt"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Workloads für dieses Gerät konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "agentTooOld": "Agent zu alt – aktualisieren Sie den Agent, damit Workloads gemeldet werden.",
+    "noRuntimes": "Auf diesem Gerät wurde keine Container- oder VM-Runtime erkannt.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unbekannt",
+    "detection": {
+      "absent": "Nicht installiert",
+      "unknown": "Erkennung nicht eindeutig"
+    },
+    "status": {
+      "ok": "Wird erfasst",
+      "disabled": "Erfassung ist aus – aktivieren Sie Workload-Inventar in einer Konfigurationsrichtlinie",
+      "unavailable": "Runtime läuft nicht",
+      "permission_denied": "Zugriff verweigert",
+      "error": "Erfassung fehlgeschlagen",
+      "unsupported": "Auf diesem Gerät nicht unterstützt"
+    },
+    "detectOnly": "Nur erkannt – Workloads für diese Runtime werden nicht aufgelistet.",
+    "counts": "{{total}} Workloads · {{running}} laufend · {{stopped}} gestoppt",
+    "partial": "Teilweiser Snapshot – einige Details konnten nicht gelesen werden, daher werden die erfassten Daten angezeigt.",
+    "truncated": "Angezeigt werden {{reported}} von {{observed}} Workloads, die die Runtime gemeldet hat.",
+    "lastError": "Letzter Fehler: {{error}}",
+    "lastCollected": "Zuletzt erfasst {{time}}",
+    "empty": "Keine Workloads gemeldet.",
+    "columns": {
+      "name": "Name",
+      "state": "Status",
+      "image": "Image / Gast-OS",
+      "compose": "Compose-Projekt",
+      "started": "Gestartet"
+    },
+    "states": {
+      "running": "Läuft",
+      "stopped": "Gestoppt",
+      "paused": "Pausiert",
+      "restarting": "Wird neu gestartet",
+      "other": "Sonstige"
+    },
+    "policy": {
+      "title": "Workload-Inventar",
+      "description": "Container und virtuelle Maschinen auf Container- und VM-Hosts auflisten",
+      "offNote": "Runtimes werden immer erkannt, aber die Workload-Auflistung bleibt aus, bis eine Richtlinie sie aktiviert.",
+      "enabled": "Workloads auflisten",
+      "runtimesHeading": "Aufzulistende Runtimes",
+      "laterRelease": "Die Auflistung für Hyper-V und Proxmox VE folgt mit einer späteren Agent-Version; diese Schalter werden dann wirksam.",
+      "interval": "Erfassungsintervall (Minuten)",
+      "invalidInterval": "Das Intervall muss eine ganze Zahl von Minuten zwischen {{min}} und {{max}} sein."
     }
   }
 }

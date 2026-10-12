@@ -7,17 +7,15 @@ import { i18n } from '@/lib/i18n';
 // type makes FEATURE_META below fail to compile until a tab entry is added, and
 // featureTypeParity.test.ts asserts the exclusion stays honest. (#2004)
 //
-// The exclusion list currently holds only workload_inventory, which has no
-// editor tab until W04 (#3834); every other canonical feature type has one
-// (onedrive_helper gained one in the OneDrive Helper phase-3 work).
-// The mechanism (const tuple + Exclude) is intentionally retained so a future
-// feature type that legitimately has no tab can be excluded here in one place
-// without re-plumbing the type derivation.
+// The exclusion list is empty: every canonical feature type has an editor tab
+// (workload_inventory gained one in #8193). The mechanism (const tuple +
+// Exclude) is intentionally retained so a future feature type that
+// legitimately has no tab can be excluded here in one place without
+// re-plumbing the type derivation.
 //
 // FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
 // exclusion list and the compile-time Exclude can't drift from each other.
-// W04 (#3834) ships the workload_inventory tab and deletes this exclusion.
-export const EDITOR_EXCLUDED_FEATURE_TYPES = ['workload_inventory'] as const;
+export const EDITOR_EXCLUDED_FEATURE_TYPES = [] as const;
 export type FeatureType = Exclude<ConfigFeatureType, typeof EDITOR_EXCLUDED_FEATURE_TYPES[number]>;
 
 export type FeatureLink = {
@@ -103,6 +101,15 @@ export const FEATURE_META: Record<FeatureType, {
     fetchUrl: null,
     get description() {
       return i18n.t('devices:timeSync.management.description');
+    },
+  },
+  workload_inventory: {
+    get label() {
+      return i18n.t('devices:workloads.policy.title');
+    },
+    fetchUrl: null,
+    get description() {
+      return i18n.t('devices:workloads.policy.description');
     },
   },
 };

@@ -945,7 +945,9 @@
       "management": "Gestione",
       "history": "Cronologia e rete",
       "extensions": "Estensioni"
-    }
+    },
+    "workloads": "Carichi di lavoro",
+    "workloadsTitle": "Container e macchine virtuali su questo host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -3958,6 +3960,64 @@
       "pdc_emulator": "Emulatore PDC del dominio",
       "forest_root_pdc_emulator": "Emulatore PDC della radice della foresta",
       "unknown": "Sconosciuto"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Impossibile caricare i carichi di lavoro per questo dispositivo.",
+    "retry": "Riprova",
+    "agentTooOld": "Agente troppo vecchio: aggiorna l’agente per segnalare i carichi di lavoro.",
+    "noRuntimes": "Nessun runtime di container o VM rilevato su questo dispositivo.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Versione {{version}}",
+    "versionUnknown": "Versione sconosciuta",
+    "detection": {
+      "absent": "Non installato",
+      "unknown": "Rilevamento non conclusivo"
+    },
+    "status": {
+      "ok": "Raccolta in corso",
+      "disabled": "La raccolta è disattivata: abilita Inventario dei carichi di lavoro in un criterio di configurazione",
+      "unavailable": "Runtime non in esecuzione",
+      "permission_denied": "Autorizzazione negata",
+      "error": "Raccolta non riuscita",
+      "unsupported": "Non supportato su questo dispositivo"
+    },
+    "detectOnly": "Solo rilevato: i carichi di lavoro di questo runtime non sono elencati.",
+    "counts": "{{total}} carichi di lavoro · {{running}} in esecuzione · {{stopped}} arrestati",
+    "partial": "Snapshot parziale: alcuni dettagli non sono stati letti, quindi vengono mostrati i dati raccolti.",
+    "truncated": "Vengono mostrati {{reported}} di {{observed}} carichi di lavoro segnalati dal runtime.",
+    "lastError": "Ultimo errore: {{error}}",
+    "lastCollected": "Ultima raccolta {{time}}",
+    "empty": "Nessun carico di lavoro segnalato.",
+    "columns": {
+      "name": "Nome",
+      "state": "Stato",
+      "image": "Immagine / OS guest",
+      "compose": "Progetto Compose",
+      "started": "Avviato"
+    },
+    "states": {
+      "running": "In esecuzione",
+      "stopped": "Arrestato",
+      "paused": "In pausa",
+      "restarting": "Riavvio in corso",
+      "other": "Altro"
+    },
+    "policy": {
+      "title": "Inventario dei carichi di lavoro",
+      "description": "Elenca i container e le macchine virtuali sugli host di container e VM",
+      "offNote": "I runtime vengono sempre rilevati, ma l’elenco dei carichi di lavoro resta disattivato finché un criterio non lo abilita.",
+      "enabled": "Elenca i carichi di lavoro",
+      "runtimesHeading": "Runtime da elencare",
+      "laterRelease": "L’elenco di Hyper-V e Proxmox VE arriverà con una release successiva dell’agente; questi interruttori avranno effetto allora.",
+      "interval": "Intervallo di raccolta (minuti)",
+      "invalidInterval": "L’intervallo deve essere un numero intero di minuti compreso tra {{min}} e {{max}}."
     }
   }
 }

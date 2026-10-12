@@ -945,7 +945,9 @@
       "management": "Yönetim",
       "history": "Geçmiş ve Ağ",
       "extensions": "Uzantılar"
-    }
+    },
+    "workloads": "İş yükleri",
+    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -3958,6 +3960,64 @@
       "pdc_emulator": "Etki alanı PDC öykünücüsü",
       "forest_root_pdc_emulator": "Orman kökü PDC öykünücüsü",
       "unknown": "Bilinmiyor"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Bu cihazın iş yükleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "agentTooOld": "Aracı çok eski — iş yüklerini bildirmesi için aracıyı güncelleyin.",
+    "noRuntimes": "Bu cihazda kapsayıcı veya VM çalışma zamanı algılanmadı.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Sürüm {{version}}",
+    "versionUnknown": "Sürüm bilinmiyor",
+    "detection": {
+      "absent": "Yüklü değil",
+      "unknown": "Algılama sonuçsuz"
+    },
+    "status": {
+      "ok": "Toplanıyor",
+      "disabled": "Toplama kapalı — bir yapılandırma ilkesinde İş yükü envanterini etkinleştirin",
+      "unavailable": "Çalışma zamanı çalışmıyor",
+      "permission_denied": "İzin reddedildi",
+      "error": "Toplama başarısız oldu",
+      "unsupported": "Bu cihazda desteklenmiyor"
+    },
+    "detectOnly": "Yalnızca algılandı — bu çalışma zamanının iş yükleri listelenmez.",
+    "counts": "{{total}} iş yükü · {{running}} çalışıyor · {{stopped}} durdu",
+    "partial": "Kısmi anlık görüntü — bazı ayrıntılar okunamadı, bu nedenle toplananlar gösteriliyor.",
+    "truncated": "Çalışma zamanının bildirdiği {{observed}} iş yükünden {{reported}} tanesi gösteriliyor.",
+    "lastError": "Son hata: {{error}}",
+    "lastCollected": "Son toplama {{time}}",
+    "empty": "Bildirilen iş yükü yok.",
+    "columns": {
+      "name": "Ad",
+      "state": "Durum",
+      "image": "İmaj / konuk OS",
+      "compose": "Compose projesi",
+      "started": "Başlangıç"
+    },
+    "states": {
+      "running": "Çalışıyor",
+      "stopped": "Durdu",
+      "paused": "Duraklatıldı",
+      "restarting": "Yeniden başlatılıyor",
+      "other": "Diğer"
+    },
+    "policy": {
+      "title": "İş yükü envanteri",
+      "description": "Kapsayıcı ve VM ana makinelerindeki kapsayıcıları ve sanal makineleri listele",
+      "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
+      "enabled": "İş yüklerini listele",
+      "runtimesHeading": "Listelenecek çalışma zamanları",
+      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "interval": "Toplama aralığı (dakika)",
+      "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
     }
   }
 }

@@ -6,6 +6,7 @@ import {
   FileSearch,
   HardDrive,
   Clock,
+  Container,
   Layers,
   LifeBuoy,
   PackageCheck,
@@ -47,8 +48,6 @@ import { i18n } from "../../lib/i18n";
 export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = [
   "remote_access",
   "pam",
-  // W04 (#3834) adds the workload_inventory row.
-  "workload_inventory",
 ] as const;
 type FeatureType = Exclude<
   ConfigFeatureType,
@@ -140,6 +139,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
       return i18n.t("devices:timeSync.management.title");
     },
     Icon: Clock,
+  },
+  workload_inventory: {
+    get label() {
+      return i18n.t("devices:workloads.policy.title");
+    },
+    Icon: Container,
   },
 };
 

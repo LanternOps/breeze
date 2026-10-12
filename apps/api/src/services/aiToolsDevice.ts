@@ -12,6 +12,8 @@
  */
 
 import {
+  WORKLOAD_RUNTIMES,
+  WORKLOAD_STATES,
   TIME_SYNC_DOMAIN_ROLES,
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
@@ -36,6 +38,8 @@ import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
+import { getDeviceWorkloadsView } from './workloads/view';
+import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
@@ -445,6 +449,44 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth);
       if ('error' in access) return JSON.stringify({ error: access.error });
       return JSON.stringify(await getDeviceTimeStatusView(deviceId));
+    },
+  });
+
+  // query_device_workloads - Tier 1 (auto-execute, read-only)
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint:
+      'containers, virtual machines, Docker, Podman, Hyper-V, Proxmox, workload inventory, compose projects',
+    definition: {
+      name: 'query_device_workloads',
+      description:
+        'List containers and VMs (Docker, Podman, Hyper-V, Proxmox) on a device with per-runtime status and counts; workloads are capped (see truncated). containerd is detect-only (no counts). Collection is off by default until a configuration policy enables "Workload inventory".',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+          runtime: { type: 'string', enum: [...WORKLOAD_RUNTIMES], description: 'Only workloads of this runtime' },
+          state: { type: 'string', enum: [...WORKLOAD_STATES], description: 'Only workloads in this state' },
+          limit: { type: 'integer', minimum: 1, maximum: 200, default: 200, description: 'Max workloads returned (default 200, max 200)' },
+        },
+        required: ['deviceId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const view = await getDeviceWorkloadsView(deviceId);
+      if (!view) return JSON.stringify({ error: 'Device not found or access denied' });
+      return JSON.stringify(
+        projectWorkloadsForAi(deviceId, access.device?.hostname, view, {
+          runtime: input.runtime as (typeof WORKLOAD_RUNTIMES)[number] | undefined,
+          state: input.state as (typeof WORKLOAD_STATES)[number] | undefined,
+          limit: typeof input.limit === 'number' ? input.limit : undefined,
+        }),
+      );
     },
   });
 

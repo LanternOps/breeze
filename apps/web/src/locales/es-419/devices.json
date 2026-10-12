@@ -945,7 +945,9 @@
       "management": "Administración",
       "history": "Historial y red",
       "extensions": "Extensiones"
-    }
+    },
+    "workloads": "Cargas de trabajo",
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -3958,6 +3960,64 @@
       "pdc_emulator": "Emulador de PDC del dominio",
       "forest_root_pdc_emulator": "Emulador de PDC de la raíz del bosque",
       "unknown": "Desconocido"
+    }
+  },
+  "workloads": {
+    "loadFailed": "No se pudieron cargar las cargas de trabajo de este dispositivo.",
+    "retry": "Reintentar",
+    "agentTooOld": "Agente demasiado antiguo: actualice el agente para informar cargas de trabajo.",
+    "noRuntimes": "No se detectó ningún runtime de contenedores o VM en este dispositivo.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Versión {{version}}",
+    "versionUnknown": "Versión desconocida",
+    "detection": {
+      "absent": "No instalado",
+      "unknown": "Detección no concluyente"
+    },
+    "status": {
+      "ok": "Recopilando",
+      "disabled": "La recopilación está desactivada: habilite Inventario de cargas de trabajo en una política de configuración",
+      "unavailable": "El runtime no se está ejecutando",
+      "permission_denied": "Permiso denegado",
+      "error": "Falló la recopilación",
+      "unsupported": "No compatible con este dispositivo"
+    },
+    "detectOnly": "Solo detectado: las cargas de trabajo de este runtime no se enumeran.",
+    "counts": "{{total}} cargas de trabajo · {{running}} en ejecución · {{stopped}} detenidas",
+    "partial": "Instantánea parcial: no se pudieron leer algunos detalles, por lo que se muestra lo recopilado.",
+    "truncated": "Se muestran {{reported}} de {{observed}} cargas de trabajo informadas por el runtime.",
+    "lastError": "Último error: {{error}}",
+    "lastCollected": "Última recopilación {{time}}",
+    "empty": "No se informaron cargas de trabajo.",
+    "columns": {
+      "name": "Nombre",
+      "state": "Estado",
+      "image": "Imagen / OS invitado",
+      "compose": "Proyecto de Compose",
+      "started": "Iniciado"
+    },
+    "states": {
+      "running": "En ejecución",
+      "stopped": "Detenida",
+      "paused": "En pausa",
+      "restarting": "Reiniciando",
+      "other": "Otro"
+    },
+    "policy": {
+      "title": "Inventario de cargas de trabajo",
+      "description": "Enumera los contenedores y las máquinas virtuales en hosts de contenedores y VM",
+      "offNote": "Los runtimes siempre se detectan, pero la lista de cargas de trabajo permanece desactivada hasta que una política la habilite.",
+      "enabled": "Enumerar cargas de trabajo",
+      "runtimesHeading": "Runtimes a enumerar",
+      "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
+      "interval": "Intervalo de recopilación (minutos)",
+      "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
     }
   }
 }

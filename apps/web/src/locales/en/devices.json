@@ -945,7 +945,9 @@
       "management": "Management",
       "history": "History & Network",
       "extensions": "Extensions"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Containers and virtual machines on this host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -3958,6 +3960,64 @@
       "pdc_emulator": "Domain PDC emulator",
       "forest_root_pdc_emulator": "Forest-root PDC emulator",
       "unknown": "Unknown"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Couldn't load workloads for this device.",
+    "retry": "Retry",
+    "agentTooOld": "Agent too old — update the agent to report workloads.",
+    "noRuntimes": "No container or VM runtime detected on this device.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unknown",
+    "detection": {
+      "absent": "Not installed",
+      "unknown": "Detection inconclusive"
+    },
+    "status": {
+      "ok": "Collecting",
+      "disabled": "Collection is off — enable Workload inventory in a configuration policy",
+      "unavailable": "Runtime not running",
+      "permission_denied": "Permission denied",
+      "error": "Collection failed",
+      "unsupported": "Not supported on this device"
+    },
+    "detectOnly": "Detected only — workloads for this runtime are not listed.",
+    "counts": "{{total}} workloads · {{running}} running · {{stopped}} stopped",
+    "partial": "Partial snapshot — some details could not be read, so this shows what was collected.",
+    "truncated": "Showing {{reported}} of {{observed}} workloads the runtime reported.",
+    "lastError": "Last error: {{error}}",
+    "lastCollected": "Last collected {{time}}",
+    "empty": "No workloads reported.",
+    "columns": {
+      "name": "Name",
+      "state": "State",
+      "image": "Image / guest OS",
+      "compose": "Compose project",
+      "started": "Started"
+    },
+    "states": {
+      "running": "Running",
+      "stopped": "Stopped",
+      "paused": "Paused",
+      "restarting": "Restarting",
+      "other": "Other"
+    },
+    "policy": {
+      "title": "Workload inventory",
+      "description": "List the containers and virtual machines on container and VM hosts",
+      "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
+      "enabled": "List workloads",
+      "runtimesHeading": "Runtimes to list",
+      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "interval": "Collection interval (minutes)",
+      "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
     }
   }
 }
