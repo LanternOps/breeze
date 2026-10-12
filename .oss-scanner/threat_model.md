@@ -58,7 +58,7 @@ Grade every finding by the weakest position from which it works:
    causes the model to invoke a privileged tool (run a script, open a session, change a monitor,
    read another tenant) is rated as the action it enables.
 10. **Release and distribution identities** (supply chain): a repository writer or automation
-    token must not be able to ship or re-sign a malicious or downgraded agent update, and an
+    token must not be able to ship a malicious or downgraded agent update, and an
     agent must not accept an update, server, or command it cannot authenticate.
 
 ## Attacker outcomes we care about most
