@@ -188,6 +188,19 @@ describe('POST /time/start', () => {
     expect(hoisted.startTimer).not.toHaveBeenCalled();
   });
 
+  it('passes 409 APPROVAL_REQUIRED and its details through (#4617)', async () => {
+    hoisted.getRunningTimer.mockResolvedValue(null);
+    hoisted.startTimer.mockRejectedValue(new TimeEntryServiceError('needs approval', 409, 'APPROVAL_REQUIRED',
+      { trigger: 'after_hours', pendingRequestId: null }));
+    const res = await makeApp().request('/time/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticketId: TICKET_ID }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'APPROVAL_REQUIRED', details: { trigger: 'after_hours', pendingRequestId: null } });
+  });
+
   it('maps TICKET_ORG_DENIED from resolveTicketLink to a 404', async () => {
     hoisted.getRunningTimer.mockResolvedValue(null);
     hoisted.startTimer.mockRejectedValue(new TimeEntryServiceError('Ticket not found', 404, 'TICKET_ORG_DENIED'));

@@ -106,7 +106,9 @@ export const startTimerSchema = z.object({
   orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   source: clientTimeEntrySourceSchema.optional(),
-  description: z.string().max(10_000).optional()
+  description: z.string().max(10_000).optional(),
+  // #4617: "log as non-billable" when a hard approval policy refuses a billable start.
+  isBillable: z.boolean().optional()
 }).refine(siteRequiresOrgOrTicket.check, siteRequiresOrgOrTicket.params);
 
 export const stopTimerSchema = z.object({

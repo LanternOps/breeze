@@ -199,6 +199,23 @@ describe('location start and site filter (#4186)', () => {
     expect((await res.json()).code).toBe(code);
   });
 
+  it('POST /start passes 409 APPROVAL_REQUIRED details through (#4617) so a client can offer "request approval"', async () => {
+    serviceMocks.startTimer.mockRejectedValue(new TimeEntryServiceError('needs approval', 409, 'APPROVAL_REQUIRED',
+      { trigger: 'budget', pendingRequestId: 'req-1' }));
+    const res = await post('/start', { ticketId: ORG });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      code: 'APPROVAL_REQUIRED', details: { trigger: 'budget', pendingRequestId: 'req-1' },
+    });
+  });
+
+  it('POST /start forwards isBillable (#4617 "log as non-billable")', async () => {
+    serviceMocks.startTimer.mockResolvedValue({ id: 'te-9' });
+    const res = await post('/start', { ticketId: ORG, isBillable: false });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.startTimer).toHaveBeenCalledWith(expect.objectContaining({ isBillable: false }), expect.anything());
+  });
+
   it('POST / forwards orgId/siteId/source=location (offline replay) and rejects source=timer', async () => {
     serviceMocks.createTimeEntry.mockResolvedValue({ id: 'te-2' });
     const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };

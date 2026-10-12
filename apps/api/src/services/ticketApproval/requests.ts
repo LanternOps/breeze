@@ -155,6 +155,8 @@ export type GateContext = Omit<GateInput, 'entry' | 'operation'> & {
   settings: PlainApprovalSettings;
   isAfterHoursWorkType: boolean;
   budgetCurrencyCode: string | null;
+  /** The ticket's pending request per trigger (null when none). */
+  pendingRequestIds: Record<TicketApprovalTrigger, string | null>;
 };
 
 /** MUST be called while the ticket row lock is held (spec §5.2). */
@@ -187,6 +189,10 @@ export async function loadGateContext(db: Tx, args: GateContextArgs): Promise<Ga
     pendingBudgetRequest: requests.some((r) => r.status === 'pending' && r.trigger === 'budget' && r.id !== args.ignoreRequestId),
     isAfterHoursWorkType,
     budgetCurrencyCode: ticket.budgetCurrencyCode,
+    pendingRequestIds: {
+      budget: requests.find((r) => r.status === 'pending' && r.trigger === 'budget')?.id ?? null,
+      after_hours: requests.find((r) => r.status === 'pending' && r.trigger === 'after_hours')?.id ?? null,
+    },
   };
 }
 

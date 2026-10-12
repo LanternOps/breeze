@@ -41,6 +41,24 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks, sentryMocks } = vi.hoisted(
 
 vi.mock('./billingProfileService', () => ({ loadCardsForOrg: cardMocks.loadCardsForOrg }));
 
+// #4617: the customer-approval gate is stubbed to "not applicable" here — its
+// reads would consume this file's ordered select queue. The gate and the
+// writers' lock order are proven against real Postgres in
+// __tests__/integration/ticketApproval.{requests,writers,decisions}.integration.test.ts
+// and ticketApprovalGate.concurrency.integration.test.ts; the wiring (hold /
+// refuse / release reaching the row) is pinned in timeEntryService.approvalGate.test.ts.
+vi.mock('./ticketApproval/writerGate', () => ({
+  peekEntry: vi.fn(async () => null),
+  peekRunningEntry: vi.fn(async () => null),
+  planGatedWrite: vi.fn(async (i: { after: { billingStatus: string } }) => ({
+    kind: 'write', billingStatus: i.after.billingStatus === 'awaiting_approval' ? 'not_billed' : i.after.billingStatus,
+    approvalRequestId: undefined, hold: null, leftRequestId: null, ttlHours: 72,
+  })),
+  settleGatedWrite: vi.fn(async () => []),
+  settleRemovedEntry: vi.fn(async () => []),
+}));
+vi.mock('./ticketEvents', () => ({ emitTicketEvent: vi.fn() }));
+
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
 
 // #6463: the drift guard REPORTS through captureException (handleServiceError
