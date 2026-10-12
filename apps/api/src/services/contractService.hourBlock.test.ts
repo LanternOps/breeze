@@ -236,6 +236,25 @@ describe('estimate and MRR count the block fee once and never hours (#4547 W03)'
     expect(out.hourBlock).toBeNull();
   });
 
+  it('computeContractEstimate attaches the open-period figure for a live block unless the caller opts out; a retired block gets none', async () => {
+    const { computeOpenHourBlockPeriod } = await import('./contractHourBlockEstimate');
+    const figure = { lineId: 'b1', consumedHours: 3 };
+    vi.mocked(computeOpenHourBlockPeriod).mockResolvedValue(figure as never);
+    queueResult([contractRow({ status: 'active' })]);
+    queueResult([blockLine()]);
+    expect((await svc.computeContractEstimate('c1', actor)).hourBlock).toBe(figure);
+    expect(computeOpenHourBlockPeriod).toHaveBeenCalledTimes(1);
+
+    vi.mocked(computeOpenHourBlockPeriod).mockClear();
+    queueResult([contractRow({ status: 'active' })]);
+    queueResult([blockLine()]);
+    expect((await svc.computeContractEstimate('c1', actor, undefined, { includeHourBlock: false })).hourBlock).toBeNull();
+    queueResult([contractRow({ status: 'active' })]);
+    queueResult([blockLine({ hourBlockRetiredAt: new Date('2026-07-01T00:00:00Z') })]);
+    expect((await svc.computeContractEstimate('c1', actor)).hourBlock).toBeNull();
+    expect(computeOpenHourBlockPeriod).not.toHaveBeenCalled();
+  });
+
   it('a RETIRED block contributes nothing to the estimate or the contracts list', async () => {
     queueResult([contractRow({ status: 'active' })]);
     queueResult([blockLine({ hourBlockRetiredAt: new Date('2026-07-01T00:00:00Z') })]);

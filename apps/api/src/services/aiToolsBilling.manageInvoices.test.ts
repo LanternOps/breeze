@@ -288,7 +288,7 @@ describe('manage_invoices', () => {
     );
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', contractActor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map));
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map), { includeHourBlock: false });
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),

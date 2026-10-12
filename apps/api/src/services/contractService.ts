@@ -15,6 +15,7 @@ import {
   type ContractLineType, type DeviceRole, type RolloverPolicy, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
+import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor, todayISO, firstUnclaimedPeriodStart, advancePastClaimed } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
@@ -975,7 +976,6 @@ export async function computeContractEstimate(
   actor: ContractActor,
   /** Internal capture for interactive materialization; never part of the public estimate response. */
   deviceEvidence?: Map<string, readonly DeviceSnapshotRow[]>,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- wired in Task 6
   opts: { includeHourBlock?: boolean } = {},
 ): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
@@ -1021,7 +1021,14 @@ export async function computeContractEstimate(
     const snapshot = await orgSnapshot(contract.orgId, dc, groupIds);
     uncoveredDevices = uncoveredByRole(snapshot, resolvableLines(lines, snapshot));
   }
-  return { currencyCode: contract.currencyCode, periodTotal: fromCents(cents), lines: out, uncoveredDevices, overages, hourBlock: null };
+  // #4547 W03: the OPEN period of the live block, if any. Ambient context (see
+  // contractHourBlockEstimate.ts for why there is no escalation); the AI add-line
+  // action opts out because it reads lines[] only.
+  const liveBlock = lines.find((l) => l.lineType === 'hour_block' && l.hourBlockRetiredAt === null);
+  const hourBlock = liveBlock && opts.includeHourBlock !== false
+    ? await computeOpenHourBlockPeriod(contract, liveBlock)
+    : null;
+  return { currencyCode: contract.currencyCode, periodTotal: fromCents(cents), lines: out, uncoveredDevices, overages, hourBlock };
 }
 
 // ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
