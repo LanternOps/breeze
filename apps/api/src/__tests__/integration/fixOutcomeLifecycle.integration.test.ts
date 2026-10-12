@@ -14,8 +14,9 @@ import { advanceOutcomesForTerminalExecution } from '../../services/fixMemory/sc
 import { alertSignature } from '../../services/fixMemory/signatureLoader';
 import {
   clearOrgErasureRequest, fillOutcomeSignature, markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome,
-  stalePartnerIds, transitionOutcome,
+  stalePartnerIds, stampRebuildAttempt, transitionOutcome,
 } from '../../services/fixMemory/store';
+import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { probeTelemetryFreshness } from '../../services/outcomeProbes';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -327,6 +328,42 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 9, 1)) }).where(eq(fixMemory.partnerId, older.partnerId)));
     expect(await sys(() => stalePartnerIds(1))).toEqual([older.partnerId]);
     expect(await sys(() => stalePartnerIds(10))).toEqual([older.partnerId, newer.partnerId]);
+  });
+
+  it('a partner whose rebuild was just attempted yields its slot: stalePartnerIds rotates by last attempt (#7278)', async () => {
+    const stuck = await world();
+    const waiting = await world();
+    await verify(stuck, stuck.o1, stuck.d1, stuck.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    await verify(waiting, waiting.o1, waiting.d1, waiting.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    // `stuck` has been stale far longer (e.g. a pending request for an org whose erasure keeps failing).
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 8, 1)) }).where(eq(fixMemory.partnerId, stuck.partnerId)));
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 10, 1)) }).where(eq(fixMemory.partnerId, waiting.partnerId)));
+    expect(await sys(() => stalePartnerIds(1))).toEqual([stuck.partnerId]);
+    // The sweeper stamps its attempt in its own transaction; the rebuild then fails or cannot lift the row.
+    expect(await sys(() => stampRebuildAttempt(stuck.partnerId, new Date(Date.UTC(2026, 11, 1))))).toBe(1);
+    expect(await sys(() => stalePartnerIds(1))).toEqual([waiting.partnerId]);
+    expect(await sys(() => stampRebuildAttempt(waiting.partnerId, new Date(Date.UTC(2026, 11, 2))))).toBe(1);
+    expect(await sys(() => stalePartnerIds(10))).toEqual([stuck.partnerId, waiting.partnerId]);
+  });
+
+  it('deleting a device stale-marks the fix memory its outcomes fed, and the rebuild drops its attempts (#7278)', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 10, 29);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, staleSince: null });
+
+    await sys(() => db.transaction((tx) => deleteDeviceCascade(tx as unknown as DeviceDeletionTx, w.d1)));
+
+    expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.deviceId, w.d1)))).toHaveLength(0);
+    const marked = (await partnerMemory(w.partnerId))[0]!;
+    // The aggregate still says 2 until the rebuild, but it is out of "proven" and queued for one.
+    expect(marked.attempts).toBe(2);
+    expect(marked.staleSince).not.toBeNull();
+    expect(marked.rebuildPendingOrgIds).toEqual([]);
+    expect(await sys(() => stalePartnerIds(1000))).toContain(w.partnerId);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 1, verifiedCount: 1, staleSince: null });
   });
 
   it('script re-scope org→partner folds org history into the partner row (Review Focus 5)', async () => {
