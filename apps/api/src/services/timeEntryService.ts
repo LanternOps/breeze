@@ -1910,6 +1910,9 @@ function entrySelection() {
     hourlyRate: timeEntries.hourlyRate,
     currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
+    // #4617: the customer approval request a held entry waits on (or, once
+    // released, the one that released it). Read-only.
+    approvalRequestId: timeEntries.approvalRequestId,
     workTypeId: timeEntries.workTypeId,
     billingProfileId: timeEntries.billingProfileId,
     coverage: timeEntries.coverage,
