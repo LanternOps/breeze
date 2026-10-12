@@ -538,6 +538,7 @@
       "more": "Carica altro",
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
+      "unknownUser": "Utente sconosciuto",
       "reverted": "Annullato",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine da parte del ritiro degli avvisi legacy."
     },

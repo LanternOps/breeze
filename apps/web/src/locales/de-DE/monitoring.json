@@ -538,6 +538,7 @@
       "more": "Mehr laden",
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
+      "unknownUser": "Unbekannter Benutzer",
       "reverted": "Rückgängig gemacht",
       "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch die Stilllegung der Legacy-Benachrichtigungen nicht verfügbar."
     },
