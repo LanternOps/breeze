@@ -2169,20 +2169,29 @@
     "noOutput": "Keine Ausgabe",
     "output": "Ausgabe",
     "refreshing": "Wird aktualisiert...",
-    "running": "Wird ausgeführt...",
     "runAgain": "Erneut ausführen",
+    "runCount_one": "{{count}} Ausführung",
+    "runCount_other": "{{count}} Ausführungen",
+    "running": "Wird ausgeführt...",
     "scriptFallback": "Skript",
     "stderr": "Standardfehler (stderr)",
     "stdout": "Standardausgabe (stdout)",
     "table": {
       "completed": "Abgeschlossen",
       "duration": "Dauer",
+      "lastOutput": "Letzte Ausgabe",
+      "lastRun": "Letzte Ausführung",
       "script": "Skript",
       "started": "Begonnen",
       "status": "Status"
     },
     "title": "Skriptausführungsverlauf",
-    "unnamedScript": "Unbenanntes Skript"
+    "unnamedScript": "Unbenanntes Skript",
+    "view": {
+      "all": "Alle Ausführungen",
+      "label": "Skriptansicht",
+      "latest": "Letztes pro Skript"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Erkannt: {{date}}",
