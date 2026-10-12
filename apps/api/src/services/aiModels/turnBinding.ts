@@ -7,12 +7,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
+  AI_DISPATCHABLE_CONNECTION_KINDS,
   AI_SURFACES,
-  GATEWAY_CONNECTION_KINDS,
   PROMPT_PROFILES,
   offeringOptionsSchema,
+  type AiDispatchableConnectionKind,
   type AiSurface,
-  type GatewayConnectionKind,
   type OfferingOptions,
   type PromptProfile,
 } from '@breeze/shared';
@@ -36,7 +36,7 @@ export interface TurnBinding {
   partnerId: string | null;
   offeringId: string | null;
   connectionId: string | null;
-  connectionKind: 'platform' | 'anthropic_byok' | 'catalog' | GatewayConnectionKind;
+  connectionKind: AiDispatchableConnectionKind;
   configVersion: number | null;
   catalogRevisionId: string | null;
   funding: AiBillingSource;
@@ -160,7 +160,7 @@ const turnBindingSchema = z.object({
   partnerId: z.string().nullable(),
   offeringId: z.string().nullable(),
   connectionId: z.string().nullable(),
-  connectionKind: z.enum(['platform', 'anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
+  connectionKind: z.enum(AI_DISPATCHABLE_CONNECTION_KINDS),
   configVersion: z.number().int().nullable(),
   catalogRevisionId: z.string().nullable(),
   funding: z.enum(['platform', 'partner_key']),

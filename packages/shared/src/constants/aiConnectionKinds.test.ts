@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AI_CONNECTION_KINDS,
   AI_CONNECTION_ROW_KINDS,
+  AI_DISPATCHABLE_CONNECTION_KINDS,
   ANTHROPIC_API_CONNECTION_KINDS,
   BYO_MODEL_ID_PATTERN,
   GATEWAY_CONNECTION_KINDS,
+  envManagementState,
+  envStateDtoFields,
   isAnthropicApiConnectionKind,
   isGatewayConnectionKind,
 } from './aiConnectionKinds';
@@ -51,5 +55,40 @@ describe('Anthropic API connection kinds (W08)', () => {
       expect(AI_CONNECTION_ROW_KINDS).toContain(k);
       expect(isGatewayConnectionKind(k)).toBe(false);
     }
+  });
+});
+
+describe('one source for every connection-kind list (#7779)', () => {
+  it('AI_CONNECTION_KINDS is the implicit platform connection plus every row kind', () => {
+    expect([...AI_CONNECTION_KINDS]).toEqual(['platform', ...AI_CONNECTION_ROW_KINDS]);
+  });
+
+  it('every row kind is exactly one of Anthropic-API or gateway (no kind falls between the lists)', () => {
+    for (const k of AI_CONNECTION_ROW_KINDS) {
+      expect(Number(isAnthropicApiConnectionKind(k)) + Number(isGatewayConnectionKind(k))).toBe(1);
+    }
+    expect([...ANTHROPIC_API_CONNECTION_KINDS, ...GATEWAY_CONNECTION_KINDS].sort())
+      .toEqual([...AI_CONNECTION_ROW_KINDS].sort());
+  });
+
+  it('dispatchable kinds are platform + Anthropic-API + gateway kinds', () => {
+    expect([...AI_DISPATCHABLE_CONNECTION_KINDS])
+      .toEqual(['platform', ...ANTHROPIC_API_CONNECTION_KINDS, ...GATEWAY_CONNECTION_KINDS]);
+  });
+});
+
+describe('env-management state (#7779)', () => {
+  it('maps provider_config to managed / released / null', () => {
+    expect(envManagementState(null)).toBeNull();
+    expect(envManagementState({})).toBeNull();
+    expect(envManagementState({ managedBy: 'env' })).toBe('managed');
+    expect(envManagementState({ managedBy: 'env', envReleasedAt: '2026-01-01T00:00:00.000Z' })).toBe('released');
+    expect(envManagementState({ envReleasedAt: '2026-01-01T00:00:00.000Z' })).toBeNull();
+  });
+
+  it('derives the DTO fields from the state', () => {
+    expect(envStateDtoFields('managed')).toEqual({ managedBy: 'env', envReleased: false });
+    expect(envStateDtoFields('released')).toEqual({ managedBy: 'env', envReleased: true });
+    expect(envStateDtoFields(null)).toEqual({ managedBy: null, envReleased: false });
   });
 });
