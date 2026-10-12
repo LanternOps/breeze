@@ -289,7 +289,7 @@ sudo launchctl list | grep breeze
 | Type | Location |
 |------|----------|
 | Binary | `/usr/local/bin/breeze-agent` |
-| Configuration | `/etc/breeze/agent.yaml` |
+| Configuration | `/Library/Application Support/Breeze/agent.yaml` |
 | Logs | `/var/log/breeze/` |
 | Data | `/var/lib/breeze/` |
 | LaunchDaemon | `/Library/LaunchDaemons/com.breeze.agent.plist` |
@@ -450,7 +450,7 @@ The enrollment key is an optional positional argument (`breeze-agent enroll [enr
 | `[enrollment-key]` | Enrollment key from the web console (positional), or set `BREEZE_AGENT_ENROLLMENT_KEY` |
 | `--server` | Breeze server URL |
 | `--enrollment-secret` | Enrollment secret, when the server requires one (`AGENT_ENROLLMENT_SECRET`) |
-| `--site-id` | Site ID to enroll into (overrides the enrollment key's default site) |
+| `--site-id` | Accepted but currently ignored; the device joins the site the enrollment key is bound to |
 | `--device-role` | Device role override (e.g. `workstation`, `server`) |
 | `--force` | Re-enroll even if already enrolled; replaces the agent ID and auth token on success |
 | `--quiet` | Suppress progress output (errors still go to stderr) |
@@ -459,24 +459,7 @@ Example with additional options:
 ```bash
 sudo BREEZE_AGENT_ENROLLMENT_KEY="YOUR_KEY" breeze-agent enroll \
     --server "https://your-server.com" \
-    --site-id "SITE_UUID" \
     --device-role server
-```
-
---------|-------------|
-| `--key` | Enrollment key from the web console |
-| `--server` | Breeze server URL |
-| `--tags` | Comma-separated tags for the device |
-| `--hostname` | Override detected hostname |
-| `--site-id` | Override site assignment |
-
-Example with additional options:
-```bash
-sudo breeze-agent enroll \
-    --key "YOUR_KEY" \
-    --server "https://your-server.com" \
-    --tags "production,web-server,nginx" \
-    --hostname "web-prod-01"
 ```
 
 ---
@@ -490,7 +473,7 @@ The agent is configured via a YAML file. After enrollment, the configuration fil
 | Platform | Path |
 |----------|------|
 | Windows | `C:\ProgramData\Breeze\agent.yaml` |
-| macOS | `/etc/breeze/agent.yaml` |
+| macOS | `/Library/Application Support/Breeze/agent.yaml` |
 | Linux | `/etc/breeze/agent.yaml` |
 
 ### Full Configuration Reference
