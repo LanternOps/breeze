@@ -86,6 +86,15 @@ If a phase fails or the snapshot is refused, the reason stays on screen with a `
   The kernel command line accepts `breeze.server=`, `breeze.code=`, `breeze.target=`, `breeze.confirm=` and `breeze.after=poweroff` to pre-answer the prompts. These exist for Breeze's own CI and for lab automation; a code on a command line is a code in a boot log, so do not use them for production recoveries.
 </Aside>
 
+### Known limits of the media path
+
+- **Linux only today.** There is no Windows or macOS recovery media. For those, use [reinstall-then-recover](#alternative-recover-into-a-freshly-installed-os), or rebuild a Windows snapshot onto a VHDX with [Restore as VM](#restore-as-vm) or a [DR rehearsal](/backup/disaster-recovery/).
+- **One blank UEFI/GPT disk** at least as large as the source disk, from a snapshot marked **Bare-metal restorable**. Multi-disk, BIOS/MBR, LVM, LUKS, RAID, btrfs and ZFS layouts are named at backup time and not rebuilt.
+- **No driver injection.** The rebuilt system boots with the drivers its own image carries; see [Windows fidelity](#windows-fidelity) for the Windows side.
+- **Rehearsal is not production.** Recoveries with the **New device** identity, DR rehearsals and Restore as VM prove the snapshot can be rebuilt; only **Original device** recovery brings the real machine back, and it counts as done once the machine checks in.
+
+Every rebuild outcome, with its measured duration, also feeds the device's [recovery readiness](/backup/verification/#bare-metal-rebuild-evidence) — a failed or stale rebuild shows up as a risk factor on the Verification tab.
+
 ---
 
 ## Alternative: recover into a freshly installed OS

@@ -99,6 +99,26 @@ The Verification tab lists specific risk factors for each device, color-coded by
 | Data change accumulation | Medium (orange) | Large volume of unprotected changes — run a backup |
 | Immutable backup gaps | Low (yellow) | Consider enabling immutability on your storage configuration |
 
+### Bare-metal rebuild evidence
+
+When a device has been through a real [bare-metal rebuild](/backup/bare-metal-recovery/) — from Breeze recovery media, a DR rehearsal or Restore as VM — the outcome feeds its readiness. Only settled rebuilds count: a recovery that is still running, was refused before touching a disk, or was cancelled before it started is neither proof nor failure. Breeze looks at the device's ten most recent settled rebuilds.
+
+- **Measured recovery time.** The time from the start of the restore to validation is the rebuild's measured duration. The device's estimated RTO becomes the slower of this and the test-restore estimate, so the [SLA](/backup/sla/) RTO check compares against a figure a full rebuild actually produced.
+- **Rebuild risk factors.**
+
+| Risk factor | Severity | When it appears |
+|-------------|----------|-----------------|
+| Latest bare-metal rebuild failed | High (red) | The most recent settled rebuild failed. The score also drops by 10 points. |
+| Earlier bare-metal rebuilds failed | Medium (orange) | A rebuild failed, but a later one succeeded. |
+| Last successful rebuild is old | Medium (orange) | The last successful rebuild is more than 90 days old. |
+| Rebuild slower than 60 minutes | Medium (orange) | The slowest recent successful rebuild exceeded 60 minutes. |
+
+A rebuild that finishes (or checks in) or fails refreshes the device's readiness straight away; you do not have to wait for the daily recalculation. A device with no rebuild history is not penalized: rebuild evidence only adds information, it never replaces the verification-based score.
+
+<Aside type="note">
+  A **DR rehearsal** and a **Restore as VM** rebuild into a disk image on a rebuild host, so they prove the snapshot can be rebuilt and how long it takes; they do not prove the physical machine's hardware. A recovery from recovery media with the **Original device** identity is the production path and is only counted as successful once the restored machine has checked in.
+</Aside>
+
 ---
 
 ## Organization Backup Health
