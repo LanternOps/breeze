@@ -3911,3 +3911,34 @@ describe('execution-plane env (W01): BREEZE_REGION / BREEZE_AI_WORKSPACE_ENABLED
     );
   });
 });
+
+// #7640: compose maps these as `${VAR:-}`, so the key is always injected, as ''
+// when the operator left it unset. '' must behave exactly like "not set".
+describe('empty-string compose passthrough (#7640)', () => {
+  it('treats empty PARTNER_HOOKS_URL, MCP_LLM_PROVIDER and MCP_LLM_BASE_URL as unset', () => {
+    withEnv({ ...validEnv, PARTNER_HOOKS_URL: '', MCP_LLM_PROVIDER: '', MCP_LLM_BASE_URL: '' }, () => {
+      const config = validateConfig();
+      expect(config.PARTNER_HOOKS_URL).toBeUndefined();
+      expect(config.MCP_LLM_PROVIDER).toBe('anthropic');
+      expect(config.MCP_LLM_BASE_URL).toBeUndefined();
+    });
+  });
+
+  it('still refuses a malformed PARTNER_HOOKS_URL / MCP_LLM_BASE_URL / MCP_LLM_PROVIDER', () => {
+    withEnv({ ...validEnv, PARTNER_HOOKS_URL: 'not-a-url' }, () => {
+      expect(() => validateConfig()).toThrow(/PARTNER_HOOKS_URL/);
+    });
+    withEnv({ ...validEnv, MCP_LLM_BASE_URL: 'not-a-url' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL/);
+    });
+    withEnv({ ...validEnv, MCP_LLM_PROVIDER: 'bogus' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_PROVIDER/);
+    });
+  });
+
+  it('still requires MCP_LLM_BASE_URL when provider is openai-compatible and the base URL is empty', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'false', MCP_LLM_PROVIDER: 'openai-compatible', MCP_LLM_BASE_URL: '', MCP_LLM_MODEL: 'm' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL is required/);
+    });
+  });
+});
