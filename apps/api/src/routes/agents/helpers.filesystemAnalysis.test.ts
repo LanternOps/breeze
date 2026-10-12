@@ -71,6 +71,7 @@ vi.mock('../../services/commandQueue', () => ({
 vi.mock('../../services/filesystemAnalysis', () => ({
   claimFilesystemScanGeneration: vi.fn(async () => 'claimed'),
   setFilesystemScanGeneration: vi.fn(),
+  clearFilesystemScanGeneration: vi.fn(),
   getFilesystemScanState: vi.fn(),
   mergeFilesystemAnalysisPayload: vi.fn(),
   parseFilesystemAnalysisStdout: vi.fn(),
@@ -89,6 +90,7 @@ import { handleFilesystemAnalysisCommandResult, maybeQueueThresholdFilesystemAna
 import {
   claimFilesystemScanGeneration,
   setFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
   parseFilesystemAnalysisStdout,
@@ -177,6 +179,30 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
       { commandId: 'c', status: 'failed', exitCode: 1 } as never,
       ORG_ID,
     );
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(upsertFilesystemScanState).not.toHaveBeenCalled();
+    expect(clearFilesystemScanGeneration).not.toHaveBeenCalled();
+  });
+
+  it('releases the volume generation when the agent refused the scan as scan_in_progress (#8509)', async () => {
+    // The refused command was registered as the volume's generation when it
+    // was queued. Left there, the RUNNING scan's result would be dropped as
+    // superseded. Release it — only if it is still this command's.
+    selectQueue.push([{ osType: 'windows' }]);
+    const command = {
+      id: '00000000-0000-4000-8000-0000000000dd',
+      deviceId: DEVICE_ID,
+      payload: { scanMode: 'baseline', trigger: 'threshold', path: 'c:/' },
+      createdBy: null,
+    } as never;
+
+    await handleFilesystemAnalysisCommandResult(
+      command,
+      { commandId: 'c', status: 'failed', exitCode: 1, error: 'filesystem analysis already in progress', errorCode: 'scan_in_progress' } as never,
+      ORG_ID,
+    );
+
+    expect(clearFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'C:\\', '00000000-0000-4000-8000-0000000000dd');
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
     expect(upsertFilesystemScanState).not.toHaveBeenCalled();
   });

@@ -47,6 +47,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   claimFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -1674,12 +1675,37 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   };
 }
 
+/**
+ * #8509: the agent refused this scan because another was already running.
+ * Producers register a command as its volume's scan generation when they queue
+ * it, so a refused command left as the generation would make the RUNNING
+ * scan's result look superseded and be dropped. Release it — conditionally, so
+ * a newer producer's registration is never cleared. The running scan then
+ * claims through the NULL-generation branch of claimFilesystemScanGeneration.
+ */
+async function releaseRefusedFilesystemScanGeneration(
+  command: typeof deviceCommands.$inferSelect,
+): Promise<void> {
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+  if (!deviceRow) return;
+  const payload = isObject(command.payload) ? command.payload : {};
+  const scanPath = normalizeScanPath(deviceRow.osType, asString(payload.path) ?? osRootScanPath(deviceRow.osType));
+  await clearFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+}
+
 export async function handleFilesystemAnalysisCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>,
   orgId: string
 ): Promise<void> {
   if (resultData.status !== 'completed') {
+    if (resultData.status === 'failed' && resultData.errorCode === 'scan_in_progress') {
+      await releaseRefusedFilesystemScanGeneration(command);
+    }
     return;
   }
 
