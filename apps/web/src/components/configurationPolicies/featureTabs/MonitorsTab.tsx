@@ -19,8 +19,8 @@ type MonitorCatalogEntry = {
   severity: string;
   enabled: boolean;
   builtinKey: string | null;
-  /** Owning org; null = partner-wide. */
-  orgId: string | null;
+  /** Owning org; null = partner-wide; undefined = not reported. */
+  orgId?: string | null;
   condition: Record<string, unknown> | null;
 };
 
@@ -159,7 +159,8 @@ export default function MonitorsTab({
             severity: String(r.severity ?? ""),
             enabled: Boolean(r.enabled),
             builtinKey: typeof r.builtinKey === "string" ? r.builtinKey : null,
-            orgId: typeof r.orgId === "string" ? r.orgId : null,
+            // Fail closed: only an explicit null counts as partner-wide.
+            orgId: r.orgId === null ? null : typeof r.orgId === "string" ? r.orgId : undefined,
             condition: r.condition && typeof r.condition === "object" && !Array.isArray(r.condition)
               ? r.condition as Record<string, unknown>
               : null,

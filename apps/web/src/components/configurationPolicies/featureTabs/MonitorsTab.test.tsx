@@ -476,6 +476,31 @@ describe('MonitorsTab — partner-owned policy (#8372)', () => {
     await waitFor(() => expect(optionValues(select)).toEqual(['org-mon', 'wide-mon']));
   });
 
+  it('keeps resolving the name of an already-attached org monitor on a partner policy', async () => {
+    useRows();
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'org-mon', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} orgId={null} existingLink={link} />);
+    const item = await screen.findByTestId('monitors-tab-item-org-mon');
+    await waitFor(() => expect(item.textContent).toContain('Org CPU'));
+    expect(optionValues(screen.getByTestId('monitors-tab-attach-select'))).toEqual(['wide-mon']);
+  });
+
+  it('reverts to the last persisted attachments, not to empty, when the save fails', async () => {
+    useRows();
+    saveMock.mockResolvedValueOnce(null as never);
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'wide-mon', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} orgId="org-1" existingLink={link} />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['org-mon']));
+    fireEvent.change(select, { target: { value: 'org-mon' } });
+    await screen.findByTestId('monitors-tab-item-org-mon');
+    clickSave();
+    await waitFor(() => expect(screen.queryByTestId('monitors-tab-item-org-mon')).toBeNull());
+    expect(screen.getByTestId('monitors-tab-item-wide-mon')).toBeTruthy();
+  });
+
   it('reverts the selection when the save fails', async () => {
     useRows();
     saveMock.mockResolvedValueOnce(null as never);

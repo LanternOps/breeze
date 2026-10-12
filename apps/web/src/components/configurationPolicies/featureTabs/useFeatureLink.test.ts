@@ -39,6 +39,7 @@ describe('feature Save action feedback', () => {
     await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
     expect(result.current.error).toBeTruthy();
     expect(result.current.error).not.toContain('MONITOR_NOT_ATTACHABLE');
+    expect(result.current.error).toMatch(/partner-wide monitors/);
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'error',
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
