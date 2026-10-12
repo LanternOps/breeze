@@ -89,6 +89,7 @@ vi.mock('../db/schema', () => ({
     enablePerformanceMetrics: 'enablePerformanceMetrics',
     enableSoftwareInventory: 'enableSoftwareInventory',
     enableNetworkVisibility: 'enableNetworkVisibility',
+    enableHourBlock: 'enableHourBlock',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -231,6 +232,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSoftwareInventory: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
+      enableHourBlock: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
@@ -302,6 +304,31 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
       .onConflictDoUpdate.mock.results[0]?.value.returning;
     expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableDevices', 'enableDevices');
+  });
+
+  it('persists the Support hours flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableHourBlock: true }]);
+
+    const res = await patch({ enableHourBlock: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableHourBlock: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableHourBlock: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableHourBlock', 'enableHourBlock');
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableHourBlock'] }) }),
+    );
+  });
+
+  it('still rejects an unknown portal setting (strict schema)', async () => {
+    expect((await patch({ enableHourBlockz: true })).status).toBe(400);
   });
 
   it('upserts and returns the managed subset', async () => {

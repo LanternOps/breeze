@@ -266,10 +266,11 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       enable_security,
       enable_backups,
       enable_reports,
-      enable_support_usage
+      enable_support_usage,
+      enable_hour_block
     ) VALUES
-      (${orgA}, true, true, false, true, false),
-      (${orgB}, false, false, true, false, true)
+      (${orgA}, true, true, false, true, false, true),
+      (${orgB}, false, false, true, false, true, false)
   `);
 
   // #3205: a per_device_role allowance line, so contract_lines.json is
@@ -554,6 +555,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
         enable_backups: false,
         enable_reports: true,
         enable_support_usage: false,
+        enable_hour_block: true,
       }),
     ]);
 

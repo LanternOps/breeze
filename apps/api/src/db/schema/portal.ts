@@ -77,6 +77,12 @@ export const portalBranding = pgTable('portal_branding', {
   // from asset inventory (enableNetworkVisibility above), so it is NOT part
   // of PORTAL_VISIBILITY_FLAG_KEYS / "Enable all".
   enableNetworkAlerts: boolean('enable_network_alerts').notNull().default(false),
+  // Block hours W04 (#8179): independent, fail-closed gate for the read-only
+  // "Support hours" card inside the Support usage section. A prepaid-hours
+  // balance is a billing figure the MSP must choose to show, so — like
+  // enableNetworkAlerts — it is NOT part of PORTAL_VISIBILITY_FLAG_KEYS /
+  // "Enable all".
+  enableHourBlock: boolean('enable_hour_block').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

@@ -40,7 +40,13 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
 
 describe('PORTAL_SENSITIVE_FLAG_KEYS', () => {
   it('lists the flags that stay outside "Enable all"', () => {
-    expect(PORTAL_SENSITIVE_FLAG_KEYS).toEqual(['enableNetworkAlerts']);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toEqual(['enableNetworkAlerts', 'enableHourBlock']);
+  });
+
+  it('keeps the billing-sensitive Support hours flag out of "Enable all"', () => {
+    // enableHourBlock (block hours W04) exposes a prepaid-hours balance and has
+    // its own fail-closed gate: switched on one org at a time.
+    expect(PORTAL_VISIBILITY_FLAG_KEYS).not.toContain('enableHourBlock');
   });
 
   it('never overlaps the flags that "Enable all" turns on', () => {

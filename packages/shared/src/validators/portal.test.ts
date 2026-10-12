@@ -103,6 +103,14 @@ describe('updatePortalSettingsSchema', () => {
       .toEqual({ enableNetworkAlerts });
   });
 
+  it.each([true, false])('accepts the Support hours flag=%s', (enableHourBlock) => {
+    expect(updatePortalSettingsSchema.parse({ enableHourBlock })).toEqual({ enableHourBlock });
+  });
+
+  it.each([null, 'true', 1])('rejects a non-boolean Support hours flag=%s', (enableHourBlock) => {
+    expect(updatePortalSettingsSchema.safeParse({ enableHourBlock }).success).toBe(false);
+  });
+
   it('rejects non-boolean portal visibility flags', () => {
     expect(updatePortalSettingsSchema.safeParse({
       enableDashboard: 'true',

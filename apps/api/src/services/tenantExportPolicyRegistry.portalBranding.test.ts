@@ -22,3 +22,14 @@ describe('portal_branding.chrome_accent export policy', () => {
     ).toBe('chrome_accent');
   });
 });
+
+describe('portal_branding.enable_hour_block export policy (block hours W04)', () => {
+  it('is mapped and included (plain boolean, not jsonb/bytea, no SUSPICIOUS_NAME_PARTS hit)', () => {
+    expect(
+      getTenantExportPolicyRegistry()['portal_branding']?.columns['enable_hour_block']?.decision,
+    ).toBe('include');
+    expect(
+      (getTableColumns(portalBranding) as Record<string, { name: string }>)['enableHourBlock']?.name,
+    ).toBe('enable_hour_block');
+  });
+});
