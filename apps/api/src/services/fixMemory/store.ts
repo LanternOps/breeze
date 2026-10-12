@@ -599,7 +599,8 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
  * the retry for a post-cascade rebuild that failed or never ran (crash between
  * cascade and rebuild).
  *
- * Order: least recently ATTEMPTED first (partners never attempted lead), then
+ * Order: partners with any never-attempted candidate row first (bool_or, since
+ * MIN() ignores NULLs), then least recently ATTEMPTED, then
  * oldest stale, then partner id. Ordering by oldest stale alone let partners
  * that can never be un-staled take every slot: a pending request for an org
  * whose erasure keeps failing, or a rebuild that throws every time, keeps the
@@ -615,7 +616,8 @@ export async function stalePartnerIds(limit: number): Promise<string[]> {
     WHERE (m.stale_since IS NOT NULL OR cardinality(m.rebuild_pending_org_ids) > 0)
       AND COALESCE(m.partner_id, o.partner_id) IS NOT NULL
     GROUP BY 1
-    ORDER BY MIN(m.rebuild_attempted_at) ASC NULLS FIRST, MIN(m.stale_since) ASC NULLS LAST, partner_id ASC
+    ORDER BY bool_or(m.rebuild_attempted_at IS NULL) DESC, MIN(m.rebuild_attempted_at) ASC NULLS FIRST,
+      MIN(m.stale_since) ASC NULLS LAST, partner_id ASC
     LIMIT ${limit}`);
   return [...rows].map((r) => r.partner_id).filter((id): id is string => typeof id === 'string');
 }
@@ -694,6 +696,9 @@ export async function deleteDeviceFixOutcomes(
   const rows = [...deleted];
   const identities = new Map<string, IdentityKey>();
   for (const r of rows) {
+    // Uncounted rows never fed an aggregate. Counted-but-unsigned rows never did
+    // either: loadContributions only reads rows with a full identity, and such a
+    // row is still waiting on recomputeForOutcome. Neither leaves anything stale.
     if (r.counted_at === null || r.signature_version === null || !r.signature_key || !r.os_type || !r.fix_identity) continue;
     const id: IdentityKey = {
       partnerId: r.partner_id, signatureVersion: r.signature_version, signatureKey: r.signature_key,

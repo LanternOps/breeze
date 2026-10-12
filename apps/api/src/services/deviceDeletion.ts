@@ -380,7 +380,19 @@ export async function deleteDeviceCascade(
   // one fed, in this transaction; the sweeper rebuilds. fix_outcomes stays in
   // getDeviceCascadeDeleteTables() for the coverage contract; its generic
   // DELETE below then finds nothing.
+  //
+  // Bounded like the parent-row lock: the store's identity advisory locks can
+  // queue behind a whole-partner fix-memory rebuild while this transaction
+  // holds the devices row, which would pin the connection and every writer of
+  // that row for as long as the rebuild runs. With the bound it fails fast
+  // with a 55P03 instead, which the routes and purge jobs already treat as
+  // retryable. Restored straight after, on the success path only, for the
+  // same reason as the restore above.
+  const fixMemoryPriorMs = await tightenLockTimeout(tx, DEVICE_LOCK_TIMEOUT_MS);
   await deleteDeviceFixOutcomes(tx, deviceId);
+  if (lockTimeoutWasChanged(fixMemoryPriorMs, DEVICE_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${fixMemoryPriorMs}ms`}, true)`);
+  }
 
   for (const table of getDeviceCascadeDeleteTables()) {
     if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {

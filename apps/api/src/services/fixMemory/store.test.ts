@@ -338,7 +338,9 @@ describe('stalePartnerIds — least-recently-attempted first, so stuck partners 
     const text = q.text.replace(/\s+/g, ' ').toLowerCase();
     // Oldest-stale-first alone let partners that can never be un-staled (a
     // pending request for an org whose erasure keeps failing) hold every slot.
-    expect(text).toMatch(/order by min\(m\.rebuild_attempted_at\) asc nulls first, min\(m\.stale_since\) asc nulls last, partner_id asc limit/);
+    // bool_or first: MIN() ignores NULLs, so a stuck partner that gains a
+    // never-attempted row must still be treated as having unattempted work.
+    expect(text).toMatch(/order by bool_or\(m\.rebuild_attempted_at is null\) desc, min\(m\.rebuild_attempted_at\) asc nulls first, min\(m\.stale_since\) asc nulls last, partner_id asc limit/);
     expect(q.params).toEqual([20]);
   });
 });
