@@ -943,13 +943,12 @@ describe('contract_lines live-block index vs the merge registry (#4547 W03, Open
     });
 
     // What the registry's plain repoint does to the loser's block (constraints deferred, as the merge walk does).
+    // The failed statement aborts the transaction, so the error surfaces when the context
+    // exits: catch it outside. Nothing is committed either way.
     const err = await withSystemDbAccessContext(async () => {
       await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
-      try {
-        await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
-        return null;
-      } catch (e) { return e; }
-    });
+      await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
+    }).then(() => null, (e: unknown) => e);
     expect(isPgUniqueViolation(err, 'contract_lines_one_live_hour_block_per_org_uq')).toBe(true);
   });
 });
