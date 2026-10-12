@@ -1239,6 +1239,7 @@ mobileRoutes.post(
         status: 'resolved',
         resolvedAt,
         resolvedBy: auth.user.id,
+        resolutionReason: 'manual',
         resolutionNote: data.note
       })
       .where(buildResolveAlertCas(alertId))

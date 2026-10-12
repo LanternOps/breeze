@@ -677,7 +677,7 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
     .update(alerts)
     .set(action === 'acknowledge'
       ? { status: 'acknowledged', acknowledgedAt: now, acknowledgedBy: userId }
-      : { status: 'resolved', resolvedAt: now, resolvedBy: userId })
+      : { status: 'resolved', resolvedAt: now, resolvedBy: userId, resolutionReason: 'manual' as const })
     .where(and(
       inArray(alerts.id, alertIds),
       action === 'acknowledge'

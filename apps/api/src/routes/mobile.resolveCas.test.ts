@@ -12,8 +12,9 @@ import type { SQL } from 'drizzle-orm';
  * publish. See alerts.resolveCas.test.ts for the full rationale and for why the
  * predicate is asserted as COMPILED SQL rather than by column name.
  */
-const { dbMock, updateWheres, updateReturns, selectReturns, alertRow } = vi.hoisted(() => {
+const { dbMock, updateWheres, updateSets, updateReturns, selectReturns, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
+  const updateSets: Record<string, unknown>[] = [];
   const updateReturns: unknown[][] = [];
   const selectReturns: unknown[][] = [];
   const alertRow = {
@@ -38,15 +39,18 @@ const { dbMock, updateWheres, updateReturns, selectReturns, alertRow } = vi.hois
       }),
     }),
     update: () => ({
-      set: () => ({
-        where: (predicate: unknown) => {
-          updateWheres.push(predicate);
-          return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
-        },
-      }),
+      set: (values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return {
+          where: (predicate: unknown) => {
+            updateWheres.push(predicate);
+            return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
+          },
+        };
+      },
     }),
   };
-  return { dbMock, updateWheres, updateReturns, selectReturns, alertRow };
+  return { dbMock, updateWheres, updateSets, updateReturns, selectReturns, alertRow };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -103,6 +107,7 @@ const resolveRequest = () =>
 
 beforeEach(() => {
   updateWheres.length = 0;
+  updateSets.length = 0;
   updateReturns.length = 0;
   selectReturns.length = 0;
   vi.clearAllMocks();
@@ -140,6 +145,15 @@ describe('POST /mobile/alerts/:id/resolve — the winning caller', () => {
     expect(publishEvent).toHaveBeenCalledTimes(1);
     expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.resolved');
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("stamps resolution_reason 'manual' on the human resolve (#7281)", async () => {
+    updateReturns.push([{ ...alertRow, status: 'resolved' }]);
+
+    await resolveRequest();
+
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toMatchObject({ status: 'resolved', resolutionReason: 'manual' });
   });
 
   it('returns the same 409 the CAS loser gets when the pre-read already sees resolved', async () => {
