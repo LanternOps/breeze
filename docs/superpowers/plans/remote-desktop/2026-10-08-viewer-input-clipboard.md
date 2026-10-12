@@ -1586,6 +1586,11 @@ unchanged.
 | `deltaX` | `mouse_scroll` | integer, \|deltaX\| ≤ 120 (same bound as `delta`); positive = right; `delta` may be 0 |
 | `button: "back"` / `"forward"` | `mouse_down`, `mouse_up`, `mouse_click` | added to the button allowlist (`""`, `left`, `right`, `middle`, `back`, `forward`) |
 
+One difference from what W03 assumed: the viewer's `clampInputEvent` removes a `code` only when it
+is over 64 bytes, while the agent rejects the whole key event when `code` is over 32 bytes or holds
+anything but ASCII letters and digits. No standard DOM code trips this. The viewer can mirror the
+stricter bound later.
+
 `code` is never passed to a syscall as text. The Windows agent looks it up in a fixed table
 (`winCodeKeys`, `input_keycode.go`). The `key_up` for a key carries the same `code` as its
 `key_down`, and the held-state tracker records `code`, so a release resolves to the key that was
@@ -1597,7 +1602,7 @@ pressed.
 |---|---|---|---|
 | `code` | Injected by scancode (`KEYEVENTF_SCANCODE`, plus `KEYEVENTF_EXTENDEDKEY` for E0 keys) when it is in the table: left/right Shift, Ctrl, Alt, Meta (`OSLeft`/`OSRight` too), ContextMenu, NumpadEnter, NumpadDivide, arrows, Insert/Delete/Home/End/PageUp/PageDown, F13–F24, IntlBackslash (`VK_OEM_102`), IntlRo, IntlYen, volume and media-track keys. Anything else uses `key` as before. Letters, digits and punctuation stay on `key` on purpose: a scancode is a physical position, so `KeyA` on an AZERTY remote would type "q". Lock keys and Pause also stay on `key`. | ignored (`key` map) | ignored (`key` map) |
 | `back`/`forward` | `XBUTTON1`/`XBUTTON2` (`MOUSEEVENTF_XDOWN`/`XUP`, `mouseData`) | other-mouse buttons 3/4 (CGEvent; IOHID other-mouse with `buttonNumber`) | buttons 8/9 |
-| `deltaX` | `MOUSEEVENTF_HWHEEL`, `deltaX × 120` (positive = right). The vertical `WHEEL` is skipped when `delta` is 0. | two-axis `CGEventCreateScrollWheelEvent`, wheel2 = −deltaX (IOHID `deltaAxis2`) | buttons 7 (right) / 6 (left), `|deltaX|` clicks |
+| `deltaX` | `MOUSEEVENTF_HWHEEL`, `deltaX × 120` (positive = right). The vertical `WHEEL` is skipped when `delta` is 0. | two-axis `CGEventCreateScrollWheelEvent`, wheel2 = −deltaX (IOHID `deltaAxis2`) | buttons 7 (right) / 6 (left), abs(deltaX) clicks |
 | `numLock`, `capsLock` | Synced, sequenced events only (see below) | Caps Lock as before (#3595); `numLock` ignored | Synced, sequenced events only |
 | Held modifiers | unchanged | Running flags mask, sequenced events only (see below) | unchanged |
 | Repeat | Forwarded repeats are plain `key_down`s and are re-injected; no wire field | same | the viewer does not forward repeats (X autorepeats XTEST-held keys) |
