@@ -430,9 +430,10 @@ describe('manage_contracts update_line (#3205 W03)', () => {
       expect(desc).toContain('includedQuantity');
       expect(desc).toContain('overageMode');
       expect(desc).toContain('overageUnitPrice');
-      // The fixed-allowance rule is the one thing a model will otherwise get wrong.
-      expect(desc).toMatch(/(every period even (when|if) the live count is lower|Bills a minimum)/i);
     }
+    // The fixed-allowance rule is the one thing a model will otherwise get wrong.
+    expect(JSON.stringify(schema.properties.line)).toMatch(/Bills a minimum/i);
+    expect(JSON.stringify(schema.properties.patch)).toMatch(/every period even if the live count is lower/i);
     const lineDesc = JSON.stringify(schema.properties.line);
     expect(lineDesc).toMatch(/Supply with overageMode/i);
     const patchDesc = JSON.stringify(schema.properties.patch);
