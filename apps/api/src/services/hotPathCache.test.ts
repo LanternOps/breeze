@@ -387,3 +387,59 @@ describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
     expect(cache.peek(ORG)).toBeUndefined();
   });
 });
+
+describe('DeferredCacheFills — sub-org keys and shouldCache (#7970)', () => {
+  const ORG = 'org-1';
+  const PARTNER = 'partner-1';
+  const scope = { orgId: ORG, partnerId: PARTNER };
+  const orgCtx = () => ({
+    scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [], currentPartnerId: PARTNER,
+  });
+  const deviceCache = () => new HotPathTtlCache<string, boolean>({ name: 'test-device', ttlMs: 60_000, maxEntries: 10 });
+
+  async function throughInOrgContext(
+    cache: HotPathTtlCache<string, boolean>,
+    key: string,
+    value: boolean,
+    options: { keyOrgId?: string; shouldCache?: (v: boolean) => boolean },
+  ): Promise<boolean> {
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    const got = await fills.through(cache, key, async () => value, scope, options);
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    return got;
+  }
+
+  beforeEach(() => {
+    dbState.inContext = false;
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+
+  it('a per-device key whose keyOrgId is the fill scope org is stored after flush', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, `${ORG}:dev-1`, false, { keyOrgId: ORG })).toBe(false);
+    expect(cache.peek(`${ORG}:dev-1`)).toBe(false);
+  });
+
+  it('a per-device key whose keyOrgId names another org is returned but never stored', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, 'org-B:dev-1', false, { keyOrgId: 'org-B' })).toBe(false);
+    expect(cache.peek('org-B:dev-1')).toBeUndefined();
+  });
+
+  it('a per-device key without keyOrgId is still bound to the org id and never stored', async () => {
+    const cache = deviceCache();
+    await throughInOrgContext(cache, `${ORG}:dev-1`, false, {});
+    expect(cache.peek(`${ORG}:dev-1`)).toBeUndefined();
+  });
+
+  it('shouldCache=false returns the value but stores nothing', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, `${ORG}:dev-1`, true, { keyOrgId: ORG, shouldCache: (present) => !present })).toBe(true);
+    expect(cache.peek(`${ORG}:dev-1`)).toBeUndefined();
+  });
+});
