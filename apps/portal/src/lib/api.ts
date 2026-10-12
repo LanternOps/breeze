@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -830,6 +830,8 @@ export interface BrandingConfig {
   enablePerformanceMetrics?: boolean;
   enableSoftwareInventory?: boolean;
   enableNetworkVisibility?: boolean;
+  /** Block hours W04 (#8179): MSP turned the Support hours card on for this org. */
+  enableHourBlock?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -1347,6 +1349,13 @@ export const portalApi = {
       `/portal/tickets/usage${buildQueryString({ month })}`,
       config
     ),
+
+  // Block hours W04 (#8179): read-only prepaid-hours balance. Only called
+  // when branding.enableHourBlock is true (see pages/tickets/index.astro).
+  getHourBlock: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<PortalHourBlockResponse>> =>
+    apiGet<PortalHourBlockResponse>('/portal/support-usage/hour-block', config),
 
   // W10 — customer reports
   getReportRuns: async (
