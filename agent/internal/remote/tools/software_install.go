@@ -709,7 +709,7 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd, fileType string, su
 	// EXE installers are typically wrappers: they spawn the real setup (which
 	// inherits the output handles) and exit. Without WaitDelay, Wait blocks on
 	// pipe EOF until every descendant exits — real installs stalled into the
-	// 30-minute timeout. Mirrors scripts/runner.go and executor/executor.go.
+	// 30-minute timeout. Mirrors executor/executor.go.
 	cmd.WaitDelay = installerWaitDelay
 
 	tree := newInstallerProcessTree()
