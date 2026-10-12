@@ -15,7 +15,7 @@ import {
   type ContractLineType, type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
+import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor, todayISO } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { pgErrorNode } from '../utils/pgErrors';
@@ -1829,10 +1829,6 @@ export async function removeContractLine(
     await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
     return { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
   });
-}
-
-function todayISO(asOf: Date = new Date()): string {
-  return asOf.toISOString().slice(0, 10);
 }
 
 export async function activateContract(contractId: string, actor: ContractActor, asOf: Date = new Date()) {
