@@ -371,6 +371,24 @@ describe('assertPairStillMergeable (in-transaction TOCTOU re-check)', () => {
     await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/no longer fenced/i);
   });
 
+  it('rejects when BOTH organizations hold a live block of hours (the live-block index is per org)', async () => {
+    mockState.executeResponses = [
+      [row({}), row({ id: S, status: 'active' })],   // the pair lock read
+      [{ org_id: L }, { org_id: S }],                // live hour_block lines: one per org
+    ];
+    await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/live block of hours/i);
+  });
+
+  it('passes when only one side holds a live block (the repoint leaves exactly one)', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], [{ org_id: L }]];
+    await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
+  });
+
+  it('passes when neither does', async () => {
+    mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })], []];
+    await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
+  });
+
   it('rejects when the loser was already stamped deleted by a concurrent merge', async () => {
     mockState.executeResponses = [[row({ deleted_at: new Date() }), row({ id: S, status: 'active' })]];
     await expect(assertPairStillMergeable(loser, survivor)).rejects.toThrow(/no longer fenced/i);

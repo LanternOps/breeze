@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
+import { partners, organizations, contracts, contractLines } from '../../db/schema';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getOrgMergePolicies, __testOnly } from '../../services/orgMergeRegistry';
 import { buildRepointDedupe } from '../../services/orgMergeExecutors';
@@ -918,5 +920,36 @@ describe('Org merge repoint-dedupe executors run against real Postgres', () => {
         throw new Error('org-merge-executors-smoke-rollback');
       })
     ).rejects.toThrow('org-merge-executors-smoke-rollback');
+  });
+});
+
+describe('contract_lines live-block index vs the merge registry (#4547 W03, Open Decision 14)', () => {
+  it('contract_lines is a plain repoint, and repointing a second live block onto the same org violates the live-block index — the reason orgMerge refuses such a pair before it fences anything', async () => {
+    expect(getOrgMergePolicies().get('contract_lines')).toMatchObject({ kind: 'repoint' });
+
+    const sfx = randomUUID().slice(0, 8);
+    const { a, b } = await withSystemDbAccessContext(async () => {
+      const [p] = await db.insert(partners).values({ name: `MB ${sfx}`, slug: `mb-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
+      const seed = async (tag: string) => {
+        const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: `MB ${tag} ${sfx}`, slug: `mb-${tag}-${sfx}`, currencyCode: 'USD' }).returning({ id: organizations.id });
+        const [c] = await db.insert(contracts).values({ partnerId: p!.id, orgId: o!.id, name: 'Block', status: 'draft', intervalMonths: 1, startDate: '2026-12-01', currencyCode: 'USD', billingTiming: 'advance' }).returning({ id: contracts.id });
+        const [l] = await db.insert(contractLines).values({
+          contractId: c!.id, orgId: o!.id, lineType: 'hour_block', description: 'Block', unitPrice: '1.00', taxable: false,
+          includedQuantity: '1.00', overageMode: 'bill', overageUnitPrice: '1.00', rolloverPolicy: 'none', hourBlockFirstPeriodStart: '2026-12-01',
+        }).returning({ id: contractLines.id });
+        return { orgId: o!.id, lineId: l!.id };
+      };
+      return { a: await seed('a'), b: await seed('b') };
+    });
+
+    // What the registry's plain repoint does to the loser's block (constraints deferred, as the merge walk does).
+    const err = await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      try {
+        await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
+        return null;
+      } catch (e) { return e; }
+    });
+    expect(isPgUniqueViolation(err, 'contract_lines_one_live_hour_block_per_org_uq')).toBe(true);
   });
 });
