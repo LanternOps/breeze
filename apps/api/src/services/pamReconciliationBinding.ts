@@ -63,7 +63,7 @@ export function toV1Disposition(
 
 /**
  * Resolves agent reconciliation candidates through the definer function
- * `breeze_pam_epoch_binding` (migration 2026-12-24-130000). Ownership of an
+ * `breeze_pam_epoch_binding` (migration 2026-12-24-210000). Ownership of an
  * actuation is proven by the device's epoch lineage, not by the live org. The
  * caller's ambient DB context must have access to the device's live org;
  * otherwise every candidate is `unresolved`.

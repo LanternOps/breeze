@@ -497,7 +497,7 @@ one disposition for candidates from an **earlier** epoch.
 The resolver no longer runs the RLS-scoped join on the live
 `devices.org_id`. It calls one `SECURITY DEFINER` function,
 `breeze_pam_epoch_binding(agent_id, device_id, candidates jsonb)`
-(migration `2026-12-24-130000-pam-lineage-binding.sql`):
+(migration `2026-12-24-210000-pam-lineage-binding.sql`):
 
 - **Phase 1, caller's scope.** The live device row must match
   `(id, agent_id)` and the caller's context must have access to that
