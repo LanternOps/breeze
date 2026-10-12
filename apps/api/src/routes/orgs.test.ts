@@ -8788,6 +8788,25 @@ describe('org routes', () => {
       });
     });
 
+    it.each([
+      ['POST /organizations', '/orgs/organizations', { name: 'O', slug: 'o', partnerId: '00000000-0000-4000-8000-000000000001' }],
+      ['POST /partners', '/orgs/partners', { name: 'P', slug: 'p' }],
+    ])('%s rejects security.sessionTimeout 721 with 400', async (_n, path, base) => {
+      setAuthContext({ scope: 'system' });
+      primeSelect();
+      const res = await send('POST', path, { ...base, ...sec(721) });
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-integer or zero timeout on the free-form paths, accepts null (unset)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeSelect();
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(0))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(60.5))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', { settings: { security: { sessionTimeout: null } } })).status).toBe(200);
+    });
+
     it('GET /partners/me clamps a stored 1440 to 720', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.select).mockReturnValue({

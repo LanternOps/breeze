@@ -55,7 +55,11 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
   const [expirationDays, setExpirationDays] = useState(initialData.expirationDays || 90);
   const [requireMfa, setRequireMfa] = useState(initialData.requireMfa ?? true);
   const [allowedMethods, setAllowedMethods] = useState(initialData.allowedMethods || { totp: true, sms: false });
-  const [sessionTimeout, setSessionTimeout] = useState(initialData.sessionTimeout || 60);
+  const [sessionTimeout, setSessionTimeout] = useState(
+    // #6111 — the org record is read raw; a legacy stored value above the
+    // ceiling must not be re-submitted (the API now rejects it with a 400).
+    Math.min(SESSION_TIMEOUT_MAX_MINUTES, initialData.sessionTimeout || 60),
+  );
   const [maxSessions, setMaxSessions] = useState(initialData.maxSessions || 3);
   const [ipAllowlist, setIpAllowlist] = useState(initialData.ipAllowlist || '');
 
@@ -77,7 +81,9 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
       expirationDays,
       requireMfa,
       allowedMethods,
-      sessionTimeout,
+      // A cleared input reads as 0; the API rejects <1 and >720, so fall back to
+      // the default / clamp rather than submit a value that fails the whole save.
+      sessionTimeout: Math.min(SESSION_TIMEOUT_MAX_MINUTES, Math.max(1, sessionTimeout || 60)),
       maxSessions,
       ipAllowlist
     };
