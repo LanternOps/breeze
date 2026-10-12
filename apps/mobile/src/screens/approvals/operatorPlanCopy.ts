@@ -67,3 +67,13 @@ export function groupOperatorPlanEffects(
     return group.length > 0 ? [{ provider, effects: group }] : [];
   });
 }
+
+/**
+ * True only when the plan parses completely AND lists at least one effect.
+ * The detail screen disables Approve (never Deny) when this is false: an
+ * approver must not sign a plan the screen could not show them.
+ */
+export function isOperatorPlanReadable(args: Record<string, unknown> | null | undefined): boolean {
+  const groups = groupOperatorPlanEffects(args);
+  return groups !== null && groups.length > 0;
+}

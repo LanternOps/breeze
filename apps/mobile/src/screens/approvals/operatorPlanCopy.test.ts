@@ -9,7 +9,7 @@ vi.mock('expo-secure-store', () => ({
 }));
 
 import { isOperatorPlanApproval, type ApprovalRequest } from '../../services/approvals';
-import { groupOperatorPlanEffects } from './operatorPlanCopy';
+import { groupOperatorPlanEffects, isOperatorPlanReadable } from './operatorPlanCopy';
 
 const effect = (ordinal: number, provider: string, extra: Record<string, unknown> = {}) => ({
   ordinal,
@@ -56,5 +56,20 @@ describe('groupOperatorPlanEffects', () => {
 
   it('returns an empty list for an empty plan', () => {
     expect(groupOperatorPlanEffects({ effects: [] })).toEqual([]);
+  });
+});
+
+describe('isOperatorPlanReadable (gates Approve)', () => {
+  it('is true for a fully parseable, non-empty plan', () => {
+    expect(isOperatorPlanReadable({ effects: [effect(0, 'm365')] })).toBe(true);
+  });
+
+  it('is false for missing, malformed, partially-malformed, or empty plans', () => {
+    expect(isOperatorPlanReadable(null)).toBe(false);
+    expect(isOperatorPlanReadable(undefined)).toBe(false);
+    expect(isOperatorPlanReadable({})).toBe(false);
+    expect(isOperatorPlanReadable({ effects: 'nope' })).toBe(false);
+    expect(isOperatorPlanReadable({ effects: [effect(0, 'm365'), { ordinal: 1 }] })).toBe(false);
+    expect(isOperatorPlanReadable({ effects: [] })).toBe(false);
   });
 });

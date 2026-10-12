@@ -38,6 +38,7 @@ import { DetailsCollapse } from './components/DetailsCollapse';
 import { UacInterceptDetails } from './components/UacInterceptDetails';
 import { ScriptProposalDetails } from './components/ScriptProposalDetails';
 import { OperatorPlanDetails } from './components/OperatorPlanDetails';
+import { isOperatorPlanReadable } from './operatorPlanCopy';
 import { isOperatorPlanApproval } from '../../services/approvals';
 import { RiskBand } from './components/RiskBand';
 import { CustomerTenantBadge } from './components/CustomerTenantBadge';
@@ -490,6 +491,7 @@ export function ApprovalScreen() {
             onDeny={handleDeny}
             approveDisabled={
               (flowType === 'script_proposal' && proposalApproveBlocked !== null) ||
+              (isOperatorPlanApproval(focused) && !isOperatorPlanReadable(focused.actionArguments)) ||
               (needsReauth && !buildReauthFactor(reauthMode, reauthSecret))
             }
           />
