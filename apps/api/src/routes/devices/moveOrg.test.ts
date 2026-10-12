@@ -672,7 +672,14 @@ describe('POST /devices/:id/move-org', () => {
         'software_inventory_observations',
         'agent_rollback_events',
         'peripheral_policy_delivery_events',
+        'device_restore_point_attempts',
       ]);
+      // ...and the loop must actually skip it: no app-role UPDATE (its
+      // composite FK's ON UPDATE CASCADE restamps it). Positive control: an
+      // ordinary sibling in the same list IS restamped by the loop.
+      const collapsed = statements.map(collapseStmt);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_registry_state SET org_id'))).toBe(true);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_restore_point_attempts SET'))).toBe(false);
 
       expect(statements).toContain(
         `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,
