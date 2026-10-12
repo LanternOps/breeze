@@ -1855,7 +1855,11 @@
       "description": "Bekleyen ve yüklü güncellemeler",
       "installed": "{{count}} kuruldu",
       "pending": "{{count}} beklemede",
-      "title": "Yama Uyumluluğu"
+      "title": "Yama Uyumluluğu",
+      "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesBehind_one": "{{count}} kapsayıcı imajı güncel değil",
+      "imagesBehind_other": "{{count}} kapsayıcı imajı güncel değil"
     },
     "confirm": {
       "install": "Yükle",
@@ -4036,7 +4040,8 @@
       "state": "Durum",
       "image": "İmaj / konuk OS",
       "compose": "Compose projesi",
-      "started": "Başlangıç"
+      "started": "Başlangıç",
+      "imageStatus": "İmaj durumu"
     },
     "states": {
       "running": "Çalışıyor",
@@ -4054,6 +4059,30 @@
       "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
       "interval": "Toplama aralığı (dakika)",
       "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
+    },
+    "imageStatus": {
+      "behind": "Güncel değil",
+      "current": "Güncel",
+      "pinned": "Sabitlenmiş",
+      "local": "Yerel derleme",
+      "not_found": "Etiket bulunamadı",
+      "not_checked": "Denetlenmedi"
+    },
+    "imageStatusReason": {
+      "pending": "Henüz denetlenmedi",
+      "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
+      "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
+      "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
+      "current": "Kayıt defteriyle eşleşiyor",
+      "pinned": "Bir özete sabitlenmiş — karşılaştırılacak bir şey yok",
+      "local": "Yerel olarak derlenmiş — kayıt defteri özeti yok",
+      "not_found": "Etiket artık kayıt defterinde yok"
+    },
+    "imageFilter": {
+      "label": "İmaj durumu",
+      "all": "Tümü",
+      "empty": "Bu imaj durumuyla eşleşen iş yükü yok."
     }
   }
 }

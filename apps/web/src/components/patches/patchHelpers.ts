@@ -222,6 +222,8 @@ export type DevicePatchRow = {
   lastInstalledAt?: string;
   lastScannedAt?: string;
   pendingReboot: boolean;
+  /** W06: distinct container images behind their registry tag; a stale image is an outstanding update. */
+  staleImages?: number;
   /** Device status from the /devices API ('online' | 'offline' | ...). Used to
    *  mute the pending-reboot badge for offline devices, whose reboot flag is
    *  frozen at the last heartbeat and may be stale (#2219). */
@@ -362,4 +364,13 @@ export function normalizeCompliance(raw: Record<string, unknown>): PatchComplian
     importantSummary,
     devicesNeedingPatches
   };
+}
+
+/**
+ * A device needs updates when it has an outstanding OS/software patch or a
+ * container image behind its registry tag (W06, spec §10.1 — the API's
+ * compliant-device count uses the same rule).
+ */
+export function deviceNeedsUpdates(device: Pick<DevicePatchRow, 'pendingPatches' | 'staleImages'>): boolean {
+  return device.pendingPatches > 0 || (device.staleImages ?? 0) > 0;
 }

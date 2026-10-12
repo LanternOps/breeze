@@ -408,7 +408,9 @@
       "unratedPending": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "unratedPending_one": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
-      "empty": "Henüz yama verisi yok"
+      "empty": "Henüz yama verisi yok",
+      "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
     },
     "vuln": {
       "title": "Güvenlik Açıkları",

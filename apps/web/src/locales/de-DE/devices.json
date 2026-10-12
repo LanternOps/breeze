@@ -1855,7 +1855,11 @@
       "description": "Ausstehende vs. installierte Updates",
       "installed": "{{count}} installiert",
       "pending": "{{count}} ausstehend",
-      "title": "Patch-Konformität"
+      "title": "Patch-Konformität",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft",
+      "imagesBehind_one": "{{count}} Container-Image veraltet",
+      "imagesBehind_other": "{{count}} Container-Images veraltet"
     },
     "confirm": {
       "install": "Installieren",
@@ -4036,7 +4040,8 @@
       "state": "Status",
       "image": "Image / Gast-OS",
       "compose": "Compose-Projekt",
-      "started": "Gestartet"
+      "started": "Gestartet",
+      "imageStatus": "Image-Status"
     },
     "states": {
       "running": "Läuft",
@@ -4054,6 +4059,30 @@
       "laterRelease": "Die Auflistung für Hyper-V und Proxmox VE folgt mit einer späteren Agent-Version; diese Schalter werden dann wirksam.",
       "interval": "Erfassungsintervall (Minuten)",
       "invalidInterval": "Das Intervall muss eine ganze Zahl von Minuten zwischen {{min}} und {{max}} sein."
+    },
+    "imageStatus": {
+      "behind": "Veraltet",
+      "current": "Aktuell",
+      "pinned": "Fixiert",
+      "local": "Lokaler Build",
+      "not_found": "Tag nicht gefunden",
+      "not_checked": "Nicht geprüft"
+    },
+    "imageStatusReason": {
+      "pending": "Noch nicht geprüft",
+      "private": "Private Registry – Anmeldedaten erforderlich",
+      "unsupported_registry": "Registry wird nicht unterstützt",
+      "error": "Registry-Prüfung fehlgeschlagen – wird wiederholt",
+      "behind": "Für diesen Tag ist ein neueres Image veröffentlicht",
+      "current": "Entspricht der Registry",
+      "pinned": "Auf einen Digest fixiert – kein Vergleich möglich",
+      "local": "Lokal erstellt – kein Registry-Digest",
+      "not_found": "Der Tag existiert in der Registry nicht mehr"
+    },
+    "imageFilter": {
+      "label": "Image-Status",
+      "all": "Alle",
+      "empty": "Keine Workloads mit diesem Image-Status."
     }
   }
 }

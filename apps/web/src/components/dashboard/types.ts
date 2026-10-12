@@ -50,6 +50,8 @@ export interface PatchCompliance {
   criticalSummary: { total: number; patched: number; pending: number };
   importantSummary: { total: number; patched: number; pending: number };
   unratedSummary: { total: number; patched: number; pending: number };
+  /** W06: present only when the scope has container images to count. */
+  containerImages?: { stale: number; current: number; unknown: number };
 }
 
 /** GET /security/dashboard — apps/api/src/routes/security/dashboard.ts */

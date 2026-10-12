@@ -408,7 +408,9 @@
       "unratedPending": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "unratedPending_one": "{{count}} unbewerteter Patch ausstehend (wird nicht automatisch genehmigt)",
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
-      "empty": "Noch keine Patch-Daten"
+      "empty": "Noch keine Patch-Daten",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
     },
     "vuln": {
       "title": "Schwachstellen",
