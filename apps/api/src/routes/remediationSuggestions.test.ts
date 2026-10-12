@@ -22,16 +22,22 @@ const dbMocks = vi.hoisted(() => ({
   loadSummariesMock: vi.fn(async () => new Map()),
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns; `depth` says whether a DB call ran inside one.
-  dbContextState: { depth: 0, events: [] as string[] },
+  // `ids` is the stack of open context identities (outermost first): `depth`
+  // alone cannot tell the SAME context from a sibling one (#7280).
+  dbContextState: { depth: 0, events: [] as string[], ids: [] as number[], committed: [] as number[], nextId: 0 },
 }));
 
 const withAuthDbAccessContextMock = vi.hoisted(() => vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
   dbMocks.dbContextState.depth += 1;
+  const id = ++dbMocks.dbContextState.nextId;
+  dbMocks.dbContextState.ids.push(id);
   try {
     return await fn();
   } finally {
     dbMocks.dbContextState.depth -= 1;
+    dbMocks.dbContextState.ids.pop();
     dbMocks.dbContextState.events.push('commit');
+    dbMocks.dbContextState.committed.push(id);
   }
 }));
 
@@ -328,6 +334,9 @@ describe('remediation suggestion routes', () => {
     scriptUpdateCalls.length = 0;
     dbMocks.dbContextState.depth = 0;
     dbMocks.dbContextState.events = [];
+    dbMocks.dbContextState.ids = [];
+    dbMocks.dbContextState.committed = [];
+    dbMocks.dbContextState.nextId = 0;
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -713,11 +722,12 @@ describe('remediation suggestion routes', () => {
     const deviceRow = { id: builtinRow.deviceId, orgId: builtinRow.orgId, siteId: '99999999-9999-4999-8999-999999999999', osType: 'windows', agentVersion: '1.0.0', status: 'online' };
     const phase3Row = { ...builtinRow, status: 'executed', executedBy: 'user-1', executedAt: new Date('2026-06-18T12:10:00.000Z') };
     // A5: the gate's conditional claim (accepted/edited -> executed) and phase 3's idempotent update.
-    const updateCalls: Array<{ depth: number; set: Record<string, unknown> }> = [];
+    const updateCalls: Array<{ depth: number; ctx: number | null; set: Record<string, unknown> }> = [];
+    const currentCtx = () => dbMocks.dbContextState.ids.at(-1) ?? null;
     const mockUpdateReturning = (rows: unknown[]) => {
       dbMocks.updateMock.mockImplementationOnce(() => ({
         set: vi.fn((set: Record<string, unknown>) => {
-          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, ctx: currentCtx(), set });
           return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) };
         }),
       }));
@@ -727,7 +737,7 @@ describe('remediation suggestion routes', () => {
       dbMocks.updateMock.mockImplementationOnce(() => {
         if (depths) depths.update = dbMocks.dbContextState.depth;
         return { set: vi.fn((set: Record<string, unknown>) => {
-          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, ctx: currentCtx(), set });
           return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([phase3Row]) }) };
         }) };
       });
@@ -775,6 +785,37 @@ describe('remediation suggestion routes', () => {
       expect(depths.dispatch).toBe(0);
       expect(depths.update).toBeGreaterThan(0);
       expect(depths.record).toBeGreaterThan(0);
+    });
+
+    it('#7280: the claim, dispatch and phase 3 run in three DISTINCT contexts; link + record share phase 3\'s', async () => {
+      withDevicesExecute();
+      const seen: Record<string, number | null> = {};
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      mockClaim();
+      dbMocks.dispatchBuiltinMock.mockImplementationOnce(async () => {
+        seen.dispatch = currentCtx();
+        seen.committedBeforeDispatch = dbMocks.dbContextState.committed.at(0) ?? null;
+        return { ok: true, commandId: 'cmd-1', cleanupRunId: null };
+      });
+      mockPhase3();
+      dbMocks.recordBuiltinMock.mockImplementationOnce(async () => {
+        seen.record = currentCtx();
+        return { state: 'pending', stateReason: null, humanVote: null };
+      });
+      const res = await run();
+      expect(res.status).toBe(201);
+      const [claim, link] = updateCalls;
+      expect(claim!.ctx).not.toBeNull();
+      expect(link!.ctx).not.toBeNull();
+      expect(seen.dispatch).toBeNull(); // outside every context
+      expect(seen.record).not.toBeNull();
+      // Phase 3 is a NEW context, not a continuation of the gate's: the gate committed first.
+      expect(link!.ctx).not.toBe(claim!.ctx);
+      expect(seen.record).toBe(link!.ctx);
+      expect(seen.record).not.toBe(claim!.ctx);
+      // The CLAIM's own context committed before dispatch ran.
+      expect(seen.committedBeforeDispatch).toBe(claim!.ctx);
     });
 
     it('A5: a claim that matches no row (a concurrent /execute won) is a 409 and nothing is dispatched', async () => {
