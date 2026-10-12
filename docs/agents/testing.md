@@ -19,7 +19,7 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before running a scoped test,
 For test-writing conventions (Drizzle mock patterns, table-driven Go tests, validator coverage, and the required coverage checklist), use the **`breeze-testing`** skill.
 
 ## CI Integration
-- All tests run automatically in CI (`.github/workflows/ci.yml`)
+- Test suites run in CI (`.github/workflows/ci.yml`), each in its own job: `test-api`, `test-web`, `test-portal`, `test-viewer`, `test-shared` (`packages/shared` vitest, #8373), `test-agent`, the add-in/M365 suites and `integration-test`. Anything without a job there is not run in CI — check before assuming a suite is covered
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
