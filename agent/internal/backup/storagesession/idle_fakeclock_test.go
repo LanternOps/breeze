@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -220,4 +221,46 @@ func TestNoProgressTransferIsCutOffOnFakeClock(t *testing.T) {
 	if got := len(st.recorded()); got != 1+maxStallRetries {
 		t.Fatalf("storage requests = %d, want %d", got, 1+maxStallRetries)
 	}
+}
+
+// waitUntil blocks until cond holds. The wait bound only guards against a
+// hung test; it is not part of the property.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// slowStorageClient returns a client for st whose nth request (1-based) is
+// held for delay before it is sent, standing in for a loaded runner that is
+// slow to dial or schedule a retry (#8488). Tests driven by the fake idle
+// clock must not care: the watchdog fires only when the test advances
+// virtual time, which it does only after the server has seen the request.
+func slowStorageClient(st *fakeStorage, nth int32, delay time.Duration) *http.Client {
+	c := st.srv.Client()
+	c.Transport = &slowRoundTripper{base: c.Transport, nth: nth, delay: delay}
+	return c
+}
+
+type slowRoundTripper struct {
+	base  http.RoundTripper
+	nth   int32
+	delay time.Duration
+	seen  atomic.Int32
+}
+
+func (s *slowRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	if s.seen.Add(1) == s.nth {
+		select {
+		case <-time.After(s.delay):
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return s.base.RoundTrip(r)
 }
