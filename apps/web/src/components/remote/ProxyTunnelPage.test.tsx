@@ -1,11 +1,16 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProxyTunnelPage from './ProxyTunnelPage';
 import { fetchWithAuth } from '@/stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+}));
+
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn(),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -94,12 +99,96 @@ describe('ProxyTunnelPage', () => {
       expect.objectContaining({ method: 'POST' }),
     );
 
-    // "Open in new tab" points at the same proxy URL.
-    const openLink = screen.getByRole('link', { name: /open in new tab/i });
-    expect(openLink.getAttribute('href')).toContain(`/api/v1/tunnel-http/${TUNNEL_ID}/?__bzt=TKT-abc`);
+    // "Open in new tab" must not reuse the iframe's (already consumed) ticket URL.
+    expect(screen.queryByRole('link', { name: /open in new tab/i })).not.toBeInTheDocument();
 
     // No expiry overlay while connectable and fresh.
     expect(screen.queryByTestId('proxy-session-expired-overlay')).not.toBeInTheDocument();
+  });
+
+  describe('Open In New Tab', () => {
+    // A fake popup window: records what the page does to it.
+    const makePopup = () => ({
+      opener: {} as unknown,
+      closed: false,
+      close: vi.fn(),
+      location: { replace: vi.fn() },
+    });
+
+    const mintSequence = (tickets: Array<string | null>) => {
+      let mints = 0;
+      fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+        if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
+          const next = tickets[Math.min(mints++, tickets.length - 1)];
+          return next
+            ? makeResponse({ ticket: { ticket: next, expiresInSeconds: 300 } })
+            : makeResponse({ error: 'No proxy access' }, false);
+        }
+        return makeResponse({ status: 'connecting' });
+      });
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('mints a fresh ticket for the new tab instead of reusing the iframe\'s consumed one', async () => {
+      mintSequence(['TKT-iframe', 'TKT-tab']);
+      const popup = makePopup();
+      const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+
+      render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
+      await screen.findByTestId('network-proxy-frame');
+
+      fireEvent.click(screen.getByRole('button', { name: /open in new tab/i }));
+
+      // Opened synchronously inside the click (popup blockers), as a blank page
+      // with no handle back to this window.
+      expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank');
+      expect(popup.opener).toBeNull();
+
+      await waitFor(() =>
+        expect(popup.location.replace).toHaveBeenCalledWith(
+          expect.stringContaining(`/api/v1/tunnel-http/${TUNNEL_ID}/?__bzt=TKT-tab`),
+        ),
+      );
+      const mintCalls = fetchMock.mock.calls.filter(([url]) => url === `/tunnels/${TUNNEL_ID}/http-ticket`);
+      expect(mintCalls).toHaveLength(2);
+      // The iframe keeps its own session.
+      expect(screen.getByTestId('network-proxy-frame').getAttribute('src')).toContain('__bzt=TKT-iframe');
+    });
+
+    it('closes the blank tab and surfaces the error when the new ticket cannot be minted', async () => {
+      mintSequence(['TKT-iframe', null]);
+      const popup = makePopup();
+      vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+
+      render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
+      await screen.findByTestId('network-proxy-frame');
+      fireEvent.click(screen.getByRole('button', { name: /open in new tab/i }));
+
+      await waitFor(() => expect(popup.close).toHaveBeenCalled());
+      expect(popup.location.replace).not.toHaveBeenCalled();
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'No proxy access' }),
+      );
+      // The iframe session is untouched by a failed new-tab mint.
+      expect(screen.getByTestId('network-proxy-frame')).toBeInTheDocument();
+    });
+
+    it('does nothing further when the browser blocks the popup', async () => {
+      mintSequence(['TKT-iframe', 'TKT-tab']);
+      vi.spyOn(window, 'open').mockReturnValue(null);
+
+      render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
+      await screen.findByTestId('network-proxy-frame');
+      fireEvent.click(screen.getByRole('button', { name: /open in new tab/i }));
+
+      // No ticket is minted for a tab that never opened.
+      await new Promise((r) => setTimeout(r, 0));
+      const mintCalls = fetchMock.mock.calls.filter(([url]) => url === `/tunnels/${TUNNEL_ID}/http-ticket`);
+      expect(mintCalls).toHaveLength(1);
+    });
   });
 
   it('shows an error when the ticket cannot be minted', async () => {

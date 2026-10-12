@@ -13,6 +13,7 @@ import { PageHeader } from '../shared/PageHeader';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 // SSR-safe: reading `window` inside an effect (not a `useState` initializer)
 // avoids the hydration-mismatch class useHashState.ts documents — this page
@@ -569,7 +570,7 @@ export default function RunsListPage() {
     if (agents.some((agent) => agent.id === agentFilter)) return;
     setAgentFilter('');
     if (window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      replaceUrl(window.location.pathname + window.location.search);
     }
   }, [agentsLoaded, agents, agentFilter]);
 

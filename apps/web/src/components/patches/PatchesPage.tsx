@@ -30,6 +30,7 @@ import { asList } from '@/lib/asList';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 type TabKey = 'rings' | 'patches' | 'compliance' | 'jobs';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
@@ -50,7 +51,7 @@ function setTabInHash(tab: TabKey) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   url.hash = tab === 'compliance' ? '' : tab;
-  window.history.replaceState({}, '', url.toString());
+  replaceUrl(url.toString());
 }
 
 // Resolve a hash-derived tab against the user's access. Rings are partner-scoped:

@@ -83,6 +83,8 @@
       "pendingDevices": "{{count}} com patches pendentes",
       "approved": "{{count}} aprovados",
       "pendingApproval": "{{count}} aguardando aprovação",
+      "failedInstalls_one": "{{count}} instalação com falha",
+      "failedInstalls_other": "{{count}} instalações com falha",
       "critical": "{{count}} críticos",
       "reboot": "{{count}} reinicialização"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Patches pendentes aprovados para instalação",
       "pendingApproval": "Aguardando aprovação",
       "pendingApprovalTitle": "Patches pendentes ainda aguardando aprovação",
+      "failed": "Com falha",
+      "failedTitle": "Patches pendentes cujo último pedido de instalação falhou",
       "osPatches": "Patches do SO",
       "osPatchesTitle": "Atualizações pendentes do Windows Update, Apple ou gerenciadores de pacotes Linux",
       "thirdParty": "Terceiros",

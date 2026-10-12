@@ -103,6 +103,12 @@ for (const [paths, on] of [
   });
 }
 
+test('classifier: a packages/shared-only diff is code+app, so it reaches test-shared (#8373)', () => {
+  const out = classify(['packages/shared/src/validators/timeSync.settings.test.ts']);
+  assert.equal(out.code, 'true');
+  assert.equal(out.app, 'true');
+});
+
 test('classifier: shared/global inputs set every area', () => {
   for (const path of [
     'packages/shared/src/types/device.ts',
@@ -345,6 +351,20 @@ for (const name of STACK_JOBS) {
     assert.match(job(name), new RegExp(`^    if: ${escape(STACK_IF)}$`, 'mu'));
   });
 }
+// #8373: packages/shared's vitest suite (4.6k tests) used to run nowhere in CI.
+// It is an app-gated job (any packages/** diff sets code+app), not area-gated:
+// shared is a dependency of every area.
+test('test-shared runs the packages/shared vitest suite, gated on code AND app (#8373)', () => {
+  assert.match(job('test-shared'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-shared'), /^        run: pnpm --filter @breeze\/shared exec vitest run$/mu);
+  assert.doesNotMatch(job('test-shared'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);
+});
+test('ci-success needs test-shared and asserts it in both the app and non-app branches (#8373)', () => {
+  assert.match(workflow, /^  ci-success:\n(?:.*\n)*?    needs: \[[^\]]*\btest-shared\b[^\]]*\]/mu);
+  assert.match(summary, /^          TEST_SHARED_RESULT: \$\{\{ needs\.test-shared\.result \}\}$/mu);
+  assert.match(summary, /\[\[ "\$\{TEST_SHARED_RESULT\}" != "success" \]\]/u);
+  assert.match(summary, /\[\[ "\$\{TEST_SHARED_RESULT\}" != "skipped" \]\]/u);
+});
 test('jobs that must never be area-gated are not', () => {
   for (const name of ['changes', 'lint', 'typecheck', 'security-audit', 'workspace-runtime', 'docs-check', 'ci-success',
     'auth-browser-transition-browser-contract', 'test-viewer', 'test-mobile', 'test-agent', 'build-agent']) {

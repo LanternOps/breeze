@@ -147,4 +147,33 @@ describe('processDeviceIPHistoryUpdate', () => {
     const metadataRefreshes = txState.updates.filter((record) => record.payload?.assignmentType === 'dhcp');
     expect(metadataRefreshes.length).toBe(2);
   });
+
+  // #5803: the agent now reports per-adapter resolvers. Removing every
+  // resolver arrives as an absent field (Go omitempty) and must clear the
+  // stored list rather than keep the stale one.
+  it('persists per-adapter dnsServers on insert and clears them when the agent reports none', async () => {
+    await processDeviceIPHistoryUpdate('dev-1', 'org-1', {
+      changedIPs: [{
+        interfaceName: 'Ethernet', ipAddress: '10.0.0.10', ipType: 'ipv4', assignmentType: 'static',
+        gateway: '10.0.0.1', dnsServers: ['10.0.0.53', '2001:DB8::53'],
+      }],
+      detectedAt: '2026-02-20T16:00:00Z',
+    });
+    const insertBatch = txState.inserts[0] as Array<Record<string, unknown>>;
+    expect(insertBatch[0]?.dnsServers).toEqual(['10.0.0.53', '2001:db8::53']);
+
+    resetTxState();
+    txState.activeRows = [
+      { id: 'row-1', interfaceName: 'Ethernet', ipAddress: '10.0.0.10', ipType: 'ipv4' },
+    ];
+    await processDeviceIPHistoryUpdate('dev-1', 'org-1', {
+      changedIPs: [{
+        interfaceName: 'Ethernet', ipAddress: '10.0.0.10', ipType: 'ipv4', assignmentType: 'static', gateway: '10.0.0.1',
+      }],
+      detectedAt: '2026-02-20T16:05:00Z',
+    });
+    expect(txState.inserts).toHaveLength(0);
+    const refresh = txState.updates.find((record) => record.payload?.gateway === '10.0.0.1');
+    expect(refresh?.payload.dnsServers).toEqual([]);
+  });
 });

@@ -311,3 +311,35 @@ describe('DeviceVaultStatus — failures are surfaced (#3531)', () => {
     expect(screen.queryByText("Couldn't load vault status.")).toBeNull();
   });
 });
+
+describe('DeviceVaultStatus — picks the vault the device actually holds (#8385)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const mk = (over: Record<string, unknown>) => ({ ...vault, createdAt: '2026-01-01T00:00:00.000Z', isActive: true, ...over });
+
+  it('shows the newest ACTIVE vault, not an inactive list[0]', async () => {
+    fetchMock.mockImplementation(async () =>
+      json({
+        data: [
+          mk({ id: 'v-inactive', vaultPath: '/inactive-newest', isActive: false, createdAt: '2026-03-01T00:00:00.000Z' }),
+          mk({ id: 'v-old', vaultPath: '/active-old', createdAt: '2026-01-01T00:00:00.000Z' }),
+          mk({ id: 'v-new', vaultPath: '/active-new', createdAt: '2026-02-01T00:00:00.000Z' }),
+        ],
+      }),
+    );
+    render(<DeviceVaultStatus deviceId="dev-1" />);
+    expect(await screen.findByText('/active-new')).toBeTruthy();
+    expect(screen.queryByText('/inactive-newest')).toBeNull();
+    expect(screen.queryByText('/active-old')).toBeNull();
+  });
+
+  it('treats a device whose vaults are all inactive as having no vault', async () => {
+    fetchMock.mockImplementation(async () => json({ data: [mk({ id: 'v-x', vaultPath: '/inactive', isActive: false })] }));
+    render(<DeviceVaultStatus deviceId="dev-1" />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await flush();
+    expect(screen.queryByText('/inactive')).toBeNull();
+    expect(screen.queryByText('Sync Now')).toBeNull();
+  });
+});
+

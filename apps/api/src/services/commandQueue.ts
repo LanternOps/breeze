@@ -90,6 +90,12 @@ export interface CommandResult {
   stdout?: string;
   stderr?: string;
   error?: string;
+  /**
+   * Typed refusal code from the agent (#4026), persisted alongside `error`.
+   * Any string: an agent may be newer than this API. Narrow with
+   * isAgentCommandErrorCode before branching — classifyCommandFailure does.
+   */
+  errorCode?: string;
   durationMs?: number;
   data?: unknown;
   trust?: { capability: 'device_execute'; reason: string };

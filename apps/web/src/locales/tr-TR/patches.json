@@ -83,6 +83,8 @@
       "pendingDevices": "{{count}} bekleyen yamalar var",
       "approved": "{{count}} onaylandı",
       "pendingApproval": "{{count}} onay bekleniyor",
+      "failedInstalls_one": "{{count}} başarısız kurulum",
+      "failedInstalls_other": "{{count}} başarısız kurulum",
       "critical": "{{count}} kritik",
       "reboot": "{{count}} yeniden başlat"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Kurulum için onaylanan olağanüstü yamalar",
       "pendingApproval": "Onay Bekleniyor",
       "pendingApprovalTitle": "Öne çıkan yamalar hâlâ onay bekliyor",
+      "failed": "Başarısız",
+      "failedTitle": "Son kurulum denemesi başarısız olan bekleyen yamalar",
       "osPatches": "İşletim Sistemi Yamaları",
       "osPatchesTitle": "Windows Update, Apple veya Linux paket yöneticilerinden olağanüstü güncellemeler",
       "thirdParty": "3. Taraf",

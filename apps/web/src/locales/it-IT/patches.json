@@ -83,6 +83,8 @@
       "pendingDevices": "{{count}} con patch in sospeso",
       "approved": "{{count}} approvate",
       "pendingApproval": "{{count}} in attesa di approvazione",
+      "failedInstalls_one": "{{count}} installazione non riuscita",
+      "failedInstalls_other": "{{count}} installazioni non riuscite",
       "critical": "{{count}} critiche",
       "reboot": "{{count}} riavvii"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Patch in sospeso approvate per l'installazione",
       "pendingApproval": "In attesa di approvazione",
       "pendingApprovalTitle": "Patch in sospeso ancora in attesa di approvazione",
+      "failed": "Non riuscite",
+      "failedTitle": "Patch in sospeso il cui ultimo tentativo di installazione non è riuscito",
       "osPatches": "Patch OS",
       "osPatchesTitle": "Aggiornamenti in sospeso da Windows Update, Apple o gestori di pacchetti Linux",
       "thirdParty": "Terze parti",

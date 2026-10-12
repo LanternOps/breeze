@@ -1623,7 +1623,8 @@ function entrySelection() {
     // per-ticket list. Never accepted on a write.
     source: timeEntries.source,
     // #4186 OD-5: raw id; any reader that resolves the site must also require
-    // sites.org_id = time_entries.org_id (org moves do not rewrite site_id).
+    // sites.org_id = time_entries.org_id (site_id is a plain FK; rows moved
+    // before #8356 can still name a site in another org).
     siteId: timeEntries.siteId,
     isApproved: timeEntries.isApproved,
     approvedBy: timeEntries.approvedBy,

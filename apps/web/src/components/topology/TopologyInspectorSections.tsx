@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { GraphNode, GraphResponse, PresentationNode } from '@breeze/shared';
+import { isDecommissioned } from './topologyPresentation';
 
 const when = (value: string | null) => value ? new Date(value).toLocaleString() : null;
 type GroupMember = NonNullable<PresentationNode['group']>['members'][number];
@@ -68,8 +69,10 @@ export function GroupSummary({ graph, group, onSelectNode }: { graph: GraphRespo
   const addressConflict = !g.conflictBasis?.length || g.conflictBasis.includes('gateway_address');
   if (g.kind === 'gateway') {
     // Each reporter's own canonical gateway stays selectable, so Diagnose runs from a real device and route.
+    // Decommissioned reporters are left out so the list matches the "N devices report" count (#8307).
     const reporters = g.canonicalNodeIds.flatMap((gatewayId) => graph.relationships
-      .filter((edge) => edge.kind === 'default_route' && edge.targetNodeId === gatewayId)
+      .filter((edge) => edge.kind === 'default_route' && edge.targetNodeId === gatewayId
+        && !isDecommissioned(graph.nodes.find((node) => node.id === edge.sourceNodeId) ?? {}))
       .map((edge) => ({ gatewayId, reporter: label(edge.sourceNodeId), freshness: edge.freshness })));
     // Inventory at the same address is a hint, never an identity merge (D:88: binding hardware to a gateway role needs evidence).
     const sameAddress = graph.nodes.filter((node) => g.address && node.inventory?.addresses.includes(g.address));

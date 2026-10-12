@@ -657,6 +657,8 @@
     "diagnoseHint": "Los diagnósticos se ejecutan desde el dispositivo que elija, por su propia ruta.",
     "stale": "desactualizado",
     "unverified": "no verificado",
+    "decommissioned": "Dado de baja",
+    "reportedByDevices": "Informado por {{reporters}}",
     "sharedAddress_one": "Misma IP que {{count}} dispositivo más",
     "sharedAddress_other": "Misma IP que otros {{count}} dispositivos",
     "networkExplanation_one": "{{count}} dispositivo informa una interfaz en {{prefix}}. La agrupación por rango de direcciones es inferida: no prueba que los dispositivos compartan un conmutador.",

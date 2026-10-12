@@ -2169,20 +2169,29 @@
     "noOutput": "Nessun output",
     "output": "Output",
     "refreshing": "Aggiornamento...",
-    "running": "In esecuzione...",
     "runAgain": "Esegui di nuovo",
+    "runCount_one": "{{count}} esecuzione",
+    "runCount_other": "{{count}} esecuzioni",
+    "running": "In esecuzione...",
     "scriptFallback": "Script",
     "stderr": "Errore standard (stderr)",
     "stdout": "Output standard (stdout)",
     "table": {
       "completed": "Completato",
       "duration": "Durata",
+      "lastOutput": "Ultimo output",
+      "lastRun": "Ultima esecuzione",
       "script": "Script",
       "started": "Avviato",
       "status": "Stato"
     },
     "title": "Cronologia esecuzioni script",
-    "unnamedScript": "Script senza nome"
+    "unnamedScript": "Script senza nome",
+    "view": {
+      "all": "Tutte le esecuzioni",
+      "label": "Vista degli script",
+      "latest": "Ultimo per script"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Rilevato: {{date}}",

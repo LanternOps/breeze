@@ -385,6 +385,9 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// unifiCollectorWake is signalled when configUpdate says this device has
+	// UniFi collectors (#7970); see unifi_collector_hint.go.
+	unifiCollectorWake        atomic.Pointer[func()]
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
@@ -3248,6 +3251,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 
 	if raw, ok := update["networkContext"]; ok {
 		h.applyNetworkContextConfig(raw)
+	}
+
+	// UniFi collector presence hint (#7970). Above the policy-probe early
+	// return below, like every key that must run on an ordinary beat.
+	ucRaw, hasUC := update["unifi_collectors_assigned"]
+	if !hasUC {
+		ucRaw, hasUC = update["unifiCollectorsAssigned"]
+	}
+	if hasUC {
+		h.applyUnifiCollectorHint(ucRaw)
 	}
 
 	hwRaw, hasHW := update["hardware_monitoring_settings"]
@@ -6673,6 +6686,9 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #4026: the typed refusal code must survive too, or the server only
+		// ever sees it on the HTTP fallback and keeps classifying by prose.
+		ErrorCode: result.ErrorCode,
 		// #3525: the cancellation marker must survive this conversion — the
 		// WebSocket leg is the primary result channel, and the marker is the
 		// only proof that closes a `cancelling` execution as `cancelled`.

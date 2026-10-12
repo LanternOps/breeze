@@ -13,6 +13,9 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // The cascade runs under withSystemDbAccessContext; fixMemory/store's
+  // deleteDeviceFixOutcomes (#7278) checks that ambient scope.
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
   db: {
     select: vi.fn(),
     execute: vi.fn(),

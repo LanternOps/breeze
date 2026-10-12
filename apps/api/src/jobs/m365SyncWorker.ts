@@ -18,6 +18,7 @@ import {
   type M365SyncQueueJobData,
 } from './m365SyncQueue';
 import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
+import { isFinalSyncAttempt } from './syncAttempt';
 
 export const M365_SYNC_WORKER_NAME = 'm365SyncWorker';
 
@@ -116,9 +117,8 @@ export async function processSyncDomain(job: Job<M365SyncQueueJobData>): Promise
     );
   }
 
-  // 1-based inside the processor (BullMQ increments attemptsMade on
-  // move-to-active) — same convention as huntressSync/ticketNotify.
-  const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+  // attemptsMade is 0-based inside the processor (see isFinalSyncAttempt).
+  const isFinalAttempt = isFinalSyncAttempt(job);
   const outcome = await runSyncDomain(parsed.data, { isFinalAttempt });
 
   if (outcome === 'throttled' && !isFinalAttempt) {

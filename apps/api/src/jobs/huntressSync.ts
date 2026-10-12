@@ -23,6 +23,7 @@ import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
 import { attachWorkerObservability } from './workerObservability';
+import { isFinalSyncAttempt } from './syncAttempt';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -995,15 +996,15 @@ async function processSyncAll(): Promise<{ queued: number }> {
   return { queued: due.length };
 }
 
-async function processSyncIntegration(
+/** Exported for the real-Job final-attempt regression test (#8351). */
+export async function processSyncIntegration(
   data: SyncIntegrationJobData,
   job: Job<HuntressSyncJobData>
 ): Promise<HuntressSyncResult> {
-  // BullMQ increments attemptsMade on move-to-active, so inside the processor it
-  // is 1-based: the final attempt is `attemptsMade >= attempts` (matches the
-  // ticketNotify/inboundEmail worker convention). Only the final attempt records
-  // a terminal 'error'; earlier attempts leave the row 'running' for the retry.
-  const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+  // attemptsMade is 0-based inside the processor (see isFinalSyncAttempt). Only
+  // the final attempt records a terminal 'error'; earlier attempts leave the row
+  // 'running' for the retry.
+  const isFinalAttempt = isFinalSyncAttempt(job);
   return syncIntegrationById(data.integrationId, 'scheduled', undefined, { isFinalAttempt });
 }
 

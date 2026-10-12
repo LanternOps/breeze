@@ -83,6 +83,8 @@
       "pendingDevices": "Bei {{count}} Geräten stehen Patches aus",
       "approved": "{{count}} freigegeben",
       "pendingApproval": "{{count}} Freigaben ausstehend",
+      "failedInstalls_one": "{{count}} fehlgeschlagene Installation",
+      "failedInstalls_other": "{{count}} fehlgeschlagene Installationen",
       "critical": "{{count}} kritisch",
       "reboot": "{{count}} mit ausstehendem Neustart"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Ausstehende Patches, die zur Installation freigegeben sind",
       "pendingApproval": "Freigabe ausstehend",
       "pendingApprovalTitle": "Ausstehende Patches, deren Freigabe noch aussteht",
+      "failed": "Fehlgeschlagen",
+      "failedTitle": "Ausstehende Patches, deren letzter Installationsversuch fehlgeschlagen ist",
       "osPatches": "OS-Patches",
       "osPatchesTitle": "Ausstehende Updates von Windows Update, Apple oder Linux-Paketmanagern",
       "thirdParty": "Drittanbieter",

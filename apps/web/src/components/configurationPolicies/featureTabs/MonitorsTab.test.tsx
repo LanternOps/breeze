@@ -450,3 +450,98 @@ describe('MonitorsTab — conversion after legacy feature retirement', () => {
     expect(baseProps.onLinkChanged).toHaveBeenCalledWith(null, 'automation');
   });
 });
+
+describe('MonitorsTab — monitor catalog after conversion (#6888)', () => {
+  it('refetches the monitor-definition list when the conversion panel reports a change', async () => {
+    const converted = { id: 'm-new', name: 'Converted CPU', kind: 'cpu', severity: 'warning', enabled: true };
+    let catalogReads = 0;
+    fetchWithAuthMock.mockImplementation((async (url: string) => {
+      if (url === '/monitor-definitions') {
+        catalogReads += 1;
+        return { ok: true, json: async () => ({ data: catalogReads > 1 ? [converted] : [] }) };
+      }
+      return { ok: true, json: async () => ({ data: [] }) };
+    }) as never);
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'm-new', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} existingLink={link} siblingLinks={[]} />);
+    const row = await screen.findByTestId('monitors-tab-item-m-new');
+    await waitFor(() => expect(row.textContent).toContain('Monitor deleted'));
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    await waitFor(() => expect(screen.getByTestId('monitors-tab-item-m-new').textContent).toContain('Converted CPU'));
+    expect(screen.queryByTestId('monitors-tab-item-deleted-m-new')).toBeNull();
+  });
+
+  it('clears an earlier catalog load error once the refetch succeeds', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce((async () => ({ ok: false, json: async () => ({}) })) as never)
+      .mockImplementation((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never);
+    render(<MonitorsTab {...baseProps} siblingLinks={[]} />);
+    await screen.findByText('Failed to load monitors');
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    await waitFor(() => expect(screen.queryByText('Failed to load monitors')).toBeNull());
+  });
+});
+
+describe('MonitorsTab — partner-owned policy (#8372)', () => {
+  const rows = [
+    { id: 'org-mon', name: 'Org CPU', kind: 'cpu', severity: 'warning', enabled: true, orgId: 'org-1', partnerId: null },
+    { id: 'wide-mon', name: 'Wide Disk', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: 'p-1' },
+  ];
+  const useRows = () =>
+    fetchWithAuthMock.mockImplementation((async () => ({ ok: true, json: async () => ({ data: rows }) })) as never);
+
+  const optionValues = (select: HTMLElement) =>
+    Array.from(select.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value).filter(Boolean);
+
+  it('offers only partner-wide monitors on a partner-owned policy', async () => {
+    useRows();
+    render(<MonitorsTab {...baseProps} orgId={null} />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['wide-mon']));
+  });
+
+  it('still offers org-owned monitors on an org policy', async () => {
+    useRows();
+    render(<MonitorsTab {...baseProps} orgId="org-1" />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['org-mon', 'wide-mon']));
+  });
+
+  it('keeps resolving the name of an already-attached org monitor on a partner policy', async () => {
+    useRows();
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'org-mon', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} orgId={null} existingLink={link} />);
+    const item = await screen.findByTestId('monitors-tab-item-org-mon');
+    await waitFor(() => expect(item.textContent).toContain('Org CPU'));
+    expect(optionValues(screen.getByTestId('monitors-tab-attach-select'))).toEqual(['wide-mon']);
+  });
+
+  it('reverts to the last persisted attachments, not to empty, when the save fails', async () => {
+    useRows();
+    saveMock.mockResolvedValueOnce(null as never);
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'wide-mon', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} orgId="org-1" existingLink={link} />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select)).toEqual(['org-mon']));
+    fireEvent.change(select, { target: { value: 'org-mon' } });
+    await screen.findByTestId('monitors-tab-item-org-mon');
+    clickSave();
+    await waitFor(() => expect(screen.queryByTestId('monitors-tab-item-org-mon')).toBeNull());
+    expect(screen.getByTestId('monitors-tab-item-wide-mon')).toBeTruthy();
+  });
+
+  it('reverts the selection when the save fails', async () => {
+    useRows();
+    saveMock.mockResolvedValueOnce(null as never);
+    render(<MonitorsTab {...baseProps} orgId="org-1" />);
+    const select = await screen.findByTestId('monitors-tab-attach-select');
+    await waitFor(() => expect(optionValues(select).length).toBe(2));
+    fireEvent.change(select, { target: { value: 'org-mon' } });
+    expect(await screen.findByTestId('monitors-tab-item-org-mon')).toBeTruthy();
+    clickSave();
+    await waitFor(() => expect(screen.queryByTestId('monitors-tab-item-org-mon')).toBeNull());
+  });
+});

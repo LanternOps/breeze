@@ -123,7 +123,13 @@
     "copy": "Copy",
     "copied": "Copied",
     "oneTimeWarning": "This plaintext key is shown once and cannot be retrieved later.",
-    "done": "Done"
+    "done": "Done",
+    "owner": "Owner",
+    "unknownOwner": "Unknown user",
+    "ownerOnlyTooltip": "Only {{owner}} can issue or rotate keys",
+    "ownerOnlyScopeTooltip": "Only {{owner}} can add scopes",
+    "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs.",
+    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save."
   },
   "language": {
     "title": "Language",
@@ -1342,6 +1348,9 @@
       "invoice_number": "Invoice number",
       "due_date": "Due date",
       "invite_url": "Invite URL",
+      "name": "Recipient name",
+      "inviter_name": "Inviter name",
+      "expires_days": "Days until the invite expires",
       "cta_button": "Button",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",

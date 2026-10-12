@@ -18,6 +18,8 @@ import VaultConfigDialog from './VaultConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
+import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -121,30 +123,41 @@ export default function VaultDashboard() {
   const handleSync = useCallback(async (vaultId: string) => {
     try {
       setSyncingId(vaultId);
-      const response = await fetchWithAuth(`/backup/vault/${vaultId}/sync`, { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to trigger sync');
+      await runAction({
+        request: () => fetchWithAuth(`/backup/vault/${vaultId}/sync`, { method: 'POST' }),
+        errorFallback: t('vaultDashboard.failedToSync'),
+        successMessage: t('vaultDashboard.syncStarted'),
+      });
       await fetchVaults();
     } catch (err) {
-      console.error('[VaultDashboard] handleSync:', err);
-      setError(err instanceof Error ? err.message : 'Failed to sync vault');
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('vaultDashboard.failedToSync') });
     } finally {
       setSyncingId(null);
     }
-  }, [fetchVaults]);
+  }, [fetchVaults, t]);
 
   const handleDeactivate = useCallback(async (vaultId: string) => {
     try {
-      const response = await fetchWithAuth(`/backup/vault/${vaultId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ active: false }),
+      const result = await runAction<{ deviceConfig?: { status?: string; error?: string } } | null>({
+        request: () => fetchWithAuth(`/backup/vault/${vaultId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ isActive: false }),
+        }),
+        errorFallback: t('vaultDashboard.failedToDeactivate'),
       });
-      if (!response.ok) throw new Error('Failed to deactivate vault');
+      if (result?.deviceConfig?.status === 'failed') {
+        showToast({
+          type: 'warning',
+          message: t('vaultDashboard.deviceConfigNotSent', { error: result.deviceConfig.error ?? '' }),
+        });
+      }
       await fetchVaults();
     } catch (err) {
-      console.error('[VaultDashboard] handleDeactivate:', err);
-      setError(err instanceof Error ? err.message : 'Failed to deactivate vault');
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('vaultDashboard.failedToDeactivate') });
     }
-  }, [fetchVaults]);
+  }, [fetchVaults, t]);
 
   const handleEdit = useCallback((vault: Vault) => {
     setEditingVault(vault);
@@ -284,10 +297,17 @@ export default function VaultDashboard() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', sCfg.className)}>
-                          <StatusIcon className={cn('h-3 w-3', vault.status === 'syncing' && 'animate-spin')} />
-                          {sCfg.label}
-                        </span>
+                        {vault.active === false ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                            <XCircle className="h-3 w-3" />
+                            {t('vaultDashboard.inactive')}
+                          </span>
+                        ) : (
+                          <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', sCfg.className)}>
+                            <StatusIcon className={cn('h-3 w-3', vault.status === 'syncing' && 'animate-spin')} />
+                            {sCfg.label}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {formatTime(vault.lastSyncAt)}
@@ -303,7 +323,7 @@ export default function VaultDashboard() {
                           <button
                             type="button"
                             onClick={() => handleSync(vault.id)}
-                            disabled={syncingId === vault.id}
+                            disabled={syncingId === vault.id || vault.active === false}
                             className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                           >
                             {syncingId === vault.id ? (
@@ -321,7 +341,8 @@ export default function VaultDashboard() {
                           <button
                             type="button"
                             onClick={() => handleDeactivate(vault.id)}
-                            className="rounded-md border px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                            disabled={vault.active === false}
+                            className="rounded-md border px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                           >
                             {t('vaultDashboard.deactivate')} </button>
                         </div>

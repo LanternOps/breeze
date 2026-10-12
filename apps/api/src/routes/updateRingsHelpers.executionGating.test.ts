@@ -34,12 +34,13 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'id', orgId: 'org_id', siteId: 'site_id', isEphemeral: 'is_ephemeral' },
-  organizations: { id: 'id', partnerId: 'partner_id' },
+  devices: { id: 'id', orgId: 'org_id', siteId: 'site_id', isEphemeral: 'is_ephemeral', deviceRole: 'device_role', osType: 'os_type' },
+  organizations: { id: 'id', partnerId: 'partner_id', type: 'type' },
+  deviceGroups: { id: 'id', orgId: 'org_id' },
   configPolicyFeatureLinks: { configPolicyId: 'config_policy_id', featureType: 'feature_type', featurePolicyId: 'feature_policy_id' },
   configPolicyAssignments: { configPolicyId: 'config_policy_id', level: 'level', targetId: 'target_id' },
   configurationPolicies: { id: 'id', status: 'status', orgId: 'org_id' },
-  deviceGroupMemberships: { deviceId: 'device_id', groupId: 'group_id' },
+  deviceGroupMemberships: { deviceId: 'device_id', groupId: 'group_id', orgId: 'org_id' },
   patchPolicies: { id: 'id', partnerId: 'partner_id' },
 }));
 
@@ -85,7 +86,7 @@ describe('resolveRingDeviceIdsWithWarnings — device_group assignment gating', 
   it('includes an execution-safe group\'s members and reports no warnings', async () => {
     selectQueue.push(
       [{ level: 'device_group', targetId: GROUP_ID, policyOrgId: null, ringPartnerId: PARTNER_ID }],
-      [{ deviceId: DEVICE_ID }],
+      [{ id: DEVICE_ID, deviceRole: 'workstation', osType: 'windows' }],
     );
     mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
       allowedGroupIds: [GROUP_ID],
@@ -96,10 +97,7 @@ describe('resolveRingDeviceIdsWithWarnings — device_group assignment gating', 
     const result = await resolveRingDeviceIdsWithWarnings(RING_ID);
 
     expect(result).toEqual({ deviceIds: [DEVICE_ID], warnings: [] });
-    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
-      null,
-      'update_ring.execution_target_refused_agent_reported_fields',
-      [],
-    );
+    // Nothing was refused, so nothing is audited.
+    expect(mockAuditRefusedExecutionGroups).not.toHaveBeenCalled();
   });
 });

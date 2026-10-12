@@ -657,6 +657,8 @@
     "diagnoseHint": "Les diagnostics s'exécutent depuis l'appareil choisi, via sa propre route.",
     "stale": "périmé",
     "unverified": "non vérifié",
+    "decommissioned": "Mis hors service",
+    "reportedByDevices": "Signalé par {{reporters}}",
     "sharedAddress_one": "Même IP que {{count}} autre appareil",
     "sharedAddress_other": "Même IP que {{count}} autres appareils",
     "networkExplanation_one": "{{count}} appareil signale une interface dans {{prefix}}. Le regroupement par plage d'adresses est déduit : il ne prouve pas que les appareils partagent un commutateur.",

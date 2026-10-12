@@ -1084,7 +1084,12 @@ describe('POST /devices/:id/move-org', () => {
         timeEntryRewrites,
         `Expected exactly one time_entries org_id rewrite.\nStatements:\n${statements.join('\n')}`,
       ).toEqual([
-        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid ` +
+        // #8356: site_id follows the device to its target site in the SAME
+        // statement (an entry with no site link keeps none) — a second
+        // UPDATE would change the statement sequence the lock-order contract
+        // pins. Without it the moved entry kept a site in the source org.
+        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid, ` +
+          `site_id = CASE WHEN site_id IS NOT NULL THEN ${TARGET_SITE}::uuid END ` +
           `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
     });
@@ -1541,16 +1546,24 @@ describe('POST /devices/:id/move-org', () => {
       // workstation-grant revocation sit immediately before the org flip: the
       // FOR UPDATE is the only device-row lock on this path, and the hook must
       // observe the SOURCE org's grants before the row leaves it.
-      expect(statements[12]).toBe('SELECT devices FOR update');
-      expect(collapseStmt(statements[13]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
-      expect(collapseStmt(statements[14]!)).toContain('UPDATE caller_verifications');
+      // #7969 — a discovery profile's pinned scan agent detaches before the
+      // org flip for the same reason as the link detaches above:
+      // discovery_profiles_pinned_device_org_fk ((pinned_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE and nothing
+      // trigger-side mirrors a pinned_device_id column.
+      const discoveryPinDetach = collapseStmt(statements[12]!);
+      expect(discoveryPinDetach).toContain('UPDATE discovery_profiles SET pinned_device_id = NULL');
+      expect(discoveryPinDetach).toMatch(/AND org_id =/);
+      expect(statements[13]).toBe('SELECT devices FOR update');
+      expect(collapseStmt(statements[14]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
+      expect(collapseStmt(statements[15]!)).toContain('UPDATE caller_verifications');
       // Diagnostic access grants approved in the SOURCE org die before the flip
       // (its trigger restamps them into the target org): pending requests
       // expire, active grants are revoked. Other approvers' approval rows are
       // expired post-commit in system scope (they are per-approver under RLS).
-      expect(collapseStmt(statements[15]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
-      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[17]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[18]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

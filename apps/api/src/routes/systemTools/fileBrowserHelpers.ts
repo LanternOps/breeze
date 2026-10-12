@@ -14,6 +14,7 @@ import {
   DEVICE_UNREACHABLE_ERROR,
   type CommandResult,
 } from '../../services/commandQueue';
+import { isAgentCommandErrorCode, type AgentCommandErrorCode } from '../agents/schemas';
 
 // True for any agent CommandResult that should map to an HTTP error response.
 // Both 'failed' and 'timeout' must be treated as failures: previously the
@@ -105,12 +106,13 @@ export const CLOUDFLARE_SWALLOWED_STATUSES = [502, 504] as const;
  * technician and inflates our error-rate alerting with working-as-intended
  * outcomes.
  *
- * Matched against the agent's prose because `CommandResult` carries only
- * `status` and a human string today. That is a known weakness, not a
- * preference: an unrecognised refusal degrades to `agent_execution_failed`
- * (500), which is the safe direction — it over-reports a fault rather than
- * silently claiming the user can fix something they cannot. The durable fix is
- * a typed `errorCode` on the Go CommandResult; see the follow-up issue.
+ * These prose tables are now the FALLBACK. Agents since #4026 send a typed
+ * `errorCode` that classifyCommandFailure branches on first (see
+ * AGENT_ERROR_CODE_KIND); the patterns remain for agents that predate it.
+ * Remove them only once no supported agent version lacks the code. An
+ * unrecognised refusal still degrades to `agent_execution_failed` (500), the
+ * safe direction — it over-reports a fault rather than silently claiming the
+ * user can fix something they cannot.
  *
  * Every pattern below is anchored to a literal in
  * agent/internal/remote/tools/fileops.go.
@@ -146,6 +148,47 @@ const NOT_FOUND_PATTERNS: readonly RegExp[] = [
   /^path does not exist:/i,
   /^source path does not exist:/i,
 ];
+
+/** The agent-refusal kinds: deterministic answers the user can act on. */
+type AgentRefusalKind =
+  | typeof ERROR_CODES.PATH_NOT_FOUND
+  | typeof ERROR_CODES.PATH_CONFLICT
+  | typeof ERROR_CODES.AGENT_COMMAND_REJECTED;
+
+const AGENT_REFUSAL_STATUS: Record<AgentRefusalKind, ContentfulStatusCode> = {
+  [ERROR_CODES.PATH_NOT_FOUND]: 404,
+  [ERROR_CODES.PATH_CONFLICT]: 409,
+  [ERROR_CODES.AGENT_COMMAND_REJECTED]: 422,
+};
+
+/**
+ * #4026: how each typed agent errorCode is presented. A full Record, so a code
+ * added to AGENT_COMMAND_ERROR_CODES (and its Go mirror) without a decision
+ * here is a compile error rather than a silent prose fallback. Each entry
+ * matches the prose table the same agent message already lands in, so a new
+ * agent never changes today's answer — fileBrowserHelpers.errorCode.test.ts
+ * asserts that parity per code.
+ */
+const AGENT_ERROR_CODE_KIND: Record<AgentCommandErrorCode, AgentRefusalKind> = {
+  path_not_found: ERROR_CODES.PATH_NOT_FOUND,
+  path_exists: ERROR_CODES.PATH_CONFLICT,
+  file_too_large: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  payload_too_large: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  path_is_directory: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  sensitive_path_denied: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  system_path_denied: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  top_level_delete_denied: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  contents_unverifiable: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  directory_too_large: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  copy_into_self: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  trash_metadata_too_large: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  unsupported_encoding: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  invalid_argument: ERROR_CODES.AGENT_COMMAND_REJECTED,
+};
+
+function failureForKind(kind: AgentRefusalKind, raw: string): CommandFailure {
+  return { kind, message: raw, status: AGENT_REFUSAL_STATUS[kind], code: kind };
+}
 
 function matchesAny(patterns: readonly RegExp[], raw: string): boolean {
   return patterns.some((pattern) => pattern.test(raw));
@@ -233,21 +276,26 @@ export function classifyCommandFailure(
     };
   }
 
+  // #4026: an agent that sends a typed code is classified by it, not by its
+  // prose. Placed after the server-synthesized branches above (unreachable,
+  // timeout, offline), which never carry an agent code and must keep winning —
+  // a timed-out mutation stays `unverified` whatever code rode along. An
+  // unknown code (agent newer than this API) is treated as absent.
+  if (isAgentCommandErrorCode(result.errorCode)) {
+    return failureForKind(AGENT_ERROR_CODE_KIND[result.errorCode], raw);
+  }
+
+  // Prose fallback for agents that predate errorCode.
   if (matchesAny(NOT_FOUND_PATTERNS, raw)) {
-    return { kind: ERROR_CODES.PATH_NOT_FOUND, message: raw, status: 404, code: ERROR_CODES.PATH_NOT_FOUND };
+    return failureForKind(ERROR_CODES.PATH_NOT_FOUND, raw);
   }
 
   if (matchesAny(CONFLICT_PATTERNS, raw)) {
-    return { kind: ERROR_CODES.PATH_CONFLICT, message: raw, status: 409, code: ERROR_CODES.PATH_CONFLICT };
+    return failureForKind(ERROR_CODES.PATH_CONFLICT, raw);
   }
 
   if (matchesAny(REFUSAL_PATTERNS, raw)) {
-    return {
-      kind: ERROR_CODES.AGENT_COMMAND_REJECTED,
-      message: raw,
-      status: 422,
-      code: ERROR_CODES.AGENT_COMMAND_REJECTED,
-    };
+    return failureForKind(ERROR_CODES.AGENT_COMMAND_REJECTED, raw);
   }
 
   return {

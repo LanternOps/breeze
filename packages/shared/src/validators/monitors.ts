@@ -77,7 +77,9 @@ const leafConditionSchemas = {
   event_log: z
     .object({
       category: z.enum(['security', 'hardware', 'application', 'system']),
-      level: z.enum(['warning', 'error', 'critical']),
+      // 'info' (#8174): Information-level Application events are collected only
+      // from the provider allowlist in ./eventLogProviders.ts; saves warn otherwise.
+      level: z.enum(['info', 'warning', 'error', 'critical']),
       sourcePattern: z.string().max(200).optional(),
       messagePattern: z.string().max(500).optional(),
       countThreshold: z.number().int().min(1).default(1),

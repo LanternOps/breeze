@@ -2169,20 +2169,29 @@
     "noOutput": "Çıkış yok",
     "output": "Çıkış",
     "refreshing": "Yenileniyor...",
-    "running": "Koşuyor...",
     "runAgain": "Tekrar çalıştır",
+    "runCount_one": "{{count}} çalıştırma",
+    "runCount_other": "{{count}} çalıştırma",
+    "running": "Koşuyor...",
     "scriptFallback": "Komut Dosyası",
     "stderr": "Standart Hata (stderr)",
     "stdout": "Standart Çıkış (stdout)",
     "table": {
       "completed": "Tamamlandı",
       "duration": "Süre",
+      "lastOutput": "Son çıktı",
+      "lastRun": "Son çalıştırma",
       "script": "Komut Dosyası",
       "started": "Başlatıldı",
       "status": "Durum"
     },
     "title": "Komut Dosyası Yürütme Geçmişi",
-    "unnamedScript": "Adsız komut dosyası"
+    "unnamedScript": "Adsız komut dosyası",
+    "view": {
+      "all": "Tüm çalıştırmalar",
+      "label": "Betik görünümü",
+      "latest": "Betik başına son"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Algılandı: {{date}}",

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -2765,11 +2765,51 @@ async function resolvePolicyCheckInterval(deviceId: string, opts?: DevicePolicyS
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
+const monitoringSettingsCacheKey = (deviceId: string) => `monitoring:settings:device:${deviceId}`;
+
+/**
+ * #8287: the device's CURRENT watch set for DISPLAY filtering from a user
+ * request (summary, status, tab-counts). Same resolver the agent heartbeat
+ * uses, but:
+ *  - runs in the CALLER'S OWN DB context — no system escalation (#2417) and no
+ *    second pooled connection under the request transaction (#1105). Partner-
+ *    wide policies/monitors are legible because their tables carry the
+ *    SELECT-only `org_id IS NULL AND partner_id = breeze_current_partner_id()`
+ *    branch, fed by `currentPartnerId` from `buildDbAccessContext`;
+ *  - never writes `monitoring:settings:device:*` (only reads it), so a
+ *    user-scoped answer can never poison the cache the agent heartbeat reads.
+ *
+ * Returns null — "unknown, do not filter" — when:
+ *  - the device vanished mid-resolution;
+ *  - there is no ambient context, or a non-system context has no
+ *    `currentPartnerId` (e.g. organization-scope SSO sessions mint
+ *    `partnerId: null`). There, partner-wide rows are invisible and the
+ *    resolver would answer a TRUNCATED set (often `watches: []`), which would
+ *    hide live alerts. Failing open shows possibly-stale rows instead.
+ */
+export async function resolveMonitoringConfigForDisplay(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const cached = await redis.get(monitoringSettingsCacheKey(deviceId));
+      if (cached) return JSON.parse(cached) as MonitoringConfigUpdate;
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) return null;
+  // Savepoint: a SQL error here is caught upstream (fail open), but on the bare
+  // request transaction it would abort/poison the caller's commit (25P02).
+  const resolution = await withDbTransaction(() => resolveDeviceMonitoringSettings(deviceId));
+  return resolution.kind === 'unresolved' ? null : resolution.settings;
+}
+
 export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitoringConfigUpdate | null> {
   hierarchyFor(deviceId, opts);
   policySetFor(deviceId, opts);
   const redis = getRedis();
-  const cacheKey = `monitoring:settings:device:${deviceId}`;
+  const cacheKey = monitoringSettingsCacheKey(deviceId);
 
   // Try cache first
   if (redis) {

@@ -35,8 +35,8 @@ import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
-import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
-import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
+import { redactAgentResultErrorFields } from '../../services/secretRedaction';
+import { buildStoredCommandResult } from '../../services/storedCommandResult';
 import {
   reconcileSoftwareInstallResult,
 } from '../../services/softwareDeploymentResult';
@@ -46,7 +46,6 @@ import {
   BACKUP_QUEUE_ACK_RESULT_STATUS,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
-  collapseAgentReportedTimeoutStatus,
 } from '../../services/commandResultAcceptance';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
@@ -112,6 +111,9 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // than through the inline restore branch below (which would only do the
   // first half and, if listed in both, do it twice).
   'bare_metal_rebuild',
+  // #8385: a vault configuration the helper could not apply is recorded on
+  // the vault. Registry-only, like system_cleanup_run.
+  'vault_configure',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
@@ -119,35 +121,6 @@ const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {
   return data.stdout ??
     (data.result !== undefined ? JSON.stringify(data.result) : undefined);
-}
-
-function buildStoredCommandResult(
-  commandType: string,
-  data: z.infer<typeof commandResultSchema>,
-  stdout: string | undefined,
-) {
-  // Defense-in-depth: strip full PEM private-key blocks from agent output
-  // before it is persisted and later shown to scripts:read users. Pre-update
-  // agents don't redact server-side-visible output, so we redact here.
-  // Preserve null/undefined (don't coerce to '') to keep the stored shape stable.
-  //
-  // Exception: artifact-bearing stdout (capture_pprof base64 profiles) must be
-  // stored byte-for-byte -- the redaction patterns statistically fire inside
-  // megabytes of random base64 and would silently corrupt the artifact (#2401).
-  const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
-  return {
-    // See collapseAgentReportedTimeoutStatus: an agent-reported 'timeout'
-    // must never be stored verbatim — that literal string doubles as the
-    // server's own reopen marker.
-    status: collapseAgentReportedTimeoutStatus(data.status),
-    exitCode: data.exitCode,
-    stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
-    stderr: data.stderr != null ? redactSecretsFromOutput(data.stderr) : data.stderr,
-    durationMs: data.durationMs,
-    error: data.error != null
-      ? redactSecretsFromOutput(data.error)
-      : data.status === 'timeout' ? 'Agent reported a timeout' : data.error,
-  };
 }
 
 function normalizeCriticalResultIfNeeded(

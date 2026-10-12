@@ -85,6 +85,9 @@ var allCommandTypes = []string{
 	tools.CmdHypervDiscover, tools.CmdHypervBackup, tools.CmdHypervRestore,
 	tools.CmdHypervCheckpoint, tools.CmdHypervVMState,
 
+	// handlers_vault_forward.go init()
+	tools.CmdVaultSync, tools.CmdVaultStatus, tools.CmdVaultConfigure,
+
 	// handlers_systemstate_forward.go init()
 	tools.CmdSystemStateCollect, tools.CmdHardwareProfile,
 

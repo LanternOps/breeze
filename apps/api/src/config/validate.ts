@@ -991,7 +991,10 @@ const envObjectSchema = z
     REDIS_PORT: z.string().optional(),
     REDIS_PASSWORD_FILE: z.string().optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PARTNER_HOOKS_URL: z.string().url().optional(),
+    PARTNER_HOOKS_URL: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.string().url().optional(),
+    ),
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
     // Empty string means "unset" — same reason as APNS_ENVIRONMENT above: both
     // compose files map this as `${IP_ALLOWLIST_ENFORCEMENT_MODE:-}`, so the key
@@ -1078,8 +1081,15 @@ const envObjectSchema = z
 
     // -- Alternative LLM backend (openai-compatible, e.g. vLLM) ---------------
     // Off by default. Chat-only PoC; tool-calling is not supported on this path.
-    MCP_LLM_PROVIDER: z.enum(['anthropic', 'openai-compatible']).default('anthropic'),
-    MCP_LLM_BASE_URL: z.string().url().optional(),
+    // '' = unset (compose maps these as `${VAR:-}`, #7640).
+    MCP_LLM_PROVIDER: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.enum(['anthropic', 'openai-compatible']).default('anthropic'),
+    ),
+    MCP_LLM_BASE_URL: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.string().url().optional(),
+    ),
     MCP_LLM_API_KEY: z.string().optional(),
     MCP_LLM_MODEL: z.string().optional(),
     MCP_LLM_PRICE_INPUT_PER_M_USD: z.string().optional().transform((v) => (v ? parseFloat(v) : 0)).pipe(z.number().min(0)),

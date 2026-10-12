@@ -49,6 +49,17 @@ vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
+const { shouldDeferOfflineTransitionMock, recordOfflineDeferredMock } = vi.hoisted(() => ({
+  shouldDeferOfflineTransitionMock: vi.fn(() => false),
+  recordOfflineDeferredMock: vi.fn(),
+}));
+vi.mock('../services/admission/admissionRuntime', () => ({
+  shouldDeferOfflineTransition: shouldDeferOfflineTransitionMock,
+}));
+vi.mock('../services/admission/admissionMetrics', () => ({
+  recordOfflineDeferred: recordOfflineDeferredMock,
+}));
+
 const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
   recordDesktopClipboardSummaryMock: vi.fn(async () => 'recorded'),
 }));
@@ -4526,6 +4537,34 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     }
   });
 
+  it('persists the agent errorCode on the WebSocket leg so the classifier can use it (#4026)', async () => {
+    const preValidatedAgent = { deviceId: 'device-e', orgId: 'org-e', partnerId: 'partner-e' };
+    const { handlers, ws } = await connectedAgent('agent-e', preValidatedAgent);
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'file_read', payload: {}, deviceId: 'device-e' },
+    ]) as any);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'failed',
+        exitCode: 1,
+        error: 'no such item at /nope',
+        errorCode: 'path_not_found',
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const stored = setSpy.mock.calls[0]![0] as { result: { errorCode?: string; error?: string } };
+    expect(stored.result.errorCode).toBe('path_not_found');
+    expect(stored.result.error).toBe('no such item at /nope');
+  });
+
   // #3409 PR4a. The heuristic redaction above is NAME-based: it only fires when
   // a secret sits next to a recognized key name, so a bare echoed credential
   // survives it. These pin the exact-value layer at the WS chokepoint.
@@ -7140,5 +7179,86 @@ describe('WebSocket desktop fallback start results', () => {
     vi.mocked(closeDesktopRelayForStop).mockClear();
     sendCommandToAgent('agent-stop-relay', { id: 'c-script', type: 'script', payload: { sessionId: SESSION } });
     expect(closeDesktopRelayForStop).not.toHaveBeenCalled();
+  });
+});
+
+describe('W08 admission integration', () => {
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // resetAllMocks drops the hoisted default; re-arm the not-shedding state.
+    shouldDeferOfflineTransitionMock.mockReturnValue(false);
+  });
+
+  async function openThenClose(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
+    ]) as any);
+    await handlers.onClose({}, ws as any);
+  }
+
+  it('leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('close');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled(); // presence still cleared at once
+  });
+
+  it('still flips offline at once when admission is not shedding', async () => {
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  async function openThenError(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+    spy.mockRestore();
+  }
+
+  it('onError leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('error');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled();
+  });
+
+  it('onError still flips offline at once when admission is not shedding', async () => {
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the admission setup slot even when onOpen throws', async () => {
+    const slot = { release: vi.fn() };
+    vi.mocked(db.update).mockImplementation(() => { throw new Error('open boom'); });
+    vi.mocked(db.select).mockImplementation(() => { throw new Error('open boom'); });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createAgentWsHandlers('agent-123', preValidatedAgent, slot).onOpen({}, wsMock() as any).catch(() => {});
+    spy.mockRestore();
+    expect(slot.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the admission setup slot when onOpen finishes, and on a close that skipped onOpen', async () => {
+    const opened = { release: vi.fn() };
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent, opened), wsMock());
+    expect(opened.release).toHaveBeenCalled();
+
+    const neverOpened = { release: vi.fn() };
+    await createAgentWsHandlers('agent-456', preValidatedAgent, neverOpened).onClose({}, wsMock() as any);
+    expect(neverOpened.release).toHaveBeenCalledTimes(1);
   });
 });

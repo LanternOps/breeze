@@ -1950,7 +1950,14 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
-  if (assigneeId && ticket.status === 'new') patch.status = 'open';
+  const implicitOpen = Boolean(assigneeId) && ticket.status === 'new';
+  if (implicitOpen) {
+    patch.status = 'open';
+    // Keep statusId in step with status (as changeTicketStatus does), so the
+    // row and the ticket.status_changed payload below agree.
+    const partnerId = await resolveTicketPartnerId(ticket);
+    patch.statusId = partnerId ? await getSystemStatusId(partnerId, 'open') : null;
+  }
 
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db
@@ -1987,6 +1994,16 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     ...actorEventIdentity(actor),
     partnerId: ticket.partnerId ?? null,
   });
+  // #8367: assigning a `new` ticket also moves it to `open`. Webhook / Partner
+  // API consumers only see the outbox, so announce that transition too, in the
+  // same transaction as `ticket.assigned`. Payload mirrors changeTicketStatus.
+  if (implicitOpen) {
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+      from: 'new',
+      to: 'open',
+      statusId: updated[0]?.statusId ?? null,
+    });
+  }
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
@@ -3510,9 +3527,17 @@ export async function moveTicketOrg(
       acceptCurrencyMismatch: opts.acceptCurrencyMismatch === true
     });
     // SET org_id only — currency_code snapshots are never touched by a move.
+    // One exception (#8356): time_entries.site_id is a plain FK to sites, and
+    // tickets carry no site, so a moved entry's site link would otherwise keep
+    // naming a SOURCE-org site. It is nulled in the SAME statement (still one
+    // UPDATE per table, in array order, so the shared lock order holds) — the
+    // ruling timeEntryService already applies when an entry relinks across
+    // orgs. The device axis re-points it to the device's target site instead.
     for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
       await tx.execute(
-        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
+        table === 'time_entries'
+          ? sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid, site_id = NULL WHERE ticket_id = ${ticketId}::uuid`
+          : sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
       );
     }
     const strandedCount = guard?.accepted ? guard.unbilledTimeEntries + guard.unbilledParts : 0;

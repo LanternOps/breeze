@@ -65,6 +65,7 @@ import {
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
+import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
 import { orgHelperSettingsCache, orgPamFallbackCache, orgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
@@ -2381,6 +2382,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     workloadInventorySettings: null,
   };
   let onedrivePlan = null as OnedriveConfigPlan | null;
+  // #7970 — whether this device is a UniFi collector; null = unknown this beat (key omitted).
+  let unifiCollectorsAssigned = null as boolean | null;
   // #8053 W1a-1 per-org caches; under this org-scoped context a miss is stored
   // only for the exact org + partner the context was built for (#8142).
   const orgCacheFills = new DeferredCacheFills();
@@ -2576,6 +2579,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         console.error(`[agents] failed to build workload inventory config update for ${agentId}:`, err);
         captureException(err);
       }
+
+      // #7970 — UniFi collector presence hint (configUpdate.unifi_collectors_assigned).
+      // The agent backs its collector-config fetch off to a long idle interval
+      // while it has none; `true` here wakes it. Shares the unifi-collectors
+      // route's negative cache (same key, same predicate), so a collector-less
+      // device costs one savepoint per TTL, not one per beat. Last in this
+      // context: an earlier aborting statement only omits the key (the agent
+      // then keeps its idle re-check).
+      try {
+        unifiCollectorsAssigned = await orgCacheFills.through(
+          agentCollectorAbsenceCache,
+          agentCollectorAbsenceKey(scoped.deviceId, agent.orgId),
+          () => withDbTransaction(() => deviceHasAgentCollectors(db, scoped.deviceId, agent.orgId)),
+          fillScope,
+          { keyOrgId: agent.orgId, shouldCache: (present) => !present },
+        );
+      } catch (err) {
+        console.error(`[agents] failed to resolve UniFi collector presence for ${agentId}:`, err);
+        captureException(err);
+      }
     });
     // Stored only now that the context has committed (fillIfCurrent refuses to
     // run inside one). This line is reached ONLY on a real COMMIT: postgres.js
@@ -2656,12 +2679,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 
   const scopedConfigUpdate = scoped.mainResponse.configUpdate as Record<string, unknown> | null;
-  const configUpdate = policyProbeConfig || scopedConfigUpdate || hasPolicyConfigUpdate || onedriveConfigUpdate
+  const unifiHint = unifiCollectorsAssigned === null ? null : { unifi_collectors_assigned: unifiCollectorsAssigned };
+  const configUpdate = policyProbeConfig || scopedConfigUpdate || hasPolicyConfigUpdate || onedriveConfigUpdate || unifiHint
     ? {
       ...(policyProbeConfig ?? {}),
       ...(scopedConfigUpdate ?? {}),
       ...policyConfigUpdate,
       ...(onedriveConfigUpdate ?? {}),
+      ...(unifiHint ?? {}),
     }
     : null;
 

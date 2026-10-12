@@ -9,7 +9,11 @@ import { captureException } from '../services/sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
-import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import {
+  checkRemoteAccess,
+  resolveDesktopSessionPolicy,
+  type DesktopSessionPolicy,
+} from '../services/remoteAccessPolicy';
 import { checkVncConsentGate } from './remote/vncConsentGate';
 import {
   CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_CODE,
@@ -474,9 +478,15 @@ tunnelRoutes.post(
 
     const isVNC = body.type === 'vnc';
     // VNC has no end-user consent prompt: refuse it on a consent-mode device.
+    // The agent cannot filter the raw RFB stream, so the viewer gates VNC
+    // clipboard on this policy (#8269). Same resolver the WebRTC offer ships to
+    // the agent, never taken from the request. Resolved before any side effect
+    // so a failure leaves no tunnel behind.
+    let vncClipboard: DesktopSessionPolicy['clipboard'] | undefined;
     if (isVNC) {
       const consentGate = await checkVncConsentGate(device.id);
       if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
+      ({ clipboard: vncClipboard } = await resolveDesktopSessionPolicy(device.id));
     }
     const targetHost = isVNC ? '127.0.0.1' : body.targetHost;
     const targetPort = isVNC ? 5900 : body.targetPort;
@@ -565,7 +575,7 @@ tunnelRoutes.post(
       sourceIp,
     );
 
-    return c.json(session, 201);
+    return c.json(vncClipboard ? { ...session, clipboard: vncClipboard } : session, 201);
   }
 );
 
@@ -1463,6 +1473,21 @@ tunnelRoutes.post(
   }
 );
 
+/**
+ * The session's remote_access clipboard policy for a VNC tunnel handed out by a
+ * route with no request DB context (code redemption, viewer-token downgrade).
+ * The viewer gates VNC clipboard on it because the agent cannot filter the raw
+ * RFB stream (#8269). Resolved in system scope: without a DB context the policy
+ * read sees no rows under deny-default RLS and would report the baseline
+ * instead of the device's policy.
+ */
+async function resolveVncClipboardPolicyContextless(
+  deviceId: string,
+): Promise<DesktopSessionPolicy['clipboard']> {
+  const { clipboard } = await withSystemDbAccessContext(() => resolveDesktopSessionPolicy(deviceId));
+  return clipboard;
+}
+
 // --- VNC exchange route (no auth — the code IS the auth) ---
 
 export const vncExchangeRoutes = new Hono();
@@ -1529,6 +1554,9 @@ vncExchangeRoutes.post(
     const liveAuthority = await authorizeTunnelContinuation(record.tunnelId, record.userId);
     if (!liveAuthority.ok) return liveAuthorizationResponse(c, liveAuthority);
 
+    // Before minting the ws-ticket and viewer token, so a failure hands out no credentials.
+    const clipboard = await resolveVncClipboardPolicyContextless(result.deviceId);
+
     // Build the WebSocket URL from the canonical external base URL. Using
     // c.req.url would yield an internal http://api:3001 in Caddy-fronted
     // deployments; honoring X-Forwarded-Proto doesn't help when Caddy itself
@@ -1576,6 +1604,7 @@ vncExchangeRoutes.post(
       tunnelId: record.tunnelId,
       wsUrl,
       deviceId: record.deviceId,
+      clipboard,
     });
   }
 );
@@ -1858,6 +1887,9 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   const consentGate = await checkVncConsentGate(bound.deviceId);
   if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
 
+  // Before the tunnel exists, so a failure leaves nothing to clean up.
+  const clipboard = await resolveVncClipboardPolicyContextless(bound.deviceId);
+
   // Insert the tunnel session row, then kick the agent off.
   const tunnel = await withSystemDbAccessContext(() => createRemoteSession('tunnel', {
     id: transitionTunnelId,
@@ -1936,5 +1968,6 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     wsUrl,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+    clipboard,
   });
 });

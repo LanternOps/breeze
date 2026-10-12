@@ -200,6 +200,10 @@
       "ready_one": "Prêt · {{ready}}/{{total}} appareil",
       "ready_other": "Prêt · {{ready}}/{{total}} appareils"
     },
+    "target": {
+      "version": "Mettre à jour vers {{version}}",
+      "latest": "Mettre à jour vers la dernière version"
+    },
     "hasMore": "Affichage des 500 groupes présentant le risque le plus élevé — affinez les filtres pour voir les autres.",
     "devices_one": "{{count}} appareil",
     "devices_other": "{{count}} appareils",

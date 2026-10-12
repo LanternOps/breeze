@@ -123,7 +123,13 @@
     "copy": "Kopieren",
     "copied": "Kopiert",
     "oneTimeWarning": "Dieser Klartextschlüssel wird nur einmal angezeigt und kann später nicht abgerufen werden.",
-    "done": "Fertig"
+    "done": "Fertig",
+    "owner": "Eigentümer",
+    "unknownOwner": "Unbekannter Benutzer",
+    "ownerOnlyTooltip": "Nur {{owner}} kann Schlüssel ausstellen oder rotieren",
+    "ownerOnlyScopeTooltip": "Nur {{owner}} kann Bereiche hinzufügen",
+    "ownerOnlyEditNotice": "Sie können diesen Principal umbenennen, einschränken oder seine Laufzeit verkürzen. Nur {{owner}} kann Bereiche hinzufügen, das Ablaufdatum verlängern oder die Quell-IPs lockern.",
+    "ownerOnlyWidening": "Nur {{owner}} kann das Ablaufdatum verlängern oder die Quell-IPs lockern. Machen Sie diese Änderungen rückgängig, um zu speichern."
   },
   "language": {
     "title": "Sprache",
@@ -1342,6 +1348,9 @@
       "invoice_number": "Rechnungsnummer",
       "due_date": "Fälligkeitsdatum",
       "invite_url": "Einladungs-URL",
+      "name": "Name des Empfängers",
+      "inviter_name": "Name der einladenden Person",
+      "expires_days": "Tage bis zum Ablauf der Einladung",
       "cta_button": "Schaltfläche",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",

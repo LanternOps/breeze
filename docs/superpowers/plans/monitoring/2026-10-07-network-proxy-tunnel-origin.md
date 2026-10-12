@@ -21,14 +21,199 @@ depends_on: PR #8110 (fix/network-proxy-sandbox-subresource-auth) merged to main
 
 **Tracking:** after Todd approves this plan, the orchestrator registers it with the `feature-lifecycle` MCP (`register_feature`: one parent plus waves W00, W01, W02, W03, W04) and adds `tracking_issue: LanternOps/breeze#<parent>` to this file's frontmatter. Each wave branch is `feature/<parent#>-network-proxy-tunnel-origin/wave-<sub#>`, and its PR body carries `Closes #<sub#>`.
 
+## Amendments 2026-10-12 (product-owner decisions)
+
+These override the tasks they name. Where an amendment and a task's text disagree, the amendment wins.
+
+1. **Tunnel domain.** It stays configuration only. The env var keeps the name `TUNNEL_ORIGIN_TEMPLATE`, because the template already subsumes a host suffix. Task 1 already adds a commented placeholder to `.env.example`. The production name is supplied at W04, so nothing before W04 waits on it.
+2. **W00 runs locally.** Task 0.1 (real DNS, ACM and ingress on US) **moves to W04** and runs as the first step of Task 17. Tasks 0.2 (Caddy routing) and 0.3 (CHIPS in real browsers) run now against `*.tunnel.localhost`, with the app on `app.localhost`. These are different registrable domains, so the iframe is genuinely cross-site. `Partitioned` requires `Secure`, so Task 0.3 first records whether each browser accepts `Secure` cookies on `http://*.localhost`. Where one doesn't, that browser runs behind Caddy's internal CA (`tls internal`) instead.
+3. **Opt-in is per partner, not per region.** The region env var only makes host mode *available*. A partner setting decides whether that partner's sessions *use* it. New Task 4b (W01) and Task 13b (W03) below implement this. Tasks 4 and 8 change as follows:
+   - **Task 4:** `mode` is `host` only when `getTunnelOriginConfig()` is non-null **and** `isTunnelOriginEnabledForOrg(session.orgId)` returns true. Otherwise the route returns the path-mode URL. Add a test where the region template is set but the partner hasn't opted in: it expects `mode: 'path'`.
+   - **Task 8:** `/__bz/enter` re-checks `isTunnelOriginEnabledForOrg(session.orgId)` after the ticket is consumed and **before** minting `__Host-bzt`. When the check fails it returns 404 and mints nothing. This is defense in depth: the tunnel host has no app auth context, and the partner can switch the setting off between ticket mint and exchange. Add a route test for it.
+   - **Task 19:** the "default flip" becomes changing `TUNNEL_ORIGIN_PARTNER_DEFAULT` to `true` once PSL inclusion is verified. It is no longer a per-region switch.
+   - **Settings rule 9:**
+     - Home: Partner Settings → Remote Access.
+     - Level: partner only. It has no org override because it is a partner-wide transport choice, and the UI says so.
+     - Resolver: `isTunnelOriginEnabledForOrg`.
+     - Places configured: 0 before, 1 after.
+4. **Execution:** `superpowers:subagent-driven-development`, with a fresh implementer and a fresh reviewer per task.
+6. **The W00 gate moves to W02.** W01 is path-mode-preserving groundwork: config, the shared core, the revocation race, the server-built URL, fail-closed host dispatch and the opt-in. None of it depends on browser cookie behaviour, so it starts now, in parallel with the W00 local spikes. W02, the host-mode auth shape, starts only after the W00 results are appended to the spec.
+5. **Task 14 shrinks.** PR #8408 already makes "Open In New Tab" mint a fresh ticket in path mode: it opens `about:blank` synchronously, clears the opener, then calls `location.replace`. Task 14 now only switches that handler to request `?mode=tab` and use the response's `url`. Its other steps are done.
+
+### Task 4b: Per-partner opt-in for the dedicated tunnel origin (W01; run before Task 4, which consumes it)
+
+**Files:**
+- Create: `apps/api/src/services/tunnelOriginOptIn.ts`
+- Create: `apps/api/src/services/tunnelOriginOptIn.test.ts`
+- Modify: `apps/api/src/routes/orgs.ts` (`partnerSettingsSchema`, ~line 737; add the `networkProxy` key next to `ml`)
+- Modify: `apps/api/src/routes/orgs.test.ts` (PATCH `/partners/me` validation case)
+
+**Interfaces:**
+- Produces:
+  - `TUNNEL_ORIGIN_PARTNER_DEFAULT: boolean` (`false`);
+  - `tunnelOriginOptInFromSettings(settings: unknown): boolean`;
+  - `isTunnelOriginEnabledForOrg(orgId: string): Promise<boolean>`.
+  - Tasks 4 and 8 consume the last one.
+- Partner settings key: `settings.networkProxy.dedicatedTunnelOrigin: boolean`.
+
+- [ ] **Step 1: Write the failing tests** (`tunnelOriginOptIn.test.ts`):
+
+```ts
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const { selectRows } = vi.hoisted(() => ({ selectRows: { value: [] as unknown[] } }));
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(async () => selectRows.value) })),
+        })),
+      })),
+    })),
+  },
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+}));
+vi.mock('../db/schema', () => ({
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  partners: { id: 'partners.id', settings: 'partners.settings' },
+}));
+
+import {
+  TUNNEL_ORIGIN_PARTNER_DEFAULT,
+  isTunnelOriginEnabledForOrg,
+  tunnelOriginOptInFromSettings,
+} from './tunnelOriginOptIn';
+
+describe('tunnelOriginOptInFromSettings', () => {
+  it('is off by default until PSL inclusion is verified', () => {
+    expect(TUNNEL_ORIGIN_PARTNER_DEFAULT).toBe(false);
+    expect(tunnelOriginOptInFromSettings(null)).toBe(false);
+    expect(tunnelOriginOptInFromSettings({})).toBe(false);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: {} })).toBe(false);
+  });
+
+  it('honours an explicit partner value either way', () => {
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: true } })).toBe(true);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: false } })).toBe(false);
+  });
+
+  it('ignores a non-boolean value instead of treating it as truthy', () => {
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: 'yes' } })).toBe(false);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: 'on' })).toBe(false);
+  });
+});
+
+describe('isTunnelOriginEnabledForOrg', () => {
+  beforeEach(() => { selectRows.value = []; });
+
+  it('reads the org\'s partner settings', async () => {
+    selectRows.value = [{ settings: { networkProxy: { dedicatedTunnelOrigin: true } } }];
+    expect(await isTunnelOriginEnabledForOrg('11111111-1111-4111-8111-111111111111')).toBe(true);
+  });
+
+  it('fails closed when the org or partner is missing', async () => {
+    selectRows.value = [];
+    expect(await isTunnelOriginEnabledForOrg('11111111-1111-4111-8111-111111111111')).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+  Run: `cd apps/api && npx vitest run src/services/tunnelOriginOptIn.test.ts`
+  Expected: FAIL, with `Cannot find module './tunnelOriginOptIn'`.
+- [ ] **Step 3: Implement** `tunnelOriginOptIn.ts`:
+
+```ts
+import { eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { organizations, partners } from '../db/schema';
+
+/**
+ * Whether a partner's Network Proxy sessions use the dedicated tunnel origin
+ * when the region offers one (TUNNEL_ORIGIN_TEMPLATE). Flips to `true` only
+ * after the tunnel domain's Public Suffix List inclusion is verified in
+ * shipped browsers (plan W04 Task 19); until then it is opt-in per partner.
+ */
+export const TUNNEL_ORIGIN_PARTNER_DEFAULT = false;
+
+export function tunnelOriginOptInFromSettings(settings: unknown): boolean {
+  if (!settings || typeof settings !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
+  const networkProxy = (settings as Record<string, unknown>).networkProxy;
+  if (!networkProxy || typeof networkProxy !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
+  const value = (networkProxy as Record<string, unknown>).dedicatedTunnelOrigin;
+  return typeof value === 'boolean' ? value : TUNNEL_ORIGIN_PARTNER_DEFAULT;
+}
+
+/**
+ * Resolver for the per-partner opt-in, keyed by the tunnel session's org.
+ * System context: called from the ticket route (inside a request) and from
+ * the tunnel host's `/__bz/enter` (no app auth context). Missing rows fail
+ * closed to path mode.
+ */
+export async function isTunnelOriginEnabledForOrg(orgId: string): Promise<boolean> {
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ settings: partners.settings })
+        .from(organizations)
+        .innerJoin(partners, eq(organizations.partnerId, partners.id))
+        .where(eq(organizations.id, orgId))
+        .limit(1),
+    ),
+  );
+  return row ? tunnelOriginOptInFromSettings(row.settings) : false;
+}
+```
+
+  Then, in `orgs.ts` `partnerSettingsSchema`, next to `ml`:
+
+```ts
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
+```
+
+  In `orgs.test.ts`, add a PATCH `/partners/me` case. `{ settings: { networkProxy: { dedicatedTunnelOrigin: 'yes' } } }` returns 400. `{ settings: { networkProxy: { dedicatedTunnelOrigin: true } } }` returns 200 and persists the setting. Copy the request and assertion shape from the neighbouring `ml` settings PATCH case in the same file.
+- [ ] **Step 4: Run to verify it passes**
+  Run: `cd apps/api && npx vitest run src/services/tunnelOriginOptIn.test.ts src/routes/orgs.test.ts`
+  Expected: PASS.
+- [ ] **Step 5: Commit**
+  ```bash
+  git add apps/api/src/services/tunnelOriginOptIn.ts apps/api/src/services/tunnelOriginOptIn.test.ts apps/api/src/routes/orgs.ts apps/api/src/routes/orgs.test.ts
+  git commit -m "feat(network-proxy): per-partner opt-in for the dedicated tunnel origin"
+  ```
+
+### Task 13b: Partner toggle for the dedicated tunnel origin (W03)
+
+**Files:**
+- Modify: `apps/web/src/components/settings/PartnerRemoteAccessTab.tsx` (+ `PartnerRemoteAccessTab.test.ts`)
+- Modify: the partner settings page's save path that already sends `remoteAccessProviders`, so it also sends `settings.networkProxy`. Find it with `grep -rn "PartnerRemoteAccessTab" apps/web/src/components/settings/`.
+- Modify: `apps/web/src/locales/*/settings.json`, **all 7 locales**. The locale-parity test lives in `src/lib/i18n` and fails if a locale is missing.
+
+**Interfaces:**
+- Consumes: the partner settings key `networkProxy.dedicatedTunnelOrigin` (Task 4b).
+- The form uses the page-level Save (settings rule 7: forms use page Save). It does not autosave.
+
+- [ ] **Step 1: Write the failing test.** Rendering the tab with `networkProxy: { dedicatedTunnelOrigin: true }` shows the switch checked. Toggling it calls `onChange` with `dedicatedTunnelOrigin: false`, and the helper text says it applies to every organization of the partner. Use the existing `PartnerRemoteAccessTab.test.ts` render helper.
+- [ ] **Step 2: Run to verify it fails.**
+  Run: `cd apps/web && npx vitest run src/components/settings/PartnerRemoteAccessTab.test.ts`
+- [ ] **Step 3: Implement** a labelled switch section, "Serve Network Proxy from a dedicated origin". Its helper text says: "Applies to all organizations. Recommended once your region offers it; improves compatibility with device web UIs." Add the keys `partnerRemoteAccess.networkProxy.title` and `partnerRemoteAccess.networkProxy.help` to every locale.
+- [ ] **Step 4: Run to verify it passes**, including the locale-parity suite.
+  Run: `cd apps/web && npx vitest run src/components/settings/PartnerRemoteAccessTab.test.ts src/lib/i18n`
+- [ ] **Step 5: Commit.**
+
+
 ## Wave → PR map
 
 | Wave | PR | Tasks | Notes |
 |---|---|---|---|
-| W00 spikes | 1 docs PR (spec results + harness) | 0.1–0.4 | Gate: Todd approves W01 only after results are appended to the spec |
-| W01 API foundation | 1 PR | 1–5 | Config/validator, shared core, revocation race fix, server-built URL, Host dispatch scaffold (tunnel hosts 404) |
+| W00 spikes | 1 docs PR (spec results + harness) | 0.2–0.4 (0.1 → W04) | Gate: W02 starts only after results are appended to the spec (W01 runs in parallel) |
+| W01 API foundation | 1 PR | 1–5, 4b | Config/validator, shared core, revocation race fix, server-built URL, Host dispatch scaffold (tunnel hosts 404) |
 | W02 API host mode | 1 PR | 6–11 | Header/cookie rules, admission, `tunnelHostRoutes`, budgets/metrics, real-Caddy contract, security-checklist exit |
-| W03 web | 1 PR | 12–15 | Server URL, validation, sandbox, new tab, cookie-blocked notice, `runAction` close, Playwright |
+| W03 web | 1 PR | 12–15, 13b | Server URL, validation, sandbox, new tab, cookie-blocked notice, `runAction` close, Playwright |
 | W04 infra + rollout | 1 docs PR + ops runbook (no app code) | 16–19 | Several steps need **[TODD]** |
 | W05 WebSockets | none | — | Separate spec later |
 

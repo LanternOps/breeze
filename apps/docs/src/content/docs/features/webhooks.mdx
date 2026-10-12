@@ -97,7 +97,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 |-------|-------------|
 | `script.started` | Script execution has begun on a device |
 | `script.completed` | Script execution finished successfully |
-| `script.failed` | Script execution failed |
+| `script.failed` | Script execution failed or timed out (a cancelled run emits neither) |
 
 ### Automation Events
 

@@ -657,6 +657,8 @@
     "diagnoseHint": "Diagnostics run from the device you pick, along its own route.",
     "stale": "stale",
     "unverified": "unverified",
+    "decommissioned": "Decommissioned",
+    "reportedByDevices": "Reported by {{reporters}}",
     "sharedAddress_one": "Same IP as {{count}} other device",
     "sharedAddress_other": "Same IP as {{count}} other devices",
     "networkExplanation_one": "{{count}} device reports an interface in {{prefix}}. Grouping by address range is inferred: it does not prove the devices share a switch.",

@@ -7,6 +7,7 @@ import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 interface MailboxConnectionDTO {
   id: string;
@@ -163,7 +164,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
     params.delete('ticketMailbox');
     params.delete('reason');
     const qs = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
+    replaceUrl(window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
   }, [t]);
 
   const startConsent = useCallback(

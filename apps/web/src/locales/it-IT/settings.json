@@ -123,7 +123,13 @@
     "copy": "Copia",
     "copied": "Copiato",
     "oneTimeWarning": "Questa chiave in chiaro viene mostrata una sola volta e non potrà essere recuperata in seguito.",
-    "done": "Fatto"
+    "done": "Fatto",
+    "owner": "Proprietario",
+    "unknownOwner": "Utente sconosciuto",
+    "ownerOnlyTooltip": "Solo {{owner}} può emettere o ruotare le chiavi",
+    "ownerOnlyScopeTooltip": "Solo {{owner}} può aggiungere ambiti",
+    "ownerOnlyEditNotice": "Puoi rinominare, restringere o accorciare questo principal. Solo {{owner}} può aggiungere ambiti, estenderne la scadenza o allentare gli IP di origine.",
+    "ownerOnlyWidening": "Solo {{owner}} può estendere la scadenza o allentare gli IP di origine. Annulla queste modifiche per salvare."
   },
   "language": {
     "title": "Lingua",
@@ -1342,6 +1348,9 @@
       "invoice_number": "Numero fattura",
       "due_date": "Data di scadenza pagamento",
       "invite_url": "URL di invito",
+      "name": "Nome del destinatario",
+      "inviter_name": "Nome di chi invita",
+      "expires_days": "Giorni alla scadenza dell'invito",
       "cta_button": "Pulsante",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",

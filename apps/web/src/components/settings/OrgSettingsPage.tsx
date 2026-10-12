@@ -496,6 +496,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         successMessage: t('orgSettingsPage.toasts.nameSaved'),
         errorFallback: t('orgSettingsPage.errors.saveName')
       });
+      // Header org switcher reads the global store; refresh so it shows the new name (#8371).
+      useOrgStore
+        .getState()
+        .fetchOrganizations()
+        .catch((storeErr: unknown) => console.warn('[OrgSettingsPage] org store refresh failed after rename', storeErr));
       await fetchOrgDetails();
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.

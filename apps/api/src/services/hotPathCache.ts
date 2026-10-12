@@ -204,18 +204,39 @@ export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope
  * Caller contract: the context must have made no writes the loaded rows could
  * observe, and the value must be a function of `key` alone.
  */
+export interface DeferredFillOptions<V> {
+  /**
+   * The org a NON-org key belongs to (#7970: `${orgId}:${deviceId}`). Without
+   * it the key itself must equal the fill scope's org id. The caller vouches
+   * that the value is a function of rows inside this one org, so the org-scoped
+   * context sees exactly what a system read would.
+   */
+  keyOrgId?: string;
+  /** Decline to store a particular value (e.g. a negative-only cache). */
+  shouldCache?: (value: V) => boolean;
+}
+
 export class DeferredCacheFills {
   private readonly pending: Array<() => void> = [];
 
-  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>, fillScope?: DeferredFillScope): Promise<V> {
+  async through<K, V>(
+    cache: HotPathTtlCache<K, V>,
+    key: K,
+    load: () => Promise<V>,
+    fillScope?: DeferredFillScope,
+    options: DeferredFillOptions<V> = {},
+  ): Promise<V> {
     const hit = cache.peek(key);
     if (hit !== undefined) return hit;
     // A fill scope binds the key: another org's key under this scope would cache an RLS-narrowed value.
+    const keyOrg: unknown = options.keyOrgId ?? key;
     const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope)
-      && !(fillScope && key !== fillScope.orgId);
+      && !(fillScope && keyOrg !== fillScope.orgId);
     const ticket = cache.ticket();
     const value = await load();
-    if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
+    if (cacheable && (options.shouldCache?.(value) ?? true)) {
+      this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
+    }
     return value;
   }
 

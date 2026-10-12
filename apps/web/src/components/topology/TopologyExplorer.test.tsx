@@ -17,10 +17,20 @@ beforeEach(() => {
     return new Response(JSON.stringify(topologyGraphFixture()));
   });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ''; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (document as { fonts?: unknown }).fonts; window.location.hash = ''; });
+/**
+ * Arrange is a no-op until the first measurement lands (`boxes` is set after `document.fonts.ready`), so a click
+ * before that is silently dropped and the draft never becomes dirty. `data-layout-applied` is the component's own
+ * signal that a layout reached the canvas (#8360); gate every user arrangement on it.
+ */
+const layoutApplied = () => waitFor(() => expect(screen.getByTestId('topology-explorer')).toHaveAttribute('data-layout-applied', 'true'));
+/** Delay font readiness so measurement lands after the data does: the slow-CI ordering, made deterministic (#8360). */
+const slowFonts = (ms = 400) => Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => setTimeout(resolve, ms)) } });
 it('renders a passive snapshot, and local arrangement never persists', async () => {
+  slowFonts();
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
+  await layoutApplied();
   fireEvent.click(screen.getByTestId('topology-arrange'));
   await screen.findByTestId('topology-unsaved-layout');
   expect(vi.mocked(fetchWithAuth).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
@@ -53,6 +63,7 @@ it('provides keyboard-equivalent list inspection and preserves conflict drafts',
   fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
   expect(await screen.findByTestId('topology-inspector')).toBeVisible();
   expect(screen.getByRole('heading', { name: 'Reported gateway' })).toHaveFocus();
+  await layoutApplied();
   fireEvent.click(screen.getByTestId('topology-arrange'));
   await screen.findByTestId('topology-unsaved-layout');
   fireEvent.click(screen.getByTestId('topology-layout-save'));

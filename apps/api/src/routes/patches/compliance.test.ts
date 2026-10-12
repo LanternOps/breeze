@@ -87,6 +87,11 @@ vi.mock('../../services/permissions', () => ({
   },
 }));
 
+const loadFailedInstallPairsMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/patchInstallFailures', () => ({
+  loadFailedInstallPairs: loadFailedInstallPairsMock,
+}));
+
 import { complianceRoutes } from './compliance';
 import { db } from '../../db';
 
@@ -176,6 +181,7 @@ function mockComplianceQueries(deviceIds: string[]) {
 describe('patch compliance site scope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loadFailedInstallPairsMock.mockResolvedValue([]);
     permissionsState = undefined;
   });
 
@@ -211,6 +217,7 @@ describe('patch compliance site scope', () => {
 describe('patch compliance unrated summary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loadFailedInstallPairsMock.mockResolvedValue([]);
     permissionsState = undefined;
   });
 
@@ -271,5 +278,106 @@ describe('patch compliance unrated summary', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.unratedSummary).toEqual({ total: 3, patched: 1, pending: 2 });
+  });
+});
+
+
+// #7214: a pending patch whose latest install attempt failed was bucketed as
+// "Pending approval" because deviceBreakdown had no failed-install signal.
+describe('patch compliance failed installs', () => {
+  const PATCH_ID = '55555555-5555-4555-8555-555555555555';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadFailedInstallPairsMock.mockResolvedValue([{ deviceId: DEVICE_ID, patchId: PATCH_ID }]);
+  });
+
+  function mockWithBreakdown(rows: unknown[], capture: { fields?: Record<string, unknown> }) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: DEVICE_ID }]) }),
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as never)
+      .mockImplementationOnce(((fields: Record<string, unknown>) => {
+        capture.fields = fields;
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  groupBy: vi.fn().mockReturnValue({
+                    having: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }) as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as never);
+  }
+
+  it('exposes failedMissing per device and keeps failed rows out of the approval buckets', async () => {
+    const capture: { fields?: Record<string, unknown> } = {};
+    mockWithBreakdown(
+      [{
+        deviceId: DEVICE_ID, hostname: 'h', osType: 'windows', lastSeenAt: null,
+        missingCount: 3, approvedMissing: 1, unapprovedMissing: 1, failedMissing: 1,
+        criticalCount: 0, importantCount: 0, osMissing: 3, thirdPartyMissing: 0,
+        lastInstalledAt: null, pendingReboot: false, lastScannedAt: null,
+      }],
+      capture,
+    );
+
+    const res = await mountApp().request('/patches/compliance', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.devicesNeedingPatches[0]).toMatchObject({
+      missingCount: 3, approvedMissing: 1, unapprovedMissing: 1, failedMissing: 1,
+    });
+    // The failed (device, patch) pair drives failedMissing and is excluded from
+    // both approval buckets, so the three buckets partition missingCount.
+    const failedSql = conditionText(capture.fields?.failedMissing);
+    expect(failedSql).toContain(DEVICE_ID);
+    expect(failedSql).toContain(PATCH_ID);
+    expect(conditionText(capture.fields?.approvedMissing)).toContain(PATCH_ID);
+    expect(conditionText(capture.fields?.unapprovedMissing)).toContain(PATCH_ID);
+  });
+
+  it('reports failedMissing 0 when no install has failed', async () => {
+    loadFailedInstallPairsMock.mockResolvedValue([]);
+    const capture: { fields?: Record<string, unknown> } = {};
+    mockWithBreakdown(
+      [{
+        deviceId: DEVICE_ID, hostname: 'h', osType: 'windows', lastSeenAt: null,
+        missingCount: 1, approvedMissing: 0, unapprovedMissing: 1, failedMissing: 0,
+        criticalCount: 0, importantCount: 0, osMissing: 1, thirdPartyMissing: 0,
+        lastInstalledAt: null, pendingReboot: false, lastScannedAt: null,
+      }],
+      capture,
+    );
+    const res = await mountApp().request('/patches/compliance', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+    const body = await res.json();
+    expect(body.data.devicesNeedingPatches[0].failedMissing).toBe(0);
+    expect(loadFailedInstallPairsMock).toHaveBeenCalledWith([DEVICE_ID]);
   });
 });

@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 const navigateToMock = vi.hoisted(() => vi.fn(async () => 'soft' as const));
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: fetchWithAuthMock }));
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/auth')>()),
+  fetchWithAuth: fetchWithAuthMock,
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 import CommandPalette from './CommandPalette';

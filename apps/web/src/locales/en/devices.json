@@ -2169,20 +2169,29 @@
     "noOutput": "No output",
     "output": "Output",
     "refreshing": "Refreshing...",
-    "running": "Running...",
     "runAgain": "Run again",
+    "runCount_one": "{{count}} run",
+    "runCount_other": "{{count}} runs",
+    "running": "Running...",
     "scriptFallback": "Script",
     "stderr": "Standard Error (stderr)",
     "stdout": "Standard Output (stdout)",
     "table": {
       "completed": "Completed",
       "duration": "Duration",
+      "lastOutput": "Last output",
+      "lastRun": "Last run",
       "script": "Script",
       "started": "Started",
       "status": "Status"
     },
     "title": "Script Execution History",
-    "unnamedScript": "Unnamed script"
+    "unnamedScript": "Unnamed script",
+    "view": {
+      "all": "All runs",
+      "label": "Scripts view",
+      "latest": "Latest per script"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Detected: {{date}}",

@@ -397,6 +397,26 @@ export async function moveDeviceOrgInTransaction(
           AND org_id = ${sourceOrgId}::uuid`,
   );
 
+  // #7969 — a discovery profile in the SOURCE org may pin this device as its
+  // scan agent via the composite FK (pinned_device_id, org_id) ->
+  // devices(id, org_id). Once the device leaves the org the pin is
+  // unrepresentable, so clear it; the profile reverts to automatic agent
+  // selection on its next run. The PROFILE stays in the source org.
+  //
+  // Placement is load-bearing, exactly as for manual_assets above: the FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, so its check fires at the end of the
+  // `UPDATE devices SET org_id` statement below, and nothing trigger-side
+  // mirrors a `pinned_device_id` column (breeze_device_child_orgid_tables()
+  // requires a column literally named `device_id`). This statement is the
+  // only detach on any path. An org MERGE never reaches this route: it
+  // re-points discovery_profiles and devices together under SET CONSTRAINTS
+  // ALL DEFERRED, keeping the pin valid inside the survivor org.
+  await tx.execute(
+    sql`UPDATE discovery_profiles SET pinned_device_id = NULL
+        WHERE pinned_device_id = ${deviceId}::uuid
+          AND org_id = ${sourceOrgId}::uuid`,
+  );
+
   // Caller verification (#6354 W01): lock the device row and revoke the
   // source org's workstation authorization BEFORE the org flip. The
   // FOR UPDATE here is load-bearing — nothing above locks the device
@@ -932,8 +952,15 @@ export async function moveDeviceOrgInTransaction(
     targetOrgName: input.targetOrgName,
     acceptCurrencyMismatch: acceptCurrencyMismatch === true,
   });
+  // #8356: time_entries.site_id is a plain FK to sites (no tenant FK), so an
+  // org_id-only rewrite left the moved entry pointing at a SOURCE-org site.
+  // It follows the device to its target site in the SAME statement — one
+  // UPDATE, so the shared lock order (services/ticketOrgMoveLockOrder.ts) and the
+  // statement sequence moveOrg.test.ts pins are unchanged. An entry with no
+  // site link keeps none (CASE without ELSE → NULL); the ticket axis
+  // (moveTicketOrg) has no site to follow and nulls it instead.
   await tx.execute(
-    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid, site_id = CASE WHEN site_id IS NOT NULL THEN ${targetSiteId}::uuid END WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,

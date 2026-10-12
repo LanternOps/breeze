@@ -200,6 +200,10 @@
       "ready_one": "Hazır · {{ready}}/{{total}} cihaz",
       "ready_other": "Hazır · {{ready}}/{{total}} cihazlar"
     },
+    "target": {
+      "version": "{{version}} sürümüne güncelle",
+      "latest": "En son sürüme güncelle"
+    },
     "hasMore": "Riske göre ilk 500 grup gösteriliyor — geri kalanını görmek için filtreleri daraltın.",
     "devices_one": "{{count}} cihaz",
     "devices_other": "{{count}} cihazlar",

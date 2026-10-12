@@ -3935,12 +3935,6 @@
       ]
     },
     {
-      "pattern": "agent/internal/scripts/**",
-      "docs": [
-        "scripts/stopping-a-running-script.mdx"
-      ]
-    },
-    {
       "pattern": "agent/internal/executor/**",
       "docs": [
         "scripts/stopping-a-running-script.mdx"

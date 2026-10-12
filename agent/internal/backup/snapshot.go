@@ -926,7 +926,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		progressMu.Lock()
 		filesDone += fileCount
 		bytesDone += byteCount
-		inFlight.reset()
+		progressMu.Unlock()
+	}
+	// markUploaded counts one uploaded file and drops its in-flight bytes
+	// under the same lock, so no emission sees the file counted twice (its
+	// in-flight bytes plus its full size) or not at all.
+	markUploaded := func(byteCount int64, slot inFlightSlot) {
+		progressMu.Lock()
+		filesDone++
+		bytesDone += byteCount
+		inFlight.release(slot)
 		progressMu.Unlock()
 	}
 
@@ -1129,10 +1138,58 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		planner.PrepareUploads(entries)
 	}
 
+	// The upload pool's state (#8381; the loop below documents the split
+	// between the workers and this goroutine). workerCtx is cancelled only
+	// to stop the workers on an abort or return; the job's own cancel
+	// reaches them through ctx as before.
+	workers := max(uploadConcurrency, 1)
+	window := workers * uploadWindowPerWorker
+	workerCtx, cancelWorkers := context.WithCancel(withSharedWriterFence(ctx, provider))
+	uploader := &fileUploader{provider: provider, stagingDir: stagingDir, sourceLiveness: sourceLiveness, snapshotID: snapshot.ID}
+	// Buffered to the worker bound so a worker never blocks handing back its
+	// outcome, even while drainUploads is waiting for it.
+	doneCh := make(chan uploadDone, workers)
+	slots := make(map[int]*uploadSlot, window)
+	uploadsInFlight := 0
+	var stagedBytes int64
+	next, head := 0, 0
+	// drainUploads cancels every worker and waits until each has returned.
+	// Every exit runs it before anything else touches the snapshot's prefix:
+	// abortStopped's cleanup and abortSourceGone's partial publish call it
+	// first, so no upload can land after the prefix was emptied or the
+	// manifest was published, and the deferred call covers every other
+	// return. Outcomes it collects are discarded, like the files a serial
+	// run never reached. Idempotent.
+	drainUploads := func() {
+		cancelWorkers()
+		for uploadsInFlight > 0 {
+			<-doneCh
+			uploadsInFlight--
+		}
+		// Nothing past this point is accounted: drop every slot's in-flight
+		// bytes (release is idempotent), so no later emission counts them.
+		for _, s := range slots {
+			inFlight.release(s.progress)
+		}
+	}
+	defer drainUploads()
+	// receiveUpload files a worker's outcome on its slot. A finished upload
+	// holds no staging space or buffers, so its charge is returned now
+	// rather than when it reaches the head: a slow head file must not stop
+	// the budget refilling.
+	receiveUpload := func(d uploadDone) {
+		uploadsInFlight--
+		done := slots[d.index]
+		done.done, done.outcome = true, d.outcome
+		stagedBytes -= done.charged
+		done.charged = 0
+	}
+
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
 	// conditional on journal == nil.
 	abortStopped := func() (*Snapshot, error) {
+		drainUploads()
 		if journal == nil {
 			// Stop the lease-refresh ticker BEFORE cleanup, not after (via
 			// the deferred stopLeaseRefresh() at the top of this function):
@@ -1168,6 +1225,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// The error carries the counts because #3260's whole complaint is that the
 	// operator-visible failure said nothing useful about what happened.
 	abortSourceGone := func(cause error) (*Snapshot, error) {
+		// Uploads after the abort point are cancelled and discarded: a
+		// partial manifest lists only the files before it, as the serial
+		// loop's did.
+		drainUploads()
 		detail := fmt.Errorf("%w (aborted after %d of %d files uploaded, %d failed)",
 			cause, len(snapshot.Files), filesTotal, len(errs))
 		log.Error("backup source snapshot is gone mid-run, aborting the run",
@@ -1224,11 +1285,102 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return snapshot, detail
 	}
 
-	for i, file := range files {
-		if err := ctx.Err(); err != nil {
+	// The file pass (#8381). Uploads run on up to uploadConcurrency worker
+	// goroutines (fileUploader.upload). EVERYTHING else runs here, on the
+	// caller's goroutine, in walk order, exactly as the serial loop did it:
+	// key assignment, the manifest entry and its SD slot, failure
+	// accounting, progress counters, the journal append, and every abort
+	// decision. A worker's outcome is acted on only when its file reaches
+	// the head of the window, so the manifest, UploadFailures and the
+	// journal come out in walk order whatever order the uploads finish in.
+	for head < len(files) {
+		// Admit files in walk order while the window, the worker bound and
+		// the staged-bytes budget allow.
+		for next < len(files) && next-head < window && uploadsInFlight < workers && ctx.Err() == nil {
+			i, file := next, files[next]
+			s := &uploadSlot{}
+			if file.kind != "" {
+				s.kind = slotContentless
+			} else if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
+				s.kind, s.entry = slotResumed, entry
+			} else if decision, refEntry := plannedOrDecide(plannedDecisions, i, file, prevIndex); decision == decideReference {
+				s.kind, s.entry = slotReference, refEntry
+			} else {
+				charge := max(file.size, 0)
+				if stagedBytes > 0 && stagedBytes+charge > uploadStagedBytesBudget {
+					break
+				}
+				naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
+				backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
+				if backupPath != naturalKey {
+					log.Info("object key folds onto a case twin's; storing under a disambiguated key",
+						"path", file.sourcePath,
+						"naturalKey", naturalKey,
+						"backupPath", backupPath,
+						"snapshotId", snapshot.ID,
+					)
+				}
+				uploadCtx, progressSlot := inFlight.track(workerCtx, file.size)
+				s.kind, s.backupPath, s.charged, s.progress = slotUpload, backupPath, charge, progressSlot
+				stagedBytes += charge
+				uploadsInFlight++
+				go func(index int, task fileUploadTask) {
+					doneCh <- uploadDone{index: index, outcome: uploader.upload(uploadCtx, task)}
+				}(i, fileUploadTask{file: file, backupPath: backupPath})
+			}
+			slots[i] = s
+			next++
+		}
+
+		s := slots[head]
+		if s == nil {
+			// Nothing admitted at the head: admission stops only on cancel.
 			return abortStopped()
 		}
-		if file.kind != "" {
+		if s.kind == slotUpload && !s.done {
+			select {
+			case d := <-doneCh:
+				receiveUpload(d)
+			case <-ctx.Done():
+				// The head's own outcome may already be waiting behind the
+				// cancel. Collect every outcome already handed back; if the
+				// head finished, account for it below rather than dropping
+				// an upload that landed (the serial loop journaled a file
+				// whose upload returned before it saw the stop).
+				for collected := true; collected; {
+					select {
+					case d := <-doneCh:
+						receiveUpload(d)
+					default:
+						collected = false
+					}
+				}
+				if !s.done {
+					return abortStopped()
+				}
+			}
+			continue
+		}
+
+		// The head entry is ready: account for it, in walk order. A stop
+		// ends the run here, except for an upload that already succeeded:
+		// like the serial loop, which checked for a stop before each file
+		// and never between a returned upload and its journal append, it is
+		// accounted (and journaled) first. Every other head, including an
+		// upload that failed, was refused or lost its source, takes the stop
+		// exit, as the serial loop's stop did.
+		succeeded := s.kind == slotUpload && s.done &&
+			s.outcome.writerStillActive == nil && s.outcome.sourceGone == nil &&
+			!s.outcome.stopped && s.outcome.err == nil
+		if err := ctx.Err(); err != nil && !succeeded {
+			return abortStopped()
+		}
+		delete(slots, head)
+		file := files[head]
+		head++
+
+		switch s.kind {
+		case slotContentless:
 			// Content-less entry (symlink/directory): nothing to upload,
 			// dedupe against, or checkpoint — see contentlessEntry's doc
 			// comment. Rebuilt from the live filesystem on every run.
@@ -1238,23 +1390,22 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			markDone(1, 0)
 			emitProgress(false)
 			continue
-		}
-		if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
+		case slotResumed:
 			// Already uploaded in a prior (interrupted) run with identical
 			// (size, modTime) — filesDone/bytesDone already reflect this
 			// file via the pre-loop seed above; do not double count.
 			// The journaled SDIndex names a slot in the INTERRUPTED run's
 			// table, which this run does not have: re-stamp it from this
 			// run's capture.
+			entry := s.entry
 			entry.SDIndex = sdTbl.index(file.sd)
 			snapshot.Files = append(snapshot.Files, entry)
 			snapshot.Size += entry.Size
 			continue
-		}
-		decision, refEntry := plannedOrDecide(plannedDecisions, i, file, prevIndex)
-		if decision == decideReference {
+		case slotReference:
 			// A referenced file carries THIS run's descriptor, like the
 			// other current-stat fields referenceEntry documents.
+			refEntry := s.entry
 			refEntry.SDIndex = sdTbl.index(file.sd)
 			// Unchanged since prevSnapshot: no upload, no journal Record
 			// (there is nothing new to checkpoint — the bytes already live
@@ -1268,228 +1419,65 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			emitProgress(false)
 			continue
 		}
-		naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
-		backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
-		if backupPath != naturalKey {
-			log.Info("object key folds onto a case twin's; storing under a disambiguated key",
-				"path", file.sourcePath,
-				"naturalKey", naturalKey,
-				"backupPath", backupPath,
-				"snapshotId", snapshot.ID,
-			)
+
+		out := s.outcome
+		if out.writerStillActive != nil || out.sourceGone != nil || out.stopped {
+			// The run ends here and this file is not counted.
+			inFlight.release(s.progress)
 		}
-
-		// Measure (stat + hash) the source immediately before handing it to
-		// the upload, so the manifest entry can describe the SAME read that
-		// is about to be uploaded rather than a walk-time stat plus a
-		// separate post-upload hash from a third point in time (#5581). A
-		// measurement failure here (source vanished/unreadable since the
-		// walk) is not fatal on its own: fall through with the walk-time
-		// size/modTime and let the upload attempt itself surface (and
-		// classify) the failure the way it always has.
-		//
-		// Only uploadFile.size is adjusted (feeds uploadDeadline below) —
-		// the manifest entry's ModTime stays file.modTime (the walk-time
-		// value, unchanged) even when a measurement is available. The
-		// journal's resume matching (journal.Lookup) keys on that walk-time
-		// (sourcePath, size, modTime) triple; a live-mutating file's
-		// pre-upload modTime would never match on a later resumed run
-		// anyway (the file has moved on again), so there is nothing to gain
-		// by substituting it here — only Size/Checksum need to describe the
-		// uploaded bytes (#5581).
-		pre, preErr := statBeforeUpload(file.sourcePath)
-		uploadFile := file
-		haveMeasurement := preErr == nil
-		if haveMeasurement {
-			uploadFile.size = pre.size
-		}
-
-		// Log the file we are ABOUT to upload, at debug, before we block on it.
-		// This is the line that makes a wedged backup diagnosable: the deadline
-		// below scales with file size (capped at uploadTimeoutCeiling), so a
-		// large file whose upload stalls mid-body can hold the loop for hours with no other
-		// output. Without a start line the last thing in the log is the
-		// previous file's success and there is no way to tell which file is
-		// stuck (#2790, #2798).
-		deadline := uploadDeadline(uploadFile.size)
-		log.Debug("uploading file",
-			"path", file.sourcePath,
-			"backupPath", backupPath,
-			"bytes", uploadFile.size,
-			"deadlineMs", deadline.Milliseconds(),
-			"snapshotId", snapshot.ID,
-		)
-
-		uploadStart := time.Now()
-		uploadCtx := inFlight.track(ctx, file.size)
-		uploaded, uploadErr := attemptFileUploadFenced(uploadCtx, provider, stagingDir, uploadFile, backupPath)
-		if errors.Is(uploadErr, errWriterStillActive) {
+		switch {
+		case out.writerStillActive != nil:
 			// Not this file's fault: the snapshot cannot be written at all.
-			return nil, uploadErr
-		}
-		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
-			// Before spending anything else on this failure, make sure the
-			// source we are reading from still exists. If the shadow copy died,
-			// this file is not bad and neither is any file after it — sleeping
-			// on a retry, and then blaming the file, is exactly the behaviour
-			// that turned 15 unreadable files into 40 lost ones (#3260).
-			if goneErr := sourceLiveness(file.sourcePath); goneErr != nil {
-				return abortSourceGone(goneErr)
-			}
-			policy, reason := classifyUploadFailure(uploadErr, file.sourcePath)
-			if policy == skipWithoutRetry {
-				// The source is locked by a live process, already gone, or an
-				// unhydratable cloud placeholder. A retry cannot change that,
-				// so skip immediately instead of burning uploadRetryDelay on a
-				// foregone conclusion — a real 123,600-file C:\Users run spent
-				// 2h38m of its 2h41m asleep here for 316 such files (#2997).
-				//
-				// This ONLY removes the sleep. The file falls through to the
-				// same skip-and-continue block below: counted in
-				// UploadFailures (and so job.ErrorCount), job carries on.
-				log.Warn("file upload failed permanently, skipping without retry",
-					"path", file.sourcePath,
-					"bytes", uploadFile.size,
-					"elapsedMs", time.Since(uploadStart).Milliseconds(),
-					"reason", reason,
-					"error", uploadErr.Error(),
-				)
-			} else {
-				// Exactly one retry, only for a non-cancel failure (including a
-				// per-file deadline expiry, which attemptFileUpload has already
-				// converted to a plain error). Job-context cancel during the
-				// backoff wait aborts immediately — never retried.
-				//
-				// retryDelayFor picks the wait: the full backoff for an
-				// unrecognised (probably transient) failure, or the short one
-				// for a source-permission denial, which is nearly always a
-				// structural ACL (#3259).
-				//
-				// Warn, not debug: a single retry is the first observable symptom
-				// of a stalling destination, and it is the point at which we have
-				// already burned the full per-file deadline.
-				retryDelay := retryDelayFor(policy)
-				if reason == "" {
-					// The failure was not attributable to the source file (a
-					// destination outage, a provider-side error, an
-					// unrecognised errno). Say so rather than logging an empty
-					// field, which reads like a dropped value.
-					reason = "unclassified"
-				}
-				log.Warn("file upload failed, retrying once",
-					"path", file.sourcePath,
-					"bytes", uploadFile.size,
-					"elapsedMs", time.Since(uploadStart).Milliseconds(),
-					"deadlineMs", deadline.Milliseconds(),
-					"retryDelayMs", retryDelay.Milliseconds(),
-					"reason", reason,
-					"error", uploadErr.Error(),
-				)
-				select {
-				case <-ctx.Done():
-					uploadErr = errBackupStopped
-				case <-time.After(retryDelay):
-					uploaded, uploadErr = attemptFileUploadFenced(uploadCtx, provider, stagingDir, uploadFile, backupPath)
-					if errors.Is(uploadErr, errWriterStillActive) {
-						return nil, uploadErr
-					}
-				}
-			}
-		}
-		if uploadErr != nil {
-			if errors.Is(uploadErr, errBackupStopped) {
-				return abortStopped()
-			}
-			// Probed a second time on purpose: the retry above is the window in
-			// which the snapshot most often dies, and #3260's own tell was a
-			// file whose error flipped from ACCESS_DENIED to PATH_NOT_FOUND
-			// between the first attempt and the retry. Costs one stat per
-			// failing file, and the very first one to see a dead root ends the
-			// run — so at most one extra stat beyond the abort itself.
-			if goneErr := sourceLiveness(file.sourcePath); goneErr != nil {
-				return abortSourceGone(goneErr)
-			}
-			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
-			errs = append(errs, err)
+			// The deferred drainUploads stops the other workers.
+			return nil, out.writerStillActive
+		case out.sourceGone != nil:
+			return abortSourceGone(out.sourceGone)
+		case out.stopped:
+			return abortStopped()
+		case out.err != nil:
+			inFlight.release(s.progress)
+			errs = append(errs, fmt.Errorf("failed to upload %s: %w", file.sourcePath, out.err))
 			failedSources = append(failedSources, file.sourcePath)
+			if out.reconcileFailed {
+				log.Warn("re-upload of a file that changed during its upload failed, skipping file",
+					"path", file.sourcePath,
+					"error", out.err.Error(),
+				)
+				continue
+			}
 			// This is skip-and-continue: the file is dropped from the backup
 			// but the job carries on. Warn so it is visible without debug
 			// shipping, and count it so the summary at the end is trustworthy.
 			log.Warn("file upload failed, skipping file",
 				"path", file.sourcePath,
-				"bytes", uploadFile.size,
-				"elapsedMs", time.Since(uploadStart).Milliseconds(),
+				"bytes", out.uploadSize,
+				"elapsedMs", out.elapsed.Milliseconds(),
 				"failedSoFar", len(errs),
-				"error", uploadErr.Error(),
+				"error", out.err.Error(),
 			)
 			continue
 		}
-		uploadMs := time.Since(uploadStart).Milliseconds()
-
-		// The manifest's Size/Checksum describe the bytes the upload stored
-		// (the digest uploadWithDigest returned for the attempt that
-		// succeeded), never a separate read of a source that may have moved
-		// on. Volatile only says the source did not hold still while it was
-		// read (see reconcileAfterUpload). ModTime is deliberately NOT
-		// touched here — it stays file.modTime (the walk-time value) in
-		// every case; see the comment above the pre-measurement for why.
-		stored := uploaded
-		volatile := false
-		if haveMeasurement {
-			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(uploadCtx, provider, stagingDir, file.sourcePath, backupPath, pre, uploaded)
-			if errors.Is(reconcileErr, errBackupStopped) {
-				return abortStopped()
-			}
-			if reconcileErr != nil {
-				// The re-upload of a changing file failed: what the key now
-				// holds is not known for certain, so the file is not in this
-				// snapshot.
-				errs = append(errs, fmt.Errorf("failed to upload %s: %w", file.sourcePath, reconcileErr))
-				failedSources = append(failedSources, file.sourcePath)
-				log.Warn("re-upload of a file that changed during its upload failed, skipping file",
-					"path", file.sourcePath,
-					"error", reconcileErr.Error(),
-				)
-				continue
-			}
-			stored = reconciled
-			volatile = isVolatile
-			if volatile {
-				volatileCount++
-				log.Warn("file was modified while being backed up, recorded as volatile",
-					"path", file.sourcePath,
-					"bytes", stored.Size,
-					"snapshotId", snapshot.ID,
-				)
-			}
+		if out.volatile {
+			volatileCount++
 		}
-		log.Debug("file uploaded",
-			"path", file.sourcePath,
-			"bytes", stored.Size,
-			"uploadMs", uploadMs,
-			"volatile", volatile,
-			"snapshotId", snapshot.ID,
-		)
-		finalSize := stored.Size
-		finalChecksum := stored.SHA256
 
 		entry := SnapshotFile{
 			SourcePath:   file.sourcePath,
 			OriginalPath: file.originalPath,
-			BackupPath:   backupPath,
-			Size:         finalSize,
+			BackupPath:   s.backupPath,
+			Size:         out.stored.Size,
 			ModTime:      file.modTime,
-			Checksum:     finalChecksum,
+			Checksum:     out.stored.SHA256,
 			Mode:         uint32(file.mode.Perm()),
 			ModeBits:     file.modeBits,
 			Owner:        file.owner,
-			Volatile:     volatile,
+			Volatile:     out.volatile,
 			WinAttrs:     file.winAttrs,
 			SDIndex:      sdTbl.index(file.sd),
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += entry.Size
-		markDone(1, file.size)
+		markUploaded(file.size, s.progress)
 		emitProgress(false)
 		if journal != nil {
 			// Record logs and swallows its own write failures — a dead
@@ -1870,7 +1858,7 @@ func attemptFileUploadFenced(ctx context.Context, provider providers.BackupProvi
 		if err == nil || !errors.Is(err, providers.ErrPreviousWriterActive) {
 			return d, err
 		}
-		fence, ok := writerFenceOf(provider)
+		fence, ok := writerFenceFor(ctx, provider)
 		if !ok || waits >= maxWriterFenceWaits {
 			return d, fmt.Errorf("%w: %w", errWriterStillActive, err)
 		}

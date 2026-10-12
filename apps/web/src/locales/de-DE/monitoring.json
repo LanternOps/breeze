@@ -244,7 +244,9 @@
     "expectedValue": "Erwarteter Wert",
     "nameserver": "DNS-Server",
     "degradedIsFailure": "Beeinträchtigt als Ausfall werten",
-    "maxResponseMs": "Fehler bei Antwort langsamer als (ms)"
+    "maxResponseMs": "Fehler bei Antwort langsamer als (ms)",
+    "eventLogCollectionNoSource": "Informations- und Warnungsereignisse aus dem Anwendungsprotokoll werden nur von {{providers}} erfasst. Ereignisse anderer Quellen lösen diese Regel nur auf den Stufen Fehler oder Kritisch aus.",
+    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Informations- oder Warnungsereignisse aus dem Anwendungsprotokoll von „{{source}}“, daher greift diese Regel nur bei deren Fehler- oder kritischen Ereignissen. Erfasste Anbieter: {{providers}}."
   },
   "operators": {
     "gt": "größer als",
@@ -268,6 +270,7 @@
     "system": "System"
   },
   "eventLevels": {
+    "info": "Informationen",
     "warning": "Warnung",
     "error": "Fehler",
     "critical": "Kritisch"
@@ -359,7 +362,7 @@
   "legacy": {
     "title": "Ältere Alarmregeln",
     "description": "Eigenständige Alarmregeln, die nicht von einem Monitor verwaltet werden. Konvertieren Sie sie, um Reaktionen, Zustellung und Eskalation an einem Ort zu erhalten.",
-    "empty": "Keine älteren Regeln.",
+    "empty": "Keine eigenständigen Alarmregeln müssen konvertiert werden.",
     "columns": {
       "name": "Name",
       "template": "Vorlage",

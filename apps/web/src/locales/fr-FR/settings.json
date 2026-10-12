@@ -123,7 +123,13 @@
     "copy": "Copier",
     "copied": "Copié",
     "oneTimeWarning": "Cette clé en clair n'est affichée qu'une seule fois et ne pourra pas être récupérée ultérieurement.",
-    "done": "Terminé"
+    "done": "Terminé",
+    "owner": "Propriétaire",
+    "unknownOwner": "Utilisateur inconnu",
+    "ownerOnlyTooltip": "Seul {{owner}} peut émettre ou renouveler des clés",
+    "ownerOnlyScopeTooltip": "Seul {{owner}} peut ajouter des portées",
+    "ownerOnlyEditNotice": "Vous pouvez renommer, restreindre ou raccourcir ce principal. Seul {{owner}} peut ajouter des portées, prolonger son expiration ou assouplir ses IP sources.",
+    "ownerOnlyWidening": "Seul {{owner}} peut prolonger l'expiration ou assouplir les IP sources. Annulez ces modifications pour enregistrer."
   },
   "language": {
     "title": "Langue",
@@ -1342,6 +1348,9 @@
       "invoice_number": "Numéro de facture",
       "due_date": "Date d'échéance",
       "invite_url": "URL d'invitation",
+      "name": "Nom du destinataire",
+      "inviter_name": "Nom de l'expéditeur de l'invitation",
+      "expires_days": "Jours avant l'expiration de l'invitation",
       "cta_button": "Bouton",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",

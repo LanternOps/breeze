@@ -315,6 +315,18 @@ vi.mock('../../middleware/agentAuth', () => ({
   DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
 }));
 
+// #7970 — the UniFi collector presence probe. A real (registered, so reset per
+// test) TTL cache; only the SQL probe is a mock.
+const deviceHasAgentCollectorsMock = vi.hoisted(() => vi.fn(async (_db: unknown, _deviceId: string, _orgId: string) => false));
+vi.mock('../../services/unifi/unifiCollectorService', async () => {
+  const { HotPathTtlCache } = await import('../../services/hotPathCache');
+  return {
+    agentCollectorAbsenceCache: new HotPathTtlCache<string, boolean>({ name: 'unifi-agent-collector-absence', ttlMs: 300_000, maxEntries: 100 }),
+    agentCollectorAbsenceKey: (deviceId: string, orgId: string) => `${orgId}:${deviceId}`,
+    deviceHasAgentCollectors: deviceHasAgentCollectorsMock,
+  };
+});
+
 vi.mock('../../services/agentEditionAutoMigrate', () => ({
   maybeDispatchEditionMigration: vi.fn().mockResolvedValue(undefined),
   // Permissive default so the launch-gating tests below control it explicitly.
@@ -4567,8 +4579,9 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the probe's cache-miss savepoint; the helper resolves in memory.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
+    // hierarchy/set savepoint + the policy probe's and the UniFi collector
+    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {
@@ -8278,5 +8291,77 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const body = (await resp.json()) as Record<string, unknown>;
     expect(Object.keys(body)).toContain('configUpdate');
     expect(Object.keys(body)).toContain('manifestTrustKeys');
+  });
+});
+
+describe('POST /agents/:id/heartbeat — UniFi collector presence hint (#7970)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    deviceHasAgentCollectorsMock.mockReset();
+  });
+
+  async function beatConfig(): Promise<Record<string, unknown>> {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    return (((await resp.json()) as Record<string, unknown>).configUpdate ?? {}) as Record<string, unknown>;
+  }
+
+  it('sends true for a collector device, probing by the token org and device inside a savepoint of the policy context', async () => {
+    deviceHasAgentCollectorsMock.mockImplementation(async () => {
+      callOrder.push('unifi:probe');
+      return true;
+    });
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(true);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledWith(expect.anything(), 'device-1', 'org-1');
+    const probe = callOrder.indexOf('unifi:probe');
+    expect(callOrder[probe - 1]).toBe('savepoint');
+    expect(probe).toBeGreaterThan(callOrder.lastIndexOf('dbContext:opened'));
+    expect(probe).toBeLessThan(callOrder.lastIndexOf('dbContext:released'));
+  });
+
+  it('sends false for a collector-less device and serves later beats from the shared negative cache', async () => {
+    deviceHasAgentCollectorsMock.mockResolvedValue(false);
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(false);
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1', osType: 'windows',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto', agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(false);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches "present": a collector device probes on every beat', async () => {
+    deviceHasAgentCollectorsMock.mockResolvedValue(true);
+    await beatConfig();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1', osType: 'windows',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto', agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(true);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('omits the key (agent: no change) when the probe fails, and still delivers the heartbeat', async () => {
+    const { captureException } = await import('../../services/sentry');
+    deviceHasAgentCollectorsMock.mockRejectedValue(new Error('probe failed'));
+    const config = await beatConfig();
+    expect(config).not.toHaveProperty('unifi_collectors_assigned');
+    expect(captureException).toHaveBeenCalled();
   });
 });

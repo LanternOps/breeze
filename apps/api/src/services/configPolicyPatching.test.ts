@@ -252,6 +252,58 @@ describe('loadPolicyLocalPatchConfig', () => {
     ]);
   });
 
+  // #8030: the columns must reach the effective settings, and an invalid stored
+  // value must be dropped (and reported) rather than failing the whole policy.
+  const promptRow = (prompt: Record<string, unknown>) => ({
+    configPolicyId: 'policy-1',
+    configPolicyName: 'Policy 1',
+    orgId: 'org-1',
+    featureLinkId: 'link-1',
+    featurePolicyId: null,
+    storedInlineSettings: {},
+    patchSettings: {
+      sources: ['os'],
+      autoApprove: false,
+      autoApproveSeverities: [],
+      scheduleFrequency: 'daily',
+      scheduleTime: '03:00',
+      scheduleDayOfWeek: 'mon',
+      scheduleDayOfMonth: 10,
+      rebootPolicy: 'if_required',
+      rebootPromptTitle: null,
+      rebootPromptBody: null,
+      rebootPromptButton: null,
+      ...prompt,
+    },
+  });
+
+  it('surfaces the restart-prompt text columns (#8030)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([promptRow({
+      rebootPromptTitle: 'Neustart', rebootPromptBody: 'In {{countdown}}', rebootPromptButton: 'Jetzt',
+    })]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.rebootPromptTitle).toBe('Neustart');
+    expect(result?.settings.rebootPromptBody).toBe('In {{countdown}}');
+    expect(result?.settings.rebootPromptButton).toBe('Jetzt');
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('drops an invalid stored prompt column instead of failing the policy load (#8030)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([promptRow({
+      rebootPromptTitle: 'Neustart', rebootPromptBody: 'Hi <b>', rebootPromptButton: 'x'.repeat(41),
+    })]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.rebootPromptTitle).toBe('Neustart');
+    expect(result?.settings.rebootPromptBody).toBeNull();
+    expect(result?.settings.rebootPromptButton).toBeNull();
+    expect(result?.settings.scheduleTime).toBe('03:00');
+    expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces exclusiveWindowsUpdate from the normalized column (#1872)', async () => {
     vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
       configPolicyId: 'policy-1',
