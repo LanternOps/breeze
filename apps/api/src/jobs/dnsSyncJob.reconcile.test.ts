@@ -1,8 +1,9 @@
 /**
- * #8404 — processPolicySync must reconcile the FULL policy domain list, not
- * just the delta queued by the edit. Domains left `pending` before #8337
- * (when sync-policy jobs never enqueued) would otherwise never reach the
- * provider while the policy flips to `synced`. Provider calls are mocked.
+ * #8404 — processPolicySync must push domains the provider has never seen
+ * (never-synced / failed-last-sync policy), not just the queued delta, but a
+ * healthy policy edit stays delta-only (no re-adds). Unsynced = addedAt after
+ * last_synced (sync_status is reset to pending by every edit, so unusable).
+ * Provider calls are mocked.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,11 +40,19 @@ function selectReturning(rows: unknown[]) {
   return chain;
 }
 
-function setup(type: 'blocklist' | 'allowlist', domains: string[]) {
+const T0 = new Date('2026-10-01T00:00:00.000Z');
+const BEFORE = '2026-09-30T00:00:00.000Z'; // already synced at T0
+const AFTER = '2026-10-02T00:00:00.000Z'; // added after last sync
+
+function setup(
+  type: 'blocklist' | 'allowlist',
+  domains: Array<string | { domain: string; addedAt: string }>,
+  lastSynced: Date | null = null
+) {
   mockDb.select.mockReturnValue(
     selectReturning([
       {
-        policy: { id: 'pol-1', type, domains: domains.map((domain) => ({ domain })) },
+        policy: { id: 'pol-1', type, domains: domains.map((d) => (typeof d === 'string' ? { domain: d } : d)), lastSynced },
         integration: { id: 'int-1', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: 's', config: {} },
       },
     ]),
@@ -69,8 +78,8 @@ beforeEach(() => {
   }));
 });
 
-describe('processPolicySync full reconcile (#8404)', () => {
-  it('pushes previously-pending domains even when the job carries only a delta', async () => {
+describe('processPolicySync reconcile (#8404)', () => {
+  it('never-synced policy: pushes previously-pending domains even when the job carries only a delta', async () => {
     const provider = setup('blocklist', ['old-pending.example', 'also-pending.example', 'new.example']);
 
     const res = await processPolicySync({
@@ -133,5 +142,55 @@ describe('processPolicySync full reconcile (#8404)', () => {
 
     expect(setCalls.some((p) => p.syncStatus === 'error')).toBe(true);
     expect(setCalls.some((p) => p.syncStatus === 'synced')).toBe(false);
+  });
+
+  it('healthy policy edit (all other domains synced) pushes the delta only — no re-adds', async () => {
+    const provider = setup(
+      'blocklist',
+      [
+        { domain: 'old-1.example', addedAt: BEFORE },
+        { domain: 'old-2.example', addedAt: BEFORE },
+        { domain: 'new.example', addedAt: AFTER },
+      ],
+      T0
+    );
+
+    const res = await processPolicySync({
+      type: 'sync-policy',
+      policyId: 'pol-1',
+      operations: { add: ['new.example'], remove: [] },
+    });
+
+    expect(provider.addBlocklistDomain.mock.calls.map((c) => c[0])).toEqual(['new.example']);
+    expect(res.added).toBe(1);
+  });
+
+  it('domains added after last_synced (failed/pending backlog) are reconciled with the delta', async () => {
+    const provider = setup(
+      'blocklist',
+      [
+        { domain: 'synced.example', addedAt: BEFORE },
+        { domain: 'backlog.example', addedAt: AFTER },
+        { domain: 'new.example', addedAt: AFTER },
+      ],
+      T0
+    );
+
+    await processPolicySync({
+      type: 'sync-policy',
+      policyId: 'pol-1',
+      operations: { add: ['new.example'], remove: [] },
+    });
+
+    expect(provider.addBlocklistDomain.mock.calls.map((c) => c[0]).sort()).toEqual(['backlog.example', 'new.example']);
+  });
+
+  it('stamps last_synced with the run start so a domain added mid-run stays unsynced', async () => {
+    setup('blocklist', [{ domain: 'a.example', addedAt: BEFORE }], T0);
+    const before = Date.now();
+    await processPolicySync({ type: 'sync-policy', policyId: 'pol-1', operations: { add: ['a.example'], remove: [] } });
+    const synced = setCalls.find((p) => p.syncStatus === 'synced');
+    expect((synced?.lastSynced as Date).getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect((synced?.lastSynced as Date).getTime()).toBeLessThanOrEqual(Date.now());
   });
 });

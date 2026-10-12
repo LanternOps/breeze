@@ -257,6 +257,25 @@ function normalizePolicyDomains(value: unknown): string[] {
   return output;
 }
 
+/**
+ * Policy domains the provider may not have seen: never-synced policy, or a
+ * domain whose `addedAt` is after `lastSynced` (or unparseable). Pure.
+ */
+export function unsyncedPolicyDomains(value: unknown, lastSynced: Date | null | undefined): string[] {
+  if (!Array.isArray(value)) return [];
+  const cutoff = lastSynced ? lastSynced.getTime() : null;
+  const out: string[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const entry = item as DnsPolicyDomain;
+    const domain = normalizeDomain(entry.domain);
+    if (!domain) continue;
+    const added = entry.addedAt ? Date.parse(entry.addedAt) : NaN;
+    if (cutoff === null || Number.isNaN(added) || added > cutoff) out.push(domain);
+  }
+  return out;
+}
+
 function normalizeDomainList(domains: string[] | undefined): string[] {
   if (!Array.isArray(domains)) return [];
   const seen = new Set<string>();
@@ -810,6 +829,9 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
   }
 
   const config = parseIntegrationConfig(row.integration.config);
+  // Stamped as last_synced on success: a domain added while this run is in
+  // flight has addedAt > this, so the next run still treats it as unsynced.
+  const syncStartedAt = new Date();
 
   try {
     const provider = createDnsProvider({
@@ -819,14 +841,27 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
       config
     });
 
-    // #8404: always reconcile the FULL policy list (idempotent adds), never
-    // just the queued delta. Before #8337 policy sync jobs never enqueued, so
-    // earlier edits sat `pending`; a delta-only push would reach the provider
-    // for the latest edit, then mark the whole policy `synced` while older
-    // domains were never pushed. The delta contributes only removals — minus
-    // anything still in the policy, which the full add list is authoritative for.
-    const addDomains = normalizePolicyDomains(row.policy.domains);
-    const stillPresent = new Set(addDomains);
+    // #8404: reconcile only what the provider has not seen. Before #8337 policy
+    // sync jobs never enqueued, so earlier edits sat unsynced; a delta-only push
+    // would reach the provider for the latest edit, then mark the whole policy
+    // `synced` while older domains were never pushed. `sync_status` cannot tell
+    // us (every edit resets it to `pending`), so we compare each domain's
+    // `addedAt` against `last_synced`: a healthy policy yields no backlog and
+    // keeps today's delta-only push (no re-adds, O(delta) provider calls). A
+    // never-synced policy, or one whose last attempt failed (last_synced is not
+    // advanced on error), carries a backlog that is pushed alongside the delta.
+    const policyDomains = normalizePolicyDomains(row.policy.domains);
+    const stillPresent = new Set(policyDomains);
+    let addDomains: string[];
+    if (data.operations) {
+      const wanted = new Set([
+        ...normalizeDomainList(data.operations.add),
+        ...unsyncedPolicyDomains(row.policy.domains, row.policy.lastSynced)
+      ]);
+      addDomains = policyDomains.filter((domain) => wanted.has(domain));
+    } else {
+      addDomains = policyDomains;
+    }
     const removeDomains = data.operations
       ? normalizeDomainList(data.operations.remove).filter((domain) => !stillPresent.has(domain))
       : [];
@@ -857,7 +892,7 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
         .update(dnsPolicies)
         .set({
           syncStatus: 'synced',
-          lastSynced: new Date(),
+          lastSynced: syncStartedAt,
           syncError: null,
           updatedAt: new Date()
         })
