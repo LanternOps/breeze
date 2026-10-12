@@ -126,6 +126,11 @@ func fillFromResult(rep *RuntimeReport, res Result) {
 	default:
 		rep.Collection, res.Error = CollectionError, "invalid_collection_state"
 	}
+	if rep.Collection == CollectionOK && !enumeratedRuntime(rep.Runtime) {
+		// The server accepts ok only from a runtime it enumerates; containerd is
+		// detect-only in v1, so a driver claiming otherwise is a driver bug.
+		rep.Collection, res.Complete, res.Error = CollectionUnsupported, true, ""
+	}
 	rep.Complete = res.Complete
 	rep.Error = strp(sanitizeError(res.Error))
 	if rep.Collection != CollectionOK {
@@ -133,30 +138,45 @@ func fillFromResult(rep *RuntimeReport, res Result) {
 		// a failed driver from ever looking like an empty host.
 		return
 	}
-	ws := dedupeWorkloads(res.Workloads)
+	ws := boundAndDedupe(res.Workloads)
 	rep.ObservedCount = res.ObservedCount
 	if rep.ObservedCount < len(ws) {
 		rep.ObservedCount = len(ws)
 	}
 	if len(ws) > MaxWorkloadsPerRuntime {
-		ws, rep.Complete = ws[:MaxWorkloadsPerRuntime], false
+		ws, rep.Complete = ws[:MaxWorkloadsPerRuntime:MaxWorkloadsPerRuntime], false
 	}
-	rep.Workloads = make([]Workload, len(ws))
-	copy(rep.Workloads, ws)
-	for i := range rep.Workloads {
-		rep.Workloads[i].Bound()
-	}
+	rep.Workloads = ws
 }
 
-// dedupeWorkloads keeps the first occurrence of each workloadId. Drivers return
-// workloads in priority order, so the first one is the one worth reporting; the
-// API rejects a whole report that repeats an id within a runtime.
-func dedupeWorkloads(ws []Workload) []Workload {
+// enumeratedRuntime mirrors WORKLOAD_ENUMERATED_RUNTIMES on the server.
+func enumeratedRuntime(r Runtime) bool {
+	switch r {
+	case RuntimeDocker, RuntimePodman, RuntimeHyperV, RuntimeProxmox:
+		return true
+	}
+	return false
+}
+
+// boundAndDedupe returns a bounded copy of ws that the ingest schema accepts as
+// a whole: every workload has a non-empty id and name, and each id appears
+// once. Bounding runs first because two ids that differ only past the bound are
+// the same id to the server. A workload with no usable id cannot be keyed and
+// is dropped; one with no name is named after its id. Drivers return workloads
+// in priority order, so the first occurrence of an id is the one kept.
+func boundAndDedupe(ws []Workload) []Workload {
 	seen := make(map[string]struct{}, len(ws))
 	out := make([]Workload, 0, len(ws))
 	for _, w := range ws {
+		w.Bound()
+		if w.WorkloadID == "" {
+			continue
+		}
 		if _, dup := seen[w.WorkloadID]; dup {
 			continue
+		}
+		if w.Name == "" {
+			w.Name = clip(w.WorkloadID, 12)
 		}
 		seen[w.WorkloadID] = struct{}{}
 		out = append(out, w)

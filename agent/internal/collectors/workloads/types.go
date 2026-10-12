@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"context"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -187,10 +188,14 @@ func strp(s string) *string {
 	return &s
 }
 
-// clip truncates s to at most max bytes on a rune boundary. Bytes are at least
-// as many as characters or UTF-16 units, so a clipped value satisfies any
-// server-side length bound of the same number.
+// clip removes NUL bytes (Postgres text rejects U+0000 and the ingest schema
+// refuses any string containing one) and truncates s to at most max bytes on a
+// rune boundary. Bytes are at least as many as characters or UTF-16 units, so a
+// clipped value satisfies any server-side length bound of the same number.
 func clip(s string, max int) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
 	if len(s) <= max {
 		return s
 	}
