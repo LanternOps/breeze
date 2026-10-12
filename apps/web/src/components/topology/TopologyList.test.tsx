@@ -2,6 +2,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import TopologyList from './TopologyList';
 import { topologyGraphFixture, NODE } from './topologyFixtures';
+import { groupedGraphFixture } from './groupedGraphFixture';
 
 afterEach(cleanup);
 
@@ -155,4 +156,14 @@ it('does not name a decommissioned device as a gateway reporter (#8307)', () => 
   const row = screen.getByTestId(`topology-node-${gw.id}`).closest('tr')!;
   expect(row).toHaveTextContent('Reported by LIVE-PC');
   expect(row).not.toHaveTextContent('RETIRED-PC');
+});
+
+it('has a Declared column: Yes/No for network cards that carry a declaration, a dash for everything else', () => {
+  const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'declared', members: 1 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 1 }]);
+  render(<TopologyList graph={graph} onSelect={vi.fn()} />);
+  expect(screen.getByRole('columnheader', { name: 'Declared' })).toBeInTheDocument();
+  const cell = (label: string) => screen.getByRole('button', { name: label }).closest('tr')!.querySelector('[data-testid^="topology-declared-"]')!;
+  expect(cell('10.1.2.0/24')).toHaveTextContent('Yes');
+  expect(cell('10.1.5.0/24')).toHaveTextContent('No');
+  expect(cell('HOST-0-0')).toHaveTextContent('\u2014');
 });
