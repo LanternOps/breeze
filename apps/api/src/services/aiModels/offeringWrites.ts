@@ -392,8 +392,9 @@ export interface OfferingReference extends OfferingInUse { via: 'default' | 'fal
  * and catalog rows are 409 not_removable (a sync would re-create them; disable
  * instead); anything that still points at the row is 409 offering_in_use with
  * the list. History survives by construction: invocation-ledger and agent-run
- * offering ids carry no FK, and ai_sessions / ai_agents null their binding on
- * delete (agents are refused above, so only closed-out session snapshots).
+ * offering ids carry no FK. ai_sessions null their binding on delete (a live
+ * session then re-resolves from the assignment default, as on connection
+ * delete); ai_agents bindings are refused above rather than silently nulled.
  */
 export async function removeOffering(input: { partnerId: string; offeringId: string }): Promise<Offering> {
   return inPartnerRegistryWrite(input.partnerId, 'aiModels.removeOffering', 'Could not remove the model.', async () => {
@@ -440,8 +441,14 @@ export async function removeOffering(input: { partnerId: string; offeringId: str
       .from(aiAgents)
       .where(and(eq(aiAgents.offeringPartnerId, input.partnerId), eq(aiAgents.offeringId, id)));
     if (inUse.length > 0 || fallbackFor.length > 0 || agents.length > 0) {
+      const parts = [
+        ...inUse.map((r) => `${r.surface} (${r.level === 'org' ? 'organization' : 'partner'} ${r.via})`),
+        ...(fallbackFor.length > 0 ? [`${fallbackFor.length} model refusal fallback${fallbackFor.length > 1 ? 's' : ''}`] : []),
+        ...agents.map((r) => `agent ${r.kind}`),
+      ];
+      const shown = parts.slice(0, 5).join(', ') + (parts.length > 5 ? `, +${parts.length - 5} more` : '');
       throw new RegistryWriteError(
-        'This model is still used by a feature, a fallback list or an agent. Remove it from those first.',
+        `This model is still used by: ${shown}. Remove it from those first.`,
         'offering_in_use', 409,
         { inUse, refusalFallbackFor: fallbackFor.map((r) => r.id), agentKinds: agents.map((r) => r.kind) },
       );

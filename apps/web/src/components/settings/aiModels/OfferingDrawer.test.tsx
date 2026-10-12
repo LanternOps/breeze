@@ -229,13 +229,34 @@ describe('OfferingDrawer', () => {
         409,
       ));
       const onClose = vi.fn();
-      render(<OfferingDrawer offering={manualRow()} offerings={[]} onClose={onClose} onSaved={vi.fn()} />);
+      const onSaved = vi.fn();
+      render(<OfferingDrawer offering={manualRow()} offerings={[]} onClose={onClose} onSaved={onSaved} />);
       fireEvent.click(screen.getByTestId('ai-offering-remove'));
       fireEvent.click(screen.getByTestId('ai-offering-remove-confirm'));
       await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
         type: 'error', message: expect.stringContaining('still used'),
       })));
       expect(onClose).not.toHaveBeenCalled();
+      expect(onSaved).not.toHaveBeenCalled();
+    });
+
+    it('reloads and closes when the model was already removed elsewhere (404)', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'Model not found.', code: 'not_found' }, 404));
+      const onSaved = vi.fn();
+      const onClose = vi.fn();
+      render(<OfferingDrawer offering={manualRow()} offerings={[]} onClose={onClose} onSaved={onSaved} />);
+      fireEvent.click(screen.getByTestId('ai-offering-remove'));
+      fireEvent.click(screen.getByTestId('ai-offering-remove-confirm'));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(onSaved).toHaveBeenCalled();
+    });
+
+    it('hides Remove for platform and catalog models', () => {
+      for (const source of ['platform', 'catalog'] as const) {
+        const { unmount } = render(<OfferingDrawer offering={manualRow({ source })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+        expect(screen.queryByTestId('ai-offering-remove')).toBeNull();
+        unmount();
+      }
     });
   });
 });

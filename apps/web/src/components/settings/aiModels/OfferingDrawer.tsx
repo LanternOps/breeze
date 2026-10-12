@@ -257,8 +257,14 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
     } catch (err) {
       setConfirmRemove(false);
       if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError && err.code === 'not_found') {
+        // Already toasted: removed elsewhere. Reload so the list drops the stale row, and close.
+        await onSaved();
+        onClose();
+        return;
+      }
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.removeFailed') });
-      // other ActionErrors (in use, not found) already toasted; the drawer stays open
+      // other ActionErrors (in use, not removable) already toasted; the drawer stays open
     } finally {
       setRemoving(false);
     }

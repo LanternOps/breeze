@@ -393,7 +393,9 @@ describe('/ai/models partner routes — behaviour', () => {
   });
   it('DELETE /offerings/:id surfaces not_removable / offering_in_use / not_found from the service', async () => {
     vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'not_removable', 409));
-    expect((await call('DELETE', `/offerings/${A}`)).status).toBe(409);
+    const nr = await call('DELETE', `/offerings/${A}`);
+    expect(nr.status).toBe(409);
+    expect(await nr.json()).toMatchObject({ code: 'not_removable' });
     vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'offering_in_use', 409, { inUse: [] }));
     const res = await call('DELETE', `/offerings/${A}`);
     expect(res.status).toBe(409);
