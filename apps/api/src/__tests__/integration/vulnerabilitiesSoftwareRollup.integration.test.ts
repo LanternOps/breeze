@@ -612,5 +612,37 @@ describe('fleet software rollup (#2262)', () => {
 
     const detail = await get<{ group: { targetVersion: string | null } }>(env, `/software/${encodeURIComponent(CHROME_KEY)}`);
     expect(detail.body.group.targetVersion).toBe('141.0.10');
+
+    // A severity filter narrows the displayed CVEs, not what must be fixed:
+    // the target still clears the whole group.
+    const filtered = await get<{ items: Array<{ groupKey: string; cveCount: number; targetVersion: string | null }> }>(env, '/software?severity=critical');
+    const chrome = filtered.body.items.find((g) => g.groupKey === CHROME_KEY);
+    expect(chrome?.cveCount).toBe(1);
+    expect(chrome?.targetVersion).toBe('141.0.10');
+  });
+
+  runDb('targetVersion: vendorless software resolves through a NULL lookup_vendor (#7071)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const d1 = await seedDevice(env, 'rollup-target-nullvendor');
+    const inv = await seedInventory(env, d1, '7-Zip', null, '23.0');
+    const cve = await seedCve('CVE-2026-74001');
+    await seedFinding(env, d1, cve, { softwareInventoryId: inv });
+    const [product] = await getTestDb()
+      .insert(softwareProducts)
+      .values({ normalizedName: `7-zip ${Date.now()}`, normalizedVendor: null })
+      .returning({ id: softwareProducts.id });
+    await getTestDb().insert(softwareProductResolutions).values({
+      lookupName: '7-zip',
+      lookupVendor: null,
+      normalizedName: '7-zip',
+      softwareProductId: product!.id,
+      confidence: 'authoritative',
+      matchedVia: 'test',
+      resolverVersion: 1,
+      resolvedAt: new Date(),
+    });
+    await getTestDb().insert(softwareVulnerabilities).values({ productId: product!.id, vulnerabilityId: cve, versionEndExcluding: '23.01' });
+    const list = await get<{ items: Array<{ groupKey: string; targetVersion: string | null }> }>(env, '/software');
+    expect(list.body.items.find((g) => g.groupKey === 'sw:7-zip|')?.targetVersion).toBe('23.01');
   });
 });
