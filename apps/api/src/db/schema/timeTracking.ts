@@ -107,9 +107,10 @@ export const timeEntries = pgTable('time_entries', {
   source: varchar('source', { length: 24 }).notNull().default('manual'),
   // #4186 OD-5: informational only; FK time_entries_site_id_fkey ON DELETE SET
   // NULL. A plain FK, not a tenant FK, so nothing in the database keeps the
-  // site in the entry's org: the two org movers re-point it in the same
-  // statement that re-stamps org_id (#8356 — device move → the device's target
-  // site, ticket move → NULL). Any reader that resolves a site from
+  // site in the entry's org: the device and ticket org movers re-point it in
+  // the same statement that re-stamps org_id (#8356 — device move → the
+  // device's target site, ticket move → NULL); org merge needs nothing, since
+  // the loser's sites move with it. Any reader that resolves a site from
   // time_entries.site_id must still require sites.org_id = time_entries.org_id
   // before trusting it (rows written before #8356 may predate the fix).
   siteId: uuid('site_id').references(() => sites.id, { onDelete: 'set null' }),
