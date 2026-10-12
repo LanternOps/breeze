@@ -737,6 +737,8 @@ export async function recordAutomationActionDispatch(input: {
 /** #3189 — what a replaying attempt needs to reuse an already-claimed action. */
 export type AutomationActionLedgerState = {
   status: AutomationActionResultStatus;
+  /** Who terminalised the row; `dispatch` means the runtime's own dispatch path. */
+  terminalSource: AutomationActionTerminalSource | null;
   commandId: string | null;
   scriptExecutionId: string | null;
   deploymentResultId: string | null;
@@ -754,6 +756,7 @@ async function readLedgerStates(
   const rows = await db.select({
     deviceId: automationActionResults.deviceId,
     status: automationActionResults.status,
+    terminalSource: automationActionResults.terminalSource,
     commandId: automationActionResults.commandId,
     scriptExecutionId: automationActionResults.scriptExecutionId,
     deploymentResultId: automationActionResults.deploymentResultId,
@@ -883,12 +886,16 @@ export async function claimAutomationActionDispatches(input: {
  * A single compare-and-swap: the UPDATE that sets `failure_notified_at` is the
  * statement that decides to send, so of any number of attempts of the same run
  * (a first attempt, a stalled-job replay, two of them racing) exactly one wins
- * and sends. Returns true when this caller won and must send.
+ * and sends. Returns `claimed` when this caller won and must send,
+ * `already_claimed` when another attempt did, and `missing` when the action
+ * has no ledger row (nothing can deduplicate the send, so the caller must not
+ * send and should report it).
  *
- * Claimed before sending: a worker that dies after this commits but before the
- * channel accepts the message still loses that alert. That window is the claim
- * statement to the send, not (as before) everything between recording the
- * failure and sending.
+ * Claimed before sending, and never released: a worker that dies after this
+ * commits but before the channel accepts the message, or a send the channel
+ * rejects, still loses that alert. The claim narrows the crash window to the
+ * claim statement to the send, not (as before) everything between recording
+ * the failure and sending. Delivery retries are not this claim's job.
  *
  * Always runs in its own system-scoped transaction (never an ambient one), and
  * locks only this one action row, so it cannot join the run-then-action lock
@@ -901,18 +908,22 @@ export async function claimAutomationFailureNotification(input: {
   runId: string;
   deviceId: string;
   actionIndex: number;
-}): Promise<boolean> {
+}): Promise<'claimed' | 'already_claimed' | 'missing'> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const where = and(
+      eq(automationActionResults.runId, input.runId),
+      eq(automationActionResults.deviceId, input.deviceId),
+      eq(automationActionResults.actionIndex, input.actionIndex),
+    );
     const won = await db.update(automationActionResults)
       .set({ failureNotifiedAt: new Date() })
-      .where(and(
-        eq(automationActionResults.runId, input.runId),
-        eq(automationActionResults.deviceId, input.deviceId),
-        eq(automationActionResults.actionIndex, input.actionIndex),
-        isNull(automationActionResults.failureNotifiedAt),
-      ))
+      .where(and(where, isNull(automationActionResults.failureNotifiedAt)))
       .returning({ id: automationActionResults.id });
-    return won.length === 1;
+    if (won.length === 1) return 'claimed';
+    // Lost the CAS, or there is no row to claim. Only the first is a dedupe.
+    const [row] = await db.select({ id: automationActionResults.id })
+      .from(automationActionResults).where(where).limit(1);
+    return row ? 'already_claimed' : 'missing';
   }));
 }
 

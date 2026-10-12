@@ -125,9 +125,13 @@ async function fixture() {
 }
 
 /** The first attempt recorded action 0 as failed, then died before notifying. */
-async function failFirstActionWithoutNotifying(runId: string, deviceId: string) {
+async function failFirstActionWithoutNotifying(
+  runId: string,
+  deviceId: string,
+  terminalSource: 'dispatch' | 'command' = 'dispatch',
+) {
   await getTestDb().update(automationActionResults)
-    .set({ status: 'failed', message: 'Synthetic dispatch failure', completedAt: new Date() })
+    .set({ status: 'failed', terminalSource, message: 'Synthetic failure', completedAt: new Date() })
     .where(and(
       eq(automationActionResults.runId, runId),
       eq(automationActionResults.deviceId, deviceId),
@@ -158,13 +162,19 @@ describe('automation on-failure notification is sent once — real PostgreSQL (#
       actionIndex: 0,
     })));
 
-    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(results.filter((r) => r === 'claimed')).toHaveLength(1);
+    expect(results.filter((r) => r === 'already_claimed')).toHaveLength(7);
     expect(await notifiedAt(f.runId, f.deviceId, 0)).not.toBeNull();
     expect(await claimAutomationFailureNotification({
       runId: f.runId,
       deviceId: f.deviceId,
       actionIndex: 0,
-    })).toBe(false);
+    })).toBe('already_claimed');
+    expect(await claimAutomationFailureNotification({
+      runId: f.runId,
+      deviceId: f.deviceId,
+      actionIndex: 7,
+    })).toBe('missing');
     // The claim is per action row: the device's other action is untouched.
     expect(await notifiedAt(f.runId, f.deviceId, 1)).toBeNull();
   });
@@ -188,5 +198,17 @@ describe('automation on-failure notification is sent once — real PostgreSQL (#
     // A further replay finds the notification claimed and sends nothing.
     await executeAutomationRun(f.runId, [f.deviceId]);
     expect(sendWebhookNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  runDb('a replay never pages for an agent-reported failure the first attempt would not have notified', async () => {
+    sendWebhookNotificationMock.mockReset();
+    sendWebhookNotificationMock.mockResolvedValue({ success: true });
+    const f = await fixture();
+    await failFirstActionWithoutNotifying(f.runId, f.deviceId, 'command');
+
+    await executeAutomationRun(f.runId, [f.deviceId]);
+
+    expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+    expect(await notifiedAt(f.runId, f.deviceId, 0)).toBeNull();
   });
 });
