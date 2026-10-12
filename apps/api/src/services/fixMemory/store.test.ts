@@ -49,8 +49,8 @@ vi.mock('./signatureLoader', () => sigMock);
 
 import {
   clearOrgErasureRequest, fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure,
-  markOwnerDriftStale, markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity, rebuildFixMemory,
-  retireFixMemory, stalePartnerIds, transitionOutcome, type ContributingRow,
+  deleteDeviceFixOutcomes, markOwnerDriftStale, markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity,
+  rebuildFixMemory, retireFixMemory, stalePartnerIds, stampRebuildAttempt, transitionOutcome, type ContributingRow,
 } from './store';
 
 /** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
@@ -244,6 +244,14 @@ describe('markFixMemoryStaleForOrgErasure — identity locks before the UPDATE (
     expect(q.sql.toLowerCase()).toContain('"id" in');
   });
 
+  it('matches contributions on the FULL identity, signature_version included (#7278)', async () => {
+    selectRows.push([{ partnerId: 'p-1' }]);
+    selectRows.push([]);
+    await markFixMemoryStaleForOrgErasure('org-a');
+    const text = flatten(selectWheres[1]).text.replace(/\s+/g, ' ').toLowerCase();
+    expect(text).toContain('o.signature_version = fix_memory.signature_version');
+  });
+
   it('does nothing — no locks, no update — when the org has no matching fix_memory rows', async () => {
     selectRows.push([{ partnerId: 'p-1' }]);
     selectRows.push([]); // no targets
@@ -322,14 +330,111 @@ describe('clearOrgErasureRequest — undo the pre-cascade mark when the cascade 
   });
 });
 
-describe('stalePartnerIds — oldest stale first, so held/poison partners cannot starve the retry pass (I1b)', () => {
-  it('orders by the oldest stale_since (NULLS LAST) then partner id, before the LIMIT', async () => {
-    executeRows.push([{ partner_id: 'p-old' }, { partner_id: 'p-new' }]);
-    expect(await stalePartnerIds(20)).toEqual(['p-old', 'p-new']);
+describe('stalePartnerIds — least-recently-attempted first, so stuck partners cannot starve the retry pass (#7278)', () => {
+  it('orders by the last rebuild attempt (never-attempted first), then oldest stale_since, then partner id, before the LIMIT', async () => {
+    executeRows.push([{ partner_id: 'p-never' }, { partner_id: 'p-old' }]);
+    expect(await stalePartnerIds(20)).toEqual(['p-never', 'p-old']);
     const q = flatten(executeMock.mock.calls[0]![0]);
     const text = q.text.replace(/\s+/g, ' ').toLowerCase();
-    expect(text).toMatch(/order by min\(m\.stale_since\) asc nulls last, partner_id asc limit/);
+    // Oldest-stale-first alone let partners that can never be un-staled (a
+    // pending request for an org whose erasure keeps failing) hold every slot.
+    expect(text).toMatch(/order by min\(m\.rebuild_attempted_at\) asc nulls first, min\(m\.stale_since\) asc nulls last, partner_id asc limit/);
     expect(q.params).toEqual([20]);
+  });
+});
+
+describe('stampRebuildAttempt — records the attempt in its own transaction so a failing rebuild still rotates', () => {
+  it('locks the partner\'s candidate identities (sorted) and stamps exactly those rows', async () => {
+    selectRows.push([
+      { id: 'm-2', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' },
+      { id: 'm-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' },
+    ]);
+    executeRows.push([], []);
+    const now = new Date('2026-12-22T00:00:00Z');
+    expect(await stampRebuildAttempt('p-1', now)).toBe(2);
+    // The second 'select' is partnerScope's organizations subquery (never awaited).
+    expect(calls).toEqual(['select', 'select', 'execute', 'execute', 'update']);
+    const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' });
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(keyA);
+    expect(flatten(executeMock.mock.calls[1]![0]).params).toContain(keyB);
+    // Only the attempt stamp: never stale_since / the pending requests.
+    expect(Object.keys(updates.at(-1)!.set)).toEqual(['rebuildAttemptedAt']);
+    expect(updates.at(-1)!.set.rebuildAttemptedAt).toBe(now);
+    expect(new PgDialect().sqlToQuery(updates.at(-1)!.where as never).sql.toLowerCase()).toContain('"id" in');
+    // Candidates only: stale or carrying a pending erasure request.
+    const where = flatten(selectWheres.at(-1)).text.replace(/\s+/g, ' ').toLowerCase();
+    expect(where).toContain('is not null');
+    expect(where).toContain('cardinality(');
+    expect(where).toContain(') > 0');
+  });
+
+  it('does nothing when the partner has no candidate rows', async () => {
+    selectRows.push([]);
+    expect(await stampRebuildAttempt('p-1')).toBe(0);
+    expect(calls).toEqual(['select', 'select']);
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
+
+  it('refuses outside system scope', async () => {
+    dbAccessContextMock.mockReturnValue({ scope: 'organization' });
+    await expect(stampRebuildAttempt('p-1')).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('deleteDeviceFixOutcomes — a device delete stale-marks the identities it removes proof from (#7278)', () => {
+  const tx = { execute: vi.fn() };
+  const outcome = (over: Record<string, unknown> = {}) => ({
+    partner_id: 'p-1', signature_version: 1, signature_key: 'a'.repeat(64), os_type: 'windows', fix_identity: 'script_version:v1',
+    counted_at: new Date('2026-12-01T00:00:00Z'), ...over,
+  });
+  beforeEach(() => { tx.execute.mockReset().mockResolvedValue([]); });
+
+  it('deletes first, then locks each COUNTED identity (sorted, once) and stale-marks that identity across the partner', async () => {
+    tx.execute.mockResolvedValueOnce([
+      outcome({ signature_key: 'b'.repeat(64) }),
+      outcome(),
+      outcome(), // same identity twice: one lock, one mark
+      outcome({ counted_at: null, signature_key: 'c'.repeat(64) }), // uncounted: contributes nothing
+      outcome({ signature_key: null, fix_identity: null }), // unsigned: never aggregated
+    ]);
+    const now = new Date('2026-12-22T00:00:00Z');
+    expect(await deleteDeviceFixOutcomes(tx, 'dev-1', now)).toEqual({ deleted: 5, identitiesMarked: 2 });
+    const stmts = tx.execute.mock.calls.map((c) => flatten(c[0]));
+    // 1 DELETE ... RETURNING, 2 advisory locks, 2 marks.
+    expect(stmts).toHaveLength(5);
+    expect(stmts[0]!.text.replace(/\s+/g, ' ').toLowerCase()).toMatch(/delete from fix_outcomes where device_id = returning partner_id, signature_version, signature_key, os_type, fix_identity, counted_at/);
+    expect(stmts[0]!.params).toEqual(['dev-1']);
+    const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    expect(stmts[1]!.text).toContain('pg_advisory_xact_lock');
+    expect(stmts[1]!.params).toEqual([keyA]);
+    expect(stmts[2]!.params).toEqual([keyB]);
+    for (const mark of stmts.slice(3)) {
+      const text = mark.text.replace(/\s+/g, ' ').toLowerCase();
+      expect(text).toContain('update fix_memory');
+      expect(text).toContain('stale_since = coalesce(stale_since,');
+      // Partner-owned AND org-owned rows of the identity, like recomputeIdentity's scope.
+      expect(text).toContain('partner_id =');
+      expect(text).toContain('org_id in (select id from organizations where partner_id =');
+      expect(text).toContain('signature_version =');
+    }
+    expect(stmts[3]!.params).toContain('a'.repeat(64));
+    expect(stmts[4]!.params).toContain('b'.repeat(64));
+  });
+
+  it('deletes and marks nothing else when the device has no counted outcomes', async () => {
+    tx.execute.mockResolvedValueOnce([outcome({ counted_at: null })]);
+    expect(await deleteDeviceFixOutcomes(tx, 'dev-1')).toEqual({ deleted: 1, identitiesMarked: 0 });
+    expect(tx.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses outside system scope, before deleting anything', async () => {
+    dbAccessContextMock.mockReturnValue({ scope: 'organization' });
+    await expect(deleteDeviceFixOutcomes(tx, 'dev-1')).rejects.toThrow(/system-scoped/);
+    expect(tx.execute).not.toHaveBeenCalled();
   });
 });
 
@@ -401,6 +506,20 @@ describe('system-scope guard — every fix_memory writer requires an open system
     outsideSystem();
     await expect(markOwnerDriftStale()).rejects.toThrow(/system-scoped/);
     expect(calls).toHaveLength(0);
+  });
+
+  it('recomputeIdentity refuses outside system scope (#7278)', async () => {
+    outsideSystem();
+    await expect(recomputeIdentity({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'k', osType: 'windows', fixIdentity: 'x' }, new Date()))
+      .rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('fillOutcomeSignature refuses outside system scope (#7278)', async () => {
+    outsideSystem();
+    await expect(fillOutcomeSignature({ id: 'o-1', signatureKey: null } as never, new Date())).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+    expect(sigMock.sourceRefFor).not.toHaveBeenCalled();
   });
 
   it('markPartnerFixMemoryStale refuses outside system scope', async () => {

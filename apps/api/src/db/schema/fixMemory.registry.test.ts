@@ -88,7 +88,7 @@ describe('fix memory schema contract', () => {
       'fixIdentity', 'scriptId', 'scriptVersionId', 'builtinAction', 'playbookId', 'instructionsRef',
       'attempts', 'verifiedCount', 'failedCount', 'recurredCount', 'upVotes', 'downVotes',
       'rollingSuccessRate', 'consecutiveFailures', 'consecutiveVerified', 'recentOutcomes', 'status',
-      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'createdAt', 'updatedAt',
+      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'rebuildAttemptedAt', 'createdAt', 'updatedAt',
     ]) expect(fixMemory, `fixMemory.${key}`).toHaveProperty(key);
   });
 });
