@@ -2178,14 +2178,45 @@ describe('device commands routes', () => {
       expect(propagateTimedOutDeviceCommand).not.toHaveBeenCalled();
     });
 
-    it('409s TOO_RECENT for a sent row with no delivery time (age unknown)', async () => {
-      rig({ existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: null } });
+    it('a legacy sent row with no executed_at is aged from created_at, like the reaper does', async () => {
+      rig({
+        existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: null, createdAt: stale() },
+        updated: { id: COMMAND_ID },
+      });
+
+      const res = await post();
+
+      expect(res.status).toBe(200);
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a legacy sent row with no executed_at and a recent created_at is TOO_RECENT, with a reachable eligibleAt', async () => {
+      const createdAt = new Date(Date.now() - 60_000);
+      rig({ existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: null, createdAt } });
 
       const res = await post();
 
       expect(res.status).toBe(409);
-      expect((await res.json()).code).toBe('TOO_RECENT');
+      const body = await res.json();
+      expect(body.code).toBe('TOO_RECENT');
+      expect(body.eligibleAt).toBe(new Date(createdAt.getTime() + MARK_FAILED_MIN_AGE_MS).toISOString());
       expect(txUpdate).not.toHaveBeenCalled();
+    });
+
+    it('is refused just under ten minutes and allowed at ten', async () => {
+      rig({
+        existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: new Date(Date.now() - MARK_FAILED_MIN_AGE_MS + 5_000) },
+      });
+      expect((await post()).status).toBe(409);
+
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: DEVICE_ID, orgId: 'org-123', siteId: 'site-allowed', hostname: 'host-a', status: 'online',
+      } as never);
+      rig({
+        existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: new Date(Date.now() - MARK_FAILED_MIN_AGE_MS) },
+        updated: { id: COMMAND_ID },
+      });
+      expect((await post()).status).toBe(200);
     });
 
     it('409s and does NOT propagate or audit when the CAS loses (the result landed first)', async () => {

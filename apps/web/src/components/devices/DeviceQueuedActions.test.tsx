@@ -330,6 +330,32 @@ describe('DeviceQueuedActions', () => {
       expect(screen.queryByTestId('power-hold-banner')).toBeNull();
     });
 
+    it('offers Mark failed at exactly ten minutes', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'reboot' })],
+        sent: [sentCommand({ executedAt: minutesAgo(10) })],
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('power-hold-banner');
+      expect(screen.getByTestId('power-hold-mark-failed')).toBeTruthy();
+    });
+
+    it('a failed running-commands load hides the banner but keeps the queued list (no error state)', async () => {
+      fetchWithAuthMock.mockImplementation(async (input: string) => {
+        if (String(input).includes('status=sent')) return jsonResponse({ error: 'boom' }, 500);
+        return jsonResponse({ data: [queuedCommand({ type: 'reboot' })] });
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      const row = await screen.findByTestId('queued-action-row');
+      expect(row.textContent).toContain('Reboot');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+      expect(screen.queryByTestId('queued-actions-retry')).toBeNull();
+    });
+
     it('shows no banner when nothing is running on the device', async () => {
       routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [] });
 

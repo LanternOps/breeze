@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { eq, sql, desc, and } from 'drizzle-orm';
+import { eq, sql, desc, and, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runAfterDbContextCommit } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
@@ -1119,6 +1119,10 @@ export const MARK_FAILED_MIN_AGE_MS = 10 * 60 * 1000;
 // Same permission as issuing or cancelling a command. CAS on the observed
 // (status='sent', executed_at) so a result landing between the read and the
 // write is a 409, never overwritten.
+//
+// Deliberately NOT limited to the types the reaper times out: the reaper
+// skips EXCLUDED_COMMAND_TYPES (terminal_*) entirely, so a reboot held behind
+// one of those has no other way out.
 commandsRoutes.post(
   '/:id/commands/:commandId/mark-failed',
   requireScope('organization', 'partner', 'system'),
@@ -1146,6 +1150,7 @@ commandsRoutes.post(
           payload: deviceCommands.payload,
           status: deviceCommands.status,
           executedAt: deviceCommands.executedAt,
+          createdAt: deviceCommands.createdAt,
         })
         .from(deviceCommands)
         .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
@@ -1155,15 +1160,18 @@ commandsRoutes.post(
       if (existing.status !== 'sent') {
         return { kind: 'not_sent' as const, status: existing.status };
       }
-      // No delivery time means no age to measure; refuse rather than guess.
+      // Aged from delivery. A legacy `sent` row with no executed_at is aged
+      // from creation instead — the reaper's own fallback for that shape, and
+      // what the device page shows — so its eligibility is always reachable.
       const executedAt = existing.executedAt;
+      const startedAt = executedAt ?? existing.createdAt;
       const now = Date.now();
-      if (!executedAt || now - executedAt.getTime() < MARK_FAILED_MIN_AGE_MS) {
-        const eligibleAt = new Date((executedAt?.getTime() ?? now) + MARK_FAILED_MIN_AGE_MS);
+      if (now - startedAt.getTime() < MARK_FAILED_MIN_AGE_MS) {
+        const eligibleAt = new Date(startedAt.getTime() + MARK_FAILED_MIN_AGE_MS);
         return { kind: 'too_recent' as const, eligibleAt };
       }
 
-      const ageMs = now - executedAt.getTime();
+      const ageMs = now - startedAt.getTime();
       const errorMsg = `Marked failed by an operator: no response from agent after ${Math.floor(ageMs / 60000)} minutes`;
       const completedAt = new Date(now);
       const [row] = await tx
@@ -1185,7 +1193,7 @@ commandsRoutes.post(
             eq(deviceCommands.id, commandId),
             eq(deviceCommands.deviceId, deviceId),
             eq(deviceCommands.status, 'sent'),
-            eq(deviceCommands.executedAt, executedAt),
+            executedAt ? eq(deviceCommands.executedAt, executedAt) : isNull(deviceCommands.executedAt),
           ),
         )
         .returning({ id: deviceCommands.id });
