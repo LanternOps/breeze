@@ -30,6 +30,8 @@ import {
   configPolicyFeatureLinks,
   configPolicyPatchSettings,
   configurationPolicies,
+  deviceGroupMemberships,
+  deviceGroups,
   devices,
   patchJobs,
   patchPolicies,
@@ -223,6 +225,80 @@ describe('scheduled patch jobs honour the assignment role/OS filter (#8442)', ()
     const unfilteredJobs = await jobsForPolicy(unfiltered.policyId);
     expect(unfilteredJobs).toHaveLength(1);
     expect(targetIds(unfilteredJobs[0]!)).toEqual([linuxServer, winServer, winWorkstation].sort());
+  });
+});
+
+describe('role filter combined with other assignments / levels (#8442)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  runDb('a filtered org assignment plus an unfiltered site assignment: the union keeps the site server, each device once', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: org.id });
+    const siteB = await createSite({ orgId: org.id });
+    const wsA = await seedDevice(org.id, siteA.id, 'workstation');
+    const serverA = await seedDevice(org.id, siteA.id, 'server');
+    const wsB = await seedDevice(org.id, siteB.id, 'workstation');
+    await seedDevice(org.id, siteB.id, 'server'); // only reachable through the filtered org assignment
+
+    const { policyId, ringId } = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: org.id,
+      assignment: { level: 'organization', targetId: org.id, roleFilter: ['workstation'] },
+    });
+    await withSystemDbAccessContext(() =>
+      db.insert(configPolicyAssignments).values({ configPolicyId: policyId, level: 'site', targetId: siteA.id, priority: 1 })
+    );
+
+    const expected = [wsA, serverA, wsB].sort();
+
+    await scanAndCreateJobs();
+    const jobs = await jobsForPolicy(policyId);
+    expect(jobs).toHaveLength(1);
+    expect(targetIds(jobs[0]!)).toEqual(expected);
+
+    const counts = await withSystemDbAccessContext(() => resolveRingDeviceCounts([ringId]));
+    expect(counts.get(ringId)).toBe(3);
+  });
+
+  runDb('a Workstation-filtered DEVICE_GROUP assignment targets only the group\'s workstation', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const ws = await seedDevice(org.id, site.id, 'workstation');
+    const server = await seedDevice(org.id, site.id, 'server');
+
+    const groupId = await withSystemDbAccessContext(async () => {
+      const [group] = await db
+        .insert(deviceGroups)
+        .values({ orgId: org.id, name: `grp-${randomUUID().slice(0, 8)}`, type: 'static' })
+        .returning({ id: deviceGroups.id });
+      await db.insert(deviceGroupMemberships).values([
+        { deviceId: ws, groupId: group!.id, orgId: org.id },
+        { deviceId: server, groupId: group!.id, orgId: org.id },
+      ]);
+      return group!.id;
+    });
+
+    const { policyId, ringId } = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: org.id,
+      assignment: { level: 'device_group', targetId: groupId, roleFilter: ['workstation'] },
+    });
+
+    await scanAndCreateJobs();
+    const jobs = await jobsForPolicy(policyId);
+    expect(jobs).toHaveLength(1);
+    expect(targetIds(jobs[0]!)).toEqual([ws]);
+
+    const ids = await withSystemDbAccessContext(() => resolveRingDeviceIds(ringId));
+    expect(ids).toEqual([ws]);
   });
 });
 

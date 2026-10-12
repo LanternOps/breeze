@@ -218,6 +218,9 @@ async function selectCandidates(
     }
 
     default:
+      // config_assignment_level is a closed enum; a value with no branch here
+      // would silently stop every feature that expands it, so say so.
+      console.error(`[configPolicyAssignmentDevices] unknown assignment level '${level}' (target ${targetId}); resolved no devices`);
       return { rows: [], refusedGroups: [] };
   }
 }
