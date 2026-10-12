@@ -49,7 +49,7 @@ export class ApprovalDecisionError extends Error {
 }
 
 export type DecisionActor =
-  | { kind: 'customer'; portalUserId: string; email: string; signerName: string; ip?: string; userAgent?: string }
+  | { kind: 'customer'; portalUserId: string; signerName: string; ip?: string; userAgent?: string }
   | {
     kind: 'on_behalf'; userId: string; method: 'verbal' | 'email' | 'signed_document' | 'other';
     reference: string; signerName: string; signerEmail?: string;
@@ -194,9 +194,11 @@ export async function decideApprovalRequest(db: Tx, args: {
 
   let signerEmail: string | null = null;
   if (actor.kind === 'customer') {
-    const email = actor.email.trim().toLowerCase();
-    const [pu] = await db.select({ orgId: portalUsers.orgId }).from(portalUsers).where(eq(portalUsers.id, actor.portalUserId)).limit(1);
-    if (!pu || pu.orgId !== req.orgId || !req.approverEmails.includes(email)) {
+    // The approver identity comes from the stored portal user, never from the caller.
+    const [pu] = await db.select({ orgId: portalUsers.orgId, email: portalUsers.email, status: portalUsers.status })
+      .from(portalUsers).where(eq(portalUsers.id, actor.portalUserId)).limit(1);
+    const email = pu?.email.trim().toLowerCase() ?? '';
+    if (!pu || pu.status !== 'active' || pu.orgId !== req.orgId || !req.approverEmails.includes(email)) {
       throw new ApprovalDecisionError('You are not an approver for this request', 403, 'NOT_AN_APPROVER');
     }
     signerEmail = email;

@@ -47,8 +47,8 @@ async function logHeld(f: ApprovalFixture, minutes: number, o: { workTypeId?: st
   return e;
 }
 
-async function portalUser(orgId: string, email: string): Promise<string> {
-  const [u] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ orgId, email, name: 'Portal person' })
+async function portalUser(orgId: string, email: string, status = 'active'): Promise<string> {
+  const [u] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ orgId, email, name: 'Portal person', status })
     .returning({ id: portalUsers.id }));
   return u!.id;
 }
@@ -143,8 +143,8 @@ describe.runIf(RUN)('decideApprovalRequest — who may decide', () => {
     const notifyOnly = await portalUser(f.orgId, 'req@example.test');
     const otherOrg = await portalUser(f.otherOrgId, 'boss@example.test');
     const boss = await portalUser(f.orgId, 'Boss@Example.test');
-    const customer = (portalUserId: string, email: string): DecisionActor =>
-      ({ kind: 'customer', portalUserId, email, signerName: 'Boss', ip: '203.0.113.9', userAgent: 'vitest' });
+    const customer = (portalUserId: string, _email?: string): DecisionActor =>
+      ({ kind: 'customer', portalUserId, signerName: 'Boss', ip: '203.0.113.9', userAgent: 'vitest' });
 
     expect(await rejected(asTech(f, () => decideApprovalRequest(db, { requestId, decision: 'approved', revision: 1, actor: customer(notifyOnly, 'req@example.test') }))))
       .toMatchObject({ status: 403 });
@@ -155,6 +155,24 @@ describe.runIf(RUN)('decideApprovalRequest — who may decide', () => {
       status: 'approved', decisionOrigin: 'customer', decidedByPortalUserId: boss, signerEmail: 'boss@example.test',
       ipAddress: '203.0.113.9', userAgent: 'vitest',
     });
+  });
+
+  it('a customer actor cannot spoof an approver email, and a disabled portal user is refused', async () => {
+    const f = await seedApprovalFixture({ budgetMinutes: 60 });
+    await addContact(f, 'boss@example.test', [{ role: 'billing' }]);
+    await insertSettledEntry(f, 60);
+    const held = await logHeld(f, 30);
+    const requestId = held.approvalHold!.requestId;
+    const impostor = await portalUser(f.orgId, 'req@example.test');
+    const disabledBoss = await portalUser(f.orgId, 'boss@example.test', 'disabled');
+    // Even if a caller smuggles an approver's email in, the stored row decides.
+    const spoofed = { kind: 'customer', portalUserId: impostor, email: 'boss@example.test', signerName: 'X' } as unknown as DecisionActor;
+    expect(await rejected(asTech(f, () => decideApprovalRequest(db, { requestId, decision: 'approved', revision: 1, actor: spoofed }))))
+      .toMatchObject({ status: 403, code: 'NOT_AN_APPROVER' });
+    const disabled = { kind: 'customer', portalUserId: disabledBoss, email: 'boss@example.test', signerName: 'X' } as unknown as DecisionActor;
+    expect(await rejected(asTech(f, () => decideApprovalRequest(db, { requestId, decision: 'approved', revision: 1, actor: disabled }))))
+      .toMatchObject({ status: 403, code: 'NOT_AN_APPROVER' });
+    expect(await readRequest(requestId)).toMatchObject({ status: 'pending' });
   });
 
   it('on behalf requires a non-blank reference (400) and a non-pending request is 409', async () => {
