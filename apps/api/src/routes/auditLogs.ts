@@ -369,6 +369,30 @@ function buildSearchCondition(q: string): SQL {
   )!;
 }
 
+/**
+ * Org scope shared by the list and the export: a pinned ?orgId= narrows to that
+ * single org (caller must be able to access it), otherwise the standard
+ * accessible-org condition. `denied` mirrors the list's 403.
+ */
+function resolveListOrgScope(
+  auth: Parameters<typeof auditLogReadCondition>[0] & { canAccessOrg: (orgId: string) => boolean },
+  orgId: string | undefined
+): { denied: true } | { denied: false; orgCond: SQL | undefined } {
+  if (orgId && !auth.canAccessOrg(orgId)) return { denied: true };
+  return { denied: false, orgCond: orgId ? eq(auditLogsTable.orgId, orgId) : auditLogReadCondition(auth) };
+}
+
+/** Filter conditions plus the optional free-text `q` (search endpoint / export). */
+function buildListWhere(
+  orgCond: SQL | undefined,
+  query: Parameters<typeof buildFilterConditions>[1] & { q?: string }
+): SQL | undefined {
+  const filterWhere = buildFilterConditions(orgCond, query);
+  if (!query.q) return filterWhere;
+  const searchCond = buildSearchCondition(query.q);
+  return filterWhere ? and(filterWhere, searchCond) : searchCond;
+}
+
 async function queryRows(where: SQL | undefined, limit: number, offset: number): Promise<DbRow[]> {
   return db
     .select({
@@ -625,7 +649,8 @@ function paginatedListHandler(
     // Explicit per-request org scope from the org-selector dropdown. If the
     // caller asks for an org they cannot access, return 403 — do NOT silently
     // fall back to the full accessible-org set.
-    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+    const scope = resolveListOrgScope(auth, query.orgId);
+    if (scope.denied) {
       return c.json({ error: 'Access denied' }, 403);
     }
     // BY DESIGN: the audit-log list is scoped to the org only, NOT the caller's
@@ -641,10 +666,7 @@ function paginatedListHandler(
     // Unpinned, a partner-scope caller also gets its own partner-scoped rows
     // (org_id NULL, partner_id = caller's partner — #7696). A pinned org is an
     // explicit "this org's events" filter, so partner rows are not included.
-    const orgCond = query.orgId
-      ? eq(auditLogsTable.orgId, query.orgId)
-      : auditLogReadCondition(auth);
-    const where = buildFilterConditions(orgCond, query);
+    const where = buildFilterConditions(scope.orgCond, query);
     // count(*) on audit_logs is 2-3s under RLS even with the org_timestamp
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
     // count — it never displays "X of Y total". Pass skipCount=true there.
@@ -760,9 +782,7 @@ auditLogRoutes.get(
     const { page, limit, offset } = getPagination(query);
 
     const orgCond = auditLogReadCondition(auth);
-    const filterWhere = buildFilterConditions(orgCond, query);
-    const searchCond = buildSearchCondition(query.q);
-    const where = filterWhere ? and(filterWhere, searchCond) : searchCond;
+    const where = buildListWhere(orgCond, query);
 
     const [total, rows] = await Promise.all([
       countRows(where),
@@ -831,8 +851,18 @@ auditLogRoutes.post(
 );
 
 // GET /export — used by AuditLogViewer export button (CSV download)
+// Accepts the same filter set as the list/search endpoints (#8366) and builds
+// the WHERE through the same helpers, so the file matches what the viewer shows.
 const exportGetSchema = z.object({
   userId: z.string().guid().optional(),
+  user: listLogsSchema.shape.user,
+  action: listLogsSchema.shape.action,
+  resource: listLogsSchema.shape.resource,
+  from: listLogsSchema.shape.from,
+  to: listLogsSchema.shape.to,
+  orgId: listLogsSchema.shape.orgId,
+  excludeActions: listLogsSchema.shape.excludeActions,
+  q: searchSchema.shape.q.optional(),
   columns: z.string().optional(),
   includeDetails: z.enum(['true', 'false']).optional().default('true')
 });
@@ -844,20 +874,23 @@ auditLogRoutes.get(
   zValidator('query', exportGetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgCond = auditLogReadCondition(auth);
+    const query = c.req.valid('query');
+    const { userId, columns, includeDetails: includeDetailsRaw } = query;
+    const scope = resolveListOrgScope(auth, query.orgId);
+    if (scope.denied) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
-    const { userId, columns, includeDetails: includeDetailsRaw } = c.req.valid('query');
     const includeDetails = includeDetailsRaw !== 'false';
     const parsedColumns = columns
       ?.split(',')
       .map((column) => column.trim())
       .filter((column): column is AuditExportColumn => (auditExportColumns as readonly string[]).includes(column));
     const exportColumns = normalizeExportColumns(parsedColumns, includeDetails);
-    const conditions: SQL[] = [];
-    if (orgCond) conditions.push(orgCond);
-    if (userId) conditions.push(eq(auditLogsTable.actorId, userId));
-
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const listWhere = buildListWhere(scope.orgCond, query);
+    const where = userId
+      ? (listWhere ? and(listWhere, eq(auditLogsTable.actorId, userId)) : eq(auditLogsTable.actorId, userId))
+      : listWhere;
     const rows = await queryRows(where, 10000, 0);
 
     writeRouteAudit(c, {
@@ -867,7 +900,17 @@ auditLogRoutes.get(
       details: {
         format: 'csv',
         rowCount: rows.length,
-        filters: { userId: userId ?? null },
+        filters: {
+          userId: userId ?? null,
+          user: query.user ?? null,
+          action: query.action ?? null,
+          resource: query.resource ?? null,
+          from: query.from ?? null,
+          to: query.to ?? null,
+          orgId: query.orgId ?? null,
+          excludeActions: query.excludeActions ?? null,
+          q: query.q ?? null
+        },
         columns: exportColumns,
         includeDetails
       }

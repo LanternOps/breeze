@@ -134,6 +134,18 @@ function computeDateRange(filters: ActiveFilters): { from?: string; to?: string 
   }
 }
 
+/** The filter query params shared by the list/search request and the export (#8366). */
+function appendFilterParams(params: URLSearchParams, filters: ActiveFilters | null): void {
+  if (!filters) return;
+  const { from, to } = computeDateRange(filters);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (filters.userEmail) params.set('user', filters.userEmail);
+  if (filters.actions.length > 0) params.set('action', filters.actions.join(','));
+  if (filters.resources.length > 0) params.set('resource', filters.resources.join(','));
+  if (filters.search) params.set('q', filters.search);
+}
+
 function hasActiveFilters(filters: ActiveFilters | null): boolean {
   if (!filters) return false;
   return !!(
@@ -193,15 +205,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
       params.set('page', String(page));
       params.set('limit', String(pageSize));
 
-      if (filters) {
-        const { from, to } = computeDateRange(filters);
-        if (from) params.set('from', from);
-        if (to) params.set('to', to);
-        if (filters.userEmail) params.set('user', filters.userEmail);
-        if (filters.actions.length > 0) params.set('action', filters.actions.join(','));
-        if (filters.resources.length > 0) params.set('resource', filters.resources.join(','));
-        if (filters.search) params.set('q', filters.search);
-      }
+      appendFilterParams(params, filters);
 
       // Fast-path: on page 1 with no active filters, skip the slow count(*)
       // and let the API use its LATERAL fast-path. From page 2 onward we
@@ -299,10 +303,10 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
   };
 
   const handleExportLogs = async () => {
-    // The export route (GET /audit-logs/export) only accepts `userId`; the
-    // date range, action, resource and search filters are not supported by
-    // the API, so they cannot be forwarded.
+    // The export accepts the same filters as the list (date range, user,
+    // action, resource, search) so the file matches what is on screen.
     const params = new URLSearchParams();
+    appendFilterParams(params, activeFilters);
     if (activeFilters?.userId) params.set('userId', activeFilters.userId);
     const query = params.toString();
 
