@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -63,7 +64,11 @@ func TestDefaultDriversHaveUniqueKnownRuntimes(t *testing.T) {
 		}
 		seen[d.Runtime()] = true
 	}
-	if seen[RuntimeHyperV] || seen[RuntimeProxmox] {
-		t.Fatal("hyperv and proxmox drivers belong to a later wave")
+	// Each VM runtime registers only on the OS that can host it.
+	if seen[RuntimeHyperV] != (runtime.GOOS == "windows") {
+		t.Fatalf("hyperv registered=%v on %s", seen[RuntimeHyperV], runtime.GOOS)
+	}
+	if seen[RuntimeProxmox] != (runtime.GOOS == "linux") {
+		t.Fatalf("proxmox registered=%v on %s", seen[RuntimeProxmox], runtime.GOOS)
 	}
 }
