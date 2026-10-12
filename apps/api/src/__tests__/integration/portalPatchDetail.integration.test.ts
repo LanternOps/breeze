@@ -2,7 +2,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'node:fs';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { devicePatches, devices, patches, portalBranding } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -151,28 +151,91 @@ describe('W05 patch detail real PostgreSQL isolation', () => {
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) {
       const id = await seedPatch('SAME-TITLE', 'moderate');
+      await getTestDb().update(patches).set({ version: `v${i}` }).where(eq(patches.id, id));
       ids.push(id);
       await link(org.id, d1, id, 'pending');
       await link(org.id, d2, id, 'pending');
     }
     const ctx = context(org.id, partner.id);
+    const fullSummary = (await withDbAccessContext(ctx, () => patchDetailSummary(org.id, args))).data.map((row) => row.version);
+    const fullDevice = (await withDbAccessContext(ctx, () => patchDetailDevicePage(org.id, d1, args)))!.data.map((row) => row.version);
+    expect(new Set(fullSummary).size).toBe(ids.length);
+    expect(new Set(fullDevice).size).toBe(ids.length);
     for (const limit of [1, 2]) {
-      const summaryKeys: string[] = [];
-      const deviceKeys: string[] = [];
+      const summaryWalk: Array<string | null> = [];
+      const deviceWalk: Array<string | null> = [];
       for (let page = 1; page <= Math.ceil(ids.length / limit); page++) {
         const s = await withDbAccessContext(ctx, () => patchDetailSummary(org.id, { ...args, page, limit }));
         expect(s.pagination).toEqual({ page, limit, total: ids.length });
-        summaryKeys.push(...s.data.map((row) => `${row.title}|${row.pendingDevices}`));
+        summaryWalk.push(...s.data.map((row) => row.version));
         const d = await withDbAccessContext(ctx, () => patchDetailDevicePage(org.id, d1, { ...args, page, limit }));
         expect(d!.pagination.total).toBe(ids.length);
-        deviceKeys.push(...d!.data.map((row) => row.title));
+        deviceWalk.push(...d!.data.map((row) => row.version));
       }
-      expect(summaryKeys).toHaveLength(ids.length);
-      expect(summaryKeys.every((key) => key === 'SAME-TITLE|2')).toBe(true);
-      expect(deviceKeys).toHaveLength(ids.length);
+      // Pages concatenate to exactly the unpaged order: no repeat, no omission.
+      expect(summaryWalk).toEqual(fullSummary);
+      expect(deviceWalk).toEqual(fullDevice);
       const beyond = await withDbAccessContext(ctx, () => patchDetailSummary(org.id, { ...args, page: 99, limit }));
       expect(beyond.data).toEqual([]);
       expect(beyond.dataStatus).toBe('ok');
     }
+  });
+
+  it('orders by outstanding work then effective severity, and counts statuses per patch', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [d1, d2, d3, d4, d5] = [
+      await seedDevice(org.id, site.id, 'H1'), await seedDevice(org.id, site.id, 'H2'),
+      await seedDevice(org.id, site.id, 'H3'), await seedDevice(org.id, site.id, 'H4'),
+      await seedDevice(org.id, site.id, 'H5'),
+    ];
+    const moderate = await seedPatch('A-MODERATE', 'moderate');
+    const critical = await seedPatch('B-CRITICAL', 'critical');
+    const promoted = await seedPatch('C-PROMOTED', 'unknown');
+    const instCritical = await seedPatch('D-INSTALLED-CRITICAL', 'critical');
+    await link(org.id, d1, moderate, 'pending');
+    await link(org.id, d1, critical, 'pending');
+    await link(org.id, d1, promoted, 'pending', { reportedSeverity: 'important' });
+    await link(org.id, d1, instCritical, 'installed');
+    // One patch across five devices: pending, failed, installed, skipped, missing.
+    const mixed = await seedPatch('E-MIXED', 'low');
+    const later = new Date('2026-10-11T04:00:00Z');
+    await link(org.id, d1, mixed, 'pending');
+    await link(org.id, d2, mixed, 'failed', { lastCheckedAt: later });
+    await link(org.id, d3, mixed, 'installed');
+    await link(org.id, d4, mixed, 'skipped', { lastCheckedAt: new Date('2026-12-31T00:00:00Z') });
+    await link(org.id, d5, mixed, 'missing');
+    const ctx = context(org.id, partner.id);
+
+    const summary = await withDbAccessContext(ctx, () => patchDetailSummary(org.id, args));
+    // Outstanding first (critical, important, moderate, low), installed-only last.
+    expect(summary.data.map((row) => row.title)).toEqual([
+      'B-CRITICAL', 'C-PROMOTED', 'A-MODERATE', 'E-MIXED', 'D-INSTALLED-CRITICAL',
+    ]);
+    expect(summary.data.find((row) => row.title === 'C-PROMOTED')!.severity).toBe('important');
+    const mixedRow = summary.data.find((row) => row.title === 'E-MIXED')!;
+    expect(mixedRow).toMatchObject({ pendingDevices: 1, failedDevices: 1, installedDevices: 1 });
+    // skipped/missing neither count nor feed the max.
+    expect(mixedRow.lastCheckedAt).toBe(later.toISOString());
+
+    const page = await withDbAccessContext(ctx, () => patchDetailDevicePage(org.id, d1, args));
+    expect(page!.data.map((row) => row.title)).toEqual([
+      'B-CRITICAL', 'C-PROMOTED', 'A-MODERATE', 'E-MIXED', 'D-INSTALLED-CRITICAL',
+    ]);
+  });
+
+  it('answers no_data (not 404) for a device whose only rows are skipped or missing', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id, 'H');
+    await link(org.id, device, await seedPatch('S'), 'skipped');
+    await link(org.id, device, await seedPatch('M'), 'missing');
+    const ctx = context(org.id, partner.id);
+    const page = await withDbAccessContext(ctx, () => patchDetailDevicePage(org.id, device, args));
+    expect(page).not.toBeNull();
+    expect(page!.dataStatus).toBe('no_data');
+    expect((await withDbAccessContext(ctx, () => patchDetailSummary(org.id, args))).dataStatus).toBe('no_data');
   });
 });

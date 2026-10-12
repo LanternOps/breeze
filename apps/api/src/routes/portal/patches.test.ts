@@ -207,4 +207,21 @@ describe('assembled portal router patch detail gate', () => {
     expect(response.status).toBe(200);
     expect(mocks.page).toHaveBeenCalledWith(ORG_ID, { page: 1, limit: 50, now: expect.any(Date) });
   });
+
+  it('serves the device route when on, and 404s a forged device through the gate', async () => {
+    seedSession();
+    mocks.brandingRows = [{ enablePatchDetail: true }];
+    mocks.detail.mockResolvedValueOnce({ ...LIST });
+    const ok = await assembledApp().request(`/portal/patches/devices/${OTHER_ORG_DEVICE}?page=2&limit=10`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('cache-control')).toContain('private');
+    expect(mocks.detail).toHaveBeenCalledWith(ORG_ID, OTHER_ORG_DEVICE, { page: 2, limit: 10, now: expect.any(Date) });
+    mocks.detail.mockResolvedValueOnce(null);
+    const missing = await assembledApp().request(`/portal/patches/devices/${OTHER_ORG_DEVICE}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(missing.status).toBe(404);
+  });
 });
