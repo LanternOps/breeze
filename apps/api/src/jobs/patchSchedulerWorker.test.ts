@@ -19,9 +19,7 @@ vi.mock('../db', () => {
   const where = vi.fn(() => Promise.resolve(mockRows));
   const leftJoinSites = vi.fn(() => ({ where }));
   const leftJoinPartners = vi.fn(() => ({ leftJoin: leftJoinSites }));
-  // innerJoinOrgs terminates two shapes: loadDeviceSchedulingContexts chains
-  // two more leftJoins; resolveDeviceIdsForAssignment's partner branch calls
-  // .where() directly after the single innerJoin.
+  // loadDeviceSchedulingContexts chains two more leftJoins after the inner join.
   const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners, where }));
   const from = vi.fn(() => ({ innerJoin: innerJoinOrgs }));
   const select = vi.fn(() => ({ from }));
@@ -75,21 +73,11 @@ vi.mock('../services/configPolicyPatching', () => ({
   summarizePatchInventory: vi.fn(),
 }));
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
-
-// Field-provenance tiering (denylist option): `resolveDeviceIdsForAssignment`'s
-// `device_group` branch now gates through the shared execution-target field
-// provenance helper before resolving membership. Mocked here so the existing
-// tests below — which pin the exact join/where SQL of the membership query
-// itself — are unaffected; the gating behavior is covered by a dedicated
-// suite further down.
-const mockResolveExecutionSafeGroupIds = vi.fn(async (groupIds: string[]) => ({
-  allowedGroupIds: groupIds,
-  refusedGroups: [] as Array<{ id: string; refusedFields: string[] }>,
-}));
-const mockAuditRefusedExecutionGroups = vi.fn();
+// The per-assignment device expansion lives in services/configPolicyAssignmentDevices
+// (covered by its own test); stub its gating dependency so importing the worker stays light.
 vi.mock('../services/executionTargetGating', () => ({
-  resolveExecutionSafeGroupIds: (...args: [string[]]) => mockResolveExecutionSafeGroupIds(...args),
-  auditRefusedExecutionGroups: (...args: unknown[]) => mockAuditRefusedExecutionGroups(...args),
+  resolveExecutionSafeGroupIds: vi.fn(),
+  auditRefusedExecutionGroups: vi.fn(),
 }));
 
 import { __testOnly } from './patchSchedulerWorker';
@@ -99,249 +87,9 @@ import { captureException } from '../services/sentry';
 const {
   loadDeviceSchedulingContexts,
   enqueueScanResults,
-  resolveDeviceIdsForAssignment,
   resetReconcileTracking,
   PATCH_RECONCILE_STALL_SWEEPS,
 } = __testOnly;
-
-// Drizzle's `eq`/`and` build a real SQL AST (queryChunks tree), even though our
-// mocked schema columns are plain strings rather than real Column objects —
-// `sql\`${left} = ${right}\`` inserts both raw operands directly into
-// queryChunks (they don't satisfy isDriverValueEncoder, so neither side gets
-// wrapped in a Param). That means the exact identifiers passed to eq()/and()
-// are recoverable by walking the tree, which lets a test assert on the ACTUAL
-// filter values a `.where(...)` call was built with, instead of trusting a
-// mock that returns a fixed row regardless of what was asked for (the gap
-// this suite is closing, #2280 review).
-function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
-  if (typeof node === 'string') {
-    acc.push(node);
-    return acc;
-  }
-  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
-  seen.add(node);
-  if (Array.isArray(node)) {
-    for (const item of node) collectSqlLeafStrings(item, seen, acc);
-    return acc;
-  }
-  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
-  if (Array.isArray(queryChunks)) {
-    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
-  }
-  return acc;
-}
-
-describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
-  beforeEach(() => {
-    mockRows = [];
-  });
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('resolves every device under the partner when the policy has no owning org (partner-wide)', async () => {
-    // A partner-wide patch policy carries policyOrgId === null and is assigned
-    // at the partner level. Resolution must NOT early-return or clamp to an org
-    // — it returns all the partner's devices for the scheduler to group by org.
-    mockRows = [{ id: 'dev-a' }, { id: 'dev-b' }];
-    const ids = await resolveDeviceIdsForAssignment(
-      'partner',
-      '88888888-8888-4888-8888-888888888888',
-      null,
-      null
-    );
-    expect(ids).toEqual(['dev-a', 'dev-b']);
-  });
-
-  it('does NOT partner-clamp an org-owned policy (policyOrgId set) — existing org clamp only, no join', async () => {
-    // Baseline/regression guard for the pre-#2280 org-owned path: no partner is
-    // threaded through, and the resolver must not attempt an organizations join
-    // (the mock chain below has no `.innerJoin`, so calling it would throw).
-    const { db } = await import('../db');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', 'org-x', null);
-
-    expect(ids).toEqual(['dev-a']);
-    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
-    expect(whereArgs).toContain('org-x');
-  });
-
-  it('re-clamps an ORGANIZATION-level SUBSET assignment on a partner-owned library policy to the policy partner (TOCTOU re-clamp, #2280 review)', async () => {
-    // Partner-owned policies can now carry org/site/group/device SUBSET
-    // assignments (#2280 library model), not just the partner-wide 'partner'
-    // level. A null policyOrgId here is the NORMAL case for those. The target
-    // org was partner-scoped at ASSIGN time only — if it's later reparented to
-    // a different partner, a stale assignment row must not keep resolving those
-    // devices. So resolution now re-verifies via an inner join on organizations
-    // and clamps to the policy's partnerId on every run, mirroring the
-    // 'partner' branch's re-verification of assignmentTargetId.
-    const { db } = await import('../db');
-    const { organizations } = await import('../db/schema');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', null, 'partner-123');
-
-    expect(ids).toEqual(['dev-a']);
-    // Joined against organizations specifically (not some other table).
-    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
-    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
-    // The where() predicate actually carries BOTH the target-org filter and the
-    // partner clamp — not just one or the other, and not a fixed mock return.
-    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
-    expect(whereArgs).toContain('org-x');
-    expect(whereArgs).toContain('partner-123');
-  });
-
-  it('re-clamps a SITE-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
-    // Structurally parallel to the organization-level re-clamp above: the site
-    // branch also joins organizations and must carry BOTH the site filter and
-    // the partner clamp in its WHERE predicate.
-    const { db } = await import('../db');
-    const { organizations } = await import('../db/schema');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('site', 'site-x', null, 'partner-123');
-
-    expect(ids).toEqual(['dev-a']);
-    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
-    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
-    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
-    expect(whereArgs).toContain('site-x');
-    expect(whereArgs).toContain('partner-123');
-  });
-
-  it('re-clamps a DEVICE_GROUP-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
-    const { db } = await import('../db');
-    const { organizations, deviceGroups, devices } = await import('../db/schema');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      where: vi.fn(() => Promise.resolve([{ deviceId: 'dev-a' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', null, 'partner-123');
-
-    expect(ids).toEqual(['dev-a']);
-    // Three joins: organizations for the partner re-clamp, deviceGroups and
-    // devices for the #3182 tightened membership -> group -> device chain
-    // (each carrying its own org-equality condition, not just an id match) —
-    // plus the pre-existing Quick Support ephemeral exclusion on devices.
-    expect(chain.innerJoin).toHaveBeenCalledTimes(3);
-    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
-    expect(chain.innerJoin.mock.calls[1][0]).toBe(deviceGroups);
-    expect(chain.innerJoin.mock.calls[2][0]).toBe(devices);
-    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
-    expect(whereArgs).toContain('group-x');
-    expect(whereArgs).toContain('partner-123');
-  });
-
-  it('#3182 — device_group join conditions tie deviceGroups/devices org_id to the membership row, not just id (tightened join, org-owned branch)', async () => {
-    // Structurally parallel to the #2280 partner-clamp test above, but exercises
-    // the OTHER device_group branch (policyOrgId set, no partner re-clamp) so
-    // there are exactly two joins to inspect. A membership row could — pre-#3182
-    // composite FK — name a group in a different org than the membership itself,
-    // letting a cross-org device slip through a bare id join. Asserting on the
-    // actual join predicates (not just table identity) means this test fails if
-    // the `eq(deviceGroups.orgId, deviceGroupMemberships.orgId)` /
-    // `eq(devices.orgId, deviceGroupMemberships.orgId)` conditions are ever
-    // reverted back to a bare id-equality join.
-    const { db } = await import('../db');
-    const { deviceGroups, devices, deviceGroupMemberships } = await import('../db/schema');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      // Empty result simulates what a real DB would return once the tightened
-      // join filters out a membership row whose group/device sit in a
-      // different org than the membership itself.
-      where: vi.fn(() => Promise.resolve([])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', 'org-y', null);
-
-    expect(ids).toEqual([]);
-    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
-    expect(chain.innerJoin.mock.calls[0][0]).toBe(deviceGroups);
-    expect(chain.innerJoin.mock.calls[1][0]).toBe(devices);
-
-    const groupJoinArgs = collectSqlLeafStrings(chain.innerJoin.mock.calls[0][1]);
-    expect(groupJoinArgs).toContain(deviceGroupMemberships.groupId);
-    expect(groupJoinArgs).toContain(deviceGroups.id);
-    expect(groupJoinArgs).toContain(deviceGroups.orgId);
-    expect(groupJoinArgs).toContain(deviceGroupMemberships.orgId);
-
-    const deviceJoinArgs = collectSqlLeafStrings(chain.innerJoin.mock.calls[1][1]);
-    expect(deviceJoinArgs).toContain(deviceGroupMemberships.deviceId);
-    expect(deviceJoinArgs).toContain(devices.id);
-    expect(deviceJoinArgs).toContain(devices.orgId);
-    expect(deviceJoinArgs).toContain(deviceGroupMemberships.orgId);
-  });
-
-  it('re-clamps a DEVICE-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
-    // The device branch additionally chains .limit(1) after .where(), unlike
-    // the site/device_group/organization branches above.
-    const { db } = await import('../db');
-    const { organizations } = await import('../db/schema');
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      where: vi.fn(() => chain),
-      limit: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('device', 'dev-x', null, 'partner-123');
-
-    expect(ids).toEqual(['dev-a']);
-    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
-    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
-    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
-    expect(whereArgs).toContain('dev-x');
-    expect(whereArgs).toContain('partner-123');
-  });
-
-  it('still resolves membership for a refused device_group (patch is protective, not gated), and still audits the refusal', async () => {
-    const { db } = await import('../db');
-    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
-      allowedGroupIds: [],
-      refusedGroups: [{ id: 'group-x', refusedFields: ['hostname'] }],
-    });
-    const chain: any = {
-      from: vi.fn(() => chain),
-      innerJoin: vi.fn(() => chain),
-      // A legitimate hostname-keyed patch ring (e.g. `SRV-*`) is still a real
-      // membership — patch is protective, so a refused group must still be
-      // resolved and the device must still receive its patch schedule.
-      where: vi.fn(() => Promise.resolve([{ deviceId: 'dev-legit' }])),
-    };
-    vi.mocked(db.select).mockReturnValueOnce(chain);
-
-    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', 'org-y', null);
-
-    expect(ids).toEqual(['dev-legit']);
-    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
-      'org-y',
-      'patch_schedule.execution_target_refused_agent_reported_fields',
-      [{ id: 'group-x', refusedFields: ['hostname'] }],
-    );
-  });
-});
 
 describe('loadDeviceSchedulingContexts (#1318 partner tz)', () => {
   beforeEach(() => {
