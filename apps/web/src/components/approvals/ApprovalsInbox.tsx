@@ -51,6 +51,7 @@ import {
   type SortOrder,
 } from './approvalGrouping';
 import DiagnosticAccessApprovalDetails, { isDiagnosticAccessApproval } from './DiagnosticAccessApprovalDetails';
+import OperatorPlanApprovalCard, { isOperatorPlanApproval } from './OperatorPlanApprovalCard';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 /** WS is only a nudge; polling is the guarantee. useEventStream gives up
@@ -1121,6 +1122,16 @@ export default function ApprovalsInbox() {
               <p className="mt-3 max-w-3xl text-sm text-foreground/80">
                 {approval.riskSummary}
               </p>
+            )}
+            {isOperatorPlanApproval(approval.actionToolName) && (
+              // Rendered INLINE, not behind a toggle like the script proposal:
+              // the script card fetches a body, this one is already in the
+              // arguments, and an approver must not be able to approve a
+              // multi-effect identity plan without the list on screen. Approve
+              // and deny stay on the existing buttons (no second mutation path).
+              <div data-testid={`approval-operator-plan-${approval.id}`}>
+                <OperatorPlanApprovalCard args={approval.actionArguments} />
+              </div>
             )}
             {proposalId && (
               <div className="mt-3">
