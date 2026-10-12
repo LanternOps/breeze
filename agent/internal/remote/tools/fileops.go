@@ -496,11 +496,12 @@ type containmentDeniedError struct{ msg string }
 
 func (e *containmentDeniedError) Error() string { return e.msg }
 
-// Every containment denial is a sensitive-path refusal, so it carries that
-// typed code (#4026); isContainmentDenied still finds the inner type through
-// codedError.Unwrap.
+// Deliberately untagged: a containment denial is either a deny-list hit (the
+// caller wraps those in withErrorCode(wire.ErrCodeSensitivePathDenied, ...)) or
+// a fail-closed "cannot determine where X resolves" I/O fault, which today's
+// prose classifier answers as a 500 and must keep answering as one (#4026).
 func containmentDeniedf(format string, args ...any) error {
-	return withErrorCode(wire.ErrCodeSensitivePathDenied, &containmentDeniedError{msg: fmt.Sprintf(format, args...)})
+	return &containmentDeniedError{msg: fmt.Sprintf(format, args...)}
 }
 
 func isContainmentDenied(err error) bool {
@@ -545,7 +546,7 @@ func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
 		return nil
 	}
 	if isSensitiveReadPath(final) {
-		return containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath)
+		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath))
 	}
 	return nil
 }
@@ -600,7 +601,7 @@ func createExclusiveChecked(verb, cleanPath string, perm os.FileMode) (*os.File,
 			return nil, containmentDeniedf("%s denied: cannot determine where %s resolves: %v", verb, parent, ferr)
 		}
 	} else if isSensitiveReadPath(filepath.Join(final, name)) {
-		return nil, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath)
+		return nil, withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath))
 	}
 	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 }

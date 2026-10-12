@@ -1,11 +1,13 @@
 package tools
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/wire"
@@ -65,6 +67,53 @@ func TestNewErrorResultUncodedOmitsField(t *testing.T) {
 	}
 }
 
+// TestContainmentResolveFailureIsUntagged pins the review finding on #4026: a
+// fail-closed "cannot determine where X resolves" denial is an I/O fault that
+// the API's prose classifier answers as a 500. Tagging it sensitive_path_denied
+// would silently turn it into a 422 ("you can fix this") for new agents.
+func TestContainmentResolveFailureIsUntagged(t *testing.T) {
+	err := containmentDeniedf("read denied: cannot determine where %s resolves: %v", "/x", errors.New("boom"))
+	if got := NewErrorResult(err, 1).ErrorCode; got != "" {
+		t.Fatalf("ErrorCode = %q, want empty for a resolve failure", got)
+	}
+	if !isContainmentDenied(err) {
+		t.Fatal("resolve failure must still be a containment denial")
+	}
+	tagged := withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("read denied on sensitive path (resolved): %s", "/x"))
+	if !isContainmentDenied(tagged) {
+		t.Fatal("isContainmentDenied must see through the codedError wrapper")
+	}
+	if got := NewErrorResult(tagged, 1).ErrorCode; got != wire.ErrCodeSensitivePathDenied {
+		t.Fatalf("ErrorCode = %q, want %q", got, wire.ErrCodeSensitivePathDenied)
+	}
+}
+
+// restoreOntoOccupiedPath trashes a file, recreates it at the original path,
+// then restores — the one 409 (path_exists) path.
+func restoreOntoOccupiedPath(t *testing.T, dir string) CommandResult {
+	t.Helper()
+	orig := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(dir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = orig }()
+
+	target := filepath.Join(dir, "occupied.txt")
+	if err := os.WriteFile(target, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := DeleteFile(map[string]any{"path": target}); res.Status != "completed" {
+		t.Fatalf("trash delete failed: %s", res.Error)
+	}
+	if err := os.WriteFile(target, []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list := TrashList(map[string]any{})
+	var resp TrashListResponse
+	if err := json.Unmarshal([]byte(list.Stdout), &resp); err != nil || len(resp.Items) == 0 {
+		t.Fatalf("trash list: %v / %s", err, list.Stdout)
+	}
+	return TrashRestore(map[string]any{"trashId": resp.Items[0].TrashID})
+}
+
 // TestFileOpsRefusalsCarryErrorCode exercises real handlers so the tags are
 // proven at the emitting sites, not just in the helper.
 func TestFileOpsRefusalsCarryErrorCode(t *testing.T) {
@@ -112,6 +161,28 @@ func TestFileOpsRefusalsCarryErrorCode(t *testing.T) {
 		}, wire.ErrCodePathNotFound},
 		{"mkdir: path required", func() CommandResult { return MakeDirectory(map[string]any{}) }, wire.ErrCodeInvalidArgument},
 		{"trash restore: id required", func() CommandResult { return TrashRestore(map[string]any{}) }, wire.ErrCodeInvalidArgument},
+		{"trash restore: unknown id", func() CommandResult {
+			return TrashRestore(map[string]any{"trashId": "no-such-item"})
+		}, wire.ErrCodePathNotFound},
+		{"mkdir: system path", func() CommandResult {
+			return MakeDirectory(map[string]any{"path": deniedSystemPaths[0]})
+		}, wire.ErrCodeSystemPathDenied},
+		{"delete: recursive top-level", func() CommandResult {
+			return DeleteFile(map[string]any{"path": "/breeze-4026-guard-probe-does-not-exist", "recursive": true, "permanent": true})
+		}, wire.ErrCodeTopLevelDeleteDenied},
+		{"write: payload too large", func() CommandResult {
+			return WriteFile(map[string]any{"path": filepath.Join(dir, "w.txt"), "content": strings.Repeat("x", MaxFileWriteSize+1)})
+		}, wire.ErrCodePayloadTooLarge},
+		{"write: base64 payload too large", func() CommandResult {
+			return WriteFile(map[string]any{
+				"path":     filepath.Join(dir, "w.bin"),
+				"encoding": "base64",
+				"content":  base64.StdEncoding.EncodeToString(make([]byte, MaxFileWriteSize+1)),
+			})
+		}, wire.ErrCodePayloadTooLarge},
+		{"trash restore: destination occupied", func() CommandResult {
+			return restoreOntoOccupiedPath(t, dir)
+		}, wire.ErrCodePathExists},
 	}
 
 	for _, tc := range cases {

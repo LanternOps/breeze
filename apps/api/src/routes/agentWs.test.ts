@@ -4526,6 +4526,34 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     }
   });
 
+  it('persists the agent errorCode on the WebSocket leg so the classifier can use it (#4026)', async () => {
+    const preValidatedAgent = { deviceId: 'device-e', orgId: 'org-e', partnerId: 'partner-e' };
+    const { handlers, ws } = await connectedAgent('agent-e', preValidatedAgent);
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'file_read', payload: {}, deviceId: 'device-e' },
+    ]) as any);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'failed',
+        exitCode: 1,
+        error: 'no such item at /nope',
+        errorCode: 'path_not_found',
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const stored = setSpy.mock.calls[0]![0] as { result: { errorCode?: string; error?: string } };
+    expect(stored.result.errorCode).toBe('path_not_found');
+    expect(stored.result.error).toBe('no such item at /nope');
+  });
+
   // #3409 PR4a. The heuristic redaction above is NAME-based: it only fires when
   // a secret sits next to a recognized key name, so a bare echoed credential
   // survives it. These pin the exact-value layer at the WS chokepoint.

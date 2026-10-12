@@ -991,6 +991,33 @@ describe('agent commands routes', () => {
     expect(serialized).not.toContain('BODYb64lineTwo');
   });
 
+  it('persists the agent errorCode on the REST leg so the classifier can use it (#4026)', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        { id: commandId, deviceId: 'device-1', type: 'file_read', status: 'sent', targetRole: 'agent' },
+      ])
+    );
+    const updateChain = chainMock([{ id: 'cmd-1' }]);
+    updateMock.mockReturnValueOnce(updateChain);
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'failed',
+        exitCode: 1,
+        error: 'no such item at /nope',
+        errorCode: 'path_not_found',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const stored = updateChain.set.mock.calls[0][0];
+    expect(stored.result.errorCode).toBe('path_not_found');
+    expect(stored.result.error).toBe('no such item at /nope');
+  });
+
   // #3409 PR4a — REST twin of the WS exact-value redaction test. The
   // private-key redaction above is NAME/pattern-based; a bare echoed
   // credential only falls to this layer.
