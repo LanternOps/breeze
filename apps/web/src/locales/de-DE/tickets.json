@@ -668,6 +668,8 @@
     },
     "timer": {
       "startNonBillable": "Als nicht abrechenbar starten"
-    }
+    },
+    "loadError": "Kundenfreigaben konnten nicht geladen werden",
+    "retry": "Erneut versuchen"
   }
 }

@@ -184,15 +184,6 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
 
       const patch = { slaOverrides };
 
-      await runAction({
-        request: () => fetchWithAuth(`/orgs/organizations/${orgId}/ticket-settings`, {
-          method: 'PATCH',
-          body: JSON.stringify(patch)
-        }),
-        errorFallback: t('orgTicketSettingsEditor.errors.save'),
-        successMessage: t('orgTicketSettingsEditor.toasts.saved'),
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
-      });
       // Only changed fields go out; `null` clears an override (= inherit).
       const approvalPatch: Record<string, unknown> = {};
       if (approvalResolved) {
@@ -204,13 +195,26 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
           else approvalPatch[field] = approval[field] === 'true';
         }
       }
-      if (Object.keys(approvalPatch).length > 0) {
+      const hasApprovalPatch = Object.keys(approvalPatch).length > 0;
+
+      await runAction({
+        request: () => fetchWithAuth(`/orgs/organizations/${orgId}/ticket-settings`, {
+          method: 'PATCH',
+          body: JSON.stringify(patch)
+        }),
+        errorFallback: t('orgTicketSettingsEditor.errors.save'),
+        // With an approval patch pending, toast once after BOTH succeed.
+        successMessage: hasApprovalPatch ? undefined : t('orgTicketSettingsEditor.toasts.saved'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
+      });
+      if (hasApprovalPatch) {
         await runAction({
           request: () => fetchWithAuth(`/orgs/${orgId}/ticketing/approval-settings`, {
             method: 'PATCH',
             body: JSON.stringify(approvalPatch)
           }),
-          errorFallback: t('orgTicketSettingsEditor.errors.save'),
+          errorFallback: t('orgTicketSettingsEditor.errors.savedApprovalFailed'),
+          successMessage: t('orgTicketSettingsEditor.toasts.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true })
         });
         // Re-fetch so a cleared field shows the inherited value and its source.

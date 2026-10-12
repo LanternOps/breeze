@@ -20,7 +20,10 @@ const REQ_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const ENTRY_A = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const ENTRY_B = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
-const { authRef, svc, summary, emit, audit, timeAudit, dbRows, ticketsById } = vi.hoisted(() => ({
+const { authRef, svc, summary, emit, audit, timeAudit, dbRows, ticketsById, sp } = vi.hoisted(() => ({
+  // Savepoint model: `depth` > 0 while inside withDbTransaction; `rolledBack`
+  // counts savepoints that ended in a throw (their writes are undone).
+  sp: { depth: 0, rolledBack: 0, serviceDepths: [] as number[] },
   authRef: { current: null as any },
   svc: {
     decideApprovalRequest: vi.fn(),
@@ -73,6 +76,10 @@ vi.mock('./tickets', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    sp.depth += 1;
+    try { return await fn(); } catch (e) { sp.rolledBack += 1; throw e; } finally { sp.depth -= 1; }
+  },
   db: {
     select: vi.fn(() => ({
       from: vi.fn((table: any) => ({
@@ -101,17 +108,21 @@ vi.mock('../../services/ticketApproval/decisions', async () => {
   }
   return {
     ApprovalDecisionError,
-    decideApprovalRequest: (...a: unknown[]) => svc.decideApprovalRequest(...a),
-    cancelApprovalRequest: (...a: unknown[]) => svc.cancelApprovalRequest(...a),
-    reaskApprovalRequest: (...a: unknown[]) => svc.reaskApprovalRequest(...a),
-    writeOffHeldEntry: (...a: unknown[]) => svc.writeOffHeldEntry(...a),
-    createStaffApprovalRequest: (...a: unknown[]) => svc.createStaffApprovalRequest(...a),
+    decideApprovalRequest: (...a: unknown[]) => { sp.serviceDepths.push(sp.depth); return svc.decideApprovalRequest(...a); },
+    cancelApprovalRequest: (...a: unknown[]) => { sp.serviceDepths.push(sp.depth); return svc.cancelApprovalRequest(...a); },
+    reaskApprovalRequest: (...a: unknown[]) => { sp.serviceDepths.push(sp.depth); return svc.reaskApprovalRequest(...a); },
+    writeOffHeldEntry: (...a: unknown[]) => { sp.serviceDepths.push(sp.depth); return svc.writeOffHeldEntry(...a); },
+    createStaffApprovalRequest: (...a: unknown[]) => { sp.serviceDepths.push(sp.depth); return svc.createStaffApprovalRequest(...a); },
   };
 });
 vi.mock('../../services/ticketApproval/summary', () => ({ getTicketApprovalSummary: (...a: unknown[]) => summary(...a) }));
 vi.mock('../../services/ticketEvents', () => ({ emitTicketEvent: (e: unknown) => emit(e) }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: (...a: unknown[]) => audit(...a) }));
-vi.mock('../../services/orgCurrencyCore', () => ({ OrgCurrencyServiceError: class extends Error {} }));
+vi.mock('../../services/orgCurrencyCore', () => ({
+  OrgCurrencyServiceError: class extends Error {
+    constructor(message: string, public status: number, public code?: string) { super(message); }
+  },
+}));
 vi.mock('../timeEntries/timeEntries', () => ({
   timeEntryAuditCollector: (c: any) => {
     const auth = c.get('auth');
@@ -163,6 +174,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbRows.clear();
   ticketsById.clear();
+  sp.depth = 0; sp.rolledBack = 0; sp.serviceDepths.length = 0;
   ticketsById.set(TICKET_A, { id: TICKET_A, orgId: ORG_A, partnerId: 'p-1', deviceId: null });
   ticketsById.set(TICKET_B, { id: TICKET_B, orgId: ORG_B, partnerId: 'p-1', deviceId: null });
   dbRows.set(REQ_A, { ticketId: TICKET_A, orgId: ORG_A });
@@ -380,5 +392,89 @@ describe('POST /time-entries/:id/write-off-held (time_entries:manage_billing)', 
     const res = await app().request(`/time-entries/${ENTRY_A}/write-off-held`, post());
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('ENTRY_NOT_RESOLVABLE');
+  });
+});
+
+// ── review round: savepoint rollback, mapping, org mismatch, partner fallback ──
+const MUTATIONS = [
+  { name: 'create', url: `/tickets/${TICKET_A}/approval-requests`, body: { trigger: 'budget', extensionMinutes: 60 }, fn: 'createStaffApprovalRequest' as const, peek: () => {} },
+  { name: 'cancel', url: `/ticket-approval-requests/${REQ_A}/cancel`, body: {}, fn: 'cancelApprovalRequest' as const, peek: () => peekRequest(REQ_A) },
+  { name: 'reask', url: `/ticket-approval-requests/${REQ_A}/reask`, body: {}, fn: 'reaskApprovalRequest' as const, peek: () => peekRequest(REQ_A) },
+  { name: 'decide-on-behalf', url: `/ticket-approval-requests/${REQ_A}/decide-on-behalf`, body: DECIDE, fn: 'decideApprovalRequest' as const, peek: () => peekRequest(REQ_A) },
+  { name: 'write-off', url: `/time-entries/${ENTRY_A}/write-off-held`, body: {}, fn: 'writeOffHeldEntry' as const, peek: () => peekEntry(ENTRY_A) },
+];
+
+describe.each(MUTATIONS)('$name — transactional post-check', ({ url, body, fn, peek }) => {
+  beforeEach(() => peek());
+
+  it('runs the service inside a savepoint', async () => {
+    expect((await app().request(url, post(body))).status).toBeLessThan(300);
+    expect(sp.serviceDepths).toEqual([1]);
+    expect(sp.rolledBack).toBe(0);
+  });
+
+  it('rolls the savepoint back, answers 404 and emits/audits nothing when the ticket left the caller\'s reach mid-flight', async () => {
+    const original = svc[fn].getMockImplementation();
+    svc[fn].mockImplementation(async (...a: unknown[]) => {
+      ticketsById.set(TICKET_A, { id: TICKET_A, orgId: ORG_B, partnerId: 'p-1', deviceId: null });
+      return original ? (original as (...x: unknown[]) => unknown)(...a) : undefined;
+    });
+    const res = await app().request(url, post(body));
+    expect(res.status).toBe(404);
+    expect(sp.rolledBack).toBe(1);
+    expect(emit).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(timeAudit).not.toHaveBeenCalled();
+  });
+
+  it('maps a service 409 with its code, rolls back, and emits nothing', async () => {
+    svc[fn].mockRejectedValue(new ApprovalDecisionError('conflict', 409, 'REQUEST_NOT_PENDING'));
+    const res = await app().request(url, post(body));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'conflict', code: 'REQUEST_NOT_PENDING' });
+    expect(sp.rolledBack).toBe(1);
+    expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('request/entry whose org differs from its ticket\'s org', () => {
+  it.each(MUTATIONS.filter((m) => m.name !== 'create'))('$name answers 404 without calling the service', async ({ url, body, fn, peek }) => {
+    dbRows.set(REQ_A, { ticketId: TICKET_A, orgId: ORG_B });
+    dbRows.set(ENTRY_A, { ticketId: TICKET_A, orgId: ORG_B });
+    peek();
+    expect((await app().request(url, post(body))).status).toBe(404);
+    expect(svc[fn]).not.toHaveBeenCalled();
+  });
+});
+
+describe('approval-summary partner resolution', () => {
+  it('falls back to the org\'s partner for a ticket with a null partnerId (system scope)', async () => {
+    authRef.current = auth({ scope: 'system', partnerId: null });
+    ticketsById.set(TICKET_A, { id: TICKET_A, orgId: ORG_A, partnerId: null, deviceId: null });
+    dbRows.set('org-row', { partnerId: 'p-9' });
+    dbRows.set('__next:orgs', 'org-row' as never);
+    expect((await app().request(`/tickets/${TICKET_A}/approval-summary`)).status).toBe(200);
+    expect(summary).toHaveBeenCalledWith(expect.anything(), { ticketId: TICKET_A, partnerId: 'p-9', orgId: ORG_A });
+  });
+  it('404s when neither the ticket nor its org has a partner', async () => {
+    authRef.current = auth({ scope: 'system', partnerId: null });
+    ticketsById.set(TICKET_A, { id: TICKET_A, orgId: ORG_A, partnerId: null, deviceId: null });
+    expect((await app().request(`/tickets/${TICKET_A}/approval-summary`)).status).toBe(404);
+    expect(summary).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrgCurrencyServiceError mapping', () => {
+  it('maps ORG_NOT_FOUND to 404', async () => {
+    const { OrgCurrencyServiceError } = await import('../../services/orgCurrencyCore');
+    peekRequest(REQ_A);
+    svc.cancelApprovalRequest.mockRejectedValue(new (OrgCurrencyServiceError as any)('gone', 404, 'ORG_NOT_FOUND'));
+    expect((await app().request(`/ticket-approval-requests/${REQ_A}/cancel`, post())).status).toBe(404);
+  });
+  it('does not disguise an unexpected org-currency error as 404', async () => {
+    const { OrgCurrencyServiceError } = await import('../../services/orgCurrencyCore');
+    peekRequest(REQ_A);
+    svc.cancelApprovalRequest.mockRejectedValue(new (OrgCurrencyServiceError as any)('boom', 500, undefined));
+    expect((await app().request(`/ticket-approval-requests/${REQ_A}/cancel`, post())).status).toBe(500);
   });
 });

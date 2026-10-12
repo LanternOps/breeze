@@ -5552,7 +5552,8 @@
     "loading": "Cargando configuración de tickets…",
     "errors": {
       "load": "La configuración del ticket no se pudo cargar.",
-      "save": "No se pudo guardar la configuración del ticket"
+      "save": "No se pudo guardar la configuración del ticket",
+      "savedApprovalFailed": "Se guardó la configuración de tickets, pero no se pudo guardar la política de aprobación del cliente"
     },
     "toasts": {
       "saved": "Configuración del ticket guardada"
@@ -6373,7 +6374,8 @@
         "partner": "Socio",
         "default": "Predeterminado"
       }
-    }
+    },
+    "savedApprovalFailed": "Se guardó la configuración de tiempo, pero no se pudo guardar la política de aprobación del cliente"
   },
   "contactsCard": {
     "title": "Contactos",

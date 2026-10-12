@@ -5605,7 +5605,8 @@
     "loading": "Carregando configurações de chamados…",
     "errors": {
       "load": "Não foi possível carregar as configurações de chamados.",
-      "save": "Falha ao salvar as configurações de chamados"
+      "save": "Falha ao salvar as configurações de chamados",
+      "savedApprovalFailed": "Configurações de tickets salvas, mas a política de aprovação do cliente não pôde ser salva"
     },
     "toasts": {
       "saved": "Configurações de chamados salvas"
@@ -6373,7 +6374,8 @@
         "partner": "Parceiro",
         "default": "Padrão"
       }
-    }
+    },
+    "savedApprovalFailed": "Configurações de tempo salvas, mas a política de aprovação do cliente não pôde ser salva"
   },
   "contactsCard": {
     "title": "Contatos",

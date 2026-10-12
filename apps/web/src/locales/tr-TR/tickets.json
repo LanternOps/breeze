@@ -668,6 +668,8 @@
     },
     "timer": {
       "startNonBillable": "Faturalanamaz olarak başlat"
-    }
+    },
+    "loadError": "Müşteri onayları yüklenemedi",
+    "retry": "Yeniden dene"
   }
 }

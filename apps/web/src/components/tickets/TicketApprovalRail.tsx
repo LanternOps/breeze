@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { notifyApprovalChanged, useTicketApprovalSummary } from '../../lib/ticketApproval';
 import TicketBudgetCard from './TicketBudgetCard';
 import TicketApprovalsPanel from './TicketApprovalsPanel';
@@ -8,12 +9,34 @@ import TicketApprovalsPanel from './TicketApprovalsPanel';
  * event, which reloads this summary, the time list and the workbench feed.
  */
 export default function TicketApprovalRail({ ticketId }: { ticketId: string }) {
-  const { summary } = useTicketApprovalSummary(ticketId);
-  if (!summary) return null;
+  const { t } = useTranslation('tickets');
+  const { summary, error, reload } = useTicketApprovalSummary(ticketId);
+  if (!summary && !error) return null;
   return (
     <>
-      <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} />
-      <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} />
+      {error && (
+        <div
+          data-testid="ticket-approval-load-error"
+          role="alert"
+          className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        >
+          <span>{t('ticketApproval.loadError')}</span>
+          <button
+            type="button"
+            data-testid="ticket-approval-retry"
+            onClick={() => void reload()}
+            className="rounded border border-destructive/40 px-2 py-0.5 font-medium hover:bg-destructive/10"
+          >
+            {t('ticketApproval.retry')}
+          </button>
+        </div>
+      )}
+      {summary && (
+        <>
+          <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} />
+          <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} />
+        </>
+      )}
     </>
   );
 }

@@ -5600,7 +5600,8 @@
     "loading": "Chargement des paramètres du billet...",
     "errors": {
       "load": "Impossible de charger les paramètres du billet.",
-      "save": "Impossible d’enregistrer les paramètres des billets"
+      "save": "Impossible d’enregistrer les paramètres des billets",
+      "savedApprovalFailed": "Les paramètres des tickets ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
     },
     "toasts": {
       "saved": "Paramètres du billet enregistrés"
@@ -6373,7 +6374,8 @@
         "partner": "Partenaire",
         "default": "Par défaut"
       }
-    }
+    },
+    "savedApprovalFailed": "Les paramètres de temps ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
   },
   "contactsCard": {
     "title": "Contacts",

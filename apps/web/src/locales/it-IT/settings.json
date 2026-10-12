@@ -5600,7 +5600,8 @@
     "loading": "Caricamento impostazioni ticket...",
     "errors": {
       "load": "Impossibile caricare le impostazioni ticket.",
-      "save": "Impossibile salvare le impostazioni ticket"
+      "save": "Impossibile salvare le impostazioni ticket",
+      "savedApprovalFailed": "Impostazioni dei ticket salvate, ma non è stato possibile salvare la policy di approvazione del cliente"
     },
     "toasts": {
       "saved": "Impostazioni ticket salvate"
@@ -6373,7 +6374,8 @@
         "partner": "Partner",
         "default": "Predefinito"
       }
-    }
+    },
+    "savedApprovalFailed": "Impostazioni del tempo salvate, ma non è stato possibile salvare la policy di approvazione del cliente"
   },
   "contactsCard": {
     "title": "Contatti",

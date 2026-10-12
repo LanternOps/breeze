@@ -5600,7 +5600,8 @@
     "loading": "Loading ticket settings…",
     "errors": {
       "load": "Ticket settings failed to load.",
-      "save": "Failed to save ticket settings"
+      "save": "Failed to save ticket settings",
+      "savedApprovalFailed": "Ticket settings saved, but the customer approval policy failed to save"
     },
     "toasts": {
       "saved": "Ticket settings saved"
@@ -6368,7 +6369,8 @@
         "partner": "Partner",
         "default": "Default"
       }
-    }
+    },
+    "savedApprovalFailed": "Time settings saved, but the customer approval policy failed to save"
   },
   "contactImportPreview": {
     "selectAll": "Select all new and linked rows",

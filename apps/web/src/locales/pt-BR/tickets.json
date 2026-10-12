@@ -668,6 +668,8 @@
     },
     "timer": {
       "startNonBillable": "Iniciar como não faturável"
-    }
+    },
+    "loadError": "Não foi possível carregar as aprovações do cliente",
+    "retry": "Tentar novamente"
   }
 }

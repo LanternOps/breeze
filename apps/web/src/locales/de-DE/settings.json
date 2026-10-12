@@ -5552,7 +5552,8 @@
     "loading": "Ticketeinstellungen werden geladen…",
     "errors": {
       "load": "Die Ticketeinstellungen konnten nicht geladen werden.",
-      "save": "Ticketeinstellungen konnten nicht gespeichert werden"
+      "save": "Ticketeinstellungen konnten nicht gespeichert werden",
+      "savedApprovalFailed": "Ticket-Einstellungen gespeichert, aber die Richtlinie für Kundenfreigaben konnte nicht gespeichert werden"
     },
     "toasts": {
       "saved": "Ticketeinstellungen gespeichert"
@@ -6373,7 +6374,8 @@
         "partner": "Partner",
         "default": "Standard"
       }
-    }
+    },
+    "savedApprovalFailed": "Zeiteinstellungen gespeichert, aber die Richtlinie für Kundenfreigaben konnte nicht gespeichert werden"
   },
   "contactsCard": {
     "title": "Kontakte",

@@ -668,6 +668,8 @@
     },
     "timer": {
       "startNonBillable": "Start as non-billable"
-    }
+    },
+    "loadError": "Couldn't load customer approvals",
+    "retry": "Retry"
   }
 }

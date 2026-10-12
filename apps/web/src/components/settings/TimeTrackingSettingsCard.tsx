@@ -214,6 +214,7 @@ export default function TimeTrackingSettingsCard() {
       }
     }
     setApprovalError(null);
+    const hasApprovalPatch = Object.keys(approvalPatch).length > 0;
     setSaving(true);
     try {
       await runAction({
@@ -234,17 +235,19 @@ export default function TimeTrackingSettingsCard() {
             }),
           }),
         errorFallback: t('timeTrackingSettingsCard.saveFailed'),
-        successMessage: t('timeTrackingSettingsCard.saved'),
+        // With an approval patch pending, toast once after BOTH succeed.
+        successMessage: hasApprovalPatch ? undefined : t('timeTrackingSettingsCard.saved'),
         onUnauthorized: UNAUTHORIZED,
       });
-      if (Object.keys(approvalPatch).length > 0) {
+      if (hasApprovalPatch) {
         const res = await runAction<{ data?: unknown }>({
           request: () =>
             fetchWithAuth('/ticketing/approval-settings', {
               method: 'PATCH',
               body: JSON.stringify(approvalPatch),
             }),
-          errorFallback: t('timeTrackingSettingsCard.saveFailed'),
+          errorFallback: t('timeTrackingSettingsCard.savedApprovalFailed'),
+          successMessage: t('timeTrackingSettingsCard.saved'),
           onUnauthorized: UNAUTHORIZED,
         });
         const { draft, sources } = readApproval(res?.data);

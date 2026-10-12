@@ -247,6 +247,30 @@ describe('TimeTrackingSettingsCard', () => {
       expect(approvalPatchBody()).toBeNull();
     });
 
+    it('first PATCH ok + approval PATCH 500: shows the specific message and no plain "saved" toast', async () => {
+      mockPartner({});
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ticketing/approval-settings' && init?.method === 'PATCH') {
+          return { ok: false, status: 500, json: async () => ({}) } as Response;
+        }
+        return base(url, init);
+      });
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      fireEvent.click(screen.getByTestId('approval-enabled'));
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(approvalPatchBody()).not.toBeNull());
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining('saved, but the customer approval') }),
+        ),
+      );
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      // The draft stays dirty so the user can retry.
+      expect((screen.getByTestId('approval-enabled') as HTMLInputElement).checked).toBe(true);
+    });
+
     it('rejects an out-of-range TTL before sending anything', async () => {
       mockPartner({});
       render(<TimeTrackingSettingsCard />);

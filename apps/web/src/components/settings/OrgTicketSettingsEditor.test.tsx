@@ -279,6 +279,27 @@ describe('OrgTicketSettingsEditor', () => {
       expect(approvalPatch()).toEqual({ requestTtlHours: null });
     });
 
+    it('first PATCH ok + approval PATCH 500: shows the specific message and no plain "saved" toast', async () => {
+      mockApi();
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === APPROVAL_URL && init?.method === 'PATCH') return makeJsonResponse({}, false, 500);
+        return base(input, init);
+      });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      fireEvent.click(screen.getByTestId('org-approval-ttl-clear'));
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(approvalPatch()).not.toBeNull());
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining('saved, but the customer approval') }),
+        ),
+      );
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      expect(onSave).not.toHaveBeenCalled();
+    });
+
     it('does not PATCH approval settings when nothing changed', async () => {
       mockApi();
       render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);

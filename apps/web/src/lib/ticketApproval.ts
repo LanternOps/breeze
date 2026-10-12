@@ -96,16 +96,20 @@ export function notifyApprovalChanged(): void {
 
 /**
  * Loads the approval summary and keeps it fresh: reloads on ticket switch and on
- * the shared billing / timer change events. A 403/404 (org-scope caller, or the
- * feature off) resolves to `summary: null` and the cards render nothing.
+ * the shared billing / timer change events. Only a 403/404 (org-scope caller, or
+ * the feature off) resolves to `summary: null`; any other failure keeps the
+ * previous summary and sets `error` so the rail can offer a retry.
  */
 export function useTicketApprovalSummary(ticketId: string): {
   summary: ApprovalSummary | null;
   loading: boolean;
+  /** True when the last load failed for a reason other than 403/404. The previous summary is kept. */
+  error: boolean;
   reload: () => Promise<void>;
 } {
   const [summary, setSummary] = useState<ApprovalSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const latest = useRef(ticketId);
   latest.current = ticketId;
 
@@ -113,11 +117,22 @@ export function useTicketApprovalSummary(ticketId: string): {
     const requested = ticketId;
     try {
       const res = await fetchWithAuth(`/tickets/${ticketId}/approval-summary`);
-      const body = res.ok ? ((await res.json().catch(() => null)) as { data?: ApprovalSummary } | null) : null;
       if (requested !== latest.current) return; // a response for the previously selected ticket
-      setSummary(body?.data ?? null);
-    } catch {
-      if (requested === latest.current) setSummary(null);
+      if (res.status === 403 || res.status === 404) {
+        // Not applicable (org-scope caller, or the feature is off): render nothing.
+        setSummary(null);
+        setError(false);
+        return;
+      }
+      const body = res.ok ? ((await res.json().catch(() => null)) as { data?: ApprovalSummary } | null) : null;
+      if (requested !== latest.current) return;
+      if (!body?.data) throw new Error(`approval-summary failed (${res.status})`);
+      setSummary(body.data);
+      setError(false);
+    } catch (err) {
+      console.warn('[ticketApproval] summary load failed', err);
+      // Keep whatever we already have; a transient failure must not wipe the cards.
+      if (requested === latest.current) setError(true);
     } finally {
       if (requested === latest.current) setLoading(false);
     }
@@ -125,6 +140,7 @@ export function useTicketApprovalSummary(ticketId: string): {
 
   useEffect(() => {
     setSummary(null);
+    setError(false);
     setLoading(true);
     void reload();
     const offBilling = onBillingChanged(() => void reload());
@@ -132,7 +148,7 @@ export function useTicketApprovalSummary(ticketId: string): {
     return () => { offBilling(); offTimer(); };
   }, [reload]);
 
-  return { summary, loading, reload };
+  return { summary, loading, error, reload };
 }
 
 /** "1h + €150.00" for a request's ask; empty string when it asks for neither. */

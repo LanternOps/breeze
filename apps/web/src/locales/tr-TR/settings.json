@@ -5605,7 +5605,8 @@
     "loading": "Bilet ayarları yükleniyor…",
     "errors": {
       "load": "Bilet ayarları yüklenemedi.",
-      "save": "Bilet ayarları kaydedilemedi"
+      "save": "Bilet ayarları kaydedilemedi",
+      "savedApprovalFailed": "Talep ayarları kaydedildi, ancak müşteri onay politikası kaydedilemedi"
     },
     "toasts": {
       "saved": "Bilet ayarları kaydedildi"
@@ -6373,7 +6374,8 @@
         "partner": "İş ortağı",
         "default": "Varsayılan"
       }
-    }
+    },
+    "savedApprovalFailed": "Zaman ayarları kaydedildi, ancak müşteri onay politikası kaydedilemedi"
   },
   "contactsCard": {
     "title": "Kişiler",

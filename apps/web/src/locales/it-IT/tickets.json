@@ -668,6 +668,8 @@
     },
     "timer": {
       "startNonBillable": "Avvia come non fatturabile"
-    }
+    },
+    "loadError": "Impossibile caricare le approvazioni del cliente",
+    "retry": "Riprova"
   }
 }

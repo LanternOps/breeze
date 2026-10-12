@@ -7,7 +7,7 @@ import {
   decideTicketApprovalOnBehalfSchema,
   reaskTicketApprovalRequestSchema,
 } from '@breeze/shared';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { organizations, ticketApprovalRequests, timeEntries } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
@@ -39,9 +39,13 @@ import { getScopedTicketOr404 } from './tickets';
  *   3. resolves the ticket through `getScopedTicketOr404` — the partner
  *      org allowlist and the site axis — and answers 404 when it is not
  *      visible, BEFORE the service runs;
- *   4. for request/entry-id routes, re-checks the ticket is still visible
- *      AFTER the mutation and throws (rolling back the request transaction)
- *      if a concurrent org move took it out of the caller's reach.
+ *   4. runs the service AND a re-check that the ticket is still visible
+ *      inside one savepoint (`withDbTransaction`), so a concurrent org move
+ *      that took the ticket out of the caller's reach between the pre-check
+ *      and the service's ticket lock undoes the mutation. A thrown error does
+ *      NOT roll back the request transaction by itself: Hono's compose turns
+ *      it into the onError response and the auth middleware's transaction
+ *      then commits — the savepoint is what makes the rollback real.
  *
  *   GET  /tickets/:id/approval-summary                 tickets:read
  *   POST /tickets/:id/approval-requests                tickets:write
@@ -52,8 +56,8 @@ import { getScopedTicketOr404 } from './tickets';
  *
  * Routes take NO locks: the services own the lock order (organizations SHARE
  * → tickets FOR UPDATE → request → entries). The id peeks below are plain
- * reads. Services throw before writing wherever they can; a response-mapped
- * error therefore commits nothing.
+ * reads. Any error thrown by a service rolls its savepoint back, so a
+ * response-mapped error commits nothing.
  *
  * Staff "on behalf" records the STAFF user as the actor; the signer name and
  * email typed in the dialog are attestation fields of the record only.
@@ -79,7 +83,12 @@ function mapError(c: Context, err: unknown): Response {
   if (err instanceof ApprovalDecisionError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
-  if (err instanceof OrgCurrencyServiceError) return c.json(NOT_FOUND, 404);
+  // The service's org SHARE read: a missing org row is a 404 (and a data
+  // anomaly worth a log line); anything else is not disguised as "not found".
+  if (err instanceof OrgCurrencyServiceError && (err.code === 'ORG_NOT_FOUND' || err.code === 'ORG_DENIED')) {
+    if (err.code === 'ORG_NOT_FOUND') console.warn('[ticketApproval] organization row missing for a visible ticket');
+    return c.json(NOT_FOUND, 404);
+  }
   throw err;
 }
 
@@ -100,10 +109,20 @@ async function scopedTicketOfRequest(auth: AuthContext, requestId: string): Prom
 /**
  * Post-mutation re-check. The services lock and re-read under the ticket
  * lock, but a ticket can change org between the pre-check above and that
- * lock. Throwing (not returning) rolls the request transaction back.
+ * lock. Only meaningful inside `mutateInSavepoint`, whose savepoint the
+ * throw rolls back.
  */
 async function assertStillVisible(auth: AuthContext, ticketId: string): Promise<void> {
   if (!(await getScopedTicketOr404(auth, ticketId))) throw new HTTPException(404, { message: 'Not found' });
+}
+
+/** The service call and the post-check, in one savepoint: either both hold or neither is kept. */
+function mutateInSavepoint<T>(auth: AuthContext, ticketId: string, fn: () => Promise<T>): Promise<T> {
+  return withDbTransaction(async () => {
+    const result = await fn();
+    await assertStillVisible(auth, ticketId);
+    return result;
+  });
 }
 
 async function partnerOf(ticket: ScopedTicket): Promise<string | null> {
@@ -134,8 +153,8 @@ ticketApprovalRoutes.post('/tickets/:id/approval-requests',
     const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
     if (!ticket) return c.json(NOT_FOUND, 404);
     try {
-      const res = await createStaffApprovalRequest(db, { ...body, ticketId: ticket.id, userId: auth.user.id });
-      await assertStillVisible(auth, ticket.id);
+      const res = await mutateInSavepoint(auth, ticket.id,
+        () => createStaffApprovalRequest(db, { ...body, ticketId: ticket.id, userId: auth.user.id }));
       writeRouteAudit(c as never, {
         orgId: ticket.orgId, action: 'ticket.approval_request.create', resourceType: 'ticket_approval_request',
         resourceId: res.requestId, details: { ticketId: ticket.id, trigger: body.trigger },
@@ -153,8 +172,7 @@ ticketApprovalRoutes.post('/ticket-approval-requests/:id/cancel',
     const ticket = await scopedTicketOfRequest(auth, requestId);
     if (!ticket) return c.json(NOT_FOUND, 404);
     try {
-      const res = await cancelApprovalRequest(db, { requestId, userId: auth.user.id });
-      await assertStillVisible(auth, ticket.id);
+      const res = await mutateInSavepoint(auth, ticket.id, () => cancelApprovalRequest(db, { requestId, userId: auth.user.id }));
       writeRouteAudit(c as never, {
         orgId: ticket.orgId, action: 'ticket.approval_request.cancel', resourceType: 'ticket_approval_request',
         resourceId: requestId, details: { ticketId: ticket.id, released: res.released.length, stillHeld: res.stillHeld.length },
@@ -173,8 +191,7 @@ ticketApprovalRoutes.post('/ticket-approval-requests/:id/reask',
     const ticket = await scopedTicketOfRequest(auth, requestId);
     if (!ticket) return c.json(NOT_FOUND, 404);
     try {
-      const res = await reaskApprovalRequest(db, { ...body, requestId, userId: auth.user.id });
-      await assertStillVisible(auth, ticket.id);
+      const res = await mutateInSavepoint(auth, ticket.id, () => reaskApprovalRequest(db, { ...body, requestId, userId: auth.user.id }));
       writeRouteAudit(c as never, {
         orgId: ticket.orgId, action: 'ticket.approval_request.reask', resourceType: 'ticket_approval_request',
         resourceId: res.newRequestId, details: { ticketId: ticket.id, previousRequestId: requestId },
@@ -193,7 +210,7 @@ ticketApprovalRoutes.post('/ticket-approval-requests/:id/decide-on-behalf',
     const ticket = await scopedTicketOfRequest(auth, requestId);
     if (!ticket) return c.json(NOT_FOUND, 404);
     try {
-      const res = await decideApprovalRequest(db, {
+      const res = await mutateInSavepoint(auth, ticket.id, () => decideApprovalRequest(db, {
         requestId, decision: body.decision, revision: body.revision, note: body.note,
         // The actor is the signed-in staff user, never the customer; signer
         // name/email are what the staff member attests the customer said.
@@ -201,8 +218,7 @@ ticketApprovalRoutes.post('/ticket-approval-requests/:id/decide-on-behalf',
           kind: 'on_behalf', userId: auth.user.id, method: body.method, reference: body.reference,
           signerName: body.signerName, signerEmail: body.signerEmail,
         },
-      });
-      await assertStillVisible(auth, ticket.id);
+      }));
       writeRouteAudit(c as never, {
         orgId: ticket.orgId, action: 'ticket.approval_request.decide_on_behalf', resourceType: 'ticket_approval_request',
         resourceId: requestId,
@@ -233,8 +249,7 @@ ticketApprovalRoutes.post('/time-entries/:id/write-off-held',
     const ticket = await getScopedTicketOr404(auth, peek.ticketId);
     if (!ticket || ticket.orgId !== peek.orgId) return c.json(NOT_FOUND, 404);
     try {
-      await writeOffHeldEntry(db, { entryId, actor });
-      await assertStillVisible(auth, ticket.id);
+      await mutateInSavepoint(auth, ticket.id, () => writeOffHeldEntry(db, { entryId, actor }));
       writeSimpleTimeEntryAudits(c as never, mutations);
       return c.json({ data: { entryId, billingStatus: 'no_charge' } });
     } catch (err) { return mapError(c, err); }

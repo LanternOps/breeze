@@ -5552,7 +5552,8 @@
     "loading": "Chargement des paramètres du ticket...",
     "errors": {
       "load": "Les paramètres du ticket n’ont pas réussi à se charger.",
-      "save": "Impossible d’enregistrer les paramètres des tickets"
+      "save": "Impossible d’enregistrer les paramètres des tickets",
+      "savedApprovalFailed": "Les paramètres des tickets ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
     },
     "toasts": {
       "saved": "Paramètres du ticket enregistrés"
@@ -6373,7 +6374,8 @@
         "partner": "Partenaire",
         "default": "Par défaut"
       }
-    }
+    },
+    "savedApprovalFailed": "Les paramètres de temps ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
   },
   "contactsCard": {
     "title": "Contacts",
