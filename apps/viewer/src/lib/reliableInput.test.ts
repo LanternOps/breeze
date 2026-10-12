@@ -3,6 +3,8 @@ import { ReliableInputRouter, MAX_RELIABLE_BUFFERED_BYTES, type InputChannelLike
 import { InputSequencer } from './inputSequencer';
 import type { InputCapabilitiesSnapshot } from './inputCapabilities';
 
+const last = <T,>(xs: T[]): T | undefined => xs[xs.length - 1];
+
 class FakeChannel implements InputChannelLike {
   readyState = 'connecting';
   bufferedAmount = 0;
@@ -161,7 +163,7 @@ describe('ReliableInputRouter — epochs', () => {
     reliable!.send = (d: string) => { order.push(JSON.parse(d).type); origSend(d); };
     router.onControlMessage({ type: 'input_epoch', epoch: 7, reason: 'monitor_switch' });
     expect(order).toEqual(['reconcile', 'input_reset']);
-    expect(reliable!.sent.at(-1)).toEqual({ type: 'input_reset', seq: 2, epoch: 7 });
+    expect(last(reliable!.sent)).toEqual({ type: 'input_reset', seq: 2, epoch: 7 });
   });
 
   it('input_epoch with an invalid epoch is ignored', () => {
@@ -179,7 +181,7 @@ describe('ReliableInputRouter — epochs', () => {
     router.onControlMessage({ type: 'input_epoch', epoch: 5, reason: 'monitor_switch' });
     expect(reliable!.sent.filter((e) => e.type === 'input_reset')).toHaveLength(2); // handshake + one
     router.send({ type: 'mouse_move', x: 0, y: 0 });
-    expect(lossy.sent.at(-1)).toMatchObject({ epoch: 5, geoEpoch: 3 });
+    expect(last(lossy.sent)).toMatchObject({ epoch: 5, geoEpoch: 3 });
   });
 
   it('monitor_switched with the current inputEpoch only updates geometry', () => {
@@ -188,13 +190,13 @@ describe('ReliableInputRouter — epochs', () => {
     expect(reconcileHeld).not.toHaveBeenCalled();
     expect(reliable!.sent).toHaveLength(1);
     router.send({ type: 'mouse_move', x: 0, y: 0 });
-    expect(lossy.sent.at(-1)).toMatchObject({ epoch: 4, geoEpoch: 8 });
+    expect(last(lossy.sent)).toMatchObject({ epoch: 4, geoEpoch: 8 });
   });
 
   it('resetHeld sends input_reset at the current epoch (focus loss)', () => {
     const { router, reliable } = reliableSetup();
     router.resetHeld();
-    expect(reliable!.sent.at(-1)).toEqual({ type: 'input_reset', seq: 2, epoch: 4 });
+    expect(last(reliable!.sent)).toEqual({ type: 'input_reset', seq: 2, epoch: 4 });
   });
 
   it('resetHeld is a no-op in legacy mode', () => {
@@ -220,7 +222,7 @@ describe('ReliableInputRouter — fallback and bounds', () => {
     expect(reconcileHeld).toHaveBeenCalledWith('fallback');
     expect(onNotice).toHaveBeenCalledTimes(1);
     router.send({ type: 'key_down', key: 'a' });
-    expect(lossy.sent.at(-1)).toEqual({ type: 'key_down', key: 'a' });
+    expect(last(lossy.sent)).toEqual({ type: 'key_down', key: 'a' });
   });
 
   it('input-r error is treated like a close', () => {
@@ -233,7 +235,7 @@ describe('ReliableInputRouter — fallback and bounds', () => {
     const { router, reliable, lossy } = reliableSetup();
     reliable!.readyState = 'closing';
     expect(router.send({ type: 'key_up', key: 'a' })).toBe('sent');
-    expect(lossy.sent.at(-1)).toEqual({ type: 'key_up', key: 'a' });
+    expect(last(lossy.sent)).toEqual({ type: 'key_up', key: 'a' });
     expect(router.isReliable()).toBe(false);
   });
 
@@ -260,7 +262,7 @@ describe('ReliableInputRouter — fallback and bounds', () => {
     expect(reconcileHeld).not.toHaveBeenCalled();
     expect(onNotice).not.toHaveBeenCalled();
     router.send({ type: 'key_down', key: 'a' });
-    expect(lossy.sent.at(-1)).toEqual({ type: 'key_down', key: 'a' });
+    expect(last(lossy.sent)).toEqual({ type: 'key_down', key: 'a' });
   });
 
   it('an input-r that opens after detach never sends a reset', () => {

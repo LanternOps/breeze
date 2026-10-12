@@ -59,6 +59,13 @@ describe('mouseButtonName', () => {
   it('returns null for back/forward so a thumb button never clicks on the remote', () => {
     expect(mouseButtonName(3)).toBeNull();
     expect(mouseButtonName(4)).toBeNull();
+    expect(mouseButtonName(3, { extraButtons: false })).toBeNull();
+  });
+  it('maps back/forward only when the agent supports them (W2c)', () => {
+    expect(mouseButtonName(3, { extraButtons: true })).toBe('back');
+    expect(mouseButtonName(4, { extraButtons: true })).toBe('forward');
+    expect(mouseButtonName(5, { extraButtons: true })).toBeNull();
+    expect(mouseButtonName(0, { extraButtons: true })).toBe('left');
   });
 });
 
