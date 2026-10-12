@@ -336,6 +336,7 @@ import {
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { dbSaturationResponse } from './middleware/dbSaturationResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -1111,6 +1112,13 @@ app.onError((err, c) => {
       err.status
     );
   }
+
+  // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue
+  // timeout means the caller's work never ran — answer 503 + Retry-After so
+  // agents make one attempt per cycle instead of four, and keep saturation out
+  // of Sentry (see middleware/dbSaturationResponse.ts).
+  const saturated = dbSaturationResponse(err, c);
+  if (saturated) return saturated;
 
   // #3022 — say out loud what a CONNECT_TIMEOUT actually means before the raw
   // error is logged. The driver's own message is `write CONNECT_TIMEOUT

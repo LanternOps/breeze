@@ -78,3 +78,13 @@ export function publishAdmissionTick(input: AdmissionTickSnapshot): void {
   wsSetups.set(input.wsSetupsInFlight);
   bulkInFlight.set(input.bulkInFlight);
 }
+
+const dbSaturationResponses = counter(
+  'breeze_admission_db_saturation_responses_total',
+  'Requests answered 503 + Retry-After because the DB pool or the RLS prologue timed out (the caller work never ran)',
+  ['error'],
+);
+
+export function recordDbSaturationResponse(kind: 'pool_acquire_timeout' | 'prologue_timeout'): void {
+  dbSaturationResponses.labels(kind).inc();
+}

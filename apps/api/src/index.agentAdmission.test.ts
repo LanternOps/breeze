@@ -49,4 +49,11 @@ describe('agent admission mount (index.ts)', () => {
     const shutdown = indexSource.slice(shutdownStart, shutdownStart + 4_000);
     expect(shutdown).toMatch(lineStart('stopAdmissionControl();'));
   });
+
+  it('maps DB saturation errors in onError before they reach Sentry', () => {
+    const onError = indexSource.slice(stmt(lineStart('app.onError((err, c) => {')));
+    const mapping = onError.indexOf('dbSaturationResponse(err, c)');
+    expect(mapping).toBeGreaterThan(-1);
+    expect(mapping).toBeLessThan(onError.indexOf('captureException(err, c)'));
+  });
 });
