@@ -128,7 +128,8 @@
     "unknownOwner": "Unknown user",
     "ownerOnlyTooltip": "Only {{owner}} can issue or rotate keys",
     "ownerOnlyScopeTooltip": "Only {{owner}} can add scopes",
-    "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs."
+    "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs.",
+    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save."
   },
   "language": {
     "title": "Language",

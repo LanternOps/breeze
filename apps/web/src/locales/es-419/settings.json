@@ -128,7 +128,8 @@
     "unknownOwner": "Usuario desconocido",
     "ownerOnlyTooltip": "Solo {{owner}} puede emitir o rotar claves",
     "ownerOnlyScopeTooltip": "Solo {{owner}} puede agregar alcances",
-    "ownerOnlyEditNotice": "Puedes cambiar el nombre, reducir o acortar este principal. Solo {{owner}} puede agregar alcances, extender su vencimiento o ampliar sus IP de origen."
+    "ownerOnlyEditNotice": "Puedes cambiar el nombre, reducir o acortar este principal. Solo {{owner}} puede agregar alcances, extender su vencimiento o ampliar sus IP de origen.",
+    "ownerOnlyWidening": "Solo {{owner}} puede extender el vencimiento o ampliar las IP de origen. Deshaz esos cambios para guardar."
   },
   "language": {
     "title": "Idioma",

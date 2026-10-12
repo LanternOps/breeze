@@ -77,4 +77,14 @@ describe('PartnerServicePrincipalsPage refusal toasts', () => {
     expect(mocks.fetchWithAuth.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(mocks.showToast).toHaveBeenCalledTimes(1);
   });
+
+  it('re-enables Issue after a refusal so the user can retry', async () => {
+    await openIssueDialog();
+    fireEvent.click(screen.getByTestId('confirm-issue-key'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByTestId('confirm-issue-key')).toBeEnabled());
+
+    fireEvent.click(screen.getByTestId('confirm-issue-key'));
+    await waitFor(() => expect(mocks.fetchWithAuth.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2));
+  });
 });

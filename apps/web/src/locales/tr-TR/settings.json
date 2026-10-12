@@ -128,7 +128,8 @@
     "unknownOwner": "Bilinmeyen kullanıcı",
     "ownerOnlyTooltip": "Yalnızca {{owner}} anahtar verebilir veya döndürebilir",
     "ownerOnlyScopeTooltip": "Yalnızca {{owner}} kapsam ekleyebilir",
-    "ownerOnlyEditNotice": "Bu sorumluyu yeniden adlandırabilir, daraltabilir veya süresini kısaltabilirsiniz. Yalnızca {{owner}} kapsam ekleyebilir, süresini uzatabilir veya kaynak IP'lerini genişletebilir."
+    "ownerOnlyEditNotice": "Bu sorumluyu yeniden adlandırabilir, daraltabilir veya süresini kısaltabilirsiniz. Yalnızca {{owner}} kapsam ekleyebilir, süresini uzatabilir veya kaynak IP'lerini genişletebilir.",
+    "ownerOnlyWidening": "Yalnızca {{owner}} süreyi uzatabilir veya kaynak IP'lerini genişletebilir. Kaydetmek için bu değişiklikleri geri alın."
   },
   "language": {
     "title": "Dil",

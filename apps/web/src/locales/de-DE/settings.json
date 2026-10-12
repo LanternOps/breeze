@@ -128,7 +128,8 @@
     "unknownOwner": "Unbekannter Benutzer",
     "ownerOnlyTooltip": "Nur {{owner}} kann Schlüssel ausstellen oder rotieren",
     "ownerOnlyScopeTooltip": "Nur {{owner}} kann Bereiche hinzufügen",
-    "ownerOnlyEditNotice": "Sie können diesen Principal umbenennen, einschränken oder seine Laufzeit verkürzen. Nur {{owner}} kann Bereiche hinzufügen, das Ablaufdatum verlängern oder die Quell-IPs lockern."
+    "ownerOnlyEditNotice": "Sie können diesen Principal umbenennen, einschränken oder seine Laufzeit verkürzen. Nur {{owner}} kann Bereiche hinzufügen, das Ablaufdatum verlängern oder die Quell-IPs lockern.",
+    "ownerOnlyWidening": "Nur {{owner}} kann das Ablaufdatum verlängern oder die Quell-IPs lockern. Machen Sie diese Änderungen rückgängig, um zu speichern."
   },
   "language": {
     "title": "Sprache",

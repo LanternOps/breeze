@@ -128,7 +128,8 @@
     "unknownOwner": "Utente sconosciuto",
     "ownerOnlyTooltip": "Solo {{owner}} può emettere o ruotare le chiavi",
     "ownerOnlyScopeTooltip": "Solo {{owner}} può aggiungere ambiti",
-    "ownerOnlyEditNotice": "Puoi rinominare, restringere o accorciare questo principal. Solo {{owner}} può aggiungere ambiti, estenderne la scadenza o allentare gli IP di origine."
+    "ownerOnlyEditNotice": "Puoi rinominare, restringere o accorciare questo principal. Solo {{owner}} può aggiungere ambiti, estenderne la scadenza o allentare gli IP di origine.",
+    "ownerOnlyWidening": "Solo {{owner}} può estendere la scadenza o allentare gli IP di origine. Annulla queste modifiche per salvare."
   },
   "language": {
     "title": "Lingua",

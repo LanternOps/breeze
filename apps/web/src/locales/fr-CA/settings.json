@@ -128,7 +128,8 @@
     "unknownOwner": "Utilisateur inconnu",
     "ownerOnlyTooltip": "Seul {{owner}} peut émettre ou renouveler des clés",
     "ownerOnlyScopeTooltip": "Seul {{owner}} peut ajouter des portées",
-    "ownerOnlyEditNotice": "Vous pouvez renommer, restreindre ou raccourcir ce principal. Seul {{owner}} peut ajouter des portées, prolonger son expiration ou assouplir ses IP sources."
+    "ownerOnlyEditNotice": "Vous pouvez renommer, restreindre ou raccourcir ce principal. Seul {{owner}} peut ajouter des portées, prolonger son expiration ou assouplir ses IP sources.",
+    "ownerOnlyWidening": "Seul {{owner}} peut prolonger l'expiration ou assouplir les IP sources. Annulez ces modifications pour enregistrer."
   },
   "language": {
     "title": "Langue",

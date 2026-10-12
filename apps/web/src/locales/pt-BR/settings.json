@@ -128,7 +128,8 @@
     "unknownOwner": "Usuário desconhecido",
     "ownerOnlyTooltip": "Somente {{owner}} pode emitir ou rotacionar chaves",
     "ownerOnlyScopeTooltip": "Somente {{owner}} pode adicionar escopos",
-    "ownerOnlyEditNotice": "Você pode renomear, restringir ou encurtar este principal. Somente {{owner}} pode adicionar escopos, estender a expiração ou ampliar os IPs de origem."
+    "ownerOnlyEditNotice": "Você pode renomear, restringir ou encurtar este principal. Somente {{owner}} pode adicionar escopos, estender a expiração ou ampliar os IPs de origem.",
+    "ownerOnlyWidening": "Somente {{owner}} pode estender a expiração ou ampliar os IPs de origem. Desfaça essas alterações para salvar."
   },
   "language": {
     "title": "Idioma",

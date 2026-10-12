@@ -96,6 +96,20 @@ function changedFields(draft: PrincipalDraft, original: PrincipalDraft) {
   return changed;
 }
 
+// Mirrors the expiry / source-CIDR half of the API's patchWidensPrincipal:
+// pushing out or clearing an existing expiry, or clearing or adding to an
+// existing CIDR list, is owner-only. (Scope additions are blocked at the
+// checkbox; the page has no re-enable control.)
+function editLoosensRestrictions(draft: PrincipalDraft, original: PrincipalDraft): boolean {
+  if (original.expiresAt && draft.expiresAt !== original.expiresAt) {
+    if (!draft.expiresAt || new Date(draft.expiresAt).getTime() > new Date(original.expiresAt).getTime()) return true;
+  }
+  const before = principalPayload(original).sourceCidrs;
+  const next = principalPayload(draft).sourceCidrs;
+  if (before.length > 0 && (next.length === 0 || next.some((cidr) => !before.includes(cidr)))) return true;
+  return false;
+}
+
 export default function PartnerServicePrincipalsPage() {
   const { t } = useTranslation('settings');
   const currentUserId = useAuthStore((state) => state.user?.id);
@@ -108,6 +122,7 @@ export default function PartnerServicePrincipalsPage() {
   const [issueTarget, setIssueTarget] = useState<Principal | null>(null);
   const [keyName, setKeyName] = useState('');
   const [issuing, setIssuing] = useState(false);
+  const [rotatingKeyId, setRotatingKeyId] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const copyKey = async () => {
@@ -237,6 +252,9 @@ export default function PartnerServicePrincipalsPage() {
   };
 
   const rotateKey = async (principal: Principal, key: PrincipalKey) => {
+    // A second rotate of the same key would hit an already-rotated key.
+    if (rotatingKeyId) return;
+    setRotatingKeyId(key.id);
     try {
       const rotated = await runAction<{ key: string }>({
         request: () => fetchWithAuth(`/partner-service-principals/${principal.id}/keys/${key.id}/rotate`, { method: 'POST' }),
@@ -248,6 +266,8 @@ export default function PartnerServicePrincipalsPage() {
       await load();
     } catch (error) {
       handleActionError(error, t('partnerServicePrincipals.rotateFailed'));
+    } finally {
+      setRotatingKeyId(null);
     }
   };
 
@@ -266,6 +286,7 @@ export default function PartnerServicePrincipalsPage() {
   };
 
   const editingNonOwner = editing && editing !== 'new' && !isOwner(editing) ? editing : null;
+  const nonOwnerLoosens = editingNonOwner !== null && editLoosensRestrictions(draft, originalDraft);
 
   // Keep the one-time secret outside list-state branches. A slow or failed
   // refresh must never unmount the reveal before the user explicitly closes it.
@@ -299,7 +320,7 @@ export default function PartnerServicePrincipalsPage() {
         </div>
       </div>
       <div className="mt-4 overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="py-2">{t('partnerServicePrincipals.keyName')}</th><th>{t('partnerServicePrincipals.prefix')}</th><th>{t('partnerServicePrincipals.status')}</th><th className="text-right">{t('partnerServicePrincipals.actions')}</th></tr></thead><tbody>
-        {principal.keys.map((key) => <tr key={key.id} className="border-b last:border-0"><td className="py-2">{key.name}</td><td className="font-mono">{key.keyPrefix}…</td><td>{key.status}</td><td className="space-x-2 text-right">{key.status === 'active' && <><span title={isOwner(principal) ? undefined : t('partnerServicePrincipals.ownerOnlyTooltip', { owner: ownerName(principal) })}><button data-testid={`rotate-key-${key.id}`} disabled={!isOwner(principal)} className="underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50" onClick={() => void rotateKey(principal, key)}>{t('partnerServicePrincipals.rotate')}</button></span><button data-testid={`revoke-key-${key.id}`} className="underline" onClick={() => void revokeKey(principal, key)}>{t('partnerServicePrincipals.revoke')}</button></>}</td></tr>)}
+        {principal.keys.map((key) => <tr key={key.id} className="border-b last:border-0"><td className="py-2">{key.name}</td><td className="font-mono">{key.keyPrefix}…</td><td>{key.status}</td><td className="space-x-2 text-right">{key.status === 'active' && <><span title={isOwner(principal) ? undefined : t('partnerServicePrincipals.ownerOnlyTooltip', { owner: ownerName(principal) })}><button data-testid={`rotate-key-${key.id}`} disabled={!isOwner(principal) || rotatingKeyId === key.id} className="underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50" onClick={() => void rotateKey(principal, key)}>{t('partnerServicePrincipals.rotate')}</button></span><button data-testid={`revoke-key-${key.id}`} className="underline" onClick={() => void revokeKey(principal, key)}>{t('partnerServicePrincipals.revoke')}</button></>}</td></tr>)}
       </tbody></table></div>
     </section>)}
 
@@ -314,7 +335,8 @@ export default function PartnerServicePrincipalsPage() {
       })}</div>{writeScopeMissingRestrictions && <p data-testid="write-scope-restrictions-required" className="mt-1 text-xs text-destructive">{t('partnerServicePrincipals.writeScopeRestrictionsRequired')}</p>}</fieldset>
       <label className="block text-sm">{t('partnerServicePrincipals.sourceCidrs')}<textarea className="mt-1 w-full rounded border bg-background p-2 font-mono" value={draft.sourceCidrs} onChange={(event) => setDraft({ ...draft, sourceCidrs: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.expiresAt')}<input type="datetime-local" className="mt-1 w-full rounded border bg-background p-2" value={draft.expiresAt} onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></label>
-      <div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="save-principal" disabled={writeScopeMissingRestrictions} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
+      {nonOwnerLoosens && editingNonOwner && <p data-testid="owner-only-widening" className="text-xs text-destructive">{t('partnerServicePrincipals.ownerOnlyWidening', { owner: ownerName(editingNonOwner) })}</p>}
+      <div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="save-principal" disabled={writeScopeMissingRestrictions || nonOwnerLoosens} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
     </div></div>}
 
     {issueTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('partnerServicePrincipals.issueKey')}</h2><label className="block text-sm">{t('partnerServicePrincipals.keyName')}<input aria-label={t('partnerServicePrincipals.keyName')} className="mt-1 w-full rounded border bg-background p-2" value={keyName} onChange={(event) => setKeyName(event.target.value)} /></label><div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => { setIssueTarget(null); setKeyName(''); }}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="confirm-issue-key" disabled={issuing} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void issueKey()}>{t('partnerServicePrincipals.issue')}</button></div></div></div>}

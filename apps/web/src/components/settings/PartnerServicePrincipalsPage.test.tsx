@@ -281,6 +281,35 @@ describe('PartnerServicePrincipalsPage', () => {
       await waitFor(() => expect(patchBody()).toEqual({ expiresAt: '2026-12-02T14:00:00.000Z' }));
     });
 
+    describe('as a non-owner (#8368)', () => {
+      beforeEach(() => { mocks.currentUserId = OTHER_USER_ID; });
+
+      const expiryInput = () => screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')!;
+      const cidrInput = () => screen.getByText('partnerServicePrincipals.sourceCidrs').querySelector('textarea')!;
+
+      it.each([
+        ['extends the expiry', () => fireEvent.change(expiryInput(), { target: { value: '2027-01-01T10:30' } })],
+        ['clears the expiry', () => fireEvent.change(expiryInput(), { target: { value: '' } })],
+        ['clears the source CIDRs', () => fireEvent.change(cidrInput(), { target: { value: '' } })],
+        ['adds a source CIDR', () => fireEvent.change(cidrInput(), { target: { value: '203.0.113.0/24\n198.51.100.0/24' } })],
+      ])('blocks Save with an owner-only message when the edit %s', async (_label, edit) => {
+        await openEdit();
+        edit();
+        expect(screen.getByTestId('owner-only-widening')).toHaveTextContent('partnerServicePrincipals.ownerOnlyWidening[Pat Owner]');
+        expect(screen.getByTestId('save-principal')).toBeDisabled();
+        fireEvent.click(screen.getByTestId('save-principal'));
+        expect(patchBody()).toBeUndefined();
+      });
+
+      it('still lets a non-owner shorten the expiry', async () => {
+        await openEdit();
+        fireEvent.change(expiryInput(), { target: { value: '2026-11-30T10:30' } });
+        expect(screen.queryByTestId('owner-only-widening')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('save-principal'));
+        await waitFor(() => expect(patchBody()).toEqual({ expiresAt: '2026-11-30T15:30:00.000Z' }));
+      });
+    });
+
     it('saving without changes sends no request', async () => {
       await openEdit();
       fireEvent.click(screen.getByTestId('save-principal'));
@@ -362,6 +391,31 @@ describe('PartnerServicePrincipalsPage', () => {
       fireEvent.click(screen.getByText('partnerServicePrincipals.edit'));
       expect(screen.getByTestId('scope-checkbox-tickets:read')).toBeEnabled();
       expect(screen.queryByTestId('owner-only-edit-notice')).not.toBeInTheDocument();
+    });
+
+    it('treats a missing signed-in user as a non-owner', async () => {
+      mocks.currentUserId = '';
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`issue-key-${PRINCIPAL_ID}`)).toBeDisabled();
+      expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeDisabled();
+    });
+
+    it('sends one rotate request when Rotate is clicked twice before the first answers', async () => {
+      const pending = deferred<{ key: string }>();
+      mocks.runAction.mockReturnValueOnce(pending.promise);
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+
+      fireEvent.click(screen.getByTestId(`rotate-key-${KEY_ID}`));
+      fireEvent.click(screen.getByTestId(`rotate-key-${KEY_ID}`));
+      expect(mocks.runAction).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeDisabled();
+
+      pending.resolve({ key: 'brz_sp_ROT_ONCE' });
+      expect(await screen.findByText('brz_sp_ROT_ONCE')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('close-key-reveal'));
+      await waitFor(() => expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeEnabled());
     });
 
     it('sends one issue request when Issue is clicked twice before the first answers', async () => {
