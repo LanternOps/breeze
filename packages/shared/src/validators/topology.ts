@@ -274,6 +274,8 @@ export const presentationNodeSchema = z.object({
    * A `hidden` group is never drawn (#7879): it names canonical nodes the overview leaves
    * out — `decommissioned` devices, and orphan network/gateway nodes with
    * `no_current_evidence` — so clients fold them away and can say how many.
+   * A `declared_site_network` card (site location W1) is the exception to "inferred": an
+   * administrator-declared prefix that no observer reports, drawn memberless.
    */
   group: z.object({
     kind: z.enum(['network', 'gateway', 'unidentified', 'hidden']),

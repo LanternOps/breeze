@@ -219,7 +219,8 @@ export const updateDeviceSchema = z.object({
   purchaseDate: purchaseDateSchema,
   // Site-move hardening (topology site location W1, spec S§12). Guard fields, never written:
   // `expectedSiteId` is the site the caller believes the device is in (409 if it is not);
-  // `siteMoveTrigger` labels the `device.site_move` audit. Client-supplied evidence is never accepted.
+  // `siteMoveTrigger` labels the `device.site_move` audit; it is a client-asserted hint, not verified
+  // (W3 derives suggestion evidence server-side). Client-supplied evidence is never accepted.
   expectedSiteId: z.string().guid().optional(),
   siteMoveTrigger: z.enum(['manual', 'topology_suggestion']).optional(),
 });

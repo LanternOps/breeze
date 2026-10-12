@@ -1951,7 +1951,7 @@ coreRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
     // The caller acted on a stale view of the device's site: refuse before any write (S§12.2).
-    if (expectedSiteId !== undefined && expectedSiteId !== device.siteId) {
+    if (expectedSiteId !== undefined && expectedSiteId.toLowerCase() !== device.siteId.toLowerCase()) {
       return siteChangedConflict(c, device.siteId);
     }
 
@@ -2036,13 +2036,16 @@ coreRoutes.patch(
     // BEFORE the devices UPDATE below so that statement's RETURNING already
     // carries the rebuilt projection; the whole handler runs inside the
     // request transaction, so a later failure rolls both back together.
-    if (customFieldWrites.length > 0) {
+    // A site move persists them inside its savepoint instead (below), so a guarded-UPDATE conflict
+    // rolls them back with the move.
+    if (customFieldWrites.length > 0 && !siteChanged) {
       await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.displayName !== undefined) updates.displayName = data.displayName;
-    if (data.siteId !== undefined) updates.siteId = data.siteId;
+    // Only a real move writes site_id: echoing the current site must not rewrite a concurrent move back.
+    if (siteChanged) updates.siteId = data.siteId;
     if (data.tags !== undefined) updates.tags = data.tags;
     if (data.deviceRole !== undefined) {
       updates.deviceRole = data.deviceRole;
@@ -2074,6 +2077,10 @@ coreRoutes.patch(
     if (siteChanged) {
       try {
         await db.transaction(async (tx) => {
+          // Same connection as the savepoint, so a SiteMoveConflict below rolls these back too.
+          if (customFieldWrites.length > 0) {
+            await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
+          }
           const [row] = await tx
             .update(devices)
             .set(updates)

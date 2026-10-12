@@ -16,8 +16,9 @@
  * The site is reachable at /discovery#topology/site/<DEMO_SITE_ID> after switching to the demo org.
  *
  * Lakeside scenario (site location W1). The org has two sites. Lakeside owns the
- * second LAN 10.1.5.0/24 (its own discovery profile and four agents; two are fresh
- * observers that corroborate the gateway MAC). Deliberately mixed in:
+ * second LAN 10.1.5.0/24: its own discovery profile and four agents on that LAN (two fresh
+ * observers that corroborate the gateway MAC, two offline), plus a fifth Lakeside agent,
+ * LAPTOP-LOV-01, visiting Main Office. Deliberately mixed in:
  *  - two online Main-Office-assigned desktops (DESKTOP-HD7K2QF, WIN-HD4M8T2C9) that
  *    sit on 10.1.5.0/24: misassigned devices;
  *  - LAPTOP-LOV-01, assigned to Lakeside but visiting Main Office's LAN (10.1.2.0/24);
@@ -35,7 +36,7 @@
  * erased through the real tenant-erasure cascade (cascadeDeleteOrg) and rebuilt.
  *
  * Paths used (real code wherever one exists):
- *  - Inventory rows (orgs, sites, devices, device_network, discovery profile/jobs,
+ *  - Inventory rows (orgs, sites, devices, device_network, discovery profiles (one per site) and Main's jobs,
  *    discovered_assets, legacy topology_layout pins) are written to their normal
  *    tables; their SQL capture triggers emit the legacy `binding.changed` /
  *    `layout.upsert` outbox events exactly as production writes do.
@@ -223,9 +224,9 @@ async function enableTopology(scope: Scope) {
 
 // --------------------------------------------------------- network context ---
 
-/** Canonical (URL-normalized) IPv6 link-local address for one device. */
 /** The home router's MAC; distinct from every demoMac(3|9, …) used on the office LANs. */
 const HOME_ROUTER_MAC = demoMac(5, 1);
+/** Canonical (URL-normalized) IPv6 link-local address for one device. */
 const linkLocalFor = (index: number) => `fe80::b7:${(0x1a00 + index).toString(16)}:${(0x2c00 + index * 13).toString(16)}`;
 
 function neighborRows(d: DemoDevice, index: number, devices: DemoDevice[], assets: DemoAsset[]) {

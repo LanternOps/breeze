@@ -45,10 +45,17 @@ vi.mock('../../services/remoteAccessLauncher', () => ({ resolveRemoteAccessLaunc
 vi.mock('../agentWs', () => ({ sendCommandToAgent: vi.fn(), isAgentConnected: vi.fn().mockReturnValue(false) }));
 vi.mock('../../services/commandQueue', () => ({ CommandTypes: { SELF_UNINSTALL: 'self_uninstall' }, queueCommandForExecution: vi.fn() }));
 vi.mock('../agents/enrollment', () => ({ getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null) }));
+vi.mock('../../services/customFields/validateValueMap', async (original) => ({
+  ...await original<object>(),
+  validateCustomFieldMap: vi.fn(async (_orgId: string, _os: string, values: Record<string, unknown>) =>
+    ({ ok: true, values, writes: Object.entries(values).map(([key, value]) => ({ definitionId: key, value })) })),
+}));
+vi.mock('../../services/customFields/queries', async (original) => ({ ...await original<object>(), persistDeviceCustomFieldValues: vi.fn() }));
 
 import { coreRoutes, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_A = '77777777-7777-4777-8777-777777777777';
@@ -151,6 +158,28 @@ describe('PATCH /devices/:id site-move guard', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('writes nothing of the request — custom fields included — when the lock read finds the device moved', async () => {
+    moveSelects({ siteId: SITE_C });
+    const res = await patch({ siteId: SITE_B, displayName: 'Front desk', customFields: { assetTag: 'HD-0042' } });
+    expect(res.status).toBe(409);
+    expect(persistDeviceCustomFieldValues).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('persists custom fields only after the lock read confirms the site, on a successful move', async () => {
+    moveSelects();
+    const res = await patch({ siteId: SITE_B, customFields: { assetTag: 'HD-0042' } });
+    expect(res.status).toBe(200);
+    expect(persistDeviceCustomFieldValues).toHaveBeenCalledTimes(1);
+  });
+
+  it('compares expectedSiteId case-insensitively', async () => {
+    moveSelects();
+    const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A.toUpperCase() });
+    expect(res.status).toBe(200);
+  });
+
   it('omits currentSiteId from the 409 when the caller cannot access the site the device moved to', async () => {
     moveSelects({ siteId: SITE_C });
     const res = await patch({ siteId: SITE_B }, { 'x-restrict-site-list': `${SITE_A},${SITE_B}` });
@@ -198,6 +227,16 @@ describe('PATCH /devices/:id site-move guard', () => {
     expect(db.transaction).not.toHaveBeenCalled();
     expect(vi.mocked(writeRouteAudit).mock.calls.map(([, event]) => event.action)).toEqual(['device.update']);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ details: { changedFields: ['displayName', 'siteId'] } }));
+  });
+
+  it('never writes site_id when the requested site equals the current one (a stale echo cannot revert a concurrent move)', async () => {
+    queueSelects([[device]]);
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([device]) }) });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+    const res = await patch({ siteId: SITE_A, displayName: 'Front desk' });
+    expect(res.status).toBe(200);
+    expect(set.mock.calls[0]![0]).not.toHaveProperty('siteId');
+    expect(set.mock.calls[0]![0]).toMatchObject({ displayName: 'Front desk' });
   });
 
   it('rejects a body with only the guard fields as having no updates', async () => {

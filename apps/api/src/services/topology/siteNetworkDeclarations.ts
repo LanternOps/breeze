@@ -9,10 +9,13 @@ import { parsePrefix } from './ipAddress';
  * An administrator declares a site's networks through the subnets of its ENABLED discovery
  * profiles and its network baselines. Matching against observed prefixes is exact normalized
  * IPv4 prefix equality, never containment: a declared /16 claims no observed /24 (a scan range
- * is not a broadcast domain, collection spec C:210). v1 is IPv4 only (S§3 D10).
+ * is not a broadcast domain, collection spec C §6). v1 is IPv4 only (S§3 D10).
  */
 
-/** Spec S§6.2: an IPv4 CIDR of length 8–30 with host bits zeroed; anything else is null. */
+/**
+ * Spec S§6.2: accepts an IPv4 CIDR of length 8–30 and zeroes its host bits (`10.1.5.1/24` → `10.1.5.0/24`);
+ * returns null for anything else (ranges, bare addresses, /31, /32, IPv6, unparsable text).
+ */
 export function normalizeDeclaredPrefix(text: string): string | null {
   const trimmed = typeof text === 'string' ? text.trim() : '';
   if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(trimmed)) return null;
@@ -26,7 +29,7 @@ export function normalizeDeclaredPrefix(text: string): string | null {
 
 export type DeclarationKind = 'discovery_profile' | 'network_baseline';
 export type DeclarationSource = { kind: DeclarationKind; id: string };
-/** `ignored` counts declaration entries that are not a usable prefix (ranges, hosts, IPv6, garbage). */
+/** `ignored` counts declaration entries that are not a usable prefix (ranges, hosts, IPv6, garbage), plus entries past SITE_DECLARATION_ENTRY_CAP. */
 export type SiteNetworkDeclarations = { prefixes: Map<string, DeclarationSource[]>; ignored: number };
 
 type DeclarationRow = { kind: DeclarationKind; id: string; site_id: string; raw: string };

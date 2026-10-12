@@ -300,6 +300,19 @@ describe('compileTopologyRender: site declarations and the roster (site location
     expect(out.hiddenNetworkCount).toBe(0);
   });
 
+  it('keeps a device that is also drawn in a declared card on the canvas and out of the roster (second NIC on a stray LAN)', () => {
+    const graph = declaredAndStray();
+    const cards = graph.presentation.nodes.filter((node) => node.group?.kind === 'network');
+    const declared = cards.find((card) => card.group!.prefix === '10.1.2.0/24')!;
+    const stray = cards.find((card) => card.group!.prefix === '10.1.5.0/24')!;
+    const dualHomed = declared.group!.members[0]!.nodeId;
+    stray.group!.members.push({ nodeId: dualHomed, placement: 'observed', primary: false, stale: false });
+    const out = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: false });
+    expect(out.nodes.some((n) => n.id === dualHomed)).toBe(true);
+    expect(out.roster[0]!.memberNodeIds).not.toContain(dualHomed);
+    expect(out.roster[0]!.memberNodeIds).toHaveLength(2);
+  });
+
   it('keeps every card on the canvas when the site declares nothing', () => {
     const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'undeclared', members: 20 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]);
     const out = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: false });

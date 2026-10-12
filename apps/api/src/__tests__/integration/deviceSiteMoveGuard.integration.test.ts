@@ -101,7 +101,7 @@ describe('PATCH /devices/:id site-move guard (real Postgres)', () => {
     let patchResponse: Promise<Response> | undefined;
     await getTestDb().transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM devices WHERE id = ${f.deviceId}::uuid FOR UPDATE`);
-      patchResponse = Promise.resolve(patch(f.token, f.deviceId, { siteId: f.siteB }));
+      patchResponse = Promise.resolve(patch(f.token, f.deviceId, { siteId: f.siteB, displayName: 'Front desk' }));
       // Wait until the PATCH's backend is actually blocked on our row lock.
       let blocked = false;
       for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
@@ -117,6 +117,9 @@ describe('PATCH /devices/:id site-move guard (real Postgres)', () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: 'device_site_changed', currentSiteId: f.siteC });
     expect(await currentSite(f.deviceId)).toBe(f.siteC);
+    // Nothing else in the losing request was written either.
+    const [row] = (await getTestDb().execute(sql`SELECT display_name FROM devices WHERE id = ${f.deviceId}::uuid`)) as unknown as { display_name: string | null }[];
+    expect(row!.display_name).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await siteMoveAudits(f.deviceId)).toHaveLength(0);
   });
