@@ -482,3 +482,78 @@ handler-classification return path, durable handoff with confirmed enqueue,
 rejected re-resolution, supplemental terminal REST observation handling,
 rollout telemetry, and all stated gates are implemented and passing. Task 8
 remains blocked until then.
+
+## 2026-10 amendment: ownership epochs (W3, #8205)
+
+Recorded by PAM ownership epochs wave 3 (feature #8202). The design this
+amends against is
+[PAM Ownership Epochs](pam/2026-10-06-pam-ownership-epoch-design.md) (§6).
+Everything above still holds for a candidate in the device's **current**
+ownership epoch; this section changes only how ownership is proven and adds
+one disposition for candidates from an **earlier** epoch.
+
+### Lookup authority
+
+The resolver no longer runs the RLS-scoped join on the live
+`devices.org_id`. It calls one `SECURITY DEFINER` function,
+`breeze_pam_epoch_binding(agent_id, device_id, candidates jsonb)`
+(migration `2026-12-24-130000-pam-lineage-binding.sql`):
+
+- **Phase 1, caller's scope.** The live device row must match
+  `(id, agent_id)` and the caller's context must have access to that
+  device's live org. Otherwise every candidate is `unresolved` — the same
+  opaque answer as before for a foreign device.
+- **Phase 2, system scope.** An actuation is this device's when
+  `actuation.device_id = device_id` and
+  `(device_id, actuation.org_id, actuation.device_epoch)` is a row of
+  `device_ownership_epochs`. The live org is no longer an ownership proof.
+  The scope is elevated in the function body and restored before it returns.
+- The function returns only `ordinal`, `observation_id` (echoed), `status`,
+  and `command_id` — never evidence or org ids. It is `STABLE`, pins
+  `search_path`, and `EXECUTE` is granted to `breeze_app` only.
+
+The structured-result transaction (`recordPamActuationResult`) matches a
+current-epoch actuation only (`device_epoch = devices.ownership_epoch`). A
+result naming an earlier-epoch actuation is resolved through the same
+function: a `retired` answer acknowledges without writing anything, so the
+source org's evidence stays byte-identical; any other answer stays
+`rejected`.
+
+### Dispositions
+
+| Candidate | v1 response | v2 response |
+|---|---|---|
+| current epoch | unchanged: `bound` / `duplicate` / `stale` / `unresolved` | same |
+| earlier epoch, actuation closed or a retirement marker exists | `stale` | `retired` |
+| actuation row gone (source org erased), retirement marker exists | `stale` | `retired` |
+| earlier epoch, not closed, no marker | `unresolved` | `unresolved` |
+| foreign, future generation, contradictory | `unresolved` | `unresolved` |
+
+- **Protocol v2** is `{ protocolVersion: 2, candidates }` with the same
+  candidate shape, limits, body cap, and rate limit as v1. Its response adds
+  `{ status: 'retired'; observationId }`, which authorizes the agent to
+  remove the ledger entry durably. Any other `protocolVersion` is a 400.
+- **v1 `stale` is widened.** Its documented meaning was "the server has
+  moved past this generation". It now also covers "this observation belongs
+  to an earlier ownership epoch of this device and is finished". The v1 agent
+  behavior is unchanged and correct for both: dispose the observation, record
+  nothing, reopen admission. A v1 agent never sees `retired`; the response
+  schema per version enforces it.
+- **Result acknowledgements** (`/commands/:id/result`,
+  `/commands/:id/pam-observations`) are protocol v1 and report `retired` as
+  `stale`.
+
+### Facts carried from wave 2 (#8204)
+
+- **Un-actuated elevation requests re-anchor.** A request that never reached
+  actuation follows its device into the new epoch (its `device_epoch` is
+  re-anchored to the device's current epoch); an actuated request's chain is
+  frozen (42501 on change). Binding never sees an un-actuated request, since
+  candidates name actuations.
+- **One-time bootstrap.** Because the epoch lineage shipped one release before
+  the PAM chain was anchored to it, the first application of
+  `2026-12-23-150000-pam-chain-epoch-anchor.sql` anchored existing PAM rows in
+  their device's current org to the device's current epoch. It does not
+  re-run on replay. Foreign keys that pre-existing data could not satisfy are
+  left `NOT VALID` with a boot-log warning (`pam chain epoch anchor:`) rather
+  than failing the migration.
