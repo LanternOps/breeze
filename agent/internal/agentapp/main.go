@@ -1042,7 +1042,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		// on self-update/config-reload the orphaned loop keeps polling with a
 		// zeroed token and spins auth-failure logs (same class as ETW PR #959).
 		unifiCtx, unifiCancel = context.WithCancel(context.Background())
+		// #7970: the loop backs off to a long idle interval while this device
+		// has no collectors; the heartbeat's unifi_collectors_assigned hint
+		// wakes it so a new assignment is picked up within about one beat.
+		unifiWaker := unifi.NewWaker()
+		hb.SetUnifiCollectorWake(unifiWaker.Wake)
 		unifiDone = unifi.StartCollectorLoop(unifiCtx, unifi.CollectorDeps{
+			Wake: unifiWaker,
 			// URL provider, not a copied string: after backup-server-URL
 			// promotion (#2323) uploads must follow the promoted primary
 			// instead of POSTing to the dead one forever (#2423).
