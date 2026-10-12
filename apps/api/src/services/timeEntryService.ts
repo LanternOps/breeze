@@ -1016,12 +1016,21 @@ async function stopRunningEntry(
   overrides: { description?: string; isBillable?: boolean } = {},
   lockedTickets?: Set<string>,
 ): Promise<(typeof timeEntries.$inferSelect & { approvalHold: ApprovalHold }) | null> {
+  // A retry is only taken when NOTHING was locked by the failed attempt (an
+  // ungated CAS that matched no row). Once a ticket and the entry are locked,
+  // a mismatch is refused (409) instead: retrying would take the next ticket
+  // lock while holding the entry lock — the entry-before-ticket order this
+  // whole sequence exists to rule out.
   for (let attempt = 0; attempt < 2; attempt++) {
     const peek = await peekRunningEntry(actor.userId);
-    // The org-axis allowlist BEFORE the org SHARE below: RLS hides a
-    // non-granted org's row, so the lock would fail as a raw error (500).
-    if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
-      throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+    if (peek?.ticketId && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+      // The technician lost access to the timer's org while it ran. RLS hides
+      // that org and ticket, so neither can be locked; the timer is still
+      // theirs, so it is stopped UNGATED (pinned to this entry), as before
+      // the approval gate existed, rather than wedging every future start.
+      const stopped = await stopUnlinkedEntry(actor, overrides, { id: peek.id, ticketless: false });
+      if (stopped !== 'changed') return stopped;
+      continue;
     }
     if (peek?.ticketId) {
       if (lockedTickets) {
@@ -1032,12 +1041,13 @@ async function stopRunningEntry(
         await lockTicketsInOrder([peek.ticketId]);
       }
       const [entry] = await db.select().from(timeEntries).where(eq(timeEntries.id, peek.id)).limit(1).for('update');
-      if (!entry || entry.endedAt != null || entry.ticketId !== peek.ticketId || entry.userId !== actor.userId) {
-        continue; // changed between the read and the lock — read again
+      if (!entry || entry.userId !== actor.userId || entry.endedAt != null) return null; // stopped (or gone) meanwhile
+      if (entry.ticketId !== peek.ticketId) {
+        throw new TimeEntryServiceError('Your running timer changed while stopping it — try again', 409, 'ENTRY_CHANGED');
       }
       return stopLockedTicketEntry(entry, actor, overrides);
     }
-    const stopped = await stopUnlinkedEntry(actor, overrides, peek?.id);
+    const stopped = await stopUnlinkedEntry(actor, overrides, { id: peek?.id, ticketless: true });
     if (stopped !== 'changed') return stopped;
   }
   throw new TimeEntryServiceError('Your running timer changed while stopping it — try again', 409, 'ENTRY_CHANGED');
@@ -1099,17 +1109,20 @@ async function stopLockedTicketEntry(
 }
 
 /**
- * A timer with no ticket is never gated: the original single-statement CAS
- * stop. `peekedId` pins the CAS to the ticketless timer the caller read; one
- * that was linked to a ticket meanwhile matches nothing and reports
- * 'changed', so the caller re-reads and takes the gated path instead.
+ * The ungated, single-statement CAS stop: for a timer with no ticket, and for
+ * a ticket-linked timer whose org the technician can no longer see.
+ * `pin.ticketless` restricts the CAS to a timer with no ticket, so a timer
+ * linked to a ticket after the caller's read is never stopped past the gate;
+ * `pin.id` pins it to the row the caller read, and a miss then reports
+ * 'changed' so the caller re-reads.
  */
 async function stopUnlinkedEntry(
   actor: TimeEntryActor,
   overrides: { description?: string; isBillable?: boolean },
-  peekedId?: string,
+  pin: { id?: string; ticketless: boolean },
 ) {
-  const pinned = peekedId ? and(eq(timeEntries.id, peekedId), isNull(timeEntries.ticketId)) : undefined;
+  const peekedId = pin.id;
+  const pinned = and(peekedId ? eq(timeEntries.id, peekedId) : undefined, pin.ticketless ? isNull(timeEntries.ticketId) : undefined);
   const now = new Date();
   let billingOverride: ReturnType<typeof applyBillingInput> | undefined;
   let entryId: string | undefined;
@@ -1190,7 +1203,10 @@ export async function startTimer(
   // #4617 spec §5.2: the auto-stop below may stop a timer on ANOTHER ticket.
   // Both tickets are locked up front, in ascending id order, before either
   // write — two users crossing timers between the same two tickets serialize.
-  const running = await peekRunningEntry(actor.userId);
+  const peeked = await peekRunningEntry(actor.userId);
+  // A timer in an org the technician lost access to cannot be locked (RLS
+  // hides it); stopRunningEntry stops it ungated instead.
+  const running = peeked && entryOrgAllowed(peeked, actor.accessibleOrgIds) ? peeked : null;
   let lockedTickets: Set<string> | undefined;
   if (input.ticketId) {
     // Same lock discipline as createTimeEntry (tickets → time_entries).
@@ -1239,8 +1255,10 @@ export async function startTimer(
     const autoStopped = await stopRunningEntry(actor, {}, lockedTickets);
     if (autoStopped) {
       recordAuditMutation(actor, 'time_entry.stopped', autoStopped);
+      // A timer stopped in an org the technician can no longer see gets no
+      // feed line: the insert is RLS-refused, which would abort the request.
       await insertTimeEntryFeedComment(
-        autoStopped.ticketId,
+        entryOrgAllowed(autoStopped, actor.accessibleOrgIds) ? autoStopped.ticketId : null,
         actor,
         `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}${heldSuffix(autoStopped)}`
       );
@@ -1315,7 +1333,7 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
 
   recordAuditMutation(actor, 'time_entry.stopped', stopped);
   await insertTimeEntryFeedComment(
-    stopped.ticketId,
+    entryOrgAllowed(stopped, actor.accessibleOrgIds) ? stopped.ticketId : null,
     actor,
     `${actor.name ?? 'Technician'} logged ${fmtMinutes(stopped.durationMinutes)}${stopped.isBillable ? ' (billable)' : ''}${heldSuffix(stopped)}`
   );
@@ -1391,22 +1409,23 @@ const GATE_RELEVANT_UPDATE_FIELDS = ['startedAt', 'endedAt', 'workTypeId', 'isBi
  * retried once, then refused (409 ENTRY_CHANGED).
  */
 async function lockEntryForWrite(id: string, actor: TimeEntryActor, input: { ticketId?: string | null; workTypeId?: string | null }) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const peek = await peekEntry(id);
-    // Same answer getEntryOr404 gives, but BEFORE the org SHARE / ticket lock:
-    // RLS hides a non-granted org's row, which would surface as a 500.
-    if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
-      throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
-    }
-    const link = typeof input.ticketId === 'string'
-      ? await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId, [peek?.ticketId])
-      : null;
-    if (!link && peek?.ticketId) await lockTicketsInOrder([peek.ticketId]);
-    const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
-    if (peek && entry.ticketId !== peek.ticketId) continue;
-    return { entry, link };
+  const peek = await peekEntry(id);
+  // Same answer getEntryOr404 gives, but BEFORE the org SHARE / ticket lock:
+  // RLS hides a non-granted org's row, which would surface as a 500.
+  if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+    throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
   }
-  throw new TimeEntryServiceError('This entry was changed by someone else — reload and retry', 409, 'ENTRY_CHANGED');
+  const link = typeof input.ticketId === 'string'
+    ? await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId, [peek?.ticketId])
+    : null;
+  if (!link && peek?.ticketId) await lockTicketsInOrder([peek.ticketId]);
+  const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
+  // Relinked between the read and the lock. Refused rather than retried: a
+  // retry would take the new ticket's lock while holding the entry lock.
+  if (peek && entry.ticketId !== peek.ticketId) {
+    throw new TimeEntryServiceError('This entry was changed by someone else — reload and retry', 409, 'ENTRY_CHANGED');
+  }
+  return { entry, link };
 }
 
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {

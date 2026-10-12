@@ -158,11 +158,11 @@ describe.runIf(RUN)('loadGateContext (spec §5.3–§5.4), partner-scope RLS', (
   it('after-hours coverage: an approved staff window, an approved auto link, or an unchanged budget link', async () => {
     const f = await seedApprovalFixture();
     const start = new Date('2026-10-06T22:00:00Z');
-    const [win] = await withSystemDbAccessContext(() => db.insert(ticketApprovalRequests).values({
+    await withSystemDbAccessContext(() => db.insert(ticketApprovalRequests).values({
       orgId: f.orgId, ticketId: f.ticketId, trigger: 'after_hours', origin: 'staff', status: 'approved', enforcement: 'soft',
       expiresAt: new Date(), coverageStartsAt: new Date('2026-10-06T20:00:00Z'), coverageEndsAt: new Date('2026-10-07T02:00:00Z'),
       decidedAt: new Date(), decisionOrigin: 'on_behalf', decisionMethod: 'verbal', decisionReference: 'call', decidedRevision: 1,
-    }).returning({ id: ticketApprovalRequests.id }));
+    }));
     const load = (o: Partial<Parameters<typeof loadGateContext>[1]>) => underTicketLock(f, () => loadGateContext(db, {
       ticketId: f.ticketId, partnerId: f.partnerId, orgId: f.orgId, entryStartedAt: start, workTypeId: f.afterHoursWorkTypeId, ...o,
     }));
@@ -173,7 +173,6 @@ describe.runIf(RUN)('loadGateContext (spec §5.3–§5.4), partner-scope RLS', (
     const outside = new Date('2026-10-01T22:00:00Z');
     expect((await load({ entryStartedAt: outside, currentRequestId: budgetReq })).afterHoursCovered).toBe(false);
     expect((await load({ entryStartedAt: outside, currentRequestId: budgetReq, afterHoursFactsUnchanged: true })).afterHoursCovered).toBe(true);
-    expect(win).toBeDefined();
   });
 
   it('disabled policy resolves enabled=false (the writers short-circuit on it)', async () => {

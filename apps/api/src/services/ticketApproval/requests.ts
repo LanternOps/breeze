@@ -178,7 +178,10 @@ export async function loadGateContext(db: Tx, args: GateContextArgs): Promise<Ga
     requests.some((r) => r.status === 'approved' && r.trigger === 'after_hours'
       && r.coverageStartsAt != null && r.coverageEndsAt != null
       && r.coverageStartsAt.getTime() <= at && at < r.coverageEndsAt.getTime())
-    || (current != null && current.status === 'approved' && current.trigger === 'after_hours' && current.origin === 'auto')
+    // An approved auto after-hours link covers the work it approved — not a
+    // different work type or start time edited onto the entry afterwards.
+    || (current != null && current.status === 'approved' && current.trigger === 'after_hours' && current.origin === 'auto'
+      && args.afterHoursFactsUnchanged === true)
     || (current != null && current.trigger === 'budget' && args.afterHoursFactsUnchanged === true);
   return {
     settings,
@@ -342,8 +345,13 @@ export async function refreshRequestAsk(db: Tx, requestId: string, opts: Refresh
     }
     const ceilMinutes = ticket.budgetMinutes == null ? null : ticket.budgetMinutes + ext.minutes;
     const ceilMinor = ticket.budgetAmount == null || cur == null ? null : toMinorUnits(ticket.budgetAmount, cur) + ext.amountMinor;
-    const askMinutes = ceilMinutes == null ? 0 : ceil15(Math.max(0, consumed.minutes + heldMinutes - ceilMinutes));
-    const askMinor = ceilMinor == null ? 0 : Math.max(0, consumed.amountMinor + heldMinor - ceilMinor);
+    let askMinutes = ceilMinutes == null ? 0 : ceil15(Math.max(0, consumed.minutes + heldMinutes - ceilMinutes));
+    let askMinor = ceilMinor == null ? 0 : Math.max(0, consumed.amountMinor + heldMinor - ceilMinor);
+    if (req.origin === 'staff') {
+      // A staff-raised ask is a floor: work joining it may raise it, never cut it.
+      askMinutes = Math.max(askMinutes, req.requestedExtensionMinutes ?? 0);
+      if (cur && req.requestedExtensionAmount != null) askMinor = Math.max(askMinor, toMinorUnits(req.requestedExtensionAmount, cur));
+    }
     Object.assign(set, {
       budgetMinutesAtRequest: ticket.budgetMinutes,
       consumedMinutesAtRequest: consumed.minutes,

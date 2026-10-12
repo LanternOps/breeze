@@ -312,7 +312,7 @@ export async function writeOffHeldEntry(db: Tx, args: { entryId: string; actor: 
   if (!args.actor.manageBilling) {
     throw new ApprovalDecisionError('Writing off held time requires manage billing permission', 403, 'MANAGE_BILLING_REQUIRED');
   }
-  for (let attempt = 0; attempt < 2; attempt++) {
+  {
     const [peek] = await db.select({ ticketId: timeEntries.ticketId, orgId: timeEntries.orgId, approvalRequestId: timeEntries.approvalRequestId })
       .from(timeEntries).where(eq(timeEntries.id, args.entryId)).limit(1);
     if (!peek || !peek.ticketId || !peek.orgId) throw new ApprovalDecisionError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
@@ -326,7 +326,11 @@ export async function writeOffHeldEntry(db: Tx, args: { entryId: string; actor: 
       : [];
     const [entry] = await db.select().from(timeEntries).where(eq(timeEntries.id, args.entryId)).limit(1).for('update');
     if (!entry) throw new ApprovalDecisionError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
-    if (entry.ticketId !== peek.ticketId || entry.approvalRequestId !== peek.approvalRequestId) continue;
+    // Changed between the read and the locks: refused, not retried (a retry
+    // would lock another ticket while holding this entry).
+    if (entry.ticketId !== peek.ticketId || entry.approvalRequestId !== peek.approvalRequestId) {
+      throw new ApprovalDecisionError('This entry changed while it was being written off — reload and retry', 409, 'ENTRY_NOT_RESOLVABLE');
+    }
     // Re-checked under the lock: a concurrent re-ask may have moved the entry
     // onto a pending request, which is not resolvable.
     if (entry.billingStatus !== 'awaiting_approval' || !req || !RESOLVABLE.has(req.status)) {
@@ -339,9 +343,7 @@ export async function writeOffHeldEntry(db: Tx, args: { entryId: string; actor: 
     args.actor.recordAuditMutation?.({
       action: 'time_entry.approval_written_off', entryId: entry.id, orgId: entry.orgId, workTypeId: entry.workTypeId,
     });
-    return;
   }
-  throw new ApprovalDecisionError('This entry changed while it was being written off — reload and retry', 409, 'ENTRY_NOT_RESOLVABLE');
 }
 
 const HOUR_MS = 3_600_000;
@@ -386,6 +388,11 @@ export async function createStaffApprovalRequest(db: Tx, args: {
   }
   const [org] = await db.select({ currencyCode: organizations.currencyCode }).from(organizations).where(eq(organizations.id, ticket.orgId)).limit(1);
   const currencyCode = ticket.budgetCurrencyCode ?? org?.currencyCode ?? null;
+  // In the currency's own minor units: '0.001' is not a positive ask.
+  if (args.trigger === 'budget' && !(args.extensionMinutes != null && args.extensionMinutes > 0)
+    && !(currencyCode && args.extensionAmount != null && toMinorUnits(args.extensionAmount, currencyCode) > 0)) {
+    throw new ApprovalDecisionError('A budget request needs a positive extension in minutes or money', 400, 'INVALID_DECISION');
+  }
   const acquired = await acquirePendingRequest(db, {
     ticketId: args.ticketId, orgId: ticket.orgId, trigger: args.trigger, origin: 'staff', enforcement: settings.enforcement,
     ttlHours: settings.requestTtlHours, currencyCode, requestedByUserId: args.userId, message: args.message ?? null,
@@ -419,7 +426,8 @@ export async function expireDueApprovalRequests(now: Date): Promise<{ expired: n
   const due = await runOutsideDbContext(() => withSystemDbAccessContext(() => ambientDb
     .select({ id: ticketApprovalRequests.id }).from(ticketApprovalRequests)
     .where(and(eq(ticketApprovalRequests.status, 'pending'), lte(ticketApprovalRequests.expiresAt, now)))
-    .orderBy(asc(ticketApprovalRequests.id)).limit(EXPIRY_BATCH)));
+    // Most overdue first, so a row skipped this run cannot starve newer ones.
+    .orderBy(asc(ticketApprovalRequests.expiresAt), asc(ticketApprovalRequests.id)).limit(EXPIRY_BATCH)));
   const events: ApprovalEvent[] = [];
   for (const { id } of due) {
     try {
@@ -436,6 +444,8 @@ export async function expireDueApprovalRequests(now: Date): Promise<{ expired: n
       }));
       if (ev) events.push(ev);
     } catch (err) {
+      // Deleted (ticket erased) between the due-list read and the lock: nothing to expire.
+      if (err instanceof ApprovalDecisionError && err.code === 'REQUEST_NOT_FOUND') continue;
       // One bad row must not stall the sweep; it is retried next run — and
       // reported, since a row that fails every run would otherwise only log.
       console.error('[ticketApproval] expiry failed for request', id, err instanceof Error ? err.message : err);

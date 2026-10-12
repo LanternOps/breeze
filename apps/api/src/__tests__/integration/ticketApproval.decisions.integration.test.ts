@@ -14,7 +14,7 @@ vi.mock('../../services/ticketEvents', async (orig) => ({
 
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { portalUsers, ticketApprovalRequests } from '../../db/schema';
+import { portalUsers } from '../../db/schema';
 import * as timeSvc from '../../services/timeEntryService';
 import {
   cancelApprovalRequest, createStaffApprovalRequest, decideApprovalRequest, expireDueApprovalRequests,
@@ -270,6 +270,31 @@ describe.runIf(RUN)('cancel, staff-raised, expire', () => {
       .toMatchObject({ status: 409 });
   });
 
+  it('a staff budget ask survives later work joining it (queue rule) and approving it honours the staff figure', async () => {
+    const f = await seedApprovalFixture({ budgetMinutes: 60 });
+    const { requestId } = await asTech(f, () => createStaffApprovalRequest(db, { ticketId: f.ticketId, userId: f.userId, trigger: 'budget', extensionMinutes: 120 }));
+    const e = await logHeld(f, 10); // fits the budget, but the pending staff request heads the queue
+    expect(e.billingStatus).toBe('awaiting_approval');
+    expect(e.approvalHold!.requestId).toBe(requestId);
+    const req = await readRequest(requestId);
+    expect(req).toMatchObject({ revision: 2, requestedExtensionMinutes: 120 });
+    await asTech(f, () => decideApprovalRequest(db, { requestId, decision: 'approved', revision: 2, actor: onBehalf(f) }));
+    expect((await readRequest(requestId)).approvedExtensionMinutes).toBe(120);
+    expect((await readEntry(e.id)).billingStatus).toBe('not_billed');
+  });
+
+  it('money-only budget: approving copies the amount and lifts the money ceiling for later work', async () => {
+    const f = await seedApprovalFixture({ budgetMinutes: null, budgetAmount: '100.00' });
+    await insertSettledEntry(f, 60); // 100.00
+    const held = await asTech(f, () => timeSvc.createTimeEntry({ ticketId: f.ticketId, startedAt: ago(30), endedAt: new Date(), isBillable: true, hourlyRate: 100 }, actor(f)));
+    expect(await readRequest(held.approvalHold!.requestId)).toMatchObject({ requestedExtensionAmount: '50.00', requestedExtensionMinutes: null });
+    await asTech(f, () => decideApprovalRequest(db, { requestId: held.approvalHold!.requestId, decision: 'approved', revision: 1, actor: onBehalf(f) }));
+    expect(await readRequest(held.approvalHold!.requestId)).toMatchObject({ approvedExtensionAmount: '50.00' });
+    expect((await readEntry(held.id)).billingStatus).toBe('not_billed');
+    const next = await asTech(f, () => timeSvc.createTimeEntry({ ticketId: f.ticketId, startedAt: ago(6), endedAt: new Date(), isBillable: true, hourlyRate: 100 }, actor(f)));
+    expect(next.billingStatus).toBe('awaiting_approval'); // 150.00 + 10.00 > 150.00
+  });
+
   it('expire marks due pending requests expired, one event each, and leaves their entries held', async () => {
     const f = await seedApprovalFixture({ budgetMinutes: 60 });
     await insertSettledEntry(f, 60);
@@ -305,6 +330,5 @@ describe.runIf(RUN)('cancel, staff-raised, expire', () => {
     await holder;
     expect(first.expired).toBe(0);
     expect((await expireDueApprovalRequests(new Date())).expired).toBe(1);
-    expect(ticketApprovalRequests).toBeDefined();
   });
 });

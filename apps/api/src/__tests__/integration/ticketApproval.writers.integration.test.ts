@@ -138,6 +138,24 @@ describe.runIf(RUN)('startTimer / stopTimer', () => {
     expect(nb.isBillable).toBe(false);
   });
 
+  it('hard: while a budget request is pending, a billable start is refused with that request\'s id', async () => {
+    const f = await seedApprovalFixture({ enforcement: 'hard', budgetMinutes: 60 });
+    await insertSettledEntry(f, 60);
+    const held = await asTech(f, () => timeSvc.createTimeEntry({ ticketId: f.ticketId, startedAt: ago(30), endedAt: new Date(), isBillable: true }, actor(f)));
+    const err = await rejected(asTech(f, () => timeSvc.startTimer({ ticketId: f.ticketId }, actor(f))));
+    expect(err).toMatchObject({ status: 409, code: 'APPROVAL_REQUIRED', details: { trigger: 'budget', pendingRequestId: held.approvalHold!.requestId } });
+    const ah = await rejected(asTech(f, () => timeSvc.startTimer({ ticketId: f.ticket2Id, workTypeId: f.afterHoursWorkTypeId }, actor(f))));
+    expect(ah).toMatchObject({ status: 409, code: 'APPROVAL_REQUIRED', details: { trigger: 'after_hours' } });
+  });
+
+  it('a running timer in an org the technician lost access to can still be stopped (ungated), and a new one started', async () => {
+    const f = await seedApprovalFixture();
+    const old = await asTech(f, () => timeSvc.startTimer({ ticketId: f.ticketId }, actor(f)));
+    const narrowed = { ctx: { ...ctx(f), accessibleOrgIds: [f.otherOrgId] }, actor: actor(f, { accessibleOrgIds: [f.otherOrgId] }) };
+    await withDbAccessContext(narrowed.ctx, () => timeSvc.stopTimer({}, narrowed.actor));
+    expect((await readEntry(old.id)).endedAt).not.toBeNull();
+  });
+
   it('hard: a refused start leaves the previous running timer running (the whole request rolls back)', async () => {
     const f = await seedApprovalFixture({ enforcement: 'hard', budgetMinutes: 60 });
     await insertSettledEntry(f, 60, { ticketId: f.ticketId });
@@ -224,6 +242,32 @@ describe.runIf(RUN)('updateTimeEntry', () => {
     expect((await readRequest(held.approvalHold!.requestId)).status).toBe('cancelled');
   });
 
+  it('relinking a held entry onto a ticket where it crosses again re-holds it there and settles the old request', async () => {
+    const f = await seedApprovalFixture({ budgetMinutes: 60 });
+    await insertSettledEntry(f, 60);
+    await insertSettledEntry(f, 120, { ticketId: f.ticket2Id }); // ticket2 budget 120, already used
+    const held = await asTech(f, () => timeSvc.createTimeEntry({ ticketId: f.ticketId, startedAt: ago(30), endedAt: new Date(), isBillable: true }, actor(f)));
+    const res = await asTech(f, () => timeSvc.updateTimeEntry(held.id, { ticketId: f.ticket2Id }, actor(f)));
+    expect(res.billingStatus).toBe('awaiting_approval');
+    expect(res.approvalHold).toMatchObject({ trigger: 'budget' });
+    const newReq = await readRequest(res.approvalRequestId!);
+    expect(newReq.ticketId).toBe(f.ticket2Id);
+    expect((await readRequest(held.approvalHold!.requestId)).status).toBe('cancelled');
+  });
+
+  it('an edit that moves the start of an approved after-hours entry needs consent again', async () => {
+    const f = await seedApprovalFixture({ budgetMinutes: 600 });
+    const held = await asTech(f, () => timeSvc.createTimeEntry({ ticketId: f.ticketId, startedAt: ago(30), endedAt: new Date(), isBillable: true, workTypeId: f.afterHoursWorkTypeId }, actor(f)));
+    const { decideApprovalRequest } = await import('../../services/ticketApproval/decisions');
+    await asTech(f, () => decideApprovalRequest(db, { requestId: held.approvalHold!.requestId, decision: 'approved', revision: 1,
+      actor: { kind: 'on_behalf', userId: f.userId, method: 'verbal', reference: 'Call', signerName: 'Pat' } }));
+    const dur = await asTech(f, () => timeSvc.updateTimeEntry(held.id, { endedAt: new Date(Date.now() - 60_000) }, actor(f)));
+    expect(dur.billingStatus).toBe('not_billed'); // same work, same start: still covered
+    const moved = await asTech(f, () => timeSvc.updateTimeEntry(held.id, { startedAt: ago(45) }, actor(f)));
+    expect(moved.billingStatus).toBe('awaiting_approval');
+    expect(moved.approvalHold).toMatchObject({ trigger: 'after_hours' });
+  });
+
   it('a client cannot PATCH billingStatus to awaiting_approval', async () => {
     const f = await seedApprovalFixture();
     const e = await insertSettledEntry(f, 10);
@@ -252,12 +296,18 @@ describe.runIf(RUN)('org-axis allowlist runs before the new pre-lock reads', () 
     expect(del).toMatchObject({ status: 404, code: 'ENTRY_NOT_FOUND' });
   });
 
-  it('stopping your own timer on a ticket in an org you no longer have is a clean 403, not a 500', async () => {
+  it('starting a timer while your old one sits in an org you lost access to stops the old one and starts the new (no 500)', async () => {
     const f = await seedApprovalFixture();
-    await asTech(f, () => timeSvc.startTimer({ ticketId: f.ticketId }, actor(f)));
+    const old = await asTech(f, () => timeSvc.startTimer({ ticketId: f.ticketId }, actor(f)));
     const s = selected(f);
-    const err = await rejected(withDbAccessContext(s.ctx, () => timeSvc.stopTimer({}, s.actor)));
-    expect(err).toMatchObject({ status: 403, code: 'ORG_DENIED' });
+    const otherTicket = await withSystemDbAccessContext(async () => {
+      const { tickets } = await import('../../db/schema');
+      const [t] = await db.insert(tickets).values({ orgId: f.otherOrgId, partnerId: f.partnerId, ticketNumber: `TA-O-${Date.now()}`, subject: 'other', source: 'manual' }).returning({ id: tickets.id });
+      return t!.id;
+    });
+    const fresh = await withDbAccessContext(s.ctx, () => timeSvc.startTimer({ ticketId: otherTicket }, s.actor));
+    expect(fresh.ticketId).toBe(otherTicket);
+    expect((await readEntry(old.id)).endedAt).not.toBeNull();
   });
 });
 
