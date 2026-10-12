@@ -382,6 +382,52 @@ describe('POST /monitor-definitions', () => {
   });
 });
 
+describe('event_log collection warnings at save (#8174)', () => {
+  const infoCondition = (sourcePattern: string) => ({
+    category: 'application',
+    level: 'info',
+    sourcePattern,
+    countThreshold: 1,
+    windowMinutes: 60,
+  });
+
+  it('POST returns warnings for an info-level Application source outside the agent allowlist', async () => {
+    const created = { ...monitorRow(), kind: 'event_log', condition: infoCondition('Application Error') };
+    createMonitorDefinitionMock.mockResolvedValue(created);
+
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data).toEqual(created);
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('Application Error');
+    expect(body.warnings[0]).toContain('MsiInstaller');
+  });
+
+  it('POST omits warnings for an allowlisted provider', async () => {
+    const created = { ...monitorRow(), kind: 'event_log', condition: infoCondition('MsiInstaller') };
+    createMonitorDefinitionMock.mockResolvedValue(created);
+
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ data: created });
+  });
+
+  it('PATCH returns warnings computed from the saved row (a partial patch carries no kind)', async () => {
+    const updated = { ...monitorRow(), kind: 'event_log', condition: infoCondition('VSS') };
+    updateMonitorDefinitionMock.mockResolvedValue(updated);
+
+    const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, { name: 'Renamed' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('VSS');
+  });
+});
+
 describe('PATCH /monitor-definitions/:id', () => {
   it('maps a MonitorValidationError to 400 { error: INVALID_MONITOR, details }', async () => {
     updateMonitorDefinitionMock.mockRejectedValue(

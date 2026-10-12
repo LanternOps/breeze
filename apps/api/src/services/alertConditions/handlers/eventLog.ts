@@ -66,7 +66,7 @@ export const eventLogHandler: ConditionHandler = {
     if (!['security', 'hardware', 'application', 'system'].includes(c.category as string)) {
       errors.push(`${path}.category: Invalid category`);
     }
-    if (!['warning', 'error', 'critical'].includes(c.level as string)) {
+    if (!['info', 'warning', 'error', 'critical'].includes(c.level as string)) {
       errors.push(`${path}.level: Invalid level`);
     }
     if (typeof c.countThreshold !== 'number' || c.countThreshold < 1) {

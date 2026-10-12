@@ -58,7 +58,7 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       kind: 'select',
       options: ['security', 'hardware', 'application', 'system'],
     },
-    { key: 'level', labelKey: 'monitoring:fields.level', kind: 'select', options: ['warning', 'error', 'critical'] },
+    { key: 'level', labelKey: 'monitoring:fields.level', kind: 'select', options: ['info', 'warning', 'error', 'critical'] },
     { key: 'sourcePattern', labelKey: 'monitoring:fields.sourcePattern', kind: 'text', optional: true },
     { key: 'messagePattern', labelKey: 'monitoring:fields.messagePattern', kind: 'text', optional: true },
     { key: 'countThreshold', labelKey: 'monitoring:fields.countThreshold', kind: 'number', min: 1 },

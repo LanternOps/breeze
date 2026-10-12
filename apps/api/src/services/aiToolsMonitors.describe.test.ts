@@ -8,7 +8,17 @@ vi.mock('../db', async (importOriginal) => ({
 vi.mock('./monitors/monitorService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./monitors/monitorService')>()),
   getMonitorDefinition: vi.fn(async () => ({ id: 'm', kind: 'event_log', condition: {} })),
+  createMonitorDefinition: vi.fn(async (input: Record<string, unknown>) => ({ id: 'm', orgId: ORG_ID, ...input })),
+  updateMonitorDefinition: vi.fn(async (_id: string, patch: Record<string, unknown>) => ({
+    id: 'm',
+    orgId: ORG_ID,
+    kind: 'event_log',
+    condition: { category: 'application', level: 'error', countThreshold: 1, windowMinutes: 60 },
+    ...patch,
+  })),
 }));
+
+const ORG_ID = '11111111-1111-4111-8111-111111111111';
 
 import { MONITOR_KINDS } from '@breeze/shared';
 import { registerMonitorTools } from './aiToolsMonitors';
@@ -137,8 +147,9 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
     expect(terse.error).not.toContain('Valid kinds');
   });
 
-  // #7060 — event_log monitors can never match Information-level events, so a
-  // rejected level/type must steer app-presence requests to compliance.
+  // #7060 — an invalid event_log level ("information") or a retired `type` key
+  // must steer app-presence requests to compliance. Since #8174 `info` is a
+  // valid level (Application events from allowlisted providers only).
   describe('event_log app-presence hint (#7060)', () => {
     const base = { name: 'Installs', severity: 'high' };
     const eventLog = (condition: Record<string, unknown>) => ({ ...base, kind: 'event_log', condition });
@@ -174,7 +185,7 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
       const r = await call({
         action: 'update',
         monitorId: ORG,
-        definition: { kind: 'event_log', condition: { category: 'application', level: 'info' } },
+        definition: { kind: 'event_log', condition: { category: 'application', level: 'information' } },
       });
       expect(r.error).toContain('required_software');
     });
@@ -189,7 +200,9 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
     it('describe event_log carries the per-category collection guidance', async () => {
       const r = await call({ action: 'describe', kind: 'event_log' });
       expect(r.guidance).toContain('required_software');
-      expect(r.guidance).toContain('Application log error/critical only');
+      expect(r.guidance).toContain('Application log error/critical from every provider');
+      expect(r.guidance).toContain('MsiInstaller');
+      expect(r.guidance).not.toContain('can never match');
       expect(r.guidance).toContain('WHEA');
       const cpu = await call({ action: 'describe', kind: 'cpu' });
       expect(cpu.guidance).toBeUndefined();
@@ -199,6 +212,38 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
       const r = await call({ action: 'create', definition: eventLog({ category: 'application', level: 'information' }) });
       expect(r.error).not.toContain('..');
       expect(r.error).toContain('Use action "describe"');
+    });
+
+    // #8174 — info is a valid level; allowlisted providers' Information events are collected.
+    it('create at info level for an allowlisted provider succeeds with no warning', async () => {
+      const r = await call({
+        action: 'create',
+        definition: eventLog({ category: 'application', level: 'info', sourcePattern: 'MsiInstaller' }),
+      });
+      expect(r.error).toBeUndefined();
+      expect(r.success).toBe(true);
+      expect(r.warnings).toBeUndefined();
+    });
+
+    it('create at info level for a non-allowlisted provider succeeds with a collection warning', async () => {
+      const r = await call({
+        action: 'create',
+        definition: eventLog({ category: 'application', level: 'info', sourcePattern: 'Application Error' }),
+      });
+      expect(r.success).toBe(true);
+      expect(r.warnings).toHaveLength(1);
+      expect(r.warnings[0]).toContain('Application Error');
+      expect(r.warnings[0]).toContain('MsiInstaller');
+    });
+
+    it('update to info level for a non-allowlisted provider returns a collection warning', async () => {
+      const r = await call({
+        action: 'update',
+        monitorId: ORG,
+        definition: { condition: { category: 'application', level: 'info', sourcePattern: 'VSS' } },
+      });
+      expect(r.success).toBe(true);
+      expect(r.warnings?.[0]).toContain('VSS');
     });
 
     it('no hint when level and category are valid but another field is rejected', async () => {

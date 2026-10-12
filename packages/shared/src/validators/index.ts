@@ -52,6 +52,7 @@ export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
 export * from './alertRuleConditions';
+export * from './eventLogProviders';
 export * from './complianceInlineSettings';
 
 // ============================================
