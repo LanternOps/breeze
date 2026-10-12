@@ -48,3 +48,20 @@ func TestHandleDesktopSwitchReleasesHeldInput(t *testing.T) {
 	}
 	t.Fatalf("desktop switch did not release alt: %v", inner.snapshot())
 }
+
+// R3: a desktop switch changes the input offset, so it is a geometry transition.
+func TestHandleDesktopSwitchMovesTheGeometryEpoch(t *testing.T) {
+	si := NewSafeInput(&workerRecorder{}, "s")
+	t.Cleanup(si.Close)
+	s := &Session{
+		id:           "s",
+		inputHandler: si,
+		capturer:     &switchingCapturer{staticTestCapturer: staticTestCapturer{img: image.NewRGBA(image.Rect(0, 0, 4, 4))}},
+	}
+
+	s.handleDesktopSwitch()
+
+	if r, g := si.Epochs(); r != 2 || g != 2 {
+		t.Fatalf("Epochs() after a desktop switch = %d,%d want 2,2", r, g)
+	}
+}

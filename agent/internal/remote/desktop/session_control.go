@@ -694,51 +694,55 @@ func (s *Session) handleControlMessage(data []byte) {
 		if msg.Value < 0 {
 			return
 		}
-		slog.Info("Switching monitor", "session", s.id, "display", msg.Value)
-		// Coordinates of a drag in progress belong to the old monitor.
-		s.releaseHeldInput("monitor_switch")
-		cfg := s.captureConfig
-		cfg.DisplayIndex = msg.Value
-		newCap, capErr := NewScreenCapturer(cfg)
-		if capErr != nil {
-			slog.Warn("Failed to create capturer for monitor", "display", msg.Value, "error", capErr.Error())
-			return
-		}
-		// Force a desktop repaint so DXGI has dirty rects for the initial
-		// AcquireNextFrame on the new display. Without this, a completely
-		// static display (no cursor, no animations) produces zero frames.
-		forceDesktopRepaint()
-		// Swap capturer and signal the capture loop to reinitialize.
-		// The old capturer is NOT closed here — the capture loop closes it
-		// after detecting the swap, avoiding a race where Close() is called
-		// while captureAndSendFrameGPU is mid-frame on the old capturer.
-		s.mu.Lock()
-		s.oldCapturers = append(s.oldCapturers, s.capturer)
-		s.capturer = newCap
-		s.displayIndex = msg.Value
-		s.captureConfig = cfg
-		s.mu.Unlock()
-		s.capturerSwapped.Store(true)
-		applyDisplayOffset(s.inputHandler, msg.Value, &s.cursorOffsetX, &s.cursorOffsetY)
-		// Get bounds for viewer notification — encoder dimensions are updated
-		// by the capture loop when it detects capturerSwapped, avoiding a race
-		// with the encoding goroutine.
-		w, h, boundsErr := newCap.GetScreenBounds()
-		if boundsErr != nil {
-			slog.Warn("Failed to get bounds for new monitor", "display", msg.Value, "error", boundsErr.Error())
-		}
-		// Notify viewer of new resolution
-		resp, _ := json.Marshal(map[string]any{
-			"type":   "monitor_switched",
-			"index":  msg.Value,
-			"width":  w,
-			"height": h,
-		})
-		s.mu.RLock()
-		dc := s.controlDC
-		s.mu.RUnlock()
-		if dc != nil {
-			dc.SendText(string(resp))
-		}
+		s.switchMonitor(msg.Value)
 	}
+}
+
+// switchMonitor moves capture and input to display index. It is a geometry
+// transition, serialised with desktop switches by geometryMu.
+func (s *Session) switchMonitor(index int) {
+	s.geometryMu.Lock()
+	defer s.geometryMu.Unlock()
+
+	slog.Info("Switching monitor", "session", s.id, "display", index)
+	// Release held input and move the reset and geometry epochs before
+	// anything moves: coordinates in flight belong to the old monitor. (W2b)
+	s.resetInputGeometry("monitor_switch")
+	s.mu.RLock()
+	cfg := s.captureConfig
+	s.mu.RUnlock()
+	cfg.DisplayIndex = index
+	newCap, capErr := NewScreenCapturer(cfg)
+	if capErr != nil {
+		slog.Warn("Failed to create capturer for monitor", "display", index, "error", capErr.Error())
+		// The epochs moved above. Tell the viewer it is still on its old
+		// monitor, under the new geoEpoch, or its pointer stays dropped. (W2b)
+		s.announceCurrentMonitor()
+		return
+	}
+	// Force a desktop repaint so DXGI has dirty rects for the initial
+	// AcquireNextFrame on the new display. Without this, a completely
+	// static display (no cursor, no animations) produces zero frames.
+	forceDesktopRepaint()
+	// Swap capturer and signal the capture loop to reinitialize.
+	// The old capturer is NOT closed here — the capture loop closes it
+	// after detecting the swap, avoiding a race where Close() is called
+	// while captureAndSendFrameGPU is mid-frame on the old capturer.
+	s.mu.Lock()
+	s.oldCapturers = append(s.oldCapturers, s.capturer)
+	s.capturer = newCap
+	s.displayIndex = index
+	s.captureConfig = cfg
+	s.mu.Unlock()
+	s.capturerSwapped.Store(true)
+	applyDisplayOffset(s.inputHandler, index, &s.cursorOffsetX, &s.cursorOffsetY)
+	// Get bounds for viewer notification — encoder dimensions are updated
+	// by the capture loop when it detects capturerSwapped, avoiding a race
+	// with the encoding goroutine.
+	w, h, boundsErr := newCap.GetScreenBounds()
+	if boundsErr != nil {
+		slog.Warn("Failed to get bounds for new monitor", "display", index, "error", boundsErr.Error())
+	}
+	// Notify viewer of new resolution and the epochs to use with it. (W2b)
+	s.sendControlJSON(s.monitorSwitchedMessage(index, w, h))
 }
