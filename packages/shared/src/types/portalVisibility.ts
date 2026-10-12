@@ -237,6 +237,10 @@ export interface SupportUsageTicketDto {
   toBeBilledMinutes: number;
   coveredByContractMinutes: number;
   pendingReviewMinutes: number;
+  /** Block hours W04: present only when the org's Support hours flag is on. */
+  coveredByBlockMinutes?: number;
+  /** Block hours W04: minutes past the block's entitlement. Flag-on only. */
+  overBlockMinutes?: number;
 }
 
 export interface SupportUsageDto {
@@ -249,8 +253,39 @@ export interface SupportUsageDto {
     toBeBilled: CountHoursDto;
     coveredByContract: CountHoursDto;
     pendingReview: CountHoursDto;
+    /** Block hours W04: present only when the org's Support hours flag is on. */
+    coveredByBlock?: CountHoursDto;
+    /** Block hours W04: hours past the block's entitlement. Flag-on only. */
+    overBlock?: CountHoursDto;
   };
   tickets: SupportUsageTicketDto[];
+}
+
+/**
+ * Customer-safe projection of the org's live block-hours balance (block hours
+ * W04). Built by an explicit whitelist (services/portal/hourBlock.ts), never by
+ * spreading the MSP-side HourBlockEstimate: that carries unapproved hours,
+ * foreign-currency hours, late-entry hours, the line id and the alert
+ * threshold, none of which a customer should see.
+ */
+export interface PortalHourBlockDto {
+  periodStart: string;            // YYYY-MM-DD, half-open [periodStart, periodEnd)
+  periodEnd: string;
+  includedHours: number;          // the line's included hours
+  carriedInHours: number;         // rollover carried in (0 under 'none')
+  usedHours: number;              // drawn so far this period (unapproved time included)
+  remainingHours: number;         // max(0, included + carriedIn - used)
+  overageHours: number;           // max(0, used - (included + carriedIn))
+  overageRate: string;            // the contracted per-hour rate, decimal string
+  currencyCode: string;           // the contract's currency
+  billingTiming: 'advance' | 'arrears';
+}
+
+export interface PortalHourBlockResponse {
+  hourBlock: PortalHourBlockDto | null;
+  /** YYYY-MM-DD. Set (with hourBlock null) when the org's block exists but its
+   *  open period has not started yet (a block added mid-period starts next period). */
+  startsOn: string | null;
 }
 
 export interface SlaDto {
