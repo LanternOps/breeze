@@ -24,8 +24,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 2,
     'alerts.json': 43,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in pt-BR IT contexts, matching how other backup.json
@@ -191,8 +193,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 39,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
@@ -350,8 +354,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 58,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
@@ -542,8 +548,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 59,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
@@ -729,8 +737,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 4,
     'alerts.json': 46,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 15,
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in German IT contexts, matching how other backup.json
@@ -912,8 +922,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 2,
     'alerts.json': 57,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 21,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
@@ -1050,8 +1062,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 0,
     'alerts.json': 25,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
