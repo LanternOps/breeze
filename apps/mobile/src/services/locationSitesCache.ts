@@ -14,3 +14,8 @@ export async function invalidateLocationSites(): Promise<void> {
     // A cache we cannot delete is re-checked against the TTL; nothing to surface.
   }
 }
+
+/** Sign-out variant: rejects, so a cache that survived is reported as a partial wipe. */
+export async function clearLocationSitesOrThrow(): Promise<void> {
+  await AsyncStorage.removeItem(LOCATION_SITES_CACHE_KEY);
+}

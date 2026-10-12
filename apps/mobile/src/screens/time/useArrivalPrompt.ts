@@ -35,6 +35,7 @@ import { startOutcomeEffects, stopOutcomeEffects } from '../tickets/timerOutcome
 import type { ArrivalSheetState } from './ArrivalSheet';
 import { runArrivalCheck, type ArrivalCheckDeps, type ArrivalCheckResult } from './arrivalCheck';
 import { afterSitePicked, initialStep, openTicketsForOrg } from './arrivalSheetLogic';
+import { canStartFromArrival, entryKeyOf, stopTargetMatches } from './arrivalGuards';
 import { isArrivalTab, subscribeArrivalCheck } from './arrivalTrigger';
 
 export { isArrivalTab };
@@ -72,6 +73,8 @@ export function useArrivalPrompt() {
   const sheetRef = useRef<SheetData | null>(null);
   sheetRef.current = sheet;
   const inFlight = useRef(false);
+  /** Set synchronously on a Start/Stop tap: React state alone lets a double-tap through. */
+  const actionInFlight = useRef(false);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -160,13 +163,29 @@ export function useArrivalPrompt() {
     if (inFlight.current || sheetRef.current !== null) return;
     inFlight.current = true;
     try {
-      applyResult(await runArrivalCheck(deps(), { manual }));
+      const result = await runArrivalCheck(deps(), { manual });
+      // The store's running timer is hydrated by a separate request, so it can
+      // land while the position was being read: re-check before showing anything.
+      if (result.kind === 'arrival') {
+        const local = (await readLocalTimer().catch(() => null)) !== null;
+        if (
+          !canStartFromArrival({
+            storeRunning: store.getState().time.running !== null,
+            localTimer: local ? 'present' : 'none',
+          })
+        ) {
+          return;
+        }
+      } else if (result.kind === 'stop') {
+        if (!stopTargetMatches(store.getState().time.running, result.siteId)) return;
+      }
+      applyResult(result);
     } catch (error) {
       reportInternalError(error, 'arrivalPrompt.check');
     } finally {
       inFlight.current = false;
     }
-  }, [applyResult, deps]);
+  }, [applyResult, deps, store]);
 
   useEffect(() => {
     void check(false);
@@ -204,14 +223,19 @@ export function useArrivalPrompt() {
 
   const onStart = useCallback(async (site: SiteCandidate, ticketId: string | null) => {
     const current = sheetRef.current;
-    if (current?.kind !== 'arrival' || busy) return;
+    if (current?.kind !== 'arrival' || actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       // Re-check at tap time: /start auto-stops a running timer server-side, so
       // a timer that began while the sheet was open must never be replaced.
-      const alreadyRunning =
-        store.getState().time.running !== null || (await readLocalTimer().catch(() => null)) !== null;
-      if (alreadyRunning) {
+      const local = (await readLocalTimer().catch(() => null)) !== null;
+      if (
+        !canStartFromArrival({
+          storeRunning: store.getState().time.running !== null,
+          localTimer: local ? 'present' : 'none',
+        })
+      ) {
         showToast({ kind: 'error', text: 'A timer is already running, so none was started.' });
         close();
         return;
@@ -228,7 +252,8 @@ export function useArrivalPrompt() {
           invalidateLocationSites,
         }
       );
-      if (!mounted.current) return;
+      // No mounted-guard before the dispatches: the store outlives this host,
+      // and a started timer must be adopted even if the host unmounted.
       const effects = startOutcomeEffects(outcome);
       if (effects.startRunning !== null) dispatch(runningTimerAdopted(effects.startRunning));
       if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
@@ -247,8 +272,10 @@ export function useArrivalPrompt() {
       reportInternalError(error, 'arrivalPrompt.start');
       showToast({ kind: 'error', text: 'Could not start the timer.' });
       close();
+    } finally {
+      actionInFlight.current = false;
     }
-  }, [busy, close, dispatch, refreshQueueDepth, showToast, store]);
+  }, [close, dispatch, refreshQueueDepth, showToast, store]);
 
   const onDismiss = useCallback(async () => {
     const current = sheetRef.current;
@@ -263,10 +290,17 @@ export function useArrivalPrompt() {
 
   const onStop = useCallback(async () => {
     const current = sheetRef.current;
-    if (current?.kind !== 'stop' || busy) return;
+    if (current?.kind !== 'stop' || actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       const running = store.getState().time.running;
+      // The timer may have changed while the sheet was open (stopped elsewhere,
+      // or a different one started): never stop one the sheet was not about.
+      if (!stopTargetMatches(running, current.siteId)) {
+        close();
+        return;
+      }
       const outcome = await stopRunningTimer(
         { running },
         {
@@ -279,11 +313,10 @@ export function useArrivalPrompt() {
           stamp: stampNow,
         }
       );
-      if (!mounted.current) return;
       const effects = stopOutcomeEffects(outcome);
       if (effects.clearRunning) {
         dispatch(stoppedTimer());
-        const key = running?.id ?? running?.localId ?? null;
+        const key = entryKeyOf(running);
         if (key !== null) await clearFarReads(key).catch(() => undefined);
         await recordStopAtSite(current.siteId, Date.now()).catch(() => undefined);
       }
@@ -295,13 +328,15 @@ export function useArrivalPrompt() {
       reportInternalError(error, 'arrivalPrompt.stop');
       showToast({ kind: 'error', text: 'Could not stop the timer.' });
       close();
+    } finally {
+      actionInFlight.current = false;
     }
-  }, [busy, close, dispatch, refreshQueueDepth, showToast, store]);
+  }, [close, dispatch, refreshQueueDepth, showToast, store]);
 
   const onKeepRunning = useCallback(async () => {
     const running = store.getState().time.running;
     close();
-    const key = running?.id ?? running?.localId ?? null;
+    const key = entryKeyOf(running);
     if (key !== null) await clearFarReads(key).catch(() => undefined);
   }, [close, store]);
 

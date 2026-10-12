@@ -57,7 +57,7 @@ const locationCaches = {
 };
 vi.mock('./locationSitesCache', () => ({
   LOCATION_SITES_CACHE_KEY: 'breeze.locationSites.v1',
-  invalidateLocationSites: (...a: unknown[]) => locationCaches.invalidateLocationSites(...a),
+  clearLocationSitesOrThrow: (...a: unknown[]) => locationCaches.invalidateLocationSites(...a),
 }));
 vi.mock('./arrivalMemory', () => ({
   ARRIVAL_MEMORY_KEY: 'breeze.arrival.v1',

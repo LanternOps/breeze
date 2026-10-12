@@ -321,10 +321,14 @@ async function closeLocalTimer(
   const workType =
     local !== null && local.workTypeId !== undefined ? { workTypeId: local.workTypeId } : {};
   // #8211: a location visit keeps its org + site + provenance through the queue.
+  // Falls back to the store's copy when the local record is gone or unreadable.
+  const orgId = local?.orgId ?? input.running?.orgId;
+  const siteId = local?.siteId ?? input.running?.siteId;
+  const source = local?.source ?? input.running?.source;
   const provenance = {
-    ...(local?.orgId ? { orgId: local.orgId } : {}),
-    ...(local?.siteId ? { siteId: local.siteId } : {}),
-    ...(local?.source === 'location' ? { source: 'location' } : {}),
+    ...(orgId ? { orgId } : {}),
+    ...(siteId ? { siteId } : {}),
+    ...(source === 'location' ? { source: 'location' } : {}),
   };
 
   if ('unusable' in span) {
