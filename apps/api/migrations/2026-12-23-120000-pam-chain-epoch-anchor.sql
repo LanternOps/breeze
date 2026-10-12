@@ -296,7 +296,7 @@ $$;
 -- Body copied from the live definition (2026-09-25-pam-actuation-org-immutable.sql),
 -- plus the terminal-cleaned check. No lifecycle path leaves `cleaned`
 -- (pamActuationLifecycle.ts, pamActuationResult.ts, pamActuationWorker.ts).
-CREATE OR REPLACE FUNCTION public.pam_actuations_transition_guard()
+CREATE OR REPLACE FUNCTION pam_actuations_transition_guard()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$

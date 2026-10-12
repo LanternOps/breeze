@@ -41,6 +41,7 @@ function sqlParams(query: unknown): unknown[] {
 describe('PAM actuation lifecycle', () => {
   it('creates exactly one generation-1 active actuation and outbox event', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 7 }],
       [],
       [{
@@ -67,11 +68,12 @@ describe('PAM actuation lifecycle', () => {
       generation: 1,
       desiredState: 'active',
     });
-    expect(tx.execute).toHaveBeenCalledTimes(4);
+    expect(tx.execute).toHaveBeenCalledTimes(5);
   });
 
   it('creates denial as a generation-1 cleanup tombstone without requiring expiry', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 8 }],
       [],
       [{
@@ -93,7 +95,7 @@ describe('PAM actuation lifecycle', () => {
 
     expect(result.desiredState).toBe('cleanup');
     expect(result.generation).toBe(1);
-    expect(tx.execute).toHaveBeenCalledTimes(4);
+    expect(tx.execute).toHaveBeenCalledTimes(5);
   });
 
   it('rejects an approved decision with a missing or elapsed expiry before writing', async () => {
@@ -109,6 +111,7 @@ describe('PAM actuation lifecycle', () => {
 
   it('refuses to create an active actuation for a path-targeting decision with no target hash', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 3 }],
       [],
       [], // UPDATE elevation_requests
@@ -130,14 +133,14 @@ describe('PAM actuation lifecycle', () => {
       desiredState: 'cleanup',
       refusalReason: PAM_TARGET_HASH_UNVERIFIED_REASON,
     });
-    // locked-row select, existing-actuation select, the elevation_requests
+    // device lock, locked-row select, existing-actuation select, the elevation_requests
     // UPDATE, and the elevation_audit INSERT — no pam_actuations row and no
     // outbox event, unlike the successful-creation path below.
-    expect(tx.execute).toHaveBeenCalledTimes(4);
-    const updateCall = tx.execute.mock.calls[2]![0];
+    expect(tx.execute).toHaveBeenCalledTimes(5);
+    const updateCall = tx.execute.mock.calls[3]![0];
     expect(sqlText(updateCall)).toContain("SET status = 'denied'");
     expect(sqlParams(updateCall)).toContain(PAM_TARGET_HASH_UNVERIFIED_REASON);
-    const auditCall = tx.execute.mock.calls[3]![0];
+    const auditCall = tx.execute.mock.calls[4]![0];
     expect(sqlText(auditCall)).toContain('INSERT INTO elevation_audit');
     expect(sqlText(auditCall)).toContain("'denied'");
     expect(sqlText(auditCall)).toContain("'system'");
@@ -146,6 +149,7 @@ describe('PAM actuation lifecycle', () => {
 
   it('refuses a blank (whitespace-only) target hash the same as a missing one', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 4 }],
       [],
       [],
@@ -165,6 +169,7 @@ describe('PAM actuation lifecycle', () => {
 
   it('does not require a target hash for a decision with no target path (e.g. tech_jit_admin)', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 5 }],
       [],
       [{
@@ -186,11 +191,12 @@ describe('PAM actuation lifecycle', () => {
 
     expect(result.refusalReason).toBeUndefined();
     expect(result.desiredState).toBe('active');
-    expect(tx.execute).toHaveBeenCalledTimes(4);
+    expect(tx.execute).toHaveBeenCalledTimes(5);
   });
 
   it('still flows a path-targeting decision through to an active actuation when a hash is present', async () => {
     const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
       [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 6 }],
       [],
       [{
@@ -218,7 +224,7 @@ describe('PAM actuation lifecycle', () => {
       generation: 1,
       desiredState: 'active',
     });
-    expect(tx.execute).toHaveBeenCalledTimes(4);
+    expect(tx.execute).toHaveBeenCalledTimes(5);
   });
 
   it('serializes concurrent cleanup requests so generation increments and publishes once', async () => {
