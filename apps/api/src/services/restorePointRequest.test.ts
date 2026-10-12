@@ -5,9 +5,10 @@ import {
   RESTORE_POINT_TRIGGERS,
 } from '@breeze/shared';
 
-const { resolveMock, inserted, contextCalls, dbMock } = vi.hoisted(() => {
+const { resolveMock, inserted, contextCalls, dbMock, writes } = vi.hoisted(() => {
   const inserted: Array<Record<string, unknown>> = [];
   const contextCalls: string[] = [];
+  const writes: Array<{ op: string; set?: unknown; where: unknown }> = [];
   const dbMock = {
     insert: vi.fn(() => ({
       values: vi.fn(async (row: Record<string, unknown>) => {
@@ -15,8 +16,16 @@ const { resolveMock, inserted, contextCalls, dbMock } = vi.hoisted(() => {
         inserted.push(row);
       }),
     })),
+    update: vi.fn(() => ({
+      set: vi.fn((set: unknown) => ({
+        where: vi.fn(async (where: unknown) => { writes.push({ op: 'update', set, where }); }),
+      })),
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(async (where: unknown) => { writes.push({ op: 'delete', where }); }),
+    })),
   };
-  return { resolveMock: vi.fn(), inserted, contextCalls, dbMock };
+  return { resolveMock: vi.fn(), inserted, contextCalls, dbMock, writes };
 });
 
 vi.mock('../db', () => ({
@@ -31,11 +40,20 @@ vi.mock('../db', () => ({
   },
 }));
 
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureMock }));
+
 vi.mock('./featureConfigResolver', () => ({
   resolveSystemProtectionForDevice: resolveMock,
 }));
 
-import { buildRestorePointRequest, type BuildRestorePointRequestInput } from './restorePointRequest';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  type BuildRestorePointRequestInput,
+} from './restorePointRequest';
+import { Param, SQL } from 'drizzle-orm';
 import {
   RESTORE_POINT_ATTEMPT_STATUSES,
   RESTORE_POINT_ATTEMPT_TRIGGERS,
@@ -75,7 +93,20 @@ beforeEach(() => {
   resolveMock.mockReset();
   inserted.length = 0;
   contextCalls.length = 0;
+  writes.length = 0;
+  captureMock.mockReset();
 });
+
+/** Bound parameter values of a drizzle condition (walks SQL/Param nodes only). */
+function boundValues(node: unknown): unknown[] {
+  const out: unknown[] = [];
+  const visit = (n: unknown) => {
+    if (n instanceof Param) { out.push((n as unknown as { value: unknown }).value); return; }
+    if (n instanceof SQL) (n as unknown as { queryChunks: unknown[] }).queryChunks.forEach(visit);
+  };
+  visit(node);
+  return out;
+}
 
 describe('buildRestorePointRequest', () => {
   it('returns null for a non-Windows device without resolving the policy', async () => {
@@ -184,8 +215,7 @@ describe('buildRestorePointRequest', () => {
   it('resolves and inserts inside a fresh system context (escaping any caller context)', async () => {
     mockResolved({ beforeScripts: true });
     await buildRestorePointRequest(base);
-    expect(contextCalls.slice(0, 2)).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext']);
-    expect(contextCalls).toContain('insert');
+    expect(contextCalls).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext', 'insert']);
   });
 
   it('propagates a resolver error instead of degrading to no-checkpoint', async () => {
@@ -197,5 +227,50 @@ describe('buildRestorePointRequest', () => {
   it('shared trigger/status lists match the ledger schema', () => {
     expect([...RESTORE_POINT_TRIGGERS]).toEqual([...RESTORE_POINT_ATTEMPT_TRIGGERS]);
     expect([...RESTORE_POINT_STATUSES]).toEqual([...RESTORE_POINT_ATTEMPT_STATUSES]);
+  });
+});
+
+describe('ledger helpers', () => {
+  const BLOCK = {
+    v: 1 as const, requestId: '77777777-7777-4777-8777-777777777777', enabled: true, label: 'x',
+    resolvedAt: '2026-10-12T00:00:00.000Z', policyRevision: '', validUntil: '2026-10-13T00:00:00.000Z',
+  };
+
+  it('a failed ledger insert fails the build (never returns an unrecorded block)', async () => {
+    mockResolved({ beforeScripts: true });
+    dbMock.insert.mockImplementationOnce(() => ({ values: vi.fn(async () => { throw new Error('insert failed'); }) }) as any);
+    await expect(buildRestorePointRequest(base)).rejects.toThrow('insert failed');
+  });
+
+  it('discard deletes only a still-requested row for this requestId', async () => {
+    await discardRestorePointRequest(BLOCK);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.op).toBe('delete');
+    expect(boundValues(writes[0]!.where)).toEqual([BLOCK.requestId, 'requested']);
+  });
+
+  it('discard and link are no-ops for null and enabled:false blocks', async () => {
+    await discardRestorePointRequest(null);
+    await discardRestorePointRequest({ ...BLOCK, enabled: false });
+    await linkRestorePointCommand(null, 'cmd');
+    await linkRestorePointCommand({ ...BLOCK, enabled: false }, 'cmd');
+    expect(writes).toHaveLength(0);
+  });
+
+  it('discard swallows and reports its own failure (never masks the caller error)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbMock.delete.mockImplementationOnce(() => ({ where: vi.fn(async () => { throw new Error('db down'); }) }) as any);
+    await expect(discardRestorePointRequest(BLOCK)).resolves.toBeUndefined();
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('link sets deviceCommandId by requestId, and swallows + reports a failure', async () => {
+    await linkRestorePointCommand(BLOCK, 'cmd-9');
+    expect(writes[0]).toMatchObject({ op: 'update', set: { deviceCommandId: 'cmd-9' } });
+    expect(boundValues(writes[0]!.where)).toEqual([BLOCK.requestId]);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbMock.update.mockImplementationOnce(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => { throw new Error('db down'); }) })) }) as any);
+    await expect(linkRestorePointCommand(BLOCK, 'cmd-9')).resolves.toBeUndefined();
+    expect(captureMock).toHaveBeenCalledTimes(1);
   });
 });

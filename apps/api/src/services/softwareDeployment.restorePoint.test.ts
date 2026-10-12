@@ -289,4 +289,27 @@ describe('software_install restore-point stamping (#4756)', () => {
     expect(lastPayload().restorePoint.requestId).not.toBe(first);
     expect(buildRestorePointRequest).toHaveBeenCalledTimes(2);
   });
+
+  it('keeps the requested row when the command was created and a later step threw', async () => {
+    // dispatchSoftwareInstallToDevice creates the command first, then links the
+    // deployment result. A failure in that link must NOT delete the ledger row:
+    // the command exists and still carries the block.
+    vi.mocked(buildRestorePointRequest).mockResolvedValue(blockFor('req-1'));
+    updateMock.mockImplementationOnce(() => ({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('link write failed')) }),
+    }));
+    await dispatchManaged();
+    expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
+    expect(discardRestorePointRequest).not.toHaveBeenCalled();
+  });
+
+  it('discards the requested row when the push claim cancels the command (never delivered)', async () => {
+    vi.mocked(buildRestorePointRequest).mockResolvedValue(blockFor('req-1'));
+    dispatchDeviceCommandMock.mockReset();
+    dispatchDeviceCommandMock.mockResolvedValue({
+      ok: true, command: { id: 'cmd-x', status: 'cancelled' }, delivery: 'cancelled', cancelReason: 'requester_inactive',
+    });
+    await dispatchManaged();
+    expect(discardRestorePointRequest).toHaveBeenCalledWith(blockFor('req-1'));
+  });
 });

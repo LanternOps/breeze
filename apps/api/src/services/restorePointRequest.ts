@@ -204,6 +204,7 @@ export async function discardRestorePointRequest(
       requestId: block.requestId,
       error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err);
   }
 }
 
@@ -326,7 +327,9 @@ export async function refreshRestorePointForDelivery(
     trigger,
     label: '',
     // The action text is not recoverable from every payload (a script's name
-    // is not on it), so the original label is kept verbatim.
+    // is not on it), so the original label is kept verbatim -- including its
+    // original prefix. Only the label is frozen; enabled / policyRevision /
+    // requestId / validUntil are re-resolved.
     labelOverride: typeof stale.label === 'string' ? stale.label : undefined,
     deviceCommandId: ctx.commandId,
     scriptExecutionId: stringOrNull(payload.executionId),

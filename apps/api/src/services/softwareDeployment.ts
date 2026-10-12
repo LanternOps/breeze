@@ -162,6 +162,19 @@ export interface SoftwareInstallDispatchOutcome {
  * The caller (routes/software.ts retry endpoint) MUST bump retryCount in the DB
  * before calling this, and pass that same post-bump value here.
  */
+/**
+ * Thrown by {@link dispatchSoftwareInstallToDevice} when the install was NOT
+ * handed to the agent: the seam refused it (no command row) or the push claim
+ * cancelled it. Distinguishes "nothing was sent" from a failure after the
+ * command row already exists (e.g. the deployment-result link write).
+ */
+export class SoftwareInstallDispatchRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SoftwareInstallDispatchRefusedError';
+  }
+}
+
 export async function dispatchSoftwareInstallToDevice(
   deploymentId: string,
   device: { id: string; agentId: string },
@@ -182,13 +195,13 @@ export async function dispatchSoftwareInstallToDevice(
   });
 
   if (!res.ok) {
-    throw new Error(`software_install dispatch refused for device ${device.id}: ${res.error}`);
+    throw new SoftwareInstallDispatchRefusedError(`software_install dispatch refused for device ${device.id}: ${res.error}`);
   }
   // The push's claim-time eligibility cancelled the row before the result row
   // below is linked to it, so nothing else will terminalise that result: refuse
   // like the seam's own refusals, and the caller fails it with this reason.
   if (res.delivery === 'cancelled') {
-    throw new Error(
+    throw new SoftwareInstallDispatchRefusedError(
       `software_install dispatch refused for device ${device.id}: ${cancelledCommandError(res.cancelReason)}`,
     );
   }
@@ -259,8 +272,9 @@ async function dispatchSoftwareInstallWithRestorePoint(
       options,
     );
   } catch (err) {
-    // The seam refused: no command exists, so nothing was asked of the agent.
-    await discardRestorePointRequest(restorePoint);
+    // Only a refusal means nothing was sent. Any other throw can come after the
+    // command row exists (it still carries the block), so the row is kept.
+    if (err instanceof SoftwareInstallDispatchRefusedError) await discardRestorePointRequest(restorePoint);
     throw err;
   }
   await linkRestorePointCommand(restorePoint, dispatch.deviceCommandId);

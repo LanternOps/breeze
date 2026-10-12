@@ -1345,18 +1345,25 @@ async function prepareDeviceExecution(
     return { kind: 'error', error: 'Failed to resolve the System Restore checkpoint policy' };
   }
 
-  const patchRecords = await db
-    .select({
-      id: patches.id,
-      source: patches.source,
-      externalId: patches.externalId,
-      title: patches.title,
-      // Only alongside a stamped block: the agent's definitions-only skip
-      // (W07) needs it, and without a block the payload stays byte-identical.
-      ...(restorePoint ? { category: patches.category } : {}),
-    })
-    .from(patches)
-    .where(inArray(patches.id, patchIds));
+  let patchRecords;
+  try {
+    patchRecords = await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title,
+        // Only alongside a stamped block: the agent's definitions-only skip
+        // (W07) needs it, and without a block the payload stays byte-identical.
+        ...(restorePoint ? { category: patches.category } : {}),
+      })
+      .from(patches)
+      .where(inArray(patches.id, patchIds));
+  } catch (err) {
+    // No command can exist yet, so the requested row would be a false record.
+    await discardRestorePointRequest(restorePoint);
+    throw err;
+  }
 
   // Enqueue through the single dispatch seam so offline devices can wait for delivery.
   // `patchJobId` is now in the payload: it is what lets a result arriving days

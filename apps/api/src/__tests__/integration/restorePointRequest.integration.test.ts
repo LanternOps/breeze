@@ -32,6 +32,7 @@ import { deviceRestorePointAttempts } from '../../db/schema/deviceRestorePointAt
 import { dispatchScriptToDevice } from '../../services/scriptDispatch';
 import {
   RESTORE_POINT_SUPERSEDED_MESSAGE,
+  buildRestorePointRequest,
   refreshRestorePointForDelivery,
 } from '../../services/restorePointRequest';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -281,5 +282,47 @@ describe('restore-point request chokepoint against real Postgres', () => {
       )),
     );
     expect(leaked).toHaveLength(0);
+  });
+
+  runDb('an explicit beforePatching:false stamps enabled:false for patch through the real resolver, with no row', async () => {
+    const { partner, org, device } = await seedTenant();
+    await seedSystemProtection({ orgId: org.id, partnerId: null }, 'organization', org.id, { beforePatching: false });
+    const block = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      buildRestorePointRequest({ deviceId: device.id, orgId: org.id, osType: device.osType, trigger: 'patch', label: 'install 1 update' }),
+    );
+    expect(block).toMatchObject({ v: 1, enabled: false });
+    expect(await attemptsFor(SYSTEM_CTX, device.id)).toHaveLength(0);
+  });
+
+  runDb('a re-stamp whose claim no longer matches throws, leaves the payload untouched, and discards the new row', async () => {
+    const { partner, org, device } = await seedTenant();
+    await seedSystemProtection({ orgId: org.id, partnerId: null }, 'organization', org.id, { beforeScripts: true });
+    const ctx = orgContext(org.id, partner.id);
+    const result = await dispatchRawScript(ctx, device);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const claimedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
+      UPDATE device_commands
+      SET payload = jsonb_set(payload, '{restorePoint,validUntil}', '"2020-01-01T00:00:00.000Z"'::jsonb),
+          status = 'sent', executed_at = ${claimedAt.toISOString()}::timestamptz
+      WHERE id = ${result.commandId}::uuid
+    `));
+    const aged = await commandPayload(ctx, result.commandId);
+
+    await expect(withDbAccessContext(ctx, () =>
+      refreshRestorePointForDelivery(aged, {
+        commandId: result.commandId,
+        deviceId: device.id,
+        type: 'script',
+        claimedAt: new Date(claimedAt.getTime() - 60_000), // a different (older) claim
+      }),
+    )).rejects.toThrow(/no longer held by this claim/);
+
+    expect(await commandPayload(ctx, result.commandId)).toEqual(aged);
+    const rows = await attemptsFor(ctx, device.id);
+    // the original row (superseded) remains; the would-be replacement was discarded
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'failed', message: RESTORE_POINT_SUPERSEDED_MESSAGE });
   });
 });

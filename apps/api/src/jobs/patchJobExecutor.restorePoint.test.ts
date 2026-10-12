@@ -318,4 +318,27 @@ describe('install_patches restore-point stamping (#4756)', () => {
     expect(discardRestorePointRequest).toHaveBeenCalledWith(BLOCK);
     expect(linkRestorePointCommand).not.toHaveBeenCalled();
   });
+
+  it('discards the requested row when the patch-records read throws before dispatch', async () => {
+    primeDeviceExecution('windows', false);
+    vi.mocked(db.select).mockImplementationOnce((() => {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => Promise.reject(new Error('read failed')));
+      return chain;
+    }) as any);
+    vi.mocked(buildRestorePointRequest).mockResolvedValueOnce(BLOCK);
+    await expect(runPrepared()).rejects.toThrow('read failed');
+    expect(discardRestorePointRequest).toHaveBeenCalledWith(BLOCK);
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+  });
+
+  it('records the error_resolving_restore_point skip reason when resolution throws', async () => {
+    primeDeviceExecution('windows', false);
+    const inserted: any[] = [];
+    vi.mocked(db.insert).mockImplementation(() => ({ values: vi.fn((v: any) => { inserted.push(v); return Promise.resolve(); }) }) as any);
+    vi.mocked(buildRestorePointRequest).mockRejectedValueOnce(new Error('db down'));
+    await runPrepared();
+    expect(JSON.stringify(inserted)).toContain('error_resolving_restore_point');
+  });
 });
