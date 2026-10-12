@@ -253,6 +253,57 @@ describe('contract line routes', () => {
     expect(svc.addContractLineToContract).toHaveBeenCalledTimes(1);
   });
 
+  it('POST /:id/lines accepts a valid block and 400s on each violation, with no service call (#4547 W03)', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID, orgId: ORG_ID, lineType: 'hour_block', unitPrice: '1000.00', contractName: 'Acme' });
+    const post = (body: unknown) => app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const ok = {
+      lineType: 'hour_block', description: 'Support block', unitPrice: '1000.00', taxable: false,
+      includedQuantity: '10', overageMode: 'bill', overageUnitPrice: '150.00', rolloverPolicy: 'none',
+    };
+    expect((await post(ok)).status).toBe(200);
+    expect(svc.addContractLineToContract).toHaveBeenCalledTimes(1);
+    for (const bad of [
+      { ...ok, overageMode: 'flag', overageUnitPrice: undefined },
+      { ...ok, rolloverPolicy: undefined },
+      { ...ok, rolloverPolicy: 'none', rolloverCapHours: '4' },
+      { ...ok, hourBlockAlertPct: 101 },
+      { ...ok, siteId: ORG_ID },
+    ]) expect((await post(bad)).status).toBe(400);
+    expect(svc.addContractLineToContract).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST maps a duplicate live block to 409 HOUR_BLOCK_EXISTS', async () => {
+    (svc.addContractLineToContract as any).mockRejectedValue(new ContractServiceError('exists', 409, 'HOUR_BLOCK_EXISTS'));
+    const res = await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'hour_block', description: 'b', unitPrice: '1.00', taxable: false, includedQuantity: '1', overageMode: 'bill', overageUnitPrice: '1.00', rolloverPolicy: 'none' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_EXISTS' });
+  });
+
+  it('PATCH rejects the server-stamped columns (strict) and maps HOUR_BLOCK_FIELD_LOCKED to 400', async () => {
+    const patch = (body: unknown) => app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    for (const key of ['hourBlockFirstPeriodStart', 'hourBlockRetiredAt']) {
+      const res = await patch({ [key]: '2020-01-01' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
+    expect(svc.updateContractLine).not.toHaveBeenCalled();
+    // an unrelated unknown key is still the ordinary validation 400 (no code)
+    const other = await patch({ lineType: 'flat' });
+    expect(other.status).toBe(400);
+    expect(await other.json()).not.toHaveProperty('code');
+    (svc.updateContractLine as any).mockRejectedValueOnce(new ContractServiceError('locked', 400, 'HOUR_BLOCK_FIELD_LOCKED'));
+    const locked = await patch({ overageMode: 'flag' });
+    expect(locked.status).toBe(400);
+    expect(await locked.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED' });
+  });
+
   it('POST /:id/lines rejects a per_device_role line without deviceRoles (400, no service call)', async () => {
     const res = await app().request(`/${CONTRACT_ID}/lines`, {
       method: 'POST',

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
+import { hourBlockStampedKeyHook } from '../../services/contractHourBlockLocked';
 import { z } from 'zod';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -61,7 +62,7 @@ contractLineRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idP
 // before contractCrudRoutes (routes/contracts/index.ts:19-20) and Hono matches
 // method+path, so PATCH /:id/lines/:lineId cannot shadow PATCH /:id.
 contractLineRoutes.patch('/:id/lines/:lineId', scopes, writePerm,
-  zValidator('param', lineParam), zValidator('json', updateContractLineSchema), async (c) => {
+  zValidator('param', lineParam), zValidator('json', updateContractLineSchema, hourBlockStampedKeyHook), async (c) => {
   try {
     const p = c.req.valid('param');
     const { line, audit } = await updateContractLine(p.id, p.lineId, c.req.valid('json'), contractActorFrom(c));

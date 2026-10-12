@@ -302,6 +302,45 @@ describe('POST /contracts/:id/lines', () => {
   });
 });
 
+describe('POST /contracts/:id/lines — hour_block (#4547 W03)', () => {
+  const ok = {
+    lineType: 'hour_block', description: 'Support block', unitPrice: '1000.00', taxable: false,
+    includedQuantity: '10', overageMode: 'bill', overageUnitPrice: '150.00', rolloverPolicy: 'none',
+  };
+  const post = (body: unknown) => request(`/contracts/${CONTRACT_ID}/lines`, { method: 'POST', body: JSON.stringify(body) });
+
+  it('accepts a valid block (201) and forwards the block fields', async () => {
+    mocks.addContractLineToContract.mockResolvedValue({ ...lineRow, lineType: 'hour_block' });
+    const res = await post(ok);
+    expect(res.status).toBe(201);
+    expect(mocks.addContractLineToContract).toHaveBeenCalledWith(
+      CONTRACT_ID,
+      expect.objectContaining({ lineType: 'hour_block', includedQuantity: '10', overageMode: 'bill', rolloverPolicy: 'none' }),
+      expect.anything(),
+    );
+  });
+
+  it('400s on each violation with no service call', async () => {
+    for (const bad of [
+      { ...ok, overageMode: 'flag', overageUnitPrice: undefined },
+      { ...ok, rolloverPolicy: undefined },
+      { ...ok, rolloverPolicy: 'none', rolloverCapHours: '4' },
+      { ...ok, hourBlockAlertPct: 101 },
+      { ...ok, siteId: ORG_ID },
+    ]) expect((await post(bad)).status).toBe(400);
+    expect(mocks.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('PATCH names the server-stamped columns as HOUR_BLOCK_FIELD_LOCKED', async () => {
+    const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', body: JSON.stringify({ hourBlockRetiredAt: '2026-01-01' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: ['hourBlockRetiredAt'] } });
+    expect(mocks.updateContractLine).not.toHaveBeenCalled();
+  });
+});
+
 describe('PATCH /contracts/:id/lines/:lineId', () => {
   it('requires contracts:write', async () => {
     const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
