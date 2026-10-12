@@ -7,31 +7,39 @@ import { describe, expect, it } from 'vitest';
  * A row write that fires a DEFERRABLE INITIALLY DEFERRED trigger queues a
  * trigger event until commit. Later DDL on the table that owns the event, in
  * the same transaction, then fails with
- *   cannot ALTER TABLE "<table>" because it has pending trigger events
+ *   cannot <ALTER TABLE|CREATE INDEX|TRUNCATE> "<table>" because it has pending trigger events
  * Every migration file runs in one transaction (autoMigrate), so a file that
  * queues such an event and then runs DDL on that table must fire the events
- * first (`SET CONSTRAINTS ALL IMMEDIATE`). The failure only shows when the
- * write matched rows, so CI's empty databases never catch it; v0.122.0
+ * first (`SET CONSTRAINTS ALL IMMEDIATE`, which also keeps later writes in the
+ * file immediate until `SET CONSTRAINTS ... DEFERRED`). The failure only shows
+ * when the write matched rows, so CI's empty databases never catch it; v0.122.0
  * crash-looped the hosted EU API on 2026-12-12-120100.
  *
  * Event sources (#8397):
- *  - a deferred constraint trigger on T: any INSERT/UPDATE/DELETE on T;
+ *  - a deferred constraint trigger on T: conservatively, any INSERT/UPDATE/
+ *    DELETE on T (its event list and WHEN clause are not read);
  *  - a deferred FK from child C to parent P: INSERT into C, an UPDATE of C that
- *    sets an FK column (an UPDATE leaving the key alone queues nothing), and a
- *    DELETE from P when the FK has no ON DELETE action (CASCADE, SET NULL and
- *    RESTRICT actions are never deferred). The event belongs to C or P
- *    respectively, and only DDL on that table fails.
- * DDL that fails: ALTER TABLE, non-concurrent CREATE [UNIQUE] INDEX ... ON, and
- * TRUNCATE.
+ *    assigns an FK column (an UPDATE leaving the key alone queues nothing), and
+ *    a DELETE from P when the FK's ON DELETE is absent or NO ACTION (CASCADE,
+ *    SET NULL, SET DEFAULT and RESTRICT are never deferred). The event belongs
+ *    to C or P respectively, and only DDL on that table fails.
+ * DDL modelled as failing: ALTER TABLE, non-concurrent CREATE [UNIQUE] INDEX
+ * ... ON, and TRUNCATE.
  *
- * Each file is scanned in order with the sources inherited from earlier files:
- * a source counts from its CREATE/ADD onward and stops at DROP TRIGGER, DROP
- * CONSTRAINT, ALTER CONSTRAINT ... NOT DEFERRABLE / INITIALLY IMMEDIATE, or
- * DROP TABLE. Writes inside function bodies are ignored (defined, not run);
- * writes and DDL inside DO blocks count, including EXECUTE format(...) whose
- * arguments are literals or columns of a `FOR v IN SELECT * FROM (VALUES ...)`
- * loop. Not modelled: DROP TABLE as failing DDL, UPDATEs of a parent's key, and
- * events queued on a child by an ON UPDATE CASCADE from its parent.
+ * Each file is scanned in order with the sources inherited from earlier files.
+ * A source counts from its CREATE/ADD onward; DROP TRIGGER, DROP CONSTRAINT
+ * (scoped to its ALTER TABLE) and DROP TABLE remove it, and ALTER CONSTRAINT
+ * or a re-declaration sets whether it is deferred. Writes inside function
+ * bodies are ignored (defined, not run). Writes and DDL inside DO blocks count
+ * as unconditional, even inside IF/EXCEPTION branches, including EXECUTE
+ * format(...) whose arguments are literals or columns of a
+ * `FOR v IN SELECT * FROM (VALUES ...)` loop.
+ *
+ * Not modelled: DROP TABLE / DROP INDEX / REINDEX / CLUSTER as failing DDL,
+ * UPDATEs of a parent's key, events queued on a child by an ON UPDATE CASCADE
+ * from its parent, SET CONSTRAINTS ALL DEFERRED promoting initially-immediate
+ * constraints, MERGE and COPY, and quoted mixed-case names (folded to lower
+ * case, so "Links" and links are treated as one table).
  */
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
@@ -98,21 +106,27 @@ function applyFormat(fmt: string, args: string[]): string {
 }
 
 /**
- * Expand each `EXECUTE format('<sql>', args...)` whose arguments are string
- * literals or `<loopvar>.<col>` of an enclosing VALUES loop (one expansion per
- * row). Unresolvable arguments become UNRESOLVED, which matches no real table.
+ * Expand each `EXECUTE format(<fmt>, args...)` whose format is a single- or
+ * dollar-quoted literal and whose arguments are literals or
+ * `<loopvar>.<col>` of an enclosing VALUES loop (one expansion per row). Any
+ * other argument becomes UNRESOLVED, which matches no real table. Calls that
+ * do not fit this shape (concatenation, function-call arguments, USING) are
+ * skipped, not guessed.
  */
 function expandExecuteFormats(sql: string): { at: number; sql: string }[] {
+  const VALUE = String.raw`${SQL_STRING}|[\w.+-]+`;
   const loops: { at: number; v: string; rows: Record<string, string>[] }[] = [];
   const loopRe = new RegExp(
     String.raw`FOR\s+(\w+)\s+IN\s+SELECT\s+\*\s+FROM\s+\(\s*VALUES([\s\S]*?)\)\s+AS\s+\w+\s*\(([^)]*)\)\s+LOOP`,
     'gi',
   );
-  const rowRe = new RegExp(String.raw`\(\s*(${SQL_STRING}(?:\s*,\s*${SQL_STRING})*)\s*\)`, 'g');
+  const rowRe = new RegExp(String.raw`\(\s*((?:${VALUE})(?:\s*,\s*(?:${VALUE}))*)\s*\)`, 'g');
   for (const m of sql.matchAll(loopRe)) {
     const cols = m[3]!.split(',').map((c) => c.trim().toLowerCase());
     const rows = [...m[2]!.matchAll(rowRe)].map((row) => {
-      const values = [...row[1]!.matchAll(new RegExp(SQL_STRING, 'g'))].map((v) => unquote(v[0]));
+      const values = [...row[1]!.matchAll(new RegExp(VALUE, 'g'))].map((v) =>
+        v[0].startsWith("'") ? unquote(v[0]) : UNRESOLVED,
+      );
       return Object.fromEntries(cols.map((c, i) => [c, values[i] ?? UNRESOLVED]));
     });
     loops.push({ at: m.index ?? 0, v: m[1]!.toLowerCase(), rows });
@@ -120,13 +134,14 @@ function expandExecuteFormats(sql: string): { at: number; sql: string }[] {
 
   const out: { at: number; sql: string }[] = [];
   const execRe = new RegExp(
-    String.raw`EXECUTE\s+format\s*\(\s*(${SQL_STRING})((?:\s*,\s*(?:${SQL_STRING}|[\w.]+))*)\s*\)`,
+    String.raw`EXECUTE\s+format\s*\(\s*(${SQL_STRING}|\$(\w*)\$[\s\S]*?\$\2\$)((?:\s*,\s*(?:${SQL_STRING}|[\w.]+))*)\s*\)`,
     'gi',
   );
   for (const m of sql.matchAll(execRe)) {
     const at = m.index ?? 0;
-    const fmt = unquote(m[1]!);
-    const rawArgs = [...(m[2] ?? '').matchAll(new RegExp(String.raw`${SQL_STRING}|[\w.]+`, 'g'))].map((a) => a[0]);
+    const lit = m[1]!;
+    const fmt = lit.startsWith("'") ? unquote(lit) : lit.replace(/^\$\w*\$|\$\w*\$$/g, '');
+    const rawArgs = [...(m[3] ?? '').matchAll(new RegExp(String.raw`${SQL_STRING}|[\w.]+`, 'g'))].map((a) => a[0]);
     const loopVars = new Set(rawArgs.filter((a) => a.includes('.')).map((a) => a.split('.')[0]!.toLowerCase()));
     const loop = [...loops].reverse().find((l) => l.at < at && loopVars.has(l.v));
     for (const row of loop ? loop.rows : [{} as Record<string, string>]) {
@@ -141,21 +156,22 @@ function expandExecuteFormats(sql: string): { at: number; sql: string }[] {
   return out;
 }
 
-type Source =
+type Source = { deferred: boolean } & (
   | { kind: 'trigger'; key: string; name: string; table: string }
-  | { kind: 'fk'; key: string; name: string; child: string; parent: string; cols: string[]; parentDelete: boolean };
+  | { kind: 'fk'; key: string; name: string; child: string; parent: string; cols: string[]; parentDelete: boolean }
+);
 
-type WriteEvent = { at: number; type: 'write'; verb: 'insert' | 'update' | 'delete'; table: string; setClause: string };
+type WriteEvent = { at: number; type: 'write'; verb: 'insert' | 'update' | 'delete'; table: string; setTargets: string[] };
 
 type Event =
-  | { at: number; type: 'source'; source: Source; deferred: boolean }
+  | { at: number; type: 'source'; source: Source }
   | { at: number; type: 'dropTrigger'; name: string; table: string }
-  | { at: number; type: 'dropConstraint'; name: string }
-  | { at: number; type: 'alterConstraint'; name: string; deferred: boolean }
+  | { at: number; type: 'dropConstraint'; name: string; table: string | undefined }
+  | { at: number; type: 'alterConstraint'; name: string; table: string | undefined; deferred: boolean }
   | { at: number; type: 'dropTable'; tables: string[] }
   | WriteEvent
   | { at: number; type: 'ddl'; table: string }
-  | { at: number; type: 'flush'; names: string[] | 'all' };
+  | { at: number; type: 'setConstraints'; names: string[] | 'all'; immediate: boolean };
 
 const FK_TAIL = String.raw`((?:\s+(?:ON\s+(?:DELETE|UPDATE)\s+(?:NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL|SET\s+DEFAULT)(?:\s*\([^)]*\))?|MATCH\s+\w+|NOT\s+DEFERRABLE|DEFERRABLE|INITIALLY\s+(?:DEFERRED|IMMEDIATE)|NOT\s+VALID))*)`;
 
@@ -177,26 +193,66 @@ function owningTable(sql: string, at: number): string | undefined {
   return owner;
 }
 
+/** Text back from `at` to the nearest `,` or `(` outside parentheses. */
+function enclosingItem(sql: string, at: number): string {
+  let depth = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const ch = sql[i];
+    if (ch === ')') depth++;
+    else if (ch === '(' && depth-- === 0) return sql.slice(i + 1, at);
+    else if ((ch === ',' || ch === ';') && depth === 0) return sql.slice(i + 1, at);
+  }
+  return sql.slice(0, at);
+}
+
+/** Split `text` on top-level commas, stopping at a top-level stop word or `;`. */
+function topLevelItems(text: string, stopWords: string): string[] {
+  const stop = new RegExp(String.raw`\s(?:${stopWords})\b`, 'iy');
+  const items: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    stop.lastIndex = i;
+    if (ch === "'") {
+      const close = text.indexOf("'", i + 1);
+      i = close === -1 ? text.length : close;
+    } else if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (depth === 0 && (ch === ';' || stop.test(text))) {
+      items.push(text.slice(start, i));
+      return items;
+    } else if (depth === 0 && ch === ',') {
+      items.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  items.push(text.slice(start));
+  return items;
+}
+
 function foreignKeys(sql: string): Event[] {
   const events: Event[] = [];
   const re = new RegExp(String.raw`\bREFERENCES\s+${TABLE}\s*(?:\([^)]*\))?${FK_TAIL}`, 'gi');
   const tableFkRe = new RegExp(String.raw`(?:CONSTRAINT\s+${IDENT}\s+)?FOREIGN\s+KEY\s*\(([^)]*)\)\s*$`, 'i');
-  const inlineNameRe = new RegExp(String.raw`CONSTRAINT\s+${IDENT}\s+$`, 'i');
+  const columnRe = new RegExp(
+    String.raw`^\s*(?:ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?)?${IDENT}\s[\s\S]*?(?:CONSTRAINT\s+${IDENT}\s+)?$`,
+    'i',
+  );
   for (const m of sql.matchAll(re)) {
     const at = m.index ?? 0;
-    const before = sql.slice(Math.max(0, at - 400), at);
-    const tableFk = tableFkRe.exec(before);
+    const tableFk = tableFkRe.exec(sql.slice(Math.max(0, at - 400), at));
     let name: string | undefined;
     let cols: string[];
     if (tableFk) {
       name = tableFk[1]?.toLowerCase();
       cols = tableFk[2]!.split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase());
     } else {
-      // Inline column FK: `<col> <type> [...] [CONSTRAINT n] REFERENCES ...`.
-      const colDef = /[(,]\s*"?(\w+)"?\s[^(),]*$/.exec(before);
-      if (!colDef) continue;
-      cols = [colDef[1]!.toLowerCase()];
-      name = inlineNameRe.exec(before)?.[1]?.toLowerCase();
+      // Column FK: `[ADD [COLUMN]] <col> <type> [...] [CONSTRAINT n] REFERENCES ...`.
+      const col = columnRe.exec(enclosingItem(sql, at));
+      if (!col) continue;
+      cols = [col[1]!.toLowerCase()];
+      name = col[2]?.toLowerCase();
     }
     const child = owningTable(sql, at);
     if (!child) continue;
@@ -206,7 +262,6 @@ function foreignKeys(sql: string): Event[] {
     events.push({
       at,
       type: 'source',
-      deferred: isDeferred(tail),
       source: {
         kind: 'fk',
         key: `fk:${child}:${name}`,
@@ -215,10 +270,16 @@ function foreignKeys(sql: string): Event[] {
         parent: normTable(m[1]!),
         cols,
         parentDelete: !onDelete || /NO\s+ACTION/i.test(onDelete),
+        deferred: isDeferred(tail),
       },
     });
   }
   return events;
+}
+
+/** Whether `at` begins a statement (so `GRANT TRUNCATE ON t` is not a TRUNCATE). */
+function startsStatement(sql: string, at: number): boolean {
+  return /(?:^|;|\bBEGIN|\bTHEN|\bELSE|\bLOOP|\$\w*\$|')\s*$/i.test(sql.slice(Math.max(0, at - 40), at));
 }
 
 function extractEvents(sql: string): Event[] {
@@ -234,8 +295,7 @@ function extractEvents(sql: string): Event[] {
     events.push({
       at: at(m),
       type: 'source',
-      deferred: isDeferred(m[2]!),
-      source: { kind: 'trigger', key: `trigger:${table}:${name}`, name, table },
+      source: { kind: 'trigger', key: `trigger:${table}:${name}`, name, table, deferred: isDeferred(m[2]!) },
     });
   }
   events.push(...foreignKeys(sql));
@@ -243,12 +303,18 @@ function extractEvents(sql: string): Event[] {
     events.push({ at: at(m), type: 'dropTrigger', name: m[1]!.toLowerCase(), table: normTable(m[2]!) });
   }
   for (const m of all(String.raw`DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?${IDENT}`)) {
-    events.push({ at: at(m), type: 'dropConstraint', name: m[1]!.toLowerCase() });
+    events.push({ at: at(m), type: 'dropConstraint', name: m[1]!.toLowerCase(), table: owningTable(sql, at(m)) });
   }
   for (const m of all(
     String.raw`ALTER\s+CONSTRAINT\s+${IDENT}((?:\s+(?:NOT\s+DEFERRABLE|DEFERRABLE|INITIALLY\s+(?:DEFERRED|IMMEDIATE)))+)`,
   )) {
-    events.push({ at: at(m), type: 'alterConstraint', name: m[1]!.toLowerCase(), deferred: isDeferred(m[2]!) });
+    events.push({
+      at: at(m),
+      type: 'alterConstraint',
+      name: m[1]!.toLowerCase(),
+      table: owningTable(sql, at(m)),
+      deferred: isDeferred(m[2]!),
+    });
   }
   for (const m of all(String.raw`DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^;]+)`)) {
     const tables = m[1]!
@@ -259,9 +325,19 @@ function extractEvents(sql: string): Event[] {
   }
   for (const m of all(String.raw`\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:ONLY\s+)?${TABLE}`)) {
     const verb = /^INSERT/i.test(m[1]!) ? 'insert' : /^UPDATE/i.test(m[1]!) ? 'update' : 'delete';
-    const rest = sql.slice(at(m) + m[0].length);
-    const setClause = verb === 'update' ? (/^[\s\S]*?(?=\bWHERE\b|\bFROM\b|\bRETURNING\b|;|$)/i.exec(rest)?.[0] ?? '') : '';
-    events.push({ at: at(m), type: 'write', verb, table: normTable(m[2]!), setClause });
+    let setTargets: string[] = [];
+    if (verb === 'update') {
+      // Assignment targets only: `SET a = ..., (b, c) = ...` up to a top-level FROM/WHERE/RETURNING.
+      const rest = sql.slice(at(m) + m[0].length).replace(/^[\s\S]*?\bSET\b/i, '');
+      setTargets = topLevelItems(rest, 'FROM|WHERE|RETURNING').flatMap((item) =>
+        (item.split('=')[0] ?? '')
+          .replace(/[()"]/g, ' ')
+          .split(/[\s,]+/)
+          .filter(Boolean)
+          .map((c) => c.toLowerCase()),
+      );
+    }
+    events.push({ at: at(m), type: 'write', verb, table: normTable(m[2]!), setTargets });
   }
   for (const m of all(String.raw`ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?${TABLE}`)) {
     events.push({ at: at(m), type: 'ddl', table: normTable(m[1]!) });
@@ -272,18 +348,20 @@ function extractEvents(sql: string): Event[] {
     events.push({ at: at(m), type: 'ddl', table: normTable(m[1]!) });
   }
   const truncTarget = new RegExp(String.raw`^\s*(?:ONLY\s+)?${TABLE}`, 'i');
-  for (const m of all(String.raw`\bTRUNCATE\s+(?:TABLE\s+)?([^;]+)`)) {
+  for (const m of all(String.raw`\bTRUNCATE\s+(?:TABLE\s+)?([^;']+)`)) {
+    if (!startsStatement(sql, at(m))) continue;
     for (const t of m[1]!.split(',')) {
       const name = truncTarget.exec(t)?.[1];
       if (name) events.push({ at: at(m), type: 'ddl', table: normTable(name) });
     }
   }
-  for (const m of all(String.raw`SET\s+CONSTRAINTS\s+([\w\s,."]+?)\s+IMMEDIATE`)) {
+  for (const m of all(String.raw`SET\s+CONSTRAINTS\s+([\w\s,."]+?)\s+(IMMEDIATE|DEFERRED)\b`)) {
     const names = m[1]!.trim();
     events.push({
       at: at(m),
-      type: 'flush',
+      type: 'setConstraints',
       names: /^ALL$/i.test(names) ? 'all' : names.split(',').map((n) => normTable(n.trim())),
+      immediate: /IMMEDIATE/i.test(m[2]!),
     });
   }
   return events;
@@ -294,12 +372,7 @@ function queuedOn(source: Source, write: WriteEvent): string | undefined {
   if (source.kind === 'trigger') return write.table === source.table ? source.table : undefined;
   if (write.table === source.child) {
     if (write.verb === 'insert') return source.child;
-    if (write.verb === 'update') {
-      const setsKey = source.cols.some((c) =>
-        new RegExp(String.raw`(?:^|[\s,(])"?${c}"?\s*(?:\)\s*)?=(?!=)`, 'i').test(write.setClause),
-      );
-      if (setsKey) return source.child;
-    }
+    if (write.verb === 'update' && source.cols.some((c) => write.setTargets.includes(c))) return source.child;
   }
   if (write.verb === 'delete' && write.table === source.parent && source.parentDelete) return source.parent;
   return undefined;
@@ -315,47 +388,68 @@ function fileEvents(sql: string): Event[] {
   return events.sort((a, b) => a.at - b.at);
 }
 
+/** Every trigger/FK seen so far, keyed by `<kind>:<table>:<name>`; `deferred` says whether it queues. */
 type Registry = Map<string, Source>;
+
+function sourceTable(s: Source): string {
+  return s.kind === 'trigger' ? s.table : s.child;
+}
 
 function scanFile(registry: Registry, file: { name: string; sql: string }, violations: string[]): void {
   const pending = new Map<string, Set<string>>(); // table -> keys of the sources that queued on it
   const flagged = new Set<string>();
-  const unregister = (match: (s: Source) => boolean) => {
-    for (const [k, s] of registry) if (match(s)) registry.delete(k);
-  };
+  // SET CONSTRAINTS ... IMMEDIATE fires what is pending AND holds for the rest
+  // of the transaction (the file), until SET CONSTRAINTS ... DEFERRED.
+  let allImmediate = false;
+  const immediateNames = new Set<string>();
+  const named = (name: string, table: string | undefined) => (s: Source) =>
+    s.name === name && (table === undefined || sourceTable(s) === table);
   for (const e of fileEvents(file.sql)) {
     switch (e.type) {
       case 'source':
-        if (e.deferred) registry.set(e.source.key, e.source);
-        else registry.delete(e.source.key);
+        registry.set(e.source.key, e.source);
         break;
       case 'dropTrigger':
         registry.delete(`trigger:${e.table}:${e.name}`);
         break;
       case 'dropConstraint':
-        unregister((s) => s.name === e.name);
+        for (const [k, s] of registry) if (named(e.name, e.table)(s)) registry.delete(k);
         break;
       case 'alterConstraint':
-        if (!e.deferred) unregister((s) => s.name === e.name);
+        for (const s of registry.values()) if (named(e.name, e.table)(s)) s.deferred = e.deferred;
         break;
       case 'dropTable':
-        unregister((s) => (s.kind === 'trigger' ? [s.table] : [s.child, s.parent]).some((t) => e.tables.includes(t)));
+        for (const [k, s] of registry) {
+          const tables = s.kind === 'trigger' ? [s.table] : [s.child, s.parent];
+          if (tables.some((t) => e.tables.includes(t))) registry.delete(k);
+        }
         break;
       case 'write':
         for (const s of registry.values()) {
+          if (!s.deferred || allImmediate || immediateNames.has(s.name)) continue;
           const table = queuedOn(s, e);
           if (!table) continue;
           if (!pending.has(table)) pending.set(table, new Set());
           pending.get(table)!.add(s.key);
         }
         break;
-      case 'flush':
-        if (e.names === 'all') pending.clear();
-        else {
-          const names = e.names;
-          for (const keys of pending.values()) for (const k of [...keys]) if (names.some((n) => k.endsWith(`:${n}`))) keys.delete(k);
+      case 'setConstraints': {
+        const names = e.names;
+        if (names === 'all') {
+          allImmediate = e.immediate;
+          immediateNames.clear();
+          if (e.immediate) pending.clear();
+        } else {
+          for (const n of names) {
+            if (e.immediate) immediateNames.add(n);
+            else immediateNames.delete(n);
+          }
+          if (e.immediate)
+            for (const keys of pending.values())
+              for (const k of [...keys]) if (names.some((n) => k.endsWith(`:${n}`))) keys.delete(k);
         }
         break;
+      }
       case 'ddl':
         if (pending.get(e.table)?.size && !flagged.has(e.table)) {
           flagged.add(e.table);
@@ -373,11 +467,11 @@ function findPendingTriggerAlters(files: { name: string; sql: string }[]): strin
   return violations;
 }
 
-/** The deferred event sources still live after every file has run. */
+/** The deferred event sources live after every given file has run. */
 function deferredSources(files: { name: string; sql: string }[]): Source[] {
   const registry: Registry = new Map();
   for (const file of files) scanFile(registry, file, []);
-  return [...registry.values()];
+  return [...registry.values()].filter((s) => s.deferred);
 }
 
 function loadMigrations(): { name: string; sql: string }[] {
@@ -482,10 +576,42 @@ CREATE INDEX kids2_parent_idx ON kids2 (parent_id);`;
     expect(run(KIDS, `UPDATE kids SET name = 'x' WHERE parent_id IS NOT NULL;\n${ALTER_KIDS}`)).toEqual([]);
   });
 
+  it('reads UPDATE assignment targets past subqueries, tuples and CASE', () => {
+    const flagged = ['0001.sql: kids'];
+    expect(run(KIDS, `UPDATE kids SET name = (SELECT n FROM t LIMIT 1), parent_id = NULL;\n${ALTER_KIDS}`)).toEqual(flagged);
+    expect(run(KIDS, `UPDATE kids k SET (name, parent_id) = (SELECT 'a', id FROM parents LIMIT 1);\n${ALTER_KIDS}`)).toEqual(flagged);
+    expect(run(KIDS, `UPDATE kids SET name = CASE WHEN parent_id = id THEN 'x' END;\n${ALTER_KIDS}`)).toEqual([]);
+    expect(run(KIDS, `UPDATE kids SET name = p.id::text FROM parents p WHERE kids.parent_id = p.id;\n${ALTER_KIDS}`)).toEqual([]);
+  });
+
   it('flags a DELETE on the parent when the FK has no ON DELETE action', () => {
     const del = `DELETE FROM parents WHERE id IS NULL;\nALTER TABLE parents ADD COLUMN y int;`;
+    const withAction = (action: string) => KIDS.replace('REFERENCES parents (id)', `REFERENCES parents (id) ON DELETE ${action}`);
     expect(run(KIDS, del)).toEqual(['0001.sql: parents']);
-    expect(run(KIDS.replace('REFERENCES parents (id)', 'REFERENCES parents (id) ON DELETE CASCADE'), del)).toEqual([]);
+    expect(run(withAction('NO ACTION'), del)).toEqual(['0001.sql: parents']);
+    for (const action of ['CASCADE', 'RESTRICT', 'SET NULL', 'SET DEFAULT']) expect(run(withAction(action), del)).toEqual([]);
+  });
+
+  it('registers FKs added with ALTER TABLE ... ADD COLUMN ... REFERENCES', () => {
+    const add = (col: string) =>
+      `ALTER TABLE kids5 ADD COLUMN IF NOT EXISTS ${col} REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED;`;
+    const use = `INSERT INTO kids5 SELECT * FROM x;\nALTER TABLE kids5 ADD COLUMN z int;`;
+    for (const col of ['parent_id uuid', 'parent_id uuid DEFAULT gen_random_uuid()', 'code varchar(10) NOT NULL']) {
+      expect(run(add(col), use)).toEqual(['0001.sql: kids5']);
+    }
+    expect(run(`ALTER TABLE kids5 ADD COLUMN a int, ADD COLUMN parent_id uuid REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED;`, `UPDATE kids5 SET parent_id = NULL;\nALTER TABLE kids5 ADD COLUMN z int;`)).toEqual(['0001.sql: kids5']);
+  });
+
+  it('re-arms an FK altered to INITIALLY DEFERRED', () => {
+    const immediate = KIDS.replace(/\s+INITIALLY DEFERRED/, '');
+    const alter = `ALTER TABLE kids ALTER CONSTRAINT kids_parent_fk DEFERRABLE INITIALLY DEFERRED;`;
+    expect(run(immediate, alter, `${INSERT_KIDS}\n${ALTER_KIDS}`)).toEqual(['0002.sql: kids']);
+  });
+
+  it('scopes DROP CONSTRAINT to its table', () => {
+    expect(run(KIDS, `ALTER TABLE other DROP CONSTRAINT kids_parent_fk;`, `${INSERT_KIDS}\n${ALTER_KIDS}`)).toEqual([
+      '0002.sql: kids',
+    ]);
   });
 
   it('ignores writes that queue no FK event (INSERT on parent, DELETE on child)', () => {
@@ -529,9 +655,16 @@ describe('DDL forms that fail on pending trigger events', () => {
     expect(run(KIDS, `${INSERT_KIDS}\nCREATE INDEX ON parents (id);`)).toEqual([]);
   });
 
-  it('flags TRUNCATE of the written table', () => {
+  it('ignores CREATE INDEX CONCURRENTLY', () => {
+    expect(run(KIDS, `${INSERT_KIDS}\nCREATE INDEX CONCURRENTLY kids_name_idx ON kids (name);`)).toEqual([]);
+  });
+
+  it('flags TRUNCATE of the written table, not of another table or a GRANT', () => {
     expect(run(KIDS, `${INSERT_KIDS}\nTRUNCATE TABLE kids;`)).toEqual(['0001.sql: kids']);
-    expect(run(TRIGGER, `UPDATE links SET x = 1;\nTRUNCATE links, other;`)).toEqual(['0001.sql: links']);
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nTRUNCATE other, links;`)).toEqual(['0001.sql: links']);
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nTRUNCATE ONLY public."links" CASCADE;`)).toEqual(['0001.sql: links']);
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nTRUNCATE other;`)).toEqual([]);
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nGRANT SELECT, TRUNCATE ON TABLE other, links TO app;`)).toEqual([]);
   });
 });
 
@@ -577,10 +710,46 @@ ALTER TABLE links ADD COLUMN y int;`;
     expect(run(TRIGGER, `/* UPDATE links SET x = 1; */\nALTER TABLE links ADD COLUMN y int;`)).toEqual([]);
   });
 
-  it('flags a write that comes after SET CONSTRAINTS ALL IMMEDIATE', () => {
+  // SET CONSTRAINTS ... IMMEDIATE holds for the rest of the transaction
+  // (verified on Postgres 16), so later writes fire at statement end.
+  it('accepts a write after SET CONSTRAINTS ... IMMEDIATE, flags one after ... DEFERRED', () => {
+    const alter = `ALTER TABLE links ADD COLUMN y int;`;
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nSET CONSTRAINTS ALL IMMEDIATE;\nUPDATE links SET x = 2;\n${alter}`)).toEqual([]);
+    expect(run(TRIGGER, `SET CONSTRAINTS t IMMEDIATE;\nUPDATE links SET x = 2;\n${alter}`)).toEqual([]);
     expect(
-      run(TRIGGER, `UPDATE links SET x = 1;\nSET CONSTRAINTS ALL IMMEDIATE;\nUPDATE links SET x = 2;\nALTER TABLE links ADD COLUMN y int;`),
+      run(TRIGGER, `SET CONSTRAINTS ALL IMMEDIATE;\nSET CONSTRAINTS ALL DEFERRED;\nUPDATE links SET x = 2;\n${alter}`),
     ).toEqual(['0001.sql: links']);
+  });
+
+  it('flags the write when SET CONSTRAINTS names a different constraint', () => {
+    expect(run(KIDS, `${INSERT_KIDS}\nSET CONSTRAINTS other_fk IMMEDIATE;\n${ALTER_KIDS}`)).toEqual(['0001.sql: kids']);
+  });
+
+  it('only flags DDL that comes after the write, in the same file', () => {
+    expect(run(KIDS, `${ALTER_KIDS}\n${INSERT_KIDS}`)).toEqual([]);
+    expect(run(KIDS, INSERT_KIDS, ALTER_KIDS)).toEqual([]);
+  });
+
+  it('resolves dollar-quoted format strings and loops with non-string values', () => {
+    const alter = `ALTER TABLE links ADD COLUMN y int;`;
+    expect(run(TRIGGER, `DO $$ BEGIN EXECUTE format($f$UPDATE public.%I SET x = 1$f$, 'links'); END $$;\n${alter}`)).toEqual([
+      '0001.sql: links',
+    ]);
+    const loop = (rows: string) => `DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT * FROM (VALUES ${rows}) AS v(t, n) LOOP
+    EXECUTE format('UPDATE public.%I SET x = 1', r.t);
+  END LOOP;
+END $$;`;
+    expect(run(TRIGGER, `${loop(`('other', 1), ('links', NULL)`)}\n${alter}`)).toEqual(['0001.sql: links']);
+    expect(run(TRIGGER, `${loop(`('other', 1)`)}\n${alter}`)).toEqual([]);
+  });
+
+  it('flags DDL issued through EXECUTE format', () => {
+    expect(run(TRIGGER, `UPDATE links SET x = 1;\nDO $$ BEGIN EXECUTE format('ALTER TABLE public.%I ADD COLUMN y int', 'links'); END $$;`)).toEqual([
+      '0001.sql: links',
+    ]);
   });
 });
 
@@ -601,8 +770,8 @@ describe('constraint trigger lifetime', () => {
   });
 });
 
-// Guards the guard: if parsing silently found no sources, the all-migrations
-// assertion above would pass vacuously.
+// Guards the guard: if parsing silently dropped sources, the all-migrations
+// assertion above would miss violations without failing.
 describe('deferred event sources found in the real migrations', () => {
   const sources = deferredSources(loadMigrations());
   const fk = (child: string, parent: string) =>
@@ -622,6 +791,18 @@ describe('deferred event sources found in the real migrations', () => {
   });
 
   it('drop an FK later made NOT DEFERRABLE', () => {
+    // 2026-07-23 creates devices_site_org_fk deferred in its VALUES loop, then
+    // makes it NOT DEFERRABLE. Cut the file before that to prove it was seen.
+    const file = '2026-07-23-partner-export-material-state-hardening.sql';
+    const cut = 'ALTER TABLE public.devices ALTER CONSTRAINT devices_site_org_fk NOT DEFERRABLE';
+    const upTo = loadMigrations().filter((f) => f.name <= file);
+    const last = upTo[upTo.length - 1]!;
+    expect(last.name).toBe(file);
+    expect(last.sql).toContain(cut);
+    upTo[upTo.length - 1] = { ...last, sql: last.sql.slice(0, last.sql.indexOf(cut)) };
+    expect(deferredSources(upTo)).toContainEqual(
+      expect.objectContaining({ kind: 'fk', child: 'devices', parent: 'sites', name: 'devices_site_org_fk' }),
+    );
     expect(fk('devices', 'sites')).toBeUndefined();
   });
 });
