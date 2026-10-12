@@ -120,7 +120,11 @@ export type ContractServiceErrorCode =
   // #8181: a block period close locked N time entries but marked a different
   // number, or found its ledger row already written under the contract lock.
   // The caller's transaction aborts — fee, claim and drawdown roll back together.
-  | 'HOUR_BLOCK_CLOSE_MISMATCH';
+  | 'HOUR_BLOCK_CLOSE_MISMATCH'
+  // #4547 W03 (index C10): a second live block-hours line for the organization
+  // (409) / an edit of a field a block does not allow, or of a retired block (400).
+  | 'HOUR_BLOCK_EXISTS'
+  | 'HOUR_BLOCK_FIELD_LOCKED';
 
 export class ContractServiceError extends Error {
   constructor(
@@ -162,6 +166,9 @@ export interface ContractLineAudit {
   /** Column NAMES whose persisted value changed. Empty on a no-op patch.
    *  Absent for add/remove. Never a value — see the no-free-text rule. */
   changedFields?: string[];
+  /** #4547 W03: true when a remove retired a block-hours line (history exists)
+   *  instead of deleting it. Absent for every other line and for add/update. */
+  retired?: boolean;
   oldUnitPrice?: string;   // only when unitPrice changed
   newUnitPrice?: string;   // also set on add
 }
