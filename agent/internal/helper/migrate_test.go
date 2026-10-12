@@ -79,3 +79,81 @@ func TestMigrateToSessionsCreatesLayout(t *testing.T) {
 		t.Fatalf("prepared sessions = %v, want [501 502]", prepared)
 	}
 }
+
+// #8541: on Linux the legacy and current helper paths are the same file, so
+// the legacy cleanup must leave the installed helper alone instead of
+// stopping it and deleting it on every Apply.
+func TestMigrateFromLegacyNameKeepsHelperWhenPathsMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	binary := filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(binary, []byte("helper"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = binary
+
+	origLegacy := legacyBinaryPathFunc
+	t.Cleanup(func() { legacyBinaryPathFunc = origLegacy })
+	legacyBinaryPathFunc = func() string { return binary }
+
+	for i := 0; i < 3; i++ {
+		mgr.migrateFromLegacyName()
+		if _, err := os.Stat(binary); err != nil {
+			t.Fatalf("call %d: installed helper was removed by legacy cleanup: %v", i+1, err)
+		}
+	}
+}
+
+func TestSamePath(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"/usr/local/bin/breeze-helper", "/usr/local/bin/breeze-helper", true},
+		{"/usr/local/bin/../bin/breeze-helper", "/usr/local/bin/breeze-helper", true},
+		{"/usr/local/bin/breeze-helper", "/usr/local/bin/Breeze Helper", false},
+		{"", "/usr/local/bin/breeze-helper", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := samePath(c.a, c.b); got != c.want {
+			t.Errorf("samePath(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// #8541: drive the real entry point. A helper that is already installed at the
+// legacy location must still be there after repeated Apply calls.
+func TestApplyKeepsInstalledHelperWhenLegacyPathMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	binary := filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(binary, []byte("helper"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Skip the one-time per-session migration; it is not under test here.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "sessions"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = binary
+
+	origLegacy := legacyBinaryPathFunc
+	origRemove := removeAutoStartFunc
+	t.Cleanup(func() {
+		legacyBinaryPathFunc = origLegacy
+		removeAutoStartFunc = origRemove
+	})
+	legacyBinaryPathFunc = func() string { return binary }
+	removeAutoStartFunc = func() error { return nil }
+
+	for i := 0; i < 3; i++ {
+		mgr.Apply(&Settings{Enabled: true})
+		if _, err := os.Stat(binary); err != nil {
+			t.Fatalf("Apply %d: installed helper was removed: %v", i+1, err)
+		}
+	}
+}
