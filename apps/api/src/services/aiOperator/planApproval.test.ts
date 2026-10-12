@@ -16,6 +16,7 @@ import {
   checkToolCeiling,
   effectArgumentDigest,
   planEffectOperationKey,
+  renderingsMatchRows,
   toDigestProjection,
 } from './planApproval';
 import type { PlannedEffect } from './recipes/types';
@@ -195,5 +196,22 @@ describe('checkPlanEffectMembership — the ONE predicate both mint and release 
     const rows = setRows([suspend, removeGroup]).map((r, i) => (i === 0 ? { ...r, idempotencyClass: 'non_idempotent' } : r));
     expect(await checkPlanEffectMembership(handleReturning([{ revision: 2 }], [approved()], rows), base))
       .toMatchObject({ ok: true, idempotencyClass: 'non_idempotent' });
+  });
+});
+
+describe('renderingsMatchRows — what the approver read must be what the seal binds', () => {
+  const row = { ordinal: 0, provider: 'google', toolName: 'google_suspend_user', targetLabel: 'Dana', principalLabel: 'dana@customer.example', rendering: 'Suspend Dana' };
+  it('accepts the identical list', () => {
+    expect(renderingsMatchRows([{ ...row }], [row])).toBe(true);
+  });
+  it('refuses a card line that differs from its row (display spoof)', () => {
+    expect(renderingsMatchRows([{ ...row, rendering: 'Set an auto-reply' }], [row])).toBe(false);
+    expect(renderingsMatchRows([{ ...row, toolName: 'google_set_vacation' }], [row])).toBe(false);
+    expect(renderingsMatchRows([{ ...row, principalLabel: 'someone@else.example' }], [row])).toBe(false);
+  });
+  it('refuses a missing, extra or non-array rendering', () => {
+    expect(renderingsMatchRows([], [row])).toBe(false);
+    expect(renderingsMatchRows([row, row], [row])).toBe(false);
+    expect(renderingsMatchRows('nope', [row])).toBe(false);
   });
 });

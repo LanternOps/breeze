@@ -604,6 +604,21 @@ export async function proposePlanApproval(input: ProposePlanApprovalInput): Prom
 // Approval (the operator_plan release handler's job)
 // ---------------------------------------------------------------------------
 
+/** The card's lines (intent arguments) equal the sealed rows, in order. */
+export function renderingsMatchRows(
+  rendered: unknown,
+  rows: ReadonlyArray<{ ordinal: number; provider: string; toolName: string; targetLabel: string; principalLabel: string | null; rendering: string }>,
+): boolean {
+  if (!Array.isArray(rendered) || rendered.length !== rows.length) return false;
+  return rows.every((r, i) => {
+    const e = rendered[i] as Record<string, unknown> | null;
+    return !!e
+      && e.ordinal === r.ordinal && e.provider === r.provider && e.toolName === r.toolName
+      && e.targetLabel === r.targetLabel && (e.principalLabel ?? null) === r.principalLabel
+      && e.rendering === r.rendering;
+  });
+}
+
 export type MarkPlanApprovedResult =
   | { ok: true; taskId: string; planRevision: number; effectCount: number; approverUserId: string }
   | { ok: false; reason: 'intent_invalid' | 'plan_approval_missing' | 'not_pending' | 'digest_mismatch'
@@ -646,12 +661,18 @@ export async function markPlanApproved(args: { orgId: string; intentId: string }
 
   return runOutsideDbContext(() => withSystemDbAccessContext(async (): Promise<MarkPlanApprovedResult> => {
     const [task] = await db
-      .select({ revision: aiOperatorTasks.revision })
+      .select({ revision: aiOperatorTasks.revision, requesterUserId: aiOperatorTasks.requesterUserId })
       .from(aiOperatorTasks)
       .where(and(eq(aiOperatorTasks.id, taskId), eq(aiOperatorTasks.orgId, args.orgId)))
       .for('update')
       .limit(1);
     if (!task) return { ok: false, reason: 'plan_approval_missing', detail: 'task not found' };
+    // Only the coordinator mints the plan intent, and it mints it AS the
+    // task's requester (D-E4-2). A plan intent raised by anyone else is not
+    // this task's plan, whatever its arguments say.
+    if (!task.requesterUserId || intent.requestedByUserId !== task.requesterUserId) {
+      return { ok: false, reason: 'intent_invalid', detail: 'the plan intent was not raised for the task requester' };
+    }
     if (task.revision !== planRevision) {
       return { ok: false, reason: 'revision_moved', detail: `task is at revision ${task.revision}, plan is ${planRevision}` };
     }
@@ -683,6 +704,13 @@ export async function markPlanApproved(args: { orgId: string; intentId: string }
     } catch { recomputed = null; }
     if (recomputed !== digest || approval.effectSetDigest !== digest || rows.length !== approval.effectCount) {
       return { ok: false, reason: 'digest_mismatch', detail: 'the stored effect set no longer matches the approved seal' };
+    }
+    // What the approver READ is the intent's `effects` rendering (the card
+    // needs no fetch); what the seal binds is the rows. They must be the same
+    // list, line for line, or the card could have shown one plan while the
+    // seal authorizes another.
+    if (!renderingsMatchRows(a.effects, rows)) {
+      return { ok: false, reason: 'digest_mismatch', detail: 'the approved card rendering does not match the stored effect rows' };
     }
     // The ceiling over every effect, re-run at the plan's own release: a
     // human-shaped, task-less plan intent reaches neither the agent release
