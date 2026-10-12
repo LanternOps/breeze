@@ -39,6 +39,33 @@ function sqlParams(query: unknown): unknown[] {
 }
 
 describe('PAM actuation lifecycle', () => {
+  it('takes the device lock before any elevation_requests lock (spec §9, deadlock vs org move)', async () => {
+    const tx = txWithRows([
+      [{ ownership_epoch: 1 }],
+      [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 7 }],
+      [{
+        id: '20000000-0000-4000-8000-000000000001',
+        elevation_request_id: request.id,
+        request_revision: 7,
+        generation: 1,
+        desired_state: 'active',
+      }],
+    ]);
+    await createPamDecisionIntent(tx as never, {
+      request,
+      requestRevision: 7,
+      decision: 'approved',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const texts = tx.execute.mock.calls.map((c) => sqlText(c[0]));
+    const deviceIdx = texts.findIndex((q) => /FROM devices[\s\S]*FOR SHARE/.test(q));
+    const requestIdx = texts.findIndex((q) => /FROM elevation_requests[\s\S]*FOR UPDATE/.test(q));
+    const actuationIdx = texts.findIndex((q) => /FROM pam_actuations[\s\S]*FOR UPDATE/.test(q));
+    expect(deviceIdx).toBe(0);
+    expect(requestIdx).toBeGreaterThan(deviceIdx);
+    expect(actuationIdx).toBeGreaterThan(requestIdx);
+  });
+
   it('creates exactly one generation-1 active actuation and outbox event', async () => {
     const tx = txWithRows([
       [{ ownership_epoch: 1 }],
