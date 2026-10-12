@@ -83,8 +83,8 @@ func callSRSetRestorePoint(rpi *restorePointInfo) (int64, error) {
 		defer windows.CoUninitialize()
 	}
 
-	if err := srSetRestorePoint.Find(); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrUnsupported, err)
+	if err := findEntryPoint(); err != nil {
+		return 0, err
 	}
 
 	status := newStatemgrStatus()
@@ -93,13 +93,5 @@ func callSRSetRestorePoint(rpi *restorePointInfo) (int64, error) {
 		uintptr(unsafe.Pointer(&status)),
 	)
 	// Both signals: the call can return TRUE with a nonzero nStatus.
-	if msg, failed := restorePointCallFailed(ret, status.Status); failed {
-		nerr := &nativeError{msg: msg, nStatus: status.Status}
-		var errno windows.Errno
-		if errors.As(callErr, &errno) && errno != 0 {
-			nerr.cause = callErr
-		}
-		return 0, nerr
-	}
-	return status.sequence(), nil
+	return interpretCall(ret, callErr, status)
 }

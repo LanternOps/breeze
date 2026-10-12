@@ -38,6 +38,9 @@ func TestBuildDescriptionFitsTheUTF16BufferForAstralLabels(t *testing.T) {
 	if n := len(utf16.Encode([]rune(got))); n > 255 {
 		t.Fatalf("description is %d UTF-16 units, over the 255-unit native limit", n)
 	}
+	if n := strings.Count(got, "😀"); n < 120 {
+		t.Fatalf("only %d emoji survived truncation; the label was over-trimmed", n)
+	}
 }
 
 func TestBuildDescriptionIsUniqueWithoutARequestID(t *testing.T) {

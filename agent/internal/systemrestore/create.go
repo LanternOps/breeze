@@ -123,12 +123,10 @@ func createWith(ctx context.Context, req Request, env environment, native native
 		}
 
 		candidate, callErr := native.begin(desc)
+		var endErr error
 		if callErr == nil && candidate != 0 {
 			if _, reused := before[candidate]; !reused {
-				if endErr := native.end(candidate); endErr != nil {
-					callErr = errors.New("END_SYSTEM_CHANGE failed for sequence " +
-						strconv.FormatInt(candidate, 10) + ": " + endErr.Error())
-				}
+				endErr = native.end(candidate)
 			}
 		}
 
@@ -142,7 +140,23 @@ func createWith(ctx context.Context, req Request, env environment, native native
 				return pollForPoint(ctx, list, candidate, desc, verifyBudget, verifyPollInterval)
 			}
 		}
-		return classify(verifyEnv, req, desc, before, candidate, callErr)
+		out := classify(verifyEnv, req, desc, before, candidate, callErr)
+		if endErr != nil {
+			// The change we opened could not be closed, so this is not a
+			// confirmed checkpoint. Still verify and keep its identity, so
+			// the console and server know which point exists and a retry
+			// does not pile up unexplained duplicates.
+			found := "was not found"
+			if out.Status == StatusCreated {
+				found = "was found"
+			}
+			out.Status = StatusFailed
+			out.SequenceNumber = formatSequence(candidate)
+			out.Description = desc
+			out.Message = "END_SYSTEM_CHANGE failed for sequence " + strconv.FormatInt(candidate, 10) +
+				" (the restore point " + found + " in WMI): " + endErr.Error()
+		}
+		return out
 	}))
 }
 
@@ -176,10 +190,7 @@ func buildDescription(req Request) string {
 	var b strings.Builder
 	runes, units := 0, 0
 	for _, r := range label {
-		n := utf16.RuneLen(r)
-		if n < 0 {
-			n = 1 // invalid rune; UTF16FromString writes U+FFFD
-		}
+		n := utf16.RuneLen(r) // range yields valid runes (or U+FFFD), so 1 or 2
 		if runes+1 > runeBudget || units+n > unitBudget {
 			break
 		}

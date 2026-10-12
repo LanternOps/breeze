@@ -221,7 +221,6 @@ func TestPollForPointStopsWhenTheContextEnds(t *testing.T) {
 
 func TestCallBoundedAbandonsAHungCall(t *testing.T) {
 	block := make(chan struct{})
-	defer close(block)
 	start := time.Now()
 	_, err := callBounded(context.Background(), 20*time.Millisecond, func() (int, error) {
 		<-block
@@ -232,6 +231,21 @@ func TestCallBoundedAbandonsAHungCall(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("callBounded did not honour its timeout")
+	}
+	close(block)
+	waitForWMIDrain(t)
+}
+
+// waitForWMIDrain waits until no abandoned callBounded call is outstanding,
+// so a test that deliberately hung one does not fail-fast the next test.
+func waitForWMIDrain(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for abandonedWMICalls.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d abandoned WMI calls never finished", abandonedWMICalls.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

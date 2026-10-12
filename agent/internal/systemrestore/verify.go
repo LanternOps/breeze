@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,6 +74,15 @@ func classify(
 			out.Status = StatusFailed
 		}
 		out.Message = callErr.Error()
+		return out
+	}
+
+	if candidate == 0 {
+		// A success that names no sequence identifies nothing to verify.
+		// Possibly how a throttled BEGIN looks on some builds; not yet
+		// observed on hardware (#8265).
+		out.Status = StatusVerificationFailed
+		out.Message = "SRSetRestorePointW reported success but returned sequence 0, so no restore point can be identified"
 		return out
 	}
 
@@ -163,21 +174,40 @@ func pollForPoint(
 		case <-ctx.Done():
 			return nil, fmt.Errorf("verification abandoned: %w", ctx.Err())
 		case <-deadline.C:
-			if readOK {
-				return rows, nil
+			// If the most recent read failed, report that rather than an
+			// older list: "WMI is failing" must not read as "not found".
+			if lastErr != nil || !readOK {
+				return nil, lastErr
 			}
-			return nil, lastErr
+			return rows, nil
 		case <-time.After(interval):
 		}
 	}
 }
+
+// abandonedWMICalls counts callBounded calls that timed out and are still
+// running in the background.
+var abandonedWMICalls atomic.Int32
+
+// errWMIWedged is returned while an earlier, abandoned WMI call is still
+// running.
+var errWMIWedged = errors.New("a previous WMI query has not returned; not starting another")
 
 // callBounded runs fn but stops waiting after timeout or when ctx ends. It
 // exists for WMI: a COM call has no cancellation, and a wedged WMI provider
 // must not wedge the command that asked for a checkpoint. On timeout the
 // goroutine running fn is abandoned — it finishes, or not, in the background —
 // which is the only option for a synchronous foreign call.
+//
+// While any abandoned call is still running, callBounded fails fast without
+// starting fn. wmi.QueryNamespace holds a package-global lock for the whole
+// query, so a second query would only queue behind the wedged one, burn its
+// full timeout, and leak another goroutine — once per patch update.
 func callBounded[T any](ctx context.Context, timeout time.Duration, fn func() (T, error)) (T, error) {
+	var zero T
+	if abandonedWMICalls.Load() > 0 {
+		return zero, errWMIWedged
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	type result struct {
@@ -185,15 +215,38 @@ func callBounded[T any](ctx context.Context, timeout time.Duration, fn func() (T
 		err error
 	}
 	ch := make(chan result, 1) // buffered: an abandoned fn must not block forever
+
+	// mu orders "fn finished" against "caller gave up", so the abandoned
+	// counter's increment and decrement always pair exactly.
+	var (
+		mu        sync.Mutex
+		finished  bool
+		abandoned bool
+	)
 	go func() {
 		v, err := fn()
+		mu.Lock()
+		finished = true
+		if abandoned {
+			abandonedWMICalls.Add(-1)
+		}
+		mu.Unlock()
 		ch <- result{v, err}
 	}()
 	select {
 	case r := <-ch:
 		return r.v, r.err
 	case <-ctx.Done():
-		var zero T
+		mu.Lock()
+		if finished {
+			// fn completed while we were giving up; its result is on its way.
+			mu.Unlock()
+			r := <-ch
+			return r.v, r.err
+		}
+		abandoned = true
+		abandonedWMICalls.Add(1)
+		mu.Unlock()
 		return zero, fmt.Errorf("WMI call did not complete: %w", ctx.Err())
 	}
 }

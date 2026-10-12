@@ -3,6 +3,7 @@ package systemrestore
 import (
 	"errors"
 	"fmt"
+	"syscall"
 )
 
 // ErrUnsupported means this machine has no usable System Restore provider:
@@ -33,6 +34,28 @@ func (e *nativeError) Error() string {
 }
 
 func (e *nativeError) Unwrap() error { return e.cause }
+
+// interpretCall turns one SRSetRestorePointW call's raw outputs into a
+// sequence number or a *nativeError. Proc.Call always returns a non-nil
+// error, usually Errno(0); only a nonzero errno is attached as the cause.
+func interpretCall(ret uintptr, callErr error, status statemgrStatus) (int64, error) {
+	if msg, failed := restorePointCallFailed(ret, status.Status); failed {
+		nerr := &nativeError{msg: msg, nStatus: status.Status}
+		var errno syscall.Errno
+		if errors.As(callErr, &errno) && errno != 0 {
+			nerr.cause = errno
+		}
+		return 0, nerr
+	}
+	return status.sequence(), nil
+}
+
+// isMissingLibraryErrno reports whether a DLL-load errno means the module or
+// entry point does not exist (ERROR_MOD_NOT_FOUND, ERROR_PROC_NOT_FOUND) —
+// the only load failures that mean "System Restore is unsupported here".
+func isMissingLibraryErrno(errno uintptr) bool {
+	return errno == 126 || errno == 127
+}
 
 // restorePointCallFailed classifies one SRSetRestorePointW call from both of
 // its outputs: the BOOL return and STATEMGRSTATUS.nStatus. The call can

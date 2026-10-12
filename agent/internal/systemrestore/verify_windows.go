@@ -26,22 +26,13 @@ type win32SystemRestore struct {
 	CreationTime   string // CIM DATETIME, e.g. 20260902180311.000000-000
 }
 
-const (
-	srConfigKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore`
-	srPolicyKey = `SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore`
-
-	// defaultFrequencyMinutes is Microsoft's documented default for
-	// SystemRestorePointCreationFrequency when the value is absent.
-	defaultFrequencyMinutes int64 = 1440
-)
-
 func newEnvironment() environment {
 	return environment{
 		probe:            probeEntryPoint,
 		enabled:          systemRestoreEnabled,
 		elevated:         tokenElevated,
 		listPoints:       listRestorePoints,
-		frequencyMinutes: readCreationFrequency,
+		frequencyMinutes: func() (int64, error) { return registryFrequency(readHKLMInteger) },
 		now:              time.Now,
 	}
 }
@@ -49,10 +40,22 @@ func newEnvironment() environment {
 // probeEntryPoint checks for srclient.dll!SRSetRestorePointW. Loading a
 // System32 DLL by name has no side effects beyond mapping it.
 func probeEntryPoint() error {
-	if err := srSetRestorePoint.Find(); err != nil {
+	return findEntryPoint()
+}
+
+// findEntryPoint resolves SRSetRestorePointW. Only a missing module or entry
+// point means "unsupported"; any other load failure (access denied, low
+// memory) is a real failure and must not be reported as an absent feature.
+func findEntryPoint() error {
+	err := srSetRestorePoint.Find()
+	if err == nil {
+		return nil
+	}
+	var errno windows.Errno
+	if errors.As(err, &errno) && isMissingLibraryErrno(uintptr(errno)) {
 		return fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
-	return nil
+	return fmt.Errorf("could not load srclient.dll!SRSetRestorePointW: %w", err)
 }
 
 // tokenElevated reports whether the agent's process token is elevated. The
@@ -96,17 +99,23 @@ func oleErrorCodes(err error) []uint32 {
 	return codes
 }
 
-func readCreationFrequency() (int64, error) {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, srConfigKey, registry.QUERY_VALUE)
+// readHKLMInteger is the registryReader over HKLM. A missing key or value is
+// errRegistryNotExist; anything else (access denied, wrong value type) is
+// returned as-is so the caller reports it rather than guessing.
+func readHKLMInteger(path, name string) (uint64, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return 0, errRegistryNotExist
+	}
 	if err != nil {
-		return defaultFrequencyMinutes, nil // absent key = Windows default
+		return 0, err
 	}
 	defer k.Close()
-	v, _, err := k.GetIntegerValue("SystemRestorePointCreationFrequency")
-	if err != nil {
-		return defaultFrequencyMinutes, nil
+	v, _, err := k.GetIntegerValue(name)
+	if errors.Is(err, registry.ErrNotExist) {
+		return 0, errRegistryNotExist
 	}
-	return int64(v), nil
+	return v, err
 }
 
 // systemRestoreEnabled reports whether System Restore is switched off
@@ -119,20 +128,9 @@ func readCreationFrequency() (int64, error) {
 // allocates shadow storage on the system volume, which can evict existing
 // shadow copies and collide with the Breeze backup agent's own snapshots.
 func systemRestoreEnabled() (bool, error) {
-	for _, path := range []string{srPolicyKey, srConfigKey} {
-		if disabledAt(path) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func disabledAt(path string) bool {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	disabled, err := registryDisabled(readHKLMInteger)
 	if err != nil {
-		return false
+		return false, err
 	}
-	defer k.Close()
-	v, _, err := k.GetIntegerValue("DisableSR")
-	return err == nil && v == 1
+	return !disabled, nil
 }
