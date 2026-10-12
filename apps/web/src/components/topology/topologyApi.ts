@@ -22,11 +22,11 @@ export class TopologyReadError extends Error {
 export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal, body?: unknown): Promise<T> {
   const response = await fetchWithAuth(path, body === undefined ? { signal } : { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+    const errorBody = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
     const message = response.status === 403 ? 'Access to this topology is denied'
-      : typeof body?.code === 'string' && body.code === 'target_not_configured' ? 'Target not configured'
-      : typeof body?.error === 'string' ? body.error : 'Unable to load topology';
-    throw new TopologyReadError(message, response.status, typeof body?.code === 'string' ? body.code : undefined);
+      : typeof errorBody?.code === 'string' && errorBody.code === 'target_not_configured' ? 'Target not configured'
+      : typeof errorBody?.error === 'string' ? errorBody.error : 'Unable to load topology';
+    throw new TopologyReadError(message, response.status, typeof errorBody?.code === 'string' ? errorBody.code : undefined);
   }
   return schema.parse(await response.json());
 }

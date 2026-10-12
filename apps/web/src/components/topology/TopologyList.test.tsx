@@ -139,3 +139,20 @@ it('tells repeated gateway rows apart by who reported them (#8307)', () => {
   expect(screen.getByTestId(`topology-node-${gwA.id}`).closest('tr')).toHaveTextContent('Reported by FRONT-DESK');
   expect(screen.getByTestId(`topology-node-${gwB.id}`).closest('tr')).toHaveTextContent('Reported by BACK-OFFICE');
 });
+
+it('does not name a decommissioned device as a gateway reporter (#8307)', () => {
+  const graph = topologyGraphFixture();
+  const base = graph.nodes[0]!;
+  const gw = { ...base, id: '10000000-0000-4000-8000-0000000000f1', label: '10.1.2.100' };
+  const inv = (agentStatus: string) => ({ source: 'device' as const, name: 'PC', addresses: [], mac: null, vendor: null, model: null, os: null, type: null,
+    presence: { state: 'offline' as const, source: 'agent' as const, agentStatus, lastSeenAt: null } });
+  const live = { ...base, id: '10000000-0000-4000-8000-0000000000f2', kind: 'endpoint' as const, label: 'LIVE-PC', inventory: inv('online') };
+  const gone = { ...base, id: '10000000-0000-4000-8000-0000000000f3', kind: 'endpoint' as const, label: 'RETIRED-PC', inventory: inv('decommissioned') };
+  graph.nodes = [gw, live, gone];
+  const route = { kind: 'default_route', meaning: 'default route', evidence: base.evidence, freshness: 'fresh', health: base.health };
+  graph.relationships = [{ ...route, id: 'r1', sourceNodeId: live.id, targetNodeId: gw.id }, { ...route, id: 'r2', sourceNodeId: gone.id, targetNodeId: gw.id }] as never;
+  render(<TopologyList graph={graph} onSelect={() => {}} />);
+  const row = screen.getByTestId(`topology-node-${gw.id}`).closest('tr')!;
+  expect(row).toHaveTextContent('Reported by LIVE-PC');
+  expect(row).not.toHaveTextContent('RETIRED-PC');
+});

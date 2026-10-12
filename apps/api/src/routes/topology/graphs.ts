@@ -62,6 +62,6 @@ topologyGraphRoutes.get(`${base}/health`, authorized, read((c) => {
  */
 topologyGraphRoutes.post(`${base}/health`, authorized, read(async (c) => {
   scopedQuery(c); // validates the ambient/foreign orgId key; the ids come only from the body
-  const body = await c.req.json().catch(() => undefined);
+  const body = await c.req.json().catch(() => { throw new GraphReadError('invalid_topology_query', 400, 'Request body must be valid JSON'); });
   return getTopologyHealth(c.get('topologyContext'), parse(healthQuerySchema, body));
 }));

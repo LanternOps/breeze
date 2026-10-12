@@ -26,7 +26,10 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
   for (const edge of graph.relationships) {
     if (edge.kind !== 'default_route') continue;
     const reporter = labels.get(edge.sourceNodeId);
-    if (reporter) reportersOf.set(edge.targetNodeId, [...(reportersOf.get(edge.targetNodeId) ?? []), reporter]);
+    const source = graph.nodes.find((candidate) => candidate.id === edge.sourceNodeId);
+    if (!reporter || (source && isDecommissioned(source))) continue; // same rule as the gateway inspector
+    const known = reportersOf.get(edge.targetNodeId) ?? [];
+    if (!known.includes(reporter)) reportersOf.set(edge.targetNodeId, [...known, reporter]);
   }
   // Name a hidden connection by its two endpoints; fall back to the id prefix only when an endpoint is not in this graph.
   const hiddenConnectionLabel = (item: HiddenConnection) => {
