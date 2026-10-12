@@ -297,8 +297,9 @@ describe('audit_log_verify_chain_incremental / _range', () => {
   });
 
   it('verifies the system chain (NULL org) and catches a tamper there', async () => {
-    // Pre-existing system rows from other tests may be present; the chain
-    // must verify clean regardless, and a forged content edit must surface.
+    // cleanupDatabase truncates audit_logs before each test, so the system
+    // chain starts empty here; it must verify clean and a forged content
+    // edit above the anchor must surface on every slice.
     const seedSystem = async (n: number) =>
       withSystemDbAccessContext(async () => {
         for (let i = 0; i < n; i++) {
