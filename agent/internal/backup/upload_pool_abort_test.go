@@ -18,7 +18,7 @@ func (p *poolProvider) fileObjects() int {
 	p.mockProvider.mu.Lock()
 	defer p.mockProvider.mu.Unlock()
 	n := 0
-	for k := range p.mockProvider.files {
+	for k := range p.files {
 		if isFileObject(k) {
 			n++
 		}
@@ -31,12 +31,41 @@ func (p *poolProvider) fileObjects() int {
 // (the finished-but-unaccounted ones are not journaled, so resume uploads
 // them again), and a resumed pooled run completes the snapshot with every
 // file exactly once, in walk order.
+//
+// Deterministic: f02 (the head after f00/f01) blocks until the stop; f01's
+// upload is held until f03..f05 have landed behind it; the stop is issued
+// from the progress callback once f00 and f01 are accounted, so the journal
+// holds exactly that prefix on every run.
 func TestUploadPool_StopWithJournalThenResume(t *testing.T) {
 	defer setUploadConcurrencyForTest(4)()
+	defer setProgressThrottleForTest(0)()
 	files := poolFiles(t, 10)
 	provider := newPoolProvider()
+	behindHead := func() int {
+		provider.mockProvider.mu.Lock()
+		defer provider.mockProvider.mu.Unlock()
+		n := 0
+		for k := range provider.files {
+			if poolKeyIs(k, "f03") || poolKeyIs(k, "f04") || poolKeyIs(k, "f05") {
+				n++
+			}
+		}
+		return n
+	}
 	provider.hold = func(ctx context.Context, remotePath string) error {
-		if strings.Contains(remotePath, "f02") {
+		switch {
+		case poolKeyIs(remotePath, "f01"):
+			// With 4 workers, f03..f05 are admitted as f00, f03 and f04
+			// finish; wait (a condition, not a timing guess) until all three
+			// have landed behind the blocked head.
+			deadline := time.Now().Add(10 * time.Second)
+			for behindHead() < 3 {
+				if time.Now().After(deadline) {
+					return errors.New("f03..f05 never landed")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		case poolKeyIs(remotePath, "f02"):
 			<-ctx.Done()
 			return ctx.Err()
 		}
@@ -49,25 +78,27 @@ func TestUploadPool_StopWithJournalThenResume(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		// f00, f01 and three files behind the blocked f02 have landed.
-		deadline := time.Now().Add(5 * time.Second)
-		for provider.fileObjects() < 5 && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
+	// Runs on the coordinator after each accounted file, before its journal
+	// append: stopping at filesDone == 2 still journals f01.
+	onProgress := func(filesDone, _ int, _, _ int64, _ string) {
+		if filesDone >= 2 {
+			cancel()
 		}
-		cancel()
-	}()
-	if _, err := createSnapshotWithProgress(ctx, provider, files, nil, journal, nil, nil); !errors.Is(err, errBackupStopped) {
+	}
+	if _, err := createSnapshotWithProgress(ctx, provider, files, onProgress, journal, nil, nil); !errors.Is(err, errBackupStopped) {
 		t.Fatalf("err = %v, want errBackupStopped", err)
 	}
+	if got := behindHead(); got != 3 {
+		t.Fatalf("%d of f03..f05 landed; the stop was not exercised with finished files behind the head", got)
+	}
 	if got := provider.fileObjects(); got < 5 {
-		t.Fatalf("only %d file objects landed; the stop was not exercised with finished files behind the head", got)
+		t.Fatalf("only %d file objects landed, want f00, f01 and f03..f05 at least", got)
 	}
 	if active, _, _ := provider.snapshotStats(); active != 0 {
 		t.Fatalf("run returned with %d uploads in flight", active)
 	}
 	provider.mockProvider.mu.Lock()
-	deletes := len(provider.mockProvider.deleteCalls)
+	deletes := len(provider.deleteCalls)
 	provider.mockProvider.mu.Unlock()
 	if deletes != 0 {
 		t.Fatalf("a journaled stop deleted %d objects; the prefix is the resume state", deletes)
@@ -86,8 +117,8 @@ func TestUploadPool_StopWithJournalThenResume(t *testing.T) {
 
 	resumedProvider := newPoolProvider()
 	provider.mockProvider.mu.Lock()
-	for k, v := range provider.mockProvider.files {
-		resumedProvider.mockProvider.files[k] = v
+	for k, v := range provider.files {
+		resumedProvider.files[k] = v
 	}
 	provider.mockProvider.mu.Unlock()
 	snapshot, err := createSnapshotWithProgress(context.Background(), resumedProvider, files, nil, j2, nil, nil)
@@ -104,9 +135,68 @@ func TestUploadPool_StopWithJournalThenResume(t *testing.T) {
 	}
 	resumedProvider.mockProvider.mu.Lock()
 	defer resumedProvider.mockProvider.mu.Unlock()
-	for _, c := range resumedProvider.mockProvider.uploadCalls {
-		if strings.Contains(c.remotePath, "f00") || strings.Contains(c.remotePath, "f01") {
+	for _, c := range resumedProvider.uploadCalls {
+		if poolKeyIs(c.remotePath, "f00") || poolKeyIs(c.remotePath, "f01") {
 			t.Fatalf("journaled file re-uploaded on resume: %s", c.remotePath)
+		}
+	}
+}
+
+// A stop that arrives while a finished upload waits to be accounted does not
+// drop it: the file already landed, so it is accounted and journaled before
+// the run ends, and resume does not upload it again.
+//
+// Deterministic: f00 is held until the coordinator has received f01's
+// outcome (it then admits f02, which is observable as a third upload
+// starting); the stop is issued from the progress callback while f00 is
+// accounted, so f01 is a finished head when the coordinator next looks.
+func TestUploadPool_StopKeepsFinishedHeadUpload(t *testing.T) {
+	defer setUploadConcurrencyForTest(2)()
+	defer setProgressThrottleForTest(0)()
+	files := poolFiles(t, 4)
+	provider := newPoolProvider()
+	provider.hold = func(ctx context.Context, remotePath string) error {
+		switch {
+		case poolKeyIs(remotePath, "f00"):
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, _, started := provider.snapshotStats(); started >= 3 {
+					return nil
+				}
+				if time.Now().After(deadline) {
+					return errors.New("f02 never started")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		case poolKeyIs(remotePath, "f02"):
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "pool-finished-head", journalMaxAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	onProgress := func(filesDone, _ int, _, _ int64, _ string) {
+		if filesDone >= 1 {
+			cancel()
+		}
+	}
+	if _, err := createSnapshotWithProgress(ctx, provider, files, onProgress, journal, nil, nil); !errors.Is(err, errBackupStopped) {
+		t.Fatalf("err = %v, want errBackupStopped", err)
+	}
+	j2, resumed, err := openSnapshotJournal(journalDir, "pool-finished-head", journalMaxAge)
+	if err != nil || !resumed {
+		t.Fatalf("reopen: resumed=%v err=%v", resumed, err)
+	}
+	for i, f := range files {
+		_, ok := j2.Lookup(f.sourcePath, f.size, f.modTime)
+		if want := i < 2; ok != want {
+			t.Fatalf("file %d journaled=%v, want %v (f01 finished before the stop reached it)", i, ok, want)
 		}
 	}
 }
@@ -172,7 +262,7 @@ func TestUploadPool_WriterStillActiveDrainsWorkers(t *testing.T) {
 	provider := &stuckFenceProvider{poolProvider: newPoolProvider()}
 	provider.ignoresCancel = true
 	provider.hold = func(ctx context.Context, remotePath string) error {
-		if strings.Contains(remotePath, "f00") || strings.Contains(remotePath, "f01") {
+		if poolKeyIs(remotePath, "f00") || poolKeyIs(remotePath, "f01") {
 			return nil
 		}
 		<-ctx.Done()
@@ -204,7 +294,7 @@ func TestUploadPool_WriterStillActiveDrainsWorkers(t *testing.T) {
 type stuckFenceProvider struct{ *poolProvider }
 
 func (p *stuckFenceProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
-	if strings.Contains(remotePath, "f02") {
+	if poolKeyIs(remotePath, "f02") {
 		return fmt.Errorf("storage session: %w", providers.ErrPreviousWriterActive)
 	}
 	return p.poolProvider.UploadContext(ctx, localPath, remotePath)

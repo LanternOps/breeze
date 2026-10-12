@@ -1173,6 +1173,17 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 	}
 	defer drainUploads()
+	// receiveUpload files a worker's outcome on its slot. A finished upload
+	// holds no staging space or buffers, so its charge is returned now
+	// rather than when it reaches the head: a slow head file must not stop
+	// the budget refilling.
+	receiveUpload := func(d uploadDone) {
+		uploadsInFlight--
+		done := slots[d.index]
+		done.done, done.outcome = true, d.outcome
+		stagedBytes -= done.charged
+		done.charged = 0
+	}
 
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
@@ -1329,22 +1340,36 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if s.kind == slotUpload && !s.done {
 			select {
 			case d := <-doneCh:
-				uploadsInFlight--
-				done := slots[d.index]
-				done.done, done.outcome = true, d.outcome
-				// A finished upload holds no staging space or buffers, so
-				// its charge is returned now rather than when it reaches the
-				// head: a slow head file must not stop the budget refilling.
-				stagedBytes -= done.charged
-				done.charged = 0
+				receiveUpload(d)
 			case <-ctx.Done():
-				return abortStopped()
+				// The head's own outcome may already be waiting behind the
+				// cancel. Collect every outcome already handed back; if the
+				// head finished, account for it below rather than dropping
+				// an upload that landed (the serial loop journaled a file
+				// whose upload returned before it saw the stop).
+				for collected := true; collected; {
+					select {
+					case d := <-doneCh:
+						receiveUpload(d)
+					default:
+						collected = false
+					}
+				}
+				if !s.done {
+					return abortStopped()
+				}
 			}
 			continue
 		}
 
-		// The head entry is ready: account for it, in walk order.
-		if err := ctx.Err(); err != nil {
+		// The head entry is ready: account for it, in walk order. A stop
+		// ends the run here, except for an upload that already finished:
+		// like the serial loop, which checked for a stop before each file
+		// and never between a returned upload and its journal append, it is
+		// accounted (and journaled) first. A stopped upload's own outcome
+		// ends the run below; the next head that is not a finished upload
+		// ends it here.
+		if err := ctx.Err(); err != nil && s.kind != slotUpload {
 			return abortStopped()
 		}
 		delete(slots, head)

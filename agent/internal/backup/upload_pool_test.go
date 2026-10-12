@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -40,6 +41,14 @@ func newPoolProvider() *poolProvider { return &poolProvider{mockProvider: newMoc
 
 func isFileObject(remotePath string) bool {
 	return strings.Contains(remotePath, "/"+snapshotFilesDir+"/")
+}
+
+// poolKeyIs reports whether remotePath is the object key of the test file
+// named name (e.g. "f02"). It matches the key's base name, not a substring
+// of the whole key: the snapshot ID in the prefix is random hex and can
+// itself contain "f02".
+func poolKeyIs(remotePath, name string) bool {
+	return strings.HasPrefix(path.Base(remotePath), name+".")
 }
 
 func (p *poolProvider) Upload(localPath, remotePath string) error {
@@ -184,7 +193,7 @@ func runPoolDifferential(t *testing.T, workers int, files []backupFile, failKey 
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if failKey != "" && strings.Contains(remotePath, failKey) {
+		if failKey != "" && poolKeyIs(remotePath, failKey) {
 			return errors.New("destination refused the object")
 		}
 		return nil
@@ -211,7 +220,7 @@ func runPoolDifferential(t *testing.T, workers int, files []backupFile, failKey 
 		run.failures = append(run.failures, e.Error())
 	}
 	provider.mockProvider.mu.Lock()
-	for k, v := range provider.mockProvider.files {
+	for k, v := range provider.files {
 		if isFileObject(k) {
 			run.stored[strings.TrimPrefix(k, path0(k))] = string(v)
 		}
@@ -323,7 +332,7 @@ func TestUploadPool_CancelDrainsWorkers(t *testing.T) {
 		t.Fatalf("%d uploads started after the run returned", late)
 	}
 	provider.mockProvider.mu.Lock()
-	leftover := len(provider.mockProvider.files)
+	leftover := len(provider.files)
 	provider.mockProvider.mu.Unlock()
 	if leftover != 0 {
 		t.Fatalf("%d objects left in the stopped run's prefix", leftover)
@@ -347,9 +356,9 @@ func TestUploadPool_SourceGoneDrainsBeforePartialPublish(t *testing.T) {
 	provider := newPoolProvider()
 	provider.hold = func(ctx context.Context, remotePath string) error {
 		switch {
-		case strings.Contains(remotePath, "f00"), strings.Contains(remotePath, "f01"):
+		case poolKeyIs(remotePath, "f00"), poolKeyIs(remotePath, "f01"):
 			return nil
-		case strings.Contains(remotePath, "f02"):
+		case poolKeyIs(remotePath, "f02"):
 			return errors.New("source read failed")
 		}
 		<-ctx.Done()
