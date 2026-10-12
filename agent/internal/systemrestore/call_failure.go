@@ -11,7 +11,7 @@ import (
 // class, or a non-Windows platform. Determined by probing, NEVER by SKU —
 // Windows Server 2022, for example, ships neither the DLL nor the WMI class
 // (#4752 hardware run), and a SKU table would drift (#4609 Open Decision 4).
-var ErrUnsupported = errors.New("System Restore is not available on this machine")
+var ErrUnsupported = errors.New("system restore is not available on this machine")
 
 // errorServiceDisabled is ERROR_SERVICE_DISABLED (1058). srclient reports it
 // in nStatus when System Restore protection is off for the system drive — a
