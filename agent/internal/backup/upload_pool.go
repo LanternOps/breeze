@@ -275,6 +275,13 @@ func (u *fileUploader) upload(ctx context.Context, task fileUploadTask) fileUplo
 			out.stopped = true
 			return out
 		}
+		if errors.Is(reconcileErr, errWriterStillActive) {
+			// The re-upload was refused by the writer fence: like the
+			// first upload's refusal, the snapshot cannot be written at
+			// all, so the run ends rather than skipping file after file.
+			out.writerStillActive = reconcileErr
+			return out
+		}
 		if reconcileErr != nil {
 			// The re-upload of a changing file failed: what the key now
 			// holds is not known for certain, so the file is not in this

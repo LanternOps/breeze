@@ -1163,11 +1163,13 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	drainUploads := func() {
 		cancelWorkers()
 		for uploadsInFlight > 0 {
-			d := <-doneCh
+			<-doneCh
 			uploadsInFlight--
-			if s := slots[d.index]; s != nil {
-				inFlight.release(s.progress)
-			}
+		}
+		// Nothing past this point is accounted: drop every slot's in-flight
+		// bytes (release is idempotent), so no later emission counts them.
+		for _, s := range slots {
+			inFlight.release(s.progress)
 		}
 	}
 	defer drainUploads()
@@ -1330,6 +1332,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				uploadsInFlight--
 				done := slots[d.index]
 				done.done, done.outcome = true, d.outcome
+				// A finished upload holds no staging space or buffers, so
+				// its charge is returned now rather than when it reaches the
+				// head: a slow head file must not stop the budget refilling.
+				stagedBytes -= done.charged
+				done.charged = 0
 			case <-ctx.Done():
 				return abortStopped()
 			}
@@ -1341,7 +1348,6 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return abortStopped()
 		}
 		delete(slots, head)
-		stagedBytes -= s.charged
 		file := files[head]
 		head++
 
@@ -1387,6 +1393,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 
 		out := s.outcome
+		if out.writerStillActive != nil || out.sourceGone != nil || out.stopped {
+			// The run ends here and this file is not counted.
+			inFlight.release(s.progress)
+		}
 		switch {
 		case out.writerStillActive != nil:
 			// Not this file's fault: the snapshot cannot be written at all.
