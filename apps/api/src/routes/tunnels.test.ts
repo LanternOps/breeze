@@ -3790,4 +3790,49 @@ describe('VNC tunnel responses carry the session clipboard policy (#8269)', () =
     expect(res.status).toBe(200);
     expect((await res.json()).clipboard).toEqual({ hostToViewer: false, viewerToHost: true });
   });
+
+  // --- Resolution failure: error out before any side effect, never a response
+  //     without the policy (the viewer would treat that as off, but a later
+  //     fail-open catch must not slip past these). ---
+
+  it('POST /tunnels (vnc) resolves the policy before creating the tunnel', async () => {
+    primeVncCreate();
+    resolveDesktopSessionPolicyMock.mockRejectedValueOnce(new Error('pool exhausted'));
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('POST /vnc-exchange/:code resolves the policy from the tunnel row before minting credentials', async () => {
+    const OTHER_DEVICE_ID = 'abababab-abab-4bab-8bab-abababababab';
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce({ ...vncCodeRecord, deviceId: OTHER_DEVICE_ID });
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    resolveDesktopSessionPolicyMock.mockRejectedValueOnce(new Error('pool exhausted'));
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(500);
+    expect(resolveDesktopSessionPolicyMock).toHaveBeenCalledWith(DEVICE_ID);
+    expect(createWsTicket).not.toHaveBeenCalled();
+    expect(createViewerAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('POST /vnc-viewer/downgrade-to-vnc resolves the policy before creating the tunnel', async () => {
+    primeDowngrade();
+    resolveDesktopSessionPolicyMock.mockRejectedValueOnce(new Error('pool exhausted'));
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(createWsTicket).not.toHaveBeenCalled();
+  });
 });

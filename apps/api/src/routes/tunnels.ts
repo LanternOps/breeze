@@ -474,9 +474,15 @@ tunnelRoutes.post(
 
     const isVNC = body.type === 'vnc';
     // VNC has no end-user consent prompt: refuse it on a consent-mode device.
+    // The agent cannot filter the raw RFB stream, so the viewer gates VNC
+    // clipboard on this policy (#8269). Same resolver the WebRTC offer ships to
+    // the agent, never taken from the request. Resolved before any side effect
+    // so a failure leaves no tunnel behind.
+    let vncClipboard: DesktopSessionPolicy['clipboard'] | undefined;
     if (isVNC) {
       const consentGate = await checkVncConsentGate(device.id);
       if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
+      ({ clipboard: vncClipboard } = await resolveDesktopSessionPolicy(device.id));
     }
     const targetHost = isVNC ? '127.0.0.1' : body.targetHost;
     const targetPort = isVNC ? 5900 : body.targetPort;
@@ -565,14 +571,7 @@ tunnelRoutes.post(
       sourceIp,
     );
 
-    if (isVNC) {
-      // The agent cannot filter the raw RFB stream, so the viewer gates VNC
-      // clipboard on this policy (#8269). Same resolver the WebRTC offer ships
-      // to the agent; never taken from the request.
-      const { clipboard } = await resolveDesktopSessionPolicy(device.id);
-      return c.json({ ...session, clipboard }, 201);
-    }
-    return c.json(session, 201);
+    return c.json(vncClipboard ? { ...session, clipboard: vncClipboard } : session, 201);
   }
 );
 
@@ -1534,6 +1533,9 @@ vncExchangeRoutes.post(
     const liveAuthority = await authorizeTunnelContinuation(record.tunnelId, record.userId);
     if (!liveAuthority.ok) return liveAuthorizationResponse(c, liveAuthority);
 
+    // Before minting the ws-ticket and viewer token, so a failure hands out no credentials.
+    const clipboard = await resolveVncClipboardPolicyContextless(result.deviceId);
+
     // Build the WebSocket URL from the canonical external base URL. Using
     // c.req.url would yield an internal http://api:3001 in Caddy-fronted
     // deployments; honoring X-Forwarded-Proto doesn't help when Caddy itself
@@ -1574,8 +1576,6 @@ vncExchangeRoutes.post(
       { deviceId: record.deviceId, type: result.type },
       getTrustedClientIp(c, 'unknown'),
     );
-
-    const clipboard = await resolveVncClipboardPolicyContextless(result.deviceId);
 
     return c.json({
       accessToken,
@@ -1866,6 +1866,9 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   const consentGate = await checkVncConsentGate(bound.deviceId);
   if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
 
+  // Before the tunnel exists, so a failure leaves nothing to clean up.
+  const clipboard = await resolveVncClipboardPolicyContextless(bound.deviceId);
+
   // Insert the tunnel session row, then kick the agent off.
   const tunnel = await withSystemDbAccessContext(() => createRemoteSession('tunnel', {
     id: transitionTunnelId,
@@ -1938,8 +1941,6 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     { deviceId: bound.deviceId, type: 'vnc', via: 'downgrade_vnc', fromSessionId: auth.sessionId },
     getClientIp(c),
   );
-
-  const clipboard = await resolveVncClipboardPolicyContextless(bound.deviceId);
 
   return c.json({
     tunnelId: transitionTunnelId,
