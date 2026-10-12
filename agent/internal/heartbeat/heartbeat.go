@@ -6686,6 +6686,9 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #4026: the typed refusal code must survive too, or the server only
+		// ever sees it on the HTTP fallback and keeps classifying by prose.
+		ErrorCode: result.ErrorCode,
 		// #3525: the cancellation marker must survive this conversion — the
 		// WebSocket leg is the primary result channel, and the marker is the
 		// only proof that closes a `cancelling` execution as `cancelled`.

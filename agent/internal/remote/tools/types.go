@@ -2,12 +2,15 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // Command types
@@ -297,6 +300,13 @@ type CommandResult struct {
 	Stdout   string `json:"stdout,omitempty"`
 	Stderr   string `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// ErrorCode is the typed reason for a deterministic refusal (#4026), set
+	// by NewErrorResult from an error tagged with withErrorCode. The server
+	// classifies on it in preference to matching Error's prose; empty means
+	// "unclassified" and the server falls back to the prose. Must also be
+	// copied by toWSCommandResult (heartbeat.go) — the WebSocket leg builds
+	// its frame field-by-field.
+	ErrorCode wire.CommandErrorCode `json:"errorCode,omitempty"`
 	// Result carries structured output for the HTTP command-result transport.
 	// Most handlers leave it nil, in which case WebSocket conversion
 	// (toWSCommandResult, agent/internal/heartbeat/heartbeat.go) independently
@@ -342,14 +352,46 @@ func NewSuccessResult(data any, durationMs int64) CommandResult {
 	}
 }
 
-// NewErrorResult creates a failed command result
+// NewErrorResult creates a failed command result. When err (or anything it
+// wraps) carries a typed code from withErrorCode, the code rides on the result
+// as ErrorCode (#4026); the outermost code in the chain wins.
 func NewErrorResult(err error, durationMs int64) CommandResult {
 	return CommandResult{
 		Status:     "failed",
 		ExitCode:   1,
 		Error:      err.Error(),
+		ErrorCode:  errorCodeOf(err),
 		DurationMs: durationMs,
 	}
+}
+
+// codedError attaches a wire.CommandErrorCode to an error without changing its
+// message — the prose is what pre-#4026 servers still classify on, so it must
+// stay byte-identical.
+type codedError struct {
+	code wire.CommandErrorCode
+	err  error
+}
+
+func (e *codedError) Error() string { return e.err.Error() }
+func (e *codedError) Unwrap() error { return e.err }
+
+// withErrorCode tags err with a typed code for NewErrorResult to carry.
+func withErrorCode(code wire.CommandErrorCode, err error) error {
+	return &codedError{code: code, err: err}
+}
+
+// errorCodef is fmt.Errorf plus a typed code.
+func errorCodef(code wire.CommandErrorCode, format string, args ...any) error {
+	return withErrorCode(code, fmt.Errorf(format, args...))
+}
+
+func errorCodeOf(err error) wire.CommandErrorCode {
+	var coded *codedError
+	if errors.As(err, &coded) {
+		return coded.code
+	}
+	return ""
 }
 
 // Process information types
