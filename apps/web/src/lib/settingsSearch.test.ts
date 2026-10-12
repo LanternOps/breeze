@@ -83,3 +83,16 @@ describe('catalogue hrefs resolve to real pages', () => {
     expect(serving(href)).not.toBeNull();
   });
 });
+
+// The palette supplies a partial NavGateContext (it mounts on every page, so it
+// must not fetch autopay/pre-assignment state). If a catalogue entry starts using
+// one of these gates, search would silently hide it while the nav shows it:
+// wire the gate into CommandPalette (or share the Sidebar's context) first.
+describe('palette gate coverage', () => {
+  it.each(['requiresAutopay', 'requiresPreAssignment', 'requiresPartnerWideAdmin', 'requiresAiForOffice'] as const)(
+    'no catalogue entry uses %s',
+    (gate) => {
+      expect(SETTINGS_CATALOG.filter((e) => e[gate]).map((e) => e.id)).toEqual([]);
+    },
+  );
+});

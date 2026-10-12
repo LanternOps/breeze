@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
@@ -6,6 +6,11 @@ const navigateToMock = vi.hoisted(() => vi.fn(async () => 'soft' as const));
 vi.mock('../../stores/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/auth')>()),
   fetchWithAuth: fetchWithAuthMock,
+}));
+const claimsMock = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/authScope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/authScope')>()),
+  getJwtClaims: claimsMock,
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
@@ -39,6 +44,8 @@ beforeEach(async () => {
   // Server returns no entity results and (post-fix) no settings rows.
   fetchWithAuthMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ results: [] }) });
   navigateToMock.mockClear();
+  claimsMock.mockReset();
+  claimsMock.mockReturnValue({ scope: 'partner' });
   useUiStore.setState({ isCommandPaletteOpen: false, isShortcutsHelpOpen: false });
   await i18n.changeLanguage('en');
   setPermissions([{ resource: '*', action: '*' }]);
@@ -67,17 +74,48 @@ describe('CommandPalette — settings come from the catalogue (#8365)', () => {
     expect(settingsTitles()).not.toContain('Enrollment Keys');
   });
 
-  it('does not duplicate a settings row the server also returned', async () => {
+  it('hides partner-only settings for an org-scoped token', () => {
+    claimsMock.mockReturnValue({ scope: 'organization' });
+    open();
+    search('billing');
+    expect(settingsTitles()).not.toContain('Billing');
+    claimsMock.mockReturnValue({ scope: 'partner' });
+  });
+
+  it('shows partner-only settings for a partner-scoped token', () => {
+    open();
+    search('billing');
+    expect(settingsTitles()).toContain('Billing');
+  });
+
+  it('does not show the no-results message when only settings match', async () => {
+    open();
+    search('enrollment');
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/searching/i)).toBeNull());
+    expect(screen.queryByText(i18n.t('layout.search.noResults', { ns: 'common' }))).toBeNull();
+    expect(settingsTitles()).toContain('Enrollment Keys');
+  });
+
+  it('shows the no-results message when nothing matches anywhere', async () => {
+    open();
+    search('zzzz-no-such-thing');
+    expect(await screen.findByText(i18n.t('layout.search.noResults', { ns: 'common' }))).toBeInTheDocument();
+  });
+
+  it('ignores settings rows from an older API (catalogue is the only source)', async () => {
     fetchWithAuthMock.mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({
-        results: [{ id: 'settings-profile', type: 'settings', title: 'My profile', href: '/settings/profile' }],
+        results: [{ id: 'settings-security', type: 'settings', title: 'Stale server row', href: '/settings/profile' }],
       }),
     });
     open();
     search('profile');
-    await act(async () => { await new Promise((r) => setTimeout(r, 500)); });
-    expect(settingsTitles().filter((t) => t === 'My profile')).toHaveLength(1);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/searching/i)).toBeNull());
+    expect(screen.queryByText('Stale server row')).toBeNull();
+    expect(settingsTitles()).toContain('My profile');
   });
 });
