@@ -319,3 +319,32 @@ func TestWebRTCSessionWiresTheReliableInputChannel(t *testing.T) {
 		"s.announceCurrentMonitor()",
 	)
 }
+
+// An old viewer (no input-r, no seq) gets exactly W2a behaviour through every
+// reset trigger: releases still happen, nothing is ever gated, and no control
+// message it predates is sent.
+func TestLegacyViewerKeepsWorkingAcrossEveryReset(t *testing.T) {
+	s, inner := newSafeSession(t)
+	sendLossy(s, `{"type":"key_down","key":"shift"}`)
+	s.resetInputGeometry("monitor_switch")
+	s.onPeerDisconnected()
+	s.onViewerChannelAttached("input", new(int))
+	s.onViewerChannelAttached("input", new(int)) // replacement
+	waitFor(t, "the replacement reset", func() bool { return s.safeInput().resetsDone.Load() == 3 })
+	if e, _ := s.safeInput().Epochs(); e != 4 {
+		t.Fatalf("epoch = %d, want 4", e)
+	}
+
+	sendLossy(s, `{"type":"key_down","key":"a"}`)
+	sendLossy(s, `{"type":"mouse_move","x":3,"y":4}`)
+	sendLossy(s, `{"type":"mouse_down","x":3,"y":4,"button":"left"}`)
+	s.safeInput().sync()
+
+	want := []string{"key_down:shift", "key_up:shift", "key_down:a", "mouse_move:3,4:", "mouse_down:3,4:left"}
+	if got := inner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls:\n got %v\nwant %v", got, want)
+	}
+	if _, ok := s.inputEpochAnnouncement("x"); ok {
+		t.Fatal("a legacy viewer would be sent input_epoch")
+	}
+}
