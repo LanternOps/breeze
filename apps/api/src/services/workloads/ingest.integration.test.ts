@@ -352,6 +352,30 @@ it('an incomplete snapshot does not carry the stored digest across an image chan
   expect(row).toMatchObject({ imageDigest: null, upstreamStatus: 'pending', upstreamDigest: null });
 });
 
+it('an incomplete snapshot does not carry the stored digest across a moved tag with the same image id', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await markChecked(f.device.id);
+  await f.send(
+    reportFixture({
+      collectedAt: at(1),
+      runtimes: [runtimeFixture({ complete: false, workloads: [wl('a', { imageDigest: null, imageRef: 'nginx:1.28', imageTag: '1.28' })] })],
+    }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: null, upstreamStatus: 'pending' });
+});
+
+it('an incomplete snapshot that does report a digest stores it', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a', { imageDigest: null })] })] }));
+  await f.send(
+    reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ complete: false, workloads: [wl('a', { imageDigest: DIGEST('c') })] })] }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: DIGEST('c'), upstreamStatus: 'pending' });
+});
+
 it('a complete snapshot reporting a null digest stores null and resets to pending', async () => {
   const f = await fixture();
   await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));

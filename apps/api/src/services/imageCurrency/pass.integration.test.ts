@@ -134,7 +134,8 @@ describe('runImageCurrencyPass', () => {
       [`ghcr.io/acme/secret-${run}:1`]: { kind: 'private' },
     });
 
-    const summary = await runImageCurrencyPass({ client });
+    const scope = [a.org.id, b.org.id];
+    const summary = await runImageCurrencyPass({ client, onlyOrgIds: scope });
 
     // One lookup per unique public repo:tag across both orgs; none for pinned/local/unsupported.
     const looked = calls.map((c) => `${c.registry}/${c.path}:${c.tag}`).sort();
@@ -164,7 +165,7 @@ describe('runImageCurrencyPass', () => {
 
     // A second pass finds nothing due for these rows: no lookups.
     const second = stubClient({});
-    await runImageCurrencyPass({ client: second.client });
+    await runImageCurrencyPass({ client: second.client, onlyOrgIds: scope });
     expect(second.calls.filter((c) => c.path.endsWith(run))).toEqual([]);
 
     // Make org B's row due again: answered from the cache, still no lookup.
@@ -173,7 +174,7 @@ describe('runImageCurrencyPass', () => {
       .set({ upstreamCheckedAt: new Date(Date.now() - 7 * 3_600_000) })
       .where(eq(deviceWorkloads.deviceId, b.device.id));
     const third = stubClient({});
-    await runImageCurrencyPass({ client: third.client });
+    await runImageCurrencyPass({ client: third.client, onlyOrgIds: scope });
     expect(third.calls.filter((c) => c.path.endsWith(run))).toEqual([]);
     expect((await rowsOf(b.device.id))['same-image']!.upstreamCheckedAt!.getTime()).toBeGreaterThan(Date.now() - 60_000);
   });
@@ -191,7 +192,7 @@ describe('runImageCurrencyPass', () => {
       },
       requestCount: () => 1,
     };
-    await runImageCurrencyPass({ client });
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
     expect((await rowsOf(a.device.id)).w).toMatchObject({ imageDigest: D('9'), upstreamStatus: 'pending' });
   });
 
@@ -207,11 +208,84 @@ describe('runImageCurrencyPass', () => {
         [1, 2, 3].map((n) => [`quay.io/acme/cap${n}-${run}:1`, { kind: 'ok', digest: D('a'), mediaType: null, platformDigests: null }]),
       ) as Record<string, RegistryLookupResult>,
     );
-    await runImageCurrencyPass({ client, maxLookups: 2 });
-    const mine = calls.filter((c) => c.path.endsWith(run));
-    expect(mine).toHaveLength(2);
-    const statuses = Object.values(await rowsOf(a.device.id)).map((r) => r.upstreamStatus).sort();
-    expect(statuses).toEqual(['current', 'current', 'pending']);
+    const summary = await runImageCurrencyPass({ client, maxLookups: 2, onlyOrgIds: [a.org.id] });
+    expect(calls.map((c) => c.path)).toEqual([`acme/cap1-${run}`, `acme/cap2-${run}`]);
+    expect(summary).toMatchObject({ lookups: 2, deferredLookups: 1, groupsLeftDue: 1 });
+    expect((await rowsOf(a.device.id)).w3).toMatchObject({ upstreamStatus: 'pending', upstreamCheckedAt: null });
+  });
+
+  it('a throttled registry does not burn the lookup budget of other registries', async () => {
+    const a = await orgWithDevice('currency-throttle');
+    const run = randomUUID().slice(0, 8);
+    const hub = (n: number) => `docker.io/acme/hub${n}-${run}`;
+    const gh = `ghcr.io/acme/app-${run}`;
+    for (const [id, repo] of [['h1', hub(1)], ['h2', hub(2)], ['g', gh]] as const) {
+      await addWorkload(a.org.id, a.device.id, id, { imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: D('a') });
+    }
+    const calls: string[] = [];
+    const client: RegistryClient = {
+      lookup: async (args) => {
+        calls.push(`${args.registry}/${args.path}`);
+        return args.registry === 'docker.io'
+          ? { kind: 'skipped', reason: 'registry_throttled' }
+          : { kind: 'ok', digest: D('a'), mediaType: MEDIA_TYPE_DOCKER_MANIFEST, platformDigests: null };
+      },
+      requestCount: () => calls.length,
+    };
+    await runImageCurrencyPass({ client, maxLookups: 1, lookupConcurrency: 1, onlyOrgIds: [a.org.id] });
+    const rows = await rowsOf(a.device.id);
+    expect(rows.g).toMatchObject({ upstreamStatus: 'current' });
+    expect(rows.h1).toMatchObject({ upstreamStatus: 'pending' });
+  });
+
+  it('a lookup that throws is recorded as error for its rows only; the rest of the pass completes', async () => {
+    const a = await orgWithDevice('currency-throw');
+    const run = randomUUID().slice(0, 8);
+    for (const [id, repo] of [['bad', `quay.io/acme/bad-${run}`], ['good', `quay.io/acme/good-${run}`]] as const) {
+      await addWorkload(a.org.id, a.device.id, id, { imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: D('a') });
+    }
+    const client: RegistryClient = {
+      lookup: async (args) => {
+        if (args.path.startsWith('acme/bad')) throw new Error('boom');
+        return { kind: 'ok', digest: D('a'), mediaType: MEDIA_TYPE_DOCKER_MANIFEST, platformDigests: null };
+      },
+      requestCount: () => 0,
+    };
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
+    const rows = await rowsOf(a.device.id);
+    expect(rows.bad).toMatchObject({ upstreamStatus: 'error' });
+    expect(rows.good).toMatchObject({ upstreamStatus: 'current' });
+  });
+
+  it('the group cap is shared fairly across orgs', async () => {
+    const x = await orgWithDevice('currency-fair-x');
+    const y = await orgWithDevice('currency-fair-y');
+    const run = randomUUID().slice(0, 8);
+    for (const n of [1, 2, 3]) {
+      await addWorkload(x.org.id, x.device.id, `x${n}`, { imageRef: `mine${n}:1`, imageRepository: `docker.io/library/a${n}-${run}`, imageTag: '1', imageDigest: null });
+    }
+    await addWorkload(y.org.id, y.device.id, 'y1', { imageRef: 'z:1', imageRepository: `docker.io/library/z-${run}`, imageTag: '1', imageDigest: null });
+    const { client } = stubClient({});
+    await runImageCurrencyPass({ client, maxGroups: 2, onlyOrgIds: [x.org.id, y.org.id] });
+    expect((await rowsOf(y.device.id)).y1).toMatchObject({ upstreamStatus: 'local' });
+    const xs = Object.values(await rowsOf(x.device.id)).map((r) => r.upstreamStatus).sort();
+    expect(xs).toEqual(['local', 'pending', 'pending']);
+  });
+
+  it('an error row is retried after 1 h; a definitive answer waits 6 h', async () => {
+    const a = await orgWithDevice('currency-retry');
+    const run = randomUUID().slice(0, 8);
+    const ninetyMinAgo = new Date(Date.now() - 90 * 60_000);
+    for (const [id, status] of [['err', 'error'], ['cur', 'current']] as const) {
+      const repo = `quay.io/acme/${id}-${run}`;
+      await addWorkload(a.org.id, a.device.id, id, {
+        imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: D('a'),
+        upstreamStatus: status, upstreamCheckedAt: ninetyMinAgo,
+      });
+    }
+    const { client, calls } = stubClient({});
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
+    expect(calls.map((c) => c.path)).toEqual([`acme/err-${run}`]);
   });
 
   it('the cache is system-only: an org context reads zero rows and cannot write', async () => {

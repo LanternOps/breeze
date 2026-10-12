@@ -146,8 +146,46 @@ describe('lookup — SSRF guard', () => {
     __setLookupForTests(async () => [{ address: '10.1.2.3', family: 4 }]);
     harness = await fakeRegistry((_req, res) => res.end());
     const result = await client().lookup({ registry: 'quay.io', path: 'org/app', tag: '1', localDigests: [] });
-    expect(result).toEqual({ kind: 'unsupported_registry' });
+    // Refused, but not a standing "unsupported" answer: a bad resolution can be transient.
+    expect(result).toEqual({ kind: 'error', reason: 'blocked_by_policy' });
     expect(harness.seen).toEqual([]);
+  });
+
+  it.each([
+    ['plain http', 'http://ghcr.io/token'],
+    ['a non-default port', 'https://ghcr.io:8443/token'],
+    ['userinfo', 'https://user:pw@ghcr.io/token'],
+  ])('refuses a token realm with %s, without contacting it', async (_name, realm) => {
+    harness = await fakeRegistry((_req, res) => {
+      res.writeHead(401, { 'www-authenticate': `Bearer realm="${realm}"` });
+      res.end();
+    });
+    const result = await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [] });
+    expect(result).toEqual({ kind: 'unsupported_registry' });
+    expect(harness.seen).toHaveLength(1);
+  });
+
+  it('does not forward the bearer token on a redirect to another allowlisted host', async () => {
+    harness = await fakeRegistry((req, res, host) => {
+      if (host === 'ghcr.io' && req.url?.startsWith('/token')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ token: 't' }));
+      }
+      if (host === 'ghcr.io' && !req.headers.authorization) {
+        res.writeHead(401, { 'www-authenticate': 'Bearer realm="https://ghcr.io/token"' });
+        return res.end();
+      }
+      if (host === 'ghcr.io') {
+        res.writeHead(307, { location: 'https://quay.io/v2/org/app/manifests/1' });
+        return res.end();
+      }
+      res.writeHead(200, { 'content-type': MEDIA_TYPE_DOCKER_MANIFEST, 'docker-content-digest': D('a') });
+      res.end();
+    });
+    await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [] });
+    const quay = harness.auth.filter((a) => a.host === 'quay.io');
+    expect(quay.length).toBeGreaterThan(0);
+    expect(quay.every((a) => a.authorization === undefined)).toBe(true);
   });
 
   it('cuts off an oversize manifest body', async () => {
@@ -186,6 +224,47 @@ describe('lookup — registry protocol', () => {
     const result = await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [D('b')] });
     expect(result).toEqual({ kind: 'ok', digest: D('a'), mediaType: MEDIA_TYPE_OCI_INDEX, platformDigests: [D('b'), D('c')] });
     expect(harness.seen.map((s) => s.split(' ')[0])).toEqual(['HEAD', 'GET']);
+  });
+
+  it('on mismatch with no Content-Type on the HEAD, the GET learns whether it is an index', async () => {
+    harness = await fakeRegistry((req, res) => {
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'docker-content-digest': D('a') });
+        return res.end();
+      }
+      res.writeHead(200, { 'content-type': MEDIA_TYPE_OCI_INDEX, 'docker-content-digest': D('a') });
+      res.end(JSON.stringify({ manifests: [{ digest: D('b') }] }));
+    });
+    const result = await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [D('b')] });
+    expect(result).toEqual({ kind: 'ok', digest: D('a'), mediaType: MEDIA_TYPE_OCI_INDEX, platformDigests: [D('b')] });
+  });
+
+  it('an index whose body cannot be read is an error (not an endlessly re-looked-up unknown)', async () => {
+    harness = await fakeRegistry((req, res) => {
+      res.writeHead(200, { 'content-type': MEDIA_TYPE_OCI_INDEX, 'docker-content-digest': D('a') });
+      res.end(req.method === 'HEAD' ? undefined : 'not json');
+    });
+    const result = await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [D('b')] });
+    expect(result).toEqual({ kind: 'error', reason: 'index_unreadable' });
+  });
+
+  it.each([
+    ['no token field', 200, JSON.stringify({ nope: 1 })],
+    ['an over-long token', 200, JSON.stringify({ token: 'x'.repeat(9000) })],
+    ['a missing token endpoint', 404, ''],
+  ])('a token endpoint giving %s is an error, not private', async (_name, status, body) => {
+    harness = await fakeRegistry((req, res, host) => {
+      if (host === 'ghcr.io' && req.url?.startsWith('/token')) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        return res.end(body);
+      }
+      res.writeHead(401, { 'www-authenticate': 'Bearer realm="https://ghcr.io/token"' });
+      res.end();
+    });
+    expect(await client().lookup({ registry: 'ghcr.io', path: 'org/app', tag: '1', localDigests: [] })).toEqual({
+      kind: 'error',
+      reason: 'token_unavailable',
+    });
   });
 
   it('on mismatch against a single manifest, no GET', async () => {

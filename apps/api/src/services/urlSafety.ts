@@ -59,6 +59,19 @@ export class SsrfBlockedError extends Error {
   }
 }
 
+/**
+ * A hop's host failed the caller's `allowHost` predicate
+ * (`safeFetchFollowingRedirects`). A subclass so callers can tell "this host
+ * is outside what I may contact" (a standing answer) from an address-policy
+ * refusal such as a private-range resolution (possibly transient).
+ */
+export class HostNotAllowedError extends SsrfBlockedError {
+  constructor(hostname: string) {
+    super(`host not allowed: ${hostname}`, { hostname });
+    this.name = 'HostNotAllowedError';
+  }
+}
+
 /** The response body exceeded the caller's `maxBytes` ceiling. The socket is destroyed. */
 export class ResponseTooLargeError extends Error {
   constructor(public readonly maxBytes: number) {
@@ -930,7 +943,7 @@ export async function safeFetchFollowingRedirects(
     if (options.allowHost) {
       const target = new URL(currentUrl);
       if (!options.allowHost(target)) {
-        throw new SsrfBlockedError(`host not allowed: ${target.hostname}`, { hostname: target.hostname });
+        throw new HostNotAllowedError(target.hostname);
       }
     }
     const response = await safeFetch(currentUrl, currentInit);

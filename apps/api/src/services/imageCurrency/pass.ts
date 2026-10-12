@@ -29,6 +29,7 @@ import {
   type UpstreamWrite,
 } from './classify';
 import { createRegistryClient, type RegistryClient, type RegistryLookupResult } from './registryClient';
+import { captureException } from '../sentry';
 
 const HOUR_MS = 3_600_000;
 /** Spec §9.3: a checked row is due again after 6 h; the cache TTL matches. */
@@ -47,6 +48,8 @@ export interface ImageCurrencyPassOptions {
   /** Lookups in flight at once (the client also limits per registry). */
   lookupConcurrency?: number;
   log?: (message: string) => void;
+  /** Restrict the scan to these orgs (tests and operator re-runs); unset = the whole fleet. */
+  onlyOrgIds?: readonly string[];
 }
 
 export interface ImageCurrencyPassSummary {
@@ -69,7 +72,10 @@ interface ScannedGroup extends DueImageGroup {
   rank: number;
 }
 
-async function scanDueGroups(now: Date, maxGroups: number): Promise<DueImageGroup[]> {
+async function scanDueGroups(now: Date, maxGroups: number, onlyOrgIds?: readonly string[]): Promise<DueImageGroup[]> {
+  const orgFilter = onlyOrgIds
+    ? sql`AND w.org_id IN (SELECT value::uuid FROM jsonb_array_elements_text(${JSON.stringify(onlyOrgIds)}::jsonb))`
+    : sql``;
   const recheckBefore = new Date(now.getTime() - UPSTREAM_RECHECK_MS);
   const errorRetryBefore = new Date(now.getTime() - UPSTREAM_ERROR_RETRY_MS);
   const rows = await withSystemDbAccessContext(
@@ -87,6 +93,7 @@ async function scanDueGroups(now: Date, maxGroups: number): Promise<DueImageGrou
             FROM device_workloads w
             LEFT JOIN device_workload_runtimes r ON r.device_id = w.device_id AND r.runtime = w.runtime
             WHERE w.kind = 'container'
+              ${orgFilter}
               AND (
                 w.upstream_checked_at IS NULL
                 OR w.upstream_checked_at < ${recheckBefore.toISOString()}::timestamp
@@ -234,7 +241,7 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
   const maxLookups = Math.max(0, options.maxLookups ?? 300);
   const log = options.log ?? ((m: string) => console.info(`[imageCurrency] ${m}`));
 
-  const groups = await scanDueGroups(now, Math.max(1, options.maxGroups ?? 5000));
+  const groups = await scanDueGroups(now, Math.max(1, options.maxGroups ?? 5000), options.onlyOrgIds);
 
   // Decide each group; collect the lookups in fair (round-robin by org) order.
   const decided = groups.map((group) => ({ group, decision: classifyGroup(group) }));
@@ -250,7 +257,14 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
     localDigestsByKey.get(id)!.add(group.imageDigest!);
   }
 
-  const cache = await readCache(lookupOrder, now);
+  let cache = new Map<string, CachedUpstream>();
+  try {
+    cache = await readCache(lookupOrder, now);
+  } catch (err) {
+    // The cache only saves requests: without it the pass still answers from the registry.
+    log(`cache read failed: ${err instanceof Error ? err.message : String(err)}`);
+    captureException(err);
+  }
   const results = new Map<string, RegistryLookupResult>();
   let cacheHits = 0;
   const toLookUp: LookupKey[] = [];
@@ -264,16 +278,26 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
       toLookUp.push(key);
     }
   }
-  const attempted = toLookUp.slice(0, maxLookups);
+  // Budget = lookups that reached a registry. A `skipped` answer (registry
+  // throttled earlier this pass) costs nothing, so a throttled registry cannot
+  // starve the others of the per-pass cap.
+  let budgetUsed = 0;
+  let attempted = 0;
   const fresh: Array<{ key: LookupKey; value: CachedUpstream }> = [];
-  await runPool(attempted, Math.max(1, options.lookupConcurrency ?? 8), async (key) => {
+  await runPool(toLookUp, Math.max(1, options.lookupConcurrency ?? 8), async (key) => {
+    if (budgetUsed >= maxLookups) return;
+    budgetUsed++;
     const id = lookupKeyString(key);
     let result: RegistryLookupResult;
     try {
       result = await client.lookup({ ...key, localDigests: [...localDigestsByKey.get(id)!] });
-    } catch {
+    } catch (err) {
+      log(`lookup threw for ${key.registry}: ${err instanceof Error ? err.name : 'unknown'}`);
+      captureException(err);
       result = { kind: 'error', reason: 'lookup_threw' };
     }
+    if (result.kind === 'skipped') budgetUsed--;
+    else attempted++;
     results.set(id, result);
     if (result.kind === 'ok') {
       fresh.push({ key, value: { digest: result.digest, mediaType: result.mediaType, platformDigests: result.platformDigests } });
@@ -284,6 +308,7 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
   } catch (err) {
     // The rows below are still written; only the next pass's dedup is lost.
     log(`cache write failed: ${err instanceof Error ? err.message : String(err)}`);
+    captureException(err);
   }
 
   // Per-org writes.
@@ -313,6 +338,7 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
     } catch (err) {
       orgWriteFailures++;
       log(`write failed for org ${orgId}: ${err instanceof Error ? err.message : String(err)}`);
+      captureException(err);
     }
   }
 
@@ -320,8 +346,8 @@ export async function runImageCurrencyPass(options: ImageCurrencyPassOptions = {
     groups: groups.length,
     orgs: new Set(groups.map((g) => g.orgId)).size,
     cacheHits,
-    lookups: attempted.length,
-    deferredLookups: toLookUp.length - attempted.length,
+    lookups: attempted,
+    deferredLookups: toLookUp.filter((key) => !results.has(lookupKeyString(key))).length,
     httpRequests: client.requestCount(),
     rowsByStatus,
     groupsLeftDue,

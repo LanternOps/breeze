@@ -19,7 +19,13 @@
  *   Authorization headers are never logged and never leave this module.
  */
 import { createHash } from 'crypto';
-import { ResponseTooLargeError, SsrfBlockedError, safeFetchFollowingRedirects, type SafeFetchInit } from '../urlSafety';
+import {
+  HostNotAllowedError,
+  ResponseTooLargeError,
+  SsrfBlockedError,
+  safeFetchFollowingRedirects,
+  type SafeFetchInit,
+} from '../urlSafety';
 
 /** Allowlist v1 (spec §9.2). Request hosts, not the agent's canonical names. */
 export const REGISTRY_HOST_ALLOWLIST: ReadonlySet<string> = new Set([
@@ -134,7 +140,9 @@ export interface LookupArgs {
   localDigests: readonly string[];
 }
 
-const allowOutboundHost = (u: URL): boolean => u.protocol === 'https:' && REGISTRY_OUTBOUND_ALLOWLIST.has(u.hostname);
+/** https, default port, no userinfo, host on the allowlist. */
+const allowOutboundHost = (u: URL): boolean =>
+  u.protocol === 'https:' && u.port === '' && !u.username && !u.password && REGISTRY_OUTBOUND_ALLOWLIST.has(u.hostname);
 
 const defaultFetch: FetchFn = (url, init, options) =>
   safeFetchFollowingRedirects(url, init, MAX_REDIRECTS, { allowHost: options.allowHost });
@@ -144,13 +152,16 @@ class Semaphore {
   private readonly waiters: Array<() => void> = [];
   constructor(private readonly limit: number) {}
   async run<T>(fn: () => Promise<T>): Promise<T> {
+    // A released slot is handed straight to the next waiter (active is not
+    // decremented), so a newcomer can never slip in between and overshoot.
     if (this.active >= this.limit) await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active++;
+    else this.active++;
     try {
       return await fn();
     } finally {
-      this.active--;
-      this.waiters.shift()?.();
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.active--;
     }
   }
 }
@@ -183,7 +194,15 @@ const contentTypeOf = (res: Response): string | null => {
 function failureReason(err: unknown): string {
   if (err instanceof SsrfBlockedError) return 'blocked_by_policy';
   if (err instanceof ResponseTooLargeError) return 'response_too_large';
-  return 'request_failed';
+  const code = (err as { code?: unknown; cause?: { code?: unknown } } | null)?.cause?.code ?? (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Z_]{2,40}$/.test(code) ? `request_failed_${code.toLowerCase()}` : 'request_failed';
+}
+
+/** The token endpoint gave no usable anonymous token (a fault, not "private"). */
+class TokenUnavailable extends Error {
+  constructor() {
+    super('token_unavailable');
+  }
 }
 
 class RetryableStatus extends Error {
@@ -258,23 +277,27 @@ export function createRegistryClient(options: RegistryClientOptions = {}): Regis
     try {
       realm = new URL(challenge.realm!);
     } catch {
-      return null;
+      throw new TokenUnavailable();
     }
     // The realm is registry-controlled: it must be on the allowlist like any other hop.
-    if (!allowOutboundHost(realm)) throw new SsrfBlockedError(`token realm not allowed: ${realm.hostname}`);
+    if (!allowOutboundHost(realm)) throw new HostNotAllowedError(realm.hostname);
     if (challenge.service) realm.searchParams.set('service', challenge.service);
     realm.searchParams.set('scope', challenge.scope || `repository:${path}:pull`);
     const res = await request(host, realm.toString(), { method: 'GET', maxBytes: TOKEN_MAX_BYTES });
-    if (res.status !== 200) return null;
+    // The realm refusing an ANONYMOUS token is how some registries say "credentials required".
+    if (res.status === 401 || res.status === 403) return null;
+    if (res.status !== 200) throw new TokenUnavailable();
     let body: unknown;
     try {
       body = await res.json();
     } catch {
-      return null;
+      throw new TokenUnavailable();
     }
     const token = (body as { token?: unknown; access_token?: unknown } | null) ?? {};
     const value = typeof token.token === 'string' ? token.token : typeof token.access_token === 'string' ? token.access_token : null;
-    return value && value.length <= 8192 ? value : null;
+    // A malformed token answer is a registry fault, not proof the repository is private.
+    if (!value || value.length > 8192) throw new TokenUnavailable();
+    return value;
   }
 
   /** Manifest request with the anonymous token dance. `private` = refused even after it. */
@@ -342,7 +365,8 @@ export function createRegistryClient(options: RegistryClientOptions = {}): Regis
 
       // One bounded GET, only when the HEAD could not give us the digest, or
       // the tag is an index and some local digest differs (platform membership).
-      if (needsBody || (mismatch && isIndexMediaType(mediaType))) {
+      // A HEAD without Content-Type cannot rule out an index: GET to find out.
+      if (needsBody || (mismatch && (mediaType === null || isIndexMediaType(mediaType)))) {
         const get = await manifestRequest(host, args.path, args.tag, 'GET', auth);
         if (get === 'private') return { kind: 'private' };
         if (get.status === 404) return { kind: 'not_found' };
@@ -353,27 +377,35 @@ export function createRegistryClient(options: RegistryClientOptions = {}): Regis
         mediaType = contentTypeOf(get) ?? mediaType;
         if (isIndexMediaType(mediaType)) {
           platformDigests = await readIndexDigests(new Response(bytes));
+          // An index we cannot list would leave the rows undecidable (and due) forever.
+          if (platformDigests === null) return { kind: 'error', reason: 'index_unreadable' };
         }
       }
       if (!isSha256Digest(digest)) return { kind: 'error', reason: 'no_digest' };
       return { kind: 'ok', digest, mediaType, platformDigests };
     } catch (err) {
+      if (err instanceof TokenUnavailable) {
+        log(`lookup on ${host} failed: token_unavailable`);
+        return { kind: 'error', reason: 'token_unavailable' };
+      }
       if (err instanceof RetryableStatus) {
         if (err.status === 429) {
           throttled.add(host);
           log(`registry ${host} rate-limited; skipping it for the rest of this pass`);
           return { kind: 'skipped', reason: 'registry_throttled' };
         }
+        log(`lookup on ${host} failed: status_${err.status}`);
         return { kind: 'error', reason: `status_${err.status}` };
       }
       const reason = failureReason(err);
       // Host + class only: never the URL query, headers or token.
       log(`lookup on ${host} failed: ${reason}`);
-      // A redirect, token realm or resolution outside what we may contact means
-      // this registry is not servable under the v1 allowlist (registry.k8s.io,
-      // for one, redirects manifests to off-list hosts). That is a standing
-      // answer, not a transient error: rechecked on the 6 h cadence, not hourly.
-      if (err instanceof SsrfBlockedError) return { kind: 'unsupported_registry' };
+      // A redirect or token realm to a host outside the v1 allowlist means this
+      // registry is not servable under it (registry.k8s.io, for one, redirects
+      // manifests to off-list hosts): a standing answer, rechecked on the 6 h
+      // cadence. Address-policy refusals (e.g. a private-range resolution) may
+      // be transient and stay `error` (1 h).
+      if (err instanceof HostNotAllowedError) return { kind: 'unsupported_registry' };
       return { kind: 'error', reason };
     }
   }
