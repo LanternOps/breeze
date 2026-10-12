@@ -75,6 +75,11 @@ func TestCreateTempBadPatternFails(t *testing.T) {
 // that writes its own .ps1 temp file must go through this package so the BOM
 // rule lives in one place. Windows PowerShell 5.1 decodes a BOM-less .ps1 as
 // the ANSI codepage, which mangles interpolated non-ASCII install paths.
+//
+// Best-effort by design: it catches the shape every known writer used
+// (os.CreateTemp in a file naming a .ps1). os.WriteFile/os.OpenFile are not
+// flagged because executor.WriteScriptFile legitimately uses os.OpenFile and
+// stamps the BOM itself via WithBOM.
 func TestNoBOMlessPowerShellTempWriters(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
