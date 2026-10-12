@@ -324,3 +324,192 @@ It becomes the hosted default only after verified PSL inclusion. A follow-up can
    default only once PSL inclusion is verified in shipped browser lists. *Recommend this.*
    It was revised after the advisor review: `__Host-` protects proxy auth, but not device
    session cookies from cross-tunnel fixation.
+
+## W00 spike results (2026-10-12)
+
+Run locally per plan amendment 2: app on `app.localhost`, tunnels on `*.tunnel.localhost`.
+Task 0.1 (DNS, ACM, hosted ingress) moved to W04 and was not run. Harness, runners and raw
+per-browser results: `docs/superpowers/plans/monitoring/evidence/2026-10-12-tunnel-origin-w00/`
+(`results/summary.txt` is the condensed view; each `results/<profile>-<scheme>.json` holds
+every request the server saw, with its `Cookie` and `Sec-Fetch-*` headers).
+
+### Results that contradict this spec as written
+
+The design sections above are left unchanged. These need a decision before W02.
+
+1. **§4 step 2 ("sets the auth cookie and `302`s to `/`") conflicts with §4a.** In every
+   engine run, the `GET /` that follows a 302 from `/__bz/enter` carried
+   `Sec-Fetch-Site: cross-site`. §4a would refuse the first device page. The plan's G1
+   resolution works: a 200 bootstrap page that pings `/__bz/ping` and then calls
+   `location.replace('/')` produced `same-origin` on `/` in every engine.
+2. **§4 fallback and the Goals ("SPAs using web storage") miss a Chrome case.** This is
+   Chrome 154 with "Block third-party cookies" on. The control cookie confirms the block was in
+   effect: an unpartitioned `SameSite=None` cookie was dropped. The `Partitioned`
+   `__Host-bzt` still worked, so `/__bz/ping` returned 204 and no cookie-blocked notice fired.
+   But `localStorage` threw `SecurityError` inside the tunnel iframe, both with and without
+   the §6 sandbox attribute. A device SPA that uses web storage will fail in the iframe, and
+   the user gets no fallback prompt. The cookie-only ping cannot detect this. The bootstrap
+   check (plan Tasks 8 and 13) also needs a storage probe that triggers the "Open in New Tab"
+   notice. In the new tab, `localStorage` worked.
+3. **§3 ("Caddy's tunnel block 404s any host that does not match the wildcard pattern")
+   does not hold in the `:80` catch-all configuration.** Hosts on the tunnel domain that
+   miss both wildcards never reach the tunnel block. The app block served them, with no
+   assertion header:
+   - a trailing-dot tunnel host;
+   - a three-label host (`a.b.c.<suffix>`);
+   - the bare suffix.
+   `/` went to `web`. By the app block's routing, `/api/*` would go to the API (inferred: not
+   probed for these hosts). The app block needs its own reject for tunnel-domain hosts. The
+   API classifier only ever sees `/api/*` paths from that block.
+
+No contradiction was found with §4a's premise, the §4 cookie shape, or the §6 sandbox. See
+"Cross-tunnel requests" below.
+
+### Decisions
+| Open question | Answer | Evidence |
+|---|---|---|
+| 1. Edge TLS | ACM (decided 2026-10-07). Origin hop: n/a, because Task 0.1 moved to W04 (plan amendment 2) | — |
+| 2. Domain | n/a: configuration only, supplied at W04 (plan amendment 1) | — |
+| 3. PSL timing | Opt-in until PSL inclusion is verified (decided 2026-10-07). The opt-in is per partner (plan amendment 3, 2026-10-12) | — |
+
+### Hosted ingress (Task 0.1)
+| Probe | Result |
+|---|---|
+| `https://<uuid>.us.<tunnel-domain>/` cert SAN + status | n/a: moved to W04 Task 17 |
+| `https://a.b.us.<tunnel-domain>/` | n/a: moved to W04 Task 17 |
+| `https://us.<tunnel-domain>/` | n/a: moved to W04 Task 17 |
+| `cf-cache-status` (two requests) | n/a: moved to W04 Task 17 |
+| API port published? (compose + `ss`) | Compose: no `ports`/`expose`/`network_mode` key on `api` in `deploy/docker-compose.prod.yml` (rendered with `config --no-interpolate`). No service in that file publishes a port. `ss` on the droplet: n/a, because W00 used no ssh. (The repo's dev `docker-compose.yml` publishes only caddy's 80/443.) |
+
+### Caddy routing (Task 0.2)
+Real `caddy:2-alpine`, `docker/Caddyfile.prod` plus the proposed tunnel block (plan Task 10)
+plus a site-level `request_header -X-Breeze-Tunnel-Site` in the app block. Settings:
+`CADDY_SITE_ADDRESS=:80`, and
+`TUNNEL_SITE_ADDRESS='http://*.us.breezetunnel.test, http://*.*.us.breezetunnel.test'`.
+The stub echoes `upstream|host|X-Breeze-Tunnel-Site|path`. Script: `caddy-routing.sh`;
+output: `results/caddy-routing.txt`.
+
+| Host / header | Upstream body |
+|---|---|
+| tunnel `/` | `api\|<uuid>.us.breezetunnel.test\|1\|/` |
+| tunnel `/api/v1/auth/me` | `api\|…\|1\|/api/v1/auth/me` (never app routing) |
+| tunnel `/portal/login` | `api\|…\|1\|/portal/login` |
+| tunnel + forged assertion (one or two `X-Breeze-Tunnel-Site` copies) | `api\|…\|1\|/`: replaced, not appended |
+| tunnel, uppercase host | `api\|<UUID>.US.BREEZETUNNEL.TEST\|1\|/`. Matched, case preserved, so the API must lowercase. |
+| tunnel, explicit `:80` | `api\|…\|1\|/` |
+| tunnel, trailing dot | `web\|<uuid>.us.breezetunnel.test.\|\|/`: **app block** (contradiction 3) |
+| `a.b.<suffix>` | `api\|a.b.us.breezetunnel.test\|1\|/` (G10 `*.*` form works) |
+| `a.b.c.<suffix>` | `web\|a.b.c.us.breezetunnel.test\|\|/`: **app block** (contradiction 3) |
+| bare suffix | `web\|us.breezetunnel.test\|\|/`: app block, as the plan expected |
+| app `/api/v1/health` + forged assertion | `api\|app.example.test\|\|/api/v1/health`: stripped |
+| app `/` + forged assertion | `web\|app.example.test\|\|/`: stripped |
+| app `/portal/login` + forged assertion | `portal\|app.example.test\|\|/portal/login`: stripped |
+| app `/` + `X-Forwarded-Host: <tunnel host>` | `web\|app.example.test\|\|/`: no effect on routing |
+| `TUNNEL_SITE_ADDRESS` unset / empty | Unset: adapts (exit 0) and the block matches only `tunnel-disabled.invalid`. Empty: `caddy adapt` **fails** (exit 1, `server block without any key is global configuration, and if used, it must be first`). Compose must therefore always pass `${TUNNEL_SITE_ADDRESS:-…}`, with `:-` so that empty also gets the default. |
+
+### Secure and Partitioned cookies on `http://*.localhost` (plan amendment 2)
+| Engine | `Secure`, `__Host-` and `Partitioned` cookies stored over http | `isSecureContext` | `Sec-Fetch-*` sent over http | Flows taken from |
+|---|---|---|---|---|
+| Chromium 151 (Playwright) | yes | true | yes | http and https: identical results |
+| Chrome 154.0.8037.58 stable | yes | true | yes | http and https: identical results |
+| Firefox 153 (Playwright build) | yes | true | yes | http and https: identical results |
+| Firefox 157.0.1 stock | yes | true | yes | http only (a throwaway profile does not trust Caddy's CA) |
+| WebKit 26.5 (Playwright) | **no**: only the non-`Secure` cookie was stored, even though `isSecureContext` was true | true | yes | **https** behind Caddy `tls internal` (the http run fails at `/__bz/ping`) |
+
+### Browsers (Task 0.3)
+Abbreviations: "SFS" means `Sec-Fetch-Site`; "3P" means third-party.
+
+Columns:
+- **Partitioned?** — `__Host-bzt` was absent when the same tunnel host was then loaded top-level.
+- **3P control** — an unpartitioned `SameSite=None` cookie set beside `__Host-bzt`.
+- **Sibling** — requests from tunnel s2's page to tunnel s1, which sit in the same app tab and
+  partition.
+
+Every row ran the same flows, all of which come from the harness:
+- the iframe bootstrap flow, then the same flow inside the exact §6 sandbox attribute set;
+- the iframe 302 flow;
+- the new tab: `about:blank`, `opener = null`, then `location.replace`;
+- the sibling flow.
+
+In every engine, the sandboxed run matched the unsandboxed run.
+
+| Browser + version | ping saw cookie | SFS on `/` (302) | SFS on `/` (bootstrap) | localStorage (iframe) | device cookie after form POST | document.cookie | Partitioned? / 3P control | tab: auth + session | sibling SFS / auth attached / toss reached |
+|---|---|---|---|---|---|---|---|---|---|
+| Chromium 151 (Playwright) | yes | cross-site | same-origin | ok | yes | yes | yes / sent (3PC allowed) | yes / yes | same-site / yes / yes |
+| Chrome 154 stable (default, headless, temp profile) | yes | cross-site | same-origin | ok | yes | yes | yes / sent (3PC allowed) | yes / yes | same-site / yes / yes |
+| Chrome 154 stable (3PC blocked) | yes | cross-site | same-origin | **throws `SecurityError`** | yes | yes | yes / **blocked**, so blocking was in effect | yes / yes (tab `localStorage` ok) | same-site / yes / yes (`Partitioned` toss only; unpartitioned toss blocked) |
+| Chromium 151 (3PC blocked) | n/a: blocking was not in effect (3P control still sent with the profile pref, the CDP cookie controls and `--test-third-party-cookie-phaseout`), so this row is not a result | | | | | | | | |
+| Chrome stable−1 | n/a: not available in this run | | | | | | | | |
+| Firefox 157.0.1 stock (headless, fresh profile; shipped `cookieBehavior=5` read from `omni.ja`) | yes | cross-site | same-origin | ok | yes | yes | yes / sent, but partitioned (TCP) | yes / yes | same-site / yes / yes |
+| Firefox 153 Playwright, stock prefs (`cookieBehavior=5`, `CHIPS.enabled=true`) | yes | cross-site | same-origin | ok | yes | yes | yes / sent, partitioned | yes / yes | same-site / yes / yes |
+| Firefox 153 Playwright default (`cookieBehavior=4`, `CHIPS.enabled=false`) | yes | cross-site | same-origin | ok | yes | yes | **no**: `Partitioned` ignored, `__Host-bzt` visible top-level / sent, unpartitioned | yes / yes | same-site / yes / yes |
+| Firefox ESR | n/a: not available in this run | | | | | | | | |
+| WebKit 26.5 (Playwright, https): **an approximation of Safari** | yes | cross-site | same-origin | ok | yes | yes | yes / **blocked** (3PC blocked by default) | yes / yes | **cross-site** / yes / yes (`Partitioned` toss) |
+| Safari 26.x | n/a: not run (see below) | | | | | | | | |
+| Safari 25/18.x | n/a: not run | | | | | | | | |
+
+Notes:
+- The `/__bz/enter` request was `cross-site` in every engine, both from the iframe and from
+  the new tab. So the §4a exemption for `/__bz/enter` is required.
+- **Chromium-family default is `SameSite=Lax`.** The secure-cookie probe set a cookie
+  without `SameSite=None` in the iframe; Chrome did not send it back there, while Firefox
+  did. This confirms that §5 must force `SameSite=None; Partitioned` on device cookies in the
+  iframe context.
+- **Playwright's Firefox is not stock Firefox for this feature.** Its `playwright.cfg` sets
+  `network.cookie.cookieBehavior=4` and `network.cookie.CHIPS.enabled=false`, which makes
+  `__Host-bzt` an unpartitioned third-party cookie. W03's Playwright Firefox project must
+  set the two stock prefs, or it tests a configuration no user has.
+- **The new-tab flow without a user gesture is Playwright-specific.** Playwright disables
+  popup blocking, and the stock Firefox run set `dom.disable_open_during_load=false`. G5
+  (a popup opened after an `await`) was **not** tested.
+- **The sibling results are approximations.** `.localhost` is not on the PSL, so how an
+  engine classifies `s1.tunnel.localhost` against `s2.tunnel.localhost` is its unknown-TLD
+  fallback. Chromium and Firefox called it `same-site`; WebKit called it `cross-site`. It
+  approximates production pre-PSL; it does not prove it.
+- **HTTPS rows used `ignoreHTTPSErrors`** against Caddy's untrusted internal CA. The http and
+  https results matched for every engine that ran both.
+
+**Safari (WebKit stands in).** Playwright's WebKit 26.5 is not Safari. It has no ITP state,
+and it differs from Safari in networking stack and cookie policy UI. Still to verify in real
+Safari 26.2+, once on a real tunnel domain over trusted TLS:
+- that the `Partitioned` `__Host-bzt` is stored and sent in the iframe (spec §4 support claim);
+- that iframe `localStorage` works;
+- the SFS between sibling tunnel hosts pre-PSL;
+- the 302-vs-bootstrap SFS;
+- that the new-tab open after the ticket `await` is not popup-blocked (G5).
+
+A pre-26.2 Safari is expected to show the cookie-blocked notice. That expectation is
+inferred and was not observed.
+
+### Cross-tunnel requests (§4a)
+In every engine with working cookies, s2's page loaded inside the same app tab and sent
+credentialed requests at s1: `fetch` POST, `fetch` GET, an `<img>` GET and a form POST.
+Every one of them **carried s1's `__Host-bzt`**, because the two share the app's partition.
+The SFS was `same-site` (Chromium, Firefox) or `cross-site` (WebKit), and never
+`same-origin`. The §4a rule (only `same-origin`/`none` admitted, GET included) refuses all
+of them. This confirms §4a's premise.
+
+The cookies s2 wrote through `document.cookie` with `Domain=tunnel.localhost` reached s1
+in every engine, which is cookie tossing pre-PSL (§1):
+- Chrome with 3PC blocked and WebKit accepted only the `Partitioned` variant;
+- the other engines accepted both.
+
+### Plan-level spec amendments (from the implementation plan G1–G10)
+- **G1 (§4 vs §4a, 302 vs admission): Confirmed.** The 302 variant gave `cross-site` on `/`
+  in every engine. The bootstrap variant gave `same-origin`. See contradiction 1.
+- **G2 (§8, hosted ingress is Cloudflare Tunnel): not tested.** Task 0.1 moved to W04.
+- **G3 (§6/§7, no runtime template in the web image): not tested.** This is a design note
+  with nothing to measure.
+- **G4 (§2, `http://` + port for `*.localhost` outside production): Confirmed for Chromium and
+  Firefox. Refuted for WebKit.** WebKit stores no `Secure` cookie on `http://*.localhost`, so
+  W03's WebKit Playwright run needs TLS (Caddy `tls internal`).
+- **G5 (§4/§7, popup after `await`): not tested.** Playwright disables popup blocking. The
+  `about:blank` → `opener = null` → `location.replace` sequence itself worked in every
+  engine.
+- **G6 (§2 response shape): not tested.** No browser behaviour is involved.
+- **G7 (§3 rate-limit bucket): not tested.** This is API-internal.
+- **G8 (§9 tickets die on Close): not tested.** This is API-internal.
+- **G9 (§4 cancel in-flight across replicas): not tested.** This is API-internal.
+- **G10 (§3/§8 depth): Confirmed, and wider than planned.** The `*.*` form catches two
+  labels. Three or more labels, a trailing dot and the bare suffix all fall through to the
+  app block (contradiction 3).
