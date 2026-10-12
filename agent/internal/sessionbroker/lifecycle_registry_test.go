@@ -127,9 +127,10 @@ func TestTimedOutStopRetainsLiveGenerationAndSuppressesReplacement(t *testing.T)
 	proc.terminateExits = false
 	spawner := &fakeHelperSpawner{byKey: map[HelperKey]helperProcess{key: proc}}
 	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
-	// Registered after the harness, so it runs first (LIFO): the process must
-	// be released before the harness's m.Stop(), or an early t.Fatalf leaves
-	// Stop waiting on a helper that never exits.
+	// Registered after the harness, so it runs first (LIFO). Releasing the fake
+	// helper lets its reaper goroutine (blocked in Wait) exit even when an
+	// early t.Fatalf skips the end of the test, and, if stopKey regresses to
+	// an unbounded wait, keeps the harness's m.Stop() from hanging on it.
 	t.Cleanup(func() { proc.markExited(1) })
 	m.gracePeriod = time.Millisecond
 	m.finalWait = time.Millisecond
