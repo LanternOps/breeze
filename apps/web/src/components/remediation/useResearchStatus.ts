@@ -42,6 +42,8 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
   const { t } = useTranslation('common');
   const [status, setStatus] = useState<ResearchStatusDto | null>(null);
   const [denial, setDenial] = useState<{ code: string; message: string } | null>(null);
+  // The start request failed with an HTTP error that had no denial code (retry keeps its depth).
+  const [requestError, setRequestError] = useState<{ depth: 'quick' | 'deep' } | null>(null);
   const [stalled, setStalled] = useState(false);
   const [epoch, setEpoch] = useState(0);
   // Reset everything when the source (type + id + org) changes, during render so a stale banner never paints.
@@ -50,6 +52,7 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
     setScopeQuery(query);
     setStatus(null);
     setDenial(null);
+    setRequestError(null);
     setStalled(false);
     setEpoch((value) => value + 1);
   }
@@ -118,5 +121,11 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
     setDenial({ code, message: denialMessage(code, message, t) });
   }, [t]);
 
-  return { status, denial, stalled, applyLoaded, noteOutcome, denyFromError, clearDenial: () => setDenial(null), restartPolling };
+  const failRequest = useCallback((depth: 'quick' | 'deep') => setRequestError({ depth }), []);
+
+  return {
+    status, denial, requestError, stalled, applyLoaded, noteOutcome, denyFromError, failRequest,
+    clearDenial: () => { setDenial(null); setRequestError(null); },
+    restartPolling,
+  };
 }

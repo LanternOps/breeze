@@ -35,6 +35,7 @@ const withAuthDbAccessContextMock = vi.hoisted(() => vi.fn(async (_auth: unknown
   }
 }));
 
+let authOverride: Record<string, unknown> | undefined;
 let currentPermissions: { allowedSiteIds?: string[]; permissions?: Array<{ resource: string; action: string }> } | undefined;
 
 vi.mock('../db', () => ({
@@ -95,6 +96,7 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
       orgCondition: () => undefined,
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+      ...authOverride,
     });
     c.set('permissions', currentPermissions ?? { permissions: [] });
     return next();
@@ -1715,6 +1717,7 @@ describe('research / memory / draft-brief routes', () => {
     });
     dbMocks.loadSummariesMock.mockResolvedValue(new Map());
     currentPermissions = undefined;
+    authOverride = undefined;
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -1748,6 +1751,51 @@ describe('research / memory / draft-brief routes', () => {
   it('POST /research refuses an org the caller cannot access before starting anything', async () => {
     const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: '99999999-9999-4999-8999-999999999999' }));
     expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  // A partner-scope caller has no org of its own; ?orgId= is the only way to pick one.
+  const partnerAuth = () => { authOverride = { scope: 'partner', orgId: null, partnerId: 'p-1' }; };
+
+  it('POST /research resolves the org from ?orgId= when the body has none (#7940)', async () => {
+    partnerAuth();
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'run-1', depth: 'quick' });
+    const res = await app.request(`/remediation-suggestions/research?orgId=${ORG}`, post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(202);
+    expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('POST /research prefers the body org over ?orgId=', async () => {
+    partnerAuth();
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'run-1', depth: 'quick' });
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: ORG }));
+    expect(res.status).toBe(202);
+    expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('POST /research 400s for a partner caller with neither body nor query org', async () => {
+    partnerAuth();
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(400);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research refuses an inaccessible ?orgId= with 403 and starts nothing (#7940)', async () => {
+    partnerAuth(); // org outside the partner
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research: an org-scope caller cannot switch org via ?orgId= (#7940)', async () => {
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research 400s on a malformed ?orgId=', async () => {
+    const res = await app.request('/remediation-suggestions/research?orgId=not-a-uuid', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(400);
     expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
   });
 
