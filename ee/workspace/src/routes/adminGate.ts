@@ -24,6 +24,20 @@ export type WorkspaceRouteEnv = {
 
 export const WORKSPACE_RESOURCE = 'workspace';
 
+/**
+ * The path below the FIRST `/content/` segment, trailing slashes stripped
+ * (`/api/v1/ext/workspace/content/jobs/advance/` → `jobs/advance`), or null
+ * when the path is not a content route. The host may mount the extension
+ * under a prefix, so the prefix is ignored — but everything after `/content/`
+ * is compared exactly, never by suffix: `/content/ingest-run/content/settings`
+ * is `ingest-run/content/settings`, not the settings route.
+ */
+export function contentSubpath(path: string): string | null {
+  const idx = path.indexOf('/content/');
+  if (idx === -1) return null;
+  return path.slice(idx + '/content/'.length).replace(/\/+$/, '');
+}
+
 function requiredPermissions(method: string, path: string): Array<[string, string]> {
   if (method === 'GET' || method === 'HEAD') {
     return path.includes('/devices/')
@@ -38,7 +52,8 @@ function requiredPermissions(method: string, path: string): Array<[string, strin
       ['devices', 'execute'],
     ];
   }
-  if (path.includes('/content/') && !path.endsWith('/content/settings')) {
+  const contentPath = contentSubpath(path);
+  if (contentPath !== null && contentPath !== 'settings') {
     return [[WORKSPACE_RESOURCE, 'execute'], ['devices', 'execute']];
   }
   // Creating or changing an active source changes what endpoint agents crawl,
