@@ -267,6 +267,7 @@ describe('block hours coverage (block hours W04)', () => {
       toBeBilled: { minutes: 60, hours: 1 },
       coveredByContract: { minutes: 60, hours: 1 },
       pendingReview: { minutes: 0, hours: 0 },
+      awaitingApproval: { minutes: 0, hours: 0 },
     });
     expect(result.totals).not.toHaveProperty('coveredByBlock');
     expect(result.totals).not.toHaveProperty('overBlock');
