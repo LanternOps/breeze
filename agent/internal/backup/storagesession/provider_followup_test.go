@@ -280,16 +280,18 @@ func TestStalledStorageTransferIsRetriedWithAFreshURL(t *testing.T) {
 			served := stallingStorage(t, st, key, data, 1, beforeHeaders)
 			// The retry is slow to reach storage; on the fake clock that
 			// must not cost it its idle window.
-			p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: slowStorageClient(st, 2, 300*time.Millisecond)})
+			client, slow := slowStorageClient(st, 2, 300*time.Millisecond)
+			p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: client})
 			dst := filepath.Join(t.TempDir(), "o")
 			errCh := make(chan error, 1)
 			go func() { errCh <- p.Download(key, dst) }()
 
 			stallAttemptSeen(t, clock, served, 1, beforeHeaders)
 			clock.Advance(idle)
-			if err := <-errCh; err != nil {
+			if err := recvErr(t, errCh); err != nil {
 				t.Fatalf("Download: %v", err)
 			}
+			slow.requireDelayed(t)
 			if got := readFile(t, dst); got != string(data) {
 				t.Fatalf("content = %q", got)
 			}
@@ -318,7 +320,8 @@ func TestPersistentlyStalledStorageTransferGivesUp(t *testing.T) {
 	served := stallingStorage(t, st, key, data, 1000, false)
 	// The last retry is slow to reach storage -- the exact shape of the CI
 	// flake (storage requests = 3, want 4) under a real-time watchdog.
-	p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: slowStorageClient(st, 1+maxStallRetries, 300*time.Millisecond)})
+	client, slow := slowStorageClient(st, 1+maxStallRetries, 300*time.Millisecond)
+	p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: client})
 	dst := filepath.Join(t.TempDir(), "o")
 	errCh := make(chan error, 1)
 	go func() { errCh <- p.Download(key, dst) }()
@@ -342,7 +345,8 @@ func TestPersistentlyStalledStorageTransferGivesUp(t *testing.T) {
 		stallAttemptSeen(t, clock, served, attempt, false)
 		clock.Advance(idle)
 	}
-	err = <-errCh
+	err = recvErr(t, errCh)
+	slow.requireDelayed(t)
 	if err == nil {
 		t.Fatal("a transfer that never progresses must fail")
 	}
@@ -355,6 +359,10 @@ func TestPersistentlyStalledStorageTransferGivesUp(t *testing.T) {
 	}
 	if got := served.Load(); got != int32(1+maxStallRetries) {
 		t.Fatalf("storage requests = %d, want %d", got, 1+maxStallRetries)
+	}
+	// Every stall retry asks for a fresh URL.
+	if got := len(cp.calls()); got != 1+maxStallRetries {
+		t.Fatalf("resolve calls = %d, want %d (one fresh URL per stall retry)", got, 1+maxStallRetries)
 	}
 	if _, statErr := os.Stat(dst); statErr == nil {
 		t.Fatal("stalled download left a partial file")

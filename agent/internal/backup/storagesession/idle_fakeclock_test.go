@@ -241,10 +241,35 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 // slow to dial or schedule a retry (#8488). Tests driven by the fake idle
 // clock must not care: the watchdog fires only when the test advances
 // virtual time, which it does only after the server has seen the request.
-func slowStorageClient(st *fakeStorage, nth int32, delay time.Duration) *http.Client {
-	c := st.srv.Client()
-	c.Transport = &slowRoundTripper{base: c.Transport, nth: nth, delay: delay}
-	return c
+// The returned round tripper lets the test assert the delayed request was
+// actually made, so a drift in request numbering cannot quietly turn the
+// injection off.
+func slowStorageClient(st *fakeStorage, nth int32, delay time.Duration) (*http.Client, *slowRoundTripper) {
+	c := *st.srv.Client() // copy: Client() is the server's shared client
+	rt := &slowRoundTripper{base: c.Transport, nth: nth, delay: delay}
+	c.Transport = rt
+	return &c, rt
+}
+
+// requireDelayed fails the test unless the delayed request was issued.
+func (s *slowRoundTripper) requireDelayed(t *testing.T) {
+	t.Helper()
+	if got := s.seen.Load(); got < s.nth {
+		t.Fatalf("storage requests through the slow transport = %d, want at least %d (delay never injected)", got, s.nth)
+	}
+}
+
+// recvErr waits for Download's result, bounded so a watchdog that fails to
+// fire after Advance fails the test instead of hanging it.
+func recvErr(t *testing.T, errCh <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for Download to return")
+		return nil
+	}
 }
 
 type slowRoundTripper struct {
