@@ -239,12 +239,85 @@ describe('ReliableInputRouter — fallback and bounds', () => {
     expect(router.isReliable()).toBe(false);
   });
 
-  it('drops discrete input with a notice when input-r is backed up, instead of growing the buffer', () => {
+  it('drops presses with a notice when input-r is backed up, instead of growing the buffer', () => {
     const { router, reliable, onNotice } = reliableSetup();
     reliable!.bufferedAmount = MAX_RELIABLE_BUFFERED_BYTES + 1;
     expect(router.send({ type: 'key_down', key: 'a' })).toBe('dropped');
+    expect(router.send({ type: 'mouse_scroll', x: 0, y: 0, delta: 1 })).toBe('dropped');
     expect(reliable!.sent).toHaveLength(1);
-    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice).toHaveBeenCalled();
+  });
+
+  it('a backlog drop does not consume a seq, so the next move barrier is still reachable', () => {
+    const { router, reliable, lossy } = reliableSetup();
+    router.send({ type: 'key_down', key: 'a' }); // seq 2, sent
+    reliable!.bufferedAmount = MAX_RELIABLE_BUFFERED_BYTES + 1;
+    router.send({ type: 'key_down', key: 'b' }); // dropped
+    router.send({ type: 'mouse_move', x: 1, y: 1 });
+    expect(last(lossy.sent)).toMatchObject({ seq: 3, after: 2 });
+  });
+
+  it('never drops a release for backpressure: key_up / mouse_up still go out', () => {
+    const { router, reliable } = reliableSetup();
+    reliable!.bufferedAmount = MAX_RELIABLE_BUFFERED_BYTES + 1;
+    expect(router.send({ type: 'key_up', key: 'a' })).toBe('sent');
+    expect(router.send({ type: 'mouse_up', x: 0, y: 0, button: 'left' })).toBe('sent');
+    router.resetHeld();
+    expect(reliable!.sent.map((e) => e.type)).toEqual(['input_reset', 'key_up', 'mouse_up', 'input_reset']);
+  });
+
+  it('closes input-r on fallback, so the agent leaves sequenced mode and accepts legacy again', () => {
+    const { router, reliable } = reliableSetup();
+    reliable!.fire('error'); // error while the channel is still open
+    expect(reliable!.readyState).toBe('closed');
+    expect(router.isReliable()).toBe(false);
+  });
+
+  it('detach() closes the old input-r', () => {
+    const { router, reliable } = reliableSetup();
+    router.detach();
+    expect(reliable!.readyState).toBe('closed');
+  });
+
+  it('a handshake that cannot start closes input-r and keeps held state', () => {
+    const lossy = new FakeChannel();
+    lossy.readyState = 'open';
+    const reliable = new FakeChannel();
+    const reconcileHeld = vi.fn();
+    const router = new ReliableInputRouter(new InputSequencer(Number.MAX_SAFE_INTEGER), {
+      lossyChannel: () => lossy,
+      openReliableChannel: () => reliable,
+      reconcileHeld,
+      onNotice: vi.fn(),
+    });
+    router.onCapabilities(CAPS);
+    reliable.open();
+    expect(reconcileHeld).not.toHaveBeenCalled();
+    expect(reliable.sent).toEqual([]);
+    expect(reliable.readyState).toBe('closed');
+    expect(router.isReliable()).toBe(false);
+  });
+
+  it('seq exhaustion mid-session falls back through the router (close + reconcile + notice)', () => {
+    const lossy = new FakeChannel();
+    lossy.readyState = 'open';
+    const reliable = new FakeChannel();
+    const reconcileHeld = vi.fn();
+    const onNotice = vi.fn();
+    const router = new ReliableInputRouter(new InputSequencer(Number.MAX_SAFE_INTEGER - 2), {
+      lossyChannel: () => lossy,
+      openReliableChannel: () => reliable,
+      reconcileHeld,
+      onNotice,
+    });
+    router.onCapabilities(CAPS);
+    reliable.open(); // reset at MAX-1
+    router.send({ type: 'key_down', key: 'a' }); // MAX
+    router.send({ type: 'key_up', key: 'a' }); // exhausted → legacy
+    expect(last(lossy.sent)).toEqual({ type: 'key_up', key: 'a' });
+    expect(reliable.readyState).toBe('closed');
+    expect(reconcileHeld).toHaveBeenCalledWith('fallback');
+    expect(onNotice).toHaveBeenCalled();
   });
 
   it('drops an event the sequencer refuses (back button without the W2c flag)', () => {

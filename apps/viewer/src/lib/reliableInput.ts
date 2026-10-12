@@ -21,14 +21,17 @@ export interface InputChannelLike {
   readonly readyState: string;
   readonly bufferedAmount: number;
   send(data: string): void;
+  close(): void;
   addEventListener(type: 'open' | 'close' | 'error', cb: () => void): void;
   removeEventListener(type: 'open' | 'close' | 'error', cb: () => void): void;
 }
 
 /**
- * Above this much unsent data on `input-r`, discrete input is dropped with a
- * notice instead of queued: the channel is not draining, and a growing backlog
- * would replay stale keystrokes once it does.
+ * Above this much unsent data on `input-r`, presses (key_down, key_press,
+ * mouse_down, scroll) are dropped with a notice instead of queued: the channel
+ * is not draining, and a growing backlog would replay stale keystrokes once it
+ * does. Releases and input_reset always go out, so a drop can never latch a
+ * key; there are at most as many of them as keys and buttons held.
  */
 export const MAX_RELIABLE_BUFFERED_BYTES = 256 * 1024;
 
@@ -51,6 +54,8 @@ export interface ReliableInputDeps {
   onNotice(message: string): void;
   now?: () => number;
 }
+
+const RELEASES = new Set(['key_up', 'mouse_up']);
 
 export type SendResult = 'sent' | 'dropped' | 'unavailable';
 
@@ -87,10 +92,17 @@ export class ReliableInputRouter {
 
     const onOpen = () => {
       if (this.channel !== ch) return;
-      this.deps.reconcileHeld('handshake');
       const { inputEpoch, geoEpoch } = this.sequencer.latestEpochs();
       const reset = this.sequencer.enter(inputEpoch, geoEpoch, this.now());
-      if (reset) this.sendOn(ch, reset);
+      if (!reset) {
+        // Cannot start (seq range used up): stay legacy, and close input-r so
+        // the agent never expects sequenced input from us.
+        this.detach();
+        return;
+      }
+      // Local only, so it can follow enter(): the reset below releases on the agent.
+      this.deps.reconcileHeld('handshake');
+      this.sendOn(ch, reset);
     };
     const onGone = () => {
       if (this.channel !== ch) return;
@@ -125,7 +137,26 @@ export class ReliableInputRouter {
   send(event: Record<string, unknown>): SendResult {
     const lossy = this.deps.lossyChannel();
     if (!lossy || lossy.readyState !== 'open') return 'unavailable';
+    if (this.sequencer.isReliable() && event.type !== 'mouse_move') {
+      // Checked BEFORE routing: routing consumes a seq, and a seq that never
+      // reaches the agent would hold every later move behind its barrier.
+      const ch = this.channel;
+      if (!ch || ch.readyState !== 'open') {
+        // input-r is going away; the agent will release everything and accept
+        // legacy input again once it sees the close.
+        this.fallback();
+        return this.send(event);
+      }
+      if (ch.bufferedAmount > MAX_RELIABLE_BUFFERED_BYTES && !RELEASES.has(event.type as string)) {
+        this.deps.onNotice('Input not delivered — the connection to the remote is backed up.');
+        return 'dropped';
+      }
+    }
     const routed = this.sequencer.route(event);
+    if (this.channel && !this.sequencer.isReliable()) {
+      // The sequencer gave up (seq range exhausted): leave W2b properly.
+      this.fallback(true);
+    }
     if (!routed) {
       console.debug('[input] dropped an event outside the agent protocol:', event.type);
       return 'dropped';
@@ -134,17 +165,7 @@ export class ReliableInputRouter {
       lossy.send(JSON.stringify(routed.payload));
       return 'sent';
     }
-    const ch = this.channel;
-    if (!ch || ch.readyState !== 'open') {
-      // input-r is going away; the agent will release everything and accept
-      // legacy input again once it sees the close.
-      this.fallback();
-      return this.send(event);
-    }
-    if (ch.bufferedAmount > MAX_RELIABLE_BUFFERED_BYTES) {
-      this.deps.onNotice('Input not delivered — the connection to the remote is backed up.');
-      return 'dropped';
-    }
+    const ch = this.channel!;
     ch.send(JSON.stringify(routed.payload));
     return 'sent';
   }
@@ -163,13 +184,23 @@ export class ReliableInputRouter {
   /**
    * The transport is being replaced. Forget `input-r` without a notice (the
    * caller releases held input itself) and route legacy until the next
-   * transport's own handshake. The old channel closes with its peer connection.
+   * transport's own handshake. The channel is closed here, not left to its
+   * peer connection: the agent stays in sequenced mode, dropping every legacy
+   * event, until it sees input-r close.
    */
   detach(): void {
+    const ch = this.channel;
     this.unbind?.();
     this.unbind = null;
     this.channel = null;
     this.sequencer.leave();
+    if (ch && ch.readyState !== 'closed' && ch.readyState !== 'closing') {
+      try {
+        ch.close();
+      } catch (err) {
+        console.debug('[input] closing input-r failed:', err);
+      }
+    }
   }
 
   private applyEpoch(epoch: unknown, reason: string | undefined): void {
@@ -184,8 +215,7 @@ export class ReliableInputRouter {
     this.sendOn(ch, reset);
   }
 
-  private fallback(): void {
-    const wasReliable = this.sequencer.isReliable();
+  private fallback(wasReliable = this.sequencer.isReliable()): void {
     this.detach();
     if (!wasReliable) return;
     this.deps.reconcileHeld('fallback');

@@ -706,7 +706,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     if (!sessionWrapper) return false;
 
-    // The old transport's input-r goes with it; this one runs its own handshake.
+    // Close the old transport's input-r; this one runs its own handshake.
     reliableInput.detach();
     webrtcRef.current = sessionWrapper;
     setWebrtcEpoch((e) => e + 1);
