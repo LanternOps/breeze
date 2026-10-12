@@ -224,14 +224,28 @@ describe('ci-success gating contract', () => {
       TEST_AGENT_RACE_RESULT: 'test-agent-race',
       AGENT_WINDOWS_MANIFEST_GUARD_RESULT: 'agent-windows-manifest-guard',
     };
+    // Branch placement matters: `!= success` belongs in the APP_CHANGED == true leg, and
+    // `!= skipped` in the APP_CHANGED == false leg. Swapping them would gate nothing on app
+    // changes (the #4261 defect) and red every tooling-only PR.
+    const skippedLegMarker = '{ [[ "${APP_CHANGED}" == "false" ]] && { \\';
+    const splitAt = blockingCondition.indexOf(skippedLegMarker);
+    expect(splitAt, 'could not locate the APP_CHANGED == false leg — the parser is stale').toBeGreaterThan(0);
+    const appLeg = blockingCondition.slice(0, splitAt);
+    const toolingLeg = blockingCondition.slice(splitAt);
     for (const [envVar, job] of Object.entries(expected)) {
       expect(neededJobs, `${job} is missing from ci-success needs:`).toContain(job);
       expect(resultEnvByName.get(envVar), `${envVar} is not mapped to ${job}`).toBe(job);
-      expect(blockingCondition, `${job} must be required when app code changed`).toContain(
+      expect(appLeg, `${job} must be required when app code changed`).toContain(
         `[[ "\${${envVar}}" != "success" ]]`,
       );
-      expect(blockingCondition, `${job} must be asserted skipped on a tooling-only change`).toContain(
+      expect(appLeg, `${job} success check must not be in the tooling-only leg`).not.toContain(
         `[[ "\${${envVar}}" != "skipped" ]]`,
+      );
+      expect(toolingLeg, `${job} must be asserted skipped on a tooling-only change`).toContain(
+        `[[ "\${${envVar}}" != "skipped" ]]`,
+      );
+      expect(toolingLeg, `${job} must not be required to succeed on a tooling-only change`).not.toContain(
+        `[[ "\${${envVar}}" != "success" ]]`,
       );
     }
   });
