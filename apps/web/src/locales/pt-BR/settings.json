@@ -5631,6 +5631,28 @@
       "inherit": "Herdar",
       "billableOption": "Faturável",
       "nonBillableOption": "Não faturável"
+    },
+    "approval": {
+      "title": "Aprovação de trabalho pelo cliente",
+      "description": "Substitui o padrão do parceiro para esta organização. Escolha Herdar para usar o padrão do parceiro.",
+      "enabled": "Exigir aprovação do cliente",
+      "budgetTrigger": "Perguntar quando o orçamento de um ticket seria excedido",
+      "afterHoursTrigger": "Perguntar em trabalho fora do horário",
+      "enforcement": "Aplicação",
+      "enforcementSoft": "Flexível (avisar, permitir o lançamento)",
+      "enforcementHard": "Rígida (bloquear até aprovar)",
+      "ttl": "A solicitação de aprovação expira após (horas)",
+      "ttlRange": "A expiração deve ficar entre {{min}} e {{max}} horas",
+      "on": "Ativado",
+      "off": "Desativado",
+      "inherit": "Herdar",
+      "inheritValue": "Herdar ({{value}})",
+      "clear": "Remover substituição (herdar)",
+      "pendingInherit": "Herdará o padrão após salvar",
+      "loadFailed": "Não foi possível carregar as configurações de aprovação do cliente.",
+      "sourceOrg": "Substituição da organização",
+      "sourcePartner": "Padrão do parceiro",
+      "sourceDefault": "Padrão integrado"
     }
   },
   "organizationForm": {
@@ -6332,7 +6354,26 @@
     "locationEnabledLabel": "Sugerir um cronômetro quando um técnico chega ao local de um cliente",
     "locationHelp": "Cada técnico também precisa permitir a localização no próprio celular. A localização é verificada no celular e nunca é enviada ao Breeze.",
     "radiusLabel": "Raio de chegada padrão (m)",
-    "radiusRange": "O raio de chegada deve estar entre {{min}} e {{max}} metros"
+    "radiusRange": "O raio de chegada deve estar entre {{min}} e {{max}} metros",
+    "approval": {
+      "heading": "Aprovação de trabalho pelo cliente",
+      "description": "Pedir ao cliente que aprove o trabalho antes de ele ser lançado no orçamento ou fora do horário comercial. Este é o padrão do parceiro; as organizações podem substituí-lo.",
+      "enabledLabel": "Exigir aprovação do cliente para o trabalho",
+      "budgetTriggerLabel": "Perguntar quando o orçamento de um ticket seria excedido",
+      "afterHoursTriggerLabel": "Perguntar em trabalho fora do horário",
+      "enforcementLabel": "Aplicação",
+      "enforcementSoft": "Flexível (avisar, permitir o lançamento)",
+      "enforcementHard": "Rígida (bloquear até aprovar)",
+      "ttlLabel": "A solicitação de aprovação expira após (horas)",
+      "ttlRange": "A expiração deve ficar entre {{min}} e {{max}} horas",
+      "readOnly": "Você precisa de permissões de configuração em nível de parceiro para alterar esta política. Exibindo os valores atuais.",
+      "loadFailed": "Não foi possível carregar as configurações de aprovação do cliente.",
+      "source": {
+        "org": "Organização",
+        "partner": "Parceiro",
+        "default": "Padrão"
+      }
+    }
   },
   "contactsCard": {
     "title": "Contatos",
@@ -6615,7 +6656,8 @@
     "nameTaken": "Já existe um tipo de trabalho com esse nome.",
     "rename": "Renomear",
     "loadError": "Não foi possível carregar os tipos de trabalho.",
-    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima."
+    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima.",
+    "afterHours": "Fora do horário (exige aprovação do cliente quando ativado)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabalho padrão",

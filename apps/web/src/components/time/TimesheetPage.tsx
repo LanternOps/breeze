@@ -19,6 +19,7 @@ import { useHashState } from '@/lib/useHashState';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { replaceUrl } from '../../lib/replaceUrl';
+import { AwaitingApprovalChip, WriteOffHeldButton, isAwaitingApproval } from './HeldEntryControls';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -707,6 +708,7 @@ export default function TimesheetPage() {
                                   {t('longTail.time.TimesheetPage.approved')}
                                 </span>
                               )}
+                              {isAwaitingApproval(entry) && <AwaitingApprovalChip entryId={entry.id} />}
                               {!entry.isBillable && (
                                 <span className="text-xs text-muted-foreground">{t('longTail.time.TimesheetPage.nonBillable')}</span>
                               )}
@@ -741,6 +743,9 @@ export default function TimesheetPage() {
                             >
                               {t('common:actions.edit')}
                             </button>
+                            {isAwaitingApproval(entry) && (
+                              <WriteOffHeldButton entryId={entry.id} onDone={() => void loadSheet(week, tech)} />
+                            )}
                             {canWriteTime && entry.billingStatus !== 'billed' && (
                               <button
                                 type="button"

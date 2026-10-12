@@ -18,6 +18,8 @@ import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketApprovalRail from './TicketApprovalRail';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
@@ -694,6 +696,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
         }),
         errorFallback: t('ticketWorkbench.move.failed'),
+        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
+        friendly: approvalFriendly(t),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setMoveBlocked(null);
@@ -1680,6 +1684,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketApprovalRail ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>

@@ -5626,6 +5626,28 @@
       "inherit": "Inherit",
       "billableOption": "Billable",
       "nonBillableOption": "Non-billable"
+    },
+    "approval": {
+      "title": "Customer work approval",
+      "description": "Override the partner default for this organization. Choose Inherit to use the partner default.",
+      "enabled": "Require customer approval",
+      "budgetTrigger": "Ask when a ticket budget would be exceeded",
+      "afterHoursTrigger": "Ask for after-hours work",
+      "enforcement": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttl": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "on": "On",
+      "off": "Off",
+      "inherit": "Inherit",
+      "inheritValue": "Inherit ({{value}})",
+      "clear": "Clear override (inherit)",
+      "pendingInherit": "Will inherit the default after saving",
+      "loadFailed": "Could not load the customer approval settings.",
+      "sourceOrg": "Organization override",
+      "sourcePartner": "Partner default",
+      "sourceDefault": "Built-in default"
     }
   },
   "organizationForm": {
@@ -6327,7 +6349,26 @@
     "locationEnabledLabel": "Suggest a timer when a technician arrives at a client site",
     "locationHelp": "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze.",
     "radiusLabel": "Default arrival radius (m)",
-    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters"
+    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters",
+    "approval": {
+      "heading": "Customer work approval",
+      "description": "Ask the customer to approve work before it is logged against their budget or outside business hours. This is the partner default; organizations can override it.",
+      "enabledLabel": "Require customer approval for work",
+      "budgetTriggerLabel": "Ask when a ticket budget would be exceeded",
+      "afterHoursTriggerLabel": "Ask for after-hours work",
+      "enforcementLabel": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttlLabel": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "readOnly": "You need partner-wide settings rights to change this policy. Showing the current values.",
+      "loadFailed": "Could not load the customer approval settings.",
+      "source": {
+        "org": "Organization",
+        "partner": "Partner",
+        "default": "Default"
+      }
+    }
   },
   "contactImportPreview": {
     "selectAll": "Select all new and linked rows",
@@ -6615,7 +6656,8 @@
     "nameTaken": "A work type with this name already exists.",
     "rename": "Rename",
     "loadError": "Could not load work types.",
-    "empty": "No work types yet. Add your first work type above."
+    "empty": "No work types yet. Add your first work type above.",
+    "afterHours": "After-hours (requires customer approval when enabled)"
   },
   "ticketCategories": {
     "defaultWorkType": "Default work type",

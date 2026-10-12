@@ -553,5 +553,121 @@
     "missingRate": "Faturável · tarifa não configurada",
     "recalculated": "O faturamento é recalculado para este tipo de trabalho ao salvar.",
     "unavailable": "Resultado do faturamento indisponível"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Esta solicitação de aprovação não está mais pendente.",
+      "requestChanged": "A solicitação mudou enquanto você a visualizava. A versão mais recente foi recarregada; revise e tente novamente.",
+      "requestExpired": "Esta solicitação de aprovação expirou. Solicite novamente para enviar uma nova.",
+      "requestAlreadyPending": "Já existe uma solicitação de aprovação pendente neste chamado pelo mesmo motivo.",
+      "requestNotReaskable": "Somente uma solicitação negada, expirada ou cancelada que ainda tenha tempo retido pode ser solicitada novamente.",
+      "nothingHeld": "Este chamado não tem tempo retido para o qual solicitar aprovação.",
+      "approvalsDisabled": "A aprovação do cliente não está habilitada para este cliente.",
+      "entryNotResolvable": "Este tempo só pode ser baixado depois que a solicitação de aprovação for negada, expirar ou ser cancelada.",
+      "approvalRequestPending": "Este chamado tem uma solicitação de aprovação aguardando o cliente, portanto não pode ser movido. Cancele ou resolva a solicitação primeiro.",
+      "sourceAwaitingApproval": "Parte do tempo desta fatura está aguardando a aprovação do cliente. Obtenha a aprovação ou dê baixa nesse tempo antes de emitir.",
+      "approvalRequired": "A aprovação do cliente é necessária antes de registrar tempo faturável neste chamado. Solicite a aprovação no painel de aprovações do chamado."
+    },
+    "budget": {
+      "title": "Orçamento e aprovação",
+      "hours": "Orçamento (horas)",
+      "amount": "Valor do orçamento",
+      "save": "Salvar orçamento",
+      "saved": "Orçamento salvo",
+      "saveFailed": "Não foi possível salvar o orçamento",
+      "invalidHours": "Informe horas maiores que 0 ou deixe em branco para não ter limite.",
+      "invalidAmount": "Informe um valor maior que 0 com no máximo 2 casas decimais ou deixe em branco.",
+      "ceiling": "Teto {{ceiling}}",
+      "ceilingWithExtensions": "Teto {{ceiling}} (orçamento {{budget}} + {{extra}} aprovadas)",
+      "noBudget": "Nenhum orçamento definido",
+      "usedLegend": "Usado {{value}}",
+      "heldLegend": "Aguardando aprovação {{value}}",
+      "unpriced_one": "{{count}} lançamento retido ainda não tem preço.",
+      "unpriced_other": "{{count}} lançamentos retidos ainda não têm preço.",
+      "barLabel": "Uso do orçamento",
+      "requestApproval": "Solicitar aprovação"
+    },
+    "request": {
+      "trigger": "Motivo",
+      "triggerBudget": "Orçamento excedido",
+      "triggerAfterHours": "Trabalho fora do expediente",
+      "extensionMinutes": "Minutos adicionais",
+      "extensionAmount": "Valor adicional",
+      "windowStart": "Cobre a partir de",
+      "windowEnd": "Cobre até",
+      "message": "Mensagem para o cliente (opcional)",
+      "submit": "Enviar solicitação",
+      "sent": "Solicitação de aprovação enviada",
+      "failed": "Não foi possível enviar a solicitação de aprovação",
+      "invalidExtension": "Informe minutos adicionais ou um valor adicional maior que 0.",
+      "invalidWindow": "Escolha um início e um fim, com o fim depois do início e a no máximo 14 dias de distância."
+    },
+    "panel": {
+      "title": "Aprovações do cliente",
+      "status": {
+        "pending": "Pendente",
+        "approved": "Aprovada",
+        "denied": "Negada",
+        "expired": "Expirada",
+        "cancelled": "Cancelada"
+      },
+      "revision": "Revisão {{n}}",
+      "ask": "Solicita {{ask}}",
+      "window": "Cobre de {{from}} a {{to}}",
+      "expires": "Expira {{when}}",
+      "heldEntries_one": "{{count}} lançamento retido",
+      "heldEntries_other": "{{count}} lançamentos retidos",
+      "approvers": "Aprovadores",
+      "notified": "Notificados",
+      "noneListed": "Nenhum",
+      "noApprover": "Nenhum aprovador cadastrado: adicione um contato de cobrança ou registre a decisão em nome do cliente.",
+      "decidedByCustomer": "Decidido por {{who}}",
+      "customerFallback": "o cliente",
+      "decidedOnBehalf": "Registrado por {{user}} em nome de {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Oral",
+        "email": "E-mail",
+        "signedDocument": "Documento assinado",
+        "other": "Outro"
+      },
+      "cancel": "Cancelar solicitação",
+      "cancelConfirmTitle": "Cancelar esta solicitação de aprovação?",
+      "cancelConfirmMessage": "O cliente não poderá mais responder. O tempo já retido continua retido até que você solicite novamente ou dê baixa nele.",
+      "cancelled": "Solicitação de aprovação cancelada",
+      "cancelFailed": "Não foi possível cancelar a solicitação",
+      "reask": "Solicitar novamente",
+      "reaskSubmit": "Enviar novamente",
+      "reasked": "Solicitação de aprovação enviada novamente",
+      "reaskFailed": "Não foi possível solicitar novamente",
+      "record": "Registrar decisão"
+    },
+    "record": {
+      "title": "Registrar a decisão do cliente",
+      "intro": "Use quando o cliente informou a decisão fora do Breeze. Ela fica registrada em seu nome.",
+      "target": "Revisão {{revision}} · {{ask}}",
+      "decision": "Decisão",
+      "approve": "Aprovada",
+      "deny": "Negada",
+      "method": "Como foi informada?",
+      "reference": "Referência",
+      "referencePlaceholder": "ex.: ligação de 12 de out., assunto do e-mail, número do documento",
+      "signerName": "Nome do cliente",
+      "signerEmail": "E-mail do cliente (opcional)",
+      "note": "Observação (opcional)",
+      "submit": "Registrar decisão",
+      "recorded": "Decisão registrada",
+      "failed": "Não foi possível registrar a decisão"
+    },
+    "held": {
+      "chip": "Aguardando aprovação do cliente",
+      "writeOff": "Dar baixa",
+      "writeOffTitle": "Dar baixa no tempo retido?",
+      "writeOffMessage": "Este tempo está retido porque o cliente não o aprovou. Ao dar baixa, ele é marcado como sem cobrança e não será faturado.",
+      "writtenOff": "Baixa do tempo concluída",
+      "writeOffFailed": "Não foi possível dar baixa no tempo"
+    },
+    "timer": {
+      "startNonBillable": "Iniciar como não faturável"
+    }
   }
 }

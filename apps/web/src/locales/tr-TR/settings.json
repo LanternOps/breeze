@@ -5631,6 +5631,28 @@
       "inherit": "Devral",
       "billableOption": "Faturalandırılabilir",
       "nonBillableOption": "Faturalandırılamaz"
+    },
+    "approval": {
+      "title": "Müşteri iş onayı",
+      "description": "Bu kuruluş için iş ortağı varsayılanını geçersiz kılar. İş ortağı varsayılanını kullanmak için Devral’ı seçin.",
+      "enabled": "Müşteri onayı iste",
+      "budgetTrigger": "Bir talep bütçesi aşılacağında sor",
+      "afterHoursTrigger": "Mesai dışı iş için sor",
+      "enforcement": "Uygulama",
+      "enforcementSoft": "Esnek (uyar, kayda izin ver)",
+      "enforcementHard": "Katı (onaylanana kadar engelle)",
+      "ttl": "Onay isteği şu süre sonra sona erer (saat)",
+      "ttlRange": "Sona erme süresi {{min}} ile {{max}} saat arasında olmalıdır",
+      "on": "Açık",
+      "off": "Kapalı",
+      "inherit": "Devral",
+      "inheritValue": "Devral ({{value}})",
+      "clear": "Geçersiz kılmayı kaldır (devral)",
+      "pendingInherit": "Kaydettikten sonra varsayılanı devralacak",
+      "loadFailed": "Müşteri onayı ayarları yüklenemedi.",
+      "sourceOrg": "Kuruluş geçersiz kılması",
+      "sourcePartner": "İş ortağı varsayılanı",
+      "sourceDefault": "Yerleşik varsayılan"
     }
   },
   "organizationForm": {
@@ -6332,7 +6354,26 @@
     "locationEnabledLabel": "Bir teknisyen müşteri sahasına vardığında zamanlayıcı öner",
     "locationHelp": "Her teknisyenin ayrıca telefonunda konum erişimine izin vermesi gerekir. Konum telefonda denetlenir ve asla Breeze’e gönderilmez.",
     "radiusLabel": "Varsayılan varış yarıçapı (m)",
-    "radiusRange": "Varış yarıçapı {{min}} ile {{max}} metre arasında olmalıdır"
+    "radiusRange": "Varış yarıçapı {{min}} ile {{max}} metre arasında olmalıdır",
+    "approval": {
+      "heading": "Müşteri iş onayı",
+      "description": "İş, müşterinin bütçesine veya mesai saatleri dışına kaydedilmeden önce müşteriden onay iste. Bu, iş ortağı varsayılanıdır; kuruluşlar bunu geçersiz kılabilir.",
+      "enabledLabel": "İş için müşteri onayı iste",
+      "budgetTriggerLabel": "Bir talep bütçesi aşılacağında sor",
+      "afterHoursTriggerLabel": "Mesai dışı iş için sor",
+      "enforcementLabel": "Uygulama",
+      "enforcementSoft": "Esnek (uyar, kayda izin ver)",
+      "enforcementHard": "Katı (onaylanana kadar engelle)",
+      "ttlLabel": "Onay isteği şu süre sonra sona erer (saat)",
+      "ttlRange": "Sona erme süresi {{min}} ile {{max}} saat arasında olmalıdır",
+      "readOnly": "Bu ilkeyi değiştirmek için iş ortağı genelinde ayar yetkisine ihtiyacınız var. Geçerli değerler gösteriliyor.",
+      "loadFailed": "Müşteri onayı ayarları yüklenemedi.",
+      "source": {
+        "org": "Kuruluş",
+        "partner": "İş ortağı",
+        "default": "Varsayılan"
+      }
+    }
   },
   "contactsCard": {
     "title": "Kişiler",
@@ -6615,7 +6656,8 @@
     "nameTaken": "Bu ada sahip bir iş türü zaten var.",
     "rename": "Yeniden adlandır",
     "loadError": "İş türleri yüklenemedi.",
-    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin.",
+    "afterHours": "Mesai dışı (etkinse müşteri onayı gerektirir)"
   },
   "ticketCategories": {
     "defaultWorkType": "Varsayılan iş türü",

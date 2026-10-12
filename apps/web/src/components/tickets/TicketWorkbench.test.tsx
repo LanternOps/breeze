@@ -2576,6 +2576,33 @@ describe('TicketWorkbench move-org action', () => {
     });
   }
 
+  it('on 409 APPROVAL_REQUEST_PENDING toasts localized copy, not the server text (#8196)', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: 'Globex Inc' }] });
+      }
+      if (init?.method === 'POST' && url.includes('/move-org')) {
+        return makeJsonResponse({ error: 'raw server text', code: 'APPROVAL_REQUEST_PENDING' }, false, 409);
+      }
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/approval request waiting on the customer/),
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'raw server text' }));
+  });
+
   it('a successful first move closes the form', async () => {
     const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
     mockTicketApiWithOrgs(ticket);

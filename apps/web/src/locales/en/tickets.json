@@ -553,5 +553,121 @@
     "missingRate": "Billable · rate not configured",
     "recalculated": "Billing is recalculated for this work type when saved.",
     "unavailable": "Billing outcome unavailable"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "This approval request is no longer pending.",
+      "requestChanged": "The request changed while you were looking at it. The latest version has been reloaded; review it and try again.",
+      "requestExpired": "This approval request has expired. Re-ask to send a new one.",
+      "requestAlreadyPending": "An approval request for this reason is already pending on this ticket.",
+      "requestNotReaskable": "Only a denied, expired or cancelled request that still has held time can be re-asked.",
+      "nothingHeld": "There is no held time on this ticket to ask approval for.",
+      "approvalsDisabled": "Customer approval is not enabled for this customer.",
+      "entryNotResolvable": "This time can only be written off once its approval request was denied, expired or cancelled.",
+      "approvalRequestPending": "This ticket has an approval request waiting on the customer, so it cannot be moved. Cancel or resolve the request first.",
+      "sourceAwaitingApproval": "Some time on this invoice is awaiting customer approval. Get it approved or write it off before issuing.",
+      "approvalRequired": "Customer approval is needed before billable time can be tracked on this ticket. Request approval from the ticket's Approvals panel."
+    },
+    "budget": {
+      "title": "Budget and approval",
+      "hours": "Budget (hours)",
+      "amount": "Budget amount",
+      "save": "Save budget",
+      "saved": "Budget saved",
+      "saveFailed": "Failed to save the budget",
+      "invalidHours": "Enter hours greater than 0, or leave it blank for no limit.",
+      "invalidAmount": "Enter an amount greater than 0 with at most 2 decimals, or leave it blank.",
+      "ceiling": "Ceiling {{ceiling}}",
+      "ceilingWithExtensions": "Ceiling {{ceiling}} (budget {{budget}} + {{extra}} approved)",
+      "noBudget": "No budget set",
+      "usedLegend": "Used {{value}}",
+      "heldLegend": "Awaiting approval {{value}}",
+      "unpriced_one": "{{count}} held entry has no price yet.",
+      "unpriced_other": "{{count}} held entries have no price yet.",
+      "barLabel": "Budget usage",
+      "requestApproval": "Request approval"
+    },
+    "request": {
+      "trigger": "Reason",
+      "triggerBudget": "Over budget",
+      "triggerAfterHours": "After-hours work",
+      "extensionMinutes": "Extra minutes",
+      "extensionAmount": "Extra amount",
+      "windowStart": "Covers from",
+      "windowEnd": "Covers until",
+      "message": "Message to the customer (optional)",
+      "submit": "Send request",
+      "sent": "Approval request sent",
+      "failed": "Failed to send the approval request",
+      "invalidExtension": "Enter extra minutes or an extra amount greater than 0.",
+      "invalidWindow": "Pick a start and an end, with the end after the start and at most 14 days apart."
+    },
+    "panel": {
+      "title": "Customer approvals",
+      "status": {
+        "pending": "Pending",
+        "approved": "Approved",
+        "denied": "Denied",
+        "expired": "Expired",
+        "cancelled": "Cancelled"
+      },
+      "revision": "Revision {{n}}",
+      "ask": "Asking for {{ask}}",
+      "window": "Covers {{from}} to {{to}}",
+      "expires": "Expires {{when}}",
+      "heldEntries_one": "{{count}} held entry",
+      "heldEntries_other": "{{count}} held entries",
+      "approvers": "Approvers",
+      "notified": "Notified",
+      "noneListed": "None",
+      "noApprover": "No approver on file: add a billing contact or record the decision on behalf.",
+      "decidedByCustomer": "Decided by {{who}}",
+      "customerFallback": "the customer",
+      "decidedOnBehalf": "Recorded by {{user}} on behalf of {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Verbal",
+        "email": "Email",
+        "signedDocument": "Signed document",
+        "other": "Other"
+      },
+      "cancel": "Cancel request",
+      "cancelConfirmTitle": "Cancel this approval request?",
+      "cancelConfirmMessage": "The customer will no longer be able to respond. Time already held stays held until you re-ask or write it off.",
+      "cancelled": "Approval request cancelled",
+      "cancelFailed": "Failed to cancel the request",
+      "reask": "Re-ask",
+      "reaskSubmit": "Send again",
+      "reasked": "Approval request sent again",
+      "reaskFailed": "Failed to re-ask",
+      "record": "Record decision"
+    },
+    "record": {
+      "title": "Record the customer's decision",
+      "intro": "Use this when the customer gave you their decision outside Breeze. It is logged under your name.",
+      "target": "Revision {{revision}} · {{ask}}",
+      "decision": "Decision",
+      "approve": "Approved",
+      "deny": "Denied",
+      "method": "How was it given?",
+      "reference": "Reference",
+      "referencePlaceholder": "e.g. phone call on 12 Oct, email subject, document number",
+      "signerName": "Customer name",
+      "signerEmail": "Customer email (optional)",
+      "note": "Note (optional)",
+      "submit": "Record decision",
+      "recorded": "Decision recorded",
+      "failed": "Failed to record the decision"
+    },
+    "held": {
+      "chip": "Awaiting customer approval",
+      "writeOff": "Write off",
+      "writeOffTitle": "Write off held time?",
+      "writeOffMessage": "This time is held because the customer did not approve it. Writing it off marks it no charge, so it will not be invoiced.",
+      "writtenOff": "Time written off",
+      "writeOffFailed": "Failed to write off the time"
+    },
+    "timer": {
+      "startNonBillable": "Start as non-billable"
+    }
   }
 }

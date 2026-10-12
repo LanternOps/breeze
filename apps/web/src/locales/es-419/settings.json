@@ -5578,6 +5578,28 @@
       "inherit": "Heredar",
       "billableOption": "facturable",
       "nonBillableOption": "No facturable"
+    },
+    "approval": {
+      "title": "Aprobación de trabajo del cliente",
+      "description": "Reemplaza el valor predeterminado del socio para esta organización. Elige Heredar para usar el valor del socio.",
+      "enabled": "Requerir aprobación del cliente",
+      "budgetTrigger": "Preguntar cuando se superaría el presupuesto de un ticket",
+      "afterHoursTrigger": "Preguntar por trabajo fuera de horario",
+      "enforcement": "Aplicación",
+      "enforcementSoft": "Flexible (advertir, permitir el registro)",
+      "enforcementHard": "Estricta (bloquear hasta que se apruebe)",
+      "ttl": "La solicitud de aprobación vence después de (horas)",
+      "ttlRange": "El vencimiento debe estar entre {{min}} y {{max}} horas",
+      "on": "Activado",
+      "off": "Desactivado",
+      "inherit": "Heredar",
+      "inheritValue": "Heredar ({{value}})",
+      "clear": "Quitar reemplazo (heredar)",
+      "pendingInherit": "Heredará el valor predeterminado después de guardar",
+      "loadFailed": "No se pudo cargar la configuración de aprobación del cliente.",
+      "sourceOrg": "Reemplazo de la organización",
+      "sourcePartner": "Predeterminado del socio",
+      "sourceDefault": "Predeterminado integrado"
     }
   },
   "organizationForm": {
@@ -6332,7 +6354,26 @@
     "locationEnabledLabel": "Sugerir un temporizador cuando un técnico llega al sitio de un cliente",
     "locationHelp": "Cada técnico también debe permitir la ubicación en su teléfono. La ubicación se verifica en el teléfono y nunca se envía a Breeze.",
     "radiusLabel": "Radio de llegada predeterminado (m)",
-    "radiusRange": "El radio de llegada debe estar entre {{min}} y {{max}} metros"
+    "radiusRange": "El radio de llegada debe estar entre {{min}} y {{max}} metros",
+    "approval": {
+      "heading": "Aprobación de trabajo del cliente",
+      "description": "Pedir al cliente que apruebe el trabajo antes de registrarlo contra su presupuesto o fuera del horario laboral. Este es el valor predeterminado del socio; las organizaciones pueden reemplazarlo.",
+      "enabledLabel": "Requerir aprobación del cliente para el trabajo",
+      "budgetTriggerLabel": "Preguntar cuando se superaría el presupuesto de un ticket",
+      "afterHoursTriggerLabel": "Preguntar por trabajo fuera de horario",
+      "enforcementLabel": "Aplicación",
+      "enforcementSoft": "Flexible (advertir, permitir el registro)",
+      "enforcementHard": "Estricta (bloquear hasta que se apruebe)",
+      "ttlLabel": "La solicitud de aprobación vence después de (horas)",
+      "ttlRange": "El vencimiento debe estar entre {{min}} y {{max}} horas",
+      "readOnly": "Necesitas permisos de configuración a nivel de socio para cambiar esta política. Se muestran los valores actuales.",
+      "loadFailed": "No se pudo cargar la configuración de aprobación del cliente.",
+      "source": {
+        "org": "Organización",
+        "partner": "Socio",
+        "default": "Predeterminado"
+      }
+    }
   },
   "contactsCard": {
     "title": "Contactos",
@@ -6615,7 +6656,8 @@
     "nameTaken": "Ya existe un tipo de trabajo con este nombre.",
     "rename": "Cambiar nombre",
     "loadError": "No se pudieron cargar los tipos de trabajo.",
-    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba."
+    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba.",
+    "afterHours": "Fuera de horario (requiere aprobación del cliente cuando está activado)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabajo predeterminado",

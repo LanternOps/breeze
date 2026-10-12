@@ -5626,6 +5626,28 @@
       "inherit": "Eredita",
       "billableOption": "Fatturabile",
       "nonBillableOption": "Non fatturabile"
+    },
+    "approval": {
+      "title": "Approvazione del lavoro da parte del cliente",
+      "description": "Sovrascrive il valore predefinito del partner per questa organizzazione. Scegli Eredita per usare quello del partner.",
+      "enabled": "Richiedi l’approvazione del cliente",
+      "budgetTrigger": "Chiedi quando il budget di un ticket verrebbe superato",
+      "afterHoursTrigger": "Chiedi per il lavoro fuori orario",
+      "enforcement": "Applicazione",
+      "enforcementSoft": "Morbida (avvisa, consenti la registrazione)",
+      "enforcementHard": "Rigida (blocca fino all’approvazione)",
+      "ttl": "La richiesta di approvazione scade dopo (ore)",
+      "ttlRange": "La scadenza deve essere compresa tra {{min}} e {{max}} ore",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "inherit": "Eredita",
+      "inheritValue": "Eredita ({{value}})",
+      "clear": "Rimuovi la sovrascrittura (eredita)",
+      "pendingInherit": "Dopo il salvataggio erediterà il valore predefinito",
+      "loadFailed": "Impossibile caricare le impostazioni di approvazione del cliente.",
+      "sourceOrg": "Sovrascrittura dell’organizzazione",
+      "sourcePartner": "Predefinito del partner",
+      "sourceDefault": "Predefinito integrato"
     }
   },
   "organizationForm": {
@@ -6332,7 +6354,26 @@
     "locationEnabledLabel": "Suggerisci un timer quando un tecnico arriva presso la sede di un cliente",
     "locationHelp": "Ogni tecnico deve inoltre consentire la posizione sul proprio telefono. La posizione viene verificata sul telefono e non viene mai inviata a Breeze.",
     "radiusLabel": "Raggio di arrivo predefinito (m)",
-    "radiusRange": "Il raggio di arrivo deve essere compreso tra {{min}} e {{max}} metri"
+    "radiusRange": "Il raggio di arrivo deve essere compreso tra {{min}} e {{max}} metri",
+    "approval": {
+      "heading": "Approvazione del lavoro da parte del cliente",
+      "description": "Chiedi al cliente di approvare il lavoro prima che venga registrato sul suo budget o fuori dall’orario di lavoro. È il valore predefinito del partner; le organizzazioni possono sovrascriverlo.",
+      "enabledLabel": "Richiedi l’approvazione del cliente per il lavoro",
+      "budgetTriggerLabel": "Chiedi quando il budget di un ticket verrebbe superato",
+      "afterHoursTriggerLabel": "Chiedi per il lavoro fuori orario",
+      "enforcementLabel": "Applicazione",
+      "enforcementSoft": "Morbida (avvisa, consenti la registrazione)",
+      "enforcementHard": "Rigida (blocca fino all’approvazione)",
+      "ttlLabel": "La richiesta di approvazione scade dopo (ore)",
+      "ttlRange": "La scadenza deve essere compresa tra {{min}} e {{max}} ore",
+      "readOnly": "Per modificare questa policy servono i diritti di configurazione a livello di partner. Vengono mostrati i valori attuali.",
+      "loadFailed": "Impossibile caricare le impostazioni di approvazione del cliente.",
+      "source": {
+        "org": "Organizzazione",
+        "partner": "Partner",
+        "default": "Predefinito"
+      }
+    }
   },
   "contactsCard": {
     "title": "Contatti",
@@ -6615,7 +6656,8 @@
     "nameTaken": "Esiste già un tipo di lavoro con questo nome.",
     "rename": "Rinomina",
     "loadError": "Impossibile caricare i tipi di lavoro.",
-    "empty": "Non ci sono ancora tipi di lavoro. Aggiungi il primo qui sopra."
+    "empty": "Non ci sono ancora tipi di lavoro. Aggiungi il primo qui sopra.",
+    "afterHours": "Fuori orario (richiede l’approvazione del cliente se attivo)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo di lavoro predefinito",

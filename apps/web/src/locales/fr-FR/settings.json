@@ -5578,6 +5578,28 @@
       "inherit": "Héritage",
       "billableOption": "Facturable",
       "nonBillableOption": "Non facturable"
+    },
+    "approval": {
+      "title": "Validation du travail par le client",
+      "description": "Remplace la valeur par défaut du partenaire pour cette organisation. Choisissez Hériter pour utiliser celle du partenaire.",
+      "enabled": "Exiger la validation du client",
+      "budgetTrigger": "Demander lorsque le budget d’un ticket serait dépassé",
+      "afterHoursTrigger": "Demander pour le travail hors heures ouvrées",
+      "enforcement": "Application",
+      "enforcementSoft": "Souple (avertir, autoriser la saisie)",
+      "enforcementHard": "Stricte (bloquer jusqu’à la validation)",
+      "ttl": "La demande de validation expire après (heures)",
+      "ttlRange": "L’expiration doit être comprise entre {{min}} et {{max}} heures",
+      "on": "Activé",
+      "off": "Désactivé",
+      "inherit": "Hériter",
+      "inheritValue": "Hériter ({{value}})",
+      "clear": "Supprimer le remplacement (hériter)",
+      "pendingInherit": "Héritera de la valeur par défaut après l’enregistrement",
+      "loadFailed": "Impossible de charger les paramètres de validation client.",
+      "sourceOrg": "Remplacement de l’organisation",
+      "sourcePartner": "Valeur par défaut du partenaire",
+      "sourceDefault": "Valeur par défaut intégrée"
     }
   },
   "organizationForm": {
@@ -6332,7 +6354,26 @@
     "locationEnabledLabel": "Suggérer un minuteur lorsqu’un technicien arrive sur le site d’un client",
     "locationHelp": "Chaque technicien doit également autoriser la localisation sur son téléphone. La position est vérifiée sur le téléphone et n’est jamais envoyée à Breeze.",
     "radiusLabel": "Rayon d’arrivée par défaut (m)",
-    "radiusRange": "Le rayon d’arrivée doit être compris entre {{min}} et {{max}} mètres"
+    "radiusRange": "Le rayon d’arrivée doit être compris entre {{min}} et {{max}} mètres",
+    "approval": {
+      "heading": "Validation du travail par le client",
+      "description": "Demander au client de valider le travail avant qu’il soit imputé à son budget ou réalisé hors des heures ouvrées. Il s’agit de la valeur par défaut du partenaire ; les organisations peuvent la remplacer.",
+      "enabledLabel": "Exiger la validation du client pour le travail",
+      "budgetTriggerLabel": "Demander lorsque le budget d’un ticket serait dépassé",
+      "afterHoursTriggerLabel": "Demander pour le travail hors heures ouvrées",
+      "enforcementLabel": "Application",
+      "enforcementSoft": "Souple (avertir, autoriser la saisie)",
+      "enforcementHard": "Stricte (bloquer jusqu’à la validation)",
+      "ttlLabel": "La demande de validation expire après (heures)",
+      "ttlRange": "L’expiration doit être comprise entre {{min}} et {{max}} heures",
+      "readOnly": "Vous avez besoin de droits de paramétrage à l’échelle du partenaire pour modifier cette politique. Les valeurs actuelles sont affichées.",
+      "loadFailed": "Impossible de charger les paramètres de validation client.",
+      "source": {
+        "org": "Organisation",
+        "partner": "Partenaire",
+        "default": "Par défaut"
+      }
+    }
   },
   "contactsCard": {
     "title": "Contacts",
@@ -6615,7 +6656,8 @@
     "nameTaken": "Un type de travail portant ce nom existe déjà.",
     "rename": "Renommer",
     "loadError": "Impossible de charger les types de travail.",
-    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus."
+    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus.",
+    "afterHours": "Hors heures ouvrées (exige la validation du client lorsque activé)"
   },
   "ticketCategories": {
     "defaultWorkType": "Type de travail par défaut",
