@@ -18,7 +18,7 @@
 - "Sustained failure" = **30 minutes** of continuous failing beats, measured on the **server receive clock**. Any non-failing beat resets the episode; an `invalid` beat is neither and changes nothing.
 - No device-list pill. One line on device detail, only when `failing`.
 - Hand-written migration only (never `drizzle-kit generate/push`); slot `2026-12-23-200000-device-log-shipping-health.sql` (re-check, see W1 Task 1). Idempotent, no inner `BEGIN/COMMIT`, nullable ADD COLUMN only, never edit a shipped migration.
-- Every new en locale key goes into all 7 locales (`apps/web/src/lib/i18n`, `localeParity`).
+- Every new en locale key goes into all 8 supported locales (`SUPPORTED_LOCALES`, `packages/shared/src/utils/locale.ts:5`; files `apps/web/src/locales/<locale>/devices.json`; `localeParity` in `src/lib/i18n`).
 - Test commands: `cd apps/api && npx vitest run <files>` / `cd apps/web && npx vitest run <files>` (no `--` before flags); `cd agent && go test -race ./internal/<pkg>/...`.
 - Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p .` (same in `apps/web`); check the exit code, never pipe to `tail`.
 - Waves are **sequential PRs off `main`**. Stacked PRs (base ≠ main) get no CI (`ci.yml` triggers only on PRs to main); if one is ever stacked, run `gh workflow run CI --ref <branch>`.
@@ -26,7 +26,7 @@
 
 ## Review Focus
 
-1. **Offline device with a stale failing episode** shows nothing and, on return, does not claim "failing since" a time before the outage (offline gap resets the episode).
+1. **Offline device** shows nothing while not `online`. Known limit (see Open Decision 6): the WS handshake and other writers set `online` before the first beat, so no server-side status/`lastSeenAt` rule can reliably detect an outage gap; an episode that spans an outage is reported from the first failing beat observed. Mitigated by the agent-side expiry below, so a device that stops attempting during an outage reads quiet, not failing.
 2. **Old agent after a new agent (downgrade)** stops sending `logShipping`; stored state returns to unknown instead of freezing at `failing`.
 3. **Malformed `logShipping`** (wrong types, huge `lastError`, negative ints, unknown keys) must never reject the heartbeat: wire field is `z.unknown()`, strict-parsed separately; a bad value is `invalid` (no state change), never coerced to a healthy zero.
 4. **Quiet agent** (warn+ only, no attempts) must read healthy/quiet, never failing and never "silent".
@@ -49,7 +49,7 @@
 | Agent-health summary precedent | `GET /devices/stats` returns `migrationRequiredCount` via `count(*) filter (...)` in `routes/devices/stats.ts:70-92` | confirmed |
 | Filter catalog is mirrored: `services/filterEngine.ts` (server, supports `computed` SQL, e.g. `daysSinceLastSeen`) and `apps/web/src/components/filters/filterFields.ts` | | confirmed |
 | Level raise is `handleSetLogLevel` in `agent/internal/heartbeat/handlers_logship.go` (stored command type `set_log_level`); API-side tool in `services/aiToolsAgentLogs.ts` | | confirmed. Raise outcome is in `device_commands.result` (`result.stdout` JSON: `appliedLevel`, `expiresAt`) |
-| `devices.last_log_at` is throttled to ≥5 min drift | `routes/agents/logs.ts:58-62` | confirmed. Not usable for a 5-min check (Review Focus 7) |
+| `devices.last_log_at` is throttled to ≥5 min drift | `routes/agents/logs.ts:58-64` | confirmed. Not usable for a 5-min check (Review Focus 7) |
 | `agent_logs` has `agent_logs_device_created_at_idx (device_id, created_at desc, id desc)` | `db/schema/agentLogs.ts:27` | confirmed. Supports the exact on-demand check |
 | Newest committed migration is `2026-12-23-100000-tier1-sweep-indexes.sql`; open PRs hold `...-110000` to `...-190000` | `git ls-tree origin/main apps/api/migrations/` | re-check at implementation time |
 | `handlers_logship.go` and `heartbeat.go` `compiledSecurityCapabilities()` (`:8152`) exist; precedent tests `*_capability_test.go` | `agent/internal/heartbeat/` | confirmed |
@@ -109,7 +109,7 @@ The beat's `UPDATE devices` already runs every beat. The new code adds keys to `
 - `ok|quiet ↔ failing` (sets/clears `failure_started_at`);
 - `lastError` change while failing.
 
-Steady-state healthy/quiet/unknown beats add **zero keys and zero statements**. Steady-state failing beats add zero unless `lastError` changed (sanitizer collapses to a closed set of short messages so it rarely flaps). Offline rule: if the loaded `device.status !== 'online'` (also true for maintenance/updating/pending, which restart the episode too: intended; the liveness sweep flips it after ~5 min of silence, `services/deviceLiveness.ts`) and the beat is failing, set `failure_started_at = now` (restart the episode), so "sustained" means continuously observed. A `lastSeenAt` gap is deliberately **not** used: WebSocket connects and other writers also bump `lastSeenAt` (`routes/agentWs.ts`), masking real gaps (Codex review).
+Steady-state healthy/quiet/unknown beats add **zero keys and zero statements**. Steady-state failing beats add zero unless `lastError` changed (sanitizer collapses to a closed set of short messages so it rarely flaps). There is deliberately **no server-side offline-gap rule**: `devices.status` and `lastSeenAt` are also written by the WebSocket handshake, desktop/terminal WS and mTLS paths (`routes/agentWs.ts:1267,2828`, `desktopWs.ts:709`, `terminalWs.ts:572`, `agents/mtls.ts:1545`) before the first post-outage beat, so neither can prove a gap. Continuity instead comes from the agent: it reports `lastAttemptOk`/`lastError` only while its last completed attempt is younger than 10 minutes on its own monotonic clock; older → fields omitted → `quiet` → the episode clears. Without that expiry one failed send from a warn-only agent would stay `lastAttemptOk:false` forever (the shipper only sends when it has entries, `shipper.go:441-446`).
 
 ### Compat matrix
 
@@ -131,7 +131,7 @@ Presence of the `logShipping` object **is** the feature-detect. No `securityCapa
 | Wave | Ships | Leaves behind if the next never ships | Test jobs that matter |
 |---|---|---|---|
 | **W1** API schema, storage, derivation | migration, schema, zod, classifier, heartbeat persistence, `logShipping` on device GET/list, export-policy classification | Columns + derived field exist, always `unknown`. Harmless, dormant. | Test API, **Integration Tests** (export policy) |
-| **W2** Web device-detail line | DeviceInfoTab line + 7 locales | Line never renders (no data). Harmless. | Test Web |
+| **W2** Web device-detail line | DeviceInfoTab line + 8 locales | Line never renders (no data). Harmless. | Test Web |
 | **W3** Agent payload | shipper counters, `logShipping` in heartbeat | Fleet starts reporting; failing devices get the W2 line. **Feature is user-visible here.** Fully useful without W4+. | Test Agent (`-race`) |
 | **W4** Fleet filter + count | `filterEngine` + web catalog field, `/devices/stats` count, saved view preset | Detail line only; no fleet view. | Test API, Test Web |
 | **W5** "Logs not arriving" | read-time check after a level raise (canary line ships in W3) | Raise works as today; no warning. | Test API, Test Web |
@@ -149,12 +149,12 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 - Create: `apps/api/migrations/2026-12-23-200000-device-log-shipping-health.sql`
 - Modify: `apps/api/src/db/schema/devices.ts` (next to `helperInstallIssueSince`, `:341`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (the `devices` entry, line ~410)
-- Test: `apps/api/src/__tests__/integration/tenant-export-policy.integration.test.ts` (reads the live DB columns, so it is the real red/green and runs only under **Integration Tests**) plus an explicit assertion added to a new `apps/api/src/services/tenantExportPolicyRegistry.logShipping.test.ts` (file does not exist today) asserting the three columns have the stated classifications; migration lint in `apps/api/src/db/migrationRlsScope.test.ts`
+- Test: `apps/api/src/__tests__/integration/tenant-export-policy.integration.test.ts` (reads the live DB columns, so it is the real red/green and runs only under **Integration Tests**) plus an explicit assertion added to a new `apps/api/src/services/tenantExportPolicyRegistry.logShipping.test.ts` (create it; follow the `tenantExportPolicyRegistry.<topic>.test.ts` naming of its siblings) asserting the three columns have the stated classifications; migration lint in `apps/api/src/db/migrationRlsScope.test.ts`
 
 **Interfaces:**
 - Produces: `devices.logShippingState: 'ok'|'quiet'|'failing'|null`, `devices.logShippingFailureStartedAt: Date|null`, `devices.logShippingLastError: string|null`.
 
-- [ ] **Step 1: Re-check the slot.** `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -5`. If anything ≥ `2026-12-23-200000` is committed, move up. Read `apps/api/migrations/README.md` (it governs `CREATE INDEX` on a hot table; follow its CONCURRENTLY/size rule exactly).
+- [ ] **Step 1: Re-check the slot.** `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -5`. If anything ≥ `2026-12-23-200000` is committed, move up. Read `apps/api/migrations/README.md` (`-- @no-transaction` is required for `CREATE INDEX CONCURRENTLY`, `:68`). Decide and state in the PR whether the plain partial-index build on `devices` is acceptable at current table size; the partial index is empty at creation so the build is a single scan.
 - [ ] **Step 2: Red first.** Write the classification assertions in the new unit test (`devices` policy: `log_shipping_state`/`log_shipping_failure_started_at` included, `log_shipping_last_error` excludedSensitive) and watch them FAIL. Then add the Drizzle columns (Step 3) and run `pnpm db:check-drift` BEFORE the SQL file exists: expected FAIL (schema declares columns no migration creates). The unclassified-column failure itself only appears in the integration suite (`pnpm test-stack up`).
   ```bash
   export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"; pnpm db:check-drift
@@ -169,8 +169,12 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 - [ ] **Step 4: Migration.**
   ```sql
   -- #8406 W1: log-shipping health reported in the heartbeat. Nullable adds only (no table rewrite).
-  ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_shipping_state varchar(16)
-    CHECK (log_shipping_state IN ('ok','quiet','failing'));
+  ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_shipping_state varchar(16);
+  -- NOT VALID: no table scan under ACCESS EXCLUSIVE (all existing rows are NULL anyway); the #6925 precedent kept the ALTER metadata-only.
+  DO $$ BEGIN
+    ALTER TABLE devices ADD CONSTRAINT devices_log_shipping_state_chk
+      CHECK (log_shipping_state IN ('ok','quiet','failing')) NOT VALID;
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_shipping_failure_started_at timestamptz;
   ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_shipping_last_error varchar(200);
   CREATE INDEX IF NOT EXISTS devices_log_shipping_failing_idx
@@ -207,7 +211,7 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 
 - [ ] **Step 1: Write failing tests** (`logShippingHealth.test.ts`), one `it` each:
   - classify: no completed attempt + zero queue → `quiet`; `lastAttemptOk:true` → `ok`; `lastAttemptOk:false` → `failing` (including `lastSuccessAt` absent, or equal to/after `lastAttemptAt`: timestamps are never compared); `droppedLogs: 3` with `lastAttemptOk:true` → `failing`; `queueDepth: 400` → `failing`, `399` → `ok`.
-  - plan: first report on NULL device → sets state only; `ok→ok` → `{}`; `ok→failing` → sets state + `failureStartedAt = now` + `lastError`; `failing→failing` same error → `{}`; `failing→failing` new error → only `lastError`; `failing→ok` → clears started_at and error; `absent` on a reporting device → all three `null`; `absent` on a NULL device → `{}`; **`invalid` on a failing device → `{}` (no change; a malformed report neither clears nor extends an episode)**; failing beat with loaded `status:'offline'` → `failureStartedAt` restarts to `now`; with `status:'online'` → started_at kept; success→failure inside one second (equal timestamps) still classifies `failing` via `lastAttemptOk:false`.
+  - plan: first report on NULL device → sets state only; `ok→ok` → `{}`; `ok→failing` → sets state + `failureStartedAt = now` + `lastError`; `failing→failing` same error → `{}`; `failing→failing` new error → only `lastError`; `failing→ok` → clears started_at and error; `absent` on a reporting device → all three `null`; `absent` on a NULL device → `{}`; **`invalid` on a failing device → `{}` (no change; a malformed report neither clears nor extends an episode)**; success→failure inside one second (equal timestamps) still classifies `failing` via `lastAttemptOk:false`.
   - derive: the full table above, incl. offline-with-failing → `unknown`, 29m59s → `healthy`, 30m00s → `failing`, `lastError` returned only when `failing`.
   - `lastError` longer than 200 chars is truncated by `planLogShippingWrite` (defence in depth; zod also caps).
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/services/logShippingHealth.test.ts` → FAIL (module missing).
@@ -233,7 +237,6 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
   4. device `ok`, failing report → state, `failureStartedAt`, `lastError` set; **exactly one** `db.update(devices)` call for the beat (no second statement).
   5. device `failing`, field omitted → all three `null`.
   6. malformed `logShipping` (string) on a `failing` device → 200 and no keys (state and `failureStartedAt` untouched).
-  7. device `status:'offline'`, failing report → `failureStartedAt` restarts.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/agents/heartbeat.logShipping.test.ts` → FAIL.
 - [ ] **Step 3: Implement.**
   ```ts
@@ -243,7 +246,7 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 - [ ] **Step 4: Read exposure.** Add the three columns to the device detail/list selects and attach `logShipping: deriveLogShipping(row, new Date())`; do **not** add the raw `logShippingLastError`/`logShippingState` columns to `PUBLIC_DEVICE_FIELDS` in `helpers.ts:31-44` (raw error must only surface through the derived `logShipping` object, only while `failing`); add the new keys to whatever the helper's `satisfies` check requires and assert the raw keys are absent from the response. Update `core.list-response-shape.test.ts` expected keys (red first).
 - [ ] **Step 5:** `npx vitest run src/routes/agents/heartbeat.logShipping.test.ts src/routes/devices/core.list-response-shape.test.ts src/services/logShippingHealth.test.ts`; typecheck (exit code). Commit.
 
-**W1 gate before PR:** typecheck API; full `cd apps/api && npx vitest run` for touched dirs; `pnpm db:check-drift`; Integration Tests locally for `tenantExportPolicy` (see Task 1 Step 7); PR via `Closes`-free body referencing the wave sub-issue per feature-lifecycle (orchestrator provides the number).
+**W1 gate before PR:** typecheck API; full `cd apps/api && npx vitest run` for touched dirs; `pnpm db:check-drift`; Integration Tests locally for `tenantExportPolicy` (see Task 1 Step 7); wave PR body carries `Closes #<wave sub-issue>` per feature-lifecycle (orchestrator provides the number); it never carries a closing keyword for parent #8406.
 
 ---
 
@@ -253,7 +256,7 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 
 **Files:**
 - Modify: `apps/web/src/components/devices/DeviceInfoTab.tsx` (next to the helper-issue block, `:1143`; extend `DeviceInfo` type near `:85`)
-- Modify: `apps/web/src/lib/i18n/**` all 7 locales (key `deviceInfoTab.logShippingFailing`)
+- Modify: `apps/web/src/lib/i18n/**` all 8 locales (key `deviceInfoTab.logShippingFailing`)
 - Test: `apps/web/src/components/devices/DeviceInfoTab.test.tsx`
 
 **Interfaces:**
@@ -261,7 +264,7 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
 
 - [ ] **Step 1: Failing tests:** renders `Log shipping failing since <date>: http 503` (via `data-testid="log-shipping-failing"`) when `state==='failing'`; renders nothing for `unknown|healthy|quiet`, for `logShipping` undefined (old API), and when `failingSince` is null; `lastError` null → line without the colon suffix; assert **no** log-shipping text in `DeviceList` row render (no pill).
 - [ ] **Step 2:** `cd apps/web && npx vitest run src/components/devices/DeviceInfoTab.test.tsx` → FAIL.
-- [ ] **Step 3: Implement** the line (plain text row in the Agent section, no mutation so no `runAction`, no hash state). Add the key to all 7 locales (en + 6; run `npx vitest run src/lib/i18n` for `localeParity`).
+- [ ] **Step 3: Implement** the line (plain text row in the Agent section, no mutation so no `runAction`, no hash state). Add the key to all 8 locales (`apps/web/src/locales/<locale>/devices.json`; run `npx vitest run src/lib/i18n` for `localeParity`).
 - [ ] **Step 4:** green + web typecheck (exit code). Commit.
 
 ---
@@ -292,7 +295,7 @@ Cut changes vs the suggested split, with reason: (a) the fleet filter is its own
   func sanitizeShipError(err error, status int) string
   ```
 
-- [ ] **Step 1: Failing tests** (`shipper_health_test.go`, `-race`): (a) success against an `httptest` server sets `LastAttemptAt`/`LastSuccessAt`, `LastAttemptOk=true`, empty `LastError`; (a2) snapshot taken while a request is blocked in-flight still reports the prior outcome; (a3) success then failure inside one second ends `LastAttemptOk=false`; (b) 503 ×3 (the 1 + 2 retries) sets attempt, leaves success zero, `LastAttemptOk=false`, `LastError == "http 503"`; (c) network error with a URL, IP and path in the message → sanitized string contains none of them (`https://`, digits-dot patterns, `/`, `\`, `Bearer`) and is ≤160 bytes; (d) `HealthSnapshot` under 8 concurrent goroutines calling `Enqueue` plus `shipChunk` passes `go test -race`; (e) a benchmark `BenchmarkEnqueue` shows no regression vs `main` (record both numbers in the PR; no lock added to `Enqueue`); (f) `QueueDepth == len(buffer) + pendingBatch`, where `pendingBatch` is an `atomic.Int32` the ship loop sets to the in-hand batch size while `shipBatch` runs and zeroes after (the loop drains the channel into a local slice, so `len(buffer)` alone reads ~0 during an outage; Codex/comment review).
+- [ ] **Step 1: Failing tests** (`shipper_health_test.go`, `-race`): (a) success against an `httptest` server sets `LastAttemptAt`/`LastSuccessAt`, `LastAttemptOk=true`, empty `LastError`; (a2) snapshot taken while a request is blocked in-flight still reports the prior outcome; (a3) success then failure inside one second ends `LastAttemptOk=false`; (a4) **expiry:** a failed attempt older than 10 min (fake clock) is reported with `LastAttemptOk=nil`, empty `LastError`; (b) 503 ×3 (the 1 + 2 retries) sets attempt, leaves success zero, `LastAttemptOk=false`, `LastError == "http 503"`; (c) network error with a URL, IP and path in the message → sanitized string contains none of them (`https://`, digits-dot patterns, `/`, `\`, `Bearer`) and is ≤160 bytes; (d) `HealthSnapshot` under 8 concurrent goroutines calling `Enqueue` plus `shipChunk` passes `go test -race`; (e) a benchmark `BenchmarkEnqueue` shows no regression vs `main` (record both numbers in the PR; no lock added to `Enqueue`); (f) `QueueDepth == len(buffer) + pendingBatch`, where `pendingBatch` is an `atomic.Int32` the ship loop sets to the in-hand batch size while `shipBatch` runs and zeroes after (the loop drains the channel into a local slice, so `len(buffer)` alone reads ~0 during an outage; Codex/comment review).
 - [ ] **Step 2:** `cd agent && go test -race ./internal/logging/...` → FAIL.
 - [ ] **Step 3: Implement.** `lastAttemptUnixNano`, `lastSuccessUnixNano atomic.Int64`; `lastErr atomic.Pointer[string]`. Update only in `shipChunk` (≤ once per HTTP attempt, never in `Enqueue`): record **one terminal outcome per chunk**, after retries are exhausted (never per retry, never before `Do`, so a transient 503 that succeeds on retry never reads as failed): success → `ok`; exhausted network/429/5xx, 401, chunk-local 4xx, `resolveServerURL` failure, and marshal/gzip/request-build failures (these drop entries without a request) → `failed` with the matching sanitizer message. State is held in a single `atomic.Pointer[attemptRecord]` (immutable struct: time, ok, lastSuccessAt, err) so a snapshot can never tear (ok=true with a stale error). Store on 2xx also store the success time and clear the error; on each terminal failure site store `sanitizeShipError`. Nothing is recorded for an in-flight request, so a heartbeat landing mid-request reports the previous completed outcome. Sanitizer maps to a closed vocabulary: `http <status>`, `timeout`, `dns`, `connection refused`, `tls`, `auth rejected` (401), `url unresolved`, `other`; **never** embeds the raw `err.Error()`. No new goroutine, no mutex.
 - [ ] **Step 4:** `go test -race ./internal/logging/...` PASS; `go vet ./...`. Commit.
@@ -324,12 +327,12 @@ Helper processes run their own shippers; only the main agent's shipper is report
 
 **Files:**
 - Modify: `apps/api/src/services/filterEngine.ts` (new computed field `logShippingFailing`, boolean-like enum `yes`/`no`; SQL: `status = 'online' AND log_shipping_failure_started_at IS NOT NULL AND log_shipping_failure_started_at <= NOW() - interval '30 minutes' AND log_shipping_state = 'failing'`)
-- Modify: `apps/web/src/components/filters/filterFields.ts` (mirror entry) and locale keys (7)
+- Modify: `apps/web/src/components/filters/filterFields.ts` (mirror entry) and locale keys (8)
 - Modify: `apps/api/src/routes/devices/stats.ts` (`logShippingFailingCount` with `count(*) filter (...)`, same predicate)
 - Modify: `apps/web/src/components/devices/DevicesPage.tsx` / saved-view preset list (search `SavedViewsMenu.tsx` for how presets are declared)
 - Test: `apps/api/src/services/filterEngine.test.ts`, `apps/api/src/routes/devices/stats.test.ts`, `apps/web/src/components/devices/DevicesPage.test.tsx`
 
-- [ ] **Step 1: Failing tests:** filter engine emits the predicate and uses the partial index (assert the SQL string contains `log_shipping_failure_started_at IS NOT NULL`); a parity test that the server and web catalogs both list the field (existing parity test, extend); stats returns `logShippingFailingCount` and excludes offline and sustained-`<30m` devices; web preset applies the filter via URL/hash state (hash, not query params, for transient UI state; follow `filterUrl.ts` for the persisted filter).
+- [ ] **Step 1: Failing tests:** filter engine emits the predicate and uses the partial index (assert the SQL string contains `log_shipping_failure_started_at IS NOT NULL`); a new parity test that the server and web catalogs both list the field (none exists today; only the customFields tests touch the catalogs); stats returns `logShippingFailingCount` and excludes offline and sustained-`<30m` devices; web preset applies the filter via URL/hash state (hash, not query params, for transient UI state; follow `filterUrl.ts` for the persisted filter).
 - [ ] **Step 2–4:** red, implement, green; `EXPLAIN` the predicate once on a populated stack and paste the plan into the PR (index must be used). Commit.
 - Classify `logShippingFailing` in `filterEngine.ts` next to `SERVER_CONTROLLED_FILTER_FIELDS` / `EXECUTION_REFUSED_AGENT_FIELDS` (`:221`, `:238`): it derives from agent-reported data, so it must be refused as a script/automation targeting field (red test: targeting by it is rejected). Computed boolean-like enum support in `getColumnForField` (`:399`, today numeric-only) is part of the task; add the test for the `yes`/`no` operators first.
 - **Note:** the SQL predicate duplicates `deriveLogShipping`; both import `LOG_SHIPPING_SUSTAINED_MS` and the filter test asserts they agree on a table of rows (Task 2's derive table reused).
@@ -342,13 +345,13 @@ Helper processes run their own shippers; only the main agent's shipper is report
 
 **Files:**
 - Create: `apps/api/src/services/logsNotArriving.ts` (+ `.test.ts`)
-- Modify: the device detail route in `routes/devices/core.ts` to attach `logsNotArriving: { since: string } | null`; `DeviceInfoTab.tsx` renders a second conditional line; 7 locales
+- Modify: the device detail route in `routes/devices/core.ts` to attach `logsNotArriving: { since: string } | null`; `DeviceInfoTab.tsx` renders a second conditional line; 8 locales
 - Test: service test, route test, `DeviceInfoTab.test.tsx`
 
 **Interfaces:**
 - Produces: `async function logsNotArriving(deviceId: string, now: Date): Promise<{ raisedAt: string } | null>`.
 
-- [ ] **Step 1: Failing tests:** (extra negatives: raise to `warn`/`error` → null; agent never reported `logShipping` → null; pre-#7416 result without `expiresAt` → null) returns non-null when the latest completed `device_commands` row for the device has `type = 'set_log_level'` (the stored type; `set_agent_log_level` is only the AI-tool name, `services/aiToolsAgentLogs.ts:355`), its `result.stdout` JSON (parse with the helper in `services/storedCommandResult.ts`, as `aiToolsAgentLogs.ts:53-73` does) has `appliedLevel` ∈ {`debug`,`info`} and `expiresAt > now`, `completedAt <= now - 5 min`, the device's stored `log_shipping_state` is non-NULL (agent has the W3 canary; old agents never warn), and **no `agent_logs` row with `created_at >= command.created_at`** (the command's creation/claim time, not `completedAt`: the canary ships before the API records completion, so comparing against `completedAt` would miss it and false-alarm; the 5-min wait still runs from `completedAt`) for the device; null when any such row exists, when the override expired, when the command failed, or when no command exists. Includes the throttle regression (Review Focus 7): `devices.last_log_at` older than `completedAt` but a fresh `agent_logs` row exists → null.
+- [ ] **Step 1: Failing tests:** (extra negatives: raise to `warn`/`error` → null; agent never reported `logShipping` → null; pre-#7416 result without `expiresAt` → null) returns non-null when the latest completed `device_commands` row for the device has `type = 'set_log_level'` (the stored type; `set_agent_log_level` is only the AI-tool name, `services/aiToolsAgentLogs.ts:355`), its `result.stdout` JSON (parse inline with `JSON.parse(result.stdout || '{}')` exactly as `aiToolsAgentLogs.ts:53-73` does; `storedCommandResult.ts` only builds results) has `appliedLevel` ∈ {`debug`,`info`} and `expiresAt > now`, `completedAt <= now - 5 min`, the device's stored `log_shipping_state` is non-NULL (agent has the W3 canary; old agents never warn), and **no `agent_logs` row with `created_at >= command.created_at`** (the command's creation/claim time, not `completedAt`: the canary ships before the API records completion, so comparing against `completedAt` would miss it and false-alarm; the 5-min wait still runs from `completedAt`) for the device; null when any such row exists, when the override expired, when the command failed, or when no command exists. Includes the throttle regression (Review Focus 7): `devices.last_log_at` older than `completedAt` but a fresh `agent_logs` row exists → null.
 - [ ] **Step 2–4:** red, implement (one `LIMIT 1` query on `device_commands` by device + type + completion, one `EXISTS` on `agent_logs` using `agent_logs_device_created_at_idx`; executed only on device-detail load and only when an override is active, so no cost on list or heartbeat), green, typecheck. No schema change; relies on the W3 canary line, so it is silent for older agents rather than guessing. Commit.
 
 ---
@@ -379,7 +382,7 @@ Helper processes run their own shippers; only the main agent's shipper is report
 3. **Feature-detect via payload presence vs `securityCapabilities` version.** **Recommend presence** (+ in-object `schemaVersion`): read-only telemetry gates nothing, so a version int is a second source of truth.
 4. **What counts as failing.** Options: (a) last attempt unsuccessful OR `droppedLogs>0` (per-beat delta) OR `queueDepth >= 400` absolute; (b) also queue-growth across beats. **Recommend (a)**: stateless per beat; growth needs previous-beat memory the API deliberately does not keep. Threshold 400 (80% of the 500-entry buffer) and the 30-min window are tunable constants. Dropped-log *delta* (not cumulative) is used because the agent zeroes it after each successful beat.
 5. **`lastError` storage, scrubbing, export.** **Recommend**: agent maps to a closed vocabulary (never raw `err.Error()`), ≤160 chars; API caps at 200; stored as `varchar(200)`; export policy `excludedSensitive` (transient diagnostics, no restore value, can reveal endpoint shape). Alternative: `included`. Unresolved risk accepted: a closed vocabulary loses detail an operator may want; revisit after dogfood.
-6. **Offline devices.** Options: (a) derive `unknown` when status ≠ online and restart the episode when the loaded device status was not `online` (not a `lastSeenAt` gap, which WS writers mask); (b) show last known state. **Recommend (a)**: "failing since" must mean continuously observed; a stale pre-outage episode would mislead.
+6. **Offline devices.** Options: (a) derive `unknown` when status ≠ online, no server-side gap rule, agent expires stale failure after 10 min; (b) show last known state; (c) agent reports its own episode age. **Recommend (a)**: status/`lastSeenAt` cannot prove a gap (WS writers set `online` first); the agent-side expiry is the only reliable continuity signal. Known limit: an episode spanning an outage is reported from the first failing beat; (c) fixes that at the cost of a wider wire shape.
 7. **Does the fleet filter ship with the detail line?** Options: (a) same wave; (b) separate wave after the agent ships. **Recommend (b)**: it edits mirrored server/web filter catalogs and stats (own review surface) and has no data to show until W3.
 8. **Opt-in alert condition now vs deferred.** **Recommend deferred (W6 optional)**: observe real failing rates from the filter first; alert-on-telemetry before tuning risks noisy, always-on alerts.
 9. **Wave cut and ordering.** Options: (a) server-first dormant (W1 → W2 → W3); (b) agent-first. **Recommend (a)** per the issue: the API can be verified with synthetic beats, and shipping the agent first emits telemetry nothing stores. Cost: W1/W2 merge with no visible effect.
