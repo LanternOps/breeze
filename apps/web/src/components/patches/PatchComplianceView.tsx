@@ -380,7 +380,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
       const d = devices.find(dev => dev.id === id);
-      return d && d.approvedMissing > 0;
+      // Failed installs are split out of approvedMissing; they stay selectable
+      // so a failed approved patch can still be retried from here.
+      return d && d.approvedMissing + d.failedMissing > 0;
     });
   }, [selectedIds, devices]);
   const selectedWithPatches = selectedPatchDeviceIds.length;

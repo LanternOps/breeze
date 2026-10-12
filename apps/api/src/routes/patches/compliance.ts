@@ -301,10 +301,13 @@ complianceRoutes.get(
     // approved + unapproved + failed partition missingCount.
     const failedPairs = await loadFailedInstallPairs(deviceIds);
     const isFailedInstall = failedPairs.length > 0
-      ? sql`(${devicePatches.deviceId}, ${devicePatches.patchId}) in (${sql.join(
-          failedPairs.map(p => sql`(${p.deviceId}::uuid, ${p.patchId}::uuid)`),
-          sql`, `
-        )})`
+      // One jsonb bind parameter regardless of pair count (a tuple list costs
+      // 2 binds per pair, which overflows Postgres' 65,535 limit on big fleets).
+      ? sql`(${devicePatches.deviceId}, ${devicePatches.patchId}) in (
+          select fp.d, fp.p
+          from jsonb_to_recordset(${JSON.stringify(failedPairs.map(p => ({ d: p.deviceId, p: p.patchId })))}::jsonb)
+            as fp(d uuid, p uuid)
+        )`
       : sql`false`;
 
     // Per-device patch breakdown for "devices needing patches" table

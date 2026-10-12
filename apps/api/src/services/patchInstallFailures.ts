@@ -47,7 +47,7 @@ export type PatchInstallAttempt = {
   at: Date;
 };
 
-type Scope = { orgId?: string; deviceId?: string };
+type Scope = { orgId?: string; deviceId?: string; deviceIds?: readonly string[] };
 
 /**
  * How far back a per-device `install_patches` command is still read as an
@@ -110,7 +110,7 @@ export async function loadFailedInstallPairs(
     );
   const attempts = await loadLatestAttempts(
     rows.map((r) => r.patchId),
-    {},
+    { deviceIds },
     { allJobAttempts: false },
   );
   const wanted = new Set(deviceIds);
@@ -207,6 +207,7 @@ async function loadJobAttempts(
 ): Promise<PatchInstallAttempt[]> {
   const conditions: SQL[] = [inArray(patchJobResults.patchId, [...patchIds])];
   if (scope.deviceId) conditions.push(eq(patchJobResults.deviceId, scope.deviceId));
+  if (scope.deviceIds) conditions.push(inArray(patchJobResults.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
 
   const latest = db
@@ -287,6 +288,7 @@ async function loadDeviceCommandAttempts(
     or(isNull(deviceCommands.submittedOrgId), eq(deviceCommands.submittedOrgId, devices.orgId))!,
   ];
   if (scope.deviceId) conditions.push(eq(deviceCommands.deviceId, scope.deviceId));
+  if (scope.deviceIds) conditions.push(inArray(deviceCommands.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
 
   const rows = await db
