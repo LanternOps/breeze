@@ -320,6 +320,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const remapCmdCtrl = remapOverride ?? defaultRemapCmdCtrl(VIEWER_OS, remoteOs);
   // Transient toolbar notice for input that could not be delivered.
   const [inputNotice, setInputNotice] = useState<string | null>(null);
+  // Neutral confirmations (screenshot copied/saved); the notices above are errors.
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [inputFocused, setInputFocused] = useState(false);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
@@ -1846,6 +1848,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return () => clearTimeout(timer);
   }, [inputNotice]);
 
+  useEffect(() => {
+    if (!statusNotice) return;
+    const timer = setTimeout(() => setStatusNotice(null), INPUT_NOTICE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [statusNotice]);
+
+  // A block-input failure is shown like any other input notice, and expires.
+  useEffect(() => {
+    if (blockLocalInput.error) setInputNotice(blockLocalInput.error);
+  }, [blockLocalInput.error]);
+
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
     const pending = webrtcMouseMovePendingRef.current;
@@ -2416,6 +2429,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (newEnabled) audioEl.play().catch((err) => {
         console.warn('Failed to play remote audio:', err.message);
         setAudioEnabled(false); // reset UI to reflect actual state
+        // Don't keep restoring an audio the webview refuses to play.
+        rememberDevicePrefs({ audio: false });
       });
     }
     // Tell the agent to start/stop sending audio frames
@@ -2504,7 +2519,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     try {
       await clipboardIO.writeImage(new Uint8Array(await blob.arrayBuffer()), 'png');
-      setPasteNotice('Screenshot copied to the clipboard.');
+      setStatusNotice('Screenshot copied to the clipboard.');
     } catch (err) {
       console.warn('Screenshot copy failed:', err);
       setPasteNotice(screenshotFailureMessage('copy'));
@@ -2522,7 +2537,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     try {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const path = await invoke<string>('save_screenshot', bytes);
-      setPasteNotice(`Screenshot saved to ${path}`);
+      setStatusNotice(`Screenshot saved to ${path}`);
     } catch (err) {
       console.warn('Screenshot save failed:', err);
       setPasteNotice(screenshotFailureMessage('save'));
@@ -2661,7 +2676,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         maxFps={maxFps}
         bitrate={bitrate}
         pasteProgress={pasteProgress}
-        pasteNotice={pasteNotice ?? inputNotice ?? blockLocalInput.error}
+        pasteNotice={pasteNotice ?? inputNotice}
+        statusNotice={statusNotice}
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}

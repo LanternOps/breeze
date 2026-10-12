@@ -38,6 +38,8 @@ interface Props {
    * agent dropped — see pasteFailureMessage in lib/pasteText.ts.
    */
   pasteNotice: string | null;
+  /** A neutral confirmation (e.g. screenshot saved); shown when no error notice is. */
+  statusNotice?: string | null;
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
@@ -217,6 +219,7 @@ export default function ViewerToolbar({
   onViewScalingChange,
   blockLocalInput,
   onToggleBlockLocalInput,
+  statusNotice = null,
   statsOverlay = false,
   onStatsOverlayChange,
   onCopyScreenshot,
@@ -698,6 +701,11 @@ export default function ViewerToolbar({
       {pasteNotice && (
         <span className="text-xs text-red-400 max-w-xs truncate" title={pasteNotice}>
           {pasteNotice}
+        </span>
+      )}
+      {!pasteNotice && statusNotice && (
+        <span role="status" className="text-xs text-gray-300 max-w-xs truncate" title={statusNotice}>
+          {statusNotice}
         </span>
       )}
 
