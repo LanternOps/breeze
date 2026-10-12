@@ -167,7 +167,15 @@ describe('metric anomalies service', () => {
     expect(executedSql).toContain('network_egress');
     expect(executedSql).toContain('memory_growth');
 
+    // US prod 2026-10-12: the open-episode exclusion set must be bounded to
+    // the buckets the baseline can actually reach, or stale open rows (860 on
+    // one org, three weeks old) ride along into every tick's join.
+    const baselineStatementSql = detectorStatements()[0] ?? '';
+    expect(baselineStatementSql).toContain('ma.window_start >=');
+    expect(baselineStatementSql).toContain('2026-06-18T12:00:00.000Z');
+
     const processStatementSql = detectorStatements()[2] ?? '';
+    expect(processStatementSql).toContain('ma.window_start >=');
     expect(processStatementSql).toContain("mr.source_table = 'device_process_samples'");
     expect(processStatementSql).toContain('top_process_cpu_percent_sum');
     expect(processStatementSql).toContain('top_process_cpu_percent_max');
