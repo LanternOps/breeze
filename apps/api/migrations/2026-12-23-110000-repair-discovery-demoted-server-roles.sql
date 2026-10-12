@@ -16,24 +16,31 @@
 -- device that is a server only by those is ambiguous here and is left alone.
 -- A technician's ('manual') or Fleet Design ('ai') role is never touched: the
 -- predicate admits only source 'discovery'. Nothing is inferred from discovery.
+-- A row that discovery already set to 'server' is included too: its role is
+-- right, but while the source is 'discovery' the next scan may still demote
+-- it (#8034 lets discovery overwrite its own writes), so its source is fixed.
 --
 -- WHAT CHANGES. Both columns: device_role = 'server' and
 -- device_role_source = 'auto'. Leaving the source as 'discovery' would let the
 -- next scan demote the device again; 'auto' + a real role is exactly what
--- #8034's allowlist protects, and it hands the role back to the heartbeat.
+-- #8034's allowlist protects, and it returns the row to agent-owned tracking:
+-- later agent-reported role changes apply again, subject to the heartbeat's
+-- privileged-flip guard. (That guard is also why the heartbeat could not have
+-- restored 'server' by itself even with the source reset.)
 -- Each repaired device gets one audit_logs row (action device.role.repaired,
 -- details.source = 'repair-7971', old role -> new role) in this transaction.
 --
--- WHY A MIGRATION. The production API image ships dist/ and migrations/ only
--- (docker/Dockerfile.api), so a one-off script would never reach Docker or
--- self-hosted installs, which is where this bug was reported.
+-- WHY A MIGRATION. The production API image (docker/Dockerfile.api) ships the
+-- compiled dist/ and migrations/, not src/ or scripts/, so a one-off script
+-- would never reach Docker or self-hosted installs, which is where this bug
+-- was reported.
 --
 -- Role-filtered configuration policies resolve device_role at read time, so
 -- they pick the device back up immediately. Materialized dynamic-group
 -- membership refreshes on the device's next filterable change (e.g. the
 -- os_build bump from its next cumulative update) or a manual group re-save.
 --
--- Idempotent: a repaired row no longer matches (role 'server', source 'auto'),
+-- Idempotent: a repaired row no longer matches (its source is now 'auto'),
 -- so a re-run updates and audits nothing.
 
 SELECT set_config('breeze.scope', 'system', true);
@@ -46,7 +53,8 @@ DECLARE
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
-  -- Partner-export pre-locks (migrations/README.md; #5239, #5357, #5912).
+  -- Partner-export pre-locks (migrations/README.md; enforced by
+  -- migrationPartnerExportLocks.test.ts, #5360; configuration family #5912).
   -- `devices` carries both device-material and configuration-material
   -- statement triggers, so take the stricter configuration family: every
   -- partner the UPDATE touches exclusive, then those orgs, each set sorted,
@@ -59,7 +67,6 @@ BEGIN
     FROM public.devices d
     JOIN public.organizations o ON o.id = d.org_id
    WHERE d.device_role_source = 'discovery'
-     AND d.device_role IS DISTINCT FROM 'server'
      AND (lower(d.os_version) LIKE '%server%' OR lower(d.os_version) LIKE '%datacenter%');
   PERFORM public.breeze_partner_export_lock_partners_exclusive(lock_partners);
   PERFORM public.breeze_partner_export_lock_orgs_under_exclusive_partners(lock_orgs, lock_partners);
@@ -72,8 +79,7 @@ BEGIN
       FROM public.devices prev
      WHERE prev.id = d.id
        AND d.device_role_source = 'discovery'
-       AND d.device_role IS DISTINCT FROM 'server'
-       AND (lower(d.os_version) LIKE '%server%' OR lower(d.os_version) LIKE '%datacenter%')
+         AND (lower(d.os_version) LIKE '%server%' OR lower(d.os_version) LIKE '%datacenter%')
     RETURNING d.id, d.org_id, d.hostname, d.os_version, prev.device_role AS from_role
   )
   INSERT INTO public.audit_logs (
