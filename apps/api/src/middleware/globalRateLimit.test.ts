@@ -232,5 +232,21 @@ describe('ISOLATED_BUCKETS pins', () => {
     expect(bucket).toBeDefined();
     expect(bucket!.limit).toBeGreaterThanOrEqual(10_000);
   });
+  it('meters tunnel-host traffic in its own bucket, never the shared dashboard bucket', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      if (c.req.header('x-test-tunnel') === '1') c.set('tunnelSurface', true);
+      return next();
+    });
+    app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60 }));
+    app.get('*', (c) => c.text('ok'));
+
+    for (let i = 0; i < 5; i += 1) {
+      expect((await app.request('/any/device/path.js', { headers: { 'x-test-tunnel': '1' } })).status).toBe(200);
+    }
+    expect((await app.request('/api/v1/dashboard')).status).toBe(200);
+    expect((await app.request('/api/v1/dashboard')).status).toBe(200);
+    expect((await app.request('/api/v1/dashboard')).status).toBe(429);
+  });
 });
 

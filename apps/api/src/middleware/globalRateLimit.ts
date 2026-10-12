@@ -2,6 +2,8 @@ import type { Context, MiddlewareHandler, Next } from 'hono';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
+// Side-effect import: brings the `tunnelSurface` ContextVariableMap augmentation into scope.
+import './tunnelHostDispatch';
 
 /**
  * Global per-IP rate limiter middleware.
@@ -60,6 +62,15 @@ export interface IsolatedBucket {
  * so one runaway viewer can still throttle other remote sessions from the same
  * IP; it just can no longer touch the dashboard or auth budget.
  */
+/**
+ * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
+ * so the path-prefix buckets below can't isolate them: one device admin page
+ * loading 100 subresources would otherwise drain the shared dashboard budget
+ * of every user behind the same IP (plan G7). The tunnel route adds its own
+ * per-user/tunnel/agent budgets on top (tunnelHttpBudget.ts).
+ */
+export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
+
 export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/desktop-ws/', name: 'desktopws', limit: 600 },
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
@@ -169,7 +180,9 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
 
     // Route into a dedicated bucket when the path has one, so high-volume
     // endpoints can't drain the budget shared by the dashboard and auth.
-    const bucket = isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
+    const bucket = c.get('tunnelSurface') === true
+      ? TUNNEL_HOST_BUCKET
+      : isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
     const bucketLimit = bucket?.limit ?? limit;
     const bucketKey = bucket ? `global:${bucket.name}:${clientIp}` : `global:${clientIp}`;
 

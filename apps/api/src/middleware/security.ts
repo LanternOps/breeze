@@ -141,6 +141,8 @@ interface SecurityMiddlewareOptions {
    * prefix.
    */
   skipHeadersPathPrefix?: string;
+  /** Predicate form of skipHeadersPathPrefix (tunnel-host requests, spec 2026-10-06 §3). Headers only. */
+  skipHeadersWhen?: (c: Context) => boolean;
 }
 
 /**
@@ -266,7 +268,9 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
       }
     }
 
-    if (!skipHeadersPathPrefix || !path.startsWith(skipHeadersPathPrefix)) {
+    const skipHeaders = (skipHeadersPathPrefix !== undefined && path.startsWith(skipHeadersPathPrefix))
+      || options?.skipHeadersWhen?.(c) === true;
+    if (!skipHeaders) {
       // --- Content Security Policy ---
       c.header('Content-Security-Policy', cspValue);
 
