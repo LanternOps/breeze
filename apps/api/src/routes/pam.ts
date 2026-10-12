@@ -48,6 +48,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { expireSupersededMobileApprovals } from '../services/pamMobileApprovals';
+import { normalizePamDenialReason } from '../services/pamDenialReason';
 import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import {
@@ -109,6 +110,10 @@ const requirePamRead = requirePermission(
 const requirePamApprove = requirePermission(
   PERMISSIONS.PAM_APPROVE.resource,
   PERMISSIONS.PAM_APPROVE.action,
+);
+const requirePamExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
 );
 const requirePamManagePolicy = requirePermission(
   PERMISSIONS.PAM_MANAGE_POLICY.resource,
@@ -582,6 +587,22 @@ pamRoutes.post(
           return { kind: 'forbidden' as const };
         }
 
+        if (approve && row.flowType === 'uac_intercept') {
+          // Approval creates a v2 apply intent in this transaction. Require the
+          // same execution grant as direct device actuation before granting it.
+          await requirePamExecute(c, async () => {});
+          const [device] = await tx.select({
+            orgId: devices.orgId,
+            siteId: devices.siteId,
+          }).from(devices).where(eq(devices.id, row.deviceId)).limit(1);
+          if (!device || device.orgId !== row.orgId) return { kind: 'not_found' as const };
+          const executePerms = c.get('permissions') as UserPermissions | undefined;
+          // Use the current device site: it may have moved since the request.
+          if (executePerms && !canAccessSite(executePerms, device.siteId ?? '')) {
+            return { kind: 'forbidden' as const };
+          }
+        }
+
         // Separation-of-duties (maker/checker): the subject who requested the
         // elevation cannot APPROVE their own request. tech_jit_admin sets
         // subjectUserId to the requesting technician, so without this they could
@@ -638,7 +659,7 @@ pamRoutes.post(
               : {
                   status: 'denied',
                   deniedByUserId: auth.user.id,
-                  denialReason: body.reason ?? null,
+                  denialReason: normalizePamDenialReason(body.reason),
                   updatedAt: now,
                   decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                   decidedVia: assurance.decidedVia,
@@ -812,9 +833,9 @@ pamRoutes.post(
       },
     );
 
-    // NOTE: actuation of approved uac_intercept rows stays on the existing
-    // admin actuate route (#960) until #1150 makes the agent the credential
-    // authority — approving here does not enqueue an agent command.
+    // The transactional decision intent/outbox dispatches pam_apply_v2 via
+    // pamActuationWorker. The client must not also call the legacy actuation
+    // route: that would create a second execution path for the same approval.
     return c.json({
       success: true,
       id: result.row.id,

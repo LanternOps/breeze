@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The holding-org refusal reads the org; the db mocks below do not model it.
 vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 // Partial-mock drizzle-orm so `inArray` is a spy while every other operator
 // (and/or/eq/sql/...) stays real. The GET /rules site-narrowing test asserts
@@ -30,8 +31,10 @@ const authMocks = vi.hoisted(() => ({
   // and restores the default in its own afterEach.
   hasPermMock: vi.fn((_resource: string, _action: string) => true),
   requirePermissionMock: vi.fn(
-    (resource: string, action: string) => async (c: any, next: any) =>
-      authMocks.hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403),
+    (resource: string, action: string) => async (_c: any, next: any) => {
+      if (!authMocks.hasPermMock(resource, action)) throw new HTTPException(403, { message: 'Permission denied' });
+      return next();
+    },
   ),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
@@ -255,6 +258,7 @@ function setAuth() {
 
 interface TxRigOptions {
   row?: Record<string, unknown> | null;
+  device?: Record<string, unknown>;
   casWins?: boolean;
   /** Whether the ai_tool_action execution mirror CAS flips a row (default true). */
   mirrorWins?: boolean;
@@ -266,10 +270,10 @@ function rigTransaction(opts: TxRigOptions) {
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
     let updateCallCount = 0;
     const tx = {
-      select: vi.fn(() => ({
+      select: vi.fn((fields: Record<string, unknown>) => ({
         from: vi.fn(() => ({
           where: vi.fn(() => ({
-            limit: vi.fn().mockResolvedValue(opts.row ? [opts.row] : []),
+            limit: vi.fn().mockResolvedValue(opts.row ? [fields.id ? opts.row : (opts.device ?? opts.row)] : []),
           })),
         })),
       })),
@@ -284,7 +288,7 @@ function rigTransaction(opts: TxRigOptions) {
               where: vi.fn(() => ({
                 returning: vi
                   .fn()
-                  .mockResolvedValue(wins ? [{ id: REQ_ID, status: 'approved' }] : []),
+                  .mockResolvedValue(wins ? [{ id: REQ_ID, status: (setArg as { status: string }).status }] : []),
               })),
             };
           }),
@@ -576,6 +580,12 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
 
+    expect(body.enforcementStatus).toBe('pending_dispatch');
+    expect(lifecycleMocks.createPamDecisionIntent).toHaveBeenCalledTimes(1);
+    expect(lifecycleMocks.createPamDecisionIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ decision: 'approved', request: expect.objectContaining({ id: REQ_ID }) }),
+    );
     const set = updateSetCalls[0] as { status: string; approvedByUserId: string; expiresAt: Date };
     expect(set.status).toBe('approved');
     expect(set.approvedByUserId).toBe(USER_ID);
@@ -589,19 +599,76 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     );
   });
 
-  it('denies with reason', async () => {
+  it('refuses UAC approval without devices:execute before writing a decision or intent', async () => {
+    const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
+    authMocks.hasPermMock.mockImplementation((resource, action) => resource !== 'devices' || action !== 'execute');
+    try {
+      const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }),
+      });
+      expect(res.status).toBe(403);
+      expect(updateSetCalls).toEqual([]);
+      expect(lifecycleMocks.createPamDecisionIntent).not.toHaveBeenCalled();
+    } finally { authMocks.hasPermMock.mockImplementation(() => true); }
+  });
+
+  it('allows UAC denial without devices:execute', async () => {
+    rigTransaction({ row: activeRow, casWins: true });
+    authMocks.hasPermMock.mockImplementation((resource, action) => resource !== 'devices' || action !== 'execute');
+    try {
+      const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'deny' }),
+      });
+      expect(res.status).toBe(200);
+    } finally { authMocks.hasPermMock.mockImplementation(() => true); }
+  });
+
+  it('queues one decision intent when approval is retried', async () => {
+    const request = () => app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }),
+    });
+    rigTransaction({ row: activeRow, casWins: true });
+    expect((await request()).status).toBe(200);
+    rigTransaction({ row: { ...activeRow, status: 'approved' }, casWins: false });
+    expect((await request()).status).toBe(409);
+    expect(lifecycleMocks.createPamDecisionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks the current device site after a device moves', async () => {
+    const { updateSetCalls } = rigTransaction({ row: { ...activeRow, siteId: 'site-a' }, device: { orgId: ORG_ID, siteId: 'site-b' }, casWins: true });
+    const previous = authMocks.authMiddlewareMock.getMockImplementation()!;
+    authMocks.authMiddlewareMock.mockImplementation((c, next) => previous(c, () => {
+      c.set('permissions', { allowedSiteIds: ['site-a'] });
+      return next();
+    }));
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(res.status).toBe(403);
+    expect(updateSetCalls).toEqual([]);
+    expect(lifecycleMocks.createPamDecisionIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, 'Denied without reason'],
+    ['', 'Denied without reason'],
+    [' \t\n ', 'Denied without reason'],
+    ['nope', 'nope'],
+    ['  not allowed  ', 'not allowed'],
+  ])('denies with reason %j and stores %j', async (reason, expectedReason) => {
     const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'deny', reason: 'nope' }),
+      body: JSON.stringify({ decision: 'deny', reason }),
     });
 
     expect(res.status).toBe(200);
     const set = updateSetCalls[0] as { status: string; denialReason: string };
     expect(set.status).toBe('denied');
-    expect(set.denialReason).toBe('nope');
+    expect(set.denialReason).toBe(expectedReason);
+    expect(await res.json()).toMatchObject({ success: true, status: 'denied' });
   });
 
   it('surfaces a refused decision intent (unverifiable target hash) as denied, not a stale "approved"', async () => {
@@ -1436,16 +1503,20 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     expect(mirrorSet.approvedBy).toBe(USER_ID);
   });
 
-  it('deny mirrors the linked execution to rejected', async () => {
+  it.each([undefined, '', ' \t\n ', 'not on my watch'])('deny with reason %j mirrors the linked execution to rejected', async (reason) => {
     const { updateSetCalls } = rigTransaction({ row: toolActionRow, casWins: true, mirrorWins: true });
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'deny', reason: 'not on my watch' }),
+      body: JSON.stringify({ decision: 'deny', reason }),
     });
 
     expect(res.status).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'denied',
+      denialReason: reason?.trim() || 'Denied without reason',
+    });
     const mirrorSet = updateSetCalls[1] as { status: string };
     expect(mirrorSet.status).toBe('rejected');
   });

@@ -145,6 +145,7 @@ var allCommandTypes = []string{
 	// handlers_actuate.go init() — PAM Track 5
 	tools.CmdActuateElevation,
 	tools.CmdPamApplyV2, tools.CmdPamCleanupV2,
+	tools.CmdPamReconcileV2,
 
 	// handlers_encryption.go init()
 	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,

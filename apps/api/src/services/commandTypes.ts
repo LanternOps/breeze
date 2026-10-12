@@ -127,6 +127,7 @@ export const CommandTypes = {
   PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
   PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
   AGENT_ROLLBACK_V1: 'agent_rollback_v1',
+  PAM_RECONCILE_V2: 'pam_reconcile_v2',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',

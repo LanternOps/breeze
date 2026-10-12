@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import canonical from '../../../../packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json';
 
-const { executeMock } = vi.hoisted(() => ({
+const { executeMock, committed, commitGate, claimMock, releaseMock, connectedMock, dispatchMock, captureMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
+  committed: { value: false },
+  commitGate: { value: null as Promise<void> | null },
+  claimMock: vi.fn(),
+  releaseMock: vi.fn(),
+  connectedMock: vi.fn(),
+  dispatchMock: vi.fn(),
+  captureMock: vi.fn(),
 }));
 const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
   assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
@@ -12,10 +19,24 @@ const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
 vi.mock('../db', () => ({
   db: { execute: executeMock },
-  withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+  runOutsideDbContext: (fn: () => Promise<unknown>) => fn(),
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => {
+    const result = await fn();
+    if (commitGate.value) await commitGate.value;
+    committed.value = true;
+    return result;
+  },
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: captureMock }));
+vi.mock('../services/commandDispatch', () => ({
+  claimPendingCommandForDelivery: claimMock,
+  releaseClaimedCommandDelivery: releaseMock,
+}));
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: connectedMock,
+  dispatchCommandToAgent: dispatchMock,
+}));
 vi.mock('../services/partnerTrust.commands', async () => ({
   ...(await vi.importActual<typeof import('../services/partnerTrust.commands')>('../services/partnerTrust.commands')),
   assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
@@ -30,6 +51,7 @@ const current = {
   request_org_id: '30000000-0000-4000-8000-000000000002',
   device_org_id: '30000000-0000-4000-8000-000000000002',
   device_id: '30000000-0000-4000-8000-000000000003',
+  agent_id: 'agent-test',
   elevation_request_id: '30000000-0000-4000-8000-000000000004',
   request_revision: 2,
   generation: 4,
@@ -59,6 +81,14 @@ function commandPayloadAt(callIndex: number): Record<string, unknown> {
 describe('processPamActuationEvent', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    committed.value = false;
+    commitGate.value = null;
+    connectedMock.mockResolvedValue(true);
+    claimMock.mockImplementation(async (id: string) => {
+      expect(committed.value).toBe(true);
+      return { status: 'claimed', id, executedAt: new Date() };
+    });
+    dispatchMock.mockResolvedValue({ status: 'sent', via: 'local' });
     vi.useFakeTimers();
     vi.setSystemTime(canonical.apply.serverTime);
   });
@@ -76,6 +106,11 @@ describe('processPamActuationEvent', () => {
       .resolves.toBe('dispatched');
     expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(current.device_id, 'pam_apply_v2', null);
     expect(commandPayloadAt(1)).toEqual(canonical.apply);
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledWith(current.agent_id, {
+      id: expect.any(String), type: 'pam_apply_v2', payload: canonical.apply,
+    });
+    expect(claimMock).toHaveBeenCalledWith(dispatchMock.mock.calls[0]![1].id);
 
     executeMock.mockReset().mockResolvedValueOnce({
       rows: [{ ...current, current_command_id: '40000000-0000-4000-8000-000000000001' }],
@@ -83,12 +118,14 @@ describe('processPamActuationEvent', () => {
     await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
       .resolves.toBe('duplicate');
     expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not dispatch a lower generation or regress cleanup to apply', async () => {
     executeMock.mockResolvedValueOnce({ rows: [{ ...current, generation: 5, desired_state: 'cleanup' }] });
     await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
       .resolves.toBe('stale');
+    expect(dispatchMock).not.toHaveBeenCalled();
     expect(executeMock).toHaveBeenCalledTimes(1);
 
     executeMock.mockReset()
@@ -103,6 +140,69 @@ describe('processPamActuationEvent', () => {
     expect(sqlText).not.toContain('pam_apply_v2');
   });
 
+  it('waits for the queue transaction to commit before claiming or pushing', async () => {
+    let commit!: () => void;
+    commitGate.value = new Promise<void>((resolve) => { commit = resolve; });
+    let queueWritten!: () => void;
+    const written = new Promise<void>((resolve) => { queueWritten = resolve; });
+    executeMock.mockResolvedValueOnce({ rows: [current] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockImplementationOnce(async () => { queueWritten(); return { rows: [] }; });
+    const work = processPamActuationEvent({ actuationId: current.id, generation: 4 });
+    await written;
+    expect(claimMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+    commit();
+    await expect(work).resolves.toBe('dispatched');
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['offline', 'expired', 'owner_mismatch', 'infrastructure_error'])('returns a %s push to heartbeat delivery', async (status) => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    dispatchMock.mockResolvedValue({ status });
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 })).resolves.toBe('dispatched');
+    expect(releaseMock).toHaveBeenCalledWith(dispatchMock.mock.calls[0]![1].id, expect.any(Date));
+  });
+
+  it('keeps an indeterminate relay claim to prevent duplicate execution', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    dispatchMock.mockResolvedValue({ status: 'indeterminate' });
+    await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+    expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a thrown send claim and reports the transport failure', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    const error = new Error('uncertain send');
+    dispatchMock.mockRejectedValue(error);
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 })).resolves.toBe('dispatched');
+    expect(releaseMock).not.toHaveBeenCalled();
+    expect(captureMock).toHaveBeenCalledWith(error);
+  });
+
+  it('leaves offline commands pending without claiming them', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    connectedMock.mockResolvedValue(false);
+    await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+    expect(claimMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['held', 'cancelled', 'not_claimable'])('does not push when the delivery claim is %s', async (status) => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    claimMock.mockResolvedValue({ status });
+    await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it('does not send a command when queue binding rolls back', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValueOnce({ rows: [] }).mockRejectedValueOnce(new Error('commit failed'));
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 })).rejects.toThrow('commit failed');
+    expect(claimMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed on ownership mismatch without inserting a command', async () => {
     executeMock
       .mockResolvedValueOnce({ rows: [{ ...current, device_org_id: '90000000-0000-4000-8000-000000000001' }] })
@@ -113,6 +213,7 @@ describe('processPamActuationEvent', () => {
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('identity_mismatch');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 
   it('marks a trust-denied actuation failed without inserting a command', async () => {
@@ -130,6 +231,7 @@ describe('processPamActuationEvent', () => {
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('TRUST_RESTRICTED');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 
   it('marks an actuation for a device parked in a holding org failed without inserting a command', async () => {
@@ -144,6 +246,7 @@ describe('processPamActuationEvent', () => {
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('device_pending_assignment');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
+    expect(dispatchMock).not.toHaveBeenCalled();
     expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
   });
 
@@ -166,6 +269,7 @@ describe('processPamActuationEvent', () => {
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('expired_before_dispatch');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 
   it.each([undefined, 0])('fails closed when PAM capability is %s', async (version) => {

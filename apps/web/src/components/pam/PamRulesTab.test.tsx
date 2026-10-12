@@ -166,6 +166,7 @@ describe('PamRulesTab', () => {
     ).length;
 
     rerender(<PamRulesTab liveTick={1} />);
+    expect(screen.getByTestId('pam-rule-row-rule-1')).toBeInTheDocument();
     await waitFor(() => {
       const after = fetchWithAuthMock.mock.calls.filter((c) => c[0] === '/pam/rules').length;
       expect(after).toBe(rulesCallsBefore + 1);
