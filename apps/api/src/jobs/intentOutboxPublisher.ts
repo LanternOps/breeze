@@ -70,14 +70,17 @@ export const MAX_PUBLISH_ATTEMPTS = 5;
 // consumer (intentReleaseWorker.processIntentReleaseJob) rethrows transient
 // failures — `PolicyDecisionTransientError` from the `intent_created` branch,
 // a DB fault before the release claim — and relies on BullMQ redelivering
-// them; with BullMQ's default `attempts: 1` nothing ever did, stranding the
-// intent until the expiry reaper cancelled it. Safe because every consumer
+// them; with BullMQ's default `attempts: 1` nothing ever did (for
+// `intent_created` that stranded the intent `unattempted` until the expiry
+// reaper cancelled it; for the others, a missed release or outcome
+// notification). Safe because every consumer
 // branch is idempotent: the release path's single-use `approved -> executing`
 // CAS, attemptPolicyDecision's `policy_decision_state = 'unattempted'` CAS,
 // and outcome notifications' `(user_id, dedupe_key)` ON CONFLICT DO NOTHING.
 // Exponential: retries wait 5s, 10s, 20s, 40s — 75s in total, well inside the
 // shortest window a retry must land in (5 min supervised chat approval window,
-// 10 min RELEASE_LEASE_MS); a later retry would be a fail-safe no-op anyway.
+// 10 min RELEASE_LEASE_MS). Past either deadline the release claim refuses
+// and policy-decide degrades to human review, so a late retry cannot act.
 export const ACTION_INTENT_JOB_ATTEMPTS = 5;
 export const ACTION_INTENT_JOB_BACKOFF_MS = 5 * 1000;
 
