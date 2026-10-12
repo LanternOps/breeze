@@ -96,7 +96,7 @@ export const probeGoogleRemoveFromGroup: EffectProbe = async (effect, ctx) => {
   return result('satisfied', `${email} is not a member of ${groupEmail}`);
 };
 
-/** `google_remove_license` — reads `userEmail`, `productId`, `skuId`; `licenseAssignments.listForProduct`. */
+/** `google_remove_license` — reads `userEmail` (resolved to primary via `users.get`), `productId`, `skuId`; `licenseAssignments.listForProduct`. */
 export const probeGoogleRemoveLicense: EffectProbe = async (effect, ctx) => {
   const email = arg(effect, 'userEmail');
   if (!email) return missing('google_remove_license', 'userEmail');
@@ -105,6 +105,19 @@ export const probeGoogleRemoveLicense: EffectProbe = async (effect, ctx) => {
   const skuId = arg(effect, 'skuId');
   if (!skuId) return missing('google_remove_license', 'skuId');
   const g = await ctxForOrg(ctx.orgId);
+  // licenseAssignments carry the user's PRIMARY email as `userId`; `userEmail`
+  // may be an alias, so resolve it first (as probeGoogleWipeMobileDevice does)
+  // or a still-held license would never match and read as falsely satisfied.
+  const dir = getDirectoryClient(g.keyJson, g.conn.adminEmail);
+  let primaryEmail: string;
+  try {
+    const u = await dir.users.get({ userKey: email });
+    if (!u.data.primaryEmail) return result('unknown', `could not resolve a primary email for ${email}, so license removal cannot be observed`);
+    primaryEmail = u.data.primaryEmail;
+  } catch (err) {
+    if (isNotFound(err)) return result('unknown', `${email} was not found in Google Workspace, so license removal cannot be observed`);
+    throw err;
+  }
   const lic = getLicensingClient(g.keyJson, g.conn.adminEmail);
   const res = await lic.licenseAssignments.listForProduct({
     productId,
@@ -112,14 +125,14 @@ export const probeGoogleRemoveLicense: EffectProbe = async (effect, ctx) => {
     maxResults: LICENSE_PAGE_SIZE,
   });
   const items = res.data.items ?? [];
-  if (items.some((a) => lc(a.userId) === lc(email) && a.skuId === skuId)) {
-    return result('unsatisfied', `${email} still holds license ${productId}/${skuId}`);
+  if (items.some((a) => lc(a.userId) === lc(primaryEmail) && a.skuId === skuId)) {
+    return result('unsatisfied', `${primaryEmail} still holds license ${productId}/${skuId}`);
   }
   if (items.length >= LICENSE_PAGE_SIZE || res.data.nextPageToken) {
     // Absence from a truncated page is not absence.
-    return result('unknown', `the license list for ${productId} is full/truncated and ${email} was not on it; absence is unproven`);
+    return result('unknown', `the license list for ${productId} is full/truncated and ${primaryEmail} was not on it; absence is unproven`);
   }
-  return result('satisfied', `${email} holds no ${productId}/${skuId} license assignment`);
+  return result('satisfied', `${primaryEmail} holds no ${productId}/${skuId} license assignment`);
 };
 
 /** `google_set_vacation` — reads `userEmail`, `enable` (default true), `message`; Gmail `getVacation({ userId: 'me' })` as the mailbox. */

@@ -134,6 +134,29 @@ describe('probeGoogleRemoveLicense', () => {
   const e = eff('google_remove_license', {
     userEmail: 'dana@customer.example', productId: 'Google-Apps', skuId: '1010020020', reason: 'offboarding',
   });
+  // licenseAssignments carry the PRIMARY email as userId, so the probe resolves it first.
+  beforeEach(() => { usersGet.mockResolvedValue({ data: { primaryEmail: 'dana@customer.example' } }); });
+  it('alias input with the license still held under the primary email is unsatisfied (not a false satisfied)', async () => {
+    const alias = eff('google_remove_license', {
+      userEmail: 'dana.alias@customer.example', productId: 'Google-Apps', skuId: '1010020020', reason: 'offboarding',
+    });
+    licenseList.mockResolvedValue({ data: { items: [{ userId: 'Dana@customer.example', skuId: '1010020020' }] } });
+    await expect(probeGoogleRemoveLicense(alias, ctx)).resolves.toMatchObject({ state: 'unsatisfied' });
+    expect(usersGet).toHaveBeenCalledWith({ userKey: 'dana.alias@customer.example' });
+  });
+  it('unknown when the user is not found (404), without listing licenses', async () => {
+    usersGet.mockRejectedValue(Object.assign(new Error('Not Found'), { code: 404 }));
+    await expect(probeGoogleRemoveLicense(e, ctx)).resolves.toMatchObject({ state: 'unknown' });
+    expect(licenseList).not.toHaveBeenCalled();
+  });
+  it('unknown when the user resolves to no primaryEmail', async () => {
+    usersGet.mockResolvedValue({ data: {} });
+    await expect(probeGoogleRemoveLicense(e, ctx)).resolves.toMatchObject({ state: 'unknown' });
+  });
+  it('rethrows non-404 users.get errors', async () => {
+    usersGet.mockRejectedValue(Object.assign(new Error('boom'), { code: 500 }));
+    await expect(probeGoogleRemoveLicense(e, ctx)).rejects.toThrow('boom');
+  });
   it('satisfied when no assignment matches user and sku', async () => {
     licenseList.mockResolvedValue({ data: { items: [{ userId: 'other@customer.example', skuId: '1010020020' }] } });
     await expect(probeGoogleRemoveLicense(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
