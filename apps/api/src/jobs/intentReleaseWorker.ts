@@ -1988,7 +1988,10 @@ async function notifyRequesterOfOutcome(
  * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
  * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
  * consumer's retry policy, but this IS the branch that relies on BullMQ's
- * own per-job retry policy to make that redelivery real.
+ * own per-job retry policy to make that redelivery real. That policy is set
+ * at enqueue time by the publisher (`ACTION_INTENT_JOB_ATTEMPTS` + exponential
+ * backoff, #4156) and applies to EVERY branch here, so each one must stay
+ * idempotent under redelivery.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (
