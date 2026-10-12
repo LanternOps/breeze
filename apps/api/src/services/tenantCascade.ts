@@ -331,6 +331,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //     here exactly as it is for the two entries above. Stated only so a
   //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
   'ai_operator_operations',
+  'ai_operator_plan_approval_effects',
+  'ai_operator_plan_approvals',
   // Recipe Library wave E2 (#6167). All four are Shape 1 with a NOT NULL
   // org_id, so all four are required here. localeCompare puts '_' ahead of
   // letters, which is why …_task_target_accounts precedes …_task_targets and

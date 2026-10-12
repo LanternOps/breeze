@@ -152,6 +152,14 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // export therefore lives in a bounded text column here (objective,
   // outcome_detail, handoff_summary, target_label) and is `included`.
   "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","plan_revision","claimed_lease_epoch","dispatch_state","dispatch_detail","result_state","dispatched_at","cancel_requested_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
+  // Recipe Library E4 (#6169). The approved effect SET is child rows rather
+  // than jsonb precisely so it survives a tenant export: it is the record of
+  // what was done to a person. The *_digest columns match
+  // SUSPICIOUS_NAME_PARTS ("digest") and are reviewed non-secret: SHA-256 seals
+  // over effects the approver was SHOWN in full, which let an auditor prove the
+  // exported rows are the ones that were approved.
+  "ai_operator_plan_approval_effects": tablePolicy("org_id", {"included":["id","org_id","approval_id","task_id","plan_revision","ordinal","tool_name","provider","target_id","account_external_id","target_label","principal_label","rendering","idempotency_class","created_at"],"reviewedIncluded":["argument_digest"],"excludedSensitive":[],"excludedOpen":[]}),
+  "ai_operator_plan_approvals": tablePolicy("org_id", {"included":["id","org_id","task_id","step_key","plan_revision","effect_count","intent_id","state","approved_by_user_id","approved_at","approved_assurance_level","superseded_by_revision","created_at","updated_at"],"reviewedIncluded":["effect_set_digest"],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_events": tablePolicy("org_id", {"included":["id","org_id","task_id","transition_seq","event_type","actor_kind","actor_user_id","step_key","target_id","detail","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_outbox": tablePolicy("org_id", {"included":["id","org_id","task_id","source_kind","source_id","transition_seq","due_at","published_at","attempts","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_steps": tablePolicy("org_id", {"included":["id","org_id","task_id","step_key","step_kind","target_id","attempt_ordinal","state","plan_revision","expected_criterion","dependency_kind","dependency_id","detail","checklist_item_id","remind_after_at","reminded_at","started_at","settled_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
