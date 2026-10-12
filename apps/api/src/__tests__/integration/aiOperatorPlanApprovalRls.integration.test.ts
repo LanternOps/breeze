@@ -199,13 +199,32 @@ describe('plan approval tables: constraints', () => {
     expect(failure.constraint).toBe('ai_operator_plan_approvals_task_revision_uq');
   });
 
-  it('approved without an approver is refused (23514)', async () => {
+  it('approved without approved_at is refused (23514 approved_chk)', async () => {
     const t = await seedPlanTenant();
+    // A real intent id so intent_link_chk is satisfied and approved_chk is the
+    // constraint that fires.
+    const plan = await propose(t);
     const failure = await pgFail(() =>
       withDbAccessContext(ctxOf(t), () =>
-        db.insert(aiOperatorPlanApprovals).values(approvalValues(t, { state: 'approved' }))));
+        db.insert(aiOperatorPlanApprovals).values(approvalValues(t, {
+          state: 'approved', intentId: plan.intentId, approvedByUserId: t.bId, approvedAt: null,
+        }))));
     expect(failure.code).toBe('23514');
     expect(failure.constraint).toBe('ai_operator_plan_approvals_approved_chk');
+  });
+
+  it('approved with approved_at but a NULL approver is accepted by the schema (approver FK is ON DELETE SET NULL)', async () => {
+    const t = await seedPlanTenant();
+    const plan = await propose(t);
+    // propose() already linked the plan intent (intent_uq), so the approved
+    // shape is reached by the lifecycle UPDATE the approval CAS performs.
+    const [row] = await withDbAccessContext(ctxOf(t), () =>
+      db.update(aiOperatorPlanApprovals)
+        .set({ state: 'approved', approvedByUserId: null, approvedAt: new Date() })
+        .where(eq(aiOperatorPlanApprovals.id, plan.approvalId))
+        .returning());
+    expect(row!.state).toBe('approved');
+    expect(row!.approvedByUserId).toBeNull();
   });
 
   it.each(['approved', 'rejected'] as const)('%s without an intent link is refused (23514 intent_link_chk)', async (state) => {
