@@ -43,6 +43,12 @@ import {
   type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  restorePointPayloadField,
+} from '../services/restorePointRequest';
 import { attachWorkerObservability } from './workerObservability';
 
 // Strict shape for patches.policyAutoApprove as stored in the job JSONB.
@@ -1115,7 +1121,7 @@ async function prepareDeviceExecution(
   }
 
   const [device] = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, osType: devices.osType })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, patchJob.orgId)))
     .limit(1);
@@ -1313,12 +1319,41 @@ async function prepareDeviceExecution(
 
   // 3. Send install_patches command
   const patchIds = approvedPatches.map((p) => p.patchId);
+
+  // #4609 W05: the System Restore checkpoint decision is made HERE, when the
+  // concrete per-device command is created. Null (no policy, non-Windows)
+  // leaves the payload exactly as it was before the feature. A resolution
+  // failure fails this device visibly rather than dispatching an install the
+  // policy may have wanted protected.
+  let restorePoint;
+  try {
+    restorePoint = await buildRestorePointRequest({
+      deviceId,
+      orgId,
+      osType: device.osType,
+      trigger: 'patch',
+      label: `install ${patchIds.length} update${patchIds.length === 1 ? '' : 's'}`,
+      patchJobId,
+    });
+  } catch (err) {
+    console.error(
+      `[PatchJobExecutor] System Restore checkpoint policy resolution failed for device ${deviceId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    captureException(err);
+    await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_restore_point');
+    return { kind: 'error', error: 'Failed to resolve the System Restore checkpoint policy' };
+  }
+
   const patchRecords = await db
     .select({
       id: patches.id,
       source: patches.source,
       externalId: patches.externalId,
       title: patches.title,
+      // Only alongside a stamped block: the agent's definitions-only skip
+      // (W07) needs it, and without a block the payload stays byte-identical.
+      ...(restorePoint ? { category: patches.category } : {}),
     })
     .from(patches)
     .where(inArray(patches.id, patchIds));
@@ -1341,12 +1376,14 @@ async function prepareDeviceExecution(
   const res = await dispatchDeviceCommand({
     deviceId,
     type: 'install_patches',
-    payload: { patchJobId, patchIds, patches: patchRecords },
+    payload: { patchJobId, patchIds, patches: patchRecords, ...restorePointPayloadField(restorePoint) },
     expectedOrgId: patchJob.orgId,
     offlinePolicy: offline.policy,
   });
 
   if (!res.ok) {
+    // No command exists, so nothing was asked of the agent.
+    await discardRestorePointRequest(restorePoint);
     // An offline device with `offlineBehavior: 'skip'` is still recorded
     // skipped, with the seam's own code as the reason. A stale-deadline
     // fallback gets its own reason so it is not mistaken for a configured skip.
@@ -1362,9 +1399,12 @@ async function prepareDeviceExecution(
 
   const commandId = res.command?.id;
   if (!commandId) {
+    await discardRestorePointRequest(restorePoint);
     await markDeviceSkipped(patchJobId, deviceId, 'command_creation_failed');
     return { kind: 'error', error: 'Failed to create command' };
   }
+
+  await linkRestorePointCommand(restorePoint, commandId);
 
   if (res.delivery === 'queued_offline') {
     await recordDeviceQueued(patchJobId, deviceId, approvedPatches);

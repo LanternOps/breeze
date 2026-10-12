@@ -9,6 +9,7 @@ import {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceRestorePointAttempts } from '../db/schema/deviceRestorePointAttempts';
 import { resolveSystemProtectionForDevice } from './featureConfigResolver';
+import { captureException } from './sentry';
 
 /**
  * Windows System Restore checkpoint requests (#4609, W05 #4756).
@@ -146,20 +147,33 @@ export function restorePointPayloadField(
 /**
  * Record the command id on the ledger row once the command exists (sites that
  * cannot reserve the id before building the payload).
+ *
+ * Best-effort: the command has already been created, so failing here would
+ * report a dispatched action as failed. The row stays joinable by `requestId`,
+ * which is its identity; `device_command_id` is an optional convenience.
  */
 export async function linkRestorePointCommand(
   block: RestorePointRequestBlock | null,
   deviceCommandId: string,
 ): Promise<void> {
   if (!block?.enabled) return;
-  await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      await db
-        .update(deviceRestorePointAttempts)
-        .set({ deviceCommandId })
-        .where(eq(deviceRestorePointAttempts.requestId, block.requestId));
-    }),
-  );
+  try {
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        await db
+          .update(deviceRestorePointAttempts)
+          .set({ deviceCommandId })
+          .where(eq(deviceRestorePointAttempts.requestId, block.requestId));
+      }),
+    );
+  } catch (err) {
+    console.error('[restorePointRequest] failed to link the command id onto the requested ledger row', {
+      requestId: block.requestId,
+      deviceCommandId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err);
+  }
 }
 
 /**
