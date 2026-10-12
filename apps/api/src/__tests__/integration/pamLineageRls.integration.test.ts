@@ -233,9 +233,14 @@ describe('target never sees source history', () => {
     const b = seeded.orgs.B!.id;
     await seedElevationAudit(seeded, a);
     // Put the epoch-1 request back in an "active" status so the /active read is a real probe.
-    await getTestDb().execute(sql`
+    const activated = rowsOf(await getTestDb().execute(sql`
       UPDATE elevation_requests SET status = 'approved', expires_at = now() + interval '1 hour'
-       WHERE id = ${seeded.epoch1.requestId}::uuid`).catch(() => undefined);
+       WHERE id = ${seeded.epoch1.requestId}::uuid RETURNING id`));
+    expect(activated, 'the /active probe row was never activated').toHaveLength(1);
+    // Control: the source org does see it on /active, so the B-side absence below is not vacuous.
+    const tokenA = await orgUserToken(seeded.partnerId, a);
+    const activeA = await getJson(tokenA, '/pam/active');
+    expect((activeA.body.active as Array<{ id: string }>).map((r) => r.id)).toContain(seeded.epoch1.requestId);
 
     const tokenB = await orgUserToken(seeded.partnerId, b);
     const list = await getJson(tokenB, `/pam/elevation-requests?deviceId=${seeded.deviceId}`);
@@ -281,5 +286,29 @@ describe('target never sees source history', () => {
     expect(list.body.requests).toHaveLength(1);
     expect(list.body.requests[0].id).toBe(seeded.epoch1.requestId);
     expect(list.body.requests[0].deviceHostname).toBe(closure!.hostname_snapshot);
+  });
+
+  it('A -> B -> A: an epoch-1 row renders the closure snapshot, not the device now back in A (list and /active)', async () => {
+    const seeded = await seedMovedDeviceWithHistory({ path: ['A', 'B', 'A'] });
+    const a = seeded.orgs.A!.id;
+    const [closure] = rowsOf<{ hostname_snapshot: string }>(await getTestDb().execute(sql`
+      SELECT hostname_snapshot FROM device_ownership_epoch_closures
+       WHERE device_id = ${seeded.deviceId}::uuid AND epoch = 1`));
+    // Same org again, so only the epoch match keeps the live row out.
+    await getTestDb().execute(sql`
+      UPDATE devices SET hostname = 'renamed-after-return' WHERE id = ${seeded.deviceId}::uuid`);
+    const activated = rowsOf(await getTestDb().execute(sql`
+      UPDATE elevation_requests SET status = 'approved', expires_at = now() + interval '1 hour'
+       WHERE id = ${seeded.epoch1.requestId}::uuid RETURNING id`));
+    expect(activated).toHaveLength(1);
+
+    const tokenA = await orgUserToken(seeded.partnerId, a);
+    const list = await getJson(tokenA, `/pam/elevation-requests?deviceId=${seeded.deviceId}`);
+    expect(list.body.requests).toHaveLength(1);
+    expect(list.body.requests[0].deviceHostname).toBe(closure!.hostname_snapshot);
+    const active = await getJson(tokenA, '/pam/active');
+    const row = (active.body.active as Array<{ id: string; deviceHostname: string | null }>)
+      .find((r) => r.id === seeded.epoch1.requestId);
+    expect(row?.deviceHostname).toBe(closure!.hostname_snapshot);
   });
 });

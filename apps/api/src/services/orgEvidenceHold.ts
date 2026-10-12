@@ -1,10 +1,11 @@
 /**
  * Org merge evidence holds — PAM ownership epochs W5 (#8207), spec §7.1–7.2.
  *
- * A merge never re-tenants PAM-chain evidence (`pam_actuations`,
- * `pam_actuation_results`, actuated `elevation_requests`, `elevation_audit`):
- * those rows keep the loser's org_id forever. When the loser still owns any
- * of them after the Phase-B walk, the loser org row is kept as a held shell
+ * `pam_actuations` and `pam_actuation_results` are never re-tenanted by a
+ * merge (today `blocks-merge` refuses the merge outright; from W6 they stay
+ * behind under the loser's org_id). `elevation_requests` and
+ * `elevation_audit` still repoint today; whatever chain rows the loser STILL
+ * owns after the Phase-B walk keep the loser org row alive as a held shell
  * (`org_evidence_holds`) instead of being erased in Phase C. A survivor that
  * is itself the survivor of a held shell is held transitively when it merges
  * away, so A -> B -> C keeps A's lineage alive.
@@ -12,7 +13,8 @@
  * Release is an erasure-path action only (OD6):
  *   - erasing the survivor erases its held shells first (tenantCascade.ts);
  *   - retention emptying a shell's chain lets the offboarding sweeper release
- *     the hold and hand the shell to erasure (tenantOffboarding.ts).
+ *     the hold and hand the shell to erasure (tenantOffboarding.ts);
+ *   - erasing the whole partner erases everything, holds included.
  *
  * Every function here runs on the ambient connection (`dbModule.db`): the
  * caller supplies a system-scope context. Holds are system-write-only at the
@@ -136,6 +138,23 @@ export async function listHoldsBySurvivor(survivorOrgId: string): Promise<Eviden
   }));
 }
 
+/**
+ * Every held shell behind `survivorOrgId`, transitively (A -> B -> C gives
+ * [B, A] for C), bounded one hop past the read cap so a malformed lineage
+ * still terminates. Survivor erasure pre-checks these before erasing any.
+ */
+export async function listHeldLineage(survivorOrgId: string): Promise<string[]> {
+  return rows<{ org_id: string }>(await dbModule.db.execute(sql`
+    WITH RECURSIVE behind(org_id, depth) AS (
+      SELECT h.loser_org_id, 1 FROM org_evidence_holds h WHERE h.survivor_org_id = ${uuid(survivorOrgId)}
+      UNION
+      SELECT h.loser_org_id, b.depth + 1
+        FROM behind b JOIN org_evidence_holds h ON h.survivor_org_id = b.org_id
+       WHERE b.depth <= ${EVIDENCE_HOLD_LINEAGE_DEPTH_CAP}
+    )
+    SELECT DISTINCT org_id FROM behind`)).map((r) => r.org_id);
+}
+
 /** Deletes the hold on `loserOrgId`. Only the erasure path calls this. */
 export async function deleteEvidenceHold(loserOrgId: string): Promise<number> {
   return rows<{ loser_org_id: string }>(await dbModule.db.execute(sql`
@@ -144,7 +163,8 @@ export async function deleteEvidenceHold(loserOrgId: string): Promise<number> {
 
 /**
  * Retention release, in ONE statement so the emptiness check and the delete
- * cannot interleave with anything: releases every hold whose shell owns no
+ * share a snapshot (a held shell is fenced and deleted, so nothing writes new
+ * chain rows under it): releases every hold whose shell owns no
  * PAM-chain row any more and is not itself the survivor of another hold (that
  * shell's erasure would destroy the inner shell's evidence). Returns the
  * released holds; the caller hands each shell to erasure.

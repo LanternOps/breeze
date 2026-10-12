@@ -135,6 +135,7 @@ vi.mock('./orgEvidenceHold', async (importActual) => ({
   ...(await importActual<typeof import('./orgEvidenceHold')>()),
   findEvidenceHold: vi.fn(async () => null),
   listHoldsBySurvivor: vi.fn(async () => []),
+  listHeldLineage: vi.fn(async () => []),
 }));
 
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));

@@ -191,7 +191,8 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
  *
  * Exported as the engine test hook for PAM ownership epochs W5 (#8207): until
  * W6 the `blocks-merge` refusal keeps Phase B from ever committing a merge
- * whose loser owns PAM evidence, so the evidence-hold tests build the
+ * whose loser owns `pam_actuations`/`pam_actuation_results`, so the
+ * evidence-hold tests build the
  * post-Phase-B state by hand and drive this directly.
  *
  * A loser kept as an evidence-hold shell is NOT handed to erasure: its PAM

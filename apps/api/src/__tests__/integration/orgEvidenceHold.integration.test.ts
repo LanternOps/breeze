@@ -39,7 +39,7 @@ import * as orgMergeModule from '../../services/orgMerge';
 import { runMergePhaseC } from '../../jobs/orgMerge';
 import { sweepOffboardingTenants } from '../../services/tenantOffboarding';
 import { getTenantErasureQueue } from '../../jobs/tenantErasure';
-import { cascadeDeleteOrg, TenantCascadeRefusalError } from '../../services/tenantCascade';
+import { cascadeDeleteOrg, cascadeDeletePartner, TenantCascadeRefusalError } from '../../services/tenantCascade';
 
 async function eventually(check: () => Promise<void>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -298,4 +298,137 @@ describe('5.2 transitive holds, depth cap, and release', () => {
     expect(forged!.cause?.code).toBe('42501');
     expect(forged!.cause?.message).toMatch(/row-level security policy/);
   });
+});
+
+
+// ---------------------------------------------------------------------------
+// Review follow-ups: per-table release semantics, partial failure, partner
+// purge, and the sweeper's stamp-recovery path.
+// ---------------------------------------------------------------------------
+
+async function seedLegalHold(orgId: string, siteId: string): Promise<void> {
+  const db_ = getTestDb();
+  const [device] = rowsOf<{ id: string }>(await db_.execute(sql`
+    INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+    VALUES (${orgId}::uuid, ${siteId}::uuid, ${`agent-hold-${orgId}`}, 'held-shell-backup', 'windows', '11', 'amd64', '1.0.0')
+    RETURNING id`));
+  const [config] = rowsOf<{ id: string }>(await db_.execute(sql`
+    INSERT INTO backup_configs (org_id, name, type, provider, provider_config)
+    VALUES (${orgId}::uuid, 'held shell legal hold', 'file', 'local', '{}') RETURNING id`));
+  const [job] = rowsOf<{ id: string }>(await db_.execute(sql`
+    INSERT INTO backup_jobs (org_id, config_id, device_id)
+    VALUES (${orgId}::uuid, ${config!.id}::uuid, ${device!.id}::uuid) RETURNING id`));
+  await db_.execute(sql`
+    INSERT INTO backup_snapshots (org_id, job_id, device_id, snapshot_id, legal_hold)
+    VALUES (${orgId}::uuid, ${job!.id}::uuid, ${device!.id}::uuid, gen_random_uuid()::text, true)`);
+}
+
+describe('review follow-ups', () => {
+  it('any remaining chain table keeps the hold; it releases only when the last one is empty', async () => {
+    const m = await seedHeldMerge();
+    await getTestDb().execute(sql`
+      INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
+      VALUES (${m.loser}::uuid, ${m.epoch1.requestId}::uuid, 'requested', 'system', '{}'::jsonb, now())`);
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+
+    // Children before parents (FK order). After each step at least one chain
+    // table still has rows, so the hold must stand.
+    const steps = [
+      sql`DELETE FROM pam_actuation_results WHERE org_id = ${m.loser}::uuid`,
+      sql`DELETE FROM pam_actuations WHERE org_id = ${m.loser}::uuid`,
+      sql`DELETE FROM elevation_audit WHERE org_id = ${m.loser}::uuid`,
+    ];
+    for (const step of steps) {
+      await getTestDb().transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+        await tx.execute(step);
+      });
+      const sweep = await sweepOffboardingTenants();
+      expect(sweep.evidenceHoldsReleased).toBe(0);
+      expect(await holdRow(m.loser)).toBeDefined();
+      expect(await erasureJobFor(m.loser)).toBeFalsy();
+    }
+    expect(await countChainRows(m.loser)).toBeGreaterThan(0); // elevation_requests alone
+
+    await expireChainByRetention(m.loser);
+    const sweep = await sweepOffboardingTenants();
+    expect(sweep.evidenceHoldsReleased).toBe(1);
+    expect(await holdRow(m.loser)).toBeUndefined();
+  }, 120_000);
+
+  it('a loser owning only un-actuated elevation requests is still held', async () => {
+    const m = await seedHeldMerge();
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`DELETE FROM pam_actuation_results WHERE org_id = ${m.loser}::uuid`);
+      await tx.execute(sql`DELETE FROM pam_actuations WHERE org_id = ${m.loser}::uuid`);
+    });
+    const reason = await writeHold({
+      partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId,
+    });
+    expect(reason).toBe('pam_evidence');
+  });
+
+  it('a backup legal hold on a held shell refuses the survivor erasure before anything is erased', async () => {
+    const m = await seedHeldMerge(); // A = loser, B = survivor
+    const actor = await createUser({ partnerId: m.partnerId, orgId: null, email: `lh-${m.loser}@hold.test` });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    // A second, older shell X held under the same survivor, with no legal hold.
+    const x = await createOrganization({ partnerId: m.partnerId });
+    const eventX = await markMergedShell({ partnerId: m.partnerId, loserOrgId: x.id, survivorOrgId: m.survivor });
+    await insertHoldRaw({ partnerId: m.partnerId, loserOrgId: x.id, survivorOrgId: m.survivor, mergeEventId: eventX });
+    await seedLegalHold(m.loser, m.orgs.L!.siteId);
+    const md5 = await chainMd5(m.loser);
+
+    const refused = await cascadeDeleteOrg(m.survivor, actor.id).catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(TenantCascadeRefusalError);
+    expect((refused as TenantCascadeRefusalError).code).toBe('LEGAL_HOLD_ACTIVE');
+
+    // Nothing erased: neither shell, nor either hold, nor the survivor.
+    for (const id of [m.loser, x.id]) {
+      expect(await orgState(id)).toEqual({ status: 'merging', deleted: true });
+      expect(await holdRow(id)).toBeDefined();
+    }
+    expect(await orgState(m.survivor)).toBeDefined();
+    expect(await chainMd5(m.loser)).toBe(md5);
+  }, 120_000);
+
+  it('partner purge erases held shells through their survivor and leaves no hold behind', async () => {
+    const m = await seedHeldMerge();
+    const actor = await createUser({ partnerId: m.partnerId, orgId: null, email: `pp-${m.loser}@hold.test` });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    const c = await createOrganization({ partnerId: m.partnerId });
+    const eventBC = await markMergedShell({ partnerId: m.partnerId, loserOrgId: m.survivor, survivorOrgId: c.id });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.survivor, survivorOrgId: c.id, mergeEventId: eventBC });
+
+    await cascadeDeletePartner(m.partnerId, actor.id);
+
+    for (const id of [m.loser, m.survivor, c.id]) expect(await orgState(id)).toBeUndefined();
+    expect(rowsOf(await getTestDb().execute(sql`
+      SELECT 1 FROM org_evidence_holds WHERE partner_id = ${m.partnerId}::uuid`))).toHaveLength(0);
+    expect(rowsOf(await getTestDb().execute(sql`
+      SELECT 1 FROM partners WHERE id = ${m.partnerId}::uuid`))).toHaveLength(0);
+  }, 180_000);
+
+  it('the sweeper stamps a held shell whose stamp never landed but does not hand it to erasure', async () => {
+    const m = await seedHeldMerge();
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    // Torn state: Phase B committed (event + hold) but deleted_at never stamped.
+    await getTestDb().execute(sql`
+      UPDATE organizations SET deleted_at = NULL, updated_at = now() - interval '3 hours'
+       WHERE id = ${m.loser}::uuid`);
+    const md5 = await chainMd5(m.loser);
+
+    const sweep = await sweepOffboardingTenants();
+    expect(sweep.mergeShellsStamped).toBe(1);
+    expect(sweep.mergeUnfenced).toBe(0);
+    expect(await orgState(m.loser)).toEqual({ status: 'merging', deleted: true });
+    expect(await erasureJobFor(m.loser), 'a held shell was handed to erasure by the stamp path').toBeFalsy();
+    expect(await chainMd5(m.loser)).toBe(md5);
+    await eventually(async () => {
+      const stamped = await auditsFor('org.merge.stamped_by_sweeper', m.loser);
+      expect(stamped).toHaveLength(1);
+      expect(String(stamped[0]!.details.note)).toContain('kept under its evidence hold');
+    });
+  }, 120_000);
 });

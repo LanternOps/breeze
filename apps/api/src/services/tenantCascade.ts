@@ -59,6 +59,7 @@ import {
   EVIDENCE_HOLD_RELEASED_ACTION,
   deleteEvidenceHold,
   findEvidenceHold,
+  listHeldLineage,
   listHoldsBySurvivor,
 } from './orgEvidenceHold';
 import { removeScreenshotFiles } from './screenshotFiles';
@@ -1848,20 +1849,61 @@ async function cascadeDeleteOrgInternal(
   // failure part-way leaves the shell still held rather than unheld and
   // sweepable. org_evidence_holds.survivor_org_id is ON DELETE RESTRICT, so
   // the survivor's own organizations row cannot go while any hold remains.
-  // After this org's own refusal checks above, so a survivor under legal
-  // hold erases nothing at all.
+  //
+  // Before anything is erased, the whole held lineage is checked for backup
+  // legal holds: a hold on any shell refuses the survivor's erasure up front,
+  // so it never erases one shell and then stops at the next.
+  if (evidence.depth === 0) {
+    const lineage = await dbModule.withSystemDbAccessContext(() => listHeldLineage(orgId));
+    for (const shellOrgId of lineage) {
+      const shellHold = await findActiveBackupLegalHold(shellOrgId);
+      if (!shellHold) continue;
+      await createAuditLog({
+        orgId: null,
+        actorType: 'user',
+        actorId: performedBy,
+        actorEmail: performedByEmail,
+        action: 'tenant.erasure.refused_legal_hold',
+        resourceType: 'organization',
+        resourceId: orgId,
+        details: { reason: 'LEGAL_HOLD_ACTIVE', holdSource: shellHold, heldShellOrgId: shellOrgId },
+        result: 'failure',
+        errorMessage: LEGAL_HOLD_ACTIVE_MESSAGE,
+      });
+      captureMessage(
+        `[tenantCascade] erasure refused for org=${orgId}: active legal hold on held shell ${shellOrgId}`,
+        { eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'held_shell' } },
+      );
+      throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
+    }
+  }
+
   const heldShells = await dbModule.withSystemDbAccessContext(() => listHoldsBySurvivor(orgId));
   for (const held of heldShells) {
-    if (evidence.depth >= EVIDENCE_HOLD_LINEAGE_DEPTH_CAP + 1) {
+    if (evidence.depth >= EVIDENCE_HOLD_LINEAGE_DEPTH_CAP) {
       throw new Error(
         `[tenantCascade] evidence-hold lineage under org=${orgId} is deeper than ${EVIDENCE_HOLD_LINEAGE_DEPTH_CAP}; refusing to recurse further`,
       );
     }
-    await cascadeDeleteOrgInternal(held.loserOrgId, performedBy, performedByEmail, {}, {
-      releasingEvidenceHold: true,
-      depth: evidence.depth + 1,
-    });
-    await dbModule.withSystemDbAccessContext(() => deleteEvidenceHold(held.loserOrgId));
+    try {
+      await cascadeDeleteOrgInternal(held.loserOrgId, performedBy, performedByEmail, {}, {
+        releasingEvidenceHold: true,
+        depth: evidence.depth + 1,
+      });
+    } catch (err) {
+      // A refusal inside a held shell (the pre-check above makes this a race)
+      // is NOT a clean "nothing happened" skip for the survivor: earlier
+      // shells may already be gone. Surface it as a failure, never as a
+      // TenantCascadeRefusalError the worker would record as a skip.
+      if (err instanceof TenantCascadeRefusalError) {
+        throw new Error(
+          `[tenantCascade] erasure of org=${orgId} stopped: held shell ${held.loserOrgId} refused (${err.code}); earlier held shells may already be erased`,
+        );
+      }
+      throw err;
+    }
+    // Audit first, then release: a failed delete leaves the hold (and a
+    // duplicate audit on retry), never a released hold with no record.
     await createAuditLog({
       orgId: null,
       actorType: 'user',
@@ -1878,6 +1920,7 @@ async function cascadeDeleteOrgInternal(
       },
       result: 'success',
     });
+    await dbModule.withSystemDbAccessContext(() => deleteEvidenceHold(held.loserOrgId));
   }
 
   // Write the tenant.erasure audit row FIRST so it survives the cascade.
@@ -2440,8 +2483,9 @@ export async function cascadeDeletePartner(
   // bare breeze_app would silently return 0 rows.
   // Held shells (org_evidence_holds) are skipped: each is erased by its
   // survivor's cascadeDeleteOrg, which releases the hold first. Erasing one
-  // directly would be refused. Holds are partner-pinned, so the survivor is
-  // always in this same list.
+  // directly would be refused. Holds are partner-pinned, so the lineage's
+  // root survivor (a live org) is always in this same list, and its cascade
+  // reaches every shell behind it, transitively held ones included.
   const orgRows = (await dbModule.withSystemDbAccessContext(() =>
     dbModule.db.execute(
       sql`SELECT id FROM organizations o

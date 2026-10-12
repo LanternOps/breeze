@@ -6,8 +6,9 @@
 --    shell must outlive the merge because it still owns PAM-chain evidence
 --    (or because it is itself the survivor of such a shell — a transitive
 --    hold). Written by the merge engine in the Phase-B transaction; released
---    only by the erasure path (survivor erasure, or retention emptying the
---    chain). Nothing else releases a hold.
+--    only by the erasure path (survivor erasure, retention emptying the
+--    chain, or erasure of the whole partner). No merge or partner-scoped
+--    action releases a hold.
 --
 --    Tenancy: Shape 3 (partner-axis), flat breeze_has_partner_access
 --    (partner_id), like org_merge_events. There is deliberately NO column named
@@ -102,7 +103,7 @@ LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION USING
     ERRCODE = 'P0001',
-    MESSAGE = 'org_evidence_holds is append-only',
+    MESSAGE = 'org_evidence_holds rows are immutable',
     HINT = 'A hold is released by deleting it through the erasure path, never edited.';
 END;
 $$;
@@ -121,8 +122,9 @@ CREATE TRIGGER org_evidence_holds_block_update BEFORE UPDATE ON public.org_evide
 -- superuser-only (migrationGucAttributes.test.ts). The caller's accessible
 -- org set is captured BEFORE elevating, so the walk is seeded only from orgs
 -- the caller can already see; the elevated region is one read-only SELECT;
--- the body has exactly one RETURN, immediately preceded by the restore; an
--- error aborts the (sub)transaction, which rolls the is_local GUC back.
+-- the only path that elevates restores the scope before leaving its IF, and
+-- the single RETURN follows; an error aborts the (sub)transaction, which
+-- rolls the is_local GUC back.
 --
 -- PARALLEL UNSAFE because set_config is refused inside a parallel operation.
 -- The policies call it once per statement through an uncorrelated scalar

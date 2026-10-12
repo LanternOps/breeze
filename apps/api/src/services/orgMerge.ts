@@ -1313,6 +1313,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         loserOrgName: loser.name,
         survivorOrgId: survivor.id,
         error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof OrgMergeBlockedError ? { reason: err.reason } : {}),
       },
     });
     throw err;

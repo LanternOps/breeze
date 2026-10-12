@@ -2098,6 +2098,31 @@ describe('sweepOffboardingTenants', () => {
         expect(result.failures).toBe(0);
       });
 
+      it('stamps a held shell but keeps it out of erasure, and says so in the audit', async () => {
+        queueCandidates([], [], [], [], [{ id: 'org-held-1', partnerId: 'partner-1' }]);
+        executeQueue.push([{ id: 'org-held-1' }]);
+        findEvidenceHoldMock.mockResolvedValue({ survivorOrgId: 'survivor-9', reason: 'pam_evidence' });
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(executedSqlLog.join(' ')).toContain('SET deleted_at = now(), updated_at = now()');
+        expect(findEvidenceHoldMock).toHaveBeenCalledWith('org-held-1');
+        expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+        expect(result.mergeShellsStamped).toBe(1);
+        expect(result.failures).toBe(0);
+        expect(writeAuditEvent).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            action: 'org.merge.stamped_by_sweeper',
+            resourceId: 'org-held-1',
+            details: expect.objectContaining({
+              note: expect.stringContaining('kept under its evidence hold'),
+              evidenceHold: { survivorOrgId: 'survivor-9', reason: 'pam_evidence' },
+            }),
+          })
+        );
+      });
+
       it('isolates a failing erasure handoff from other stamp candidates', async () => {
         queueCandidates([], [], [], [], [
           { id: 'org-unstamped-bad', partnerId: 'partner-1' },

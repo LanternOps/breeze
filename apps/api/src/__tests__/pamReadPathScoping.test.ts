@@ -2,9 +2,9 @@
  * PAM ownership epochs W5 (#8207), spec §7.3: history reads never join the
  * live `devices` row on `device_id` alone.
  *
- * A PAM-chain row (`pam_actuations`, `pam_actuation_results`,
- * `elevation_requests`) keeps the org it was written under forever, while the
- * device it names can move to another org. A join on `device_id` alone pairs
+ * A PAM-chain row (`pam_actuations`, `pam_actuation_results`, actuated
+ * `elevation_requests`) keeps the org and ownership epoch it was written
+ * under, while the device it names can move to another org. A join on `device_id` alone pairs
  * an old org's evidence with the device's CURRENT org row — leaking the new
  * owner's device data into the old org's history, or the reverse. Every such
  * join must also match `org_id` (and render historical device fields from
@@ -14,6 +14,11 @@
  * names one of the three tables is checked for a `devices` join (raw SQL
  * `JOIN devices <alias> ON ...` or Drizzle `.xxxJoin(devices, ...)`) whose ON
  * clause references a PAM-chain table's `device_id` without an `org_id`.
+ *
+ * Known limits (a heuristic, not a SQL parser): it does not see joins written
+ * with `devices` on the FROM side, comma joins, or Drizzle queries rooted at
+ * `devices`; any `org_id` token in the ON clause satisfies it; and an
+ * allowlist entry exempts the whole file. Review still owns those shapes.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -49,7 +54,7 @@ function listSourceFiles(dir: string): string[] {
   return out;
 }
 
-const RAW_JOIN = /\bJOIN\s+(?:public\.)?devices\s+(?:AS\s+)?(\w+)\s+ON\b([\s\S]*?)(?=\b(?:LEFT|RIGHT|INNER|FULL|CROSS)?\s*JOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|\bFOR\s+UPDATE\b|\)\s*[,;]|`)/gi;
+const RAW_JOIN = /\bJOIN\s+(?:public\.)?devices(?:\s+(?:AS\s+)?(?!ON\b)(\w+))?\s+ON\b([\s\S]*?)(?=\b(?:LEFT|RIGHT|INNER|FULL|CROSS)?\s*JOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|\bFOR\s+UPDATE\b|\)\s*[,;]|`)/gi;
 const DRIZZLE_JOIN = /\.(?:leftJoin|innerJoin|rightJoin|fullJoin)\(\s*devices\s*,([\s\S]*?)(?=\.(?:leftJoin|innerJoin|rightJoin|fullJoin|where|orderBy|groupBy|limit|offset|for)\(|;)/g;
 
 /** Aliases a raw-SQL statement gives the PAM-chain tables (`FROM pam_actuations a`, `JOIN elevation_requests r`). */
@@ -98,6 +103,12 @@ describe('findUnscopedPamDeviceJoins (scanner self-test)', () => {
   it('flags a raw join on device_id alone', () => {
     expect(findUnscopedPamDeviceJoins(`sql\`SELECT a.id FROM pam_actuations a
       JOIN devices d ON d.id = a.device_id
+      WHERE a.id = 1\``)).toHaveLength(1);
+  });
+
+  it('flags an unaliased raw join on device_id alone', () => {
+    expect(findUnscopedPamDeviceJoins(`sql\`SELECT 1 FROM pam_actuations a
+      JOIN devices ON devices.id = a.device_id
       WHERE a.id = 1\``)).toHaveLength(1);
   });
 
