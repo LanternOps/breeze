@@ -5,6 +5,7 @@ import { extractApiError } from '@/lib/apiError';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { showToast } from '../shared/Toast';
 
 interface Props {
   tunnelId: string;
@@ -110,26 +111,51 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
   // branch below — the ticket itself is stripped from the URL by the existing
   // 302 (ticket -> cookie exchange), so re-minting never puts new capability
   // material somewhere it lingers.
+  // Tickets are one-time: every navigation that enters the proxy (the iframe,
+  // a reconnect, a new tab) needs its own.
+  const requestTicketUrl = useCallback(async (): Promise<string> => {
+    const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || stableT('proxyTunnelPage.errors.obtainTicket'));
+    }
+    const body = await res.json();
+    // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
+    const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
+    if (!ticket) {
+      throw new Error(stableT('proxyTunnelPage.errors.invalidTicket'));
+    }
+    return buildProxyUrl(tunnelId, ticket);
+  }, [tunnelId, stableT]);
+
   const mintTicket = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || stableT('proxyTunnelPage.errors.obtainTicket'));
-      }
-      const body = await res.json();
-      // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
-      const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
-      if (!ticket) {
-        throw new Error(stableT('proxyTunnelPage.errors.invalidTicket'));
-      }
-      setProxyUrl(buildProxyUrl(tunnelId, ticket));
+      setProxyUrl(await requestTicketUrl());
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('proxyTunnelPage.errors.prepareConnection'));
       return false;
     }
-  }, [tunnelId, stableT]);
+  }, [requestTicketUrl, stableT]);
+
+  // The iframe's ticket was consumed by the iframe, so the new tab mints its
+  // own. The tab is opened synchronously inside the click (an `await` first
+  // would get it popup-blocked), detached from this window, and navigated
+  // once the ticket arrives.
+  const handleOpenInNewTab = useCallback(async () => {
+    const tab = window.open('about:blank', '_blank');
+    if (!tab) return;
+    tab.opener = null;
+    try {
+      tab.location.replace(await requestTicketUrl());
+    } catch (err) {
+      tab.close();
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : stableT('proxyTunnelPage.errors.prepareConnection'),
+      });
+    }
+  }, [requestTicketUrl, stableT]);
 
   useEffect(() => {
     mintTicket();
@@ -250,15 +276,14 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {proxyUrl && (
-            <a
-              href={proxyUrl}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              type="button"
+              onClick={handleOpenInNewTab}
               className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
               <ExternalLink className="h-4 w-4" />
               {t('proxyTunnelPage.openInNewTab')}
-            </a>
+            </button>
           )}
           <button
             type="button"
