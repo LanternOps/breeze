@@ -20,7 +20,7 @@
  *   resolveAutomationsForDevice, resolveComplianceRulesForDevice,
  *   resolveMaintenanceConfigForDevice, resolveSoftwarePolicyForDevice,
  *   resolveVulnerabilityEnabledForDevice, resolveBackupConfigForDevice,
- *   resolveBackupProtectionForDevice
+ *   resolveBackupProtectionForDevice, resolveSystemProtectionForDevice (#4754)
  *
  * Model: agentPolicyResolversPartnerWide.integration.test.ts (same pattern,
  * for the four agent-facing resolvers in routes/agents/helpers.ts).
@@ -59,6 +59,7 @@ import {
   resolveVulnerabilityEnabledForDevice,
   resolveBackupConfigForDevice,
   resolveBackupProtectionForDevice,
+  resolveSystemProtectionForDevice,
 } from '../../services/featureConfigResolver';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
@@ -257,6 +258,20 @@ async function seedVulnerabilityPolicy(owner: Owner, enabled: boolean): Promise<
       configPolicyId: policyId,
       featureType: 'vulnerability',
       inlineSettings: { enabled },
+    });
+    return policyId;
+  });
+}
+
+// No settings child for system_protection (#4754) — the toggles live in the
+// feature link's inlineSettings JSONB.
+async function seedSystemProtectionPolicy(owner: Owner, inlineSettings: Record<string, unknown>): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const policyId = await createPolicy(owner, 'system protection policy');
+    await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policyId,
+      featureType: 'system_protection',
+      inlineSettings,
     });
     return policyId;
   });
@@ -500,6 +515,71 @@ describe('per-device config-policy resolvers honour partner-wide policies (#2930
         resolveVulnerabilityEnabledForDevice(device.id),
       );
       expect(sighted).toBe(true);
+    });
+  });
+
+  describe('resolveSystemProtectionForDevice (#4754)', () => {
+    // Default (no visible policy) is the platform default: beforeScripts false,
+    // isPlatformDefault true. The seed opts INTO beforeScripts so a resolved
+    // partner-wide row is unmistakable from the default.
+    const SEED = { beforePatching: true, beforeScripts: true, beforeSoftwareInstall: false, labelPrefix: 'Partner MSP' };
+
+    it('resolves a partner-wide policy for a device in a child org under an org-scoped context', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedSystemProtectionPolicy({ orgId: null, partnerId: partner.id }, SEED);
+      await assign(policyId, 'partner', partner.id);
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveSystemProtectionForDevice(device.id),
+      );
+
+      expect(result.isPlatformDefault).toBe(false);
+      expect(result.invalidStoredSettings).toBe(false);
+      expect(result.settings).toEqual(SEED);
+      expect(result.policyRevision).not.toBeNull();
+    });
+
+    it('a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedSystemProtectionPolicy({ orgId: null, partnerId: partner.id }, SEED);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        resolveSystemProtectionForDevice(device.id),
+      );
+      expect(blind.isPlatformDefault).toBe(true);
+      expect(blind.settings.beforeScripts).toBe(false);
+
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveSystemProtectionForDevice(device.id),
+      );
+      expect(sighted.settings.beforeScripts).toBe(true);
+    });
+
+    it('an org-level policy overrides the partner-wide one (closest wins)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const partnerPolicy = await seedSystemProtectionPolicy({ orgId: null, partnerId: partner.id }, SEED);
+      await assign(partnerPolicy, 'partner', partner.id);
+      const orgPolicy = await seedSystemProtectionPolicy({ orgId: org!.id, partnerId: null }, { beforeScripts: false });
+      await assign(orgPolicy, 'organization', org!.id);
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveSystemProtectionForDevice(device.id),
+      );
+      expect(result.settings.beforeScripts).toBe(false);
+      expect(result.settings.labelPrefix).toBe('Breeze');
     });
   });
 
