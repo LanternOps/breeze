@@ -14,6 +14,7 @@ import {
   updateContractLine, type ContractActorT,
 } from '../../services/contractService';
 import { computeOpenHourBlockPeriod } from '../../services/contractHourBlockEstimate';
+import { closeHourBlockPeriods } from '../../services/contractHourBlockClose';
 import { listContractHourPeriods } from '../../services/contractHourPeriodsRead';
 import { computePeriod, periodIndexFor, todayISO } from '../../services/contractMath';
 
@@ -170,6 +171,56 @@ describe('block-hours lines against real Postgres (#4547 W03)', () => {
     await withSystemDbAccessContext(() => db.update(contractLines).set({ hourBlockRetiredAt: new Date() }).where(eq(contractLines.id, row.id)));
     const after = await withSystemDbAccessContext(() => summarizeActiveContractMrrByOrg([f.orgId]));
     expect(Number(after.get(f.orgId)?.find((r) => r.currencyCode === 'USD')?.amount ?? '0')).toBe(0);
+  });
+
+  it('the live figure counts exactly the entries the W02 close later bills: UTC bounds, carry-in from the latest EARLIER row, foreign currency, late entries', async () => {
+    const f = await seedOrg();
+    // Monthly advance contract; the open period under test is [2025-03-01, 2025-04-01).
+    const c = await seedContract(f, { status: 'active', startDate: '2025-01-01', billingTiming: 'advance', nextBillingAt: '2025-04-01' });
+    const [line] = await withSystemDbAccessContext(() => db.insert(contractLines).values({
+      contractId: c.id, orgId: f.orgId, lineType: 'hour_block', description: 'Support block', unitPrice: '1000.00', taxable: false,
+      includedQuantity: '10.00', overageMode: 'bill', overageUnitPrice: '150.00', rolloverPolicy: 'carry_forward',
+      hourBlockFirstPeriodStart: '2025-01-01',
+    }).returning());
+    const row = (periodStart: string, periodEnd: string, carriedOut: string) => ({
+      contractLineId: line!.id, contractId: c.id, orgId: f.orgId, periodStart, periodEnd,
+      includedHours: '10.00', carriedInHours: '0.00', consumedHours: '0.00', overageHours: '0.00', carriedOutHours: carriedOut,
+      entryCount: 0, overageUnitPrice: '150.00', currencyCode: 'USD', closeSource: 'billing_run' as const,
+    });
+    await withSystemDbAccessContext(async () => {
+      // February closed with 3 h carried out. A LATER closed row must not feed the open period's carry-in.
+      await db.insert(contractHourPeriods).values([row('2025-02-01', '2025-03-01', '3.00'), row('2025-05-01', '2025-06-01', '9.00')]);
+      await db.insert(contractBillingPeriods).values({ contractId: c.id, orgId: f.orgId, periodStart: '2025-03-01', periodEnd: '2025-04-01' });
+    });
+    const e = (endedAt: string, minutes: number, over: Record<string, unknown> = {}) => ({
+      partnerId: f.partnerId, orgId: f.orgId, userId: f.userId,
+      startedAt: new Date(new Date(endedAt).getTime() - minutes * 60_000), endedAt: new Date(endedAt),
+      durationMinutes: minutes, isBillable: true, hourlyRate: '100.00', currencyCode: 'USD',
+      billingStatus: 'not_billed' as const, isApproved: true, ...over,
+    });
+    await withSystemDbAccessContext(() => db.insert(timeEntries).values([
+      e('2025-03-01T00:00:00Z', 60),                          // exactly the period start: counted
+      e('2025-03-31T23:59:59Z', 30, { currencyCode: 'EUR' }), // last second, other currency: counted and flagged
+      e('2025-04-01T00:00:00Z', 600),                         // exactly the period end: NOT counted
+      e('2025-02-28T23:59:59Z', 45),                          // inside the closed February: a late entry
+    ]));
+
+    const live = await withSystemDbAccessContext(() => computeOpenHourBlockPeriod(c, line!, new Date('2025-03-15T12:00:00Z')));
+    expect(live).toMatchObject({
+      periodStart: '2025-03-01', periodEnd: '2025-04-01', carriedInHours: 3, consumedHours: 1.5,
+      foreignCurrencyHours: 0.5, remainingHours: 11.5, overageHours: 0, lateEntryHours: 0.75,
+    });
+
+    // Parity: the real close of the same period bills exactly what the live figure showed.
+    const { closes } = await withSystemDbAccessContext(() => closeHourBlockPeriods({
+      contract: c, line: line!, closeSource: 'billing_run', asOf: new Date('2025-04-02T00:00:00Z'),
+      overageInvoice: () => { throw new Error('no overage expected'); },
+    }));
+    expect(closes).toHaveLength(1);
+    expect(closes[0]).toMatchObject({
+      periodStart: live.periodStart, consumedHours: live.consumedHours, carriedInHours: live.carriedInHours,
+      foreignCurrencyHours: live.foreignCurrencyHours, overageHours: live.overageHours, entryCount: 2,
+    });
   });
 
   describe('the open-period read and the partner-axis trap', () => {
