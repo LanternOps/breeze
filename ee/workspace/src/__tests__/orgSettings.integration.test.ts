@@ -55,7 +55,9 @@ describe('putOrgSettings (real DB)', () => {
   });
 
   it('an empty patch on an existing row changes nothing', async () => {
+    await putOrgSettings(db, org, { contentEnabled: true, dlpConfig: CUSTOM });
     const before = await getOrgSettings(db, org);
+    expect(before.dlpConfig).toEqual(CUSTOM);
     expect(await putOrgSettings(db, org, {})).toEqual(before);
   });
 });

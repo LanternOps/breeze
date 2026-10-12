@@ -516,7 +516,17 @@ describe('content routes — #3474 cleanup', () => {
 
   it("rejects a typo'd detector key instead of silently dropping it", async () => {
     const { app } = makeApp({ db: fakeSettingsDb() });
-    expect((await put(app, { dlpConfig: { detectors: { credit_crad: 'block' } } })).status).toBe(400);
+    const res = await put(app, { dlpConfig: { detectors: { credit_crad: 'block' } } });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify((await res.json()).details)).toContain('credit_crad');
+  });
+
+  it('flag gate: exemption is exact — nested /content/settings 404s, real exempt paths pass', async () => {
+    const { app } = makeApp({ db: fakeSettingsDb() }); // content disabled
+    const q = `orgId=${ORG_ID}`;
+    expect((await app.request(`/content/ingest-run/content/settings?${q}`, { method: 'POST' })).status).toBe(404);
+    expect((await app.request(`/content/settings?${q}`)).status).toBe(200);
+    expect((await app.request(`/content/jobs?${q}`)).status).not.toBe(404);
   });
 
   it('still accepts every known detector key', async () => {

@@ -97,6 +97,12 @@ const SEED: SeedFile[] = [
     key: 'blocked', rel: 'Projects/2019-112 Quail Hollow Estates ROS/blocked-file.md',
     entities: [{ type: 'apn', value: '888-777-666' }], blockedDlp: true,
   },
+  // Same shape, but the NAME carries the entity string so the filename arm
+  // still returns it — exercises the matched_entities hydration guard.
+  {
+    key: 'blockedNamed', rel: 'Projects/2019-112 Quail Hollow Estates ROS/999-111-222-blocked.md',
+    entities: [{ type: 'apn', value: '999-111-222' }], blockedDlp: true,
+  },
 ];
 
 async function asOrg<T>(fn: (svc: ReturnType<typeof createContentSearchService>) => Promise<T>): Promise<T> {
@@ -252,6 +258,15 @@ describe('blocked_dlp files (#3474)', () => {
   it('does not surface a blocked_dlp file through an llm-origin entity hit', async () => {
     const results = await asOrg((svc) => svc.search(org, DEVICE, { q: '888-777-666' }));
     expect(results.map((r) => r.id)).not.toContain(ids.blocked);
+  });
+
+  it('never reports llm-origin entities of a blocked_dlp file as matched, even when the file surfaces via another arm', async () => {
+    // The filename arm can still return the blocked file (file-index
+    // metadata); its matched_entities hydration must not leak the entity.
+    const results = await asOrg((svc) => svc.search(org, DEVICE, { q: '999-111-222' }));
+    const hit = results.find((r) => r.id === ids.blockedNamed);
+    expect(hit, 'positive control: blocked file must surface via the filename arm').toBeDefined();
+    expect(hit!.matchedEntities ?? []).toEqual([]);
   });
 });
 
