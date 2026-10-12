@@ -1,7 +1,10 @@
 -- @no-transaction
 -- Tier-1 rows of the 2026-09-06 DB deep-dive (issue #5020) not covered by
--- 2026-10-11-000300-recurring-job-missing-indexes.sql (#5021): three tables
--- read by recurring jobs or hot lookups with no index beyond the primary key.
+-- 2026-10-11-000300-recurring-job-missing-indexes.sql (#5021): recurring-job
+-- and hot-lookup predicates with no covering index. discovery_jobs and
+-- organization_users had nothing beyond the primary key; automations had
+-- partner_id / managed_by_agent_id / managed_by_monitor_id indexes but none
+-- on org_id or enabled.
 --
 -- 1. discovery_jobs — grows one row per scan, forever.
 --    a. (profile_id, status): discoveryWorker's per-profile in-flight check
