@@ -81,6 +81,16 @@ for file in "${GO_VERSION_LITERAL_FILES[@]}"; do
     || note "$file declares no literal go-version — its toolchain is no longer held to agent/go.mod"
 done
 
+# A templated go-version must read the pinned env var exactly; a typo such as
+# `${{ env.GOVERSION }}` expands to empty and would otherwise be skipped below.
+for file in .github/workflows/*.yml; do
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    note "$file go-version templates something other than \${{ env.GO_VERSION }}: $line"
+  done < <(grep -E '^[[:space:]]*go-version:[[:space:]]*.*\{\{' "$file" \
+    | grep -vE '\{\{[[:space:]]*env\.GO_VERSION[[:space:]]*\}\}' || true)
+done
+
 # --- every GO_VERSION env in workflows -------------------------------------
 for file in .github/workflows/*.yml; do
   while IFS= read -r v; do

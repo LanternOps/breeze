@@ -69,7 +69,7 @@ for (const wf of ['ci.yml', 'security.yml', 'release.yml', 'dev-build-agent.yml'
     stripLines(root, wf, /^\s*GO_VERSION:/);
     const r = runPins(root);
     assert.notEqual(r.status, 0, 'deleted GO_VERSION must not pass');
-    assert.match(r.stderr, new RegExp(`${wf.replace('.', '\\.')}.*GO_VERSION`));
+    assert.match(r.stderr, new RegExp(`${wf.replace('.', '\\.')} declares no GO_VERSION`));
   });
 }
 
@@ -78,7 +78,56 @@ test('pin check fails when codeql.yml loses its literal go-version', () => {
   stripLines(root, 'codeql.yml', /^\s*go-version:/);
   const r = runPins(root);
   assert.notEqual(r.status, 0, 'deleted codeql go-version must not pass');
-  assert.match(r.stderr, /codeql\.yml.*go-version/);
+  assert.match(r.stderr, /codeql\.yml declares no literal go-version/);
+});
+
+// Replace a matching line's text in a scratch workflow file.
+function rewrite(root, workflow, re, replacement) {
+  const p = join(root, '.github/workflows', workflow);
+  const before = readFileSync(p, 'utf8');
+  const changed = before.replace(re, replacement);
+  assert.notEqual(changed, before, `fixture precondition: ${workflow} had no text matching ${re}`);
+  writeFileSync(p, changed);
+}
+
+test('pin check fails when a GO_VERSION drifts from agent/go.mod', () => {
+  const root = pinLayout();
+  rewrite(root, 'release.yml', /^(\s*GO_VERSION:\s*)'[^']+'/m, "$1'1.25.12'");
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /release\.yml GO_VERSION=1\.25\.12 !=/);
+});
+
+test('pin check fails when codeql.yml literal go-version drifts', () => {
+  const root = pinLayout();
+  rewrite(root, 'codeql.yml', /^(\s*go-version:\s*)'[^']+'/m, "$1'1.25.12'");
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /codeql\.yml hard-codes go-version: 1\.25\.12/);
+});
+
+test('pin check fails when codeql.yml go-version is only a template', () => {
+  const root = pinLayout();
+  rewrite(root, 'codeql.yml', /^(\s*go-version:\s*)'[^']+'/m, '$1${{ env.GO_VERSION }}');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /codeql\.yml declares no literal go-version/);
+});
+
+test('pin check fails when a go-version template does not read env.GO_VERSION', () => {
+  const root = pinLayout();
+  rewrite(root, 'ci.yml', /go-version: \$\{\{ env\.GO_VERSION \}\}/, 'go-version: ${{ env.GOVERSION }}');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /ci\.yml go-version templates something other than/);
+});
+
+test('pin check fails on a two-part go directive in agent/go.mod', () => {
+  const root = pinLayout();
+  writeFileSync(join(root, 'agent/go.mod'), 'module x\n\ngo 1.26\n');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /fully-qualified/);
 });
 
 test('pin check fails when a required workflow file is missing', () => {
@@ -120,18 +169,21 @@ const FINDING = JSON.stringify({
 test('govulncheck wrapper fails on exit-0 empty output', () => {
   const r = runVuln(vulnLayout(''));
   assert.notEqual(r.status, 0, 'empty output must not read as a clean scan');
+  assert.match(r.stderr, /produced no output/);
   assert.doesNotMatch(r.stdout, /no unallowlisted/);
 });
 
 test('govulncheck wrapper fails on output with no config record', () => {
   const r = runVuln(vulnLayout('{"progress":{"message":"hi"}}\n'));
   assert.notEqual(r.status, 0, 'output without a config record must not pass');
+  assert.match(r.stderr, /no config record/);
   assert.doesNotMatch(r.stdout, /no unallowlisted/);
 });
 
 test('govulncheck wrapper fails on output that is not JSON', () => {
   const r = runVuln(vulnLayout('govulncheck: not json\n'));
   assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /no config record/);
   assert.doesNotMatch(r.stdout, /no unallowlisted/);
 });
 
@@ -145,6 +197,24 @@ test('govulncheck wrapper still fails an unallowlisted symbol-level finding', ()
   const r = runVuln(vulnLayout(`${CONFIG}\n${FINDING}\n`));
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /GO-2099-0001/);
+});
+
+test('govulncheck wrapper honors the allowlist and warns on stale entries', () => {
+  const l = vulnLayout(`${CONFIG}\n${FINDING}\n`);
+  writeFileSync(
+    join(l.root, 'scripts/security/govulncheck-allowlist.txt'),
+    'GO-2099-0001\nGO-2099-9999\n',
+  );
+  const r = runVuln(l);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /ALLOWLISTED GO-2099-0001/);
+  assert.match(r.stdout, /WARN stale allowlist entry GO-2099-9999/);
+});
+
+test('govulncheck wrapper ignores a finding with no symbol-level trace', () => {
+  const pkgOnly = JSON.stringify({ finding: { osv: 'GO-2099-0002', trace: [{ package: 'x' }] } });
+  const r = runVuln(vulnLayout(`${CONFIG}\n${pkgOnly}\n`));
+  assert.equal(r.status, 0, r.stderr);
 });
 
 test('govulncheck wrapper propagates a non-zero govulncheck exit', () => {
