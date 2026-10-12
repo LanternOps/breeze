@@ -73,6 +73,18 @@ function parseEffects(value: unknown): OperatorPlanEffect[] | null {
   return out;
 }
 
+/**
+ * True only when the plan payload is fully parseable AND lists at least one
+ * effect — i.e. the card can show the approver everything they would sign.
+ * The inbox gates Approve on this so the card and the button share one
+ * definition of "readable" (deny is never gated).
+ */
+export function isOperatorPlanReadable(args: unknown): boolean {
+  if (!args || typeof args !== 'object') return false;
+  const effects = parseEffects((args as OperatorPlanArgs).effects);
+  return effects !== null && effects.length > 0;
+}
+
 export default function OperatorPlanApprovalCard({ args }: { args: OperatorPlanArgs | Record<string, unknown> | null | undefined }) {
   const { t } = useTranslation('approvals');
   const a = (args ?? {}) as OperatorPlanArgs;

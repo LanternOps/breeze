@@ -1822,6 +1822,26 @@ describe('ApprovalsInbox — expiry roll-up (sweep G2-10)', () => {
     expect(screen.getAllByTestId(/^operator-plan-effect-/)).toHaveLength(3);
   });
 
+  it('enables Approve for a valid operator_plan', async () => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'operator_plan', actionArguments: PLAN_ARGS }]);
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId(`approval-approve-${pendingApproval.id}`)).toBeEnabled();
+  });
+
+  it.each([
+    ['missing arguments', null],
+    ['malformed effects', { effects: 'nope' }],
+    ['a malformed entry', { effects: [{ ordinal: 0 }] }],
+    ['zero effects', { effects: [] }],
+  ])('disables Approve (deny stays enabled) for an unreadable operator_plan: %s', async (_name, args) => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'operator_plan', actionArguments: args }]);
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId(`approval-approve-${pendingApproval.id}`)).toBeDisabled();
+    expect(screen.getByTestId(`approval-deny-${pendingApproval.id}`)).toBeEnabled();
+  });
+
   it('does NOT render the operator plan card for any other tool', async () => {
     routeFetch([{ ...pendingApproval, actionToolName: 'run_script' }]);
     render(<ApprovalsInbox />);

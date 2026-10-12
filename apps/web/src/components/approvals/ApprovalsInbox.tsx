@@ -51,7 +51,7 @@ import {
   type SortOrder,
 } from './approvalGrouping';
 import DiagnosticAccessApprovalDetails, { isDiagnosticAccessApproval } from './DiagnosticAccessApprovalDetails';
-import OperatorPlanApprovalCard, { isOperatorPlanApproval } from './OperatorPlanApprovalCard';
+import OperatorPlanApprovalCard, { isOperatorPlanApproval, isOperatorPlanReadable } from './OperatorPlanApprovalCard';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 /** WS is only a nudge; polling is the guarantee. useEventStream gives up
@@ -1024,6 +1024,11 @@ export default function ApprovalsInbox() {
     // once the next poll removes it.
     const expired = isExpired(approval.expiresAt, now);
     const actionsDisabled = busy || expired;
+    // An operator_plan the card cannot render (malformed / zero effects) must
+    // not be approvable: the approver would be signing what they cannot read.
+    const approveDisabled =
+      actionsDisabled ||
+      (isOperatorPlanApproval(approval.actionToolName) && !isOperatorPlanReadable(approval.actionArguments));
     // W03 (#5612): only a run_script row fanned out from a proposal carries
     // this — every other tool keeps the plain risk-summary line.
     const proposalId =
@@ -1246,7 +1251,7 @@ export default function ApprovalsInbox() {
             <button
               type="button"
               onClick={() => void decide(approval, 'approve')}
-              disabled={actionsDisabled}
+              disabled={approveDisabled}
               // emerald-600 + white text is only ~3.8:1 (fails AA); emerald-700
               // clears 4.5:1 in both themes (this button carries no dark:
               // override — it is a solid fill, unaffected by page theme).
@@ -1264,7 +1269,7 @@ export default function ApprovalsInbox() {
               <button
                 type="button"
                 onClick={() => openAlwaysAllow(approval, alwaysAllow.opKey, alwaysAllow.kind)}
-                disabled={actionsDisabled}
+                disabled={approveDisabled}
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-emerald-600 px-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
                 data-testid={`approval-always-allow-${approval.id}`}
               >
