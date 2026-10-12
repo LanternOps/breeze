@@ -555,6 +555,7 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'trash_metadata_too_large',
   'unsupported_encoding',
   'invalid_argument',
+  'scan_in_progress',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];
