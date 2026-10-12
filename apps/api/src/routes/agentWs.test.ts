@@ -49,6 +49,17 @@ vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
+const { shouldDeferOfflineTransitionMock, recordOfflineDeferredMock } = vi.hoisted(() => ({
+  shouldDeferOfflineTransitionMock: vi.fn(() => false),
+  recordOfflineDeferredMock: vi.fn(),
+}));
+vi.mock('../services/admission/admissionRuntime', () => ({
+  shouldDeferOfflineTransition: shouldDeferOfflineTransitionMock,
+}));
+vi.mock('../services/admission/admissionMetrics', () => ({
+  recordOfflineDeferred: recordOfflineDeferredMock,
+}));
+
 const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
   recordDesktopClipboardSummaryMock: vi.fn(async () => 'recorded'),
 }));
@@ -7140,5 +7151,50 @@ describe('WebSocket desktop fallback start results', () => {
     vi.mocked(closeDesktopRelayForStop).mockClear();
     sendCommandToAgent('agent-stop-relay', { id: 'c-script', type: 'script', payload: { sessionId: SESSION } });
     expect(closeDesktopRelayForStop).not.toHaveBeenCalled();
+  });
+});
+
+describe('W08 admission integration', () => {
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // resetAllMocks drops the hoisted default; re-arm the not-shedding state.
+    shouldDeferOfflineTransitionMock.mockReturnValue(false);
+  });
+
+  async function openThenClose(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
+    ]) as any);
+    await handlers.onClose({}, ws as any);
+  }
+
+  it('leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('close');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled(); // presence still cleared at once
+  });
+
+  it('still flips offline at once when admission is not shedding', async () => {
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the admission setup slot when onOpen finishes, and on a close that skipped onOpen', async () => {
+    const opened = { release: vi.fn() };
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent, opened), wsMock());
+    expect(opened.release).toHaveBeenCalled();
+
+    const neverOpened = { release: vi.fn() };
+    await createAgentWsHandlers('agent-456', preValidatedAgent, neverOpened).onClose({}, wsMock() as any);
+    expect(neverOpened.release).toHaveBeenCalledTimes(1);
   });
 });
