@@ -23,6 +23,17 @@ describe('portal_branding.chrome_accent export policy', () => {
   });
 });
 
+describe('portal_branding.enable_patch_detail export policy (portal visibility W05)', () => {
+  it('is mapped and included (plain boolean, not jsonb/bytea)', () => {
+    expect(
+      getTenantExportPolicyRegistry()['portal_branding']?.columns['enable_patch_detail']?.decision,
+    ).toBe('include');
+    expect(
+      (getTableColumns(portalBranding) as Record<string, { name: string }>)['enablePatchDetail']?.name,
+    ).toBe('enable_patch_detail');
+  });
+});
+
 describe('portal_branding.enable_hour_block export policy (block hours W04)', () => {
   it('is mapped and included (plain boolean, not jsonb/bytea, no SUSPICIOUS_NAME_PARTS hit)', () => {
     expect(

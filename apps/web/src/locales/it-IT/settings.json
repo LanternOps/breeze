@@ -1990,6 +1990,10 @@
           "label": "Avvisi di rete",
           "description": "Mostra nel portale cliente il numero di avvisi attivi e i ticket aperti collegati agli asset di rete."
         },
+        "enablePatchDetail": {
+          "label": "Dettaglio patch",
+          "description": "Mostra a tutti gli accessi al portale di questa organizzazione le patch in sospeso, installate e non riuscite di ogni dispositivo (titolo, gravità, versione, link KB). Rivela quali macchine non hanno le patch. Non viene attivato da Abilita tutta la visibilità."
+        },
         "enableHourBlock": {
           "label": "Ore di assistenza",
           "description": "Mostra le ore prepagate del pacchetto utilizzate e rimanenti nella sezione Utilizzo assistenza del cliente. Richiede Utilizzo assistenza. Non viene attivato abilitando tutta la visibilità."

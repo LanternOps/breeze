@@ -1990,6 +1990,10 @@
           "label": "Alertas de rede",
           "description": "Exibe no portal do cliente a contagem de alertas ativos e os chamados abertos vinculados aos ativos de rede."
         },
+        "enablePatchDetail": {
+          "label": "Detalhes de patches",
+          "description": "Mostra a todos os logins do portal desta organização os patches pendentes, instalados e com falha de cada dispositivo (título, gravidade, versão, link KB). Isso revela quais máquinas estão sem patches. Não é ativado por Ativar toda a visibilidade."
+        },
         "enableHourBlock": {
           "label": "Horas de suporte",
           "description": "Mostra as horas pré-pagas do pacote usadas e restantes dentro da seção de uso de suporte do cliente. Requer Uso de suporte. Não é ativado ao habilitar toda a visibilidade."

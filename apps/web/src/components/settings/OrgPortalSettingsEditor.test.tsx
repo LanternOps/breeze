@@ -40,6 +40,7 @@ const SETTINGS = {
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   enableHourBlock: false,
+  enablePatchDetail: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -241,6 +242,35 @@ describe('OrgPortalSettingsEditor', () => {
     const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
     expect(JSON.parse(String(patchCall![1]!.body)).enableSoftwareInventory).toBe(true);
   });
+
+  it('keeps patch detail (sensitive) off through "Enable all" and saves it when toggled individually', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const toggle = screen.getByTestId('org-portal-toggle-enablePatchDetail') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enablePatchDetail).toBe(true);
+  });
+
+  it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
+    'has a translated patch detail label and description in %s',
+    async (locale) => {
+      const catalog = (await import(`../../locales/${locale}/settings.json`)).default as {
+        orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
+      };
+      const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enablePatchDetail;
+      expect(entry?.label.length).toBeGreaterThan(0);
+      expect(entry?.description.length).toBeGreaterThan(0);
+    },
+  );
 
   it('leaves every sensitive flag off when "Enable all" is clicked', async () => {
     mockApi();

@@ -1990,6 +1990,10 @@
           "label": "Ağ uyarıları",
           "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."
         },
+        "enablePatchDetail": {
+          "label": "Yama ayrıntısı",
+          "description": "Bu kuruluşun tüm portal girişlerine her cihazın bekleyen, yüklenen ve başarısız yamalarını (başlık, önem derecesi, sürüm, KB bağlantısı) gösterir. Hangi makinelerde yama eksik olduğunu açığa çıkarır. Tüm görünürlüğü etkinleştir seçeneğiyle açılmaz."
+        },
         "enableHourBlock": {
           "label": "Destek saatleri",
           "description": "Müşterinin destek kullanımı bölümünde ön ödemeli saat paketinin kullanılan ve kalan saatlerini gösterir. Destek kullanımı gerektirir. Tüm görünürlüğü etkinleştirdiğinizde açılmaz."

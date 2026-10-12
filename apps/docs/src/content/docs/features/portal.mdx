@@ -50,6 +50,7 @@ The service-insight sections — Dashboard, Security, Backups, Reports, support 
 | **Reports** | Off | The ability to generate and download approved reports |
 | **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
 | **Support hours** | Off | A read-only card inside the Support section showing prepaid block hours used and remaining. Requires **Support usage**. Not turned on by **Enable all visibility** -- switch it on per customer |
+| **Patch detail** | Off | A read-only list of each device's pending, installed and failed patches (title, severity, version, vendor KB link). **Sensitive:** every portal login for the organization sees which machines are missing patches, so **Enable all visibility** deliberately leaves it off -- switch it on per customer. It never shows error text, failure counts, or anything about your patch policies, approvals or jobs, and patches the agent no longer reports (or that you skipped) are left out |
 | **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
 | **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
 | **Hardware lifecycle** | Off | The live replacement plan for the customer's machines — see [Hardware Lifecycle](#hardware-lifecycle) below |
@@ -459,6 +460,8 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `POST` | `/tickets/:id/comments` | Yes | Add a comment to a ticket |
 | `GET` | `/tickets/usage` | Yes | Month-to-date billable support time. Requires **Support usage** visibility |
 | `GET` | `/support-usage/hour-block` | Yes | The live block-hours balance for the organization, or `null`. Requires **Support usage** and **Support hours** visibility |
+| `GET` | `/patches/summary` | Yes | Per-patch counts of pending, failed and installed devices for the organization. Requires **Patch detail** visibility |
+| `GET` | `/patches/devices/:deviceId` | Yes | One device's pending, installed and failed patches. Requires **Patch detail** visibility |
 
 ### Invoices
 

@@ -5,7 +5,8 @@ import {
   bulkInvitePortalUsersSchema,
   updatePortalUserSchema,
   findUnsafePortalCssPattern,
-  PORTAL_CUSTOM_CSS_MAX_LENGTH
+  PORTAL_CUSTOM_CSS_MAX_LENGTH,
+  PORTAL_SENSITIVE_FLAG_KEYS
 } from './portal';
 
 describe('updatePortalSettingsSchema', () => {
@@ -273,6 +274,8 @@ describe('updatePortalSettingsSchema W04 flags', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableHardwareInventory: true }).success).toBe(true);
     expect(updatePortalSettingsSchema.safeParse({ enablePerformanceMetrics: true }).success).toBe(true);
     expect(updatePortalSettingsSchema.safeParse({ enableSoftwareInventory: true }).success).toBe(true);
+    expect(updatePortalSettingsSchema.safeParse({ enablePatchDetail: true }).success).toBe(true);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
   });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);

@@ -83,6 +83,10 @@ export const portalBranding = pgTable('portal_branding', {
   // enableNetworkAlerts — it is NOT part of PORTAL_VISIBILITY_FLAG_KEYS /
   // "Enable all".
   enableHourBlock: boolean('enable_hour_block').notNull().default(false),
+  // Portal Advanced Visibility W05 (#7735): read-only per-host patch status.
+  // Sensitive (points at patch gaps): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
+  // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enablePatchDetail: boolean('enable_patch_detail').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

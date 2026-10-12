@@ -15,7 +15,8 @@ export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 // the portal advanced visibility feature (#7730) add enablePatchDetail and
 // enableVulnerabilityDetail.
 // enableHourBlock (block hours W04) exposes a prepaid-hours balance.
-export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts', 'enableHourBlock'] as const;
+// enablePatchDetail (visibility W05) exposes per-host missing/pending patches.
+export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail'] as const;
 export type PortalSensitiveFlag = typeof PORTAL_SENSITIVE_FLAG_KEYS[number];
 
 // This CSS is served verbatim to end users of the customer portal (no
@@ -130,6 +131,9 @@ export const updatePortalSettingsSchema = z.object({
   // Block hours W04 (#8179): fail closed, default false. NOT a visibility
   // flag ("Enable all" never sets it).
   enableHourBlock: z.boolean().optional(),
+  // Portal advanced visibility W05 (#7735): patch detail, fail closed. Sensitive:
+  // "Enable all" never sets it.
+  enablePatchDetail: z.boolean().optional(),
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),

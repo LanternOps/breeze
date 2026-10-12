@@ -72,6 +72,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enablePerformanceMetrics', 'PORTAL_PERFORMANCE_METRICS_DISABLED'],
     ['enableSoftwareInventory', 'PORTAL_SOFTWARE_INVENTORY_DISABLED'],
     ['enableHourBlock', 'PORTAL_HOUR_BLOCK_DISABLED'],
+    ['enablePatchDetail', 'PORTAL_PATCH_DETAIL_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -105,6 +106,15 @@ describe('createPortalFeatureGateStrict', () => {
   it('continues when enablePerformanceMetrics is explicitly true', async () => {
     dbState.rows = [{ enablePerformanceMetrics: true }];
     expect((await createTestApp('enablePerformanceMetrics').request('/protected')).status).toBe(200);
+  });
+
+  it('enablePatchDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enablePatchDetail: true }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enablePatchDetail: 'true' }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enablePatchDetail: null }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
   });
 
   it('enableHourBlock: continues only when the flag is strictly true', async () => {

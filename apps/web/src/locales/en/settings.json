@@ -1990,6 +1990,10 @@
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
         },
+        "enablePatchDetail": {
+          "label": "Patch detail",
+          "description": "Show every portal login of this organization each device's pending, installed and failed patches (title, severity, version, KB link). This reveals which machines are missing patches. Not turned on by Enable all visibility."
+        },
         "enableHourBlock": {
           "label": "Support hours",
           "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."

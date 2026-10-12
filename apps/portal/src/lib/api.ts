@@ -832,6 +832,8 @@ export interface BrandingConfig {
   enableNetworkVisibility?: boolean;
   /** Block hours W04 (#8179): MSP turned the Support hours card on for this org. */
   enableHourBlock?: boolean;
+  /** Visibility W05 (#7735): MSP turned sensitive per-host patch detail on for this org. */
+  enablePatchDetail?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -876,7 +878,34 @@ export interface PortalSoftwarePage<T = PortalSoftwareItem> {
   pagination: { page: number; limit: number; total: number };
 }
 
+export type PortalPatchStatus = 'pending' | 'installed' | 'failed';
+export interface PortalPatchSummaryItem {
+  title: string;
+  severity: string;
+  version: string | null;
+  kbArticleUrl: string | null;
+  pendingDevices: number;
+  failedDevices: number;
+  installedDevices: number;
+  lastCheckedAt: string | null;
+}
+export interface PortalDevicePatchItem {
+  title: string;
+  severity: string;
+  version: string | null;
+  kbArticleUrl: string | null;
+  status: PortalPatchStatus;
+  installedAt: string | null;
+  installedVersion: string | null;
+  availableVersion: string | null;
+  lastCheckedAt: string | null;
+}
+
 export const portalApi = {
+  getPatchSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalPatchSummaryItem>>> =>
+    apiGet<PortalSoftwarePage<PortalPatchSummaryItem>>('/portal/patches/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
+  getDevicePatches: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalDevicePatchItem>>> =>
+    apiGet<PortalSoftwarePage<PortalDevicePatchItem>>('/portal/patches/devices/' + encodeURIComponent(deviceId) + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getSoftwareSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>
     apiGet<PortalSoftwarePage>('/portal/software/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getDeviceSoftware: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>

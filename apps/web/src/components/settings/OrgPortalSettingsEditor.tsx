@@ -33,6 +33,7 @@ type PortalSettings = {
   enableNetworkVisibility: boolean;
   enableNetworkAlerts: boolean;
   enableHourBlock: boolean;
+  enablePatchDetail: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -81,7 +82,8 @@ type VisibilityToggleKey =
   | 'enableSoftwareInventory'
   | 'enableNetworkVisibility'
   | 'enableNetworkAlerts'
-  | 'enableHourBlock';
+  | 'enableHourBlock'
+  | 'enablePatchDetail';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -177,6 +179,14 @@ const VISIBILITY_TOGGLES: Array<{
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.description',
     requires: 'enableSupportUsage',
+  },
+  // Sensitive (visibility W05, #7735): shows every portal login of the org which
+  // devices are missing patches. Deliberately left out of enableAllVisibility()
+  // below; listed in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enablePatchDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.description',
   },
 ];
 
@@ -274,6 +284,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableNetworkVisibility: draft.enableNetworkVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
+            enablePatchDetail: draft.enablePatchDetail,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
