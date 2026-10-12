@@ -206,6 +206,28 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
     expect(upsertFilesystemScanState).not.toHaveBeenCalled();
   });
+
+  it('keeps the generation for any other failure code', async () => {
+    await handleFilesystemAnalysisCommandResult(
+      baselineCommand(),
+      { commandId: 'c', status: 'failed', exitCode: 1, error: 'path does not exist', errorCode: 'path_not_found' } as never,
+      ORG_ID,
+    );
+    expect(clearFilesystemScanGeneration).not.toHaveBeenCalled();
+  });
+
+  it('warns and releases nothing when the refused command\u2019s device row is gone', async () => {
+    selectQueue.push([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await handleFilesystemAnalysisCommandResult(
+      baselineCommand(),
+      { commandId: 'c', status: 'failed', exitCode: 1, error: 'busy', errorCode: 'scan_in_progress' } as never,
+      ORG_ID,
+    );
+    expect(clearFilesystemScanGeneration).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scan generation not released'));
+    warn.mockRestore();
+  });
 });
 
 describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1)', () => {

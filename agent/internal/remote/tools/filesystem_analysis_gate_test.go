@@ -67,6 +67,21 @@ func TestFilesystemScanGateRefusesConcurrentScan(t *testing.T) {
 	}
 }
 
+// The command-handler entry point must go through the agent-wide gate, not
+// call AnalyzeFilesystem directly.
+func TestAnalyzeFilesystemCommandUsesDefaultGate(t *testing.T) {
+	release, running := defaultFilesystemScanGate.tryBegin("cmd-held", time.Now())
+	if running != nil {
+		t.Fatalf("default gate unexpectedly held by %+v", running)
+	}
+	defer release()
+
+	got := AnalyzeFilesystemCommand("cmd-new", map[string]any{"path": t.TempDir()})
+	if got.ErrorCode != wire.ErrCodeScanInProgress || !strings.Contains(got.Error, "cmd-held") {
+		t.Fatalf("AnalyzeFilesystemCommand bypassed the default gate: status=%q code=%q err=%q", got.Status, got.ErrorCode, got.Error)
+	}
+}
+
 // A walker that panics must not wedge the gate shut for the agent's lifetime.
 func TestFilesystemScanGateReleasesOnPanic(t *testing.T) {
 	gate := &filesystemScanGate{}

@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"log/slog"
 	"runtime"
 
 	"golang.org/x/sys/windows"
@@ -40,10 +41,13 @@ func beginBackgroundIO() func() {
 	runtime.LockOSThread()
 	if err := setCurrentThreadPriority(threadModeBackgroundBegin); err != nil {
 		runtime.UnlockOSThread()
+		slog.Warn("filesystem analysis: could not enter background I/O mode; walking at normal priority", "error", err.Error())
 		return func() {}
 	}
 	return func() {
 		if err := setCurrentThreadPriority(threadModeBackgroundEnd); err != nil {
+			// Stay locked: the goroutine's exit then terminates this thread.
+			slog.Warn("filesystem analysis: could not leave background I/O mode; retiring the worker thread", "error", err.Error())
 			return
 		}
 		runtime.UnlockOSThread()

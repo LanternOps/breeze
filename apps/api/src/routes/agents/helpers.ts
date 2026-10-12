@@ -1691,7 +1691,12 @@ async function releaseRefusedFilesystemScanGeneration(
     .from(devices)
     .where(eq(devices.id, command.deviceId))
     .limit(1);
-  if (!deviceRow) return;
+  if (!deviceRow) {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} refused as scan_in_progress but device ${command.deviceId} has no devices row; scan generation not released`
+    );
+    return;
+  }
   const payload = isObject(command.payload) ? command.payload : {};
   const scanPath = normalizeScanPath(deviceRow.osType, asString(payload.path) ?? osRootScanPath(deviceRow.osType));
   await clearFilesystemScanGeneration(command.deviceId, scanPath, command.id);
