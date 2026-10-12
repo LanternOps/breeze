@@ -1951,7 +1951,13 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
   const implicitOpen = Boolean(assigneeId) && ticket.status === 'new';
-  if (implicitOpen) patch.status = 'open';
+  if (implicitOpen) {
+    patch.status = 'open';
+    // Keep statusId in step with status (as changeTicketStatus does), so the
+    // row and the ticket.status_changed payload below agree.
+    const partnerId = await resolveTicketPartnerId(ticket);
+    patch.statusId = partnerId ? await getSystemStatusId(partnerId, 'open') : null;
+  }
 
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db

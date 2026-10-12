@@ -2219,6 +2219,21 @@ describe('assignTicket — additional status cases', () => {
     expect(rows[1].payload).toEqual({ from: 'new', to: 'open', statusId: null });
   });
 
+  it('stamps the open system statusId on the ticket and carries it in the status_changed row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', statusId: 's-new', assignedTo: null
+    }]);
+    configMocks.getSystemStatusId.mockResolvedValueOnce('s-open');
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: 's-open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(configMocks.getSystemStatusId).toHaveBeenCalledWith('p-1', 'open');
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ status: 'open', statusId: 's-open' });
+    expect(outboxRows()[1].payload).toEqual({ from: 'new', to: 'open', statusId: 's-open' });
+  });
+
   it('assigns on open ticket: no ticket.status_changed outbox row (#8367)', async () => {
     dbMocks.selectResult.mockResolvedValue([{
       id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null
