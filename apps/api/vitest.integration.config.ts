@@ -44,6 +44,8 @@ export default defineConfig({
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
       'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency (W05 #8194): the pass under real RLS + the system-only cache.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
       // proof and BMC discovery-worker/topology-publish suites. Import
       // `__tests__/integration/setup` (real postgres pool + autoMigrate).

@@ -87,6 +87,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
+  'container_image_upstream_cache', // Workload image currency W05 (#8194, spec §9.3): global cache of what PUBLIC registries serve per registry/repository:tag — no tenant column by design (fleet-wide dedup, D13). Forced RLS, single system-only policy, NO permissive SELECT (keys are derived from what tenants run). Written only by the imageCurrencyWorker for anonymous lookups that succeeded; private/failed results land only on the tenant's own device_workloads rows. No org_id/device_id, so no cascade, merge or export registration applies.
   'pam_ledger_retirements', // PAM ownership epochs (#8203, spec §4.5): identifier-only markers (device_id, actuation_id, epoch) — no org, no evidence. Forced RLS, single system-only policy; written only by the SECURITY DEFINER devices org-change trigger, read only by system-scope lineage lookups. Lives with the device (FK ON DELETE CASCADE + CORE_DEVICE_CASCADE_DELETE_TABLES).
   'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.

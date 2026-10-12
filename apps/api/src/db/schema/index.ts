@@ -18,6 +18,7 @@ export * from './devices';
 export * from './hardwareHealth';
 export * from './timeSync';
 export * from './deviceWorkloads';
+export * from './containerImageUpstreamCache';
 export * from './deviceExternalLinks';
 export * from './deviceCustomFieldValues';
 export * from './deviceFunctionAssessments';

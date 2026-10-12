@@ -111,6 +111,8 @@ const EXPECTED_WORKER_NAMES = [
   'fixOutcomeWorker',
   // AI model registry W01 (#7599).
   'aiModelDiscoveryWorker',
+  // Workload image currency W05 (#8194).
+  'imageCurrencyWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

@@ -1745,6 +1745,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeAiModelDiscoveryWorker, shutdown: m.shutdownAiModelDiscoveryWorker };
     },
   },
+  // Workload image currency W05 (#8194): 30-minute registry pass. `global`:
+  // its closure is db + services/imageCurrency (urlSafety), never routes or
+  // socket-local dispatch (workerEntrypointClosure.contract.test.ts).
+  {
+    name: 'imageCurrencyWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/imageCurrencyWorker');
+      return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {
