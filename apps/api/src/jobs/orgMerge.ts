@@ -62,6 +62,7 @@ import { enqueueTenantErasure } from './tenantErasure';
 import { createAuditLog, type CreateAuditLogParams } from '../services/auditService';
 import { removeOrgFromPartnerOrder } from '../services/orgOrdering';
 import { resolveMergePerformerRefusal } from '../services/orgMergePerformerAuthority';
+import { EVIDENCE_HOLD_DEFERRED_ACTION, findEvidenceHold } from '../services/orgEvidenceHold';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'org-merge';
@@ -180,7 +181,28 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
   // merge that did not commit.
   const result: OrgMergeResult = await executeOrgMerge(input);
 
-  // Phase C — dispose.
+  await runMergePhaseC(input, result);
+
+  return { ...result, jobId: job.id };
+}
+
+/**
+ * Phase C — dispose. Runs only after `executeOrgMerge` committed Phase B.
+ *
+ * Exported as the engine test hook for PAM ownership epochs W5 (#8207): until
+ * W6 the `blocks-merge` refusal keeps Phase B from ever committing a merge
+ * whose loser owns PAM evidence, so the evidence-hold tests build the
+ * post-Phase-B state by hand and drive this directly.
+ *
+ * A loser kept as an evidence-hold shell is NOT handed to erasure: its PAM
+ * chain still lives under its org_id, and erasure would destroy it. The skip
+ * is audited (`tenant.erasure.deferred_evidence_hold`, org-less). The hold is
+ * re-read from the database rather than taken from `result`, so a result
+ * built by any other path cannot talk Phase C into erasing a held shell; and
+ * `cascadeDeleteOrg` refuses a held shell independently of this check.
+ */
+export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMergeResult): Promise<void> {
+  const { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail } = input;
   await writeAudit({
     orgId: null,
     actorType: 'user',
@@ -198,19 +220,42 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
     result: 'success',
   });
 
-  const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
+  const hold = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => findEvidenceHold(loserOrgId)),
+  );
+  if (hold) {
+    await writeAudit({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: EVIDENCE_HOLD_DEFERRED_ACTION,
+      resourceType: 'organization',
+      resourceId: loserOrgId,
+      details: {
+        stage: 'merge_phase_c',
+        survivorOrgId: hold.survivorOrgId,
+        mergeEventId: hold.mergeEventId,
+        holdReason: hold.reason,
+        note: 'the merged-away organization still owns privileged-access evidence; its shell is kept (deleted, non-operational) and is erased with the surviving organization or once retention empties its evidence',
+      },
+      result: 'success',
+    });
+  } else {
+    const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
 
-  await writeAudit({
-    orgId: null,
-    actorType: 'user',
-    actorId: performedBy,
-    actorEmail: performedByEmail,
-    action: 'org.merge.erasure_enqueued',
-    resourceType: 'organization',
-    resourceId: loserOrgId,
-    details: { erasureJobId: erasureJob.id },
-    result: 'success',
-  });
+    await writeAudit({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'org.merge.erasure_enqueued',
+      resourceType: 'organization',
+      resourceId: loserOrgId,
+      details: { erasureJobId: erasureJob.id },
+      result: 'success',
+    });
+  }
 
   // Cosmetic, best-effort: never lets a failure here mask a completed
   // merge + enqueued erasure, which are the parts that actually matter.
@@ -222,8 +267,6 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
       err,
     );
   }
-
-  return { ...result, jobId: job.id };
 }
 
 export function createOrgMergeWorker(): Worker {

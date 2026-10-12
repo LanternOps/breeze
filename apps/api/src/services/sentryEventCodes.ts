@@ -309,6 +309,13 @@ export const SENTRY_EVENT_CODES = [
    */
   'tenant_erasure_refused_legal_hold',
   /**
+   * cascadeDeleteOrg refused to erase a merged-away org shell kept under an
+   * org_evidence_holds row (PAM ownership epochs W5). The shell is erased with
+   * its survivor or after retention empties its evidence; a direct erasure
+   * attempt means some path tried to bypass that.
+   */
+  'tenant_erasure_deferred_evidence_hold',
+  /**
    * Helper screenshot files could not be removed after their rows were
    * deleted (org erasure, device purge, site delete) or by the orphan sweep
    * (#8117). The rows are already gone, so the bytes are customer data with no
