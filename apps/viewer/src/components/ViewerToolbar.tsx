@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal, Eye, Lock } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal, Eye, Lock, Camera, Activity } from 'lucide-react';
 import type { TransportCapabilities } from '../lib/transports/types';
 import { transportHasQualityControls } from '../lib/transportTuning';
 import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
@@ -94,6 +94,12 @@ interface Props {
   /** Block the remote user's keyboard and mouse (#966), rendered from the agent's reply. */
   blockLocalInput?: BlockLocalInputState;
   onToggleBlockLocalInput?: () => void;
+  /** Stats overlay (RTT, fps, bitrate, loss, codec, transport), off by default. */
+  statsOverlay?: boolean;
+  onStatsOverlayChange?: (on: boolean) => void;
+  /** Screenshot of the current frame, kept on this machine. */
+  onCopyScreenshot?: () => void;
+  onSaveScreenshot?: () => void;
 }
 
 interface KeyCombo {
@@ -211,6 +217,10 @@ export default function ViewerToolbar({
   onViewScalingChange,
   blockLocalInput,
   onToggleBlockLocalInput,
+  statsOverlay = false,
+  onStatsOverlayChange,
+  onCopyScreenshot,
+  onSaveScreenshot,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
   const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
@@ -231,6 +241,8 @@ export default function ViewerToolbar({
   const SlidersIcon = SlidersHorizontal as unknown as ComponentType<{ className?: string }>;
   const EyeIcon = Eye as unknown as ComponentType<{ className?: string }>;
   const LockIcon = Lock as unknown as ComponentType<{ className?: string }>;
+  const CameraIcon = Camera as unknown as ComponentType<{ className?: string }>;
+  const ActivityIcon = Activity as unknown as ComponentType<{ className?: string }>;
 
   // Transport label: a crisp lucide glyph + text, replacing emoji so the badge
   // matches the rest of the toolbar's monochrome icon vocabulary.
@@ -867,6 +879,49 @@ export default function ViewerToolbar({
                   {blockLocalInput?.pending ? 'Block remote input…' : 'Block remote input'}
                 </span>
                 {blockLocalInput?.blocked && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Stats overlay */}
+            {onStatsOverlayChange && (
+              <button
+                role="menuitemcheckbox"
+                aria-checked={statsOverlay}
+                data-testid="toggle-stats-overlay"
+                onClick={() => onStatsOverlayChange(!statsOverlay)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+              >
+                <span className="flex items-center gap-2">
+                  <ActivityIcon className="w-3.5 h-3.5" />
+                  Stats overlay
+                </span>
+                {statsOverlay && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Screenshot of the current frame: local only */}
+            {onCopyScreenshot && (
+              <button
+                role="menuitem"
+                data-testid="copy-screenshot"
+                disabled={status !== 'connected'}
+                onClick={() => { onCopyScreenshot(); setMoreOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                <CameraIcon className="w-3.5 h-3.5" />
+                Copy screenshot
+              </button>
+            )}
+            {onSaveScreenshot && (
+              <button
+                role="menuitem"
+                data-testid="save-screenshot"
+                disabled={status !== 'connected'}
+                onClick={() => { onSaveScreenshot(); setMoreOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                <CameraIcon className="w-3.5 h-3.5" />
+                Save screenshot
               </button>
             )}
 

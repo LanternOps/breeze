@@ -62,6 +62,15 @@ import {
   type BlockLocalInputState,
 } from '../lib/blockLocalInput';
 import { mediaClassName, scrollerClassName, type ViewScaling } from '../lib/displayScaling';
+import type { StatsSample } from '../lib/statsReporter';
+import { statsOverlayRows } from '../lib/statsOverlay';
+import { captureFramePng, screenshotFailureMessage } from '../lib/screenshot';
+import {
+  createKeyboardLockController,
+  getKeyboardLockApi,
+  shouldLockKeyboard,
+  type KeyboardLockController,
+} from '../lib/keyboardLock';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
 
@@ -372,6 +381,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [viewScaling, setViewScaling] = useState<ViewScaling>('fit');
   const [blockLocalInput, setBlockLocalInput] = useState<BlockLocalInputState>(INITIAL_BLOCK_LOCAL_INPUT);
   const blockLocalInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stats overlay (#8241): off by default; the reporter only pushes samples
+  // into state while it is on.
+  const [statsOverlay, setStatsOverlay] = useState(false);
+  const statsOverlayRef = useRef(false);
+  const [statsSample, setStatsSample] = useState<StatsSample | null>(null);
+  const keyboardLockRef = useRef<KeyboardLockController | null>(null);
+  if (!keyboardLockRef.current) keyboardLockRef.current = createKeyboardLockController(getKeyboardLockApi());
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
@@ -1373,9 +1389,38 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const stop = createStatsReporter({
       getConnection: () => webrtcRef.current,
       log: (summary) => console.log(`[WebRTC stats] ${summary}`),
+      onSample: (sample) => {
+        if (statsOverlayRef.current) setStatsSample(sample);
+      },
     });
     return stop;
   }, [transport]);
+
+  // Keyboard Lock (K9, #8241): in fullscreen, Alt-Tab / Win / Esc go to the
+  // remote where the webview supports it (WebView2); a no-op elsewhere.
+  useEffect(() => {
+    const keyboardLock = keyboardLockRef.current;
+    if (!keyboardLock) return;
+    const sync = (focused = document.hasFocus()) => keyboardLock.sync(shouldLockKeyboard({
+      fullscreen: !!document.fullscreenElement,
+      focused,
+      connected: status === 'connected',
+      viewOnly,
+    }));
+    const onChange = () => sync();
+    const onBlur = () => sync(false);
+    sync();
+    document.addEventListener('fullscreenchange', onChange);
+    window.addEventListener('focus', onChange);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      window.removeEventListener('focus', onChange);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [status, viewOnly]);
+
+  useEffect(() => () => { keyboardLockRef.current?.release(); }, []);
 
   // Request monitor list and listen for control channel responses (WebRTC only)
 	  useEffect(() => {
@@ -2416,6 +2461,65 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     vncSessionRef.current?.setViewOnly(next);
   }, [releaseAllKeys]);
 
+  const handleStatsOverlayChange = useCallback((on: boolean) => {
+    statsOverlayRef.current = on;
+    setStatsOverlay(on);
+    if (!on) setStatsSample(null);
+  }, []);
+
+  // Screenshot (#8241): the frame on screen, from whichever transport is live.
+  const captureScreenshot = useCallback(async (): Promise<Blob | null> => {
+    switch (transportRef.current) {
+      case 'webrtc': {
+        const video = videoRef.current;
+        return video ? captureFramePng({ kind: 'video', video }) : null;
+      }
+      case 'websocket': {
+        const canvas = canvasRef.current;
+        return canvas ? captureFramePng({ kind: 'canvas', canvas }) : null;
+      }
+      case 'vnc': {
+        const vnc = vncSessionRef.current;
+        return vnc ? captureFramePng({ kind: 'vnc', capture: () => vnc.captureFrame() }) : null;
+      }
+      default:
+        return null;
+    }
+  }, []);
+
+  const handleCopyScreenshot = useCallback(async () => {
+    const blob = await captureScreenshot();
+    if (!blob) {
+      setPasteNotice(screenshotFailureMessage('no-frame'));
+      return;
+    }
+    try {
+      await clipboardIO.writeImage(new Uint8Array(await blob.arrayBuffer()), 'png');
+      setPasteNotice('Screenshot copied to the clipboard.');
+    } catch (err) {
+      console.warn('Screenshot copy failed:', err);
+      setPasteNotice(screenshotFailureMessage('copy'));
+    }
+  }, [captureScreenshot]);
+
+  // Written by the viewer process to a local folder it chooses; the file
+  // name is generated there too. Nothing leaves this machine.
+  const handleSaveScreenshot = useCallback(async () => {
+    const blob = await captureScreenshot();
+    if (!blob) {
+      setPasteNotice(screenshotFailureMessage('no-frame'));
+      return;
+    }
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const path = await invoke<string>('save_screenshot', bytes);
+      setPasteNotice(`Screenshot saved to ${path}`);
+    } catch (err) {
+      console.warn('Screenshot save failed:', err);
+      setPasteNotice(screenshotFailureMessage('save'));
+    }
+  }, [captureScreenshot]);
+
   const handleViewScalingChange = useCallback((mode: ViewScaling) => {
     viewScalingRef.current = mode;
     setViewScaling(mode);
@@ -2557,6 +2661,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onViewScalingChange={handleViewScalingChange}
         blockLocalInput={blockLocalInput}
         onToggleBlockLocalInput={handleToggleBlockLocalInput}
+        statsOverlay={statsOverlay}
+        onStatsOverlayChange={handleStatsOverlayChange}
+        onCopyScreenshot={() => { void handleCopyScreenshot(); }}
+        onSaveScreenshot={() => { void handleSaveScreenshot(); }}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
         {/* Holds the video/canvas; scrolls them at 100% (view scaling, #8241).
@@ -2582,6 +2690,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             {...interactionProps}
           />
         </div>
+
+        {statsOverlay && transport && (
+          <div
+            data-testid="stats-overlay"
+            className="absolute top-3 right-3 z-30 pointer-events-none px-2 py-1.5 rounded bg-black/75 border border-gray-700 text-[11px] font-mono text-gray-200 shadow-lg"
+          >
+            {statsOverlayRows({ transport, fps, sample: statsSample }).map(([label, value]) => (
+              <div key={label} className="flex gap-3 justify-between">
+                <span className="text-gray-500">{label}</span>
+                <span>{value}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {viewOnly && (
           <div

@@ -96,3 +96,35 @@ describe('view scaling (W05, #8241)', () => {
     expect(source).toMatch(/vncSessionRef\.current\?\.setScaling\(/);
   });
 });
+
+describe('stats overlay (W05, #8241)', () => {
+  it('feeds the overlay from the existing stats reporter, off by default', () => {
+    expect(source).toMatch(/onSample: \(sample\) => \{\s*\n\s*if \(statsOverlayRef\.current\) setStatsSample\(sample\);/);
+    expect(source).toMatch(/const \[statsOverlay, setStatsOverlay\] = useState\(false\)/);
+    expect(source).toMatch(/statsOverlayRows\(/);
+    expect(source).toMatch(/data-testid="stats-overlay"/);
+  });
+});
+
+describe('screenshot (W05, #8241)', () => {
+  it('captures from the active transport and stays local (clipboard IO or the save command)', () => {
+    const shot = body('captureScreenshot');
+    expect(shot).toMatch(/kind: 'video'/);
+    expect(shot).toMatch(/kind: 'canvas'/);
+    expect(shot).toMatch(/kind: 'vnc'/);
+    const copy = body('handleCopyScreenshot');
+    expect(copy).toMatch(/clipboardIO\.writeImage\(/);
+    const save = body('handleSaveScreenshot');
+    expect(save).toMatch(/invoke<string>\('save_screenshot', bytes\)/);
+    for (const fn of [shot, copy, save]) expect(fn).not.toMatch(/fetch\(|apiUrl/);
+  });
+});
+
+describe('keyboard lock (W05, #8241)', () => {
+  it('locks only under the shared condition and releases on unmount', () => {
+    expect(source).toMatch(/createKeyboardLockController\(getKeyboardLockApi\(\)\)/);
+    expect(source).toMatch(/keyboardLock\.sync\(shouldLockKeyboard\(/);
+    expect(source).toMatch(/keyboardLockRef\.current\?\.release\(\)/);
+    expect(source).toMatch(/addEventListener\('fullscreenchange'/);
+  });
+});
