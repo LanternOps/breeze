@@ -552,6 +552,51 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
+    it('ALLOWS the system_protection feature on a partner-owned policy → 201, storing the parsed settings (#4754)', async () => {
+      // Inline-only feature: not in ORG_SCOPED_ONLY_FEATURE_TYPES, and
+      // deliberately NOT in PARTNER_LINKABLE_FEATURE_TYPES (that set governs
+      // featurePolicyId links to standalone tables; system_protection has none).
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'system_protection', inlineSettings: { beforeScripts: true } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'system_protection',
+        undefined,
+        { beforePatching: true, beforeScripts: true, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+        expect.anything(),
+      );
+    });
+
+    it('still denies a system_protection write on a partner-wide policy without full partner org access → 403 (#4754)', async () => {
+      const appSelected = new Hono();
+      appSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_POLICY.partnerId,
+          partnerOrgAccess: 'selected',
+        }));
+        await next();
+      });
+      appSelected.route('/', featureLinkRoutes);
+
+      const res = await appSelected.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'system_protection', inlineSettings: { beforeScripts: true } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(String((await res.json()).error)).toMatch(/full partner org access/);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
     it('denies feature-link DELETE on a partner-wide policy without full partner org access → 403', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...PARTNER_POLICY,
@@ -1277,6 +1322,70 @@ describe('featureLinks routes', () => {
   // ============================================================
   // #6312 — maintenance inlineSettings are schema-validated on both sites
   // ============================================================
+
+  describe('system_protection inlineSettings validation (#4754)', () => {
+    const STUB_POLICY_WITH_SP_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'system_protection', inlineSettings: {} }],
+    };
+
+    beforeEach(() => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      // Armed so an UNVALIDATED route would actually complete the write.
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+    });
+
+    it('rejects an unknown key on ADD instead of persisting it', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'system_protection',
+          inlineSettings: { beforeScripts: true, beforeRemoteTerminal: true },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid system protection settings' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-boolean toggle on UPDATE instead of writing it', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_SP_LINK);
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { beforePatching: 'sometimes' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid system protection settings' });
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the parsed, default-filled settings on UPDATE', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_SP_LINK);
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { beforePatching: false } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+        LINK_ID,
+        expect.objectContaining({
+          inlineSettings: { beforePatching: false, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+        }),
+        POLICY_ID,
+        expect.anything(),
+      );
+    });
+  });
 
   describe('maintenance inlineSettings validation', () => {
     const STUB_POLICY_WITH_MAINTENANCE_LINK = {
