@@ -44,6 +44,7 @@ vi.mock("../services/auditEvents", () => ({
 // ============================================================
 
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import { installerRoutes, childEnrollmentKeyTtlMinutes } from "./installer";
 import { db } from "../db";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -210,6 +211,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
     });
     expect(db.insert).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
   it("includes backupServerUrl when AGENT_BACKUP_SERVER_URL is set", async () => {
@@ -698,7 +700,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       set: () => ({
         where: () => ({
           returning: () =>
-            Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+            Promise.resolve([{ ...tokenRow, consumedCount: 2, consumedAt: new Date() }]),
         }),
       }),
     } as any);
@@ -727,6 +729,10 @@ describe("POST /api/v1/installer/bootstrap", () => {
       (capturedChildKeyValues as unknown as Record<string, unknown>)
         .bootstrapTokenId,
     ).toBe(tokenRow.id);
+    // Usage counts come from the post-increment row, not the pre-read (#7973).
+    expect(vi.mocked(writeAuditEvent).mock.calls[0]![1].details).toEqual(
+      expect.objectContaining({ consumedCount: 2, maxUsage: 3, remainingUsage: 1 }),
+    );
   });
 
   it("lost race / exhausted-on-consume: deletes the pre-inserted child key and 404s", async () => {
@@ -804,7 +810,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
   });
 
   it("writes an installer.bootstrap_redeemed audit event on success (#7973)", async () => {
-    await redeemBootstrapOk();
+    const body = await redeemBootstrapOk();
 
     expect(writeAuditEvent).toHaveBeenCalledTimes(1);
     const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
@@ -815,8 +821,15 @@ describe("POST /api/v1/installer/bootstrap", () => {
       resourceId: "backup-url-token",
       actorType: "system",
       actorId: "00000000-0000-0000-0000-000000000000",
+      initiatedBy: "agent",
       result: "success",
     }));
+    // Exact allowlist: a new details field (e.g. a token hash) must be a
+    // deliberate change to this test, not a silent addition.
+    expect(Object.keys(event.details ?? {}).sort()).toEqual([
+      "childEnrollmentKeyId", "consumedCount", "enrollmentKeyId", "ip",
+      "maxUsage", "platform", "remainingUsage", "siteId", "tokenId",
+    ]);
     expect(event.details).toEqual(expect.objectContaining({
       tokenId: "backup-url-token",
       enrollmentKeyId: "backup-url-parent-key",
@@ -826,8 +839,18 @@ describe("POST /api/v1/installer/bootstrap", () => {
       maxUsage: 1,
       remainingUsage: 0,
     }));
+    // No resolvable client IP: the "unknown" sentinel is never audited as an IP.
+    expect(event.ipAddress).toBeUndefined();
+    expect(event.details?.ip).toBeNull();
     // The bearer token (and its log hash) must never reach the audit trail.
-    expect(JSON.stringify(event)).not.toContain("HHHHHHHHHH");
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain("HHHHHHHHHH");
+    // Same 16-hex log-correlation hash installer.ts writes to the process log.
+    expect(serialized).not.toContain(
+      createHash("sha256").update("HHHHHHHHHH").digest("hex").slice(0, 16),
+    );
+    expect(typeof body.enrollmentKey).toBe("string");
+    expect(serialized).not.toContain(body.enrollmentKey as string);
   });
 
   it("propagates installer_platform from token to child enrollment key", async () => {
@@ -996,6 +1019,10 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
     // socket fallback.
     expect((capturedSet as any).consumedFromIp).not.toBe("203.0.113.5");
     expect((capturedSet as any).consumedFromIp).toBe("198.51.100.77");
+    // The audit row records the same trusted IP, never the spoof (#7973).
+    const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+    expect(event.ipAddress).toBe("198.51.100.77");
+    expect(event.details?.ip).toBe("198.51.100.77");
   });
 
   it("records the real cf-connecting-ip when the peer is a trusted proxy (SR2-16)", async () => {
@@ -1034,6 +1061,9 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
 
     expect(res.status).toBe(200);
     expect((capturedSet as any).consumedFromIp).toBe("203.0.113.5");
+    const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+    expect(event.ipAddress).toBe("203.0.113.5");
+    expect(event.details?.ip).toBe("203.0.113.5");
   });
 });
 

@@ -309,9 +309,10 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // Success audit: consumed_at/consumed_from_ip on the token row only retain
-    // the LAST redeemer, so record each redemption's IP + running count here —
-    // this is the only per-device forensic trail for a multi-use token.
+    // consumed_at/consumed_from_ip on the token row only retain the LAST
+    // redeemer, so log each redemption's IP + running count. Operational log
+    // only — the durable per-device record is the installer.bootstrap_redeemed
+    // audit row written after this transaction commits (#7973).
     console.log("[installer] bootstrap redeemed", {
       reason: "redeemed",
       tokenId: row.id,
