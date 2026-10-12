@@ -244,7 +244,9 @@
     "expectedValue": "Valor esperado",
     "nameserver": "Servidor de nomes",
     "degradedIsFailure": "Tratar degradado como falha",
-    "maxResponseMs": "Falhar se mais lento que (ms)"
+    "maxResponseMs": "Falhar se mais lento que (ms)",
+    "eventLogCollectionNoSource": "Eventos de Aplicativo de nível Informação e Aviso são coletados apenas de {{providers}}. Eventos de outras origens só acionam esta regra no nível Erro ou Crítico.",
+    "eventLogCollectionSourceNotCollected": "O agente não coleta eventos de Aplicativo de nível Informação ou Aviso de \"{{source}}\", então esta regra só corresponderá aos eventos de Erro ou Crítico dessa origem. Provedores coletados: {{providers}}."
   },
   "operators": {
     "gt": "maior que",
@@ -268,6 +270,7 @@
     "system": "Sistema"
   },
   "eventLevels": {
+    "info": "Informação",
     "warning": "Aviso",
     "error": "Erro",
     "critical": "Crítico"

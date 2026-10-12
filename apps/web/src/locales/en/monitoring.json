@@ -244,7 +244,9 @@
     "expectedValue": "Expected value",
     "nameserver": "Nameserver",
     "degradedIsFailure": "Treat degraded as failure",
-    "maxResponseMs": "Fail when slower than (ms)"
+    "maxResponseMs": "Fail when slower than (ms)",
+    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level.",
+    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", so this rule only matches its Error or Critical events. Collected providers: {{providers}}."
   },
   "operators": {
     "gt": "greater than",
@@ -268,6 +270,7 @@
     "system": "System"
   },
   "eventLevels": {
+    "info": "Information",
     "warning": "Warning",
     "error": "Error",
     "critical": "Critical"

@@ -21,39 +21,52 @@ type EventLogConditionLike = {
 };
 
 /**
- * Save-time warning for an event_log condition that can never (or only
- * partly) match because the agent does not collect those events: an
- * info/warning Application rule whose source is not an allowlisted provider.
+ * Why an event_log condition can never (or only partly) match: an info/warning
+ * Application rule whose source is not an allowlisted provider (the agent does
+ * not collect those events), or one that names no source at all (it only ever
+ * sees allowlisted providers' events at that level).
  *
  * "Matches a provider" mirrors the evaluator (alertConditions/handlers/
  * eventLog.ts), which filters source with ILIKE %pattern%: the pattern must be
- * a case-insensitive substring of an allowlisted provider name. A rule with no
- * source pattern also gets a warning, since it will only ever see allowlisted
- * providers' events at that level.
+ * a case-insensitive substring of an allowlisted provider name.
  *
- * Returns null when no warning applies. The condition is not saved any
- * differently either way; this is advisory only.
+ * Structured so the web editor can render a localized message; the API uses
+ * `eventLogCollectionWarning` for English text. Advisory only: the rule is
+ * saved the same way either way.
  */
-export function eventLogCollectionWarning(condition: EventLogConditionLike | null | undefined): string | null {
+export type EventLogCollectionGap =
+  | { reason: 'no_source' }
+  | { reason: 'source_not_collected'; source: string };
+
+export function eventLogCollectionGap(
+  condition: EventLogConditionLike | null | undefined,
+): EventLogCollectionGap | null {
   if (!condition || typeof condition !== 'object') return null;
   if (condition.category !== 'application') return null;
   if (typeof condition.level !== 'string' || !ALLOWLIST_ONLY_LEVELS.has(condition.level)) return null;
 
-  const providers = APPLICATION_INFO_EVENT_PROVIDERS.join(', ');
   const pattern = typeof condition.sourcePattern === 'string' ? condition.sourcePattern.trim() : '';
-  if (!pattern) {
+  if (!pattern) return { reason: 'no_source' };
+
+  const needle = pattern.toLowerCase();
+  if (APPLICATION_INFO_EVENT_PROVIDERS.some((p) => p.toLowerCase().includes(needle))) return null;
+  return { reason: 'source_not_collected', source: pattern };
+}
+
+/** English save-time warning for `eventLogCollectionGap`, or null when none applies. */
+export function eventLogCollectionWarning(condition: EventLogConditionLike | null | undefined): string | null {
+  const gap = eventLogCollectionGap(condition);
+  if (!gap) return null;
+  const providers = APPLICATION_INFO_EVENT_PROVIDERS.join(', ');
+  if (gap.reason === 'no_source') {
     return (
       `Information and Warning Application events are collected only from these providers: ${providers}. ` +
       'Events from other sources match this rule only at Error or Critical level.'
     );
   }
-
-  const needle = pattern.toLowerCase();
-  if (APPLICATION_INFO_EVENT_PROVIDERS.some((p) => p.toLowerCase().includes(needle))) return null;
-
   return (
-    `The agent does not collect Information or Warning Application events from "${pattern}", ` +
-    `so this rule will only match its Error or Critical events. ` +
+    `The agent does not collect Information or Warning Application events from "${gap.source}", ` +
+    'so this rule will only match its Error or Critical events. ' +
     `Information and Warning events are collected only from: ${providers}.`
   );
 }
