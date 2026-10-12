@@ -858,6 +858,9 @@ async function decomposeInlineSettings(
         rebootAllowDeferral: parsed.rebootAllowDeferral,
         rebootMaxDeferrals: parsed.rebootMaxDeferrals,
         rebootDeferralMinutes: parsed.rebootDeferralMinutes,
+        rebootPromptTitle: parsed.rebootPromptTitle,
+        rebootPromptBody: parsed.rebootPromptBody,
+        rebootPromptButton: parsed.rebootPromptButton,
         exclusiveWindowsUpdate: parsed.exclusiveWindowsUpdate,
       });
       break;
@@ -1361,6 +1364,9 @@ async function assembleInlineSettings(
         rebootAllowDeferral: row.rebootAllowDeferral,
         rebootMaxDeferrals: row.rebootMaxDeferrals,
         rebootDeferralMinutes: row.rebootDeferralMinutes,
+        rebootPromptTitle: row.rebootPromptTitle,
+        rebootPromptBody: row.rebootPromptBody,
+        rebootPromptButton: row.rebootPromptButton,
         exclusiveWindowsUpdate: row.exclusiveWindowsUpdate,
       };
     }

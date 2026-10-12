@@ -361,6 +361,9 @@ export async function loadPolicyLocalPatchConfig(
         rebootAllowDeferral: row.patchSettings.rebootAllowDeferral,
         rebootMaxDeferrals: row.patchSettings.rebootMaxDeferrals,
         rebootDeferralMinutes: row.patchSettings.rebootDeferralMinutes,
+        rebootPromptTitle: row.patchSettings.rebootPromptTitle,
+        rebootPromptBody: row.patchSettings.rebootPromptBody,
+        rebootPromptButton: row.patchSettings.rebootPromptButton,
         exclusiveWindowsUpdate: row.patchSettings.exclusiveWindowsUpdate,
       })
     : storedInline;
@@ -437,6 +440,9 @@ export async function backfillMissingPatchSettings(): Promise<{
       rebootAllowDeferral: normalized.settings.rebootAllowDeferral,
       rebootMaxDeferrals: normalized.settings.rebootMaxDeferrals,
       rebootDeferralMinutes: normalized.settings.rebootDeferralMinutes,
+      rebootPromptTitle: normalized.settings.rebootPromptTitle,
+      rebootPromptBody: normalized.settings.rebootPromptBody,
+      rebootPromptButton: normalized.settings.rebootPromptButton,
       exclusiveWindowsUpdate: normalized.settings.exclusiveWindowsUpdate,
     });
     repaired += 1;
