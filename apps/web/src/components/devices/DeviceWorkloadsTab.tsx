@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Container, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -97,19 +97,29 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
+  // Monotonic request id: a late response for a previous device (or an
+  // earlier retry) must not overwrite the current one.
+  const requestSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     setFailed(false);
+    setView(null);
     try {
       const response = await fetchWithAuth(`/devices/${deviceId}/workloads`);
       if (!response.ok) throw new Error(`GET /devices/${deviceId}/workloads returned ${response.status}`);
-      setView((await response.json()) as WorkloadsView);
+      const body = (await response.json()) as Partial<WorkloadsView> | null;
+      if (!body || !Array.isArray(body.runtimes) || !Array.isArray(body.workloads)) {
+        throw new Error(`GET /devices/${deviceId}/workloads returned an unexpected body`);
+      }
+      if (seq === requestSeq.current) setView(body as WorkloadsView);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       console.error('[DeviceWorkloadsTab] Failed to load workloads:', err);
       setFailed(true);
-      setView(null);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [deviceId]);
 

@@ -149,6 +149,30 @@ describe('DeviceWorkloadsTab', () => {
     expect(await screen.findByText(/no container or vm runtime/i)).toBeTruthy();
   });
 
+  it('treats a 200 with an unexpected body as a failed load, not a render crash', async () => {
+    fetchWithAuthMock.mockResolvedValue(json({}));
+    render(<DeviceWorkloadsTab deviceId="dev-1" />);
+    expect(await screen.findByTestId('workloads-error')).toBeTruthy();
+  });
+
+  it('ignores a late response for a previous device', async () => {
+    let resolveOld: (r: Response) => void = () => {};
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.includes('old-dev')
+        ? new Promise<Response>((resolve) => {
+            resolveOld = resolve;
+          })
+        : Promise.resolve(json({ capability: 1, runtimes: [runtime({})], workloads: [workload({ name: 'new-one' })] })),
+    );
+    const { rerender } = render(<DeviceWorkloadsTab deviceId="old-dev" />);
+    rerender(<DeviceWorkloadsTab deviceId="new-dev" />);
+    expect(await screen.findByText('new-one')).toBeTruthy();
+    resolveOld(json({ capability: 1, runtimes: [runtime({})], workloads: [workload({ name: 'old-one' })] }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText('old-one')).toBeNull();
+    expect(screen.getByText('new-one')).toBeTruthy();
+  });
+
   it('surfaces a failed request', async () => {
     fetchWithAuthMock.mockResolvedValue(json({ error: 'boom' }, false, 500));
     render(<DeviceWorkloadsTab deviceId="dev-1" />);

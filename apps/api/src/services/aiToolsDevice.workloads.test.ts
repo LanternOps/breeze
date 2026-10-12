@@ -102,6 +102,24 @@ describe(name, () => {
     expect(JSON.stringify(out)).not.toContain('secret');
   });
 
+  it('drops any containerd workload rows from the list and counts (detect-only)', async () => {
+    m.access.mockResolvedValue({ device: { id: deviceId } });
+    m.view.mockResolvedValue({
+      capability: 1,
+      runtimes: [runtime('docker'), runtime('containerd')],
+      workloads: [
+        ...Array.from({ length: 200 }, (_, i) => wl(i, 'docker')),
+        wl(900, 'containerd'),
+        wl(901, 'containerd'),
+      ],
+    });
+    const out = JSON.parse(await getTool().handler({ deviceId }, {} as any));
+    expect(out.counts.total).toBe(200);
+    expect(out.counts.byRuntime).not.toHaveProperty('containerd');
+    expect(out.workloads.some((w: any) => w.runtime === 'containerd')).toBe(false);
+    expect(out.truncated).toBe(false);
+  });
+
   it('honours a smaller limit and flags truncation', async () => {
     m.access.mockResolvedValue({ device: { id: deviceId } });
     m.view.mockResolvedValue({ capability: 1, runtimes: [runtime('docker')], workloads: [wl(1), wl(2), wl(3)] });
