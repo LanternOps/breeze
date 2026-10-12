@@ -346,12 +346,21 @@ describe('DELETE /contracts/:id/lines/:lineId', () => {
   it('removes a line', async () => {
     const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { ok: true } });
+    expect(await res.json()).toEqual({ data: { ok: true, retired: false } });
     expect(mocks.removeContractLine).toHaveBeenCalledWith(
       CONTRACT_ID,
       LINE_ID,
       expect.objectContaining({ partnerId: PARTNER_ID }),
     );
+  });
+
+  it('reports retired: true when the service kept the line as history (#4547 W03)', async () => {
+    mocks.removeContractLine.mockResolvedValueOnce({
+      orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'hour_block', retired: true,
+    });
+    const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ok: true, retired: true } });
   });
 });
 

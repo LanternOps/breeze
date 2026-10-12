@@ -351,7 +351,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           case 'remove_line': {
             const audit = await removeContractLine(String(input.contractId), String(input.lineId), actor);
             auditContractLineToolEvent(auth, 'contract.line.removed', audit);
-            return JSON.stringify({ ok: true });
+            return JSON.stringify({ ok: true, retired: audit.retired === true });
           }
           case 'update_line': {
             const { line, audit } = await updateContractLine(

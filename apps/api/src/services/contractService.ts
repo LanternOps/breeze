@@ -4,7 +4,7 @@ import { assertInTransaction, db } from '../db';
 import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
   organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
-  invoices, invoiceLineDevices,
+  invoices, invoiceLineDevices, contractHourPeriods,
 } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, HourBlockEstimate, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
@@ -166,7 +166,46 @@ export async function getOwnedContractOr404(contractId: string, actor: ContractA
 export type DecoratedContractLine = typeof contractLines.$inferSelect & {
   site: { id: string; name: string } | null;
   deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+  /** #4547 W03: block lines only — the same predicate that decides retire-vs-delete. */
+  hourBlockHasHistory?: boolean;
 };
+
+/** True when a block line has billing history: a ledger row for it, or ANY claimed
+ *  period at or after its first_period_start. The SAME predicate drives retire-vs-delete
+ *  and the UI's "retire" confirm copy, so the copy can never disagree with the action.
+ *  Agrees with W02's close entitlement (selectClosablePeriods): a retired line still
+ *  closes every period claimed while it was live, and retire stamps clock_timestamp()
+ *  under the contract lock, so every claim existing at that moment is entitled — "any
+ *  claim at or after first_period_start" is exactly "something W02 may still close".
+ *  Two short indexed reads, ledger first; runs on the caller's executor so remove sees
+ *  it under the contract row lock. */
+async function hourBlockHasHistory(
+  tx: DbExecutor,
+  line: { id: string; contractId: string; hourBlockFirstPeriodStart: string | null },
+): Promise<boolean> {
+  const [ledger] = await tx.select({ id: contractHourPeriods.id }).from(contractHourPeriods)
+    .where(eq(contractHourPeriods.contractLineId, line.id)).limit(1);
+  if (ledger) return true;
+  if (line.hourBlockFirstPeriodStart === null) return false;
+  const [claimed] = await tx.select({ id: contractBillingPeriods.id }).from(contractBillingPeriods)
+    .where(and(
+      eq(contractBillingPeriods.contractId, line.contractId),
+      gte(contractBillingPeriods.periodStart, line.hourBlockFirstPeriodStart),
+    )).limit(1);
+  return !!claimed;
+}
+
+async function withBlockHistory<T extends { id: string; contractId: string; lineType: string; hourBlockFirstPeriodStart: string | null; hourBlockRetiredAt: Date | string | null }>(
+  rows: T[],
+): Promise<Array<T & { hourBlockHasHistory?: boolean }>> {
+  const out: Array<T & { hourBlockHasHistory?: boolean }> = [];
+  for (const r of rows) {
+    if (r.lineType !== 'hour_block') { out.push(r); continue; }
+    // A retired block always has history (it is only ever retired because it did).
+    out.push({ ...r, hourBlockHasHistory: r.hourBlockRetiredAt !== null ? true : await hourBlockHasHistory(db, r) });
+  }
+  return out;
+}
 
 /** #3205 W03: one decorator for every line read. The group leg is W02's
  *  (renamed from withDeviceGroup); the site leg is the W01-deferred detail-page
@@ -430,7 +469,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     ? lines.length !== allLines.length
     : undefined;
   if (linesFilteredBySiteScope === true) {
-    return { autopayEnabled, contract, lines: await withLineRefs(lines), periods: null, linesFilteredBySiteScope };
+    return { autopayEnabled, contract, lines: await withBlockHistory(await withLineRefs(lines)), periods: null, linesFilteredBySiteScope };
   }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
@@ -458,7 +497,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
   return {
     autopayEnabled,
     contract,
-    lines: await withLineRefs(lines),
+    lines: await withBlockHistory(await withLineRefs(lines)),
     periods: periods as typeof periods | null,
     ...(linesFilteredBySiteScope === undefined ? {} : { linesFilteredBySiteScope }),
   };
@@ -1921,12 +1960,32 @@ export async function removeContractLine(
     // lineType, and so a miss is a typed 404 rather than a silent 200 (the
     // pre-W03 behaviour deleted by (id, contract_id) and never checked whether
     // a row matched). Its permissiveness is exactly what would make the audit lie.
-    const [row] = await tx.select({ id: contractLines.id, lineType: contractLines.lineType })
-      .from(contractLines)
+    const [row] = await tx.select({
+      id: contractLines.id, lineType: contractLines.lineType,
+      hourBlockFirstPeriodStart: contractLines.hourBlockFirstPeriodStart,
+      hourBlockRetiredAt: contractLines.hourBlockRetiredAt,
+    }).from(contractLines)
       .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
     if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+    const audit = { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
+    if (row.lineType === 'hour_block') {
+      // Already retired: idempotent, and retired_at must not move (W02 entitles claims
+      // with generated_at <= retired_at).
+      if (row.hourBlockRetiredAt !== null) return { ...audit, retired: true };
+      // Index C7: history => retire (never delete: the ledger FK is ON DELETE RESTRICT and a
+      // claimed-but-unclosed period must still close via W02's sweep); else delete.
+      if (await hourBlockHasHistory(tx, { id: row.id, contractId, hourBlockFirstPeriodStart: row.hourBlockFirstPeriodStart })) {
+        // clock_timestamp(), same as retireLiveHourBlocks: now() is the transaction START and
+        // would predate a claim committed while this request waited on the contract lock.
+        await tx.update(contractLines).set({ hourBlockRetiredAt: sql`clock_timestamp()` })
+          .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+        return { ...audit, retired: true };
+      }
+      await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+      return { ...audit, retired: false };
+    }
     await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
-    return { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
+    return audit;
   });
 }
 

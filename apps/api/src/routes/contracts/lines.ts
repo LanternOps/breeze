@@ -76,8 +76,9 @@ contractLineRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('p
     const audit = await removeContractLine(p.id, p.lineId, contractActorFrom(c));
     writeLineAudit(c, 'contract.line.removed', audit);
     // Was {"data":undefined} -> {} before W03; removeContractLine returns the
-    // pre-read audit payload now and 404s on a miss.
-    return c.json({ data: { ok: true } });
+    // pre-read audit payload now and 404s on a miss. `retired` tells the UI
+    // whether a block-hours line was kept as history instead of deleted.
+    return c.json({ data: { ok: true, retired: audit.retired === true } });
   }
   catch (err) { return handleContractError(c, err); }
 });

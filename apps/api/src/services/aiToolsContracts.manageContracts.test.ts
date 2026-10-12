@@ -153,7 +153,15 @@ describe('manage_contracts', () => {
       'line-1',
       actor,
     );
-    expect(JSON.parse(out)).toEqual({ ok: true });
+    expect(JSON.parse(out)).toEqual({ ok: true, retired: false });
+  });
+
+  it('remove_line reports retired: true when the service kept the line as history (#4547 W03)', async () => {
+    vi.mocked(contractService.removeContractLine).mockResolvedValueOnce({
+      orgId: 'org-1', contractId: 'contract-1', contractName: 'Acme MSA', contractLineId: 'line-1', lineType: 'hour_block', retired: true,
+    } as never);
+    const out = await getTool().handler({ action: 'remove_line', contractId: 'contract-1', lineId: 'line-1' }, auth);
+    expect(JSON.parse(out)).toEqual({ ok: true, retired: true });
   });
 
   it('returns a JSON error when a service action rejects with ContractServiceError', async () => {

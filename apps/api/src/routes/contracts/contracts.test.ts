@@ -16,6 +16,7 @@ vi.mock('../../services/contractService', () => ({
     ...(audit.changedFields !== undefined ? { changedFields: audit.changedFields } : {}),
     ...(audit.oldUnitPrice !== undefined ? { oldUnitPrice: audit.oldUnitPrice } : {}),
     ...(audit.newUnitPrice !== undefined ? { newUnitPrice: audit.newUnitPrice } : {}),
+    ...(audit.retired !== undefined ? { retired: audit.retired } : {}),
   })),
   activateContract: vi.fn(),
   pauseContract: vi.fn(),
@@ -367,10 +368,22 @@ describe('contract line routes', () => {
     });
     const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { ok: true } });
+    expect(await res.json()).toEqual({ data: { ok: true, retired: false } });
     expect(svc.removeContractLine).toHaveBeenCalledWith(CONTRACT_ID, LINE_ID, expect.anything());
     expect((writeRouteAudit as any).mock.calls[0][1]).toMatchObject({
       action: 'contract.line.removed', details: { contractLineId: LINE_ID, lineType: 'per_seat' },
+    });
+  });
+
+  it('DELETE reports { ok: true, retired: true } for a retired block and audits it (#4547 W03)', async () => {
+    (svc.removeContractLine as any).mockResolvedValue({
+      orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'hour_block', retired: true,
+    });
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ok: true, retired: true } });
+    expect((writeRouteAudit as any).mock.calls[0][1]).toMatchObject({
+      action: 'contract.line.removed', details: { lineType: 'hour_block', retired: true },
     });
   });
 

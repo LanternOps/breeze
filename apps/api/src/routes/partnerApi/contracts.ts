@@ -224,7 +224,7 @@ partnerContractRoutes.delete(
         removeContractLine(p.id, p.lineId, actorFrom(principal)),
       );
       auditLine(c, principal, 'contract.line.removed', audit);
-      return c.json({ data: { ok: true } });
+      return c.json({ data: { ok: true, retired: audit.retired === true } });
     } catch (err) {
       return handleContractError(c, err);
     }

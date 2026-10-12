@@ -342,3 +342,84 @@ describe('updateContractLine — hour_block (#4547 W03)', () => {
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
   });
 });
+
+describe('removeContractLine — retire vs delete (#4547 W03)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'b1', lineType: 'hour_block', hourBlockFirstPeriodStart: '2026-07-01', hourBlockRetiredAt: null, ...over,
+  });
+
+  it('DELETES a block with no ledger row and no claimed period at or after its first period', async () => {
+    queueResult([contractRow()]);   // lockContract
+    queueResult([row()]);           // pre-read
+    queueResult([]);                // history: no ledger row
+    queueResult([]);                // history: no claimed period
+    queueResult([]);                // delete
+    const audit = await svc.removeContractLine('c1', 'b1', actor);
+    expect(audit).toMatchObject({ contractLineId: 'b1', lineType: 'hour_block', retired: false });
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(1);
+    expect((db as unknown as Chain).set.mock.calls).toHaveLength(0);
+  });
+
+  it('RETIRES a block that has a ledger row (and never deletes it)', async () => {
+    queueResult([contractRow()]);
+    queueResult([row()]);
+    queueResult([{ id: 'hp1' }]);   // ledger row exists
+    queueResult([]);                // update retired_at
+    const audit = await svc.removeContractLine('c1', 'b1', actor);
+    expect(audit).toMatchObject({ lineType: 'hour_block', retired: true });
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(0);
+    // W02: a retired line's period closes iff generated_at <= retired_at, which compares transaction clocks —
+    // so the stamp must be the DATABASE's clock_timestamp() (matching retireLiveHourBlocks), never a JS Date and never now(), which predates a claim committed while the remove waited on the contract lock.
+    const set = (db as unknown as Chain).set.mock.calls[0]![0] as { hourBlockRetiredAt: unknown };
+    expect(set.hourBlockRetiredAt).not.toBeInstanceOf(Date);
+    expect(set.hourBlockRetiredAt).toHaveProperty('queryChunks');
+  });
+
+  it('RETIRES a block with a claimed-but-unclosed period (the advance-billing window)', async () => {
+    queueResult([contractRow()]);
+    queueResult([row()]);
+    queueResult([]);                // no ledger row yet
+    queueResult([{ id: 'cbp1' }]);  // but period >= first_period_start is claimed
+    queueResult([]);
+    const audit = await svc.removeContractLine('c1', 'b1', actor);
+    expect(audit.retired).toBe(true);
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(0);
+  });
+
+  it('re-removing an already retired block is an idempotent no-op that does not move retired_at', async () => {
+    queueResult([contractRow()]);
+    queueResult([row({ hourBlockRetiredAt: new Date('2026-07-10T00:00:00Z') })]);
+    const audit = await svc.removeContractLine('c1', 'b1', actor);
+    expect(audit.retired).toBe(true);
+    expect((db as unknown as Chain).set.mock.calls).toHaveLength(0);
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(0);
+  });
+
+  it('a non-block line is deleted exactly as before, with no history queries and no retired key', async () => {
+    queueResult([contractRow()]);
+    queueResult([{ id: 'l1', lineType: 'flat', hourBlockFirstPeriodStart: null, hourBlockRetiredAt: null }]);
+    queueResult([]);
+    const audit = await svc.removeContractLine('c1', 'l1', actor);
+    expect(audit).not.toHaveProperty('retired');
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(1);
+  });
+});
+
+describe('getContract — hourBlockHasHistory decoration (#4547 W03)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  it('marks a retired block as having history without querying, and a live one by the same predicate', async () => {
+    const live = { id: 'b1', contractId: 'c1', orgId: 'org1', lineType: 'hour_block', siteId: null, deviceGroupId: null, hourBlockFirstPeriodStart: '2026-07-01', hourBlockRetiredAt: null, sortOrder: 0 };
+    const retired = { ...live, id: 'b2', hourBlockRetiredAt: new Date('2026-07-10T00:00:00Z') };
+    const flat = { id: 'f1', contractId: 'c1', orgId: 'org1', lineType: 'flat', siteId: null, deviceGroupId: null, hourBlockFirstPeriodStart: null, hourBlockRetiredAt: null, sortOrder: 1 };
+    queueResult([contractRow()]);          // getOwnedContractOr404
+    queueResult([live, retired, flat]);    // lines
+    queueResult([]);                       // periods
+    queueResult([{ id: 'hp1' }]);          // live block: ledger row exists
+    const out = await svc.getContract('c1', actor);
+    const byId = new Map(out.lines.map((l) => [l.id, l]));
+    expect(byId.get('b2')?.hourBlockHasHistory).toBe(true);
+    expect(byId.get('b1')?.hourBlockHasHistory).toBe(true);
+    expect(byId.get('f1')).not.toHaveProperty('hourBlockHasHistory');
+  });
+});
