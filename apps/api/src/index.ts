@@ -55,6 +55,7 @@ import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { ticketApprovalSettingsRoutes } from './routes/tickets/approvalSettings';
+import { ticketApprovalRoutes } from './routes/tickets/approvals';
 import { autopayRoutes } from './routes/autopay';
 import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
@@ -783,6 +784,12 @@ api.route('/alert-templates', alertTemplateRoutes);
 // authMiddleware) gate (the Microsoft admin-consent redirect carries no Bearer
 // token). The callback authenticates via signed state + binding cookie instead.
 api.route('/tickets/mailbox', mailboxRoutes);
+// Customer work approval staff routes (#4617 W03): absolute paths spanning
+// /tickets/:id/approval-*, /ticket-approval-requests/:id/* and
+// /time-entries/:id/write-off-held, each with its own authMiddleware. Mounted
+// BEFORE the /tickets and /time-entries hubs so these paths are matched here
+// first and never fall through those hubs' .use('*') chains.
+api.route('/', ticketApprovalRoutes);
 api.route('/tickets', ticketsRoutes);
 // Caller verification (#6354 W01): mounted at the root because its paths
 // span /orgs/:orgId/…, /partner/… and /orgs/:orgId/tickets/:ticketId/…; the

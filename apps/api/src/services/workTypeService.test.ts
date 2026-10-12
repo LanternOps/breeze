@@ -55,6 +55,22 @@ describe('createWorkType', () => {
     await createWorkType(ADMIN, PARTNER, { name: 'Remote' });
     expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER, name: 'Remote' }));
   });
+
+  it('#4617: stores the after-hours flag, defaulting to false', async () => {
+    await createWorkType(ADMIN, PARTNER, { name: 'Night', isAfterHours: true });
+    expect(insertSpy).toHaveBeenLastCalledWith(expect.objectContaining({ isAfterHours: true }));
+    await createWorkType(ADMIN, PARTNER, { name: 'Day' });
+    expect(insertSpy).toHaveBeenLastCalledWith(expect.objectContaining({ isAfterHours: false }));
+  });
+});
+
+describe('updateWorkType after-hours flag (#4617)', () => {
+  it('sets isAfterHours only when supplied', async () => {
+    await updateWorkType(ADMIN, 'wt-1', PARTNER, { isAfterHours: true });
+    expect(updateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ isAfterHours: true }));
+    await updateWorkType(ADMIN, 'wt-1', PARTNER, { name: 'Renamed' });
+    expect(updateSpy.mock.calls.at(-1)![0]).not.toHaveProperty('isAfterHours');
+  });
 });
 
 describe('archiveWorkType', () => {

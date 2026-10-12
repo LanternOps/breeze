@@ -112,7 +112,7 @@ async function listTicketRequests(db: Tx, ticketId: string): Promise<RequestSumm
   }).from(ticketApprovalRequests).where(eq(ticketApprovalRequests.ticketId, ticketId));
 }
 
-function approvedExtensionsOf(requests: RequestSummary[], budgetCurrencyCode: string | null) {
+export function approvedExtensionsOf(requests: RequestSummary[], budgetCurrencyCode: string | null) {
   let minutes = 0;
   let amountMinor = 0;
   for (const r of requests) {
