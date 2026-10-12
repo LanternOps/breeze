@@ -479,7 +479,22 @@ export async function planEffectStep(args: {
     // stopped it) all mean "this plan was not approved" -> `rejected`. The
     // intent's own error_code is the reason, and it is carried into the
     // handoff so the technician sees WHY rather than a generic "not approved".
-    await closePendingPlan({ orgId: task.orgId, approvalId: approval.id, state: status === 'expired' ? 'expired' : 'rejected' });
+    const closed = await closePendingPlan({ orgId: task.orgId, approvalId: approval.id, state: status === 'expired' ? 'expired' : 'rejected' });
+    if (!closed) {
+      // The approval row left `pending` between our two unlocked reads: the
+      // approver's markPlanApproved committed and the release worker completed
+      // the plan intent, so `completed` is not a rejection. Re-read before
+      // deciding. If it is now approved, wait: the next poll re-enters with a
+      // fresh read and takes the approved path (the walk's reads are not
+      // repeated here, keeping a single entry into the dispatch loop).
+      const fresh = await readPlanApprovalAtRevision(task.orgId, task.id, task.revision);
+      if (fresh?.state === 'approved') {
+        return {
+          action: 'wait', reason: 'approval', dependency: { kind: 'intent', id: approval.intentId! },
+          wakeAfterMs: PLAN_POLL_WAKE_MS, detail: `plan revision ${task.revision} was approved concurrently; resuming on the next poll`,
+        };
+      }
+    }
     const why = `${status ?? 'missing'}${errorCode ? `: ${errorCode}` : ''}`;
     return handOff('unresolved', `plan approval ended as ${why}`,
       `The plan for this task was not approved (${why}). Nothing was changed.`);

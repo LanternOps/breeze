@@ -228,6 +228,29 @@ describe('planEffectStep — pending plan', () => {
     expect(out).toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('digest_mismatch') });
     expect((out as { handoffSummary: string }).handoffSummary).toContain('digest_mismatch');
   });
+
+  it('closePendingPlan losing the race to markPlanApproved re-reads the approval and does not hand off as rejected', async () => {
+    h.readPlanApprovalAtRevision
+      .mockResolvedValueOnce(approvalRow({ state: 'pending', approvedByUserId: null }))
+      .mockResolvedValueOnce(approvalRow({ state: 'approved' }));
+    setIntents([{ id: 'plan-intent', status: 'completed', errorCode: null }]);
+    h.closePendingPlan.mockResolvedValue(false);
+    const out = await run();
+    expect(h.closePendingPlan).toHaveBeenCalledTimes(1);
+    expect(h.readPlanApprovalAtRevision).toHaveBeenCalledTimes(2);
+    expect(out).toMatchObject({ action: 'wait', reason: 'approval', dependency: { kind: 'intent', id: 'plan-intent' } });
+    expect(out).not.toMatchObject({ action: 'settle' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('closePendingPlan returning false with the re-read still not approved hands off', async () => {
+    h.readPlanApprovalAtRevision
+      .mockResolvedValueOnce(approvalRow({ state: 'pending', approvedByUserId: null }))
+      .mockResolvedValueOnce(approvalRow({ state: 'rejected', approvedByUserId: null }));
+    setIntents([{ id: 'plan-intent', status: 'rejected', errorCode: null }]);
+    h.closePendingPlan.mockResolvedValue(false);
+    await expect(run()).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved' });
+  });
 });
 
 describe('planEffectStep — approvals that cannot be walked', () => {
