@@ -23,7 +23,7 @@ import {
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
   DEVICE_ORG_FK_CASCADE_TABLES,
-  DEVICE_SITE_DENORMALIZED_TABLES,
+  rewriteDeviceSiteDenormalizedTables,
 } from '../../routes/devices/core';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { propagateCancelledDeviceCommands } from '../commandCancelPropagation';
@@ -1316,11 +1316,9 @@ export async function moveDeviceOrgInTransaction(
   // in core.ts). Skipping any of these strands rows under the OLD
   // site_id. PATCH /devices/:id (core.ts) performs the same propagation
   // for same-org site changes; keep both loops in lockstep.
-  for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
-    await tx.execute(
-      sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,
-    );
-  }
+  // Current ownership epoch only (W2, #8204): earlier epochs keep their
+  // event-time site.
+  await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
   return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome };
 }

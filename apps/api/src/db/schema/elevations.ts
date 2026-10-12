@@ -16,7 +16,7 @@ import {
 import { sql } from 'drizzle-orm';
 import { organizations, partners, sites } from './orgs';
 import { users } from './users';
-import { devices } from './devices';
+import { deviceOwnershipEpochs } from './deviceOwnershipEpochs';
 import { approvalRequests, approvalFactorEnum } from './approvals';
 import { softwarePolicies } from './softwarePolicies';
 import { aiToolExecutions } from './ai';
@@ -89,7 +89,18 @@ export const elevationRequests = pgTable(
     siteId: uuid('site_id').references(() => sites.id),
     partnerId: uuid('partner_id').references(() => partners.id),
 
-    deviceId: uuid('device_id').notNull().references(() => devices.id),
+    // No FK to devices (PAM ownership epochs W2, #8204): the row is anchored to
+    // the ownership epoch it was created in, (device_id, org_id, device_epoch)
+    // -> device_ownership_epochs, DEFERRABLE INITIALLY IMMEDIATE, so it keeps
+    // its original org after the device moves and survives the device's
+    // deletion when it belongs to an earlier epoch. The FK and the epoch guard
+    // trigger (breeze_pam_chain_epoch_guard) are declared in
+    // migrations/2026-12-23-120000-pam-chain-epoch-anchor.sql.
+    deviceId: uuid('device_id').notNull(),
+    // Set to the device's current ownership epoch on insert (the guard rejects
+    // any other value); re-anchored with the device only while no actuation
+    // references the request.
+    deviceEpoch: integer('device_epoch').notNull(),
 
     flowType: elevationFlowTypeEnum('flow_type').notNull(),
 
@@ -171,6 +182,11 @@ export const elevationRequests = pgTable(
     // invariant — it just declares the tuple the composite FK references.
     // Mirrors organizations_id_partner_uq (2026-04-11-users-rls.sql §3).
     idOrgIdUq: unique('elevation_requests_id_org_id_key').on(table.id, table.orgId),
+    deviceEpochFk: foreignKey({
+      columns: [table.deviceId, table.orgId, table.deviceEpoch],
+      foreignColumns: [deviceOwnershipEpochs.deviceId, deviceOwnershipEpochs.orgId, deviceOwnershipEpochs.epoch],
+      name: 'elevation_requests_device_epoch_fkey',
+    }),
     // Note: the partial / WHERE-clause indexes
     //   elevation_requests_org_pending_idx,
     //   elevation_requests_expires_at_idx,
@@ -202,6 +218,8 @@ export const pamActuations = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
     deviceId: uuid('device_id').notNull(),
+    // Ownership epoch the actuation was created in (W2, #8204); immutable.
+    deviceEpoch: integer('device_epoch').notNull(),
     elevationRequestId: uuid('elevation_request_id').notNull(),
     requestRevision: integer('request_revision').notNull(),
     generation: integer('generation').notNull(),
@@ -225,10 +243,17 @@ export const pamActuations = pgTable(
       table.requestRevision,
     ),
     idOrgUq: unique('pam_actuations_id_org_id_key').on(table.id, table.orgId),
-    deviceOrgFk: foreignKey({
-      columns: [table.deviceId, table.orgId],
-      foreignColumns: [devices.id, devices.orgId],
-      name: 'pam_actuations_device_id_org_id_fkey',
+    // Target of pam_actuation_results' epoch FK.
+    idDeviceOrgEpochUq: unique('pam_actuations_id_device_org_epoch_key').on(
+      table.id,
+      table.deviceId,
+      table.orgId,
+      table.deviceEpoch,
+    ),
+    deviceEpochFk: foreignKey({
+      columns: [table.deviceId, table.orgId, table.deviceEpoch],
+      foreignColumns: [deviceOwnershipEpochs.deviceId, deviceOwnershipEpochs.orgId, deviceOwnershipEpochs.epoch],
+      name: 'pam_actuations_device_epoch_fkey',
     }).onDelete('cascade'),
     requestOrgFk: foreignKey({
       columns: [table.elevationRequestId, table.orgId],
@@ -249,6 +274,10 @@ export const pamActuationResults = pgTable(
     observationId: uuid('observation_id').notNull(),
     orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
     deviceId: uuid('device_id').notNull(),
+    // Must equal the actuation's epoch (4-column FK below). The DB default 1
+    // only exists so the column could be added without rewriting this
+    // append-only table; writers always pass the actuation's value.
+    deviceEpoch: integer('device_epoch').notNull().default(1),
     actuationId: uuid('actuation_id').notNull(),
     generation: integer('generation').notNull(),
     resultKind: text('result_kind').notNull().$type<PamResultKind>(),
@@ -269,10 +298,10 @@ export const pamActuationResults = pgTable(
       foreignColumns: [pamActuations.id, pamActuations.orgId],
       name: 'pam_actuation_results_actuation_id_org_id_fkey',
     }).onDelete('cascade'),
-    deviceOrgFk: foreignKey({
-      columns: [table.deviceId, table.orgId],
-      foreignColumns: [devices.id, devices.orgId],
-      name: 'pam_actuation_results_device_id_org_id_fkey',
+    actuationEpochFk: foreignKey({
+      columns: [table.actuationId, table.deviceId, table.orgId, table.deviceEpoch],
+      foreignColumns: [pamActuations.id, pamActuations.deviceId, pamActuations.orgId, pamActuations.deviceEpoch],
+      name: 'pam_actuation_results_actuation_epoch_fkey',
     }).onDelete('cascade'),
     actuationGenerationIdx: index('pam_actuation_results_actuation_generation_idx').on(
       table.actuationId,

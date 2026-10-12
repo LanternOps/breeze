@@ -20,6 +20,7 @@ import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatur
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
 import { captureException } from '../services/sentry';
 import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
+import { currentOwnershipEpochSql } from '../services/deviceOwnershipEpoch';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -966,6 +967,7 @@ remediationSuggestionRoutes.post(
         siteId: device.siteId,
         partnerId: null,
         deviceId,
+        deviceEpoch: currentOwnershipEpochSql(deviceId),
         flowType: 'tech_jit_admin',
         subjectUserId: auth.user.id,
         subjectUsername: auth.user.email ?? auth.user.name ?? auth.user.id,

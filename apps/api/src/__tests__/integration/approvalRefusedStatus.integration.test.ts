@@ -46,6 +46,7 @@ import {
   grantRolePermissions,
 } from './db-utils';
 import { approvalRoutes } from '../../routes/approvals';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
 
 const RUN = !!process.env.DATABASE_URL;
 const MIGRATION = '2026-11-10-130000-approval-requests-refusal-reason.sql';
@@ -115,6 +116,7 @@ async function seedPendingElevationApproval(
         siteId: s.siteId,
         partnerId: s.partnerId,
         deviceId: s.deviceId,
+        deviceEpoch: currentOwnershipEpochSql(s.deviceId),
         flowType: 'uac_intercept',
         subjectUsername: 'REFUSED\\enduser',
         reason: 'install setup.exe',

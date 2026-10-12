@@ -560,6 +560,40 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
+ * Extra row filter for a site rewrite on a table in
+ * {@link DEVICE_SITE_DENORMALIZED_TABLES}. PAM ownership epochs W2 (#8204,
+ * spec §7.3): an elevation request from an EARLIER ownership epoch keeps its
+ * event-time site_id — it belongs to the org that owned the device then, even
+ * when that is the same org (A -> B -> A). Only the device's current-epoch rows
+ * follow the site change. Read after the devices row has been updated, so on
+ * an org move this is the NEW epoch, which the un-actuated requests have just
+ * been re-anchored into.
+ */
+const DEVICE_SITE_REWRITE_FILTERS: Readonly<Record<string, (deviceId: string) => SQL>> = {
+  elevation_requests: (deviceId) =>
+    sql`device_epoch = (SELECT d.ownership_epoch FROM devices d WHERE d.id = ${deviceId}::uuid)`,
+};
+
+/**
+ * Rewrite the denormalized site_id on every {@link DEVICE_SITE_DENORMALIZED_TABLES}
+ * entry for one device, inside the caller's transaction. The single
+ * implementation behind both site-changing paths (PATCH /devices/:id and the
+ * org move), so they cannot drift apart.
+ */
+export async function rewriteDeviceSiteDenormalizedTables(
+  tx: { execute(query: SQL): Promise<unknown> },
+  deviceId: string,
+  siteId: string,
+): Promise<void> {
+  for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
+    const filter = DEVICE_SITE_REWRITE_FILTERS[table];
+    await tx.execute(
+      sql`UPDATE ${sql.identifier(table)} SET site_id = ${siteId}::uuid WHERE device_id = ${deviceId}::uuid${filter ? sql` AND ${filter(deviceId)}` : sql``}`,
+    );
+  }
+}
+
+/**
  * All tables with a direct device_id FK to devices.id, ordered so children come
  * before parents (to avoid FK violations during cascade delete).
  *
@@ -662,17 +696,18 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // CASCADE; recovery_key_access_events.key_id → device_recovery_keys.id
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
-  'pam_actuations', 'pam_actuation_results',
-  // PAM ownership-epoch lineage (#8203). No FK to devices on the two epoch
-  // tables (spec §4.4) — this app-level DELETE is what reclaims them.
-  // deviceDeletion runs in a SYSTEM context and deletes by device_id alone,
-  // so today it removes EVERY epoch and closure of the device, earlier orgs'
-  // included. That is acceptable only while no device with PAM evidence can
-  // change org (devices_pam_history_move_guard): a multi-epoch device carries
-  // lineage but no evidence. W2 (#8202) MUST narrow both entries to the exact
-  // current epoch, (device_id, org_id, epoch) = the live device's, before any
-  // PAM-touched device may move. Closures FK -> epochs, so closures first.
-  // pam_ledger_retirements also cascades from devices by FK.
+  // PAM chain + ownership-epoch lineage (#8203, #8204, spec §4.4). None of
+  // these has an FK to devices any more: the chain FKs onto the epoch row, and
+  // the epoch tables have no device FK at all. Every entry here is deleted by
+  // the EXACT current epoch, (device_id, org_id, epoch) = the live device's —
+  // see DEVICE_CASCADE_DELETE_PREDICATES below — so an earlier epoch's rows,
+  // which are another org's evidence (or the same org's, on A -> B -> A),
+  // survive the device. Order: results, actuations (FK -> epoch, results FK ->
+  // actuation), requests (FK -> epoch, NO ACTION; elevation_audit cascades from
+  // the request), closures (FK -> epoch), then the epoch row itself.
+  // pam_ledger_retirements carries no org or evidence and cascades from
+  // devices by FK; it is deleted by device_id.
+  'pam_actuation_results', 'pam_actuations', 'elevation_requests',
   'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
@@ -713,8 +748,6 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   // Backup verification
   'recovery_readiness',
-  // PAM elevation requests (elevation_audit cascades automatically via FK ON DELETE CASCADE)
-  'elevation_requests',
   // Provisioning one-time credential handles (FK device_id → devices.id ON DELETE CASCADE;
   // listed for the explicit-cascade coverage contract — leaf table, no children)
   'provision_credential_handles',
@@ -728,6 +761,32 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
 export function getDeviceCascadeDeleteTables(): readonly string[] {
   return withExtensionDeviceCascade(CORE_DEVICE_CASCADE_DELETE_TABLES);
 }
+
+/** The live device's current ownership, read under the deletion's row lock. */
+export interface DeviceCurrentOwnership {
+  deviceId: string;
+  orgId: string;
+  ownershipEpoch: number;
+}
+
+/**
+ * Per-table row predicate for device permanent deletion, replacing the default
+ * `device_id = $device` (PAM ownership epochs W2, #8204, spec §4.4). Each entry
+ * matches only the device's CURRENT ownership epoch. The ownership is passed in
+ * as literals rather than re-read in a subquery because the append-only tables
+ * are deleted under `breeze_audit_admin`, which cannot read `devices`. Every
+ * key must also be in CORE_DEVICE_CASCADE_DELETE_TABLES (cascadeDelete.test.ts).
+ */
+const currentEpochPredicate = (epochColumn: 'device_epoch' | 'epoch') => (o: DeviceCurrentOwnership): SQL =>
+  sql`(device_id, org_id, ${sql.identifier(epochColumn)}) = (${o.deviceId}::uuid, ${o.orgId}::uuid, ${o.ownershipEpoch}::integer)`;
+
+export const DEVICE_CASCADE_DELETE_PREDICATES: ReadonlyMap<string, (o: DeviceCurrentOwnership) => SQL> = new Map([
+  ['pam_actuation_results', currentEpochPredicate('device_epoch')],
+  ['pam_actuations', currentEpochPredicate('device_epoch')],
+  ['elevation_requests', currentEpochPredicate('device_epoch')],
+  ['device_ownership_epoch_closures', currentEpochPredicate('epoch')],
+  ['device_ownership_epochs', currentEpochPredicate('epoch')],
+]);
 
 /** @deprecated Static core-only snapshot retained for call sites that predate extensions. */
 export const DEVICE_CASCADE_DELETE_TABLES = CORE_DEVICE_CASCADE_DELETE_TABLES;
@@ -2089,11 +2148,7 @@ coreRoutes.patch(
           if (!row) throw new SiteMoveConflict();
           updated = row;
 
-          for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
-            await tx.execute(
-              sql`UPDATE ${sql.identifier(table)} SET site_id = ${data.siteId}::uuid WHERE device_id = ${deviceId}::uuid`,
-            );
-          }
+          await rewriteDeviceSiteDenormalizedTables(tx, deviceId, data.siteId!);
         });
       } catch (error) {
         if (!(error instanceof SiteMoveConflict)) throw error;

@@ -37,6 +37,7 @@ type CurrentActuation = Record<string, unknown> & {
   id: string;
   org_id: string;
   device_id: string;
+  device_epoch: number;
   elevation_request_id: string;
   generation: number;
   desired_state: 'active' | 'cleanup';
@@ -75,8 +76,13 @@ export async function recordPamActuationResult(input: {
   const result = parsed.data;
 
   return db.transaction(async (tx) => {
+    // Lock order (PAM ownership epochs spec §9): the device row FOR SHARE
+    // before the actuation FOR UPDATE, the same order as actuation insert and
+    // an org change. A result racing a move then either lands before the move
+    // takes the device, or sees the moved device and is rejected below.
+    await tx.execute(sql`SELECT 1 FROM devices WHERE id = ${input.deviceId} FOR SHARE`);
     const current = rows<CurrentActuation>(await tx.execute<CurrentActuation>(sql`
-      SELECT a.id, a.org_id, a.device_id, a.elevation_request_id, a.generation,
+      SELECT a.id, a.org_id, a.device_id, a.device_epoch, a.elevation_request_id, a.generation,
              a.desired_state, a.observed_state, a.current_command_id
       FROM pam_actuations a
       JOIN devices d ON d.id = a.device_id AND d.org_id = a.org_id
@@ -108,10 +114,10 @@ export async function recordPamActuationResult(input: {
     const evidenceJson = JSON.stringify(result.evidence);
     const inserted = rows<{ id: string }>(await tx.execute<{ id: string }>(sql`
       INSERT INTO pam_actuation_results (
-        observation_id, org_id, device_id, actuation_id, generation,
+        observation_id, org_id, device_id, device_epoch, actuation_id, generation,
         result_kind, failure_code, evidence, observed_at
       ) VALUES (
-        ${result.observationId}, ${current.org_id}, ${current.device_id}, ${current.id},
+        ${result.observationId}, ${current.org_id}, ${current.device_id}, ${current.device_epoch}, ${current.id},
         ${result.generation}, ${result.state}, ${result.failureCode ?? null},
         ${evidenceJson}::jsonb, ${result.observedAt}::timestamptz
       )

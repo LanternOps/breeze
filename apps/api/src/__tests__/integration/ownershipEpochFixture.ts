@@ -12,12 +12,12 @@
  * get explicit epoch values. After commit it re-checks the lineage FKs by
  * hand and throws if any target is missing.
  *
- * Until W2 swaps the PAM-chain FKs onto the epoch table, the seeded epoch-1
- * PAM rows deliberately violate `pam_actuations(device_id, org_id) ->
- * devices(id, org_id)` (the device now lives in another org) — that is the
- * exact shape W2's `(device_id, org_id, device_epoch) -> device_ownership_epochs`
- * FK makes legal. The post-commit check asserts the W2 target instead: the
- * chain's (device_id, org_id, epoch 1) epoch row exists.
+ * The epoch-1 PAM rows carry an explicit `device_epoch = 1` (W2, #8204): with
+ * triggers suppressed the insert guard cannot anchor them. Their FK target is
+ * `(device_id, org_id, device_epoch) -> device_ownership_epochs`; the
+ * post-commit check asserts that epoch row exists. Their created_at predates
+ * every epoch's started_at, as real pre-move evidence would, so a replay of
+ * the W2 anchoring migration keeps them in epoch 1.
  */
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -102,28 +102,30 @@ export async function seedMovedDeviceWithHistory(options: SeedMovedDeviceOptions
       // Closed epoch-1 PAM chain in the first owner's org.
       await tx`
         INSERT INTO elevation_requests (
-          id, org_id, site_id, partner_id, device_id, flow_type, subject_username, reason,
-          target_executable_path, target_executable_hash, status, approved_at, expired_at
+          id, org_id, site_id, partner_id, device_id, device_epoch, flow_type, subject_username, reason,
+          target_executable_path, target_executable_hash, status, approved_at, expired_at,
+          requested_at, created_at
         ) VALUES (
-          ${requestId}, ${first.id}, ${first.siteId}, ${partner.id}, ${deviceId}, 'uac_intercept',
+          ${requestId}, ${first.id}, ${first.siteId}, ${partner.id}, ${deviceId}, 1, 'uac_intercept',
           'fixture-user', 'ownership epoch fixture', ${exe}, ${hash}, 'expired',
-          now() - interval '10 days', now() - interval '9 days'
+          now() - interval '10 days', now() - interval '9 days',
+          now() - interval '10 days', now() - interval '10 days'
         )`;
       await tx`
         INSERT INTO pam_actuations (
-          id, org_id, device_id, elevation_request_id, request_revision, generation,
+          id, org_id, device_id, device_epoch, elevation_request_id, request_revision, generation,
           desired_state, observed_state, target_executable_path, target_executable_hash,
-          subject_username, cleanup_requested_at, cleaned_at
+          subject_username, cleanup_requested_at, cleaned_at, created_at
         ) VALUES (
-          ${actuationId}, ${first.id}, ${deviceId}, ${requestId}, 1, 1,
+          ${actuationId}, ${first.id}, ${deviceId}, 1, ${requestId}, 1, 1,
           'cleanup', 'cleaned', ${exe}, ${hash}, 'fixture-user',
-          now() - interval '9 days', now() - interval '9 days'
+          now() - interval '9 days', now() - interval '9 days', now() - interval '10 days'
         )`;
       await tx`
         INSERT INTO pam_actuation_results (
-          id, observation_id, org_id, device_id, actuation_id, generation, result_kind, evidence, observed_at
+          id, observation_id, org_id, device_id, device_epoch, actuation_id, generation, result_kind, evidence, observed_at
         ) VALUES (
-          ${resultId}, ${randomUUID()}, ${first.id}, ${deviceId}, ${actuationId}, 1, 'cleaned',
+          ${resultId}, ${randomUUID()}, ${first.id}, ${deviceId}, 1, ${actuationId}, 1, 'cleaned',
           '{"source":"ownership-epoch-fixture"}'::jsonb, now() - interval '9 days'
         )`;
       // The 1 -> 2 transition retired the epoch-1 actuation.

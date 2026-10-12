@@ -32,6 +32,7 @@ import {
 import type { RiskTier } from '@breeze/shared';
 import { createPamDecisionIntent } from '../../services/pamActuationLifecycle';
 import { buildPamConfigUpdate } from './helpers';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -556,6 +557,7 @@ elevationRequestsRoutes.post(
             orgId: device.orgId,
             siteId: device.siteId ?? null,
             deviceId: device.id,
+            deviceEpoch: currentOwnershipEpochSql(device.id),
             flowType: 'uac_intercept',
             subjectUserId: null,
             subjectUsername: payload.subject_username,
