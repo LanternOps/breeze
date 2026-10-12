@@ -67,7 +67,7 @@ import { isParkedDeliverableCommandType } from '../services/unassignedPool/deliv
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
-import { isRawStdoutArtifactCommand } from '../services/commandAudit';
+import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
@@ -114,7 +114,6 @@ import { applyCommandAutomationTerminal } from '../services/automationTerminalEv
 import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
-  collapseAgentReportedTimeoutStatus,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
 import { markCommandResultProcessingFailed } from '../services/commandResultProcessingFailure';
@@ -766,38 +765,6 @@ export function buildAgentMessageRejection(args: {
 function commandResultToStdout(result: AgentCommandResult): string | undefined {
   return result.stdout ??
     (result.result !== undefined ? JSON.stringify(result.result) : undefined);
-}
-
-function buildStoredCommandResult(
-  commandType: string,
-  result: AgentCommandResult,
-  stdout: string | undefined,
-) {
-  // Finding #5 (WS leg): strip full PEM private-key blocks from agent output
-  // BEFORE it is persisted into device_commands.result and later shown to
-  // scripts:read users. Mirrors the REST ingest path
-  // (routes/agents/commands.ts). Pre-update agents don't redact
-  // server-side-visible output, so we redact here as defense-in-depth.
-  // Preserve null/undefined (don't coerce to '') to keep the stored shape
-  // stable; exitCode/status/durationMs are untouched.
-  //
-  // Exception: artifact-bearing stdout (capture_pprof base64 profiles) must be
-  // stored byte-for-byte -- the redaction patterns statistically fire inside
-  // megabytes of random base64 and would silently corrupt the artifact (#2401).
-  const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
-  return {
-    // See collapseAgentReportedTimeoutStatus: an agent-reported 'timeout'
-    // must never be stored verbatim — that literal string doubles as the
-    // server's own reopen marker.
-    status: collapseAgentReportedTimeoutStatus(result.status),
-    exitCode: result.exitCode,
-    stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
-    stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
-    durationMs: result.durationMs,
-    error: result.error != null
-      ? redactSecretsFromOutput(result.error)
-      : result.status === 'timeout' ? 'Agent reported a timeout' : result.error,
-  };
 }
 
 function rejectMalformedCriticalResult(

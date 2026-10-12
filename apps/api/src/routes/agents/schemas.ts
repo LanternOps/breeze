@@ -530,6 +530,41 @@ export function commandResultResultByteLength(val: unknown): number | null {
   }
 }
 
+/**
+ * Typed refusal codes an agent may set on a failed command result's
+ * `errorCode` (#4026), so the API classifies a failure by meaning instead of by
+ * matching the agent's English `error` prose (classifyCommandFailure).
+ *
+ * MIRRORS agent/internal/wire/errorcodes.go `AllCommandErrorCodes`. Pinned in
+ * both directions — schemas.commandResult.test.ts here and
+ * TestCommandErrorCodesMatchServerSchema in Go — so a one-sided edit fails CI.
+ * Keep one plain string literal per line: the Go test parses this array.
+ */
+export const AGENT_COMMAND_ERROR_CODES = [
+  'path_not_found',
+  'path_exists',
+  'file_too_large',
+  'payload_too_large',
+  'path_is_directory',
+  'sensitive_path_denied',
+  'system_path_denied',
+  'top_level_delete_denied',
+  'contents_unverifiable',
+  'directory_too_large',
+  'copy_into_self',
+  'trash_metadata_too_large',
+  'unsupported_encoding',
+  'invalid_argument',
+] as const;
+
+export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];
+
+const AGENT_COMMAND_ERROR_CODE_SET: ReadonlySet<string> = new Set(AGENT_COMMAND_ERROR_CODES);
+
+export function isAgentCommandErrorCode(value: unknown): value is AgentCommandErrorCode {
+  return typeof value === 'string' && AGENT_COMMAND_ERROR_CODE_SET.has(value);
+}
+
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
@@ -541,6 +576,13 @@ export const commandResultSchema = z.object({
   // which the server falls back to reconstructing from durationMs.
   startedAt: z.string().datetime().optional(),
   error: z.string().max(10_000).optional(),
+  // #4026 typed refusal code. Deliberately a lenient string, NOT
+  // z.enum(AGENT_COMMAND_ERROR_CODES): a newer agent may emit a code this API
+  // has not learned yet, and rejecting the whole command_result over it would
+  // lose the outcome. Unknown codes pass through and the classifier treats
+  // them as absent (prose fallback); a malformed value is dropped via
+  // `.catch` rather than failing the parse.
+  errorCode: z.string().max(64).optional().catch(undefined),
   result: z.any().optional().refine(
     (val) => {
       const size = commandResultResultByteLength(val);
