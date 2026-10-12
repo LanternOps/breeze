@@ -453,12 +453,33 @@ describe('MonitorsTab — conversion after legacy feature retirement', () => {
 
 describe('MonitorsTab — monitor catalog after conversion (#6888)', () => {
   it('refetches the monitor-definition list when the conversion panel reports a change', async () => {
-    fetchWithAuthMock.mockImplementation((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never);
-    render(<MonitorsTab {...baseProps} siblingLinks={[]} />);
+    const converted = { id: 'm-new', name: 'Converted CPU', kind: 'cpu', severity: 'warning', enabled: true };
+    let catalogReads = 0;
+    fetchWithAuthMock.mockImplementation((async (url: string) => {
+      if (url === '/monitor-definitions') {
+        catalogReads += 1;
+        return { ok: true, json: async () => ({ data: catalogReads > 1 ? [converted] : [] }) };
+      }
+      return { ok: true, json: async () => ({ data: [] }) };
+    }) as never);
+    const link = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'm-new', enabled: true }] } };
+    render(<MonitorsTab {...baseProps} existingLink={link} siblingLinks={[]} />);
+    const row = await screen.findByTestId('monitors-tab-item-m-new');
+    await waitFor(() => expect(row.textContent).toContain('Monitor deleted'));
     fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
-    const catalogCalls = () =>
-      fetchWithAuthMock.mock.calls.filter((c) => (c as unknown[])[0] === '/monitor-definitions').length;
-    await waitFor(() => expect(catalogCalls()).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('monitors-tab-item-m-new').textContent).toContain('Converted CPU'));
+    expect(screen.queryByTestId('monitors-tab-item-deleted-m-new')).toBeNull();
+  });
+
+  it('clears an earlier catalog load error once the refetch succeeds', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce((async () => ({ ok: false, json: async () => ({}) })) as never)
+      .mockImplementation((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never);
+    render(<MonitorsTab {...baseProps} siblingLinks={[]} />);
+    await screen.findByText('Failed to load monitors');
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    await waitFor(() => expect(screen.queryByText('Failed to load monitors')).toBeNull());
   });
 });
 

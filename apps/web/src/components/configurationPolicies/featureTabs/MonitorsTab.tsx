@@ -143,6 +143,8 @@ export default function MonitorsTab({
     }
     let cancelled = false;
     setCatalogLoading(true);
+    // The effect re-runs after a conversion; a prior load error must not outlive a good refetch.
+    setCatalogError(undefined);
     fetchWithAuth(meta.fetchUrl)
       .then(async (res) => {
         if (!res.ok) {
