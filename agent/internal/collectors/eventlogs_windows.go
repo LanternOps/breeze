@@ -33,6 +33,9 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 			return c.collectSystemErrors(since, categories)
 		}},
 		{categoryEnabled(categories, "application"), c.collectApplicationCrashes},
+		// Warning/Information events from the small provider allowlist only
+		// (MsiInstaller etc., issue #8174); all other providers stay error+.
+		{categoryEnabled(categories, "application"), c.collectApplicationAllowlistedEvents},
 		{categoryEnabled(categories, "system"), c.collectPowerEvents},
 	}
 
@@ -188,6 +191,40 @@ func (c *EventLogCollector) collectApplicationCrashes(since time.Time) ([]EventL
 	return results, nil
 }
 
+// collectApplicationAllowlistedEvents gathers Warning and Information events
+// from the Application-log providers in applicationInfoProviderAllowlist
+// (e.g. MsiInstaller install/uninstall), so event_log rules on those events
+// can match (#8174). It uses the same -MaxEvents 50 per-query cap as the
+// other queries.
+func (c *EventLogCollector) collectApplicationAllowlistedEvents(since time.Time) ([]EventLogEntry, error) {
+	events, err := c.runWinEventFilter(applicationInfoEventsFilterHashtable(since.UTC().Format(time.RFC3339)))
+	if err != nil {
+		return nil, err
+	}
+
+	var results []EventLogEntry
+	for _, e := range events {
+		results = append(results, EventLogEntry{
+			Timestamp: truncateCollectorString(e.TimeCreated),
+			Level:     mapWinLevel(e.Level),
+			Category:  "application",
+			Source:    truncateCollectorString(e.ProviderName),
+			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
+			Message:   truncateString(e.Message, 500),
+			Details: map[string]any{
+				"recordId": e.RecordId,
+				"logName":  truncateCollectorString(e.LogName),
+				"eventId":  e.Id,
+			},
+		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
 // collectPowerEvents gathers shutdown/restart/boot events from System log by specific Event IDs
 func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry, error) {
 	sinceStr := since.UTC().Format(time.RFC3339)
@@ -255,11 +292,17 @@ func (c *EventLogCollector) queryWinEvents(logName string, maxLevel int, since t
 	}
 	levelFilter := strings.Join(levels, ",")
 
+	return c.runWinEventFilter(fmt.Sprintf("LogName='%s'; Level=%s; StartTime='%s'", logName, levelFilter, sinceStr))
+}
+
+// runWinEventFilter runs Get-WinEvent with the given -FilterHashtable body
+// (without the surrounding @{ }) and the shared -MaxEvents 50 per-query cap.
+func (c *EventLogCollector) runWinEventFilter(filterHashtable string) ([]winEvent, error) {
 	psCmd := fmt.Sprintf(
-		`Get-WinEvent -FilterHashtable @{LogName='%s'; Level=%s; StartTime='%s'} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
+		`Get-WinEvent -FilterHashtable @{%s} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
 			`Select-Object RecordId, LogName, Level, LevelDisplayName, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, ProviderName, Id, Message | `+
 			`ConvertTo-Json -Depth 2 -Compress`,
-		logName, levelFilter, sinceStr,
+		filterHashtable,
 	)
 
 	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))
