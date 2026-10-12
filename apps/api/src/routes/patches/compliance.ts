@@ -27,6 +27,7 @@ import {
   resolveRequestReportAuthority,
   type PersistedSiteScopeColumns,
 } from '../../services/siteScope';
+import { loadFailedInstallPairs } from '../../services/patchInstallFailures';
 import { isPatchReportPastRetention } from '../../services/patchReportFiles';
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
@@ -295,6 +296,17 @@ complianceRoutes.get(
       ? Math.round((summary.installed / relevantTotal) * 100)
       : 100;
 
+    // #7214: an outstanding patch whose latest install attempt failed is a failed
+    // install, not "pending approval". Split it out of the approval buckets so
+    // approved + unapproved + failed partition missingCount.
+    const failedPairs = await loadFailedInstallPairs(deviceIds);
+    const isFailedInstall = failedPairs.length > 0
+      ? sql`(${devicePatches.deviceId}, ${devicePatches.patchId}) in (${sql.join(
+          failedPairs.map(p => sql`(${p.deviceId}::uuid, ${p.patchId}::uuid)`),
+          sql`, `
+        )})`
+      : sql`false`;
+
     // Per-device patch breakdown for "devices needing patches" table
     const deviceBreakdown = await db
       .select({
@@ -303,20 +315,21 @@ complianceRoutes.get(
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
         missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
+        failedMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${isFailedInstall})`,
         approvedMissing: preApprovedPatchIds !== null
-          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+          ? sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${
               preApprovedPatchIds.size > 0
                 ? inArray(devicePatches.patchId, [...preApprovedPatchIds])
                 : sql`false`
             })`
-          : sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${isApprovedForInstall})`,
         unapprovedMissing: preApprovedPatchIds !== null
-          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+          ? sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${
               preApprovedPatchIds.size > 0
                 ? sql`not ${inArray(devicePatches.patchId, [...preApprovedPatchIds])}`
                 : sql`true`
             })`
-          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and not ${isApprovedForInstall})`,
         criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical')`,
         importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
@@ -350,6 +363,7 @@ complianceRoutes.get(
       missingCount: Number(row.missingCount),
       approvedMissing: Number(row.approvedMissing),
       unapprovedMissing: Number(row.unapprovedMissing),
+      failedMissing: Number(row.failedMissing),
       criticalCount: Number(row.criticalCount),
       importantCount: Number(row.importantCount),
       osMissing: Number(row.osMissing),

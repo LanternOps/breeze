@@ -159,6 +159,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             // Read it directly rather than synthesizing from (pending - approved),
             // which produced a misleading count when the field was absent.
             unapprovedMissing: toNumber(n?.unapprovedMissing ?? 0),
+            failedMissing: toNumber(n?.failedMissing ?? 0),
             criticalMissing: toNumber(n?.criticalCount ?? 0),
             importantMissing: toNumber(n?.importantCount ?? 0),
             osMissing: toNumber(n?.osMissing ?? 0),
@@ -392,6 +393,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     [devices]
   );
 
+  const failedInstallPatches = useMemo(
+    () => devices.reduce((sum, d) => sum + d.failedMissing, 0),
+    [devices]
+  );
+
   // Precomputed filter counts
   const filterCounts = useMemo(() => ({
     critical: devices.filter(d => d.criticalMissing > 0).length,
@@ -452,6 +458,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           )}
           {unapprovedPendingPatches > 0 && (
             <span className="text-orange-600 font-medium">{t('patchComplianceView.summary.pendingApproval', { count: unapprovedPendingPatches })}</span>
+          )}
+          {failedInstallPatches > 0 && (
+            <span className="text-red-600 font-medium">{t('patchComplianceView.summary.failedInstalls', { count: failedInstallPatches })}</span>
           )}
           {summary.criticalPatches > 0 && (
             <span className="text-red-600 font-medium">{t('patchComplianceView.summary.critical', { count: summary.criticalPatches })}</span>
@@ -595,6 +604,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               <th className="px-3 py-3">{t('patchComplianceView.table.status')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.approvedTitle')}>{t('patchComplianceView.table.approved')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.pendingApprovalTitle')}>{t('patchComplianceView.table.pendingApproval')}</th>
+              <th className="px-3 py-3" title={t('patchComplianceView.table.failedTitle')}>{t('patchComplianceView.table.failed')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.osPatchesTitle')}>{t('patchComplianceView.table.osPatches')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.thirdPartyTitle')}>{t('patchComplianceView.table.thirdParty')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.criticalTitle')}>{t('patchComplianceView.table.critical')}</th>
@@ -606,7 +616,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           <tbody className="divide-y">
             {filteredDevices.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={12} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {hasActiveFilters ? t('patchComplianceView.emptyFiltered') : t('patchComplianceView.empty')}
                 </td>
               </tr>
@@ -680,6 +690,15 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                       {device.unapprovedMissing > 0 ? (
                         <span className="inline-flex items-center rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700">
                           {device.unapprovedMissing}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums" data-testid={`failed-installs-${device.id}`}>
+                      {device.failedMissing > 0 ? (
+                        <span className="inline-flex items-center rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-700">
+                          {device.failedMissing}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">-</span>
