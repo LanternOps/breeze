@@ -2,15 +2,19 @@ package agentapp
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 // The --site-id flag on `enroll` was never read: the server derives the site
@@ -121,5 +125,47 @@ func TestEnrollWithConfig_DoesNotSendSiteID(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("site-from-flag-8474")) {
 		t.Errorf("enroll request body carries the --site-id value: %s", body)
+	}
+}
+
+// enrollDevice itself must emit the WARN into agent.log: cobra's notice goes
+// to stderr only, which unattended installs discard. Driven down the shortest
+// path — no server URL — so enrollError exits (stubbed to panic) right after
+// logging is initialised and the warning is written.
+func TestEnrollDevice_LogsIgnoredSiteIDToAgentLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_file: "+strconv.Quote(logPath)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origCfg, origServer, origQuiet := cfgFile, serverURL, quietEnroll
+	origExit, origWrite, origEvErr := osExit, writeLastErrorFile, eventLogError
+	t.Cleanup(func() {
+		releaseLogFiles()
+		logging.Init("text", "info", nil)
+		cfgFile, serverURL, quietEnroll = origCfg, origServer, origQuiet
+		osExit, writeLastErrorFile, eventLogError = origExit, origWrite, origEvErr
+	})
+	resetSiteIDFlag(t)
+	cfgFile, serverURL, quietEnroll = cfgPath, "", true
+	enrollSiteID = "site-from-flag-8474"
+	osExit = func(c int) { panic(fmt.Sprintf("test exit %d", c)) }
+	writeLastErrorFile = func(string) {}
+	eventLogError = func(_, _ string) {}
+
+	func() {
+		defer func() { _ = recover() }()
+		enrollDevice("key")
+	}()
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("agent.log not written: %v", err)
+	}
+	if !strings.Contains(string(got), "the site comes from the enrollment key") ||
+		!strings.Contains(string(got), "site-from-flag-8474") {
+		t.Errorf("agent.log lacks the --site-id deprecation WARN; got:\n%s", got)
 	}
 }
