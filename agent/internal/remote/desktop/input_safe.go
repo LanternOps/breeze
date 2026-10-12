@@ -71,6 +71,9 @@ type SafeInput struct {
 	now           func() time.Time // worker reads; tests may replace before first use
 	lastResync    time.Time        // worker goroutine only
 	discardBelow  uint64           // worker goroutine only
+	// resetsDone counts reset release jobs that have finished on the worker.
+	// Tests wait on it: the epoch moves before the release job is queued.
+	resetsDone atomic.Uint64
 }
 
 type safeInputJob struct {
@@ -487,6 +490,7 @@ func (s *SafeInput) reset(reason string, geometry, announce bool) {
 		}
 		s.takeMove()
 		s.releaseHeld(reason)
+		s.resetsDone.Add(1)
 		return nil
 	})
 	if err != nil && !errors.Is(err, errInputClosed) {

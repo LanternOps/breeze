@@ -138,7 +138,7 @@ func TestSupersededChannelClosingLateDoesNotResetAgain(t *testing.T) {
 	a, b := new(int), new(int)
 	s.onViewerChannelAttached("input-r", a)
 	s.onViewerChannelAttached("input-r", b)
-	waitFor(t, "the replacement reset", func() bool { e, _ := s.safeInput().Epochs(); return e == 2 })
+	waitFor(t, "the replacement reset", func() bool { return s.safeInput().resetsDone.Load() == 1 })
 	sendR(s, `{"type":"input_reset","seq":1,"epoch":2}`)
 
 	s.onViewerChannelClosed("input-r", a) // the old channel's close arrives late
@@ -158,7 +158,7 @@ func TestSupersededChannelMessagesAreIgnored(t *testing.T) {
 	a, b := new(int), new(int)
 	s.onViewerChannelAttached("input", a)
 	s.onViewerChannelAttached("input", b)
-	waitFor(t, "the replacement reset", func() bool { e, _ := s.safeInput().Epochs(); return e == 2 })
+	waitFor(t, "the replacement reset", func() bool { return s.safeInput().resetsDone.Load() == 1 })
 
 	s.viewerChannelMessage("input", a, []byte(`{"type":"key_down","key":"a"}`))
 	s.viewerChannelMessage("input", b, []byte(`{"type":"key_down","key":"b"}`))
