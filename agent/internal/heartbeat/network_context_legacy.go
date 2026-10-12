@@ -61,12 +61,28 @@ var windowsPlaceholderResolvers = map[string]bool{
 // (system-wide, e.g. resolv.conf) rows both apply; OS order is preserved
 // because it is the resolver preference order. Returns nil when unknown and a
 // non-nil empty slice when the adapter positively has no resolver.
+//
+// An empty list is a claim that the adapter has no resolver, so every
+// degraded read is "unknown" rather than "empty": an incomplete manifest or
+// interface inventory, any resolver section that is not Complete, except the
+// resolv.conf fallback (always Partial with split_dns_unavailable, and
+// otherwise whole), and any truncated section.
 func legacyResolverAddresses(snapshot networkcontext.Snapshot, name string) []string {
-	if len(snapshot.ContextManifest.Contexts) != 1 || len(snapshot.Resolvers) == 0 {
+	if snapshot.ContextManifest.Outcome != networkcontext.Complete || len(snapshot.ContextManifest.Contexts) != 1 || len(snapshot.Resolvers) == 0 {
 		return nil
+	}
+	for _, s := range snapshot.Resolvers {
+		whole := s.Outcome == networkcontext.Complete ||
+			(s.Outcome == networkcontext.Partial && s.ReasonCode == "split_dns_unavailable")
+		if !whole || s.OmittedRowCount > 0 {
+			return nil
+		}
 	}
 	iface := ""
 	for _, s := range snapshot.Interfaces {
+		if s.Outcome != networkcontext.Complete {
+			return nil
+		}
 		for _, r := range s.Rows {
 			if r.Name != name {
 				continue
@@ -83,12 +99,6 @@ func legacyResolverAddresses(snapshot networkcontext.Snapshot, name string) []st
 	out := []string{}
 	seen := map[string]bool{}
 	for _, s := range snapshot.Resolvers {
-		// Partial sections still carry usable rows (resolv.conf is always
-		// Partial: split DNS is unavailable); a section with no rows that
-		// did not complete means the read failed and the answer is unknown.
-		if s.Outcome != networkcontext.Complete && s.Outcome != networkcontext.Partial {
-			return nil
-		}
 		for _, r := range s.Rows {
 			if r.InterfaceKey != nil && *r.InterfaceKey != iface {
 				continue

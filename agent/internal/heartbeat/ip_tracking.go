@@ -356,6 +356,18 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect network adapters for ip history: %w", err)
 	}
+	return h.ipHistoryFromAdapters(adapters), nil
+}
+
+// ipHistoryFromAdapters builds the current IP entries, diffs them against the
+// persisted previous state, and saves the new state. Returns nil when there
+// is nothing to report.
+func (h *Heartbeat) ipHistoryFromAdapters(adapters []collectors.NetworkAdapterInfo) *IPHistoryUpdate {
+	previousIPs := h.loadPreviousIPState()
+	previousByKey := make(map[string]IPHistoryEntry, len(previousIPs))
+	for _, entry := range previousIPs {
+		previousByKey[ipEntryKey(entry)] = entry
+	}
 
 	currentIPs := make([]IPHistoryEntry, 0, len(adapters))
 	for _, adapter := range adapters {
@@ -375,18 +387,26 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 		if !ok {
 			continue
 		}
+		// nil means the resolvers are unknown right now (network context
+		// off, stale or degraded). Keep the last known list rather than
+		// report a change: on the wire nil and [] are both an absent field,
+		// which the API stores as "no resolvers".
+		if entry.DNSServers == nil {
+			if previous, found := previousByKey[ipEntryKey(entry)]; found {
+				entry.DNSServers = previous.DNSServers
+			}
+		}
 		currentIPs = append(currentIPs, entry)
 	}
 
 	currentIPs = dedupeEntries(currentIPs)
-	previousIPs := h.loadPreviousIPState()
 	changedIPs, removedIPs := detectIPChanges(currentIPs, previousIPs)
 	if err := h.savePreviousIPState(currentIPs); err != nil {
 		log.Warn("ip history state save failed, diff may be inaccurate next heartbeat", "error", err.Error())
 	}
 
 	if len(currentIPs) == 0 && len(changedIPs) == 0 && len(removedIPs) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// Ensure non-nil slices so JSON serializes as [] instead of null.
@@ -403,7 +423,7 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 		ChangedIPs: changedIPs,
 		RemovedIPs: removedIPs,
 		DetectedAt: time.Now().UTC(),
-	}, nil
+	}
 }
 
 // perUserStateDir is the per-user ~/.breeze dir the small state stores below

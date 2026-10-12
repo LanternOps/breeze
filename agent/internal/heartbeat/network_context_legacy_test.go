@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/collectors"
 	nc "github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 )
 
@@ -93,6 +94,37 @@ func TestLegacyResolverAddresses(t *testing.T) {
 			mutate: func(s *nc.Snapshot) {
 				s.Resolvers[0] = nc.Section[nc.ResolverRow]{Outcome: nc.Failed, ReasonCode: "resolver_read_failed", Rows: []nc.ResolverRow{}}
 			}, want: nil},
+		{name: "unsupported resolver read is unknown", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) { s.Resolvers[0].Outcome = nc.Unsupported }, want: nil},
+		{name: "not-attempted resolver read is unknown", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) { s.Resolvers[0].Outcome = nc.NotAttempted }, want: nil},
+		{name: "resolv.conf with no nameserver lines is positively empty", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) {
+				s.Resolvers[0] = nc.Section[nc.ResolverRow]{Outcome: nc.Partial, ReasonCode: "split_dns_unavailable", Rows: []nc.ResolverRow{}}
+			}, want: []string{}},
+		{name: "partial read for any other reason is unknown (scutil limit, no rows)", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) {
+				s.Resolvers[0] = nc.Section[nc.ResolverRow]{Outcome: nc.Partial, ReasonCode: "limit_exceeded", Rows: []nc.ResolverRow{}}
+			}, want: nil},
+		{name: "scope-lost rows are not attributed to every adapter", iface: "Wi-Fi",
+			mutate: func(s *nc.Snapshot) {
+				s.Resolvers[0].Outcome = nc.Partial
+				s.Resolvers[0].ReasonCode = "resolver_scope_unknown"
+				s.Resolvers[0].Rows = append(s.Resolvers[0].Rows, nc.ResolverRow{Address: "10.8.0.1"})
+			}, want: nil},
+		{name: "a later failed section makes the answer unknown even past the cap", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) {
+				rows := []nc.ResolverRow{}
+				for i := 1; i <= 9; i++ {
+					rows = append(rows, nc.ResolverRow{Address: "10.1.0." + strconv.Itoa(i), InterfaceKey: strPtr("if-eth0")})
+				}
+				s.Resolvers[0].Rows = rows
+				s.Resolvers = append(s.Resolvers, nc.Section[nc.ResolverRow]{Outcome: nc.Failed, Rows: []nc.ResolverRow{}})
+			}, want: nil},
+		{name: "incomplete interface inventory is unknown", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) { s.Interfaces[0].Outcome = nc.Partial }, want: nil},
+		{name: "incomplete context manifest is unknown", iface: "Ethernet",
+			mutate: func(s *nc.Snapshot) { s.ContextManifest.Outcome = nc.Partial }, want: nil},
 		{name: "missing resolver section is unknown", iface: "Ethernet",
 			mutate: func(s *nc.Snapshot) { s.Resolvers = nil }, want: nil},
 		{name: "adapter absent from snapshot is unknown", iface: "eth9", want: nil},
@@ -121,6 +153,70 @@ func TestLegacyResolverAddresses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestIPHistoryFromAdaptersCarriesDNSServers exercises the wiring from the
+// network-context snapshot through entry normalisation, diffing and the
+// persisted previous-state file.
+func TestIPHistoryFromAdaptersCarriesDNSServers(t *testing.T) {
+	useTempHome(t)
+	snapshot := resolverFixtureSnapshot()
+	h := &Heartbeat{networkContext: &networkContextManager{enabled: true, latestSnapshot: &snapshot, captured: time.Now()}}
+	adapters := []collectors.NetworkAdapterInfo{
+		{InterfaceName: "Ethernet", IPAddress: "10.0.0.10", IPType: "ipv4"},
+		{InterfaceName: "Ethernet", IPAddress: "2001:db8::10", IPType: "ipv6"},
+		{InterfaceName: "Wi-Fi", IPAddress: "192.168.1.20", IPType: "ipv4"},
+	}
+	dnsByIP := func(entries []IPHistoryEntry) map[string][]string {
+		out := map[string][]string{}
+		for _, e := range entries {
+			out[e.IPAddress] = e.DNSServers
+		}
+		return out
+	}
+
+	first := h.ipHistoryFromAdapters(adapters)
+	if first == nil {
+		t.Fatal("expected an update")
+	}
+	want := map[string][]string{
+		"10.0.0.10":    {"10.0.0.53", "10.0.0.54"},
+		"2001:db8::10": {"10.0.0.53", "10.0.0.54"},
+		"192.168.1.20": {"192.168.1.1"},
+	}
+	if got := dnsByIP(first.CurrentIPs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("current dns = %v, want %v", got, want)
+	}
+	if len(first.ChangedIPs) != 3 {
+		t.Fatalf("first run should report all entries changed, got %d", len(first.ChangedIPs))
+	}
+
+	second := h.ipHistoryFromAdapters(adapters)
+	if second == nil || len(second.ChangedIPs) != 0 {
+		t.Fatalf("identical resolvers must not re-report changes (state round-trip), got %+v", second)
+	}
+
+	// Resolvers become unknown (failed read): the last known list is kept
+	// and nothing is reported as changed.
+	good := snapshot.Resolvers[0]
+	snapshot.Resolvers[0] = nc.Section[nc.ResolverRow]{Outcome: nc.Failed, Rows: []nc.ResolverRow{}}
+	unknown := h.ipHistoryFromAdapters(adapters)
+	if len(unknown.ChangedIPs) != 0 {
+		t.Fatalf("unknown resolvers must not overwrite the known list, changed=%v", unknown.ChangedIPs)
+	}
+	if got := dnsByIP(unknown.CurrentIPs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown resolvers should carry the last known list, got %v", got)
+	}
+	snapshot.Resolvers[0] = good
+
+	// All resolvers removed from Ethernet: both of its entries change and
+	// carry an empty list; Wi-Fi is untouched.
+	snapshot.Resolvers[0].Rows = snapshot.Resolvers[0].Rows[2:]
+	third := h.ipHistoryFromAdapters(adapters)
+	changed := dnsByIP(third.ChangedIPs)
+	if len(changed) != 2 || len(changed["10.0.0.10"]) != 0 || len(changed["2001:db8::10"]) != 0 {
+		t.Fatalf("resolver removal should change both Ethernet entries, got %v", changed)
 	}
 }
 
