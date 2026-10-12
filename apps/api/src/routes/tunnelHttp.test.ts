@@ -213,8 +213,10 @@ beforeEach(() => {
   sendCommandMock.mockResolvedValue(okAgentResult());
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  (await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait'))
+    .__resetCancelledPrefixTombstonesForTests();
 });
 
 // Helper: run the ticket flow and return the signed auth cookie value.

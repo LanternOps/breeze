@@ -43,14 +43,29 @@ type PendingEntry = {
 const pending = new Map<string, PendingEntry>();
 
 /**
+ * Node's http.Server `requestTimeout` default (ms). `serve(...)` in index.ts
+ * does not override it, so it is the only bound on a proxied request's body
+ * read (`await c.req.arrayBuffer()` in routes/tunnelHttp.ts path mode).
+ */
+const NODE_DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+/**
+ * Agent round-trip timeout for a proxied request. Restated from
+ * `HTTP_REQUEST_TIMEOUT_MS` in routes/tunnelHttpCore.ts (which imports this
+ * module, so importing it here would be circular); keep the two in sync.
+ */
+const PROXIED_REQUEST_TIMEOUT_MS = 25_000;
+const TOMBSTONE_SLACK_MS = 5_000;
+
+/**
  * Cancellation tombstones: a prefix cancelled by `cancelPendingAgentCommandsByPrefix`
  * keeps refusing NEW sends with that prefix for a while. Closes the window where
- * a request passed its gates, but had not yet registered in `pending` (body read,
- * allowlist lookup) when Close swept. 60s = the 25s proxied-request timeout plus
- * generous slack for a slow body upload / DB lookup between gate and dispatch;
- * after that the request would have timed out anyway.
+ * a request passed its gates but had not yet registered in `pending` when Close
+ * swept. The longest such gap is the request body read, bounded only by the
+ * server's requestTimeout, plus the agent round-trip timeout; after that the
+ * request would have been killed anyway.
  */
-export const CANCELLED_PREFIX_TOMBSTONE_TTL_MS = 60_000;
+export const CANCELLED_PREFIX_TOMBSTONE_TTL_MS =
+  NODE_DEFAULT_REQUEST_TIMEOUT_MS + PROXIED_REQUEST_TIMEOUT_MS + TOMBSTONE_SLACK_MS;
 const cancelledPrefixes = new Map<string, { error: string; expiresAt: number }>();
 
 function findCancelledPrefix(commandId: string): string | null {
@@ -151,4 +166,9 @@ export function cancelPendingAgentCommandsByPrefix(prefix: string, error: string
     cancelled += 1;
   }
   return cancelled;
+}
+
+/** Test-only: drop all cancellation tombstones so they cannot leak between tests. */
+export function __resetCancelledPrefixTombstonesForTests(): void {
+  cancelledPrefixes.clear();
 }

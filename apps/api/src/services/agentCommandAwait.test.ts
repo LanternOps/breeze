@@ -5,7 +5,7 @@ vi.mock('../routes/agentWs', () => ({
   sendCommandToAgent: vi.fn(),
 }));
 
-import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand, cancelPendingAgentCommandsByPrefix, CANCELLED_PREFIX_TOMBSTONE_TTL_MS } from './agentCommandAwait';
+import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand, cancelPendingAgentCommandsByPrefix, CANCELLED_PREFIX_TOMBSTONE_TTL_MS, __resetCancelledPrefixTombstonesForTests } from './agentCommandAwait';
 import { sendCommandToAgent } from '../routes/agentWs';
 
 const mockSendCommandToAgent = vi.mocked(sendCommandToAgent);
@@ -19,6 +19,7 @@ describe('agentCommandAwait', () => {
   });
 
   afterEach(() => {
+    __resetCancelledPrefixTombstonesForTests();
     vi.useRealTimers();
   });
 
@@ -126,6 +127,10 @@ describe('agentCommandAwait', () => {
       expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
       resolvePendingAgentCommand('http-req-T5-x', { status: 'completed' });
       await expect(p).resolves.toEqual({ status: 'completed' });
+    });
+
+    it('outlives the body-read + request-timeout window', () => {
+      expect(CANCELLED_PREFIX_TOMBSTONE_TTL_MS).toBeGreaterThan(300_000 + 25_000);
     });
 
     it('stops blocking once the tombstone expires', async () => {
