@@ -732,7 +732,8 @@ type idleTimer interface {
 	Stop() bool
 }
 
-// idleAfterFunc arms the idle watchdog. It is a variable only so tests can
+// idleAfterFunc arms the idle watchdog of both the read path (fetchOnce) and
+// the write path (WriteProvider.idleContext). It is a variable only so tests can
 // drive the watchdog with a fake clock instead of racing real time (#7380);
 // production always uses time.AfterFunc.
 var idleAfterFunc = func(d time.Duration, f func()) idleTimer { return time.AfterFunc(d, f) }
