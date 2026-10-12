@@ -255,3 +255,90 @@ describe('estimate and MRR count the block fee once and never hours (#4547 W03)'
     }
   });
 });
+
+describe('updateContractLine — hour_block (#4547 W03)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const blockRow = (over: Record<string, unknown> = {}) => ({
+    id: 'b1', contractId: 'c1', orgId: 'org1', lineType: 'hour_block', description: 'Support block',
+    unitPrice: '1000.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, siteName: null,
+    deviceRoles: null, deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: '10.00', overageMode: 'bill', overageUnitPrice: '150.00',
+    rolloverPolicy: 'carry_forward', rolloverCapHours: '4.00', hourBlockAlertPct: 80,
+    hourBlockFirstPeriodStart: '2026-07-01', hourBlockRetiredAt: null, ...over,
+  });
+  const lockAndRead = (line: Record<string, unknown>) => { queueResult([contractRow()]); queueResult([line]); };
+
+  it.each([
+    ['siteId', { siteId: '22222222-2222-4222-8222-222222222222' }],
+    ['siteId (null)', { siteId: null }],
+    ['deviceRoles', { deviceRoles: ['server'] }],
+    ['deviceGroupId', { deviceGroupId: '22222222-2222-4222-8222-222222222222' }],
+    ['manualQuantity', { manualQuantity: '1.00' }],
+    ["overageMode 'flag'", { overageMode: 'flag' }],
+    ['overageMode null', { overageMode: null }],
+  ])('locks %s on a block', async (_name, patch) => {
+    lockAndRead(blockRow());
+    await expect(svc.updateContractLine('c1', 'b1', patch as never, actor))
+      .rejects.toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', status: 400 });
+    expect((db as unknown as Chain).set.mock.calls).toHaveLength(0);
+  });
+
+  it("allows overageMode 'bill' re-sent unchanged (a form echoing the current value)", async () => {
+    lockAndRead(blockRow());
+    queueResult([blockRow({ description: 'Renamed' })]); // update returning (withLineRefs runs no query: no site/group ids)
+    await svc.updateContractLine('c1', 'b1', { overageMode: 'bill', description: 'Renamed' } as never, actor);
+    expect((db as unknown as Chain).set.mock.calls[0]![0]).toMatchObject({ description: 'Renamed', overageMode: 'bill' });
+  });
+
+  it('refuses every patch of a RETIRED block', async () => {
+    lockAndRead(blockRow({ hourBlockRetiredAt: new Date('2026-07-10T00:00:00Z') }));
+    await expect(svc.updateContractLine('c1', 'b1', { description: 'x' } as never, actor))
+      .rejects.toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', status: 400 });
+    expect((db as unknown as Chain).set.mock.calls).toHaveLength(0);
+  });
+
+  it('persists the block columns and the audit records names AND before/after for them (Open Decision 15)', async () => {
+    lockAndRead(blockRow());
+    queueResult([blockRow({ includedQuantity: '12.00', rolloverPolicy: 'none', rolloverCapHours: null, hourBlockAlertPct: 90 })]);
+    const { audit } = await svc.updateContractLine('c1', 'b1',
+      { includedQuantity: '12', rolloverPolicy: 'none', rolloverCapHours: null, hourBlockAlertPct: 90 } as never, actor);
+    expect((db as unknown as Chain).set.mock.calls[0]![0]).toMatchObject({
+      includedQuantity: '12', rolloverPolicy: 'none', rolloverCapHours: null, hourBlockAlertPct: 90,
+    });
+    expect(audit.changedFields).toEqual(expect.arrayContaining(['includedQuantity', 'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct']));
+    expect(audit.changedFields).not.toContain('description');
+    expect(audit.blockChanges).toEqual({
+      includedQuantity: { before: '10.00', after: '12.00' },
+      rolloverPolicy: { before: 'carry_forward', after: 'none' },
+      rolloverCapHours: { before: '4.00', after: null },
+      hourBlockAlertPct: { before: 80, after: 90 },
+    });
+    // the shared audit-detail builder carries it to every door (HTTP, partner API, AI)
+    expect(svc.contractLineAuditDetails(audit)).toMatchObject({ blockChanges: audit.blockChanges });
+  });
+
+  it('a non-block edit carries no blockChanges (audit payloads for other lines are unchanged)', async () => {
+    lockAndRead({ ...blockRow(), lineType: 'flat', includedQuantity: null, overageMode: null, overageUnitPrice: null, rolloverPolicy: null, rolloverCapHours: null, hourBlockAlertPct: null, hourBlockFirstPeriodStart: null });
+    queueResult([{ ...blockRow(), lineType: 'flat', description: 'Renamed', includedQuantity: null, overageMode: null, overageUnitPrice: null, rolloverPolicy: null, rolloverCapHours: null, hourBlockAlertPct: null, hourBlockFirstPeriodStart: null }]);
+    const { audit } = await svc.updateContractLine('c1', 'b1', { description: 'Renamed' } as never, actor);
+    expect(audit).not.toHaveProperty('blockChanges');
+  });
+
+  it('a switch to rollover none that leaves the cap set is a 400 INVALID_LINE_PATCH naming the cap', async () => {
+    lockAndRead(blockRow());
+    await expect(svc.updateContractLine('c1', 'b1', { rolloverPolicy: 'none' } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400, details: { issues: expect.arrayContaining([expect.objectContaining({ path: 'rolloverCapHours' })]) } });
+  });
+
+  it('block fields on a non-block line are INVALID_LINE_PATCH, not a silent write', async () => {
+    lockAndRead({ ...blockRow(), lineType: 'flat', includedQuantity: null, overageMode: null, overageUnitPrice: null, rolloverPolicy: null, rolloverCapHours: null, hourBlockAlertPct: null, hourBlockFirstPeriodStart: null });
+    await expect(svc.updateContractLine('c1', 'b1', { rolloverPolicy: 'none' } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
+  });
+
+  it('clearing the included hours is INVALID_LINE_PATCH (the DB twin would reject the row)', async () => {
+    lockAndRead(blockRow());
+    await expect(svc.updateContractLine('c1', 'b1', { includedQuantity: null, overageUnitPrice: null } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
+  });
+});

@@ -12,7 +12,7 @@ import {
   ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
   contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
-  type ContractLineType, type DeviceRole, type UpdateContractLineInput,
+  type ContractLineType, type DeviceRole, type RolloverPolicy, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor, todayISO, firstUnclaimedPeriodStart, advancePastClaimed } from './contractMath';
@@ -203,8 +203,10 @@ const AUDITED_LINE_COLUMNS = [
   'description', 'unitPrice', 'taxable', 'catalogItemId', 'manualQuantity',
   'siteId', 'deviceRoles', 'deviceGroupId', 'deviceGroupName', 'sortOrder',
   'includedQuantity', 'overageMode', 'overageUnitPrice',
+  'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct',
 ] as const;
 type AuditedLineColumn = typeof AUDITED_LINE_COLUMNS[number];
+const BLOCK_AUDIT_COLUMNS = ['includedQuantity', 'overageUnitPrice', 'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct'] as const;
 type ContractLineRowT = typeof contractLines.$inferSelect;
 
 function lineColumnChanged(field: AuditedLineColumn, before: ContractLineRowT, after: ContractLineRowT): boolean {
@@ -227,6 +229,16 @@ function diffLineAudit(
   c: { id: string; orgId: string; name: string },
 ): ContractLineAudit {
   const changedFields = AUDITED_LINE_COLUMNS.filter((f) => lineColumnChanged(f, before, after));
+  // #4547 W03: a block edit applies at the next close, so the audit keeps before/after.
+  // Numbers and enum values only — never free text.
+  const blockChanges = after.lineType === 'hour_block'
+    ? (() => {
+        const moved = BLOCK_AUDIT_COLUMNS.filter((f) => changedFields.includes(f));
+        if (moved.length === 0) return {};
+        const v = (x: unknown): string | number | null => (x === null || x === undefined ? null : typeof x === 'number' ? x : String(x));
+        return { blockChanges: Object.fromEntries(moved.map((f) => [f, { before: v(before[f]), after: v(after[f]) }])) };
+      })()
+    : {};
   return {
     orgId: c.orgId, contractId: c.id, contractName: c.name,
     contractLineId: after.id, lineType: after.lineType,
@@ -234,6 +246,7 @@ function diffLineAudit(
     ...(changedFields.includes('unitPrice')
       ? { oldUnitPrice: before.unitPrice, newUnitPrice: after.unitPrice }
       : {}),
+    ...blockChanges,
   };
 }
 
@@ -246,6 +259,7 @@ export function contractLineAuditDetails(audit: ContractLineAudit) {
     ...(audit.oldUnitPrice !== undefined ? { oldUnitPrice: audit.oldUnitPrice } : {}),
     ...(audit.newUnitPrice !== undefined ? { newUnitPrice: audit.newUnitPrice } : {}),
     ...(audit.retired !== undefined ? { retired: audit.retired } : {}),
+    ...(audit.blockChanges ? { blockChanges: audit.blockChanges } : {}),
   };
 }
 
@@ -298,6 +312,31 @@ async function assertGroupInOrg(tx: DbExecutor, groupId: string, orgId: string) 
 /** Postgres 23503 on contract_lines_device_group_org_fk = the group vanished
  *  between assertGroupInOrg and the insert (deleteDeviceGroup holds FOR UPDATE
  *  on the group row, so the insert waited and then lost). Same answer. */
+/** Fields a block-hours line cannot take (index C7). The shared validator's
+ *  invariants would also reject most of them on the merged row, but as the
+ *  generic INVALID_LINE_PATCH; naming them HOUR_BLOCK_FIELD_LOCKED tells the
+ *  caller this is a property of the line type, not a typo. A key present with
+ *  any value — including null — counts, like the rest of the patch logic. */
+const HOUR_BLOCK_LOCKED_KEYS = ['siteId', 'deviceRoles', 'deviceGroupId', 'manualQuantity'] as const;
+
+function assertBlockPatchAllowed(
+  current: { hourBlockRetiredAt: Date | string | null },
+  patch: UpdateContractLineInput,
+): void {
+  if (current.hourBlockRetiredAt !== null) {
+    throw new ContractServiceError('A retired block-hours line cannot be edited', 400, 'HOUR_BLOCK_FIELD_LOCKED', { fields: ['retired'] });
+  }
+  const locked: string[] = HOUR_BLOCK_LOCKED_KEYS.filter((k) => patchHasKey(patch, k));
+  // Open Decision 10 (A): the mode stays 'bill'. Re-sending 'bill' is a no-op.
+  if (patchHasKey(patch, 'overageMode') && patch.overageMode !== 'bill') locked.push('overageMode');
+  if (locked.length > 0) {
+    throw new ContractServiceError(
+      `These fields cannot be changed on a block-hours line: ${locked.join(', ')}`,
+      400, 'HOUR_BLOCK_FIELD_LOCKED', { fields: locked },
+    );
+  }
+}
+
 function isGroupFkViolation(err: unknown): boolean {
   const node = pgErrorNode(err);
   const constraint = node?.constraint_name ?? node?.constraint;
@@ -632,22 +671,6 @@ function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 
     // null — and a role line must NEVER degrade into an every-device count.
     throw new ContractServiceError(`Contract line ${line.id} is per_device_role but carries no device roles`, 500, 'INVALID_STATE');
   }
-}
-
-/** #4547 W01: the fail-closed error for an hour_block row reaching a path that
- *  cannot price it. W02 replaces the generateDueInvoice arm; W03 the
- *  resolveLineQty arm and the updateContractLine guard. */
-function hourBlockNotEnabled(): ContractServiceError {
-  return new ContractServiceError('hour_block lines are not enabled', 500, 'HOUR_BLOCK_NOT_ENABLED');
-}
-
-/** Throws on a block row; otherwise narrows the row's `lineType` to the shared
- *  ContractLineType so the pure shared helpers (which are typed against
- *  CONTRACT_LINE_TYPES) accept it. */
-function assertNotHourBlock<T extends { lineType: string }>(
-  line: T,
-): asserts line is T & { lineType: ContractLineType } {
-  if (line.lineType === 'hour_block') throw hourBlockNotEnabled();
 }
 
 const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
@@ -1744,6 +1767,12 @@ export async function addContractLineToContract(contractId: string, input: Contr
  * invoice lines carry their own copies of description, quantity, unit price and
  * taxable (invoiceService.ts:405-450), and nothing re-reads a contract line's
  * CONTENT after generation.
+ *
+ * EXCEPTION (#4547, Open Decision 15): on an `hour_block` line `includedQuantity`,
+ * `overageUnitPrice`, `rolloverPolicy` and `rolloverCapHours` are read by the close
+ * (W02) at close time, so an edit applies to the open period when it closes; closed
+ * periods are frozen in `contract_hour_periods`. The audit records before/after
+ * (`blockChanges`).
  */
 export async function updateContractLine(
   contractId: string, lineId: string, patch: UpdateContractLineInput, actor: ContractActor,
@@ -1756,7 +1785,7 @@ export async function updateContractLine(
     const [current] = await tx.select().from(contractLines)
       .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
     if (!current) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
-    assertNotHourBlock(current);
+    if (current.lineType === 'hour_block') assertBlockPatchAllowed(current, patch);
 
     // ---- catalog transition table (spec § Validators (d)) ------------------
     const touchesLink = patchHasKey(patch, 'catalogItemId');
@@ -1857,6 +1886,11 @@ export async function updateContractLine(
         includedQuantity: merged.includedQuantity,
         overageMode: merged.overageMode,
         overageUnitPrice: merged.overageUnitPrice,
+        // #4547 W03: NULL on every non-block line (the merge carries current values,
+        // and the invariants above reject a block field on another type).
+        rolloverPolicy: (merged.rolloverPolicy ?? null) as RolloverPolicy | null,
+        rolloverCapHours: merged.rolloverCapHours ?? null,
+        hourBlockAlertPct: merged.hourBlockAlertPct ?? null,
       }).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).returning();
       if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
       updated = row;

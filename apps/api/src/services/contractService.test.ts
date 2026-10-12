@@ -627,14 +627,6 @@ describe('hour_block fails closed until its engine ships (#4547 W01)', () => {
     expect(addContractLine).not.toHaveBeenCalled();
   });
 
-  it('updateContractLine refuses to patch a forged hour_block line', async () => {
-    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'draft', currencyCode: 'USD' }]);
-    queueResult([blockLine]);
-    await expect(svc.updateContractLine('c1', 'cl-block', { description: 'x' } as never, actor))
-      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
-    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
-  });
-
   it('createContractWithLinesDetailed (quote conversion) rejects an hour_block line with 400 INVALID_STATE before any contract insert (#4547 W03)', async () => {
     await expect(svc.createContractWithLinesDetailed({
       partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
