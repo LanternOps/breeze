@@ -36,7 +36,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
-import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -207,8 +207,6 @@ export type Device = {
   updateAttemptTargetVersion?: string | null;
   updateAttemptStartedAt?: string | null;
   updateAttemptLastAt?: string | null;
-  /** Latest agent-logs ingest time (#7067); drives the logs-silent badge. */
-  lastLogAt?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -1847,23 +1845,6 @@ export default function DeviceList({
                 {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
             )}
-            {/* #7067: a heartbeating device that has shipped no logs for over 6h —
-                distinct from agent-silent above (which fires on a dead main agent
-                with a live watchdog). This can fire even when the agent process
-                itself is healthy but its log-shipping channel is dead. */}
-            {isDeviceLogSilent({
-              status: device.status,
-              lastLogAt: device.lastLogAt,
-              enrolledAt: device.enrolledAt,
-            }) && (
-              <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.logsSilent")}
-              </span>
-            )}
             {/* Collision enrollment (#2764): this row may be replacing an
                 earlier device with the same hostname. Unlike pending-reboot
                 below it is NOT suppressed on an offline row — the duplicate
@@ -1894,7 +1875,7 @@ export default function DeviceList({
                 the ones in the Agent Version / Helper Version columns, which
                 are opt-in and hidden by default — most users never saw them.
                 Status is default-visible, so mirror the same three badges
-                here as compact pills, matching the agent-silent/logs-silent
+                here as compact pills, matching the agent-silent
                 pattern above. */}
             {device.updateOfferWithheldReason && (
               <span

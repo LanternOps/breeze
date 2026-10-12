@@ -168,30 +168,18 @@ describe('DeviceList — stuck update badge (#4073)', () => {
   });
 });
 
-describe('DeviceList — logs silent badge (#7067)', () => {
-  it('flags an online device with no logs for over the threshold', () => {
+describe('DeviceList — no logs-silent badge (#7067)', () => {
+  // Agents ship warn+ by default, so a healthy agent is routinely log-quiet for
+  // hours; "no logs since X" flagged nearly every online device. Log-shipping
+  // health is a detail-page diagnostic once agents report it, never a list pill.
+  it('does not badge an online device that has been log-quiet for hours', () => {
     const dev = device('99999999-9999-9999-9999-999999999994', 'quiet', {
-      lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(),
+      enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(),
     });
     render(<DeviceList devices={[dev]} pageSize={50} />);
-    expect(screen.getByTestId(`device-${dev.id}-logs-silent-badge`)).toBeTruthy();
-  });
-
-  it('does not flag an online device with recent logs', () => {
-    const dev = device('99999999-9999-9999-9999-999999999995', 'healthy-logs', {
-      lastLogAt: new Date(Date.now() - 60_000).toISOString(),
-    });
-    render(<DeviceList devices={[dev]} pageSize={50} />);
+    expect(screen.getByText('quiet')).toBeTruthy();
     expect(screen.queryByTestId(`device-${dev.id}-logs-silent-badge`)).toBeNull();
-  });
-
-  it('does not flag an offline device with a stale last log', () => {
-    const dev = device('99999999-9999-9999-9999-999999999996', 'offline-quiet', {
-      status: 'offline',
-      lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(),
-    });
-    render(<DeviceList devices={[dev]} pageSize={50} />);
-    expect(screen.queryByTestId(`device-${dev.id}-logs-silent-badge`)).toBeNull();
+    expect(screen.queryByText('Logs silent')).toBeNull();
   });
 });
 

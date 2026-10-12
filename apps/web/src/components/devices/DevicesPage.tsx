@@ -796,7 +796,6 @@ export default function DevicesPage() {
           // (warned once per value — see normalizeLinkGroupRole).
           linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
           enrolledAt: d.enrolledAt as string | undefined,
-          lastLogAt: (d.lastLogAt ?? null) as string | null,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {
             cpuModel: hardware.cpuModel as string | undefined,
@@ -879,7 +878,6 @@ export default function DevicesPage() {
         responseTimeMs: typeof d.responseTimeMs === 'number' ? d.responseTimeMs : null,
         monitoringEnabled: d.monitoringEnabled === true,
         enrolledAt: d.enrolledAt as string | undefined,
-        lastLogAt: (d.lastLogAt ?? null) as string | null,
         // #5213 — provenance (scan | unifi | manual) and the website/service
         // identity. Anything else degrades to null rather than leaking an
         // unexpected API value through the type.
@@ -927,7 +925,6 @@ export default function DevicesPage() {
         notes: (d.notes ?? null) as string | null,
         monitoringEnabled: false,
         enrolledAt: d.enrolledAt as string | undefined,
-        lastLogAt: (d.lastLogAt ?? null) as string | null,
       }));
 
       const allTransformed = [...transformedDevices, ...transformedNetworkDevices, ...transformedManualAssets];
