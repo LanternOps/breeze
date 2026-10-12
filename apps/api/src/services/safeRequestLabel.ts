@@ -7,6 +7,8 @@ declare module 'hono' {
     requestCorrelationId: string;
     /** Stable snake_case code set by a middleware that short-circuits a request before routing; logged by `requestPathLogger`. */
     rejectReason: string;
+    /** W08: route template of a request agent admission refused before routing (agentRouteClasses label). */
+    admissionRouteLabel: string;
   }
 }
 
@@ -16,7 +18,7 @@ const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PERCENT_ENCODED_BYTE = /%[0-9a-f]{2}/i;
 
-export function safeMatchedRouteLabel(c: Context): string {
+function matchedRouteLabel(c: Context): string {
   let routePath: string | undefined;
   try {
     routePath = c.req.routePath;
@@ -38,6 +40,25 @@ export function safeMatchedRouteLabel(c: Context): string {
   }
 
   return routePath;
+}
+
+// Only templates agentRouteClasses can produce: a closed set, never request data.
+const ADMISSION_ROUTE_LABEL = /^\/api\/v1\/(?:agents|agent-ws)\/:id(?:\/[A-Za-z0-9:-]+)+$/;
+
+/** W08: the route template of a request agent admission refused before routing, or null. */
+export function admissionRouteLabelOf(c: Context): string | null {
+  let label: unknown;
+  try {
+    label = c.get('admissionRouteLabel');
+  } catch {
+    return null;
+  }
+  return typeof label === 'string' && label.length <= 200 && ADMISSION_ROUTE_LABEL.test(label) ? label : null;
+}
+
+export function safeMatchedRouteLabel(c: Context): string {
+  const matched = matchedRouteLabel(c);
+  return matched === UNMATCHED_ROUTE_LABEL ? (admissionRouteLabelOf(c) ?? UNMATCHED_ROUTE_LABEL) : matched;
 }
 
 export function newRequestCorrelationId(inbound: string | undefined): string {

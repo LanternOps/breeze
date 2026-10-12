@@ -68,6 +68,7 @@ import { setExtensionMetricsRecorder } from '../extensions/metrics';
 import { envFloat } from '../utils/envFloat';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { admissionRouteLabelOf } from '../services/safeRequestLabel';
 export {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -761,13 +762,14 @@ export function resolveResponseStatus(c: any): number {
  * own registration; every global in index.ts is registered at `'*'`, which Hono
  * normalises to `/*`, so that is what `unmatched` keys on. NOTE: this means a
  * request short-circuited by a global middleware (rate limit, body limit) also
- * reports `unmatched`, and a path-scoped guard reports ITS pattern
+ * reports `unmatched` (except an agent request refused by W08 admission control,
+ * which reports its route template via `admissionRouteLabelOf`), and a path-scoped guard reports ITS pattern
  * (`/api/v1/agents/:id/*`) rather than the leaf route.
  */
 function resolveRoutePattern(c: any): string {
   const resolved = honoRoutePath(c);
   const pattern = typeof resolved === 'string' ? resolved.trim() : '';
-  if (pattern.length === 0 || pattern === '/*' || pattern === '*') return UNMATCHED_ROUTE_LABEL;
+  if (pattern.length === 0 || pattern === '/*' || pattern === '*') return admissionRouteLabelOf(c) ?? UNMATCHED_ROUTE_LABEL;
   return pattern;
 }
 

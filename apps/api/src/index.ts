@@ -17,6 +17,8 @@ import { secureHeaders } from 'hono/secure-headers';
 import { securityMiddleware } from './middleware/security';
 import { exceptPathPrefix } from './middleware/pathExemption';
 import { requestPathLogger } from './middleware/requestPathLogger';
+import { agentAdmission } from './middleware/agentAdmission';
+import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
@@ -451,6 +453,13 @@ const resolveCorsOrigin = createCorsOriginResolver({
 // but was never mounted, so neither series appeared in a production scrape.
 app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
+// W08 (#8147): agent admission control. Directly after the request logger so a
+// refusal is still counted (metricsMiddleware) and logged with its reason, and
+// before everything that costs: secure headers, the body-limit gate, the Redis
+// round trip in globalRateLimit, the partner guard, agent auth's DB transaction
+// and any body read. O(1), no I/O, never inside a DB context. A pass-through
+// until the admission controller starts, and in BREEZE_ADMISSION_MODE=off.
+app.use('*', agentAdmission());
 
 // The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
 // headers on every request — a restrictive sandboxed CSP that intentionally
@@ -1330,6 +1339,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
   stopEventLoopMonitor();
+  stopAdmissionControl();
   // #3214. Also already unref'd, so this is tidiness — but it additionally stops
   // the watchdog opening a fresh probe connection while the pool is draining,
   // which would report `database-unreachable` about a process that is simply
@@ -1866,6 +1876,9 @@ async function bootstrap(): Promise<void> {
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
 
+  // W08: start sampling only after migrations and boot work, so their stalls
+  // never enter the controller's history. Admission never affects /ready.
+  startAdmissionControl();
   server = serve({
     fetch: app.fetch,
     port
