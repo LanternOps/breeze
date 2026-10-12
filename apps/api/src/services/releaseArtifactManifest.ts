@@ -842,7 +842,11 @@ export function verifyReleaseArtifactManifestIdentity(args: {
   };
 }
 
-async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
+async function fetchSmallBuffer(
+  url: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   // A naive `redirect: "follow"` on verification inputs was an SSRF bypass
   // (#3649): a trusted URL could redirect into private space. The guarded
   // helper re-validates and pins every hop before it is dialed. `maxBytes`
@@ -850,6 +854,7 @@ async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
   // overrun rather than the body being buffered and measured afterwards.
   const resp = await safeFetchFollowingRedirects(url, {
     maxBytes: MAX_MANIFEST_BYTES,
+    ...(signal ? { signal } : {}),
   });
   if (!resp.ok) {
     throw new Error(`Failed to fetch ${label}: ${resp.status}`);
@@ -922,6 +927,8 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
   expectedEdition?: string;
   requireMacosPublisher?: boolean;
   maxAssetBytes: number;
+  /** Aborts the manifest, signature and asset fetches (e.g. AbortSignal.timeout). */
+  signal?: AbortSignal;
 }): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
   if (!isReleaseArtifactManifestVerificationConfigured()) {
     throw new Error(
@@ -930,10 +937,11 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
   }
 
   const [manifestBytes, signatureBytes] = await Promise.all([
-    fetchSmallBuffer(args.manifestUrl, "release artifact manifest"),
+    fetchSmallBuffer(args.manifestUrl, "release artifact manifest", args.signal),
     fetchSmallBuffer(
       args.signatureUrl,
       "release artifact manifest Ed25519 signature",
+      args.signal,
     ),
   ]);
   const selected = await verifyReleaseArtifactManifestAsset({
@@ -954,6 +962,7 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
 
   const response = await safeFetchFollowingRedirects(args.assetUrl, {
     maxBytes: selected.size,
+    ...(args.signal ? { signal: args.signal } : {}),
   });
   if (!response.ok) {
     throw new Error(`Failed to fetch release artifact ${args.assetName}: ${response.status}`);

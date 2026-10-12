@@ -18,7 +18,6 @@ import {
 import {
   fetchVerifiedGithubReleaseArtifact,
   probeSafeReleaseArtifact,
-  verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   type VerifiedReleaseArtifact,
@@ -722,36 +721,54 @@ export function __stopRegularMsiCacheWarmer(): void {
   }
 }
 
+const REGULAR_MSI_ASSET_NAME = 'breeze-agent.msi';
+const MAX_REGULAR_MSI_BYTES = 128 * 1024 * 1024;
+
+// Every source verifies the MSI against the Ed25519-signed release manifest
+// and refuses to serve on any failure, including a missing manifest public key
+// (#7976). The MSI is embedded into every Windows installer zip and served by
+// the public /s/:code and /i/:shortCode routes, so a replaced file on the
+// binaries volume, or an unverified GitHub download, must never be handed out.
 async function fetchRegularMsiUncached(): Promise<Buffer> {
+  // No expectedPlatformTrust on either source: the public self-host release
+  // ships this MSI unsigned (platformTrust "none") by default, while a hosted
+  // build or a BYO-re-signed repo ships it Authenticode-signed. Both are
+  // legitimate for their edition; the edition-aware accept/reject decision
+  // lives in assertDistributableReleaseAsset (releaseAssetTrust.ts), which
+  // runs on every manifest-verified asset.
   if (getBinarySource() === 'github') {
-    const url = getGithubRegularMsiUrl();
-    const resp = await fetch(url, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(REGULAR_MSI_FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    // No expectedPlatformTrust here: the public self-host release ships this
-    // MSI unsigned (platformTrust "none") by default, while a BYO-re-signed
-    // repo still ships it Authenticode-signed. Both are legitimate for
-    // edition "self-host" — the edition-aware accept/reject decision lives in
-    // assertDistributableReleaseAsset (releaseAssetTrust.ts), which
-    // verifyGithubReleaseArtifactBuffer runs on every manifest-verified asset.
-    const verified = await verifyGithubReleaseArtifactBuffer({
-      assetName: 'breeze-agent.msi',
-      assetBuffer: buffer,
+    // fetchVerifiedGithubReleaseArtifact throws when no manifest key is
+    // configured; verifyGithubReleaseArtifactBuffer (used here before #7976)
+    // soft-passed outside production and served the MSI unverified.
+    const result = await fetchVerifiedGithubReleaseArtifact({
+      assetName: REGULAR_MSI_ASSET_NAME,
+      assetUrl: getGithubRegularMsiUrl(),
       manifestUrl: getGithubReleaseArtifactManifestUrl(),
       signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
       expectedRepository: getGithubReleaseRepository(),
       expectedRelease: getGithubExpectedReleaseTag(),
+      maxAssetBytes: MAX_REGULAR_MSI_BYTES,
+      // One bound across the manifest, signature and MSI fetches: callers run
+      // this under a held DB transaction (see the cache comment above).
+      signal: AbortSignal.timeout(REGULAR_MSI_FETCH_TIMEOUT_MS),
     });
-    if (verified) {
-      assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: verified.edition });
-    }
-    return buffer;
+    assertGithubFetchableEdition({
+      assetName: REGULAR_MSI_ASSET_NAME,
+      edition: result.verified.edition,
+    });
+    return result.buffer;
   }
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent.msi'));
+
+  // Local source: the signed manifest pair staged at the binaries volume root
+  // is the trust anchor, with edition pinned to BINARY_EDITION — the same
+  // contract as the locally staged macOS pkg. Read from disk only, as before.
+  const result = await fetchVerifiedLocalArtifact({
+    assetName: REGULAR_MSI_ASSET_NAME,
+    diskPath: join(binaryStoreDir('agent'), REGULAR_MSI_ASSET_NAME),
+    expectedPlatformTrust: '',
+    requireMacosPublisher: false,
+  });
+  return result.buffer;
 }
 
 /**
