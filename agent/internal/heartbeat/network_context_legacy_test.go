@@ -162,11 +162,15 @@ func TestLegacyResolverAddresses(t *testing.T) {
 func TestIPHistoryFromAdaptersCarriesDNSServers(t *testing.T) {
 	useTempHome(t)
 	snapshot := resolverFixtureSnapshot()
+	// VPN-style names short-circuit determineAssignmentType, so the test
+	// never shells out to PowerShell/ipconfig on a CI runner.
+	snapshot.Interfaces[0].Rows[0].Name = "wg-eth"
+	snapshot.Interfaces[0].Rows[1].Name = "wg-wifi"
 	h := &Heartbeat{networkContext: &networkContextManager{enabled: true, latestSnapshot: &snapshot, captured: time.Now()}}
 	adapters := []collectors.NetworkAdapterInfo{
-		{InterfaceName: "Ethernet", IPAddress: "10.0.0.10", IPType: "ipv4"},
-		{InterfaceName: "Ethernet", IPAddress: "2001:db8::10", IPType: "ipv6"},
-		{InterfaceName: "Wi-Fi", IPAddress: "192.168.1.20", IPType: "ipv4"},
+		{InterfaceName: "wg-eth", IPAddress: "10.0.0.10", IPType: "ipv4"},
+		{InterfaceName: "wg-eth", IPAddress: "2001:db8::10", IPType: "ipv6"},
+		{InterfaceName: "wg-wifi", IPAddress: "192.168.1.20", IPType: "ipv4"},
 	}
 	dnsByIP := func(entries []IPHistoryEntry) map[string][]string {
 		out := map[string][]string{}
