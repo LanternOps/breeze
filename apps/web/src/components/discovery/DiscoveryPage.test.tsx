@@ -42,7 +42,7 @@ vi.mock('../shared/Toast', () => ({
 // that hands the page whatever values the test sets, plus a hook to drive the
 // count loader the page passes it in edit mode.
 const { mockFormValues } = vi.hoisted(() => ({
-  mockFormValues: { current: null as Record<string, unknown> | null }
+  mockFormValues: { current: null as Record<string, unknown> | null, loadedAgents: null as unknown }
 }));
 vi.mock('./DiscoveryProfileForm', () => ({
   defaultAlertSettings: {
@@ -50,12 +50,20 @@ vi.mock('./DiscoveryProfileForm', () => ({
     severity: 'warning',
     channels: []
   },
-  default: ({ onSubmit, loadMovableAssetCount }: {
+  default: ({ onSubmit, loadMovableAssetCount, loadSiteAgents }: {
     onSubmit: (values: unknown) => void;
     loadMovableAssetCount?: () => Promise<number>;
+    loadSiteAgents?: (siteId: string) => Promise<unknown>;
   }) => (
     <div>
       <button type="button" data-testid="mock-form-submit" onClick={() => onSubmit(mockFormValues.current)}>submit</button>
+      {loadSiteAgents && (
+        <button
+          type="button"
+          data-testid="mock-form-load-agents"
+          onClick={() => void loadSiteAgents('site-1').then((agents) => { mockFormValues.loadedAgents = agents; })}
+        >agents</button>
+      )}
       {loadMovableAssetCount && (
         <button type="button" data-testid="mock-form-load-count" onClick={() => void loadMovableAssetCount()}>count</button>
       )}
@@ -152,6 +160,7 @@ describe('DiscoveryPage', () => {
     orgStoreState.sites = [];
     orgStoreState.allOrgs = false;
     mockFormValues.current = null;
+    mockFormValues.loadedAgents = null;
     window.history.pushState({}, '', '/discovery#profiles');
   });
 
@@ -205,6 +214,53 @@ describe('DiscoveryPage', () => {
       });
       const patchCall = fetchWithAuthMock.mock.calls.find(([url, init]) => url === '/discovery/profiles/profile-1' && init?.method === 'PATCH');
       expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({ siteId: 'site-1', moveDiscoveredAssets: false });
+    });
+
+    it('#7969: sends the chosen scan agent, and null for Automatic', async () => {
+      await openEditor();
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload.data[0]));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
+      mockFormValues.current = { ...editFormValues, pinnedDeviceId: 'dev-1', moveDiscoveredAssets: false };
+      fireEvent.click(screen.getByTestId('mock-form-submit'));
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles/profile-1', expect.objectContaining({ method: 'PATCH' }));
+      });
+      const patchCall = fetchWithAuthMock.mock.calls.find(([url, init]) => url === '/discovery/profiles/profile-1' && init?.method === 'PATCH');
+      expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({ pinnedDeviceId: 'dev-1' });
+    });
+
+    it('#7969: Automatic (empty pin) is sent as null so the API clears the pin', async () => {
+      await openEditor();
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload.data[0]));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
+      mockFormValues.current = { ...editFormValues, pinnedDeviceId: '', moveDiscoveredAssets: false };
+      fireEvent.click(screen.getByTestId('mock-form-submit'));
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles/profile-1', expect.objectContaining({ method: 'PATCH' }));
+      });
+      const patchCall = fetchWithAuthMock.mock.calls.find(([url, init]) => url === '/discovery/profiles/profile-1' && init?.method === 'PATCH');
+      expect(JSON.parse(String(patchCall?.[1]?.body)).pinnedDeviceId).toBeNull();
+    });
+
+    it('#7969: loads the site\'s devices for the scan-agent picker, scoped to the current org', async () => {
+      await openEditor();
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [
+        { id: 'dev-2', hostname: 'zulu', status: 'offline' },
+        { id: 'dev-1', hostname: 'alpha', displayName: 'Alpha desk', status: 'online' },
+      ] }));
+
+      fireEvent.click(screen.getByTestId('mock-form-load-agents'));
+
+      await waitFor(() => expect(mockFormValues.loadedAgents).not.toBeNull());
+      const url = String(fetchWithAuthMock.mock.calls.at(-1)?.[0]);
+      expect(url).toMatch(/^\/devices\?/);
+      const params = new URLSearchParams(url.split('?')[1]);
+      expect(params.get('siteId')).toBe('site-1');
+      expect(params.get('orgId')).toBe('org-1');
+      expect(mockFormValues.loadedAgents).toEqual([
+        { id: 'dev-1', name: 'Alpha desk', online: true },
+        { id: 'dev-2', name: 'zulu', online: false },
+      ]);
     });
 
     it('loads the movable-asset count from the profile endpoint', async () => {

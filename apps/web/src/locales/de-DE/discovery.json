@@ -269,11 +269,15 @@
       "time": "Zeit",
       "timeout": "Timeout (ms)",
       "timezone": "Zeitzone",
-      "username": "Benutzername"
+      "username": "Benutzername",
+      "scanAgent": "Scan-Agent"
     },
     "options": {
       "everyHours": "Alle {{count}} Stunden",
-      "selectSite": "Wählen Sie eine Standort aus..."
+      "selectSite": "Wählen Sie eine Standort aus...",
+      "automaticAgent": "Automatisch (Agent in diesen Subnetzen bevorzugen)",
+      "agentOffline": "{{name}} (nicht online)",
+      "pinnedAgentUnlisted": "Fest zugewiesener Agent (nicht an diesem Standort)"
     },
     "placeholders": {
       "profileName": "Scan des Hauptquartiers",
@@ -313,6 +317,11 @@
       "moveAssets_one": "Auch das {{count}} von diesem Profil erkannte Netzwerkgerät an den neuen Standort verschieben",
       "moveAssets_other": "Auch die {{count}} von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben",
       "moveAssetsUnknown": "Auch die von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben"
+    },
+    "scanAgentHelp": {
+      "automatic": "Bevorzugt wird ein Online-Agent an diesem Standort mit einer Adresse in einem der Subnetze.",
+      "pinned": "Scans laufen nur über diesen Agenten. Ist er offline, schlägt der Scan fehl, statt einen anderen Agenten zu verwenden.",
+      "loadError": "Die Agenten dieses Standorts konnten nicht geladen werden. Die automatische Auswahl ist weiterhin verfügbar."
     }
   },
   "discoveryProfileList": {

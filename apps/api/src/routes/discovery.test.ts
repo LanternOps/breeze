@@ -3365,4 +3365,149 @@ describe('discovery routes', () => {
       expect(setSpy).toHaveBeenCalled();
     });
   });
+
+  describe('pinned scan agent (#7969)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const OTHER_ORG = '00000000-0000-0000-0000-0000000000ff';
+    const PROFILE_ID = '00000000-0000-0000-0000-000000000020';
+    const SITE = '00000000-0000-0000-0000-0000000000a1';
+    const SITE_TO = '00000000-0000-0000-0000-0000000000a2';
+    const DEVICE = '00000000-0000-0000-0000-0000000000d1';
+    const pinnable = { id: DEVICE, orgId: ORG, siteId: SITE, agentId: 'agent-1', isEphemeral: false };
+    const existingProfile = {
+      id: PROFILE_ID, orgId: ORG, siteId: SITE, subnets: ['10.0.0.0/24'], excludeIps: [],
+      snmpCommunities: [], snmpCredentials: null, deepScan: false, pinnedDeviceId: null,
+    };
+
+    const limitSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+
+    beforeEach(() => {
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.update).mockReset();
+      vi.mocked(db.insert).mockClear();
+    });
+
+    const post = (extra: Record<string, unknown>) => app.request('/discovery/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'Pinned', siteId: SITE, subnets: ['10.0.0.0/24'], methods: ['ping'],
+        schedule: { type: 'interval', intervalMinutes: 30 }, ...extra,
+      }),
+    });
+
+    const patch = (body: unknown) => app.request(`/discovery/profiles/${PROFILE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    function mockProfileUpdate(updatedRow: any) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updatedRow]) }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return setSpy;
+    }
+
+    it('creates a profile pinned to a device in its own org and site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+      const values = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: PROFILE_ID, orgId: ORG, pinnedDeviceId: DEVICE }])) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await post({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: DEVICE }));
+    });
+
+    it('cross-org forge: rejects pinning a device from another organization without writing', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, orgId: OTHER_ORG }]));
+
+      const res = await post({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/organization/i);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a device that is not visible (RLS-hidden / unknown), in another site, ephemeral, or agentless', async () => {
+      for (const row of [null, { ...pinnable, siteId: SITE_TO }, { ...pinnable, isEphemeral: true }, { ...pinnable, agentId: null }]) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+          .mockReturnValueOnce(limitSelect(row ? [row] : []));
+        const res = await post({ pinnedDeviceId: DEVICE });
+        expect(res.status).toBe(400);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed pinnedDeviceId at the schema', async () => {
+      const res = await post({ pinnedDeviceId: 'agent-1' });
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('PATCH pins, and null clears the pin without a device lookup', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfile]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+      const pinSpy = mockProfileUpdate({ ...existingProfile, pinnedDeviceId: DEVICE });
+      const pinned = await patch({ pinnedDeviceId: DEVICE });
+      expect(pinned.status).toBe(200);
+      expect(pinSpy).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: DEVICE }));
+
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]));
+      const clearSpy = mockProfileUpdate({ ...existingProfile, pinnedDeviceId: null });
+      const cleared = await patch({ pinnedDeviceId: null });
+      expect(cleared.status).toBe(200);
+      expect(clearSpy).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: null }));
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('PATCH cross-org forge: rejects pinning another org\'s device without writing', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfile]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, orgId: OTHER_ORG }]));
+
+      const res = await patch({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH site move re-validates a stored pin against the NEW site instead of carrying it silently', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/site/i);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH site move with an explicit pin in the new site validates the NEW pin against the new site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, siteId: SITE_TO }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      const res = await patch({ siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, pinnedDeviceId: DEVICE }));
+    });
+  });
 });

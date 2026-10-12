@@ -139,4 +139,83 @@ describe('DiscoveryProfileForm', () => {
     });
   });
 });
+
+describe('DiscoveryProfileForm scan agent (#7969)', () => {
+  const sites = [{ id: 'site-1', name: 'HQ' }, { id: 'site-2', name: 'Branch' }];
+  const agentSelect = () => screen.getByTestId('discovery-profile-scan-agent-select') as HTMLSelectElement;
+
+  it('is hidden when no agent loader is supplied', () => {
+    render(<DiscoveryProfileForm initialValues={baseProfile} sites={sites} onSubmit={vi.fn()} />);
+    expect(screen.queryByTestId('discovery-profile-scan-agent-select')).not.toBeInTheDocument();
+  });
+
+  it('lists the selected site\'s agents after Automatic and submits the chosen pin', async () => {
+    const loadSiteAgents = vi.fn().mockResolvedValue([
+      { id: 'dev-1', name: 'scanner-01', online: true },
+      { id: 'dev-2', name: 'laptop-07', online: false },
+    ]);
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <DiscoveryProfileForm initialValues={baseProfile} sites={sites} onSubmit={onSubmit} loadSiteAgents={loadSiteAgents} />
+    );
+
+    await waitFor(() => expect(agentSelect().options).toHaveLength(3));
+    expect(loadSiteAgents).toHaveBeenCalledWith('site-1');
+    expect(agentSelect().value).toBe('');
+    expect(agentSelect().options[2]!.textContent).toMatch(/laptop-07.*offline/i);
+
+    fireEvent.change(agentSelect(), { target: { value: 'dev-1' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: 'dev-1' }));
+  });
+
+  it('clears the pin and reloads agents when the site changes', async () => {
+    const loadSiteAgents = vi.fn(async (siteId: string) => siteId === 'site-1'
+      ? [{ id: 'dev-1', name: 'scanner-01', online: true }]
+      : [{ id: 'dev-9', name: 'branch-pc', online: true }]);
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <DiscoveryProfileForm
+        initialValues={{ ...baseProfile, pinnedDeviceId: 'dev-1' }}
+        sites={sites}
+        onSubmit={onSubmit}
+        loadSiteAgents={loadSiteAgents}
+      />
+    );
+    await waitFor(() => expect(agentSelect().value).toBe('dev-1'));
+
+    fireEvent.change(screen.getByTestId('discovery-profile-site-select'), { target: { value: 'site-2' } });
+
+    await waitFor(() => expect(loadSiteAgents).toHaveBeenCalledWith('site-2'));
+    await waitFor(() => expect(Array.from(agentSelect().options).map((o) => o.value)).toEqual(['', 'dev-9']));
+    expect(agentSelect().value).toBe('');
+    fireEvent.submit(container.querySelector('form')!);
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ siteId: 'site-2', pinnedDeviceId: '' }));
+  });
+
+  it('keeps a stored pin that is not in the loaded list visible instead of silently showing Automatic', async () => {
+    const loadSiteAgents = vi.fn().mockResolvedValue([{ id: 'dev-1', name: 'scanner-01', online: true }]);
+    render(
+      <DiscoveryProfileForm
+        initialValues={{ ...baseProfile, pinnedDeviceId: 'dev-gone' }}
+        sites={sites}
+        onSubmit={vi.fn()}
+        loadSiteAgents={loadSiteAgents}
+      />
+    );
+
+    await waitFor(() => expect(agentSelect().options).toHaveLength(3));
+    expect(agentSelect().value).toBe('dev-gone');
+  });
+
+  it('shows a load error and still allows Automatic', async () => {
+    const loadSiteAgents = vi.fn().mockRejectedValue(new Error('boom'));
+    render(<DiscoveryProfileForm initialValues={baseProfile} sites={sites} onSubmit={vi.fn()} loadSiteAgents={loadSiteAgents} />);
+
+    expect(await screen.findByTestId('discovery-profile-scan-agent-error')).toBeInTheDocument();
+    expect(agentSelect().value).toBe('');
+  });
+});
+
 import '@/lib/i18n';
