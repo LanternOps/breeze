@@ -324,7 +324,7 @@ The patch agent only acts on devices and organizations it has been explicitly gr
 
 ### Generating a Report
 
-In the dashboard, open **Patches → Compliance**, select an organization (or an update ring) and click **Export**. Breeze queues the report, waits for it to finish and downloads the CSV to your browser.
+In the dashboard, open **Patches → Compliance**, select an organization (you can also narrow the view by update ring, but the export always covers the selected organization) and click **Export**. Breeze queues the report, waits for it to finish and downloads the CSV to your browser.
 
 Compliance reports are generated asynchronously. Call the report endpoint with your desired filters — the response is immediate and contains a `reportId` to track progress:
 

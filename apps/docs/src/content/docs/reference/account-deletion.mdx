@@ -99,7 +99,7 @@ Erasing a whole organization is separate from this request flow, and it affects 
 
 - **Users.** The organization's own users are deleted with it. Partner staff whose home organization is the erased one are kept when their partner membership still gives them access elsewhere. They lose that organization's data and are signed out, but keep their account and partner access. Erasure also completes for an organization that is still in use.
 - **Backups.** The organization's restore points are removed from Breeze, but the backup files stay in the storage target. Storage cleanup never deletes them later, even past retention, and the storage is not reclaimed until an explicit backup-deletion feature ships. Permanently deleting (purging) a single device works the same way. See [What retention removes today](/backup/storage/).
-- **Legal holds.** A legal hold on a backup snapshot, a backup policy or a configuration policy's backup settings blocks erasure, and blocks purging the devices it covers (`409`, `BACKUP_PROTECTED`). Release the hold first.
+- **Legal holds.** A legal hold on a backup snapshot, a backup policy or a configuration policy's backup settings blocks erasure (`409`, `LEGAL_HOLD_ACTIVE`) and blocks purging the devices it covers (`409`, `BACKUP_PROTECTED`). Release the hold first.
 
 ---
 

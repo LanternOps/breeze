@@ -156,9 +156,9 @@ If the device's tickets carry unbilled time or parts in a currency other than th
 
 The agent is disconnected and reconnects under the new organization within its normal heartbeat interval. The device page refreshes to the new organization and site. Two audit events are written, one in each organization's trail (`device.move_org.source` and `device.move_org.target`).
 
-From v0.122.1 the agent also picks up its new organization and site itself, through a signed identity update. When it applies the update, the agent restarts once after a random delay of 0–60 seconds. Two cases keep the agent on the organization and site it enrolled with (the device record still moves):
+From v0.122.1 the agent also picks up its new organization and site itself, through a signed identity update. When it applies the update, the agent restarts after a random delay of 0–60 seconds, first letting commands that are already running finish (it waits at most 5 minutes). Two cases keep the agent on the organization and site it enrolled with (the device record still moves):
 
-- **No deployment signing key.** The identity update is signed with the server's agent deployment signing key. A server has one when it registers its own agent binaries (`BINARY_SOURCE=local`) or has issued an agent rollback directive. On the default `BINARY_SOURCE=github` there is no key, so no identity update is sent, as before this release, and the API logs a one-time warning.
+- **No deployment signing key.** The identity update is signed with the server's agent deployment signing key. The server creates one the first time it signs anything: registering its own agent binaries (`BINARY_SOURCE=local`), issuing an agent rollback directive, or approving a diagnostic file access grant. Until then (the usual state on the default `BINARY_SOURCE=github`) no identity update is sent, as before this release, and the API logs a one-time warning.
 - **Environment overrides.** An agent with `BREEZE_ORG_ID` or `BREEZE_SITE_ID` set in its environment cannot take the new identity.
 
 <Aside type="note">

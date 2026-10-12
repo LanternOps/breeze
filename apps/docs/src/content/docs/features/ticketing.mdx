@@ -404,7 +404,7 @@ A time entry does not have to belong to a ticket. Through the API, `POST /time-e
 
 ### Location suggestions
 
-**Location suggestions** let the Breeze mobile app offer to start a timer when a technician arrives at a client site. Turn it on under **Settings → Ticketing → Time Tracking** with **Suggest a timer when a technician arrives at a client site**, and set a **Default arrival radius (m)** (default 150 m, 50--1000 m) for sites that have no radius of their own. The setting is partner-wide and **off by default**. Each technician must also allow location on their phone; location is checked on the phone and is never sent to Breeze. Only the site's own pinned coordinate is stored -- see [Site location](/reference/organizations-and-sites/#site-location) for how sites are pinned.
+**Location suggestions** let the Breeze mobile app offer to start a timer when a technician arrives at a client site. Turn it on under **Settings → Ticketing → Time capture** with **Suggest a timer when a technician arrives at a client site**, and set a **Default arrival radius (m)** (default 150 m, 50--1000 m) for sites that have no radius of their own. The setting is partner-wide and **off by default**. Each technician must also allow location on their phone; location is checked on the phone and is never sent to Breeze. Only the site's own pinned coordinate is stored -- see [Site location](/reference/organizations-and-sites/#site-location) for how sites are pinned.
 
 <Aside type="note" title="Mobile prompt ships later">
   v0.122.1 adds the setting, site pins and the API the mobile app reads (`GET /time-entries/location-sites`, which returns the setting, the default radius, whether the caller may pin sites, and the caller's sites, capped at 2,000 with a `truncated` flag). The arrival prompt itself ships in a later mobile app release, so turning the setting on changes nothing a technician sees yet.
@@ -418,7 +418,7 @@ When a remote session ends, Breeze can offer it as a one-tap time entry: *"You r
   The suggestion list, the one-tap confirm and the dismiss/restore control live in the **Breeze mobile app** and ship with it. In the web app this release adds only the partner setting described below and the provenance badge described at the end of this section -- there is no web suggestions panel. Turning the setting on changes nothing a technician sees on **/timesheet**.
 </Aside>
 
-**Turning it on.** Go to **Settings → Ticketing → Time Tracking** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
+**Turning it on.** Go to **Settings → Ticketing → Time capture** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
 
 - **Minimum session length** (default 120 seconds) -- sessions shorter than this are never suggested, so a mistyped connection does not become a billable line.
 - **Merge gap** (default 10 minutes) -- back-to-back sessions on the same device within this gap are combined into a single suggestion rather than offered separately.
