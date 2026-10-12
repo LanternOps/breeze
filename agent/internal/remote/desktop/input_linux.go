@@ -21,6 +21,10 @@ type LinuxInputHandler struct {
 	tried bool
 	offX  int
 	offY  int
+
+	// W2c lock-key sync (sequenced sessions only; see lockSyncFor).
+	capsSync lockKeySync
+	numSync  lockKeySync
 }
 
 var _ InputHandler = (*LinuxInputHandler)(nil)
@@ -102,7 +106,7 @@ func (h *LinuxInputHandler) SendMouseDown(x, y int, button string) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
-	return inj.ButtonDown(mouseButtonCode(button))
+	return inj.ButtonDown(x11ButtonCode(button))
 }
 
 func (h *LinuxInputHandler) SendMouseUp(x, y int, button string) error {
@@ -117,7 +121,7 @@ func (h *LinuxInputHandler) SendMouseUp(x, y int, button string) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
-	return inj.ButtonUp(mouseButtonCode(button))
+	return inj.ButtonUp(x11ButtonCode(button))
 }
 
 func (h *LinuxInputHandler) SendMouseClick(x, y int, button string) error {
@@ -127,13 +131,13 @@ func (h *LinuxInputHandler) SendMouseClick(x, y int, button string) error {
 	return h.SendMouseUp(x, y, button)
 }
 
-// XTEST button numbering: 4=scroll up, 5=scroll down.
-const (
-	scrollButtonUp   byte = 4
-	scrollButtonDown byte = 5
-)
-
 func (h *LinuxInputHandler) SendMouseScroll(x, y int, delta int) error {
+	return h.sendMouseScroll(x, y, delta, 0)
+}
+
+// sendMouseScroll clicks the XTEST scroll buttons x11ScrollClicksFor picks:
+// 4/5 vertical as before W2c, 6/7 for a W2c deltaX.
+func (h *LinuxInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -141,17 +145,14 @@ func (h *LinuxInputHandler) SendMouseScroll(x, y int, delta int) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
-	btn := scrollButtonUp
-	if delta < 0 {
-		delta = -delta
-		btn = scrollButtonDown
-	}
-	for i := 0; i < delta; i++ {
-		if err := inj.ButtonDown(btn); err != nil {
-			return err
-		}
-		if err := inj.ButtonUp(btn); err != nil {
-			return err
+	for _, c := range x11ScrollClicksFor(delta, deltaX) {
+		for i := 0; i < c.Count; i++ {
+			if err := inj.ButtonDown(c.Button); err != nil {
+				return err
+			}
+			if err := inj.ButtonUp(c.Button); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -200,7 +201,17 @@ func (h *LinuxInputHandler) HandleEvent(event InputEvent) error {
 	case "mouse_up":
 		return h.SendMouseUp(event.X, event.Y, event.Button)
 	case "mouse_scroll":
-		return h.SendMouseScroll(event.X, event.Y, event.Delta)
+		return h.sendMouseScroll(event.X, event.Y, event.Delta, event.DeltaX)
+	}
+	// Key events. Lock state first (sequenced sessions only); a lock key whose
+	// state is asserted is not injected, or it would flip the state back.
+	if plan := lockSyncFor(event); plan.active {
+		h.syncLockKeys(plan)
+		if plan.suppressKey {
+			return nil
+		}
+	}
+	switch event.Type {
 	case "key_press":
 		return h.SendKeyPress(event.Key, event.Modifiers)
 	case "key_down":
@@ -212,14 +223,31 @@ func (h *LinuxInputHandler) HandleEvent(event InputEvent) error {
 	}
 }
 
-func mouseButtonCode(button string) byte {
-	switch button {
-	case "right":
-		return 3
-	case "middle":
-		return 2
-	default:
-		return 1
+// syncLockKeys brings Caps Lock and Num Lock to the states plan asserts.
+// X autorepeats keys held through XTEST, so a W2c repeat key_down is never
+// needed here (the viewer does not forward repeats to Linux remotes).
+func (h *LinuxInputHandler) syncLockKeys(plan lockSyncPlan) {
+	inj := h.injector()
+	if inj == nil {
+		return
+	}
+	if plan.caps != nil {
+		readCaps := func() (bool, bool) {
+			caps, _, _, err := inj.LockStates()
+			return caps, err == nil
+		}
+		if h.capsSync.next(*plan.caps, readCaps) && inj.TapKeyByName("capslock") == nil {
+			h.capsSync.done(*plan.caps)
+		}
+	}
+	if plan.num != nil {
+		readNum := func() (bool, bool) {
+			_, num, numOK, err := inj.LockStates()
+			return num, err == nil && numOK
+		}
+		if h.numSync.next(*plan.num, readNum) && inj.TapKeyByName("numlock") == nil {
+			h.numSync.done(*plan.num)
+		}
 	}
 }
 

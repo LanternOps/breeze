@@ -258,6 +258,13 @@ func buildInputCapabilities() map[string]any {
 // seq/after and the reset and geometry epochs. inputEpoch and geoEpoch are
 // where a viewer starts. Agents without the input worker never send these
 // keys, and a viewer that does not see them stays on the legacy protocol.
+//
+// keyCodes (W2c) says this agent accepts `code` and `numLock` on key events,
+// `back`/`forward` buttons, and `deltaX` on mouse_scroll. The viewer sends
+// them only in reliable mode, so the flag rides with reliableInput. Every
+// platform handler honours all of it; `code` is used by Windows only and
+// `numLock` by Windows and Linux, and the others ignore those fields, as the
+// spec prescribes (see the W2c wire contract in the plan doc).
 func (s *Session) inputCapabilities() map[string]any {
 	body := buildInputCapabilities()
 	if si := s.safeInput(); si != nil {
@@ -265,6 +272,7 @@ func (s *Session) inputCapabilities() map[string]any {
 		body["reliableInput"] = true
 		body["inputEpoch"] = epoch
 		body["geoEpoch"] = geo
+		body["keyCodes"] = true
 	}
 	return body
 }

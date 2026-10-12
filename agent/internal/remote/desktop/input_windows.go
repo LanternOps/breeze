@@ -20,6 +20,7 @@ var (
 	mapvirtualkey    = user32.NewProc("MapVirtualKeyW")
 	getSystemMetrics = user32.NewProc("GetSystemMetrics")
 	vkKeyScanW       = user32.NewProc("VkKeyScanW")
+	getKeyState      = user32.NewProc("GetKeyState")
 )
 
 const (
@@ -101,6 +102,10 @@ type WindowsInputHandler struct {
 	threadLocked    bool
 	lastDesktopSync time.Time
 	currentDesktop  uintptr
+
+	// W2c lock-key sync (sequenced sessions only; see lockSyncFor).
+	capsSync lockKeySync
+	numSync  lockKeySync
 }
 
 // NewInputHandler creates a Windows input handler
@@ -200,15 +205,8 @@ func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
 	// data on the button events themselves and process them as a batch.
 	// Separate SendInput calls can be split by the input queue, causing
 	// window chrome (close/minimize/maximize, taskbar, Start) to ignore clicks.
-	var downFlag, upFlag uint32
-	switch button {
-	case "right":
-		downFlag, upFlag = MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP
-	case "middle":
-		downFlag, upFlag = MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP
-	default:
-		downFlag, upFlag = MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
-	}
+	btn := winMouseButtonFor(button)
+	downFlag, upFlag := btn.Down, btn.Up
 
 	// Try absolute coordinate path for atomic click
 	vx, vy, ok := h.screenToAbsolute(x, y)
@@ -227,10 +225,12 @@ func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
 		events[1].mi.dx = vx
 		events[1].mi.dy = vy
 		events[1].mi.dwFlags = uint32(posFlags) | downFlag
+		events[1].mi.mouseData = btn.Data
 		// Event 2: button up at position
 		events[2].mi.dx = vx
 		events[2].mi.dy = vy
 		events[2].mi.dwFlags = uint32(posFlags) | upFlag
+		events[2].mi.mouseData = btn.Data
 
 		ret, _, _ := sendInput.Call(3, uintptr(unsafe.Pointer(&events[0])), unsafe.Sizeof(events[0]))
 		if ret != 3 {
@@ -262,20 +262,10 @@ func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
 		return err
 	}
 
-	var flags uint32
-	switch button {
-	case "left":
-		flags = MOUSEEVENTF_LEFTDOWN
-	case "right":
-		flags = MOUSEEVENTF_RIGHTDOWN
-	case "middle":
-		flags = MOUSEEVENTF_MIDDLEDOWN
-	default:
-		flags = MOUSEEVENTF_LEFTDOWN
-	}
-
+	btn := winMouseButtonFor(button)
 	inp := input{inputType: INPUT_MOUSE}
-	inp.mi.dwFlags = flags
+	inp.mi.dwFlags = btn.Down
+	inp.mi.mouseData = btn.Data // XBUTTON1/2 for back/forward, else 0
 
 	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 	if ret == 0 {
@@ -295,20 +285,10 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 	h.buttonDown = false
 	h.mu.Unlock()
 
-	var flags uint32
-	switch button {
-	case "left":
-		flags = MOUSEEVENTF_LEFTUP
-	case "right":
-		flags = MOUSEEVENTF_RIGHTUP
-	case "middle":
-		flags = MOUSEEVENTF_MIDDLEUP
-	default:
-		flags = MOUSEEVENTF_LEFTUP
-	}
-
+	btn := winMouseButtonFor(button)
 	inp := input{inputType: INPUT_MOUSE}
-	inp.mi.dwFlags = flags
+	inp.mi.dwFlags = btn.Up
+	inp.mi.mouseData = btn.Data
 
 	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 	if ret == 0 {
@@ -318,23 +298,36 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 }
 
 func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
+	return h.sendMouseScroll(x, y, delta, 0)
+}
+
+// sendMouseScroll posts the wheel events winScrollInputs picks: the single
+// pre-W2c WHEEL when deltaX is 0, plus an HWHEEL for a W2c deltaX.
+func (h *WindowsInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
 
-	inp := input{inputType: INPUT_MOUSE}
-	inp.mi.dwFlags = MOUSEEVENTF_WHEEL
-	// Negate: browser deltaY positive = scroll down, but Windows WHEEL positive = scroll up
-	inp.mi.mouseData = uint32(-delta * 120) // Windows uses multiples of WHEEL_DELTA (120)
+	for _, w := range winScrollInputs(delta, deltaX) {
+		inp := input{inputType: INPUT_MOUSE}
+		inp.mi.dwFlags = w.Flags
+		inp.mi.mouseData = w.Data // multiples of WHEEL_DELTA (120)
 
-	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
-	if ret == 0 {
-		slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+		ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+		if ret == 0 {
+			slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+		}
 	}
 	return nil
 }
 
 func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error {
+	return h.sendKeyPress("", key, modifiers)
+}
+
+// sendKeyPress is SendKeyPress with the W2c physical key code. Modifiers stay
+// on the VK path: they are names, not physical keys.
+func (h *WindowsInputHandler) sendKeyPress(code, key string, modifiers []string) error {
 	h.ensureInputDesktop()
 	// Press modifiers
 	for _, mod := range modifiers {
@@ -342,14 +335,14 @@ func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error
 	}
 
 	// Press and release key
-	if err := h.SendKeyDown(key); err != nil {
+	if err := h.sendKeyDown(code, key); err != nil {
 		// Still release modifiers before returning
 		for i := len(modifiers) - 1; i >= 0; i-- {
 			h.sendModifierKey(modifiers[i], true)
 		}
 		return err
 	}
-	h.SendKeyUp(key)
+	h.sendKeyUp(code, key)
 
 	// Release modifiers (in reverse order)
 	for i := len(modifiers) - 1; i >= 0; i-- {
@@ -404,44 +397,73 @@ func vkToScanCode(vk uint16) uint16 {
 	return uint16(sc)
 }
 
-// isExtendedKey returns true for keys that require the KEYEVENTF_EXTENDEDKEY flag
-// (right-hand nav cluster, numpad enter, etc.).
-func isExtendedKey(vk uint16) bool {
-	switch vk {
-	case 0x21, 0x22, 0x23, 0x24, // PageUp, PageDown, End, Home
-		0x25, 0x26, 0x27, 0x28, // Arrow keys
-		0x2D, 0x2E, // Insert, Delete
-		0x5B, 0x5C, // LWin, RWin
-		0x6F, // Numpad Divide
-		0x90, // NumLock
-		0x91, // ScrollLock
-		0x2C: // PrintScreen
-		return true
-	}
-	return false
+func (h *WindowsInputHandler) SendKeyDown(key string) error {
+	return h.sendKeyDown("", key)
 }
 
-func (h *WindowsInputHandler) SendKeyDown(key string) error {
+// sendKeyDown presses the key identified by code (W2c, scancode) or, when
+// code is empty or not in winCodeKeys, by key name exactly as before W2c.
+func (h *WindowsInputHandler) sendKeyDown(code, key string) error {
 	h.ensureInputDesktop()
-	vk := charToVK(key)
-	if vk == 0 {
+	k, ok := winKeyInputFor(code, key, false, vkToScanCode)
+	if !ok {
 		slog.Warn("Unknown key — no VK mapping, input dropped", "key", key)
 		return fmt.Errorf("unknown key: %s", key)
 	}
-
-	inp := input{inputType: INPUT_KEYBOARD}
-	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
-	ki.wVk = vk
-	ki.wScan = vkToScanCode(vk)
-	if isExtendedKey(vk) {
-		ki.dwFlags = KEYEVENTF_EXTENDEDKEY
-	}
-
-	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
-	if ret == 0 {
-		return fmt.Errorf("SendInput failed for key_down vk=0x%X", vk)
+	if !sendKeybdInput(k) {
+		return fmt.Errorf("SendInput failed for key_down vk=0x%X scan=0x%X", k.VK, k.Scan)
 	}
 	return nil
+}
+
+// sendKeybdInput posts one keyboard INPUT. False when SendInput injected none.
+func sendKeybdInput(k winKeyInput) bool {
+	inp := input{inputType: INPUT_KEYBOARD}
+	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
+	ki.wVk = k.VK
+	ki.wScan = k.Scan
+	ki.dwFlags = k.Flags
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	return ret != 0
+}
+
+const (
+	vkCapital = 0x14 // VK_CAPITAL
+	vkNumLock = 0x90 // VK_NUMLOCK
+)
+
+// syncLockKeys brings Caps Lock and Num Lock to the states plan asserts.
+func (h *WindowsInputHandler) syncLockKeys(plan lockSyncPlan) {
+	if plan.caps != nil {
+		h.syncLockKey(&h.capsSync, vkCapital, *plan.caps)
+	}
+	if plan.num != nil {
+		h.syncLockKey(&h.numSync, vkNumLock, *plan.num)
+	}
+}
+
+// syncLockKey taps the lock key vk when its toggle state differs from want.
+// GetKeyState's low bit is the toggle state.
+func (h *WindowsInputHandler) syncLockKey(s *lockKeySync, vk uint16, want bool) {
+	read := func() (bool, bool) {
+		r, _, _ := getKeyState.Call(uintptr(vk))
+		return r&1 != 0, true
+	}
+	if !s.next(want, read) {
+		return
+	}
+	k := winKeyInput{VK: vk, Scan: vkToScanCode(vk)}
+	if isExtendedKey(vk) {
+		k.Flags = KEYEVENTF_EXTENDEDKEY
+	}
+	down := sendKeybdInput(k)
+	k.Flags |= KEYEVENTF_KEYUP
+	up := sendKeybdInput(k) // always attempted: never leave the lock key down
+	if down && up {
+		s.done(want)
+		return
+	}
+	slog.Debug("Lock key sync tap failed", "vk", vk)
 }
 
 // windowsUnicodeChunkUnits is how many UTF-16 code units are posted per
@@ -518,23 +540,19 @@ func sendUnicodeUnits(units []uint16) error {
 }
 
 func (h *WindowsInputHandler) SendKeyUp(key string) error {
-	vk := charToVK(key)
-	if vk == 0 {
+	return h.sendKeyUp("", key)
+}
+
+// sendKeyUp releases what sendKeyDown(code, key) pressed: the same code and
+// key resolve to the same physical key, so a right Ctrl pressed by scancode
+// is released by scancode rather than as VK_CONTROL (left Ctrl).
+func (h *WindowsInputHandler) sendKeyUp(code, key string) error {
+	k, ok := winKeyInputFor(code, key, true, vkToScanCode)
+	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-
-	inp := input{inputType: INPUT_KEYBOARD}
-	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
-	ki.wVk = vk
-	ki.wScan = vkToScanCode(vk)
-	ki.dwFlags = KEYEVENTF_KEYUP
-	if isExtendedKey(vk) {
-		ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
-	}
-
-	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
-	if ret == 0 {
-		return fmt.Errorf("SendInput failed for key_up vk=0x%X", vk)
+	if !sendKeybdInput(k) {
+		return fmt.Errorf("SendInput failed for key_up vk=0x%X scan=0x%X", k.VK, k.Scan)
 	}
 	return nil
 }
@@ -604,177 +622,31 @@ func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
 	case "mouse_up":
 		return h.SendMouseUp(event.X, event.Y, event.Button)
 	case "mouse_scroll":
-		return h.SendMouseScroll(event.X, event.Y, event.Delta)
-	case "key_press":
-		return h.SendKeyPress(event.Key, event.Modifiers)
-	case "key_down":
-		return h.SendKeyDown(event.Key)
-	case "key_up":
-		return h.SendKeyUp(event.Key)
+		return h.sendMouseScroll(event.X, event.Y, event.Delta, event.DeltaX)
+	case "key_press", "key_down", "key_up":
+		return h.handleKeyEvent(event)
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
 	}
 }
 
-func charToVK(key string) uint16 {
-	// Single ASCII letters → VK_A..VK_Z (0x41..0x5A)
-	// Single ASCII digits  → VK_0..VK_9 (0x30..0x39)
-	if len(key) == 1 {
-		c := key[0]
-		if c >= 'a' && c <= 'z' {
-			return uint16(c - 'a' + 'A')
-		}
-		if c >= 'A' && c <= 'Z' {
-			return uint16(c)
-		}
-		if c >= '0' && c <= '9' {
-			return uint16(c)
+// handleKeyEvent injects a key event, first bringing Caps Lock and Num Lock
+// to the state the viewer asserts (sequenced sessions only; see lockSyncFor).
+// A lock key whose state is being asserted is not injected: the sync already
+// made the state right, and pressing it as well would flip it back.
+func (h *WindowsInputHandler) handleKeyEvent(event InputEvent) error {
+	if plan := lockSyncFor(event); plan.active {
+		h.syncLockKeys(plan)
+		if plan.suppressKey {
+			return nil
 		}
 	}
-
-	switch strings.ToLower(key) {
-	// Whitespace / editing
-	case "enter", "return":
-		return 0x0D
-	case "tab":
-		return 0x09
-	case "space", " ":
-		return 0x20
-	case "backspace":
-		return 0x08
-	case "escape", "esc":
-		return 0x1B
-	case "delete", "del":
-		return 0x2E
-	case "insert":
-		return 0x2D
-
-	// Navigation
-	case "home":
-		return 0x24
-	case "end":
-		return 0x23
-	case "pageup":
-		return 0x21
-	case "pagedown":
-		return 0x22
-	case "up":
-		return 0x26
-	case "down":
-		return 0x28
-	case "left":
-		return 0x25
-	case "right":
-		return 0x27
-
-	// Function keys
-	case "f1":
-		return 0x70
-	case "f2":
-		return 0x71
-	case "f3":
-		return 0x72
-	case "f4":
-		return 0x73
-	case "f5":
-		return 0x74
-	case "f6":
-		return 0x75
-	case "f7":
-		return 0x76
-	case "f8":
-		return 0x77
-	case "f9":
-		return 0x78
-	case "f10":
-		return 0x79
-	case "f11":
-		return 0x7A
-	case "f12":
-		return 0x7B
-
-	// Symbol keys (OEM VK codes — US keyboard layout)
-	case "-":
-		return 0xBD // VK_OEM_MINUS
-	case "=":
-		return 0xBB // VK_OEM_PLUS (the =/+ key)
-	case "[":
-		return 0xDB // VK_OEM_4
-	case "]":
-		return 0xDD // VK_OEM_6
-	case "\\":
-		return 0xDC // VK_OEM_5
-	case ";":
-		return 0xBA // VK_OEM_1
-	case "'":
-		return 0xDE // VK_OEM_7
-	case "`":
-		return 0xC0 // VK_OEM_3
-	case ",":
-		return 0xBC // VK_OEM_COMMA
-	case ".":
-		return 0xBE // VK_OEM_PERIOD
-	case "/":
-		return 0xBF // VK_OEM_2
-
-	// Numpad
-	case "num0":
-		return 0x60 // VK_NUMPAD0
-	case "num1":
-		return 0x61
-	case "num2":
-		return 0x62
-	case "num3":
-		return 0x63
-	case "num4":
-		return 0x64
-	case "num5":
-		return 0x65
-	case "num6":
-		return 0x66
-	case "num7":
-		return 0x67
-	case "num8":
-		return 0x68
-	case "num9":
-		return 0x69
-	case "multiply":
-		return 0x6A // VK_MULTIPLY
-	case "add":
-		return 0x6B // VK_ADD
-	case "subtract":
-		return 0x6D // VK_SUBTRACT
-	case "decimal":
-		return 0x6E // VK_DECIMAL
-	case "divide":
-		return 0x6F // VK_DIVIDE
-
-	// Lock / toggle keys
-	case "capslock":
-		return 0x14 // VK_CAPITAL
-	case "numlock":
-		return 0x90 // VK_NUMLOCK
-	case "scrolllock":
-		return 0x91 // VK_SCROLL
-
-	// Modifier keys (when sent as standalone key presses, not modifiers)
-	case "shift":
-		return VK_SHIFT
-	case "control", "ctrl":
-		return VK_CONTROL
-	case "alt":
-		return VK_MENU
-	case "meta", "super", "win", "lwin":
-		return VK_LWIN
-	case "rwin":
-		return 0x5C // VK_RWIN
-
-	// Misc
-	case "printscreen":
-		return 0x2C // VK_SNAPSHOT
-	case "pause":
-		return 0x13 // VK_PAUSE
+	switch event.Type {
+	case "key_press":
+		return h.sendKeyPress(event.Code, event.Key, event.Modifiers)
+	case "key_down":
+		return h.sendKeyDown(event.Code, event.Key)
+	default:
+		return h.sendKeyUp(event.Code, event.Key)
 	}
-
-	return 0
 }

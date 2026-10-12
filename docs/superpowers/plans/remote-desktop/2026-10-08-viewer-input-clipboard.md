@@ -1567,3 +1567,64 @@ pre-reset events are then discarded. A geometry change (monitor switch, desktop 
   monitor switch whose capturer failed (same `index`, new epochs).
 
 Epochs are never 0 (0 means absent). They wrap from 2^32−1 to 1.
+
+## W2c shipped wire contract (#8247)
+
+Agent side of spec §3, shipped in the W2c PR. It matches what W03 (#8239) assumed: one flag,
+`keyCodes`, gates every field below. Old viewers send none of these and get the W2b behaviour
+unchanged.
+
+**Discovery.** The `input_capabilities` reply adds `keyCodes: true`. It is sent together with
+`reliableInput`, only by sessions that have the input worker. No other flags were added.
+
+**Event fields** (on `InputEvent`, all optional):
+
+| Field | Events | Validation (event dropped if it fails) |
+|---|---|---|
+| `code` | `key_press`, `key_down`, `key_up` | 1–32 bytes, ASCII letters and digits only; rejected on any other event type. An unknown code is accepted and falls back to `key`. |
+| `numLock` | key events | JSON boolean (anything else fails decoding) |
+| `deltaX` | `mouse_scroll` | integer, \|deltaX\| ≤ 120 (same bound as `delta`); positive = right; `delta` may be 0 |
+| `button: "back"` / `"forward"` | `mouse_down`, `mouse_up`, `mouse_click` | added to the button allowlist (`""`, `left`, `right`, `middle`, `back`, `forward`) |
+
+`code` is never passed to a syscall as text. The Windows agent looks it up in a fixed table
+(`winCodeKeys`, `input_keycode.go`). The `key_up` for a key carries the same `code` as its
+`key_down`, and the held-state tracker records `code`, so a release resolves to the key that was
+pressed.
+
+**Per-platform behaviour**
+
+| | Windows | macOS | Linux (X11) |
+|---|---|---|---|
+| `code` | Injected by scancode (`KEYEVENTF_SCANCODE`, plus `KEYEVENTF_EXTENDEDKEY` for E0 keys) when it is in the table: left/right Shift, Ctrl, Alt, Meta (`OSLeft`/`OSRight` too), ContextMenu, NumpadEnter, NumpadDivide, arrows, Insert/Delete/Home/End/PageUp/PageDown, F13–F24, IntlBackslash (`VK_OEM_102`), IntlRo, IntlYen, volume and media-track keys. Anything else uses `key` as before. Letters, digits and punctuation stay on `key` on purpose: a scancode is a physical position, so `KeyA` on an AZERTY remote would type "q". Lock keys and Pause also stay on `key`. | ignored (`key` map) | ignored (`key` map) |
+| `back`/`forward` | `XBUTTON1`/`XBUTTON2` (`MOUSEEVENTF_XDOWN`/`XUP`, `mouseData`) | other-mouse buttons 3/4 (CGEvent; IOHID other-mouse with `buttonNumber`) | buttons 8/9 |
+| `deltaX` | `MOUSEEVENTF_HWHEEL`, `deltaX × 120` (positive = right). The vertical `WHEEL` is skipped when `delta` is 0. | two-axis `CGEventCreateScrollWheelEvent`, wheel2 = −deltaX (IOHID `deltaAxis2`) | buttons 7 (right) / 6 (left), `|deltaX|` clicks |
+| `numLock`, `capsLock` | Synced, sequenced events only (see below) | Caps Lock as before (#3595); `numLock` ignored | Synced, sequenced events only |
+| Held modifiers | unchanged | Running flags mask, sequenced events only (see below) | unchanged |
+| Repeat | Forwarded repeats are plain `key_down`s and are re-injected; no wire field | same | the viewer does not forward repeats (X autorepeats XTEST-held keys) |
+
+With `deltaX` 0 and buttons `left`/`right`/`middle`, every platform posts exactly what it did
+before W2c. Button names are now matched case-insensitively on every platform, as the held-state
+tracker already did. Before, a `"Right"` press on Windows and Linux was a left press released as
+right.
+
+**Lock-key sync (Windows, Linux).** It runs only for sequenced events (`seq > 0`). Viewers since
+#3595 send `capsLock` on every key event, and these agents ignored it. Legacy and WebSocket
+sessions still do. For each lock state the event asserts, the agent reads the remote state
+(Windows `GetKeyState` low bit; X11 `LockMask`, and for Num Lock the modifier bit that
+`GetModifierMapping` binds `Num_Lock` to). It taps the lock key only on a mismatch. It acts only
+when the asserted value differs from the last one it established. So it is idempotent, and a
+stale read right after its own tap cannot make it tap again. A lock toggled at the remote console
+stays as it is until the viewer's state next changes. A lock key whose state the same event
+asserts is not injected, because the sync already set it.
+
+**macOS running flags mask.** In a sequenced session, a modifier `key_down` (`shift`, `ctrl`,
+`alt`, `meta`; `*Right` codes select the right-hand keycode) is held. Its bit joins a running mask
+and a `kCGEventFlagsChanged` is posted (IOHID: `NX_FLAGSCHANGED`). The mask is then set on every
+key and mouse event, so Shift+click and Cmd+click work. A modifier `key_up` clears the bit whatever
+its `seq`, so ReleaseAll's releases clear the mask. A `key_up` without the pressing `code` clears
+every held key of that name. A legacy modifier `key_down` is still rejected as an unknown key, so
+legacy sessions never hold a modifier, and their events keep the ambient flags exactly as before.
+
+**Not verified in CI:** real injection on Windows and macOS (scancode/XBUTTON/HWHEEL,
+`GetKeyState` from the agent's input thread, flags-changed and other-mouse CGEvents) and on X11.
+These are lab checks.

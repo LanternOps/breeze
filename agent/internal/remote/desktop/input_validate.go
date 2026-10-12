@@ -15,6 +15,10 @@ const (
 	MaxInputKeyBytes      = 64
 	MaxInputModifiers     = 8
 
+	// MaxInputCodeBytes caps the W2c `code` field (DOM KeyboardEvent.code).
+	// The longest standard code is "MediaTrackPrevious" (18 bytes).
+	MaxInputCodeBytes = 32
+
 	// MaxInputSeq is the largest integer a JavaScript number holds exactly.
 	// A larger seq cannot have come from a well-behaved viewer.
 	MaxInputSeq = 1<<53 - 1
@@ -26,7 +30,10 @@ var validInputTypes = map[string]struct{}{
 	"input_reset": {},
 }
 
-var validInputButtons = map[string]struct{}{"": {}, "left": {}, "right": {}, "middle": {}}
+var validInputButtons = map[string]struct{}{
+	"": {}, "left": {}, "right": {}, "middle": {},
+	"back": {}, "forward": {}, // W2c
+}
 
 // ValidateInputEvent rejects an event a well-behaved viewer never sends. The
 // viewer is untrusted: without this, the WebRTC path handed SendInput an
@@ -38,7 +45,7 @@ func ValidateInputEvent(ev InputEvent) error {
 	if absInt(ev.X) > MaxInputCoordinateAbs || absInt(ev.Y) > MaxInputCoordinateAbs {
 		return fmt.Errorf("coordinate out of range")
 	}
-	if absInt(ev.Delta) > MaxInputScrollDelta {
+	if absInt(ev.Delta) > MaxInputScrollDelta || absInt(ev.DeltaX) > MaxInputScrollDelta {
 		return fmt.Errorf("scroll delta out of range")
 	}
 	if _, ok := validInputButtons[strings.ToLower(ev.Button)]; !ok {
@@ -53,6 +60,16 @@ func ValidateInputEvent(ev InputEvent) error {
 		// fallback paste sends.
 		if ev.Key == "" {
 			return fmt.Errorf("key is required for keyboard events")
+		}
+	}
+	if ev.Code != "" {
+		switch ev.Type {
+		case "key_press", "key_down", "key_up":
+		default:
+			return fmt.Errorf("code on a non-keyboard event")
+		}
+		if !validInputCode(ev.Code) {
+			return fmt.Errorf("invalid key code")
 		}
 	}
 	if len(ev.Modifiers) > MaxInputModifiers {
@@ -72,6 +89,22 @@ func ValidateInputEvent(ev InputEvent) error {
 		}
 	}
 	return nil
+}
+
+// validInputCode accepts the shape of a DOM KeyboardEvent.code: ASCII letters
+// and digits, bounded. Whether an agent injects that code is decided later
+// against a fixed table; an unknown code falls back to the key name.
+func validInputCode(code string) bool {
+	if len(code) > MaxInputCodeBytes {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func absInt(v int) int {
