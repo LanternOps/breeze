@@ -243,7 +243,7 @@ describe('readAlertRecovery', () => {
     await readAlertRecovery('a1');
     const arg = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(arg).sort()).toEqual(['resolutionReason', 'resolvedAt', 'resolvedBy', 'status']);
-    expect(db.limit).toHaveBeenCalledWith(1);
+    expect((db as unknown as { limit: unknown }).limit).toHaveBeenCalledWith(1);
   });
 });
 
