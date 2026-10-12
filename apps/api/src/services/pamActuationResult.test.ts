@@ -4,7 +4,11 @@ const mocks = vi.hoisted(() => ({ transaction: vi.fn(), execute: vi.fn() }));
 
 vi.mock('../db', () => ({ db: { transaction: mocks.transaction } }));
 
-import { recordPamActuationResult, type PamAgentResultV2 } from './pamActuationResult';
+import {
+  recordPamActuationResult,
+  toV1PamResultClassification,
+  type PamAgentResultV2,
+} from './pamActuationResult';
 
 const baseResult: PamAgentResultV2 = {
   protocolVersion: 2,
@@ -64,7 +68,10 @@ describe('recordPamActuationResult', () => {
   });
 
   it('rejects foreign command/device identity and classifies lower generations as stale', async () => {
-    mocks.execute.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ status: 'unresolved' }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-foreign', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
@@ -75,6 +82,44 @@ describe('recordPamActuationResult', () => {
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('stale');
+  });
+
+  // PAM ownership epochs W3 (#8205): no current-epoch actuation matched, so
+  // the lineage definer function decides. Only `retired` short-circuits, and
+  // nothing after it is written.
+  it.each([
+    ['retired', 'retired'],
+    ['stale', 'rejected'],
+    ['bound', 'rejected'],
+    ['unresolved', 'rejected'],
+  ])('maps a lineage disposition of %s to %s and writes nothing', async (lineage, expected) => {
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ status: lineage }] });
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: baseResult,
+    })).resolves.toBe(expected);
+    expect(mocks.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats an empty lineage answer as rejected', async () => {
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: baseResult,
+    })).resolves.toBe('rejected');
+  });
+
+  it('never acknowledges retired to a protocol-v1 agent', () => {
+    expect(toV1PamResultClassification('retired')).toBe('stale');
+    for (const value of ['applied', 'duplicate', 'stale', 'rejected'] as const) {
+      expect(toV1PamResultClassification(value)).toBe(value);
+    }
   });
 
   it('rejects verified-active after cleanup and cleaned without independent negative evidence', async () => {

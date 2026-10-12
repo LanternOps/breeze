@@ -31,7 +31,21 @@ export const pamAgentResultV2Schema = z.object({
 }).strict();
 
 export type PamAgentResultV2 = z.infer<typeof pamAgentResultV2Schema>;
-export type PamActuationResultClassification = 'applied' | 'duplicate' | 'stale' | 'rejected';
+/**
+ * `retired` (PAM ownership epochs, #8202): the result names an actuation from
+ * an EARLIER ownership epoch of this device that is closed or carries a
+ * retirement marker. Nothing is written. Every acknowledgement surface today
+ * is protocol v1, which reports it as `stale` — see
+ * `toV1PamResultClassification`.
+ */
+export type PamActuationResultClassification = 'applied' | 'duplicate' | 'stale' | 'rejected' | 'retired';
+export type PamActuationResultClassificationV1 = Exclude<PamActuationResultClassification, 'retired'>;
+
+export function toV1PamResultClassification(
+  classification: PamActuationResultClassification,
+): PamActuationResultClassificationV1 {
+  return classification === 'retired' ? 'stale' : classification;
+}
 
 type CurrentActuation = Record<string, unknown> & {
   id: string;
@@ -85,14 +99,38 @@ export async function recordPamActuationResult(input: {
       SELECT a.id, a.org_id, a.device_id, a.device_epoch, a.elevation_request_id, a.generation,
              a.desired_state, a.observed_state, a.current_command_id
       FROM pam_actuations a
-      JOIN devices d ON d.id = a.device_id AND d.org_id = a.org_id
+      JOIN devices d
+        ON d.id = a.device_id
+       AND d.org_id = a.org_id
+       AND d.ownership_epoch = a.device_epoch
       WHERE a.id = ${result.actuationId}
         AND a.device_id = ${input.deviceId}
         AND a.current_command_id = ${input.commandId}
         AND d.agent_id = ${input.agentId}
       FOR UPDATE OF a
     `))[0];
-    if (!current) return 'rejected';
+    if (!current) {
+      // Not a current-epoch actuation of this device. It may be one from an
+      // earlier ownership epoch (#8205, spec §6.2): resolve it through the
+      // lineage definer function — the earlier epoch's rows are another org's
+      // and hidden by RLS here. A closed or marker-retired historical
+      // actuation acknowledges `retired` and writes NOTHING, so the source
+      // org's evidence stays byte-identical. Anything else stays `rejected`.
+      const lineage = rows<{ status: string }>(await tx.execute<{ status: string }>(sql`
+        SELECT status
+        FROM public.breeze_pam_epoch_binding(
+          ${input.agentId}::text,
+          ${input.deviceId}::uuid,
+          ${JSON.stringify([{
+            ordinal: 1,
+            observation_id: result.observationId,
+            actuation_id: result.actuationId,
+            generation: result.generation,
+          }])}::jsonb
+        )
+      `))[0];
+      return lineage?.status === 'retired' ? 'retired' : 'rejected';
+    }
     if (result.generation < current.generation) return 'stale';
     if (result.generation > current.generation) return 'rejected';
     if (result.state === 'verified_active' && current.desired_state !== 'active') return 'rejected';

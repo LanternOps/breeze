@@ -8,11 +8,23 @@ export type PamReconciliationCandidate = {
   generation: number;
 };
 
-export type PamReconciliationBindingDisposition =
+export type PamReconciliationProtocolVersion = 1 | 2;
+
+/** The v1 wire dispositions. v1 never carries `retired`. */
+export type PamReconciliationBindingDispositionV1 =
   | { status: 'bound'; observationId: string; commandId: string }
   | { status: 'duplicate'; observationId: string }
   | { status: 'stale'; observationId: string }
   | { status: 'unresolved'; observationId: string };
+
+/**
+ * `retired` (protocol v2, PAM ownership epochs #8202): the candidate belongs
+ * to an EARLIER ownership epoch of this device and is closed or carries a
+ * retirement marker, so the agent may remove its ledger entry durably.
+ */
+export type PamReconciliationBindingDisposition =
+  | PamReconciliationBindingDispositionV1
+  | { status: 'retired'; observationId: string };
 
 type ResolverRow = {
   ordinal: number | string;
@@ -20,6 +32,8 @@ type ResolverRow = {
   status: string;
   command_id: string | null;
 };
+
+const RESOLVER_STATUSES: ReadonlySet<string> = new Set(['bound', 'duplicate', 'stale', 'unresolved', 'retired']);
 
 function rows<T>(result: unknown): T[] {
   const value = (result as { rows?: T[] }).rows ?? result;
@@ -33,10 +47,31 @@ function unresolved(candidates: readonly PamReconciliationCandidate[]): PamRecon
   }));
 }
 
+/**
+ * Protocol v1 maps `retired` to `stale`: the agent disposes the observation,
+ * records nothing and reopens admission. This widened meaning of v1 `stale`
+ * is recorded in the reconciliation-binding spec's 2026-10 amendment.
+ */
+export function toV1Disposition(
+  disposition: PamReconciliationBindingDisposition,
+): PamReconciliationBindingDispositionV1 {
+  if (disposition.status === 'retired') {
+    return { status: 'stale', observationId: disposition.observationId };
+  }
+  return disposition;
+}
+
+/**
+ * Resolves agent reconciliation candidates through the definer function
+ * `breeze_pam_epoch_binding` (migration 2026-12-24-130000). Ownership of an
+ * actuation is proven by the device's epoch lineage, not by the live org. The
+ * caller's ambient DB context must have access to the device's live org;
+ * otherwise every candidate is `unresolved`.
+ */
 export async function resolvePamReconciliationBindings(input: {
   agentId: string;
   deviceId: string;
-  orgId: string;
+  protocolVersion: PamReconciliationProtocolVersion;
   candidates: readonly PamReconciliationCandidate[];
 }): Promise<PamReconciliationBindingDisposition[]> {
   if (input.candidates.length === 0) return [];
@@ -49,80 +84,15 @@ export async function resolvePamReconciliationBindings(input: {
   })));
 
   const result = await db.execute<ResolverRow>(sql`
-    WITH candidates AS (
-      SELECT ordinal, observation_id::uuid, actuation_id::uuid, generation
-      FROM jsonb_to_recordset(${encodedCandidates}::jsonb) AS candidate(
-        ordinal integer,
-        observation_id text,
-        actuation_id text,
-        generation integer
-      )
-    ),
-    owned_actuations AS MATERIALIZED (
-      SELECT candidate.ordinal,
-             candidate.observation_id,
-             candidate.actuation_id,
-             candidate.generation,
-             actuation.generation AS current_generation,
-             actuation.desired_state,
-             actuation.current_command_id,
-             device.id AS owned_device_id,
-             device.org_id AS owned_org_id
-      FROM candidates candidate
-      LEFT JOIN devices device
-        ON device.id = ${input.deviceId}::uuid
-       AND device.org_id = ${input.orgId}::uuid
-       AND device.agent_id = ${input.agentId}
-      LEFT JOIN pam_actuations actuation
-        ON actuation.id = candidate.actuation_id
-       AND actuation.device_id = device.id
-       AND actuation.org_id = device.org_id
-    ),
-    classified AS (
-      SELECT owned.*,
-             observation.id AS existing_observation_id,
-             command.id AS verified_command_id,
-             command.type AS command_type,
-             command.target_role AS command_target_role
-      FROM owned_actuations owned
-      LEFT JOIN pam_actuation_results observation
-        ON owned.current_generation IS NOT NULL
-       AND owned.current_generation = owned.generation
-       AND observation.actuation_id = owned.actuation_id
-       AND observation.device_id = owned.owned_device_id
-       AND observation.org_id = owned.owned_org_id
-       AND observation.generation = owned.generation
-       AND observation.observation_id = owned.observation_id
-      LEFT JOIN device_commands command
-        ON command.id = owned.current_command_id
-       AND command.device_id = owned.owned_device_id
-    )
     SELECT ordinal,
-           observation_id::text,
-           CASE
-             WHEN current_generation IS NULL THEN 'unresolved'
-             WHEN generation < current_generation THEN 'stale'
-             WHEN generation > current_generation THEN 'unresolved'
-             WHEN existing_observation_id IS NOT NULL THEN 'duplicate'
-             WHEN current_command_id IS NULL OR verified_command_id IS NULL THEN 'unresolved'
-             WHEN command_target_role <> 'agent' THEN 'unresolved'
-             WHEN desired_state = 'active' AND command_type = 'pam_apply_v2' THEN 'bound'
-             WHEN desired_state = 'cleanup' AND command_type = 'pam_cleanup_v2' THEN 'bound'
-             ELSE 'unresolved'
-           END AS status,
-           CASE
-             WHEN current_generation = generation
-              AND existing_observation_id IS NULL
-              AND verified_command_id IS NOT NULL
-              AND command_target_role = 'agent'
-              AND (
-                (desired_state = 'active' AND command_type = 'pam_apply_v2')
-                OR (desired_state = 'cleanup' AND command_type = 'pam_cleanup_v2')
-              )
-             THEN verified_command_id::text
-             ELSE NULL
-           END AS command_id
-    FROM classified
+           observation_id::text AS observation_id,
+           status,
+           command_id::text AS command_id
+    FROM public.breeze_pam_epoch_binding(
+      ${input.agentId}::text,
+      ${input.deviceId}::uuid,
+      ${encodedCandidates}::jsonb
+    )
     ORDER BY ordinal
   `);
 
@@ -140,7 +110,7 @@ export async function resolvePamReconciliationBindings(input: {
       || seenOrdinals.has(ordinal)
       || !candidate
       || row.observation_id !== candidate.observationId
-      || !['bound', 'duplicate', 'stale', 'unresolved'].includes(row.status)
+      || !RESOLVER_STATUSES.has(row.status)
       || (row.status === 'bound' && !row.command_id)
       || (row.status !== 'bound' && row.command_id !== null)
     ) {
@@ -166,5 +136,5 @@ export async function resolvePamReconciliationBindings(input: {
     const rightIndex = input.candidates.findIndex((candidate) => candidate.observationId === right.observationId);
     return leftIndex - rightIndex;
   });
-  return dispositions;
+  return input.protocolVersion === 1 ? dispositions.map(toV1Disposition) : dispositions;
 }

@@ -51,13 +51,14 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandType
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
   pamAgentResultV2Schema,
-  type PamActuationResultClassification,
+  toV1PamResultClassification,
+  type PamActuationResultClassificationV1,
 } from '../../services/pamActuationResult';
 import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
 
 export type PamResultAcknowledgement = {
   protocolVersion: 1;
-  classification: PamActuationResultClassification;
+  classification: PamActuationResultClassificationV1;
 };
 
 export const commandsRoutes = new Hono();
@@ -346,7 +347,7 @@ commandsRoutes.post(
       }
       return c.json<PamResultAcknowledgement>({
         protocolVersion: 1,
-        classification: outcome.classification,
+        classification: toV1PamResultClassification(outcome.classification),
       });
     }
     if (isTerminalPamCommand) {
@@ -649,7 +650,7 @@ commandsRoutes.post(
               }
               pamAcknowledgement = {
                 protocolVersion: 1,
-                classification: outcome.classification,
+                classification: toV1PamResultClassification(outcome.classification),
               };
             }
           }
