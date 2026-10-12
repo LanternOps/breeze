@@ -70,6 +70,7 @@ describe('EmailTemplatesTab', () => {
       'invoice_send',
       'invoice_autopay',
       'portal_invite',
+      'staff_invite',
       'autopay_request',
       'autopay_enrolled',
       'autopay_stopped','autopay_paused','autopay_resumed',

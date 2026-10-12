@@ -9,6 +9,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'invoice_send',
   'invoice_autopay',
   'portal_invite',
+  'staff_invite',
   'autopay_request',
   'autopay_enrolled',
   'autopay_stopped', 'autopay_paused', 'autopay_resumed',
@@ -38,6 +39,9 @@ export type EmailTemplateVarKey =
   | 'invoice_number'
   | 'due_date'
   | 'invite_url'
+  | 'name'
+  | 'inviter_name'
+  | 'expires_days'
   | 'cta_button'
   | 'client_name' | 'setup_link' | 'ach_mode_text' | 'payment_method'
   | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
@@ -97,6 +101,16 @@ const PORTAL_INVITE_VARS = [
   'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
+const STAFF_INVITE_VARS = [
+  'name',
+  'inviter_name',
+  'org_name',
+  'partner_name',
+  'invite_url',
+  'expires_days',
+  'cta_button',
+] as const satisfies readonly EmailTemplateVarKey[];
+
 const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_comment_notification: COMMENT_NOTIFICATION_VARS,
   ticket_autoresponse: AUTORESPONSE_VARS,
@@ -106,6 +120,7 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
     'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link', 'client_name'],
   portal_invite: PORTAL_INVITE_VARS,
+  staff_invite: STAFF_INVITE_VARS,
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
   autopay_stopped: ['partner_name','org_name','client_name','stopped_by','open_invoices_text'],
@@ -128,6 +143,7 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   invoice_send: 'Invoice',
   invoice_autopay: 'Invoice with automatic payment notice',
   portal_invite: 'Portal invite',
+  staff_invite: 'Staff invite',
   autopay_request: 'Automatic payments request',
   autopay_enrolled: 'Automatic payments confirmed',
   autopay_stopped: 'Automatic payments stopped',
@@ -148,6 +164,7 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   invoice_send: true,
   invoice_autopay: true,
   portal_invite: true,
+  staff_invite: true,
   autopay_request: true,
   autopay_enrolled: false,
   autopay_stopped: false,
@@ -250,6 +267,16 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
       `<p>{{requester_name}} invited you to the {{org_name}} support portal, where you can open tickets, view invoices, and track your devices.</p>
 <p>{{cta_button}}</p>
 <p>This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>`,
+  },
+  staff_invite: {
+    subject: '{{inviter_name}} invited you to {{org_name}} on Breeze',
+    heading: 'Join {{org_name}}',
+    buttonLabel: 'Accept invitation',
+    html:
+      `<p>Hi {{name}},</p>
+<p>{{inviter_name}} invited you to {{org_name}} on Breeze.</p>
+<p>{{cta_button}}</p>
+<p>This invitation expires in {{expires_days}} days. If you weren't expecting it, you can ignore this email.</p>`,
   },
   autopay_request: {
     subject: 'Set up automatic payments with {{partner_name}}',

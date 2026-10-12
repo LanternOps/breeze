@@ -20,6 +20,7 @@ describe('email template catalog', () => {
       'invoice_send',
       'invoice_autopay',
       'portal_invite',
+      'staff_invite',
       'autopay_request',
       'autopay_enrolled',
       'autopay_stopped',
@@ -98,6 +99,18 @@ describe('email template catalog', () => {
     expect(varsForEmailTemplate('invoice_send')).toEqual([
       'invoice_number', 'partner_name', 'total', 'due_date', 'portal_url', 'cta_button',
     ]);
+  });
+
+  it('staff_invite is a labelled CTA template with a closed var list', () => {
+    expect(varsForEmailTemplate('staff_invite')).toEqual([
+      'name', 'inviter_name', 'org_name', 'partner_name', 'invite_url', 'expires_days', 'cta_button',
+    ]);
+    expect(emailTemplateLabel('staff_invite')).toBe('Staff invite');
+    expect(emailTemplateHasCta('staff_invite')).toBe(true);
+    const d = emailTemplateFieldDefaults('staff_invite');
+    expect(d.buttonLabel).toBe('Accept invitation');
+    expect(d.html).toContain('{{cta_button}}');
+    expect(d.html).toContain('{{expires_days}}');
   });
 
   it('portal_invite vars are the closed list', () => {
