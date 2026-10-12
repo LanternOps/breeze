@@ -1363,13 +1363,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 
 		// The head entry is ready: account for it, in walk order. A stop
-		// ends the run here, except for an upload that already finished:
+		// ends the run here, except for an upload that already succeeded:
 		// like the serial loop, which checked for a stop before each file
 		// and never between a returned upload and its journal append, it is
-		// accounted (and journaled) first. A stopped upload's own outcome
-		// ends the run below; the next head that is not a finished upload
-		// ends it here.
-		if err := ctx.Err(); err != nil && s.kind != slotUpload {
+		// accounted (and journaled) first. Every other head, including an
+		// upload that failed, was refused or lost its source, takes the stop
+		// exit, as the serial loop's stop did.
+		succeeded := s.kind == slotUpload && s.done &&
+			s.outcome.writerStillActive == nil && s.outcome.sourceGone == nil &&
+			!s.outcome.stopped && s.outcome.err == nil
+		if err := ctx.Err(); err != nil && !succeeded {
 			return abortStopped()
 		}
 		delete(slots, head)
