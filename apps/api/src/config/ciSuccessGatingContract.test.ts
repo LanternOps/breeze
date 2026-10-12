@@ -55,13 +55,10 @@ const UNGATED_JOBS = new Set([
   // criterion — a week of green, then move it into ci-success needs: with an env var and a
   // blocking assertion — is recorded at its job definition in ci.yml.
   'portal-dev-e2e',
-  'lint-agent', // KNOWN GAP
-  'test-agent-race', // KNOWN GAP
-  'agent-windows-manifest-guard', // KNOWN GAP
 ]);
-// The three KNOWN GAP jobs above run on every PR but are not in ci-success needs:, so they
-// cannot block a merge — the same defect as #3941. They are pinned here so the gap is visible
-// and any NEW job must be a conscious decision, not silently ungated.
+// Every other job is in ci-success needs: with a result env var and an unconditional blocking
+// assertion. A NEW job must make that decision consciously: gate it, or pin it above with a reason.
+// (lint-agent, test-agent-race and agent-windows-manifest-guard were promoted in #4261.)
 
 describe('ci-success gating contract', () => {
   // Without this, a change to the `needs:` / `env:` / `run:` formatting would empty the parsed
@@ -219,6 +216,24 @@ describe('ci-success gating contract', () => {
     expect(body).toMatch(
       /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.agent == 'true'$/m,
     );
+  });
+
+  it('the Go agent gates block a merge (regression guard for #4261)', () => {
+    const expected = {
+      LINT_AGENT_RESULT: 'lint-agent',
+      TEST_AGENT_RACE_RESULT: 'test-agent-race',
+      AGENT_WINDOWS_MANIFEST_GUARD_RESULT: 'agent-windows-manifest-guard',
+    };
+    for (const [envVar, job] of Object.entries(expected)) {
+      expect(neededJobs, `${job} is missing from ci-success needs:`).toContain(job);
+      expect(resultEnvByName.get(envVar), `${envVar} is not mapped to ${job}`).toBe(job);
+      expect(blockingCondition, `${job} must be required when app code changed`).toContain(
+        `[[ "\${${envVar}}" != "success" ]]`,
+      );
+      expect(blockingCondition, `${job} must be asserted skipped on a tooling-only change`).toContain(
+        `[[ "\${${envVar}}" != "skipped" ]]`,
+      );
+    }
   });
 
   it('test-mobile blocks a merge (regression guard for #3941)', () => {
