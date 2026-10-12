@@ -242,10 +242,32 @@ func TestExecBareMetalRebuild_CeilingIsADistinctReason(t *testing.T) {
 	}
 }
 
+// withFrozenWatchdogClock stops the watchdog's progress clock for one test,
+// so no idle time accrues and the stall check can never fire.
+func withFrozenWatchdogClock(t *testing.T) {
+	t.Helper()
+	prev := rebuildWatchdogNow
+	frozen := time.Now()
+	rebuildWatchdogNow = func() time.Time { return frozen }
+	t.Cleanup(func() { rebuildWatchdogNow = prev })
+}
+
 // A stop/cancel from the agent is not a budget failure and must not be
 // reported as one.
+//
+// The watchdog clock is frozen so the only way the run can end is the
+// parent cancel. On a real clock the bootstrap before the engine's first
+// progress report (authenticate, dry run, progress posts) counts against the
+// stall window, and under -race on a loaded CI host it could outlast it, so
+// the watchdog won and the run read "stalled" (#8489). The 1ns window and
+// 1ms tick make that ordering certain on a real clock: this test fails every
+// time if the watchdog stops reading rebuildWatchdogNow.
 func TestExecBareMetalRebuild_ParentCancelIsNotABudgetFailure(t *testing.T) {
-	withRebuildBudget(t, fastBudget())
+	b := fastBudget()
+	b.StallWindow = time.Nanosecond
+	b.Tick = time.Millisecond
+	withRebuildBudget(t, b)
+	withFrozenWatchdogClock(t)
 	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
 	parent, cancel := context.WithCancel(context.Background())
 	fn := scriptedRebuild(func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
