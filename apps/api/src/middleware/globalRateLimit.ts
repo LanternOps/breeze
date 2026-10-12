@@ -161,13 +161,17 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
       return next();
     }
 
+    // Tunnel hosts choose their own path, so path-based skips would let a
+    // device-served `/health` or `/api/v1/agents/x` bypass metering entirely.
+    const tunnelSurface = c.get('tunnelSurface') === true;
+
     // Skip health checks — used by load balancers / k8s probes
-    if (SKIP_PATHS.has(c.req.path)) {
+    if (!tunnelSurface && SKIP_PATHS.has(c.req.path)) {
       return next();
     }
 
     // Skip agent routes — they have dedicated per-agent rate limiting
-    if (skipPrefixes.some(prefix => c.req.path.startsWith(prefix))) {
+    if (!tunnelSurface && skipPrefixes.some(prefix => c.req.path.startsWith(prefix))) {
       return next();
     }
 
@@ -180,7 +184,7 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
 
     // Route into a dedicated bucket when the path has one, so high-volume
     // endpoints can't drain the budget shared by the dashboard and auth.
-    const bucket = c.get('tunnelSurface') === true
+    const bucket = tunnelSurface
       ? TUNNEL_HOST_BUCKET
       : isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
     const bucketLimit = bucket?.limit ?? limit;

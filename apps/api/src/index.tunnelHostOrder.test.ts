@@ -29,6 +29,13 @@ describe('tunnel host middleware order (spec §3)', () => {
     expect(dispatch).toBeLessThan(cors);
   });
 
+  it('dispatches before the first route registration', () => {
+    const dispatch = at("app.use('*', tunnelHostDispatch(tunnelHostRoutes))");
+    const firstRoute = src.search(/^app\.(get|post|put|patch|delete|all|route)\(/m);
+    expect(firstRoute).toBeGreaterThan(-1);
+    expect(dispatch).toBeLessThan(firstRoute);
+  });
+
   it('exempts tunnel surfaces from the app security-header stack', () => {
     expect(src).toMatch(/exceptPathPrefix\(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface\(mw\)\)/);
     expect(src).toMatch(/skipHeadersWhen: isTunnelSurface/);

@@ -50,6 +50,10 @@ describe('decideTunnelHost', () => {
     ['us.breeze-app.test', undefined, CONFIG, 'app'],
     [TUNNEL_HOST, '1', null, 'reject'],
     [TUNNEL_HOST, undefined, null, 'app'],
+    ['bad host with spaces', undefined, CONFIG, 'reject'],
+    ['bad host with spaces', undefined, null, 'app'],
+    [undefined, undefined, CONFIG, 'reject'],
+    [undefined, undefined, null, 'app'],
   ] as const)('host %s assertion %s → %s', (host, assertion, config, kind) => {
     expect(decideTunnelHost(host, assertion, config).kind).toBe(kind);
   });

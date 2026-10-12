@@ -502,8 +502,8 @@ app.use(
   })
 );
 app.use('*', globalRateLimit());
-// Tunnel hosts end here: body limit, rate limit, metrics and logging already
-// ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
+// Tunnel hosts end here: the body limit (fixed policy on tunnel surfaces, not
+// path-keyed), rate limit (tunnel bucket, no path skips), metrics and logging ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
 app.use('*', tunnelHostDispatch(tunnelHostRoutes));
 app.use('*', prettyJSON());
 app.use(

@@ -26,7 +26,15 @@ declare module 'hono' {
 export type TunnelHostDecision =
   | { kind: 'app' }
   | { kind: 'tunnel' }
-  | { kind: 'reject'; reason: 'tunnel_host_without_assertion' | 'tunnel_assertion_on_app_host' | 'tunnel_assertion_while_disabled' };
+  | { kind: 'reject'; reason: 'tunnel_host_without_assertion' | 'unparsable_host' | 'tunnel_assertion_on_app_host' | 'tunnel_assertion_while_disabled' };
+
+function isParsableHost(host: string): boolean {
+  try {
+    return new URL(`http://${host}`).hostname !== '';
+  } catch {
+    return false;
+  }
+}
 
 export function decideTunnelHost(
   hostHeader: string | undefined,
@@ -35,6 +43,9 @@ export function decideTunnelHost(
 ): TunnelHostDecision {
   const asserted = assertion !== undefined;
   if (!config) return asserted ? { kind: 'reject', reason: 'tunnel_assertion_while_disabled' } : { kind: 'app' };
+  // Feature on: a Host we cannot parse might be a tunnel host in disguise, so
+  // it never falls through to app routing.
+  if (!hostHeader || !isParsableHost(hostHeader)) return { kind: 'reject', reason: 'unparsable_host' };
   if (isTunnelDomainHost(hostHeader, config)) {
     return assertion === TUNNEL_SITE_ASSERTION_VALUE
       ? { kind: 'tunnel' }

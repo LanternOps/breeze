@@ -34,6 +34,7 @@ import {
   __resetSkipPrefixesForTests,
   globalRateLimit,
   ISOLATED_BUCKETS,
+  TUNNEL_HOST_BUCKET,
   registerGlobalRateLimitSkipPrefix,
 } from './globalRateLimit';
 
@@ -247,6 +248,23 @@ describe('ISOLATED_BUCKETS pins', () => {
     expect((await app.request('/api/v1/dashboard')).status).toBe(200);
     expect((await app.request('/api/v1/dashboard')).status).toBe(200);
     expect((await app.request('/api/v1/dashboard')).status).toBe(429);
+  });
+  it.each(['/health', '/api/v1/agents/x'])('never path-skips tunnel-surface requests (%s) but still skips them on app hosts', async (path) => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      if (c.req.header('x-test-tunnel') === '1') c.set('tunnelSurface', true);
+      return next();
+    });
+    app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60 }));
+    app.get('*', (c) => c.text('ok'));
+    let last = 0;
+    for (let i = 0; i < TUNNEL_HOST_BUCKET.limit; i += 1) {
+      last = (await app.request(path, { headers: { 'x-test-tunnel': '1' } })).status;
+      expect(last).toBe(200);
+    }
+    expect((await app.request(path, { headers: { 'x-test-tunnel': '1' } })).status).toBe(429);
+    // App host: the same path stays unmetered.
+    for (let i = 0; i < 5; i += 1) expect((await app.request(path)).status).toBe(200);
   });
 });
 
