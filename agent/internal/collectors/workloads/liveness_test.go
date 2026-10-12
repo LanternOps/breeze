@@ -141,7 +141,7 @@ func TestPodmanNeverConnectsWithoutARunningServiceProcess(t *testing.T) {
 	fakeProc(t, procDir, 202, "conmon", "/usr/bin/conmon")
 	writeFile(t, filepath.Join(procDir, "self-not-a-pid", "cmdline"), "podman\x00system\x00service\x00")
 
-	d := newEngineDriver(RuntimePodman, noDial(t), withSocketPath(socket), withLiveness(podmanServiceLiveness(procDir)))
+	d := newEngineDriver(RuntimePodman, noDial(t), withSocketPath(socket), withLiveness(podmanServiceLiveness(procDir, socket, allRoot)))
 	det := d.Detect(context.Background())
 	if det.State != DetectionPresent || det.Reason != ReasonNotRunning {
 		t.Fatalf("detection = %+v, want present/not_running", det)
@@ -155,7 +155,7 @@ func TestPodmanNeverConnectsWithoutARunningServiceProcess(t *testing.T) {
 	_, dial := newFakeEngine(t, map[string]func(http.ResponseWriter){
 		"/_ping": serve([]byte("OK")), "/version": serve(fixture(t, "podman_version.json")),
 	})
-	d = newEngineDriver(RuntimePodman, dial, withSocketPath(socket), withLiveness(podmanServiceLiveness(procDir)))
+	d = newEngineDriver(RuntimePodman, dial, withSocketPath(socket), withLiveness(podmanServiceLiveness(procDir, socket, allRoot)))
 	if det := d.Detect(context.Background()); det.State != DetectionPresent || det.Version != "5.1.2" {
 		t.Fatalf("detection with a running service = %+v", det)
 	}
@@ -191,6 +191,55 @@ func TestLivenessFromService(t *testing.T) {
 	} {
 		if got := livenessFromService(state); got != want {
 			t.Errorf("livenessFromService(%d) = %d, want %d", state, got, want)
+		}
+	}
+}
+
+// allRoot treats every fake process as root-owned; rootOwnedExcept marks the
+// listed pids as belonging to an unprivileged user.
+func allRoot(string) bool { return true }
+
+func rootOwnedExcept(pids ...int) func(string) bool {
+	return func(pidDir string) bool {
+		for _, p := range pids {
+			if filepath.Base(pidDir) == strconv.Itoa(p) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// Only a root-owned service process listening on the rootful socket proves the
+// rootful engine is up. A rootless user's `podman system service`, or a root
+// one serving another URI, says nothing about the rootful socket, and dialing
+// that socket would make systemd start the rootful podman.service.
+func TestPodmanLivenessIgnoresServicesForOtherSockets(t *testing.T) {
+	dir := t.TempDir()
+	socket, procDir := filepath.Join(dir, "podman.sock"), filepath.Join(dir, "proc")
+	writeFile(t, socket, "")
+	fakeProc(t, procDir, 400, "podman", "/usr/bin/podman", "system", "service", "--time=0") // rootless user unit
+	fakeProc(t, procDir, 401, "podman", "/usr/bin/podman", "system", "service", "unix:///tmp/other.sock")
+	fakeProc(t, procDir, 402, "podman", "/usr/bin/podman", "system", "service", "tcp://127.0.0.1:8888")
+
+	d := newEngineDriver(RuntimePodman, noDial(t), withSocketPath(socket),
+		withLiveness(podmanServiceLiveness(procDir, socket, rootOwnedExcept(400))))
+	if det := d.Detect(context.Background()); det.State != DetectionPresent || det.Reason != ReasonNotRunning {
+		t.Fatalf("detection = %+v, want present/not_running without dialing", det)
+	}
+
+	for name, args := range map[string][]string{
+		"systemd unit (no URI)": {"/usr/bin/podman", "--log-level=info", "system", "service"},
+		"explicit unix URI":     {"podman", "system", "service", "--time", "0", "unix://" + socket},
+		"unix: form":            {"podman", "system", "service", "-t", "5", "unix:" + socket},
+	} {
+		pd := filepath.Join(t.TempDir(), "proc")
+		fakeProc(t, pd, 500, "podman", args...)
+		if got := podmanServiceLiveness(pd, socket, allRoot)(context.Background()); got != livenessRunning {
+			t.Errorf("%s: liveness = %d, want running", name, got)
+		}
+		if got := podmanServiceLiveness(pd, socket, rootOwnedExcept(500))(context.Background()); got != livenessStopped {
+			t.Errorf("%s owned by a user: liveness = %d, want stopped", name, got)
 		}
 	}
 }

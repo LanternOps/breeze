@@ -42,9 +42,14 @@ func pidFileLiveness(pidFile, procDir, comm string) func(context.Context) livene
 }
 
 // podmanServiceLiveness scans procDir/*/cmdline for a running
-// `podman system service`. podman.socket is socket-activated, so the API socket
-// existing says nothing about whether a service process is up.
-func podmanServiceLiveness(procDir string) func(context.Context) liveness {
+// `podman system service` that serves socket. podman.socket is
+// socket-activated, so the API socket existing says nothing about whether a
+// service process is up. Only a root-owned process counts (rootOwned is given
+// the process's procDir entry): a rootless user's service serves that user's
+// own socket, and dialing the rootful socket because of it would make systemd
+// start the rootful podman.service. A root process serving another URI does not
+// count either.
+func podmanServiceLiveness(procDir, socket string, rootOwned func(pidDir string) bool) func(context.Context) liveness {
 	return func(ctx context.Context) liveness {
 		entries, err := os.ReadDir(procDir)
 		if err != nil {
@@ -57,18 +62,47 @@ func podmanServiceLiveness(procDir string) func(context.Context) liveness {
 			if _, err := strconv.Atoi(e.Name()); err != nil {
 				continue
 			}
-			f, err := os.Open(filepath.Join(procDir, e.Name(), "cmdline"))
+			pidDir := filepath.Join(procDir, e.Name())
+			f, err := os.Open(filepath.Join(pidDir, "cmdline"))
 			if err != nil {
 				continue
 			}
 			raw, _ := io.ReadAll(io.LimitReader(f, 4096))
 			_ = f.Close()
-			if isPodmanService(strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")) {
+			args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+			if isPodmanService(args) && podmanServiceServes(args, socket) && rootOwned(pidDir) {
 				return livenessRunning
 			}
 		}
 		return livenessStopped
 	}
+}
+
+// podmanServiceValueFlags are `podman system service` flags that take their
+// value as the next argument; that value is not the listen URI.
+var podmanServiceValueFlags = map[string]bool{"-t": true, "--time": true, "--cors": true}
+
+// podmanServiceServes reports whether a `podman system service` argv listens on
+// socket: either it names no URI (the systemd unit form, which serves the
+// socket systemd passes it, the rootful one for a root process) or its URI is
+// that socket. Anything unrecognized counts as another socket, so the driver
+// errs toward not connecting.
+func podmanServiceServes(args []string, socket string) bool {
+	i := 0
+	for i+1 < len(args) && !(args[i] == "system" && args[i+1] == "service") {
+		i++
+	}
+	for j := i + 2; j < len(args); j++ {
+		a := args[j]
+		if strings.HasPrefix(a, "-") {
+			if podmanServiceValueFlags[a] {
+				j++
+			}
+			continue
+		}
+		return a == "unix://"+socket || a == "unix:"+socket
+	}
+	return true
 }
 
 // isPodmanService matches argv of `podman [global flags] system service ...`.

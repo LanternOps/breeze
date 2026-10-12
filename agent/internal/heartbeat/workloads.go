@@ -137,7 +137,7 @@ func parseWorkloadSettings(raw any) (workloads.Settings, bool) {
 func (h *Heartbeat) applyWorkloadInventoryConfig(raw any) {
 	s, ok := parseWorkloadSettings(raw)
 	if !ok {
-		log.Warn("ignoring invalid workload_inventory_settings")
+		log.Warn("ignoring invalid workload_inventory_settings; previous settings stay in force", "payload", raw)
 		return
 	}
 	h.mu.Lock()
