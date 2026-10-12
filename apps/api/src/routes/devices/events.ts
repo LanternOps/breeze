@@ -495,6 +495,7 @@ const actionLabels: Record<string, string> = {
   'agent.filesystem.threshold_scan.queued': 'Disk threshold scan queued',
   'device.command.queue': 'Command queued',
   'device.update': 'Device updated',
+  'device.site_move': 'Device moved to another site',
   'device.decommission': 'Device decommissioned',
   'device.agent_token.rotate': 'Agent token rotated',
   'device.patch.install.queue': 'Patch installation queued',
