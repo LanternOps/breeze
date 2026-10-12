@@ -409,17 +409,27 @@ async function resolveInvitePartnerBranding(
       partnerId = org?.partnerId ?? null;
     }
     if (!partnerId) return { custom: null };
-    const [partner] = await db
-      .select({ name: partners.name, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, partnerId))
-      .limit(1);
+    // `partners` is forced-RLS and an org-scoped session has no accessible
+    // partners, so read it in system context. Safe: the id is derived from the
+    // verified auth scope above, never from request input.
+    const [partner] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ name: partners.name, settings: partners.settings })
+          .from(partners)
+          .where(eq(partners.id, partnerId))
+          .limit(1),
+      ),
+    );
     return {
       partnerName: partner?.name || undefined,
       custom: partnerEmailCustomFromSettings(partner?.settings, 'staff_invite'),
     };
   } catch (error) {
-    console.error('[UsersRoute] Failed to resolve partner branding for invite email:', error);
+    console.error(
+      `[UsersRoute] Failed to resolve partner branding for the staff invite email (scope=${scopeContext.scope}); sending the default Breeze template:`,
+      error,
+    );
     return { custom: null };
   }
 }

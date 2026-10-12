@@ -13,7 +13,9 @@ describe('buildStaffInviteTemplate', () => {
     expect(t.html).toContain('Accept invitation');
     expect(t.html).toContain('expires in 7 days');
     expect(t.html).toContain(`href="${inviteUrl}"`);
-    expect(t.text).toContain(inviteUrl);
+    expect(t.text).toContain('Tess invited you to Acme Co on Breeze.');
+    expect(t.text).toContain(`Accept invitation: ${inviteUrl}`);
+    expect(t.text).toContain('expires in 7 days');
     expect(t.html).toContain('Breeze RMM');
   });
 
@@ -46,7 +48,9 @@ describe('buildStaffInviteTemplate', () => {
     expect(t.html).toContain('Hallo Sam, gültig 7 Tage.');
     expect(t.html).toContain(`href="${inviteUrl}"`);
     expect(t.html).not.toContain('Accept invitation');
-    expect(t.text).toContain(inviteUrl);
+    expect(t.text).toContain('Hallo Sam, gültig 7 Tage.');
+    expect(t.text).toContain(`Einladung annehmen: ${inviteUrl}`);
+    expect(t.text).not.toContain('invited you');
   });
 
   it('brands the footer with the partner name, defaulting to Breeze RMM', () => {

@@ -1062,7 +1062,11 @@ describe('user routes', () => {
       const body = await res.json();
       expect(body.email).toBe('invitee@example.com');
       expect(body.status).toBe('invited');
+      // partners is forced-RLS: the branding read must escalate to system context
+      // (an org-scoped inviter has no accessible partners).
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
       expect(sendInviteMock).toHaveBeenCalledWith(expect.objectContaining({
+        expiresDays: 7,
         partnerName: 'Fix-It MSP',
         custom: expect.objectContaining({ subject: 'Einladung' }),
       }));

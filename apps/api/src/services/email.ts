@@ -1215,10 +1215,7 @@ export function buildStaffInviteTemplate(params: InviteEmailParams): EmailTempla
 
   const support = getSupportEmail(params.supportEmail);
   const text = [
-    `Hi ${name},`,
-    `${inviter} invited you${orgName ? ` to ${orgName}` : ''} on Breeze.`,
-    `Accept invitation: ${params.inviteUrl}`,
-    `This invitation expires in ${expiresDays} days. If you weren't expecting it, you can ignore this email.`,
+    rendered.bodyText,
     support ? `Questions? Contact ${support}.` : null,
   ]
     .filter(Boolean)
