@@ -63,8 +63,32 @@ describe('view-only (W05, #8241)', () => {
 
   it('shows a visible indicator and disables the input actions in the toolbar', () => {
     expect(source).toMatch(/data-testid="view-only-indicator"/);
-    expect(toolbar).toMatch(/viewOnly/);
-    expect(toolbar).toMatch(/disabled=\{!!pasteProgress \|\| viewOnly\}/);
+    // Paste Text and Send Keys.
+    expect(toolbar).toMatch(/onClick=\{onPasteAsKeystrokes\}\s*\n\s*disabled=\{!!pasteProgress \|\| viewOnly\}/);
+    expect(toolbar).toMatch(/onClick=\{\(\) => setKeysOpen\(!keysOpen\)\}\s*\n\s*disabled=\{viewOnly\}/);
+  });
+
+  it('a paste already in flight cannot type once view-only is on (review fix)', () => {
+    const paste = body('handlePasteAsKeystrokes');
+    // The cancel flag is reset before the awaits, so a view-only toggle during them sticks.
+    expect(paste.indexOf('pasteCancelRef.current = false')).toBeLessThan(paste.indexOf('await '));
+    // Re-checked after the last await, before anything is sent.
+    const settled = paste.indexOf('.settled(');
+    expect(paste.indexOf('if (viewOnlyRef.current) return;', settled)).toBeGreaterThan(settled);
+    // type_text rides the control channel, outside the input sender's gate.
+    expect(paste).toMatch(/\(json: string\) => \{\s*if \(viewOnlyRef\.current\) return;\s*control\.send\(json\);\s*\}/);
+    expect(paste).toMatch(/isCancelled: \(\) => pasteCancelRef\.current \|\| viewOnlyRef\.current/);
+  });
+
+  it('reports a suppressed event as not delivered, without the "connection down" notice', () => {
+    const send = body('sendInputFn');
+    const gate = send.indexOf('if (suppressedByViewOnly(event, viewOnlyRef.current)) return false;');
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(send.indexOf('getInputSender()'));
+  });
+
+  it('"Send clipboard to remote" is held back in view-only', () => {
+    expect(body('handleSendClipboardToRemote')).toMatch(/if \(viewOnlyRef\.current\)/);
   });
 });
 
@@ -80,8 +104,21 @@ describe('block local input UI (W05, #8241, #966)', () => {
   });
 
   it('times out a request that is never answered', () => {
-    expect(source).toMatch(/BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS/);
-    expect(source).toMatch(/blockLocalInputTimedOut/);
+    const toggle = body('handleToggleBlockLocalInput');
+    expect(toggle).toMatch(/setTimeout\(\(\) => \{[\s\S]*setBlockLocalInput\(blockLocalInputTimedOut\);[\s\S]*\}, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS\)/);
+  });
+
+  it('ignores a second toggle while a request is pending, and says so when the channel is down', () => {
+    const toggle = body('handleToggleBlockLocalInput');
+    expect(toggle.indexOf('if (blockLocalInput.pending) return;')).toBeGreaterThan(-1);
+    expect(toggle.indexOf('if (blockLocalInput.pending) return;')).toBeLessThan(toggle.indexOf('ch.send('));
+    expect(toggle).toMatch(/setInputNotice\(/);
+    expect(toggle).toMatch(/try \{\s*ch\.send\(blockLocalInputMessage\(/);
+  });
+
+  it('clears the reply timer when the reply lands', () => {
+    const reply = source.slice(source.indexOf("case 'block_local_input_result':"), source.indexOf("case 'input_capabilities':"));
+    expect(reply).toMatch(/clearTimeout\(blockLocalInputTimerRef\.current\)/);
   });
 });
 
@@ -134,9 +171,20 @@ describe('per-device prefs (W05, #8241)', () => {
   });
 
   it('restores audio through the same path as the toggle, once a track and the control channel exist', () => {
-    const restore = source.slice(source.indexOf('pendingAudioRestoreRef.current = false;') - 400, source.indexOf('pendingAudioRestoreRef.current = false;') + 200);
+    const at = source.indexOf('setPendingAudioRestore(false);');
+    expect(at).toBeGreaterThan(-1);
+    const restore = source.slice(at - 300, at + 200);
+    expect(restore).toMatch(/if \(!pendingAudioRestore\) return;/);
     expect(restore).toMatch(/hasAudioTrack/);
     expect(restore).toMatch(/handleToggleAudio\(\)/);
+    // State, not a ref: a prefs read that finishes after the track arrived
+    // must still re-run the restore effect (review fix).
+    expect(restore).toMatch(/\[pendingAudioRestore, hasAudioTrack, status, audioEnabled, handleToggleAudio\]/);
+  });
+
+  it('restoring prefs never writes them back', () => {
+    const load = source.slice(source.indexOf('loadDevicePrefs(store, params.deviceId)'), source.indexOf('}, [params.deviceId, applyViewScaling]);'));
+    expect(load).not.toMatch(/rememberDevicePrefs|handleViewScalingChange/);
   });
 });
 

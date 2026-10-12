@@ -17,6 +17,7 @@ function render() {
       return unlisten;
     }),
     confirmQuit: vi.fn(async () => {}),
+    ackShown: vi.fn(async () => {}),
   };
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -48,6 +49,8 @@ describe('QuitConfirm (Cmd+Q with sessions open, #8241)', () => {
     const { deps, request } = render();
     await request(2);
     expect(q('quit-confirm')?.textContent).toMatch(/2 remote sessions/);
+    // Tells the app the prompt is up, or Cmd+Q falls back to quitting.
+    expect(deps.ackShown).toHaveBeenCalledOnce();
     act(() => q('quit-confirm-cancel')!.click());
     expect(q('quit-confirm')).toBeNull();
     expect(deps.confirmQuit).not.toHaveBeenCalled();

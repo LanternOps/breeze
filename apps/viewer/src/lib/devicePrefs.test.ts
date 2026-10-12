@@ -39,6 +39,21 @@ describe('load / save', () => {
     expect(await loadDevicePrefs(store, DEVICE)).toEqual({ remapCmdCtrl: false, viewScaling: 'actual' });
   });
 
+  it('two saves fired together both land (writes are serialized, review fix)', async () => {
+    const base = createMemoryPrefsStore();
+    // A slow read lets the second save's read overlap the first save's write.
+    const slow: PrefsStore = {
+      get: async (k) => { const v = await base.get(k); await new Promise((r) => setTimeout(r, 5)); return v; },
+      set: (k, v) => base.set(k, v),
+    };
+    await Promise.all([
+      saveDevicePrefs(slow, DEVICE, { audio: true }),
+      saveDevicePrefs(slow, DEVICE, { viewScaling: 'actual' }),
+      saveDevicePrefs(slow, DEVICE, { remapCmdCtrl: true }),
+    ]);
+    expect(await loadDevicePrefs(base, DEVICE)).toEqual({ audio: true, viewScaling: 'actual', remapCmdCtrl: true });
+  });
+
   it('keeps devices apart', async () => {
     const store = createMemoryPrefsStore();
     await saveDevicePrefs(store, DEVICE, { audio: true });

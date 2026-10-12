@@ -56,21 +56,29 @@ export async function loadDevicePrefs(
   }
 }
 
+// Saves are read-modify-write; run them one at a time so two changes made
+// together (a scaling change and an audio toggle) cannot drop each other.
+let saveQueue: Promise<void> = Promise.resolve();
+
 /** Merges `patch` into what is stored for the device. */
-export async function saveDevicePrefs(
+export function saveDevicePrefs(
   store: PrefsStore | null,
   deviceId: string | undefined | null,
   patch: DevicePrefs,
   log: Log = defaultLog,
 ): Promise<void> {
   const key = devicePrefsKey(deviceId);
-  if (!store || !key) return;
-  try {
-    const current = sanitizeDevicePrefs(await store.get(key));
-    await store.set(key, { ...current, ...sanitizeDevicePrefs(patch) });
-  } catch (err) {
-    log(`write failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  if (!store || !key) return Promise.resolve();
+  const run = async () => {
+    try {
+      const current = sanitizeDevicePrefs(await store.get(key));
+      await store.set(key, { ...current, ...sanitizeDevicePrefs(patch) });
+    } catch (err) {
+      log(`write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  saveQueue = saveQueue.then(run);
+  return saveQueue;
 }
 
 export function createMemoryPrefsStore(initial: Record<string, unknown> = {}): PrefsStore {

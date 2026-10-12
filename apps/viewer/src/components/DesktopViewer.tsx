@@ -391,7 +391,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [statsSample, setStatsSample] = useState<StatsSample | null>(null);
   const keyboardLockRef = useRef<KeyboardLockController | null>(null);
   // Remembered audio is turned back on once the session has a track (#8241).
-  const pendingAudioRestoreRef = useRef(false);
+  // State, so a prefs read that lands after the track still triggers it.
+  const [pendingAudioRestore, setPendingAudioRestore] = useState(false);
   if (!keyboardLockRef.current) keyboardLockRef.current = createKeyboardLockController(getKeyboardLockApi());
 
   const setTransportState = useCallback((t: Transport | null) => {
@@ -1759,6 +1760,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [reliableInput]);
 
   const sendInputFn = useCallback((event: Record<string, unknown>): boolean => {
+    // Not delivered, but not a fault either: no "connection down" notice.
+    if (suppressedByViewOnly(event, viewOnlyRef.current)) return false;
     const send = getInputSender();
     if (!send) {
       // Pointer motion is disposable; a dropped click or keystroke is not, and
@@ -2003,6 +2006,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const handlePasteAsKeystrokes = useCallback(async () => {
     if (viewOnlyRef.current) return;
+    // Reset before the awaits below: view-only switched on during them sets
+    // it, and that must not be undone here.
+    pasteCancelRef.current = false;
     let text: string;
     try {
       // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
@@ -2023,9 +2029,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // fired immediately after (re)connect can still beat the reply. Wait
     // briefly for it rather than silently dropping to the lossy fallback.
     await inputCapabilitiesRef.current.settled(INPUT_CAPABILITIES_WAIT_MS);
+    if (viewOnlyRef.current) return;
 
     const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
-    pasteCancelRef.current = false;
     setPasteNotice(null);
 
     try {
@@ -2035,10 +2041,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // type_text rides the reliable control channel: the input channel is
         // created with maxRetransmits: 0, so a dropped datagram would silently
         // truncate the paste.
-        sendControl: control && control.readyState === 'open' ? (json: string) => control.send(json) : null,
+        // type_text is not on the input sender, so view-only is checked here too.
+        sendControl: control && control.readyState === 'open' ? (json: string) => {
+          if (viewOnlyRef.current) return;
+          control.send(json);
+        } : null,
         sendInput: event => sendInputFn({ ...event }),
         onProgress: setPasteProgress,
-        isCancelled: () => pasteCancelRef.current,
+        isCancelled: () => pasteCancelRef.current || viewOnlyRef.current,
         yieldToUi: () => new Promise(r => setTimeout(r, 5)),
       });
     } catch (err) {
@@ -2082,6 +2092,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // "Send clipboard to remote": for pasting from a menu on the remote, which
   // no keystroke here can detect.
   const handleSendClipboardToRemote = useCallback(async () => {
+    if (viewOnlyRef.current) {
+      setPasteNotice('View only is on — nothing is sent to the remote.');
+      return;
+    }
     const target = activeClipboard();
     if (!target) return;
     const outcome = await target.sendLocalClipboard();
@@ -2522,7 +2536,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       setStatusNotice('Screenshot copied to the clipboard.');
     } catch (err) {
       console.warn('Screenshot copy failed:', err);
-      setPasteNotice(screenshotFailureMessage('copy'));
+      setPasteNotice(screenshotFailureMessage('copy', err));
     }
   }, [captureScreenshot]);
 
@@ -2540,7 +2554,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       setStatusNotice(`Screenshot saved to ${path}`);
     } catch (err) {
       console.warn('Screenshot save failed:', err);
-      setPasteNotice(screenshotFailureMessage('save'));
+      setPasteNotice(screenshotFailureMessage('save', err));
     }
   }, [captureScreenshot]);
 
@@ -2568,7 +2582,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         setRemapOverride(prefs.remapCmdCtrl);
       }
       if (prefs.viewScaling) applyViewScaling(prefs.viewScaling);
-      if (prefs.audio) pendingAudioRestoreRef.current = true;
+      if (prefs.audio) setPendingAudioRestore(true);
     });
     return () => { cancelled = true; };
   }, [params.deviceId, applyViewScaling]);
@@ -2576,25 +2590,36 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Audio goes back on through the toggle itself, so the agent is told and
   // a refused play() resets the button, exactly as for a click.
   useEffect(() => {
-    if (!pendingAudioRestoreRef.current) return;
+    if (!pendingAudioRestore) return;
     if (!hasAudioTrack || status !== 'connected' || audioEnabled) return;
-    pendingAudioRestoreRef.current = false;
+    setPendingAudioRestore(false);
     handleToggleAudio();
-  }, [hasAudioTrack, status, audioEnabled, handleToggleAudio]);
+  }, [pendingAudioRestore, hasAudioTrack, status, audioEnabled, handleToggleAudio]);
 
   // Block local input (#966): the toolbar shows what the agent replies, never
   // what was asked for.
   const handleToggleBlockLocalInput = useCallback(() => {
+    // One request at a time: a second click would send a stale value.
+    if (blockLocalInput.pending) return;
     const ch = webrtcRef.current?.controlChannel;
-    if (!ch || ch.readyState !== 'open') return;
-    ch.send(blockLocalInputMessage(!blockLocalInput.blocked));
+    if (!ch || ch.readyState !== 'open') {
+      setInputNotice('Block remote input is unavailable — the session is not connected.');
+      return;
+    }
+    try {
+      ch.send(blockLocalInputMessage(!blockLocalInput.blocked));
+    } catch (err) {
+      console.warn('Block local input request failed:', err);
+      setInputNotice('Block remote input could not be sent to the remote device.');
+      return;
+    }
     setBlockLocalInput(blockLocalInputRequested);
     if (blockLocalInputTimerRef.current !== null) clearTimeout(blockLocalInputTimerRef.current);
     blockLocalInputTimerRef.current = setTimeout(() => {
       blockLocalInputTimerRef.current = null;
       setBlockLocalInput(blockLocalInputTimedOut);
     }, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS);
-  }, [blockLocalInput.blocked]);
+  }, [blockLocalInput.blocked, blockLocalInput.pending]);
 
   const handleDisconnect = useCallback(() => {
     userDisconnectRef.current = true;

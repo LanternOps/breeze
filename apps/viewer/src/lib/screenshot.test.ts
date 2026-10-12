@@ -65,4 +65,11 @@ describe('screenshotFailureMessage', () => {
     expect(screenshotFailureMessage('copy')).toMatch(/copied/i);
     expect(screenshotFailureMessage('save')).toMatch(/saved/i);
   });
+
+  it('carries the reason when there is one, so a save failure is diagnosable', () => {
+    expect(screenshotFailureMessage('save', 'cannot create file: Permission denied'))
+      .toBe('Screenshot could not be saved: cannot create file: Permission denied');
+    expect(screenshotFailureMessage('copy', new Error('denied'))).toMatch(/: denied$/);
+    expect(screenshotFailureMessage('save', 'x'.repeat(500)).length).toBeLessThan(220);
+  });
 });

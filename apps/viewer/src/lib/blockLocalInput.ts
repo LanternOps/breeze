@@ -76,6 +76,6 @@ export function blockLocalInputTimedOut(state: BlockLocalInputState): BlockLocal
   return {
     ...state,
     pending: false,
-    error: 'The remote device did not respond to the block-input request.',
+    error: 'The remote device did not respond to the block-input request; its block state is unknown. Toggle again to retry.',
   };
 }

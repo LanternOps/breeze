@@ -57,6 +57,11 @@ static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// Set once the operator confirms Cmd+Q with sessions open (#8241).
 static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Set by the session window when it has shown the quit confirmation. If it
+/// never does (no listener, webview not ready), Cmd+Q falls back to quitting.
+static QUIT_PROMPT_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const QUIT_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
 // ── Linux `breeze://` registration ───────────────────────────────────────
 // The helpers below are compiled on Linux, and under `cfg(test)` everywhere so
 // they stay unit-testable on any dev machine. Only the fs/subprocess half
@@ -892,14 +897,32 @@ fn request_quit(app: &tauri::AppHandle) {
         Some(window) => {
             let _ = window.show();
             let _ = window.set_focus();
+            QUIT_PROMPT_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst);
             if let Err(err) = app.emit_to(window.label(), "quit-requested", sessions) {
                 // Nobody can answer the prompt; do what Cmd+Q always did.
                 eprintln!("Failed to ask for quit confirmation: {err}");
                 request_exit(app, 0);
+                return;
             }
+            // An emit reaches no one if the window is not listening; never let
+            // Cmd+Q silently do nothing.
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(QUIT_PROMPT_ACK_TIMEOUT);
+                if !QUIT_PROMPT_SHOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                    eprintln!("Quit confirmation was not shown; quitting");
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || request_exit(&h, 0));
+                }
+            });
         }
         None => request_exit(app, 0),
     }
+}
+
+#[tauri::command]
+fn quit_prompt_shown() {
+    QUIT_PROMPT_SHOWN.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -1237,6 +1260,7 @@ pub fn run() {
             dismiss_pending_update,
             get_scheme_registration_error,
             save_screenshot,
+            quit_prompt_shown,
             confirm_quit,
         ]);
 

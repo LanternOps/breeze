@@ -230,7 +230,8 @@ export async function connectVnc(
     captureFrame: () => new Promise<Blob | null>((resolve) => {
       try {
         rfb.toBlob((blob: Blob | null) => resolve(blob), 'image/png');
-      } catch {
+      } catch (err) {
+        console.warn('[vnc] frame capture failed:', err);
         resolve(null);
       }
     }),

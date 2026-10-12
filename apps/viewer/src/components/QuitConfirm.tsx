@@ -9,6 +9,8 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 export interface QuitConfirmDeps {
   listenQuitRequested(cb: (sessions: number) => void): Promise<() => void>;
   confirmQuit(): Promise<void>;
+  /** Tells the app the prompt is on screen; without it Cmd+Q quits anyway. */
+  ackShown(): Promise<void>;
 }
 
 const tauriDeps: QuitConfirmDeps = {
@@ -16,6 +18,7 @@ const tauriDeps: QuitConfirmDeps = {
   listenQuitRequested: (cb) =>
     getCurrentWebviewWindow().listen<number>('quit-requested', (e) => cb(typeof e.payload === 'number' ? e.payload : 1)),
   confirmQuit: () => invoke('confirm_quit'),
+  ackShown: () => invoke('quit_prompt_shown'),
 };
 
 export function QuitConfirm({ deps = tauriDeps }: { deps?: QuitConfirmDeps }) {
@@ -24,7 +27,10 @@ export function QuitConfirm({ deps = tauriDeps }: { deps?: QuitConfirmDeps }) {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
-    deps.listenQuitRequested((n) => setSessions(n)).then(
+    deps.listenQuitRequested((n) => {
+      setSessions(n);
+      deps.ackShown().catch((err) => console.warn('Quit prompt ack failed:', err));
+    }).then(
       (fn) => {
         if (disposed) fn();
         else unlisten = fn;

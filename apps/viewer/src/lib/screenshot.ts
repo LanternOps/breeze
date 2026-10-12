@@ -17,7 +17,8 @@ function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => {
     try {
       canvas.toBlob((blob) => resolve(blob), 'image/png');
-    } catch {
+    } catch (err) {
+      console.warn('[screenshot] PNG encode failed:', err);
       resolve(null);
     }
   });
@@ -48,20 +49,24 @@ export async function captureFramePng(
         return await canvasToPng(canvas);
       }
     }
-  } catch {
+  } catch (err) {
+    console.warn('[screenshot] frame capture failed:', err);
     return null;
   }
 }
 
 export type ScreenshotFailure = 'no-frame' | 'copy' | 'save';
 
-export function screenshotFailureMessage(failure: ScreenshotFailure): string {
+/** `cause` is shown when it carries a reason (the save command's errors are ours). */
+export function screenshotFailureMessage(failure: ScreenshotFailure, cause?: unknown): string {
+  const reason = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  const suffix = reason ? `: ${reason.slice(0, 160)}` : '.';
   switch (failure) {
     case 'no-frame':
       return 'Screenshot failed — there is no picture from the remote yet.';
     case 'copy':
-      return 'Screenshot could not be copied to the clipboard.';
+      return `Screenshot could not be copied to the clipboard${suffix}`;
     case 'save':
-      return 'Screenshot could not be saved.';
+      return `Screenshot could not be saved${suffix}`;
   }
 }
