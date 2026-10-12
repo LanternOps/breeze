@@ -32,6 +32,7 @@ import { scriptMonitorHandler } from './handlers/scriptMonitor';
 import { networkCheckHandler } from './handlers/networkCheck';
 import { hardwareHealthHandler } from './handlers/hardwareHealth';
 import { timeSyncHandler } from './handlers/timeSync';
+import { containerImageCurrencyHandler } from './handlers/containerImageCurrency';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -52,6 +53,7 @@ conditionRegistry.register(scriptMonitorHandler);
 conditionRegistry.register(networkCheckHandler);
 conditionRegistry.register(hardwareHealthHandler);
 conditionRegistry.register(timeSyncHandler);
+conditionRegistry.register(containerImageCurrencyHandler);
 
 // Re-export types for backward compatibility
 export type {
@@ -60,6 +62,7 @@ export type {
   HardwareHealthCondition,
   HardwareHealthComponentFilter,
   TimeSyncCondition,
+  ContainerImageCurrencyCondition,
   ComparisonOperator,
   MetricName,
   ThresholdCondition,

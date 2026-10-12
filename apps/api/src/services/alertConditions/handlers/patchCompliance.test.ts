@@ -89,3 +89,39 @@ describe('patchComplianceHandler', () => {
     expect(result).toMatchObject({ passed: false, dataAvailable: false });
   });
 });
+
+// W06 (#8195, spec §10.1): the container image term is folded into the
+// patch-compliance PERCENT views only. This handler scores from posture
+// snapshots (posture is excluded from the term), so unchecked images can never
+// read as a data gap here and never suppress a known OS-patch breach.
+describe('patchComplianceHandler and container images (W06 pin)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    mockDb.select.mockReset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('still breaches on a known OS-patch score whatever the device runs', async () => {
+    const from = vi.fn(() => ({
+      where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([snapshot({ patchComplianceScore: 40 })]) }) }),
+    }));
+    mockDb.select.mockReturnValue({ from });
+    const result = await patchComplianceHandler.evaluate(COND, 'device-with-unchecked-images');
+    expect(result.passed).toBe(true);
+    expect(result.dataAvailable).not.toBe(false);
+    expect(result.actualValue).toBe(40);
+    // one read, of posture snapshots only — no workload/image source is consulted
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'sps.deviceId' }));
+  });
+
+  it('neither this handler nor security posture reads container image data', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    for (const rel of ['./patchCompliance.ts', '../../securityPosture.ts']) {
+      const source = await readFile(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+      expect(source).not.toMatch(/imageCompliance|containerImageComplianceTerms|device_workloads|deviceWorkloads/);
+    }
+  });
+});

@@ -21,7 +21,8 @@ import {
   linkRestorePointCommand,
   restorePointPayloadField,
 } from '../../services/restorePointRequest';
-import type { DevicePatchApprovalEvaluation } from '@breeze/shared';
+import { compliancePercentWithImageTerm, type DevicePatchApprovalEvaluation } from '@breeze/shared';
+import { containerImageComplianceTerms } from '../../services/workloads/imageCompliance';
 
 export const patchesRoutes = new Hono();
 
@@ -563,10 +564,13 @@ patchesRoutes.get(
         failureCount: p.failureCount
       }));
 
+    // W06 (#8195): stale container images count as pending items, current
+    // ones as installed items; unknowns stay out of the ratio and are only
+    // reported. A device with no workload rows gets exactly the old number
+    // and no `containerImages` key.
+    const imageTerms = (await containerImageComplianceTerms({ deviceIds: [deviceId] })).get(deviceId) ?? null;
     const total = pending.length + installed.length;
-    const compliancePercent = total > 0
-      ? Math.round((installed.length / total) * 100)
-      : 100;
+    const compliancePercent = compliancePercentWithImageTerm(installed.length, total, imageTerms);
 
     return c.json({
       data: {
@@ -594,7 +598,8 @@ patchesRoutes.get(
           source: p.source,
           approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending',
           effectiveApproval: p.status === 'pending' ? effectiveApprovalFor(p.patchId) : null
-        }))
+        })),
+        ...(imageTerms ? { containerImages: imageTerms } : {})
       }
     });
   }

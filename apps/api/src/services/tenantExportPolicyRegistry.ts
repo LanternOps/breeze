@@ -413,8 +413,8 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // upstream_status / upstream_digest / upstream_checked_at (W05 #8194): the
   // image-currency verdict for the tenant's own row — a closed status token,
   // a public registry content digest and a timestamp. No SUSPICIOUS_NAME_PARTS
-  // hit, no open container.
-  "device_workloads": tablePolicy("org_id", {"included":["id","device_id","org_id","runtime","kind","workload_id","name","state","raw_state","image_ref","image_repository","image_tag","image_digest","image_id","guest_os","compose_project","compose_service","compose_working_dir","restart_policy","cpu_count","memory_mb","started_at","runtime_created_at","first_seen_at","last_seen_at","updated_at","upstream_status","upstream_digest","upstream_checked_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // hit, no open container. behind_since (W06 #8195): a timestamp, same class.
+  "device_workloads": tablePolicy("org_id", {"included":["id","device_id","org_id","runtime","kind","workload_id","name","state","raw_state","image_ref","image_repository","image_tag","image_digest","image_id","guest_os","compose_project","compose_service","compose_working_dir","restart_policy","cpu_count","memory_mb","started_at","runtime_created_at","first_seen_at","last_seen_at","updated_at","upstream_status","upstream_digest","upstream_checked_at","behind_since"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // risk metadata: withheld so a subject-access export cannot be used to tune evasion
   // log_shipping_state / log_shipping_failure_started_at /
   // log_shipping_last_error (#8608): agent-reported log-shipping health. A
