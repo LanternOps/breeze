@@ -7,11 +7,11 @@ tracking_issue: LanternOps/breeze#8164
 
 **Goal:** Make the framework data W01 persists (`edr_endpoints`, `edr_detections`) visible everywhere the legacy S1/Huntress data is: incidents feed + promotion, read-only AI tools, events/alerts, retention, portal, readiness, reports, and the web UI.
 
-**Architecture:** Two independently shippable PRs. **PR-A (API)** adds a fourth incidents-feed leg (folding the nested ternary into a leg list), `routes/edr/detections.ts`, a shared read service used by both the route and the AI tools, a "Phase 4" notifier after the detection sync commits, a retention job, and the portal/readiness/report consumers. **PR-B (Web)** consumes only routes PR-A or W01 already ships. One migration (a portal visibility flag column), in PR-A. No new table, so no cascade/merge registration.
+**Architecture:** Two independently shippable PRs. **PR-A (API)** adds a fourth incidents-feed leg (folding the nested ternary into a leg list), `routes/edr/detections.ts`, a shared read service used by both the route and the AI tools, a "Phase 4" notifier after the detection sync commits (plus a stale-tenant check on the `sync-all` tick), a retention job, and the portal/readiness/report consumers. **PR-B (Web)** consumes only routes PR-A or W01 already ships. One migration (a portal visibility flag column), in PR-A. No new table, so no cascade/merge registration.
 
 **Tech Stack:** Hono, Drizzle (queries only), PostgreSQL RLS, BullMQ, Vitest, Astro + React islands, `runAction`.
 
-**Spec:** `docs/superpowers/specs/integrations/2026-09-30-edr-provider-framework-spec.md` (§4.7, 4.11, 4.12, D6, D10, D11, D14). **Read the index first** (`…-index.md`, corrections 5, 12) and the W01 results: W01a #8220 and W01b #8259 are both merged to main (verified 2026-10-12).
+**Spec:** `docs/superpowers/specs/integrations/2026-09-30-edr-provider-framework-spec.md` (§4.4, 4.7, 4.11, 4.12, D6, D10, D11, D14). **Read the index first** (`…-index.md`, corrections 5, 12) and the W01 results: W01a #8220 and W01b #8259 are both merged to main (verified 2026-10-12).
 
 Epic: #8164 · Wave sub-issue: #8166. PR bodies: `Refs #8166` / `Part of #8164` until the last PR of the wave, which carries `Closes #8166` (orchestrator decides). Branches: `feature/8164-edr-provider-framework/wave-8166` (PR-A) and `…/wave-8166-web` (PR-B, branched from main after PR-A merges, or stacked — see the stacked-PR CI trap in the index).
 
@@ -30,7 +30,7 @@ Epic: #8164 · Wave sub-issue: #8166. PR bodies: `Refs #8166` / `Part of #8164` 
 
 ## Migration & tenancy statement
 
-**One migration, PR-A only:** `apps/api/migrations/2026-12-22-140000-portal-edr-visibility-flag.sql` (slot after `2026-12-22-130000`; **re-check** with `git fetch -q origin main && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -3` before committing and before pushing — at plan time the newest on this checkout is `2026-12-21-230000-…`, and the brief states `2026-12-22-130000` has been claimed).
+**One migration, PR-A only:** `apps/api/migrations/2026-12-22-140000-portal-edr-visibility-flag.sql` (slot after `2026-12-22-130000`, the highest slot claimed at planning time; **re-check** with `git fetch -q origin main && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -3` before committing and before pushing — at plan time the newest on this checkout is `2026-12-21-230000-…`, and the `2026-12-22-130000` slot is claimed by work not yet on this checkout).
 - Content: `ALTER TABLE portal_branding ADD COLUMN IF NOT EXISTS enable_edr_visibility boolean NOT NULL DEFAULT false;` + `COMMENT ON COLUMN`. DDL only → **no** `set_config('breeze.scope','system',true)` (it writes no rows) and nothing added to the `migrationRlsScope.test.ts` baseline. Idempotent, no `BEGIN/COMMIT`. Copy the shape of `2026-12-21-230000-portal-software-inventory-flag.sql`.
 - **No new table.** Not touched: `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `REPOINT_TABLES`, `routes/devices/core.ts` cascade lists, `rls-coverage` lists, `encryptedColumnRegistry` (the W01a registrations already cover all `edr_*` tables).
 - **One registration:** `portal_branding` is an existing org-cascade table, so the new column needs a `CORE_TENANT_EXPORT_POLICY` classification — add `enable_edr_visibility` to the `portal_branding` **included** list at `services/tenantExportPolicyRegistry.ts` (line ~666, next to `enable_software_inventory`). Boolean → `included`, not `excludedOpen`.
@@ -39,9 +39,9 @@ Epic: #8164 · Wave sub-issue: #8166. PR bodies: `Refs #8166` / `Part of #8164` 
 
 ## Review Focus
 
-1. **First-sync alert flood.** First detection sync of a tenant back-fills 30 days of old detections; a naive "severity ≠ notified_severity" evaluator would fire hundreds of alerts/events and page the MSP. Expected: back-filled rows are stamped notified silently; only detections first seen within the notify horizon publish. Pinned in A6.
+1. **First-sync alert flood.** First detection sync of a tenant back-fills the adapter's lookback window (GravityZone: `firstSyncLookbackDays: 30`) of old detections; a naive "severity ≠ notified_severity" evaluator would fire hundreds of alerts/events and page the MSP. Expected: back-filled rows are stamped notified silently; only detections first seen within the notify horizon publish. Pinned in A6.
 2. **A site-restricted technician must not see another site's findings** — including findings whose device link was cleared by an org move / device delete (D14), via the feed, `/edr/detections`, AI tools and the device panel. Pinned in A3, A4, A5.
-3. **Partial coverage must not read as "no threats".** `get_edr_status` / `list_edr_detections` with a stale tenant, a failed tenant, or an unmapped tenant must say so in the response. Pinned in A5/A7.
+3. **Partial coverage must not read as "no threats".** For partner/system callers, `get_edr_status` / `list_edr_detections` with a stale, failed, never-synced or unmapped tenant must say so; org-scoped callers cannot see tenant state under RLS and get an explicit "sync health visible to partner users only" note instead (Open Decision 9). Pinned in A5/A7.
 4. **Promotion double-click / two tabs.** Promoting the same detection twice yields one incident and a 409, and a promote request naming another org's detection id is rejected (existing legs trust `sourceRef`; the EDR leg verifies it). Pinned in A4.
 5. **Vendor strings in AI tool output are prompt-injection carriers** (`threat_name`, `file_path`). Pinned in A7 via the raw-text fencing test.
 6. **Portal flag off ⇒ zero EDR influence**: protection tile, threat counts, `avProducts` and reports identical to today. Pinned in A9.
@@ -69,7 +69,7 @@ Epic: #8164 · Wave sub-issue: #8166. PR bodies: `Refs #8166` / `Part of #8164` 
 | `aiTools.ts`, `aiToolSchemas.ts`, `aiGuardrails.ts`, `aiAgentSdkTools.ts`, `aiToolOutput.ts`, `aiAgents/agentToolCatalog.ts`, `mcpCoverage.ts`, `llm/toolEval/agentGoldenTasks.ts` | Register (Task A7) |
 | `apps/api/src/services/eventBus.ts` | `edr.*` events |
 | `apps/api/src/services/edrProviders/alerts.ts` | Create — Phase 4 notifier |
-| `apps/api/src/jobs/edrProviderSync.ts` | Call notifier after Phase 3 |
+| `apps/api/src/jobs/edrProviderSync.ts`, `services/edrProviders/persist.ts` | Call notifier after Phase 3; stale-tenant check on `sync-all`; stamp first-sync rows |
 | `apps/api/src/services/workerRegistry.ts` | Re-verify `edrProviderSyncWorker` placement |
 | `apps/api/src/jobs/edrDetectionRetention.ts` | Create |
 | `jobs/scheduleRegistry.ts`, `services/workerRegistry.ts`, `jobs/workerReadinessManifest.ts` | Register retention |
@@ -90,7 +90,7 @@ Epic: #8164 · Wave sub-issue: #8166. PR bodies: `Refs #8166` / `Part of #8164` 
 - Produces (used by A3–A7, PR-B):
 ```ts
 export interface EdrDetectionDto {
-  id: string; connectionId: string; orgId: string; provider: string; providerLabel: string;
+  id: string; connectionId?: string /* omitted for org tokens */; orgId: string; provider: string; providerLabel: string;
   vendorDetectionId: string; vendorKind: EdrVendorKind; severity: EdrSeverity; status: EdrDetectionStatus;
   title: string | null; category: string | null; threatName: string | null;
   filePath: string | null; processName: string | null; mitreTechniques: string[];
@@ -99,8 +99,9 @@ export interface EdrDetectionDto {
   detached: boolean; promotedIncidentId: string | null;
 }
 export interface EdrStatusSummary {
-  providers: Array<{ provider: string; label: string; connectionId: string; connectionStatus: EdrConnectionStatus;
-    tenantsMapped: number; tenantsUnmapped: number; tenantsStale: number; tenantsFailed: number;
+  providers: Array<{ provider: string; label: string; connectionId?: string; connectionStatus?: EdrConnectionStatus; // partner/system only
+    tenantsMapped?: number; tenantsUnmapped?: number; tenantsStale?: number; tenantsFailed?: number; // partner/system only
+
     endpoints: number; linkedEndpoints: number; unhealthyEndpoints: number; openDetections: number; lastDetectionSyncAt: string | null }>;
   coverage: { orgsWithEdr: number; partial: boolean; notes: string[] };
 }
@@ -133,7 +134,7 @@ No DB CHECK exists on `incidents.source_type` (verified: `2026-06-29-incidents-e
 - Test: `apps/api/src/routes/incidents.helpers.test.ts`
 
 **Interfaces:**
-- Produces: `type FeedLeg = { key: 'tracked'|'huntress'|'s1'|'edr'; include: boolean; query: any }` and `foldLegs(legs: FeedLeg[]): any | null` (exported for test).
+- Produces: `type FeedLeg = { key: 'tracked'|'huntress'|'s1'|'edr'; include: boolean; query: any }` and `foldLegs(legs: FeedLeg[], combine?: (a: any, b: any) => any): any | null` (exported for test; `combine` defaults to `unionAll`).
 
 - [ ] **Step 1: Failing test** — enumerate all 2^4 include combinations:
 ```ts
@@ -193,7 +194,7 @@ const edrSitePredicate = (p: IncidentFeedParams) => {
 - [ ] **Step 1: Failing tests** (helpers unit, with the existing mock-db harness): (a) `source: 'bitdefender'` includes only the EDR leg and excludes tracked; (b) `source: 'huntress'` excludes the EDR leg; (b2) `kind: 'tracked'` excludes the EDR leg; (c) unrestricted caller → no site predicate; (d) restricted caller with `allowedDeviceIds=[d1]`, `allowedSiteIds=[siteA]` → predicate SQL contains the three branches; (e) `allowedDeviceIds=[]`, `allowedSiteIds=[]` → never-linked rows only, no crash.
   Integration (`incidents-feed.integration.test.ts`, test stack): seed org + two sites + two devices + one connection/tenant/endpoint + three detections: on a site-A device, on a site-B device, and one detached from a site-B device (`breeze_device_id NULL, device_detached_at set, last_site_id = siteB`). Site-A-only caller sees the site-A row and none of the others; unrestricted caller sees all three; a tombstoned (`detached_at` set) row is invisible to everyone.
 - [ ] **Step 2:** run → FAIL.
-- [ ] **Step 3:** implement `edrQ`, `includeEdr = hasDevicesRead && params.kind !== 'tracked' && (params.source is undefined or an EDR provider key)` (the existing finding legs gate on `kind !== 'tracked'` at `incidents.helpers.ts:330`), widen the types, compute `allowedSiteIds` in `incidents.ts` as `perms?.allowedSiteIds ?? null` (scope `organization` only, same condition as `allowedDeviceIds`), and extend the row-mapper cast. `linkOut` for EDR rows is `null` in W02 (vendor console deep links are out of scope).
+- [ ] **Step 3:** implement `edrQ`, `includeEdrLeg = hasDevicesRead && params.kind !== 'tracked' && (params.source is undefined or an EDR provider key)` (the existing finding legs gate on `kind !== 'tracked'` at `incidents.helpers.ts:330`; note the existing `includeEdr` flag there means only `hasDevicesRead` — rename to avoid confusion). Also: `includeTracked` must additionally be false when `source` is an EDR provider key (today it excludes only `huntress`/`s1`, L329), and the `if (!includeTracked && !includeHuntress && !includeS1) return null` guard must count the EDR leg, widen the types, compute `allowedSiteIds` in `incidents.ts` as `perms?.allowedSiteIds ?? null` (scope `organization` only, same condition as `allowedDeviceIds`), and extend the row-mapper cast. `linkOut` for EDR rows is `null` in W02 (vendor console deep links are out of scope).
 - [ ] **Step 4:** unit tests PASS; integration: `pnpm test-stack up` then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/incidents-feed.integration.test.ts` (confirm the config name in `docs/agents/testing.md`).
 - [ ] **Step 5:** commit `feat(incidents): EDR detection feed leg with detached-finding site rule (#8166)`.
 
@@ -241,7 +242,8 @@ export function resolveEdrReadScope(auth: AuthContext, perms: UserPermissions | 
 **Files:**
 - Modify: `apps/api/src/services/eventBus.ts` (union ~lines 98-146 + `EVENT_TYPES` ~631-652)
 - Create: `apps/api/src/services/edrProviders/alerts.ts`, `alerts.test.ts`
-- Modify: `apps/api/src/jobs/edrProviderSync.ts` (`syncEdrDetections`, after `runPhase3` at ~L757, **outside** the Phase 3 transaction; no Phase 4 stub exists today)
+- Modify: `apps/api/src/services/edrProviders/persist.ts` (`persistDetections` stamps `notified_severity` on first-sync inserts; runs inside Phase 3) + `persist.test.ts`
+- Modify: `apps/api/src/jobs/edrProviderSync.ts` (`syncEdrDetections`: call `evaluateEdrAlerts` after `runPhase3` returns — `runPhase3` is at ~L722, the block ends ~L762 — i.e. **outside** the Phase 3 transaction; plus `evaluateEdrStaleTenants` from the `sync-all` tick; no Phase 4 stub exists today)
 - Modify: `apps/api/src/services/workerRegistry.ts:962-971`
 - Test: `alerts.test.ts`, `src/__tests__/integration/edrProviderSync.integration.test.ts` (extend)
 
@@ -294,7 +296,7 @@ Descriptions ≤ 300 chars, each param ≤ 160, and both **state coverage semant
 - Create: `apps/api/src/jobs/edrDetectionRetention.ts`, `edrDetectionRetention.test.ts`
 - Modify: `jobs/scheduleRegistry.ts` (+ `scheduleRegistry.contract.test.ts` expectations), `services/workerRegistry.ts`, `jobs/workerReadinessManifest.ts`, **`services/retentionMetrics.ts`** (`RETENTION_JOB_NAMES` closed union, ~L28 — `recordRetentionRun('edr_detection_retention')` does not typecheck without it), and the expected-name list/count in `services/workerEntrypointClosure.contract.test.ts` (~L485)
 
-Mirror `jobs/monitorEpisodeRetention.ts` (queue const, `parsePositiveIntEnv` batch size, `retentionBatch` helper, `recordRetentionRun('edr_detection_retention', …)`, `attachWorkerObservability`, `__testOnly`). Rule: delete `edr_detections WHERE status IN ('resolved','dismissed','false_positive','mitigated') AND COALESCE(resolved_at, last_vendor_update_at, updated_at) < now() - interval '180 days'`; **open / in_progress / unknown rows are never pruned**; tombstones (`detached_at NOT NULL`) follow the same window. Runs under `withSystemDbAccessContext`. `edr_actions` untouched (W03; spec says actions are kept with detections). Promoted incidents keep their copy (no FK from `incidents.source_ref`).
+Mirror `jobs/monitorEpisodeRetention.ts` (queue const, `parsePositiveIntEnv` batch size, `retentionBatch` helper, `recordRetentionRun('edr_detection_retention', …)`, `attachWorkerObservability`, `__testOnly`). Rule: delete `edr_detections WHERE status IN ('resolved','dismissed','false_positive','mitigated') AND COALESCE(resolved_at, last_vendor_update_at, updated_at) < now() - interval '180 days'`; **open / in_progress / unknown rows are never pruned**; tombstones (`detached_at NOT NULL`) follow the same status/age rule (an open tombstone is never pruned either). Runs under `withSystemDbAccessContext`. `edr_actions` untouched (W03; spec says actions are kept with detections). Promoted incidents keep their copy (no FK from `incidents.source_ref`).
 
 - [ ] **Step 1: Failing tests:** `__testOnly.retentionPredicate` unit: open 400-day-old row kept; resolved 181 d pruned; resolved 179 d kept; `unknown` kept; batch loop stops at `MAX_BATCHES`. Integration (test stack): seeds the four classes, runs one pass, asserts surviving ids. Cron contract: new queue present in `scheduleRegistry` (`'edr-detection-retention': '17 20 * * *'` — pick a minute not already used; the contract test lists collisions) and `workerReadinessManifest` has `consumers('edrDetectionRetentionWorker')`.
 - [ ] **Step 2–4:** implement; `npx vitest run src/jobs/edrDetectionRetention.test.ts src/jobs/scheduleRegistry.contract.test.ts src/jobs/workerReadinessManifest.test.ts src/jobs/workerReadinessCoverage.test.ts` → PASS.
@@ -354,7 +356,7 @@ Semantics via the existing `parentMappingState`: per org, `connected` when ≥1 
 
 # PR-B — Web
 
-Starts after PR-A merges (or stacked on it with `gh workflow run CI --ref <branch>`). Depends on PR-A for: `GET /edr/detections`, `GET /edr/status`, `GET /edr/endpoints?deviceId=`, the `edr` feed `source`, `enableEdrVisibility`.
+Starts after PR-A merges (or stacked on it with `gh workflow run CI --ref <branch>`). Depends on PR-A for: `GET /edr/detections`, `GET /edr/status`, `GET /edr/endpoints?deviceId=`, EDR provider keys as feed `source` values, `enableEdrVisibility`.
 
 ## File Structure (PR-B)
 
