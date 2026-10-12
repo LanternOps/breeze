@@ -61,7 +61,10 @@ describe('nextAgentHop', () => {
       excludeOfferingIds: ['p'], failoverCause: 'overloaded', failoverOrigin: ORIGIN,
     }));
     expect(h.checkBudgetDetailed).toHaveBeenCalledWith('org-1', 'partner_key');
-    expect(h.updates).toEqual([{ servedOfferingId: 'k', servedFundingSource: 'partner_key', servedFailoverHop: 1, servedFailoverCause: 'overloaded' }]);
+    expect(h.updates).toEqual([{ servedOfferingId: 'k', servedFundingSource: 'partner_key', servedFailoverHop: 1, servedFailoverCause: 'overloaded',
+      // #7787: a run-loop hop clears any failover source admission recorded.
+      servedFailoverFromOfferingId: null,
+    }]);
     expect(r).toMatchObject({ ok: true, resolved: { offering: { id: 'k' } } });
   });
 
@@ -139,5 +142,8 @@ describe('startHopFor (re-drive resume)', () => {
   });
   it('a re-driven run resumes on the hop it last reserved', () => {
     expect(startHopFor({ admittedOfferingId: 'p', servedOfferingId: 'k', servedFailoverHop: 1 })).toEqual({ requestedOfferingId: 'k', hop: 1 });
+  });
+  it('#7787: provenance stamped at ADMISSION (served = admitted) is not a hop: the run stays on hop 0\'s key', () => {
+    expect(startHopFor({ admittedOfferingId: 'k', servedOfferingId: 'k', servedFailoverHop: 2 })).toEqual({ requestedOfferingId: 'k', hop: 0 });
   });
 });
