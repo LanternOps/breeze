@@ -162,6 +162,35 @@ describe('ContractDetail — block hours (#4547 W03)', () => {
     expect(await screen.findByTestId('hour-block-history-error')).toBeInTheDocument();
   });
 
+  it('a 200 with an unreadable or data-less body is a failed history, never "no closed periods"', async () => {
+    for (const bad of [{}, { data: null }, { data: { nextCursor: null } }]) {
+      (api.listContractHourPeriods as any).mockResolvedValue(resp(bad));
+      const { unmount } = renderDetail([blockLine()], hb());
+      expect(await screen.findByTestId('hour-block-history-error')).toBeInTheDocument();
+      expect(screen.queryByTestId('hour-block-history-empty')).toBeNull();
+      unmount();
+    }
+    (api.listContractHourPeriods as any).mockResolvedValue({ ok: true, status: 200, json: vi.fn().mockRejectedValue(new Error('bad json')) });
+    renderDetail([blockLine()], hb());
+    expect(await screen.findByTestId('hour-block-history-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('hour-block-history-empty')).toBeNull();
+  });
+
+  it('a failed "load more" keeps the rows already loaded, shows the error beside them, and can be retried', async () => {
+    (api.listContractHourPeriods as any)
+      .mockResolvedValueOnce(resp({ data: { items: [row(3), row(2)], nextCursor: 'c1' } }))
+      .mockResolvedValueOnce(resp({}, false))
+      .mockResolvedValueOnce(resp({ data: { items: [row(1)], nextCursor: null } }));
+    renderDetail([blockLine()], hb());
+    await waitFor(() => expect(screen.getAllByTestId(/^hour-block-history-row-/)).toHaveLength(2));
+    fireEvent.click(screen.getByTestId('hour-block-history-more'));
+    expect(await screen.findByTestId('hour-block-history-error')).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^hour-block-history-row-/)).toHaveLength(2);
+    fireEvent.click(screen.getByTestId('hour-block-history-more'));
+    await waitFor(() => expect(screen.getAllByTestId(/^hour-block-history-row-/)).toHaveLength(3));
+    expect(screen.queryByTestId('hour-block-history-error')).toBeNull();
+  });
+
   it('flags a closed period that had overage but lost its invoice, and shows a plain dash only when nothing was over', async () => {
     (api.listContractHourPeriods as any).mockResolvedValue(resp({ data: { items: [
       row(3, { overageInvoiceId: null, overageHours: '2.00' }),   // invoice removed: hours not billed

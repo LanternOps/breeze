@@ -24,22 +24,34 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
   const [cursor, setCursor] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [moreFailed, setMoreFailed] = useState(false);
   const mounted = useRef(true);
+  /** Bumped per request; a response that is no longer the latest request is dropped. */
+  const seq = useRef(0);
 
   const load = useCallback(async (after?: string) => {
+    const mine = ++seq.current;
+    const live = () => mounted.current && seq.current === mine;
+    // A failed first page replaces the table; a failed "load more" keeps the rows already loaded.
+    const fail = () => {
+      if (!live()) return;
+      if (after) setMoreFailed(true); else { setFailed(true); setMoreFailed(false); }
+      setLoaded(true);
+    };
     let res: Response;
     try {
       res = await listContractHourPeriods(contractId, { limit: PAGE, cursor: after });
-    } catch {
-      if (mounted.current) { setFailed(true); setLoaded(true); }
-      return;
-    }
-    if (!res.ok) { if (mounted.current) { setFailed(true); setLoaded(true); } return; }
-    const body = (await res.json().catch(() => null)) as { data?: { items: HourPeriodRow[]; nextCursor: string | null } } | null;
-    if (!mounted.current) return;
+    } catch { fail(); return; }
+    if (!res.ok) { fail(); return; }
+    const body = (await res.json().catch(() => null)) as { data?: { items?: HourPeriodRow[]; nextCursor?: string | null } } | null;
+    // A 200 whose body is unreadable or has no item list is a failure, not an empty history.
+    if (!Array.isArray(body?.data?.items)) { fail(); return; }
+    if (!live()) return;
+    const items = body!.data!.items!;
     setFailed(false);
-    setRows((prev) => (after ? [...prev, ...(body?.data?.items ?? [])] : (body?.data?.items ?? [])));
-    setCursor(body?.data?.nextCursor ?? null);
+    setMoreFailed(false);
+    setRows((prev) => (after ? [...prev, ...items] : items));
+    setCursor(body!.data!.nextCursor ?? null);
     setLoaded(true);
   }, [contractId]);
 
@@ -155,6 +167,7 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
           {t('contracts.hourBlock.history.empty')}
         </p>
       ) : (
+        <>
         <table className="w-full text-sm" data-testid="hour-block-history">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -189,6 +202,12 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
             ))}
           </tbody>
         </table>
+        {moreFailed && (
+          <p className="border-t px-3 py-2 text-xs text-amber-600 dark:text-amber-500" data-testid="hour-block-history-error">
+            {t('contracts.hourBlock.detail.loadFailed')}
+          </p>
+        )}
+        </>
       )}
       {cursor && !failed && (
         <div className="border-t px-3 py-2">
