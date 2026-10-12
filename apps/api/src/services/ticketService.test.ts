@@ -1761,8 +1761,9 @@ describe('assignTicket', () => {
 
     await assignTicket('t-1', 'u-2', actor);
 
-    // call 0 is the assignment feed comment; call 1 is the outbox row.
-    expect(valuesMock).toHaveBeenCalledTimes(2);
+    // call 0 is the assignment feed comment; call 1 is the assigned outbox row;
+    // call 2 is the implicit new->open ticket.status_changed row (#8367).
+    expect(valuesMock).toHaveBeenCalledTimes(3);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.assigned' });
     expect(outboxPayload.payload).toEqual({
@@ -2193,6 +2194,53 @@ describe('assignTicket — additional status cases', () => {
     const updatePayload = setMock.mock.calls[0]![0];
     expect(updatePayload).toMatchObject({ assignedTo: 'u-2' });
     expect(updatePayload).not.toHaveProperty('status');
+  });
+
+  // #8367: the implicit new -> open move must reach webhook / Partner API
+  // consumers as ticket.status_changed, in the same transaction as
+  // ticket.assigned.
+  const outboxRows = () =>
+    valuesMock.mock.calls
+      .map((c) => c[0])
+      .filter((v) => v && typeof v.eventType === 'string');
+
+  it('assigns on new ticket: writes ticket.assigned AND ticket.status_changed (new->open) outbox rows (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    const rows = outboxRows();
+    expect(rows.map((r) => r.eventType)).toEqual(['ticket.assigned', 'ticket.status_changed']);
+    expect(rows[1]).toMatchObject({ orgId: 'o-1', ticketId: 't-1' });
+    expect(rows[1].payload).toEqual({ from: 'new', to: 'open', statusId: null });
+  });
+
+  it('assigns on open ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
+  });
+
+  it('unassigning a new ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: null, status: 'new' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', null, actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
   });
 });
 

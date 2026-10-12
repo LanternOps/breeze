@@ -1950,7 +1950,8 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
-  if (assigneeId && ticket.status === 'new') patch.status = 'open';
+  const implicitOpen = Boolean(assigneeId) && ticket.status === 'new';
+  if (implicitOpen) patch.status = 'open';
 
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db
@@ -1987,6 +1988,16 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     ...actorEventIdentity(actor),
     partnerId: ticket.partnerId ?? null,
   });
+  // #8367: assigning a `new` ticket also moves it to `open`. Webhook / Partner
+  // API consumers only see the outbox, so announce that transition too, in the
+  // same transaction as `ticket.assigned`. Payload mirrors changeTicketStatus.
+  if (implicitOpen) {
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+      from: 'new',
+      to: 'open',
+      statusId: updated[0]?.statusId ?? null,
+    });
+  }
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
