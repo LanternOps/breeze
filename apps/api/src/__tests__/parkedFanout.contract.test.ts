@@ -340,7 +340,6 @@ const EXEMPT: Record<string, string> = {
   'services/offlineAlertEffects.ts': 'derived: acts on an alert-plan effect, which offlineEffectsStore never writes for a parked device',
   'services/pamActuationLifecycle.ts': 'derived: locks the one device named by an elevation request the caller already holds; selects no work',
   'services/pamActuationResult.ts': 'agent self-service: agent posts result for its own deviceId/agentId/commandId only',
-  'services/pamReconciliationBinding.ts': 'agent self-service: agent-supplied ids; joins devices only to confirm agent owns them',
   'services/pamToolActionGovernance.ts': 'agent self-service: helper on one device drives its own tool-action elevation request',
   'services/partnerTrust.repo.ts': 'derived: single id lookups (partnerId/orgId/deviceId) supplied by caller, no enumeration',
   'services/partnerTrustPromotion.ts': 'reads one partner\'s device IP classes for a trust decision; no per-device action',
