@@ -1629,6 +1629,40 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
       });
 
+      it.each([
+        ['POST', '/orgs/partners', { name: 'P', slug: 'newp' }],
+        ['PATCH', '/orgs/partners/partner-1', {}],
+        ['POST', '/orgs/organizations', { name: 'O', slug: 'newo', partnerId: '11111111-1111-4111-8111-111111111111' }],
+      ])('%s %s (free-form settings) rejects 721 and a string value, 400 before any write', async (method, path, base) => {
+        setAuthContext({ scope: 'system' });
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+        for (const sessionTimeout of [721, '99999']) {
+          const res = await app.request(path, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...base, settings: { security: { sessionTimeout } } })
+          });
+          expect(res.status).toBe(400);
+        }
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      it('GET /partners/me clamps a stored 1440 to 720 and keeps other settings', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: { security: { sessionTimeout: 1440, requireMfa: true } } }])
+            })
+          })
+        } as any);
+        const res = await app.request('/orgs/partners/me');
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.settings.security).toEqual({ sessionTimeout: 720, requireMfa: true });
+      });
+
       it('org PATCH rejects 721 with a clear message and never writes it', async () => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
         const setSpy = vi.fn();

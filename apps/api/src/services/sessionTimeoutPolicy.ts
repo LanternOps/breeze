@@ -20,7 +20,10 @@ function securityOf(settings: unknown): Record<string, unknown> | null {
 /** Write-side check for free-form (`z.any()`) settings blobs. */
 export function sessionTimeoutWithinCeiling(settings: unknown): boolean {
   const value = securityOf(settings)?.sessionTimeout;
-  return !(typeof value === 'number' && value > SESSION_TIMEOUT_MAX_MINUTES);
+  // Absent (or null = inherit) is fine; anything present must be a real
+  // in-range integer so a string like "99999" can't slip past a free-form blob.
+  if (value === undefined || value === null) return true;
+  return Number.isInteger(value) && (value as number) >= 1 && (value as number) <= SESSION_TIMEOUT_MAX_MINUTES;
 }
 
 /** Read-side clamp. Returns the input untouched when nothing needs clamping. */

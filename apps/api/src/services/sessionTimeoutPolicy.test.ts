@@ -17,7 +17,12 @@ describe('session timeout ceiling (#6111)', () => {
     expect(sessionTimeoutWithinCeiling(settings)).toBe(true);
   });
 
-  it.each([[{ security: { sessionTimeout: 721 } }], [{ security: { sessionTimeout: 1440 } }]])(
+  it.each([
+    [{ security: { sessionTimeout: 721 } }], [{ security: { sessionTimeout: 1440 } }],
+    [{ security: { sessionTimeout: '99999' } }], [{ security: { sessionTimeout: 720.5 } }],
+    [{ security: { sessionTimeout: 0 } }], [{ security: { sessionTimeout: -5 } }],
+    [{ security: { sessionTimeout: NaN } }],
+  ])(
     'rejects %j',
     (settings) => {
       expect(sessionTimeoutWithinCeiling(settings)).toBe(false);
