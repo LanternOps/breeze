@@ -547,9 +547,11 @@ func (h *Heartbeat) identityIntakePaused() bool {
 }
 
 // admittedDuringIdentityRestart reports whether a WebSocket command is still
-// taken while the identity restart is pending: one that stops work, or that
-// carries on a terminal, desktop or tunnel session already open. Anything that
-// starts new work is refused, since the restart would cut it off.
+// taken while the identity restart is pending: one that stops work (cancelling
+// a script, a diagnostic or a scheduled reboot, stopping a backup the restart
+// would otherwise wait on), or that carries on a terminal, desktop or tunnel
+// session already open. Anything that starts new work is refused, since the
+// restart would cut it off.
 func admittedDuringIdentityRestart(cmdType string) bool {
 	if isLifecycleCommand(cmdType) {
 		return true
@@ -557,7 +559,8 @@ func admittedDuringIdentityRestart(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
 		tools.CmdStopDesktop, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
-		tools.CmdTunnelData, tools.CmdTunnelClose:
+		tools.CmdTunnelData, tools.CmdTunnelClose,
+		tools.CmdCancelReboot, tools.CmdBackupStop:
 		return true
 	}
 	return false

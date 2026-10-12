@@ -144,7 +144,8 @@ func TestPendingIdentityRestartRefusesNewWebSocketWork(t *testing.T) {
 	}
 	for _, admitted := range []string{tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig, tools.CmdTunnelData, tools.CmdTunnelClose,
-		tools.CmdScriptCancel, tools.CmdScriptListRunning, tools.CmdNetworkDiagnosticCancel} {
+		tools.CmdScriptCancel, tools.CmdScriptListRunning, tools.CmdNetworkDiagnosticCancel,
+		tools.CmdCancelReboot, tools.CmdBackupStop} {
 		if !admittedDuringIdentityRestart(admitted) {
 			t.Fatalf("%s is refused although it only continues or stops existing work", admitted)
 		}
