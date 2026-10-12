@@ -163,6 +163,16 @@ vi.mock('../../services/commandCancelPropagation', () => ({
   propagateCancelledDeviceCommand: vi.fn(),
 }));
 
+// #8296 — POST /:id/commands/:commandId/mark-failed terminalises the records
+// that own the command through the reaper's own propagation, and resolves any
+// automation action riding on it. Mocked at the seam, like cancel above.
+vi.mock('../../jobs/staleCommandReaper', () => ({
+  propagateTimedOutDeviceCommand: vi.fn(),
+}));
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn(),
+}));
+
 vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => {
   // Partial: maintenanceResourceDigest stays REAL so the binding assertion in
   // T4 compares against the production canonicalization, not a stub.
@@ -186,6 +196,9 @@ import { dispatchWake } from '../../services/wakeOnLan';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { propagateCancelledDeviceCommand } from '../../services/commandCancelPropagation';
+import { propagateTimedOutDeviceCommand } from '../../jobs/staleCommandReaper';
+import { applyAutomationActionTerminal } from '../../services/automationActionResults';
+import { MARK_FAILED_MIN_AGE_MS } from './commands';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -2014,6 +2027,198 @@ describe('device commands routes', () => {
       expect(res.status).toBe(404);
       expect(txUpdate).not.toHaveBeenCalled();
       expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /devices/:id/commands/:commandId/mark-failed (#8296)', () => {
+    const DEVICE_ID = 'device-a';
+    const COMMAND_ID = 'cmd-sent-1';
+    const url = `/devices/${DEVICE_ID}/commands/${COMMAND_ID}/mark-failed`;
+    const post = (headers: Record<string, string> = {}) =>
+      app.request(url, { method: 'POST', headers: { Authorization: 'Bearer token', ...headers } });
+
+    let txUpdate = vi.fn();
+    let txSet = vi.fn();
+
+    const rig = (opts: {
+      existing?: Record<string, unknown> | undefined;
+      updated?: { id: string } | undefined;
+    }) => {
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(opts.existing ? [opts.existing] : []),
+          }),
+        }),
+      });
+      txSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue(opts.updated ? [opts.updated] : []),
+        }),
+      });
+      txUpdate = vi.fn().mockReturnValue({ set: txSet });
+      vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb({ select: txSelect, update: txUpdate }));
+    };
+
+    const stale = () => new Date(Date.now() - MARK_FAILED_MIN_AGE_MS - 60_000);
+
+    beforeEach(() => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: DEVICE_ID,
+        orgId: 'org-123',
+        siteId: 'site-allowed',
+        hostname: 'host-a',
+        status: 'online',
+      } as never);
+    });
+
+    it('waits ten minutes before a sent command can be marked failed', () => {
+      expect(MARK_FAILED_MIN_AGE_MS).toBe(10 * 60 * 1000);
+    });
+
+    it('fails a stale sent command with a reopenable server-timeout result, propagates, and audits', async () => {
+      const executedAt = stale();
+      rig({
+        existing: { id: COMMAND_ID, type: 'install_patches', payload: { patchJobId: 'pj-1' }, status: 'sent', executedAt },
+        updated: { id: COMMAND_ID },
+      });
+
+      const res = await post();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: COMMAND_ID, status: 'failed' });
+
+      const set = txSet.mock.calls[0]![0] as Record<string, any>;
+      expect(set.status).toBe('failed');
+      // The reopen marker: a late REAL result from the agent must still win
+      // over the operator's verdict (commandAcceptsAgentResultCondition keys on
+      // result.status='timeout' AND timedOutBy IS NOT NULL).
+      expect(set.result).toMatchObject({
+        status: 'timeout',
+        timedOutBy: 'server',
+        reason: 'operator_marked_failed',
+        markedFailedBy: 'user-123',
+      });
+      expect(typeof set.result.error).toBe('string');
+
+      expect(propagateTimedOutDeviceCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: COMMAND_ID,
+          payload: { patchJobId: 'pj-1' },
+          kind: 'timeout',
+          commandType: 'install_patches',
+          deviceId: DEVICE_ID,
+        }),
+      );
+      // Same ledger transition as a reaper timeout, so a late real result can
+      // still repair the automation action (REAL_TERMINAL_SOURCES repair path).
+      expect(applyAutomationActionTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ commandId: COMMAND_ID, source: 'reaper', terminalStatus: 'timed_out' }),
+      );
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: 'org-123',
+          action: 'device.command.mark_failed',
+          resourceType: 'device_command',
+          resourceId: COMMAND_ID,
+          resourceName: 'install_patches',
+          details: expect.objectContaining({ deviceId: DEVICE_ID, commandType: 'install_patches' }),
+        }),
+      );
+    });
+
+    it('does not swallow a propagation fault: the request fails (and its transaction rolls back) with no audit', async () => {
+      rig({
+        existing: { id: COMMAND_ID, type: 'script', payload: { executionId: 'exec-1' }, status: 'sent', executedAt: stale() },
+        updated: { id: COMMAND_ID },
+      });
+      vi.mocked(propagateTimedOutDeviceCommand).mockRejectedValueOnce(new Error('db down'));
+
+      const res = await post();
+
+      expect(res.status).toBe(500);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('409s TOO_RECENT for a sent command younger than ten minutes, without writing', async () => {
+      rig({
+        existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: new Date(Date.now() - 60_000) },
+      });
+
+      const res = await post();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('TOO_RECENT');
+      expect(typeof body.eligibleAt).toBe('string');
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(propagateTimedOutDeviceCommand).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it.each(['pending', 'completed', 'failed', 'cancelled'])('409s NOT_SENT for a %s command', async (status) => {
+      rig({ existing: { id: COMMAND_ID, type: 'reboot', payload: {}, status, executedAt: stale() } });
+
+      const res = await post();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('NOT_SENT');
+      expect(body.status).toBe(status);
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(propagateTimedOutDeviceCommand).not.toHaveBeenCalled();
+    });
+
+    it('409s TOO_RECENT for a sent row with no delivery time (age unknown)', async () => {
+      rig({ existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: null } });
+
+      const res = await post();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('TOO_RECENT');
+      expect(txUpdate).not.toHaveBeenCalled();
+    });
+
+    it('409s and does NOT propagate or audit when the CAS loses (the result landed first)', async () => {
+      rig({
+        existing: { id: COMMAND_ID, type: 'script', payload: { executionId: 'exec-1' }, status: 'sent', executedAt: stale() },
+        updated: undefined,
+      });
+
+      const res = await post();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('NOT_SENT');
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+      expect(propagateTimedOutDeviceCommand).not.toHaveBeenCalled();
+      expect(applyAutomationActionTerminal).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('404s for a command that is not on this device', async () => {
+      rig({ existing: undefined });
+
+      const res = await post();
+
+      expect(res.status).toBe(404);
+      expect(txUpdate).not.toHaveBeenCalled();
+    });
+
+    it('403s when the caller cannot access the device site', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockReset().mockResolvedValueOnce({
+        id: DEVICE_ID,
+        orgId: 'org-123',
+        siteId: 'site-denied',
+        hostname: 'host-a',
+        status: 'online',
+      } as never);
+      rig({ existing: { id: COMMAND_ID, type: 'install_patches', payload: {}, status: 'sent', executedAt: stale() } });
+
+      const res = await post({ 'x-site-restricted': 'true' });
+
+      expect(res.status).toBe(403);
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 

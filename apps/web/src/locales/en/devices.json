@@ -3420,7 +3420,15 @@
     "cancelled": "Queued action cancelled",
     "cancelFailed": "Failed to cancel queued action",
     "loadFailed": "Couldn't load queued actions.",
-    "empty": "No queued actions"
+    "empty": "No queued actions",
+    "powerHold": {
+      "title": "{{action}} is waiting for a running command",
+      "body": "{{action}} goes out once the device finishes the commands it is running. {{command}} has been running for {{minutes}} min with no result.",
+      "markFailed": "Mark failed",
+      "markFailedIn": "You can mark it failed in {{minutes}} min.",
+      "markedFailed": "Command marked failed",
+      "markFailedFailed": "Failed to mark the command failed"
+    }
   },
   "savedViewsMenu": {
     "applyTitle": "Apply \"{{name}}\"",

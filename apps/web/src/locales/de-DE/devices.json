@@ -3696,7 +3696,15 @@
     "cancelled": "Aktion in der Warteschlange abgebrochen",
     "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
     "loadFailed": "Warteschlangenaktionen konnten nicht geladen werden.",
-    "empty": "Keine ausstehenden Aktionen"
+    "empty": "Keine ausstehenden Aktionen",
+    "powerHold": {
+      "title": "{{action}} wartet auf einen laufenden Befehl",
+      "body": "{{action}} wird gesendet, sobald das Gerät seine laufenden Befehle abgeschlossen hat. {{command}} läuft seit {{minutes}} Min. ohne Ergebnis.",
+      "markFailed": "Als fehlgeschlagen markieren",
+      "markFailedIn": "Sie können ihn in {{minutes}} Min. als fehlgeschlagen markieren.",
+      "markedFailed": "Befehl als fehlgeschlagen markiert",
+      "markFailedFailed": "Befehl konnte nicht als fehlgeschlagen markiert werden"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Manuellen Asset hinzufügen",

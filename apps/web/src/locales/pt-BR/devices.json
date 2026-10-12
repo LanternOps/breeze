@@ -3696,7 +3696,15 @@
     "cancelled": "Ação na fila cancelada",
     "cancelFailed": "Falha ao cancelar a ação na fila",
     "loadFailed": "Não foi possível carregar as ações na fila.",
-    "empty": "Nenhuma ação na fila"
+    "empty": "Nenhuma ação na fila",
+    "powerHold": {
+      "title": "{{action}} está aguardando um comando em execução",
+      "body": "{{action}} será enviado quando o dispositivo concluir os comandos em execução. {{command}} está em execução há {{minutes}} min sem resultado.",
+      "markFailed": "Marcar como falha",
+      "markFailedIn": "Você poderá marcá-lo como falha em {{minutes}} min.",
+      "markedFailed": "Comando marcado como falha",
+      "markFailedFailed": "Não foi possível marcar o comando como falha"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Adicionar ativo manual",

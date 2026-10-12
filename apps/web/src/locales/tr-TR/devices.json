@@ -3696,7 +3696,15 @@
     "cancelled": "Sıradaki eylem iptal edildi",
     "cancelFailed": "Sıradaki eylem iptal edilemedi",
     "loadFailed": "Sıradaki eylemler yüklenemedi.",
-    "empty": "Sıraya alınmış eylem yok"
+    "empty": "Sıraya alınmış eylem yok",
+    "powerHold": {
+      "title": "{{action}} çalışan bir komutu bekliyor",
+      "body": "{{action}}, cihaz çalışan komutlarını bitirdiğinde gönderilir. {{command}} {{minutes}} dakikadır sonuç vermeden çalışıyor.",
+      "markFailed": "Başarısız olarak işaretle",
+      "markFailedIn": "{{minutes}} dakika sonra başarısız olarak işaretleyebilirsiniz.",
+      "markedFailed": "Komut başarısız olarak işaretlendi",
+      "markFailedFailed": "Komut başarısız olarak işaretlenemedi"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Manuel varlık ekle",

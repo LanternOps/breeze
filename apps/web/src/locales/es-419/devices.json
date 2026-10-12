@@ -3696,7 +3696,15 @@
     "cancelled": "Acción en cola cancelada",
     "cancelFailed": "No se pudo cancelar la acción en cola",
     "loadFailed": "No se pudieron cargar las acciones en cola.",
-    "empty": "No hay acciones en cola"
+    "empty": "No hay acciones en cola",
+    "powerHold": {
+      "title": "{{action}} está esperando un comando en ejecución",
+      "body": "{{action}} se enviará cuando el dispositivo termine los comandos en ejecución. {{command}} lleva {{minutes}} min en ejecución sin resultado.",
+      "markFailed": "Marcar como fallido",
+      "markFailedIn": "Podrás marcarlo como fallido en {{minutes}} min.",
+      "markedFailed": "Comando marcado como fallido",
+      "markFailedFailed": "No se pudo marcar el comando como fallido"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Agregar activo manual",

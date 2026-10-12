@@ -3696,7 +3696,15 @@
     "cancelled": "Azione in coda annullata",
     "cancelFailed": "Impossibile annullare l'azione in coda",
     "loadFailed": "Impossibile caricare le azioni in coda.",
-    "empty": "Nessuna azione in coda"
+    "empty": "Nessuna azione in coda",
+    "powerHold": {
+      "title": "{{action}} è in attesa di un comando in esecuzione",
+      "body": "{{action}} verrà inviato quando il dispositivo avrà terminato i comandi in esecuzione. {{command}} è in esecuzione da {{minutes}} min senza risultato.",
+      "markFailed": "Segna come non riuscito",
+      "markFailedIn": "Potrai segnarlo come non riuscito tra {{minutes}} min.",
+      "markedFailed": "Comando segnato come non riuscito",
+      "markFailedFailed": "Impossibile segnare il comando come non riuscito"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Aggiungi risorsa manuale",

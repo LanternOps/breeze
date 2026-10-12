@@ -3696,7 +3696,15 @@
     "cancelled": "Action en file d'attente annulée",
     "cancelFailed": "Échec de l'annulation de l'action en file d'attente",
     "loadFailed": "Impossible de charger les actions en file d'attente.",
-    "empty": "Aucune action en file d'attente"
+    "empty": "Aucune action en file d'attente",
+    "powerHold": {
+      "title": "{{action}} attend la fin d’une commande en cours",
+      "body": "{{action}} sera envoyé une fois que l’appareil aura terminé ses commandes en cours. {{command}} est en cours depuis {{minutes}} min sans résultat.",
+      "markFailed": "Marquer en échec",
+      "markFailedIn": "Vous pourrez la marquer en échec dans {{minutes}} min.",
+      "markedFailed": "Commande marquée en échec",
+      "markFailedFailed": "Impossible de marquer la commande en échec"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Ajouter un actif manuel",
