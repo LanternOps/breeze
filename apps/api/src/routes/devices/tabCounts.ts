@@ -15,6 +15,7 @@ import { authMiddleware, requirePermission, requireScope } from '../../middlewar
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { alertTopologySiteGate } from '../alerts/helpers';
+import { filterToActiveWatches, loadActiveWatchKeys } from '../../services/monitoringActiveWatches';
 
 /**
  * GET /devices/:id/tab-counts — one "needs attention" count per signal tab on
@@ -131,7 +132,9 @@ tabCountsRoutes.get(
     // Defensive dedupe — DISTINCT ON already guarantees one row per watch.
     const seen = new Set<string>();
     let monitoringCount = 0;
-    for (const r of monitoringRows) {
+    // #8287: results for watches removed from the policy are not "needs attention".
+    const activeMonitoringRows = filterToActiveWatches(monitoringRows, await loadActiveWatchKeys(deviceId));
+    for (const r of activeMonitoringRows) {
       const key = `${r.watchType}:${r.name}`;
       if (seen.has(key)) continue;
       seen.add(key);
