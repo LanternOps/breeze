@@ -123,6 +123,11 @@ func (s *Session) onViewerChannelClosed(label string, ch any) {
 		return
 	}
 	s.onViewerDataChannelClosed(label)
+	if label == "input-r" {
+		if si := s.safeInput(); si != nil {
+			si.LeaveSequencedMode()
+		}
+	}
 }
 
 // wireInputEpochHooks tells the viewer about agent-side resets. onReset runs on

@@ -7,7 +7,8 @@ package desktop
 //
 // The protocol in brief:
 //   - Events with Seq == 0 are legacy and behave exactly as before W2b, until
-//     the session's first accepted input_reset. After that they are dropped.
+//     the session's first accepted input_reset. After that they are dropped,
+//     until input-r closes (LeaveSequencedMode): the viewer then falls back.
 //   - A sequenced stream opens with input_reset{epoch}. Sequenced input before
 //     it is dropped (awaitingReset).
 //   - Every agent-side reset bumps resetEpoch and closes the gate again, so a

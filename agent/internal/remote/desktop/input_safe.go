@@ -471,6 +471,17 @@ func (s *SafeInput) ReleaseAll(reason string) { s.reset(reason, false, true) }
 // monitor and desktop switches call it before the display offset changes.
 func (s *SafeInput) ResetGeometry(reason string) { s.reset(reason, true, true) }
 
+// LeaveSequencedMode returns the session to legacy input after its input-r
+// closed: the viewer falls back to seq-less events on input. Call it after the
+// close's ReleaseAll. No sequenced discrete event can arrive any more (only
+// input-r carries them), so legacy input cannot bypass the barrier. A viewer
+// that reopens input-r re-enters sequenced mode with its input_reset.
+func (s *SafeInput) LeaveSequencedMode() {
+	s.orderMu.Lock()
+	s.order.v2 = false
+	s.orderMu.Unlock()
+}
+
 func (s *SafeInput) reset(reason string, geometry, announce bool) {
 	s.orderMu.Lock()
 	s.order.agentReset(geometry)

@@ -1548,7 +1548,9 @@ Old viewers that use none of this keep the W2a behaviour unchanged.
 `{"type":"input_reset","seq":N,"epoch":E}`. Both fields are required and non-zero. `E` must equal
 the agent's current reset epoch. On acceptance the agent releases all held input, in order, and
 opens the gate. Sequenced input is dropped until then. The first accepted `input_reset` switches
-the session to W2b: legacy (`seq`-less) events are dropped from then on.
+the session to W2b: legacy (`seq`-less) events are dropped until `input-r` closes. After that
+close, the agent releases held input and accepts legacy events again, so the viewer can fall back to
+W2a on `input`. Reopening `input-r` plus a new `input_reset` re-enters W2b.
 
 **Agent-side resets.** Release-all events bump the reset epoch and close the gate. These include
 monitor/desktop switch, channel close or replacement, and peer disconnect. Queued and in-flight

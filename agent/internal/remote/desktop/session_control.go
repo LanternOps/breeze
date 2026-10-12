@@ -139,6 +139,12 @@ func (s *Session) handleInputMessageFrom(label string, data []byte) {
 	// login window without IOHIDSystem). The viewer is notified once via
 	// sendInputStatus(); no need to log per-event.
 	if !s.inputHandler.InputAvailable() {
+		// The event never reaches the worker, so keep the barrier moving.
+		if label == "input-r" && len(data) <= maxInputMessageBytes {
+			var ev InputEvent
+			_ = json.Unmarshal(data, &ev)
+			s.skipRejectedSeq(label, ev)
+		}
 		return
 	}
 
