@@ -120,6 +120,26 @@ describe('screenshot (W05, #8241)', () => {
   });
 });
 
+describe('per-device prefs (W05, #8241)', () => {
+  it('loads and saves by the deep link device id only, through the local store', () => {
+    expect(source).toMatch(/loadDevicePrefs\(store, params\.deviceId\)/);
+    expect(source.match(/rememberDevicePrefs\(\{/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(body('rememberDevicePrefs')).toMatch(/saveDevicePrefs\(store, params\.deviceId, patch\)/);
+  });
+
+  it('remembers remap, scaling and audio when the operator changes them', () => {
+    expect(source).toMatch(/rememberDevicePrefs\(\{ remapCmdCtrl: v \}\)/);
+    expect(body('handleViewScalingChange')).toMatch(/rememberDevicePrefs\(\{ viewScaling: mode \}\)/);
+    expect(body('handleToggleAudio')).toMatch(/rememberDevicePrefs\(\{ audio: newEnabled \}\)/);
+  });
+
+  it('restores audio through the same path as the toggle, once a track and the control channel exist', () => {
+    const restore = source.slice(source.indexOf('pendingAudioRestoreRef.current = false;') - 400, source.indexOf('pendingAudioRestoreRef.current = false;') + 200);
+    expect(restore).toMatch(/hasAudioTrack/);
+    expect(restore).toMatch(/handleToggleAudio\(\)/);
+  });
+});
+
 describe('keyboard lock (W05, #8241)', () => {
   it('locks only under the shared condition and releases on unmount', () => {
     expect(source).toMatch(/createKeyboardLockController\(getKeyboardLockApi\(\)\)/);

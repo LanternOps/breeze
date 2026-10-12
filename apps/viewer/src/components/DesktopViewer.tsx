@@ -64,6 +64,7 @@ import {
 import { mediaClassName, scrollerClassName, type ViewScaling } from '../lib/displayScaling';
 import type { StatsSample } from '../lib/statsReporter';
 import { statsOverlayRows } from '../lib/statsOverlay';
+import { getTauriPrefsStore, loadDevicePrefs, saveDevicePrefs, type DevicePrefs } from '../lib/devicePrefs';
 import { captureFramePng, screenshotFailureMessage } from '../lib/screenshot';
 import {
   createKeyboardLockController,
@@ -387,6 +388,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const statsOverlayRef = useRef(false);
   const [statsSample, setStatsSample] = useState<StatsSample | null>(null);
   const keyboardLockRef = useRef<KeyboardLockController | null>(null);
+  // Remembered audio is turned back on once the session has a track (#8241).
+  const pendingAudioRestoreRef = useRef(false);
   if (!keyboardLockRef.current) keyboardLockRef.current = createKeyboardLockController(getKeyboardLockApi());
 
   const setTransportState = useCallback((t: Transport | null) => {
@@ -2397,9 +2400,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, [sessions, activeSessionId, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
 
+  // Per-device prefs (#8241): local only, keyed by the deep link's device id.
+  const rememberDevicePrefs = useCallback((patch: DevicePrefs) => {
+    void getTauriPrefsStore().then((store) => saveDevicePrefs(store, params.deviceId, patch));
+  }, [params.deviceId]);
+
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
     setAudioEnabled(newEnabled);
+    rememberDevicePrefs({ audio: newEnabled });
     // Mute/unmute the audio element
     const audioEl = audioElRef.current;
     if (audioEl) {
@@ -2414,7 +2423,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ch && ch.readyState === 'open') {
       ch.send(JSON.stringify({ type: 'toggle_audio', value: newEnabled ? 1 : 0 }));
     }
-  }, [audioEnabled]);
+  }, [audioEnabled, rememberDevicePrefs]);
 
   const handleSendKeys = useCallback((key: string, modifiers: string[]) => {
     if (viewOnlyRef.current) return;
@@ -2520,11 +2529,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, [captureScreenshot]);
 
-  const handleViewScalingChange = useCallback((mode: ViewScaling) => {
+  const applyViewScaling = useCallback((mode: ViewScaling) => {
     viewScalingRef.current = mode;
     setViewScaling(mode);
     vncSessionRef.current?.setScaling(mode);
   }, []);
+
+  const handleViewScalingChange = useCallback((mode: ViewScaling) => {
+    applyViewScaling(mode);
+    rememberDevicePrefs({ viewScaling: mode });
+  }, [applyViewScaling, rememberDevicePrefs]);
+
+  // Restore what was remembered for this device. Defaults stand when nothing
+  // was, or when the store cannot be read.
+  useEffect(() => {
+    let cancelled = false;
+    void getTauriPrefsStore().then(async (store) => {
+      const prefs = await loadDevicePrefs(store, params.deviceId);
+      if (cancelled) return;
+      if (prefs.remapCmdCtrl !== undefined) {
+        // Anything held went down under the old mapping.
+        releaseAllKeysRef.current();
+        setRemapOverride(prefs.remapCmdCtrl);
+      }
+      if (prefs.viewScaling) applyViewScaling(prefs.viewScaling);
+      if (prefs.audio) pendingAudioRestoreRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, [params.deviceId, applyViewScaling]);
+
+  // Audio goes back on through the toggle itself, so the agent is told and
+  // a refused play() resets the button, exactly as for a click.
+  useEffect(() => {
+    if (!pendingAudioRestoreRef.current) return;
+    if (!hasAudioTrack || status !== 'connected' || audioEnabled) return;
+    pendingAudioRestoreRef.current = false;
+    handleToggleAudio();
+  }, [hasAudioTrack, status, audioEnabled, handleToggleAudio]);
 
   // Block local input (#966): the toolbar shows what the agent replies, never
   // what was asked for.
@@ -2636,6 +2677,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           // would no longer match.
           releaseAllKeys();
           setRemapOverride(v);
+          rememberDevicePrefs({ remapCmdCtrl: v });
         }}
         onReleaseAllKeys={releaseAllKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
