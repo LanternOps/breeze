@@ -219,6 +219,32 @@ describe('asset_physical_placements behaviour (#8359)', () => {
       expect(audit[0]!.details).toMatchObject({ deviceId, discarded: A, kept: B });
     });
 
+    runDb('device_wins writes NO audit row when the surrounding transaction rolls back', async () => {
+      const t = await seedTenant();
+      const { id: deviceId } = await createDevice(t);
+      const assetId = await seedAsset(t.orgId, t.siteId);
+      await asSystem(async () => {
+        await savePlacement(assetSubject(t, assetId), A);
+        await savePlacement(deviceSubject(t, deviceId), B);
+      });
+      // Outermost transaction rolls back (a savepoint rollback inside a
+      // committing transaction would not drop deferred work — see
+      // runAfterDbContextCommit's caveat).
+      await expect(
+        asSystem(async () => {
+          await reconcilePlacementOnLink({ discoveredAssetId: assetId, deviceId, mode: 'automatic' });
+          throw new Error('rollback after reconcile');
+        }),
+      ).rejects.toThrow('rollback after reconcile');
+      await new Promise((r) => setTimeout(r, 500));
+      const rows = await getTestDb().execute(
+        sql`SELECT 1 FROM audit_logs WHERE action = 'asset.placement.device_wins' AND resource_id = ${assetId}`,
+      );
+      expect(rows).toHaveLength(0);
+      // The discard rolled back with it.
+      expect(await rowCount('discovered_asset_id', assetId)).toBe(1);
+    });
+
     runDb('a lost unique-index race on the move surfaces as PlacementConcurrentUpdateError and rolls back', async () => {
       const t = await seedTenant();
       const { id: deviceId } = await createDevice(t);

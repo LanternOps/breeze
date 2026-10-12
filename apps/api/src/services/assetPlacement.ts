@@ -14,7 +14,7 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { assetPhysicalPlacements, devices, discoveredAssets } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { createAuditLogAsync } from './auditService';
@@ -279,7 +279,9 @@ export async function reconcilePlacementOnLink(args: {
         .set({ deviceId: args.deviceId, discoveredAssetId: null, updatedAt: new Date() })
         .where(eq(assetPhysicalPlacements.id, discovered.id));
     } catch (err) {
-      // A device placement committed between loadPair and this write.
+      // A device placement committed between loadPair and this write. The 23505
+      // aborts the executor's transaction: callers must let it unwind (roll back
+      // the savepoint) and not keep using it.
       if (isPlacementUniqueViolation(err)) throw new PlacementConcurrentUpdateError();
       throw err;
     }
@@ -295,10 +297,12 @@ export async function reconcilePlacementOnLink(args: {
 
   await ex.delete(assetPhysicalPlacements).where(eq(assetPhysicalPlacements.id, discovered.id));
   // The discovered asset's differing values are discarded; leave a trail.
-  // Fire-and-forget on its own connection (never throws, never aborts the link).
-  void createAuditLogAsync({
+  // Deferred until the outermost transaction COMMITS, so a rolled-back link
+  // never leaves an audit row claiming a discard that did not happen. The
+  // write itself is fire-and-forget on its own connection (never throws).
+  const auditEntry = {
     orgId: discovered.orgId,
-    actorType: 'system',
+    actorType: 'system' as const,
     actorId: ANONYMOUS_ACTOR_ID,
     action: 'asset.placement.device_wins',
     resourceType: 'discovered_asset',
@@ -309,8 +313,9 @@ export async function reconcilePlacementOnLink(args: {
       discarded: toFields(discovered),
       kept: toFields(device),
     },
-    result: 'success',
-  });
+    result: 'success' as const,
+  };
+  runAfterDbContextCommit('assetPlacement.deviceWinsAudit', () => createAuditLogAsync(auditEntry));
   return 'device_wins';
 }
 

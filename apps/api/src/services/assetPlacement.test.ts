@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../db', () => ({ db: {} }));
+vi.mock('../db', () => ({
+  db: {},
+  // No ambient transaction in unit tests: commit-deferred work runs at once.
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { void work(); },
+}));
 
 const auditMock = vi.hoisted(() => ({ createAuditLogAsync: vi.fn(async () => undefined) }));
 vi.mock('./auditService', () => auditMock);
