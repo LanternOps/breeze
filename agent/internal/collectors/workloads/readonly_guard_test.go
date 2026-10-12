@@ -59,12 +59,24 @@ func packageSources(t *testing.T) map[string]string {
 	return out
 }
 
+// forbiddenTokensIn returns the forbidden tokens src contains. The os/exec
+// import path is removed first: it is not a mutation, and whether a file may
+// import it is decided by execAllowedFiles below.
+func forbiddenTokensIn(src string) []string {
+	src = strings.ReplaceAll(src, `"os/exec"`, "")
+	var hits []string
+	for _, tok := range forbiddenTokens {
+		if strings.Contains(src, tok) {
+			hits = append(hits, tok)
+		}
+	}
+	return hits
+}
+
 func TestPackageSourceHasNoMutatingVerbsOrPaths(t *testing.T) {
 	for name, src := range packageSources(t) {
-		for _, tok := range forbiddenTokens {
-			if strings.Contains(src, tok) {
-				t.Errorf("%s contains forbidden mutating token %q", name, tok)
-			}
+		for _, tok := range forbiddenTokensIn(src) {
+			t.Errorf("%s contains forbidden mutating token %q", name, tok)
 		}
 	}
 }
@@ -104,5 +116,17 @@ func TestGuardDetectsAPlantedMutation(t *testing.T) {
 	}
 	if hits < 2 {
 		t.Fatalf("planted mutation matched %d forbidden tokens, want at least 2", hits)
+	}
+}
+
+// The "/exec" path token must catch the engine's exec endpoint but not the
+// os/exec import, which TestOnlyAllowlistedFilesImportOSExec governs on its
+// own; otherwise a runner file added to execAllowedFiles could never pass.
+func TestForbiddenTokenScanIgnoresTheOSExecImport(t *testing.T) {
+	if hits := forbiddenTokensIn("import (\n\t\"os/exec\"\n)\n"); len(hits) != 0 {
+		t.Fatalf("os/exec import matched %v", hits)
+	}
+	if hits := forbiddenTokensIn(`"/containers/abc/exec"`); len(hits) == 0 {
+		t.Fatal("the engine exec endpoint was not caught")
 	}
 }
