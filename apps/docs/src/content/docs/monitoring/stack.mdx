@@ -229,6 +229,29 @@ Two things to know before writing alert rules against these:
   stalled right now"; the window max stays elevated for the retention window, so
   a `max_over_time` on it counts one stall many times.
 
+### Admission Metrics
+
+Agent admission control (see [Agent admission control](/deploy/environment/#agent-admission-control))
+publishes its state and every refusal.
+
+| Metric | Type | Description |
+|---|---|---|
+| `breeze_admission_mode{mode}` | Gauge | `1` for the active mode (`off`, `observe`, `enforce`) |
+| `breeze_admission_level` | Gauge | `0` normal, `1` inventory-type uploads refused, `2` status uploads refused too, `3` critical |
+| `breeze_admission_decisions_total{class,route,outcome,reason}` | Counter | Requests refused (`outcome="shed"`), or that would have been in `observe` mode (`would_shed`). `reason` is `level`, `bulk_in_flight`, `ws_bucket` or `ws_setups` |
+| `breeze_admission_transitions_total{from,to,trigger}` | Counter | Level changes; `trigger` is `lag`, `db`, `db_timeout` or `emergency` |
+| `breeze_admission_signal_lag_seconds` | Gauge | Median event-loop lag the controller used (`-1` when the lag monitor is off) |
+| `breeze_admission_signal_db_wait_seconds` | Gauge | How long requests wait for a database connection (the pool's own series are `breeze_db_pool_admission_*`) |
+| `breeze_admission_db_saturation_responses_total{error}` | Counter | Requests answered `503` because the database pool (`pool_acquire_timeout`) or the RLS prologue (`prologue_timeout`) timed out |
+| `breeze_admission_ws_bucket_tokens` / `breeze_admission_ws_setups_in_flight` | Gauge | WebSocket pacing state |
+| `breeze_admission_bulk_in_flight` | Gauge | Inventory-type uploads being processed |
+| `breeze_admission_offline_deferred_total{event}` | Counter | WebSocket disconnects whose offline flip was left to the offline detector while under load |
+| `breeze_nodejs_eventloop_utilization` | Gauge | Event-loop utilization over the last second |
+
+Alert on `breeze_admission_level == 3` for 5 minutes: the instance is down to
+protected traffic and needs capacity. In `observe` mode, compare
+`would_shed` against incidents before switching to `enforce`.
+
 ## Log Aggregation with Loki
 
 Promtail scrapes Docker container logs and ships them to Loki. Loki stores logs for 14 days by default (configurable via `retention_period` in `monitoring/loki-config.yml`).
