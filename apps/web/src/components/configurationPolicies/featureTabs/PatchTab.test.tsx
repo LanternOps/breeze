@@ -527,6 +527,33 @@ describe('PatchTab', () => {
       await waitFor(() => expect(saveMock).toHaveBeenCalled());
     });
 
+    it('shows the prompt error once, inline, when the fields are visible', async () => {
+      render(<PatchTab {...baseProps} />);
+      fireEvent.change(await screen.findByTestId('patch-reboot-prompt-title'), { target: { value: '<b>x</b>' } });
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      expect(await screen.findByTestId('patch-reboot-prompt-error')).toBeInTheDocument();
+      expect(screen.getAllByText(/must be plain text/i)).toHaveLength(1);
+    });
+
+    it('still blocks a save with invalid hidden text under the never policy, via the banner', async () => {
+      render(
+        <PatchTab
+          {...baseProps}
+          existingLink={{
+            id: 'link-1',
+            featureType: 'patch',
+            featurePolicyId: null,
+            inlineSettings: { sources: ['os'], rebootPolicy: 'never', rebootPromptTitle: '<b>x</b>' },
+          }}
+        />
+      );
+      await screen.findByText('Approval Ring');
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      expect(await screen.findByText(/must be plain text/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('patch-reboot-prompt-error')).toBeNull();
+      expect(saveMock).not.toHaveBeenCalled();
+    });
+
     it('hides the prompt-text fields when the reboot policy is never', async () => {
       render(
         <PatchTab

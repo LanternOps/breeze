@@ -1,4 +1,4 @@
--- 2026-12-21-233000: custom restart-prompt text per patch policy (#8030).
+-- 2026-12-22-110000: custom restart-prompt text per patch policy (#8030).
 --
 -- Adds optional title / body / button text for the end-user restart prompt to
 -- config_policy_patch_settings, alongside the #3197 delay and #3207 deferral

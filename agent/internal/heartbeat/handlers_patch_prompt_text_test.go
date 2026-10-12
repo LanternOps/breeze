@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -85,18 +86,38 @@ func TestScheduleRebootDropsInvalidPromptTextButStillSchedules(t *testing.T) {
 	if got[0] != "Restart Scheduled" || got[1] != "Body 15 minutes" {
 		t.Errorf("lead notice = %q / %q", got[0], got[1])
 	}
+	// The drop is reported on the command result, not only in the agent log.
+	result := scheduleRebootResultMap(t, res.Stdout)
+	ignored, _ := result["promptTextIgnored"].([]any)
+	if fmt.Sprint(ignored) != "[button title]" {
+		t.Errorf("promptTextIgnored = %v, want [button title]", result["promptTextIgnored"])
+	}
+}
+
+func TestScheduleRebootResultOmitsPromptTextIgnoredWhenNothingWasDropped(t *testing.T) {
+	h, _ := newTestHeartbeatCapturingNotices(t)
+	res := handleScheduleReboot(h, Command{Payload: map[string]any{
+		"delayMinutes": float64(15), "promptTitle": "Neustart",
+	}})
+	if _, present := scheduleRebootResultMap(t, res.Stdout)["promptTextIgnored"]; present {
+		t.Error("promptTextIgnored present on a clean payload")
+	}
 }
 
 func TestRebootPromptTextFromPayload(t *testing.T) {
-	got := rebootPromptTextFromPayload(map[string]any{
+	got, ignored := rebootPromptTextFromPayload(map[string]any{
 		"promptTitle": " T ", "promptBody": "B", "promptButton": "Btn",
 	})
-	if got != (patching.RebootPromptText{Title: "T", Body: "B", Button: "Btn"}) {
-		t.Errorf("got %+v", got)
+	if got != (patching.RebootPromptText{Title: "T", Body: "B", Button: "Btn"}) || len(ignored) != 0 {
+		t.Errorf("got %+v, ignored %v", got, ignored)
 	}
-	if got := rebootPromptTextFromPayload(map[string]any{
+	got, ignored = rebootPromptTextFromPayload(map[string]any{
 		"promptTitle": true, "promptBody": []any{"x"}, "promptButton": strings.Repeat("a", 41),
-	}); got != (patching.RebootPromptText{}) {
+	})
+	if got != (patching.RebootPromptText{}) {
 		t.Errorf("non-string / over-length fields survived: %+v", got)
+	}
+	if fmt.Sprint(ignored) != "[title body button]" {
+		t.Errorf("ignored = %v", ignored)
 	}
 }

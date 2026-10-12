@@ -761,10 +761,11 @@ export function mergeRingAutoApproveWrite(
   };
 }
 
-// #8030: restart-prompt text limits. Mirrored by the DB CHECKs on
-// config_policy_patch_settings and by the agent's schedule_reboot payload
-// validation (agent/internal/heartbeat/handlers_patch.go), which rejects rather
-// than truncates anything longer.
+// #8030: restart-prompt text limits. Mirrored by the varchar(n) lengths on
+// config_policy_patch_settings (lengths only — the content rules below are not
+// DB-enforced, which is why the API load and dispatch paths re-validate per
+// field) and by the agent's SanitizeRebootPromptText, which drops (never
+// truncates) a field that fails and falls back to the built-in text.
 export const REBOOT_PROMPT_TITLE_MAX = 100;
 export const REBOOT_PROMPT_BODY_MAX = 500;
 export const REBOOT_PROMPT_BUTTON_MAX = 40;

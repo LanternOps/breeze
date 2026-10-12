@@ -255,3 +255,61 @@ func TestANewScheduleWithoutTextRevertsToBuiltIn(t *testing.T) {
 		t.Errorf("title = %q, want the built-in title", got.title)
 	}
 }
+
+// TestCountdownIsFilledInTitleAndButton: the placeholder is accepted in every
+// field, so it must be substituted in every field.
+func TestCountdownIsFilledInTitleAndButton(t *testing.T) {
+	n := RebootNotification{Title: "Restart Soon", Body: "built-in", Countdown: 5 * time.Minute}
+	title, _ := applyRebootPromptText(n, RebootPromptText{Title: "Neustart in {{countdown}}"})
+	if title != "Neustart in 5 minutes" {
+		t.Errorf("title = %q", title)
+	}
+	if got := rebootActionRestartNowLabel(n, RebootPromptText{Button: "Jetzt ({{countdown}})"}); got != "Jetzt (5 minutes)" {
+		t.Errorf("button = %q", got)
+	}
+	if got := rebootActionRestartNowLabel(n, RebootPromptText{}); got != RebootActionRestartNow {
+		t.Errorf("default button = %q", got)
+	}
+}
+
+// TestCustomButtonEqualToPostponeFallsBackAndPostponeStillDefers: a custom
+// label identical to the postponement label must not turn a Postpone click
+// into Restart now.
+func TestCustomButtonEqualToPostponeFallsBackAndPostponeStillDefers(t *testing.T) {
+	postpone := rebootActionPostpone(time.Hour)
+	rm, timers, _, _, clock, prompts := newPromptTestManager(t, 3, postpone)
+	opts := allowDeferral(2, 60)
+	opts.Prompt = RebootPromptText{Button: postpone}
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job", opts); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	if len(*prompts) != 1 {
+		t.Fatalf("prompts = %d, want 1", len(*prompts))
+	}
+	if got := (*prompts)[0].actions[0]; got != RebootActionRestartNow {
+		t.Errorf("actions[0] = %q, want the built-in label when the custom one collides", got)
+	}
+	if st := rm.State(); st.DeferralsUsed != 1 || st.ScheduledAt.Sub(clock.now()) != 75*time.Minute {
+		t.Errorf("Postpone click was not honoured as a postponement: used=%d, ScheduledAt %v out",
+			st.DeferralsUsed, st.ScheduledAt.Sub(clock.now()))
+	}
+}
+
+// TestPerRungCountdownButtonIsHonoured: a button carrying {{countdown}} has a
+// different label on each rung; a click on the label actually shown counts.
+func TestPerRungCountdownButtonIsHonoured(t *testing.T) {
+	rm, timers, _, _, clock, prompts := newPromptTestManager(t, 3, "Jetzt (1 hour)")
+	opts := allowDeferral(2, 60)
+	opts.Prompt = RebootPromptText{Button: "Jetzt ({{countdown}})"}
+	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job", opts); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	if got := (*prompts)[0].actions[0]; got != "Jetzt (1 hour)" {
+		t.Fatalf("actions[0] = %q", got)
+	}
+	if st := rm.State(); st.ScheduledAt.Sub(clock.now()) != MinRebootDelay {
+		t.Errorf("Restart now not honoured: ScheduledAt %v out", st.ScheduledAt.Sub(clock.now()))
+	}
+}

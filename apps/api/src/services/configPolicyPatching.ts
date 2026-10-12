@@ -1,6 +1,6 @@
 import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
-import { patchInlineSettingsSchema, policyAppRuleSchema } from '@breeze/shared/validators';
+import { patchInlineSettingsSchema, policyAppRuleSchema, rebootPromptTextSchemas } from '@breeze/shared/validators';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
 import { captureException } from './sentry';
@@ -121,6 +121,36 @@ export interface PatchInventorySummary {
 function coerceCategoryList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
+/**
+ * #8030: the restart-prompt text columns are cosmetic, so an invalid stored
+ * value (a hand-edited row, a future unvalidated write) must not make the
+ * strict parse below throw and take the whole policy's patching down with it.
+ * Each field is re-validated on its own; a failing one is nulled (the agent
+ * then shows its built-in text) and reported. Mirrors rebootPromptTextFrom on
+ * the dispatch path.
+ */
+export function salvageRebootPromptColumns(
+  columns: { rebootPromptTitle: unknown; rebootPromptBody: unknown; rebootPromptButton: unknown },
+  featureLinkId: string,
+): { rebootPromptTitle: string | null; rebootPromptBody: string | null; rebootPromptButton: string | null } {
+  const salvage = (field: 'title' | 'body' | 'button', column: string, value: unknown): string | null => {
+    const parsed = rebootPromptTextSchemas[field].safeParse(value);
+    if (parsed.success) return parsed.data;
+    console.warn(
+      `[configPolicyPatching] feature link ${featureLinkId} has an invalid stored ${column}; ignoring it`,
+    );
+    captureException(
+      new Error(`Invalid config_policy_patch_settings.${column} for feature link ${featureLinkId}; ignored`),
+    );
+    return null;
+  };
+  return {
+    rebootPromptTitle: salvage('title', 'reboot_prompt_title', columns.rebootPromptTitle),
+    rebootPromptBody: salvage('body', 'reboot_prompt_body', columns.rebootPromptBody),
+    rebootPromptButton: salvage('button', 'reboot_prompt_button', columns.rebootPromptButton),
+  };
 }
 
 export function normalizePatchInlineSettings(settings: unknown): PatchInlineSettings {
@@ -361,9 +391,7 @@ export async function loadPolicyLocalPatchConfig(
         rebootAllowDeferral: row.patchSettings.rebootAllowDeferral,
         rebootMaxDeferrals: row.patchSettings.rebootMaxDeferrals,
         rebootDeferralMinutes: row.patchSettings.rebootDeferralMinutes,
-        rebootPromptTitle: row.patchSettings.rebootPromptTitle,
-        rebootPromptBody: row.patchSettings.rebootPromptBody,
-        rebootPromptButton: row.patchSettings.rebootPromptButton,
+        ...salvageRebootPromptColumns(row.patchSettings, row.featureLinkId),
         exclusiveWindowsUpdate: row.patchSettings.exclusiveWindowsUpdate,
       })
     : storedInline;

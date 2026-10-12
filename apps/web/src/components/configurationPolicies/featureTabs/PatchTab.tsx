@@ -312,26 +312,26 @@ export default function PatchTab({
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
   // Client-side mirror of the server-side Zod checks so users get inline
   // feedback instead of a round-trip rejection.
+  // #8030: same schema the API applies, so plain-text / length / placeholder
+  // problems surface before the save rather than as a rejected one. Checked
+  // whatever the reboot policy: the fields are hidden under "never" but are
+  // still sent, and the server validates them either way.
+  const validatePromptText = (): string | null => {
+    const valid =
+      rebootPromptTextSchemas.title.safeParse(settings.rebootPromptTitle)
+        .success &&
+      rebootPromptTextSchemas.body.safeParse(settings.rebootPromptBody)
+        .success &&
+      rebootPromptTextSchemas.button.safeParse(settings.rebootPromptButton)
+        .success;
+    return valid
+      ? null
+      : i18n.t(
+          "policies:configurationPolicies.featureTabs.patchTab.rebootPromptInvalid",
+          { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
+        );
+  };
   const validateSettings = (): string | null => {
-    // #8030: same schema the API applies, so plain-text / length / placeholder
-    // problems surface inline instead of as a rejected save.
-    const promptInvalid =
-      settings.rebootPolicy !== "never" &&
-      (!rebootPromptTextSchemas.title.safeParse(settings.rebootPromptTitle)
-        .success ||
-        !rebootPromptTextSchemas.body.safeParse(settings.rebootPromptBody)
-          .success ||
-        !rebootPromptTextSchemas.button.safeParse(settings.rebootPromptButton)
-          .success);
-    if (promptInvalid) {
-      const message = i18n.t(
-        "policies:configurationPolicies.featureTabs.patchTab.rebootPromptInvalid",
-        { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
-      );
-      setPromptError(message);
-      return message;
-    }
-    setPromptError(undefined);
     if (
       settings.apps.some(
         (app) => app.action === "pin" && !app.pinnedVersion?.trim(),
@@ -341,11 +341,25 @@ export default function PatchTab({
     }
     return null;
   };
+  /**
+   * Every pre-save check. Returns the banner message, "" when the only problem
+   * is already shown inline next to the prompt-text fields (so it is not shown
+   * twice), or null when the save may proceed.
+   */
+  const validateBeforeSave = (): string | null => {
+    const promptMessage = validatePromptText();
+    const promptFieldsVisible = settings.rebootPolicy !== "never";
+    setPromptError(
+      promptMessage && promptFieldsVisible ? promptMessage : undefined,
+    );
+    if (promptMessage) return promptFieldsVisible ? "" : promptMessage;
+    return validateSettings();
+  };
   const handleSave = async () => {
     clearError();
-    const validation = validateSettings();
+    const validation = validateBeforeSave();
     setValidationError(validation ?? undefined);
-    if (validation) return;
+    if (validation !== null) return;
     const result = await save(existingLink?.id ?? null, {
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
@@ -378,9 +392,9 @@ export default function PatchTab({
   };
   const handleOverride = async () => {
     clearError();
-    const validation = validateSettings();
+    const validation = validateBeforeSave();
     setValidationError(validation ?? undefined);
-    if (validation) return;
+    if (validation !== null) return;
     const result = await save(null, {
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
