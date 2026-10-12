@@ -720,7 +720,9 @@
     "vaultType": "Kasa Tipi",
     "retentionCount": "Elde Tutma Sayısı",
     "numberOfSnapshotsToKeepInTheVault": "Kasada saklanacak anlık görüntü sayısı (1-100).",
-    "cancel": "İptal"
+    "cancel": "İptal",
+    "failedToSave": "Kasa kaydedilemedi. Lütfen tekrar deneyin.",
+    "deviceConfigNotSent": "Kasa kaydedildi, ancak yapılandırması cihaza gönderilemedi: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Kasalar yükleniyor...",
@@ -742,7 +744,12 @@
     "actions": "Eylemler",
     "sync": "Senkronizasyon",
     "edit": "Düzenle",
-    "deactivate": "Devre dışı bırak"
+    "deactivate": "Devre dışı bırak",
+    "inactive": "Pasif",
+    "syncStarted": "Kasa eşitlemesi başlatıldı",
+    "failedToSync": "Kasa eşitlemesi başlatılamadı. Lütfen tekrar deneyin.",
+    "failedToDeactivate": "Kasa devre dışı bırakılamadı. Lütfen tekrar deneyin.",
+    "deviceConfigNotSent": "Kasa kaydedildi, ancak yapılandırması cihaza gönderilemedi: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Olağanüstü durum kurtarma yükleniyor...",

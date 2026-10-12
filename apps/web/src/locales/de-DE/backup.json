@@ -720,7 +720,9 @@
     "vaultType": "Tresortyp",
     "retentionCount": "Aufbewahrungsanzahl",
     "numberOfSnapshotsToKeepInTheVault": "Anzahl der Snapshots, die im Tresor aufbewahrt werden sollen (1–100).",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "failedToSave": "Der Tresor konnte nicht gespeichert werden. Bitte erneut versuchen.",
+    "deviceConfigNotSent": "Tresor gespeichert, aber die Konfiguration konnte nicht an das Gerät gesendet werden: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Tresore werden geladen...",
@@ -742,7 +744,12 @@
     "actions": "Aktionen",
     "sync": "Synchronisieren",
     "edit": "Bearbeiten",
-    "deactivate": "Deaktivieren"
+    "deactivate": "Deaktivieren",
+    "inactive": "Inaktiv",
+    "syncStarted": "Tresor-Synchronisierung gestartet",
+    "failedToSync": "Die Tresor-Synchronisierung konnte nicht gestartet werden. Bitte erneut versuchen.",
+    "failedToDeactivate": "Der Tresor konnte nicht deaktiviert werden. Bitte erneut versuchen.",
+    "deviceConfigNotSent": "Tresor gespeichert, aber die Konfiguration konnte nicht an das Gerät gesendet werden: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Disaster Recovery wird geladen...",

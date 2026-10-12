@@ -33,6 +33,9 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // #8385: vault sync/deactivate/save mutations must surface failures (they were silently swallowed)
+  'src/components/backup/VaultDashboard.tsx',
+  'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
   'src/components/devices/DeviceSettingsModal.tsx', // device tags/name/site PATCH via runAction (success toast)
   'src/components/billing/PaymentsSettingsTab.tsx',
@@ -911,7 +914,8 @@ describe('no silent mutations in targeted set', () => {
     // Ticket-assignment Pushover adds settings/TicketPushoverSettings.tsx: 219 → 220.
     // Reliability baselines (#5876) add devices/ReliabilityBaseline{Dialog,Section}.tsx: 220 → 222.
     // DeviceSettingsModal.tsx (tag/name/site save moved to runAction) makes 223.
-    expect(absoluteFiles.length).toBe(223);
+    // #8385 adds backup/VaultDashboard.tsx and backup/VaultConfigDialog.tsx: 223 → 225.
+    expect(absoluteFiles.length).toBe(225);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

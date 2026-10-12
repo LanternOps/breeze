@@ -720,7 +720,9 @@
     "vaultType": "Type de voûte",
     "retentionCount": "Nombre de rétentions",
     "numberOfSnapshotsToKeepInTheVault": "Nombre d’instantanés à conserver dans le coffre (1 à 100).",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "failedToSave": "Impossible d'enregistrer le coffre. Veuillez réessayer.",
+    "deviceConfigNotSent": "Coffre enregistré, mais sa configuration n'a pas pu être envoyée à l'appareil : {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Chargement des coffres...",
@@ -742,7 +744,12 @@
     "actions": "Actions",
     "sync": "Synchroniser",
     "edit": "Modifier",
-    "deactivate": "Désactiver"
+    "deactivate": "Désactiver",
+    "inactive": "Inactif",
+    "syncStarted": "Synchronisation du coffre démarrée",
+    "failedToSync": "Impossible de démarrer la synchronisation du coffre. Veuillez réessayer.",
+    "failedToDeactivate": "Impossible de désactiver le coffre. Veuillez réessayer.",
+    "deviceConfigNotSent": "Coffre enregistré, mais sa configuration n'a pas pu être envoyée à l'appareil : {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Chargement de la récupération après sinistre...",

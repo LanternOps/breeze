@@ -720,7 +720,9 @@
     "vaultType": "Tipo vault",
     "retentionCount": "Conteggio conservazione",
     "numberOfSnapshotsToKeepInTheVault": "Numero di snapshot da conservare nel vault (1-100).",
-    "cancel": "Annulla"
+    "cancel": "Annulla",
+    "failedToSave": "Impossibile salvare il vault. Riprova.",
+    "deviceConfigNotSent": "Vault salvato, ma la sua configurazione non è stata inviata al dispositivo: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Caricamento vault...",
@@ -742,7 +744,12 @@
     "actions": "Azioni",
     "sync": "Sincronizza",
     "edit": "Modifica",
-    "deactivate": "Disattiva"
+    "deactivate": "Disattiva",
+    "inactive": "Inattivo",
+    "syncStarted": "Sincronizzazione del vault avviata",
+    "failedToSync": "Impossibile avviare la sincronizzazione del vault. Riprova.",
+    "failedToDeactivate": "Impossibile disattivare il vault. Riprova.",
+    "deviceConfigNotSent": "Vault salvato, ma la sua configurazione non è stata inviata al dispositivo: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Caricamento disaster recovery...",
