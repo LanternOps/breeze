@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
       "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
     },
+    "logShipping": {
+      "label": "Invio dei log",
+      "state": {
+        "healthy": "Regolare",
+        "quiet": "Inattivo",
+        "failing": "In errore"
+      },
+      "tooltip": {
+        "healthy": "L'agente sta inviando i propri log normalmente.",
+        "quiet": "L'agente non ha effettuato tentativi di invio recenti, quindi non c'è nulla da segnalare.",
+        "failing": "L'invio dei log non riesce dal {{since}}. Motivo: {{reason}}"
+      },
+      "reason": {
+        "http": "Il server ha restituito HTTP {{status}}",
+        "timeout": "La richiesta è scaduta",
+        "dns": "Impossibile risolvere il nome del server",
+        "connectionRefused": "La connessione è stata rifiutata",
+        "tls": "La connessione sicura non è riuscita",
+        "authRejected": "Il server ha rifiutato le credenziali dell'agente",
+        "urlUnresolved": "Impossibile determinare l'indirizzo del server",
+        "other": "Altro errore di invio",
+        "unspecified": "Non specificato"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossibile recuperare i dettagli del dispositivo",

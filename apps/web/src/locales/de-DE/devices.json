@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}}): Die Installation der angebotenen Version ist wiederholt fehlgeschlagen, daher hat der Agent weitere Versuche pausiert. Er versucht es nach einigen Stunden oder bei einer neueren Version erneut; der Installationsfehler steht im Agent-Log.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}})."
     },
+    "logShipping": {
+      "label": "Log-Übertragung",
+      "state": {
+        "healthy": "In Ordnung",
+        "quiet": "Ruhig",
+        "failing": "Fehlerhaft"
+      },
+      "tooltip": {
+        "healthy": "Der Agent überträgt seine Logs normal.",
+        "quiet": "Der Agent hat zuletzt keine Übertragungsversuche unternommen, daher gibt es nichts zu melden.",
+        "failing": "Log-Übertragungen schlagen seit {{since}} fehl. Grund: {{reason}}"
+      },
+      "reason": {
+        "http": "Der Server hat HTTP {{status}} zurückgegeben",
+        "timeout": "Zeitüberschreitung bei der Anfrage",
+        "dns": "Der Servername konnte nicht aufgelöst werden",
+        "connectionRefused": "Die Verbindung wurde abgelehnt",
+        "tls": "Die sichere Verbindung ist fehlgeschlagen",
+        "authRejected": "Der Server hat die Agent-Anmeldedaten abgelehnt",
+        "urlUnresolved": "Die Serveradresse konnte nicht ermittelt werden",
+        "other": "Anderer Übertragungsfehler",
+        "unspecified": "Nicht angegeben"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Gerätedetails konnten nicht abgerufen werden",

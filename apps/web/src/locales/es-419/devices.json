@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
       "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
     },
+    "logShipping": {
+      "label": "Envío de registros",
+      "state": {
+        "healthy": "Correcto",
+        "quiet": "Inactivo",
+        "failing": "Con fallas"
+      },
+      "tooltip": {
+        "healthy": "El agente está enviando sus registros con normalidad.",
+        "quiet": "El agente no ha hecho intentos de envío recientes, por lo que no hay nada que informar.",
+        "failing": "El envío de registros falla desde {{since}}. Motivo: {{reason}}"
+      },
+      "reason": {
+        "http": "El servidor devolvió HTTP {{status}}",
+        "timeout": "La solicitud agotó el tiempo de espera",
+        "dns": "No se pudo resolver el nombre del servidor",
+        "connectionRefused": "Se rechazó la conexión",
+        "tls": "Falló la conexión segura",
+        "authRejected": "El servidor rechazó las credenciales del agente",
+        "urlUnresolved": "No se pudo determinar la dirección del servidor",
+        "other": "Otro error de envío",
+        "unspecified": "Sin especificar"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "No se pudieron recuperar los detalles del dispositivo",

@@ -84,6 +84,12 @@ type DeviceInfo = {
   helperVersion?: string | null;
   helperInstallIssue?: string | null;
   helperInstallIssueSince?: string | null;
+  /** Derived read view from the API (#8608); absent until an agent reports. */
+  logShipping?: {
+    state: "healthy" | "quiet" | "failing" | "unknown";
+    failingSince: string | null;
+    lastError: string | null;
+  } | null;
   status?: string | null;
   lastSeenAt?: string | null;
   lastLogAt?: string | null;
@@ -227,6 +233,90 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between py-2">
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium text-right">{value || "—"}</dd>
+    </div>
+  );
+}
+
+const LOG_SHIPPING_CHIP_CLASS: Record<string, string> = {
+  healthy: "bg-success/10 text-success border-success/30",
+  quiet: "bg-muted/40 text-muted-foreground border-muted",
+  failing: "bg-warning/10 text-warning border-warning/40",
+};
+
+/**
+ * Log-shipping health (#8609). Renders nothing for `unknown`/absent so
+ * devices whose agent has not reported show no row. The reason is mapped from
+ * a closed vocabulary; payload text is never rendered verbatim.
+ */
+function LogShippingRow({ logShipping }: { logShipping: DeviceInfo["logShipping"] }) {
+  const { t } = useTranslation("devices");
+  const state = logShipping?.state;
+  if (state !== "healthy" && state !== "quiet" && state !== "failing") return null;
+
+  let tooltip: string;
+  if (state === "failing") {
+    const raw = logShipping?.lastError ?? "";
+    const httpStatus = /^http (\d{3})$/.exec(raw)?.[1];
+    let reason: string;
+    if (httpStatus) {
+      reason = t("deviceInfoTab.logShipping.reason.http", { status: httpStatus });
+    } else {
+      switch (raw) {
+        case "timeout":
+          reason = t("deviceInfoTab.logShipping.reason.timeout");
+          break;
+        case "dns":
+          reason = t("deviceInfoTab.logShipping.reason.dns");
+          break;
+        case "connection refused":
+          reason = t("deviceInfoTab.logShipping.reason.connectionRefused");
+          break;
+        case "tls":
+          reason = t("deviceInfoTab.logShipping.reason.tls");
+          break;
+        case "auth rejected":
+          reason = t("deviceInfoTab.logShipping.reason.authRejected");
+          break;
+        case "url unresolved":
+          reason = t("deviceInfoTab.logShipping.reason.urlUnresolved");
+          break;
+        case "other":
+          reason = t("deviceInfoTab.logShipping.reason.other");
+          break;
+        default:
+          reason = t("deviceInfoTab.logShipping.reason.unspecified");
+      }
+    }
+    const sinceDate = logShipping?.failingSince ? new Date(logShipping.failingSince) : null;
+    const since =
+      sinceDate && !Number.isNaN(sinceDate.getTime()) ? sinceDate.toLocaleDateString() : "—";
+    tooltip = t("deviceInfoTab.logShipping.tooltip.failing", { since, reason });
+  } else {
+    tooltip =
+      state === "healthy"
+        ? t("deviceInfoTab.logShipping.tooltip.healthy")
+        : t("deviceInfoTab.logShipping.tooltip.quiet");
+  }
+  const stateLabel =
+    state === "healthy"
+      ? t("deviceInfoTab.logShipping.state.healthy")
+      : state === "quiet"
+        ? t("deviceInfoTab.logShipping.state.quiet")
+        : t("deviceInfoTab.logShipping.state.failing");
+
+  return (
+    <div className="flex justify-between py-2">
+      <dt className="text-sm text-muted-foreground">{t("deviceInfoTab.logShipping.label")}</dt>
+      <dd>
+        <span
+          data-testid="log-shipping-health"
+          data-state={state}
+          title={tooltip}
+          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${LOG_SHIPPING_CHIP_CLASS[state]}`}
+        >
+          {stateLabel}
+        </span>
+      </dd>
     </div>
   );
 }
@@ -1161,6 +1251,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             })()}
           </div>
         ) : null}
+        <LogShippingRow logShipping={info?.logShipping} />
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">
             {t("deviceInfoTab.status")}

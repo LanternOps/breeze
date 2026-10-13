@@ -76,6 +76,27 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.data.securityCapabilities?.pamReconciliation).toBeUndefined();
   });
 
+  it('tolerates an unknown capability key from a newer agent without dropping its siblings (#8615)', () => {
+    // Agents from heartbeat retain-state W1 advertise
+    // securityCapabilities.retainStateProtocolVersion before any API knows the
+    // key. The beat must still parse AND the known sibling capabilities must
+    // survive: if this object were ever made .strict(), its .catch(undefined)
+    // would silently drop every capability (fleet-wide desktop refusals)
+    // instead of 400-ing, so success alone is not enough.
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: {
+        revocationLeaseProtocolVersion: 1,
+        consentPromptProtocolVersion: 2,
+        retainStateProtocolVersion: 1,
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.securityCapabilities?.revocationLeaseProtocolVersion).toBe(1);
+    expect(result.data.securityCapabilities?.consentPromptProtocolVersion).toBe(2);
+  });
+
   it('accepts a valid rollback observation and drops a malformed optional one', () => {
     const valid = heartbeatSchema.safeParse({
       ...minimal,

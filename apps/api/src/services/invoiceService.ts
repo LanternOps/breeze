@@ -1251,8 +1251,19 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
     parentLineId: null, ticketId: s.ticketId, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
-    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, workedMinutes: s.workedMinutes, sortOrder: sort++
+    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, workedMinutes: s.workedMinutes, workDate: s.workDate,
+    sortOrder: sort++
   })));
+}
+
+/** #8603: the zone a draft's time-entry lines are dated in (`invoice_lines.work_date`).
+ *  Runs in the caller's DB context — a partner request can read its own partners
+ *  row. `partners.timezone` is NOT NULL DEFAULT 'UTC'; the fallback only covers a
+ *  row the context cannot see, and an unknown zone string is handled downstream
+ *  by `toPartnerLocalDate` (UTC). Never blocks assembly. */
+async function readPartnerTimeZone(partnerId: string): Promise<string> {
+  const [row] = await db.select({ timezone: partners.timezone }).from(partners).where(eq(partners.id, partnerId)).limit(1);
+  return row?.timezone || 'UTC';
 }
 
 /** One blocked group on an assembly response: unbilled work snapshotted in a
@@ -1335,6 +1346,8 @@ export async function assembleDraftFromOrg(
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
+  const timeZone = await readPartnerTimeZone(partnerId);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
   // Create the draft FIRST so the gathered line totals are rounded in the
@@ -1355,7 +1368,7 @@ export async function assembleDraftFromOrg(
   // month; see gatherOrgAiUsageCharges). The ticket path
   // (assembleDraftFromTicket) intentionally does not gather them.
   const gathered = mergeAssembly(
-    await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
+    await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode, new Date(), timeZone),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode),
     await gatherOrgAiUsageCharges(input.orgId, to, inv!.currencyCode)
   );
@@ -1370,6 +1383,8 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // This path produces an org-level (null-site) invoice; a site-restricted caller
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
+  // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
+  const timeZone = await readPartnerTimeZone(partnerId);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
   // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),
@@ -1379,7 +1394,7 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
     const currencyCode = opts.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });
-  const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode);
+  const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode, new Date(), timeZone);
   return finishAssembly(inv!, gathered, 'Nothing billable on this ticket', actor);
 }
 
@@ -2412,7 +2427,10 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
-      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes, sortOrder: l.sortOrder
+      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes,
+      // #8603: copied verbatim — the reissue keeps the date the work was done,
+      // never re-derived from the (possibly edited) time entry.
+      workDate: l.workDate, sortOrder: l.sortOrder
     });
     // Mint every new line id UP FRONT — parents AND children — so the map is
     // complete and order-independent before a single row is written.
