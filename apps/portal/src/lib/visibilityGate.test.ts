@@ -87,6 +87,10 @@ describe('redirectToPortalHomeAfterDisabled', () => {
     expect(PORTAL_GATED_PAGES).not.toContain(PORTAL_UNGATED_HOME);
     expect(PORTAL_UNGATED_HOME).toBe('/quotes');
   });
+
+  it('lists /approvals as gated (it rides the tickets flag, #8200)', () => {
+    expect(PORTAL_GATED_PAGES).toContain('/approvals');
+  });
 });
 
 describe('gate-code parity with the API', () => {

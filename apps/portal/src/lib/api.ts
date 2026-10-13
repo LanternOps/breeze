@@ -927,6 +927,54 @@ export interface PortalVulnerabilityFindingItem {
   deviceName: string;
 }
 
+// Customer work approval (#8200): staff ask the customer to approve extra or
+// after-hours work on a ticket. Dates arrive as ISO strings.
+export type PortalApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+
+export interface PortalApproval {
+  id: string;
+  ticketId: string;
+  ticketNumber: string;
+  ticketSubject: string;
+  trigger: 'budget' | 'after_hours';
+  status: PortalApprovalStatus;
+  revision: number;
+  requestedAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  decisionOrigin: 'customer' | 'on_behalf' | null;
+  /** Staff message to the customer. */
+  message: string | null;
+  ask: {
+    minutes: number | null;
+    amount: string | null;
+    currencyCode: string | null;
+    coverageStartsAt: string | null;
+    coverageEndsAt: string | null;
+  };
+  snapshot: {
+    budgetMinutes: number | null;
+    consumedMinutes: number | null;
+    budgetAmount: string | null;
+    consumedAmount: string | null;
+  };
+  role: 'approver' | 'notify';
+  canDecide: boolean;
+}
+
+export interface PortalApprovalDecisionBody {
+  /** The revision the customer was looking at; the API refuses a stale one. */
+  revision: number;
+  signerName: string;
+  note?: string;
+}
+
+export interface PortalApprovalDecisionResult {
+  status: 'approved' | 'denied';
+  releasedEntryCount: number;
+  stillHeldEntryCount: number;
+}
+
 export const portalApi = {
   getVulnerabilitySummary: (params: ListParams & { status?: PortalVulnerabilityStatus } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>> =>
     apiGet<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>('/portal/vulnerabilities/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open' }), config),
@@ -951,6 +999,38 @@ export const portalApi = {
         data: EnrichedPortalDevice[];
         pagination: Pagination;
       }>(`/portal/devices${query}`, config)
+    );
+  },
+
+  getApprovals: async (
+    config: ApiRequestConfig = {},
+    options: { pendingOnly?: boolean } = {}
+  ): Promise<ApiResponse<{ data: PortalApproval[] }>> => {
+    const query = buildQueryString({ status: options.pendingOnly ? 'pending' : undefined });
+    return apiGet<{ data: PortalApproval[] }>(`/portal/approvals${query}`, config);
+  },
+
+  approveApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/approve`,
+      body,
+      config
+    );
+  },
+
+  denyApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/deny`,
+      body,
+      config
     );
   },
 

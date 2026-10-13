@@ -49,6 +49,8 @@ export const PORTAL_GATED_PAGES = [
   '/devices',
   '/assets',
   '/tickets',
+  // Customer work approval (#8200) rides the tickets flag: no flag of its own.
+  '/approvals',
   '/service',
   '/documents',
   '/reports/lifecycle',
