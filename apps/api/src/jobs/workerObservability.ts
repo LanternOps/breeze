@@ -97,6 +97,8 @@ export const WORKER_FAILURE_REASONS = [
   'script_review_proposal_not_visible',
   /** gmailMarkHandledWorker: transient Gmail failure, already recorded on the mailbox; retrying with backoff. */
   'gmail_mark_retry',
+  /** intentReleaseWorker: attemptPolicyDecision hit a transient fault; BullMQ redelivers with backoff (#4156). */
+  'action_intent_policy_decide_transient',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

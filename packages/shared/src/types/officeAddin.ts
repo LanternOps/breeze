@@ -8,6 +8,8 @@
 // consuming client (`apps/outlook-addin/src/tech/api.ts`). One definition here
 // replaces the previously hand-mirrored copies on each side.
 
+import type { TicketType } from '../validators/tickets';
+
 export type ContactCandidateKind = 'portal_user' | 'contact';
 export type ContactCandidateProvenance = 'address_match' | 'domain_org';
 
@@ -35,6 +37,11 @@ export interface AddinTicketSummary {
   subject: string;
   status: string;
   priority: string | null;
+  /**
+   * #7900: the ITIL type. Optional on the wire type because an add-in may talk
+   * to an API that predates the field; current APIs always send it.
+   */
+  ticketType?: TicketType;
   updatedAt: string;
   submitterEmail: string | null;
   matchesSubmitter: boolean;
@@ -93,4 +100,10 @@ export interface AddinTimeEntry {
   ticketNumber: string | null;
   ticketSubject: string | null;
   userName: string | null;
+  /**
+   * #8196: set when the entry was recorded but held from billing pending
+   * customer approval (`billingStatus` is `awaiting_approval`). Absent/null
+   * when nothing is held.
+   */
+  approvalHold?: { requestId: string; trigger: 'budget' | 'after_hours' } | null;
 }

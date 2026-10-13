@@ -31,6 +31,8 @@ export const CONFIG_FEATURE_TYPES = [
   'time_sync',
   // #3834 — workload host inventory enumeration settings, inline-only.
   'workload_inventory',
+  // #4609 — Windows System Restore checkpoint toggles, inline-only.
+  'system_protection',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -49,6 +51,10 @@ export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
  * partner-agnostic inline settings) — this set should stay small and shrink
  * further only when a feature's underlying storage moves off a required
  * org_id (see the partner-wide-first rule in CLAUDE.md).
+ *
+ * system_protection is deliberately absent: its settings are partner-agnostic
+ * booleans with no per-tenant anchor, so it is authorable partner-wide from
+ * day one (#4609, epic #2135).
  *
  * SINGLE SOURCE OF TRUTH for this restriction — consumed by:
  *  - `apps/api/src/routes/configurationPolicies/featureLinks.ts`
@@ -130,6 +136,7 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   monitors: 'protective', // monitor definitions — detection only
   hardware_monitoring: 'protective', // RAID/disk-health collection — detection only
   time_sync: 'protective', // NTP/timezone enforcement settings — no execution capability
+  system_protection: 'protective', // takes a Windows restore point before risky actions — grants nothing; dropping it only removes a protection
   workload_inventory: 'protective', // opt-in, read-only enumeration of containers/VMs — nothing executes, installs or receives a secret
   warranty: 'protective', // informational warranty alerts — no execution capability
   // A device that self-selects into a group

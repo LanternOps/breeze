@@ -35,8 +35,9 @@ describe('config-policy editor feature-type parity (#2004)', () => {
   });
 
   it('exposes every canonical type except the documented exclusions, and no retired type', () => {
-    // W04 (#3834) adds the workload_inventory tab and removes this exclusion.
-    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual(['workload_inventory']);
+    // Every canonical feature type has an editor tab (workload_inventory gained
+    // one in #8193).
+    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual([]);
     expect(Object.keys(FEATURE_META).sort()).toEqual(
       CONFIG_FEATURE_TYPES.filter((t) => !(EDITOR_EXCLUDED_FEATURE_TYPES as readonly string[]).includes(t)).sort(),
     );

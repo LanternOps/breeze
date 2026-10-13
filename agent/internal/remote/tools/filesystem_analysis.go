@@ -57,6 +57,18 @@ func isVirtualFilesystem(path string) bool {
 	return false
 }
 
+// isVolumeShadowMetadataDir reports whether a directory entry is NTFS's
+// `System Volume Information` (#8509). It holds the volume shadow copy diff
+// area, restore points and indexer state. The agent runs as SYSTEM, so the
+// walker could enumerate it; doing so on every baseline scan of a volume root
+// adds I/O inside the store VSS itself is using, for data no cleanup will ever
+// act on (shadow storage is sized with `vssadmin resize shadowstorage`, not
+// deleted file by file). Matched by name at any depth and on every OS, so an
+// NTFS volume mounted elsewhere is treated the same way.
+func isVolumeShadowMetadataDir(name string) bool {
+	return strings.EqualFold(name, "System Volume Information")
+}
+
 type scanDirFrame struct {
 	path  string
 	depth int
@@ -326,7 +338,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			}
 
 			if isDir {
-				if isVirtualFilesystem(entryPath) {
+				if isVirtualFilesystem(entryPath) || isVolumeShadowMetadataDir(entry.Name()) {
 					continue
 				}
 				childDepth := frame.depth + 1
@@ -477,6 +489,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
+			// Walk at background I/O priority on Windows (#8509); no-op elsewhere.
+			endBackgroundIO := beginBackgroundIO()
+			defer endBackgroundIO()
 			for {
 				queueMu.Lock()
 				for len(dirStack) == 0 && !done && !stopping {

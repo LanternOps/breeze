@@ -3,13 +3,12 @@
  * them in services/aiModels/registryView.ts and usageQueries.ts; the web reads
  * them unchanged. Never add key material, fingerprints or raw provider config.
  */
+import type { AiConnectionEnvFields, AiConnectionKind } from '../constants/aiConnectionKinds';
 import type { AiSurface } from '../constants/aiSurfaces';
 import type { EffortLevel, ModelLifecycle, ModelRates, OfferingOptions, OptionSupport } from '../validators/aiModelOptions';
 import type { AiAssignmentWriteRole, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
 
-export type AiConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
-
-export interface AiConnectionDto {
+export interface AiConnectionDto extends AiConnectionEnvFields {
   /** null for the implicit platform connection. */
   id: string | null;
   kind: AiConnectionKind;
@@ -33,17 +32,6 @@ export interface AiConnectionDto {
   funding: 'platform' | 'partner_key';
   /** openai_compatible only (W06). Never contains credentials. */
   baseUrl: string | null;
-  /**
-   * 'env' = bootstrapped from MCP_LLM_* (envOpenAiBootstrap.ts). Read-only:
-   * the API refuses partner edits with 409 managed_by_env.
-   */
-  managedBy: 'env' | null;
-  /**
-   * An env connection whose MCP_LLM_* variables are no longer set. Still
-   * read-only (it holds the operator's endpoint and key); the partner may only
-   * disconnect it. Always false unless managedBy is 'env'.
-   */
-  envReleased: boolean;
 }
 
 /** Why the enable switch is disabled (the subset of ResolveFailureReason the enable gate can return). */

@@ -261,6 +261,38 @@ export const deploymentTargetConfigSchema = z.object({
   filter: filterConditionGroupSchema.optional()
 });
 
+/**
+ * The `target` of a script run (`POST /scripts/:id/execute`): one or more saved
+ * device groups. A narrowing of `deploymentTargetConfigSchema` to `groups`, not
+ * a new target vocabulary. The server resolves it to concrete device ids at
+ * execution time (materialized membership); nothing stores the group id.
+ */
+export const scriptRunGroupTargetSchema = z.object({
+  type: z.literal('groups'),
+  groupIds: z.array(z.string().guid()).min(1).max(100)
+});
+
+/**
+ * `deploymentTargetConfigSchema` with the member lists made mandatory for the
+ * types that need them. Used to validate an automation's `conditions` when it is
+ * a target config: without it an empty `groupIds` or a missing `filter` persists
+ * and the run quietly targets nothing.
+ */
+export const automationTargetConfigSchema = deploymentTargetConfigSchema.superRefine((target, ctx) => {
+  const need = (ok: boolean, path: string, message: string) => {
+    if (!ok) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  };
+  if (target.type === 'groups') {
+    need((target.groupIds?.length ?? 0) > 0, 'groupIds', 'A groups target requires at least one group');
+  }
+  if (target.type === 'devices') {
+    need((target.deviceIds?.length ?? 0) > 0, 'deviceIds', 'A devices target requires at least one device');
+  }
+  if (target.type === 'filter') {
+    need(target.filter !== undefined, 'filter', 'A filter target requires a filter');
+  }
+});
+
 export const deploymentScheduleSchema = z.object({
   type: z.enum(['immediate', 'scheduled', 'maintenance_window']),
   scheduledAt: z.coerce.date().optional(),

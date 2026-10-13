@@ -16,6 +16,7 @@ export * from './documentTerms';
 export * from './quoteFulfillment';
 export * from './quoteOrderability';
 export * from './depositMath';
+export * from './invoiceLineDetail';
 export * from './csvExport';
 export * from './reportSchedule';
 export * from './s3Region';

@@ -141,6 +141,22 @@ vi.mock('../../services/ticketMoveHourBlockGuard', async () => {
   );
   return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
 });
+// #4617: the pending-approval guard runs real Postgres in ticketApprovalRequests.integration.test.ts.
+const { approvalGuardMock } = vi.hoisted(() => ({ approvalGuardMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../services/ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveApprovalGuard')>(
+    '../../services/ticketMoveApprovalGuard',
+  );
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
+
+const { scheduleTicketLinkRemovalNotesMock } = vi.hoisted(() => ({ scheduleTicketLinkRemovalNotesMock: vi.fn() }));
+vi.mock('../../services/ticketLinkMoveNotes', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketLinkMoveNotes')>(
+    '../../services/ticketLinkMoveNotes',
+  );
+  return { ...actual, scheduleTicketLinkRemovalNotes: scheduleTicketLinkRemovalNotesMock };
+});
 
 vi.mock('../../services/pamDeviceMoveGuard', async () => {
   const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
@@ -165,6 +181,7 @@ import { propagateCancelledDeviceCommands } from '../../services/commandCancelPr
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
@@ -640,8 +657,12 @@ describe('POST /devices/:id/move-org', () => {
       // and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
+        // Move-delete tables (topology_device_presence, extension move-delete
+        // tables) are DELETED below, never restamped first: a presence row's
+        // (matched_site_id, org_id) names a source-org site, so a restamp 23503s.
         ...getDeviceOrgDenormalizedTables().filter(
-          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
+          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never)
+            && !getDeviceOrgMoveDeleteTables().includes(table),
         ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
@@ -662,6 +683,19 @@ describe('POST /devices/:id/move-org', () => {
       const claimRestamp = statements.findIndex((s) => /UPDATE\s+"?partner_api_idempotency_keys"?\s+SET org_id/.test(s));
       expect(claimDelete).toBeGreaterThan(refRestamp);
       expect(claimRestamp).toBeGreaterThan(claimDelete);
+      // #7900 W02: ticket_links is DELETED (both legs) as the tail of the
+      // shared ticket-child lock order — after the last re-stamp
+      // (ticket_approval_requests) and before the alert-axis children.
+      const approvalRestamp = statements.findIndex((s) => /UPDATE\s+"?ticket_approval_requests"?\s+SET org_id/.test(s));
+      const linkDelete = statements.findIndex((s) => /DELETE FROM ticket_links\b/.test(s));
+      const firstAlertChild = statements.findIndex((s) => s.includes(ALERT_CHILD_ORG_REWRITE_TABLES[0]!));
+      expect(approvalRestamp).toBeGreaterThan(-1);
+      expect(linkDelete).toBeGreaterThan(approvalRestamp);
+      expect(firstAlertChild).toBeGreaterThan(linkDelete);
+      expect(statements[linkDelete]).toMatch(/source_ticket_id IN \(SELECT id FROM tickets WHERE device_id = .*\)\s+OR target_ticket_id IN \(SELECT id FROM tickets WHERE device_id = /);
+      // Notes on the surviving tickets are scheduled by the route, after the
+      // move is final — never written inside the move transaction.
+      expect(scheduleTicketLinkRemovalNotesMock).toHaveBeenCalledTimes(1);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
       // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
       // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
@@ -672,11 +706,23 @@ describe('POST /devices/:id/move-org', () => {
         'software_inventory_observations',
         'agent_rollback_events',
         'peripheral_policy_delivery_events',
+        'device_restore_point_attempts',
       ]);
+      // ...and the loop must actually skip it: no app-role UPDATE (its
+      // composite FK's ON UPDATE CASCADE restamps it). Positive control: an
+      // ordinary sibling in the same list IS restamped by the loop.
+      const collapsed = statements.map(collapseStmt);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_registry_state SET org_id'))).toBe(true);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_restore_point_attempts SET'))).toBe(false);
 
       expect(statements).toContain(
         `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,
       );
+      expect(getDeviceOrgMoveDeleteTables()).toContain('topology_device_presence');
+      expect(statements).toContain(
+        `DELETE FROM topology_device_presence WHERE device_id = ${DEVICE_ID}`,
+      );
+      expect(collapsed.some((s) => s.startsWith('UPDATE topology_device_presence SET'))).toBe(false);
 
       // After the move, the live WS for this agent MUST be closed so the
       // reconnect handshake resolves the new org_id. Otherwise every
@@ -1084,7 +1130,12 @@ describe('POST /devices/:id/move-org', () => {
         timeEntryRewrites,
         `Expected exactly one time_entries org_id rewrite.\nStatements:\n${statements.join('\n')}`,
       ).toEqual([
-        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid ` +
+        // #8356: site_id follows the device to its target site in the SAME
+        // statement (an entry with no site link keeps none) — a second
+        // UPDATE would change the statement sequence the lock-order contract
+        // pins. Without it the moved entry kept a site in the source org.
+        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid, ` +
+          `site_id = CASE WHEN site_id IS NOT NULL THEN ${TARGET_SITE}::uuid END ` +
           `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
     });
@@ -1451,9 +1502,12 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
       );
-      expect(statements.slice(1, 5)).toEqual([
+      // #7900 W02 — the source org's ticket_links advisory lock, SHARED, is
+      // the second statement: before any row lock (services/ticketLinkLock.ts).
+      expect(statements[1]).toMatch(/^SELECT pg_advisory_xact_lock_shared\(hashtextextended\(ticket_links:/);
+      expect(statements.slice(2, 6)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
         'SELECT organizations FOR share (after 0 updates)',
         'PAM guard',
@@ -1467,7 +1521,7 @@ describe('POST /devices/:id/move-org', () => {
       // must not invert that hierarchy), and strictly BEFORE the org flip, since
       // the flip's own trigger restamps the value rows and the coherence trigger
       // would refuse them while they still name the source org's definition.
-      expect(collapseStmt(statements[5]!)).toContain(
+      expect(collapseStmt(statements[6]!)).toContain(
         'breeze_rehome_device_custom_field_values',
       );
       // #4622 — the manual-asset detach sits between the custom-field re-home
@@ -1479,7 +1533,7 @@ describe('POST /devices/:id/move-org', () => {
       // breeze_cascade_device_org_id(), which shares the after-row queue with
       // that check and is ordered against it only by trigger name — arrives too
       // late and the move aborts with 23503.
-      expect(collapseStmt(statements[6]!)).toContain(
+      expect(collapseStmt(statements[7]!)).toContain(
         'UPDATE manual_assets SET linked_device_id = NULL',
       );
       // #5329 (M365 tenant sync W02, spec §3.4) — the Intune link detach sits
@@ -1491,7 +1545,7 @@ describe('POST /devices/:id/move-org', () => {
       // discovers by a column named `device_id` and this one is
       // `breeze_device_id`, so the route statement is the ONLY thing standing
       // between an Intune-linked device and a 23503 on every move.
-      const intuneDetach = collapseStmt(statements[7]!);
+      const intuneDetach = collapseStmt(statements[8]!);
       expect(intuneDetach).toContain(
         'UPDATE m365_intune_devices SET breeze_device_id = NULL',
       );
@@ -1506,7 +1560,7 @@ describe('POST /devices/:id/move-org', () => {
       // column literally named `device_id` and this one is `breeze_device_id`
       // — so this statement is the ONLY thing standing between a
       // Cove-linked device and a 23503 on every cross-org move.
-      const providerDetach = collapseStmt(statements[8]!);
+      const providerDetach = collapseStmt(statements[9]!);
       expect(providerDetach).toContain(
         'UPDATE backup_provider_devices SET breeze_device_id = NULL',
       );
@@ -1521,12 +1575,12 @@ describe('POST /devices/:id/move-org', () => {
       // devices(id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE and nothing
       // trigger-side mirrors a breeze_device_id column. The ROWS stay in the
       // source org (their org_id comes from the vendor tenant mapping).
-      const edrEndpointDetach = collapseStmt(statements[9]!);
+      const edrEndpointDetach = collapseStmt(statements[10]!);
       expect(edrEndpointDetach).toContain(
         'UPDATE edr_endpoints SET breeze_device_id = NULL, device_match_source = NULL',
       );
       expect(edrEndpointDetach).toMatch(/AND org_id =/);
-      const edrDetectionDetach = collapseStmt(statements[10]!);
+      const edrDetectionDetach = collapseStmt(statements[11]!);
       expect(edrDetectionDetach).toContain('UPDATE edr_detections SET breeze_device_id = NULL');
       // D14: a detached finding keeps the last device's site restriction, so
       // a site-restricted technician does not gain visibility of it. The
@@ -1534,23 +1588,31 @@ describe('POST /devices/:id/move-org', () => {
       expect(edrDetectionDetach).toContain('device_detached_at = now()');
       expect(edrDetectionDetach).toMatch(/last_site_id = \(SELECT site_id FROM devices WHERE id =/);
       expect(edrDetectionDetach).toMatch(/AND org_id =/);
-      const edrActionDetach = collapseStmt(statements[11]!);
+      const edrActionDetach = collapseStmt(statements[12]!);
       expect(edrActionDetach).toContain('UPDATE edr_actions SET breeze_device_id = NULL');
       expect(edrActionDetach).toMatch(/AND org_id =/);
       // Caller verification (#6354 W01) — the device row lock and the
       // workstation-grant revocation sit immediately before the org flip: the
       // FOR UPDATE is the only device-row lock on this path, and the hook must
       // observe the SOURCE org's grants before the row leaves it.
-      expect(statements[12]).toBe('SELECT devices FOR update');
-      expect(collapseStmt(statements[13]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
-      expect(collapseStmt(statements[14]!)).toContain('UPDATE caller_verifications');
+      // #7969 — a discovery profile's pinned scan agent detaches before the
+      // org flip for the same reason as the link detaches above:
+      // discovery_profiles_pinned_device_org_fk ((pinned_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE and nothing
+      // trigger-side mirrors a pinned_device_id column.
+      const discoveryPinDetach = collapseStmt(statements[13]!);
+      expect(discoveryPinDetach).toContain('UPDATE discovery_profiles SET pinned_device_id = NULL');
+      expect(discoveryPinDetach).toMatch(/AND org_id =/);
+      expect(statements[14]).toBe('SELECT devices FOR update');
+      expect(collapseStmt(statements[15]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
+      expect(collapseStmt(statements[16]!)).toContain('UPDATE caller_verifications');
       // Diagnostic access grants approved in the SOURCE org die before the flip
       // (its trigger restamps them into the target org): pending requests
       // expire, active grants are revoked. Other approvers' approval rows are
       // expired post-commit in system scope (they are per-approver under RLS).
-      expect(collapseStmt(statements[15]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
-      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[17]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[18]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[19]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
@@ -1565,7 +1627,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });
@@ -1764,6 +1826,20 @@ describe('POST /devices/:id/move-org', () => {
       expect(captureExceptionMock).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('409s with code + details when a ticket has a pending customer approval request (#4617) — no Sentry, no failed-move audit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 2 }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 2 } });
+      expect(hourBlockGuardMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('409s with code + details when block-drawn time blocks the move (#8181) — no Sentry, no failed-move audit', async () => {

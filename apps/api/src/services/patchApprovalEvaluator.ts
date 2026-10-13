@@ -67,8 +67,10 @@ export interface ApprovalEvaluationConfig {
   /**
    * The partner that owns the ring referenced by ringId. Used to guard against
    * a config policy that links a ring from another partner (featurePolicyId is
-   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the ring
-   * is ignored (treated as ringId = null).
+   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the
+   * reference is invalid and fails closed: every candidate is denied with
+   * 'ring_reference_invalid' (#8186). Never fall back to "no ring", or a manual
+   * approval could install an app the ring blocks.
    */
   ringPartnerId?: string | null;
   categoryRules: CategoryRule[];
@@ -95,8 +97,12 @@ export interface ApprovalEvaluationConfig {
    */
   policyAutoApprove?: PolicyAutoApproveConfig;
   /**
-   * Policy-level per-app block/pin rules. Applied to every job approval path;
-   * manual per-device installs do not pass through this evaluator.
+   * Legacy per-app block/pin rules from a configuration policy. Since the
+   * #8186 cutover the live resolver no longer fills this; it is read only from
+   * job snapshots (frozen pre-cutover jobs carry their rules here, and W02+
+   * snapshots mirror the ring rules here for older executors). Applied to
+   * every job approval path; manual per-device installs do not pass through
+   * this evaluator.
    */
   apps?: PolicyAppRule[];
   /**
@@ -106,6 +112,12 @@ export interface ApprovalEvaluationConfig {
    * "overrides a manual approval" semantics.
    */
   ringAppRules?: PolicyAppRule[];
+  /**
+   * The policy links a ring reference that does not resolve (#8186). The
+   * evaluator then denies every outstanding candidate with
+   * 'ring_reference_invalid', manual approvals included.
+   */
+  ringReferenceInvalid?: boolean;
 }
 
 /** @deprecated Use ApprovalEvaluationConfig — kept for existing importers. */
@@ -436,7 +448,7 @@ export type PatchApprovalDecision =
    * is held until it can.
    */
   | { denied: 'held_by_deferral'; holdUntil: Date | null }
-  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral'> };
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid'> };
 
 export function evaluatePatchApproval(
   patch: PatchCandidate,

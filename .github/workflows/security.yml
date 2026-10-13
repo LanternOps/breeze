@@ -60,6 +60,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Negative self-tests for the two guards below (#8283): a deleted pin or
+      # an empty govulncheck scan must fail, not pass. Uses the runner's Node.
+      - name: Self-test security guards
+        run: node --test scripts/security/check-security-guards.test.mjs
+
       # Runs before Setup Go on purpose: this job only proves the toolchain it
       # was handed is clean, so a pin that drifts anywhere else (release.yml
       # builds the shipped binary) would scan one Go and ship another.

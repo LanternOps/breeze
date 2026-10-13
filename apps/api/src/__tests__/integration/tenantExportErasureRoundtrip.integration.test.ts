@@ -266,10 +266,11 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       enable_security,
       enable_backups,
       enable_reports,
-      enable_support_usage
+      enable_support_usage,
+      enable_hour_block
     ) VALUES
-      (${orgA}, true, true, false, true, false),
-      (${orgB}, false, false, true, false, true)
+      (${orgA}, true, true, false, true, false, true),
+      (${orgB}, false, false, true, false, true, false)
   `);
 
   // #3205: a per_device_role allowance line, so contract_lines.json is
@@ -370,8 +371,11 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
   const invoiceLineId = crypto.randomUUID();
   const billingPeriodId = crypto.randomUUID();
   await db.execute(sql`
-    INSERT INTO invoices (id, partner_id, org_id, status, currency_code, device_appendix, evidence_version)
-    VALUES (${invoiceId}, ${partnerId}, ${orgA}, 'draft', 'USD', true, 1)
+    INSERT INTO invoices (
+      id, partner_id, org_id, status, currency_code, device_appendix, evidence_version,
+      line_grouping, line_show_date, line_show_note, line_show_worked_time
+    )
+    VALUES (${invoiceId}, ${partnerId}, ${orgA}, 'draft', 'USD', true, 1, 'day', true, false, false)
   `);
   await db.execute(sql`
     INSERT INTO invoice_lines (
@@ -554,6 +558,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
         enable_backups: false,
         enable_reports: true,
         enable_support_usage: false,
+        enable_hour_block: true,
       }),
     ]);
 
@@ -614,6 +619,12 @@ describe('tenant export + erasure round-trip (live DB)', () => {
       included_quantity: null,
       overage_mode: null,
       overage_unit_price: null,
+    });
+    // #8604: the per-invoice line itemization override is ordinary exported data.
+    const invoiceRows = await archiveTable(archive, 'invoices');
+    expect(invoiceRows).toHaveLength(1);
+    expect(invoiceRows[0]).toMatchObject({
+      line_grouping: 'day', line_show_date: true, line_show_note: false, line_show_worked_time: false,
     });
     // #3205 W07: evidence is ordinary exported customer data...
     const evidence = await archiveTable(archive, 'invoice_line_devices');

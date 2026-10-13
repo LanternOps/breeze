@@ -319,3 +319,18 @@ describe('normalizePatch releaseDate (#7800)', () => {
     expect(normalizePatch({ id: 'p1', release_date: '2026-09-03' }, 0).releaseDate).toBe('2026-09-03');
   });
 });
+
+// #8187: rings own application rules. The editor round-trips normalizeRing's
+// output, so a malformed stored value must not reach the form.
+describe('normalizeRing — appRules (#8187)', () => {
+  it('passes a stored rule list through', () => {
+    const appRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+    expect(normalizeRing({ id: 'r1', name: 'Pilot', appRules }).appRules).toEqual(appRules);
+  });
+
+  it('coerces a missing or non-array value to []', () => {
+    expect(normalizeRing({ id: 'r1', name: 'Pilot' }).appRules).toEqual([]);
+    expect(normalizeRing({ id: 'r1', name: 'Pilot', appRules: 'x' }).appRules).toEqual([]);
+    expect(normalizeRing({ id: 'r1', name: 'Pilot', appRules: { a: 1 } }).appRules).toEqual([]);
+  });
+});

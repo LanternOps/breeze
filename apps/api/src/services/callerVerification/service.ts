@@ -14,14 +14,15 @@
  * hourly cap cannot be raced.
  */
 import { randomInt, randomBytes, createHash } from 'node:crypto';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, assertInTransaction, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { tickets } from '../../db/schema/portal';
-import { devices } from '../../db/schema/devices';
+import { devices, deviceCommands } from '../../db/schema/devices';
 import { incidents } from '../../db/schema/incidentResponse';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { callerVerificationEnabled } from '../../config/env';
+import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import type {
   CallerVerificationAction, CallerVerificationActor, CallerVerificationMethod, CallerVerificationStatus,
   CallerVerificationActionScope, VerificationRow,
@@ -37,6 +38,7 @@ import { callerVerificationPorts as ports } from './ports';
 import { fencedUntil } from './gate';
 import { recordEffect } from './effects';
 import { handleRejection } from './rejection';
+import { deviceSuggestions } from './deviceSuggestions';
 
 // ---------------------------------------------------------------------------
 // Cross-wave contracts (fixed by the index plan)
@@ -104,6 +106,7 @@ export type Decision =
   | { kind: 'undeliverable'; reason: string };
 
 const STARTABLE: Array<Exclude<CallerVerificationMethod, 'administrative_stepup'>> = ['workstation', 'sms', 'email', 'callback_attestation'];
+const PUBLIC_REJECTION_WINDOW_MS = 24 * 3600 * 1000;
 const UNDELIVERABLE_REASONS = ['no_session_for_user', 'session_not_console', 'helper_outdated', 'sms_failed', 'email_failed'] as const;
 
 // ---------------------------------------------------------------------------
@@ -200,7 +203,11 @@ export async function methodsForContact(
     else if (!p.allowedMethods.includes(method)) unavailableReason = 'method_disabled';
     else if (actionScope !== 'any' && !bindings.some((r) => !!r.entraOid)) unavailableReason = 'no_binding';
     else if (kind && (!destination || !normalizeDestination(kind, contact[kind]))) unavailableReason = 'no_destination';
-    else if (method !== 'callback_attestation' && !(await ports.available(method, orgId))) unavailableReason = method === 'workstation' ? 'helper_outdated' : 'method_disabled';
+    // W02: workstation readiness is per device + OS user, so the contact-level
+    // answer aggregates the contact's device suggestions (any one ready).
+    // start() re-checks the device the technician actually selected.
+    else if (method === 'workstation' && !(await deviceSuggestions(actor, orgId, contactId)).some((d) => d.available)) unavailableReason = 'helper_outdated';
+    else if (method !== 'callback_attestation' && method !== 'workstation' && !(await ports.available(method, orgId))) unavailableReason = 'method_disabled';
     rows.push({ method, available: !unavailableReason, ...tier, ...(unavailableReason ? { unavailableReason } : {}) });
   }
   return rows;
@@ -268,7 +275,11 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
   }
   const methods = await methodsForContact(actor, orgId, contactId, input.actionScope);
   const method = methods.find((m) => m.method === input.method)!;
-  if (!method.available) throw new Invalid(method.unavailableReason!, 'Method unavailable');
+  // A technician may pick a workstation that is not among the suggestions;
+  // then the aggregate readiness does not apply and the workstation adapter
+  // (ports.prepare) checks that exact device + OS user instead.
+  const selectedWorkstation = input.method === 'workstation' && !!input.deviceId && method.unavailableReason === 'helper_outdated';
+  if (!method.available && !selectedWorkstation) throw new Invalid(method.unavailableReason!, 'Method unavailable');
 
   let ticket: typeof tickets.$inferSelect | undefined;
   if (p.requireTicket && !input.ticketId) throw new Invalid('ticket_required', 'A ticket is required');
@@ -396,6 +407,16 @@ export async function cancel(actor: CallerVerificationActor, orgId: string, id: 
   const [row] = await db.update(v).set({ status: 'cancelled', decidedAt: new Date() })
     .where(and(eq(v.orgId, orgId), eq(v.id, id), eq(v.status, 'pending'))).returning();
   if (row) await recordEffect(row, 'cancelled', actor.userId);
+  // W02: a cancelled workstation challenge must not still pop up on the
+  // user's screen. Withdraw its command if no agent has claimed it yet (a
+  // card already on screen expires on its own; its answer is a no-op).
+  if (row?.agentCommandId) {
+    await db.update(deviceCommands).set({
+      status: 'cancelled', completedAt: new Date(),
+      result: { status: 'cancelled', reason: 'caller_verification_cancelled' },
+      ...terminalPayloadErasureSet(),
+    }).where(and(eq(deviceCommands.id, row.agentCommandId), eq(deviceCommands.status, 'pending')));
+  }
   return get(actor, orgId, id);
 }
 
@@ -435,7 +456,18 @@ export async function applyDecision(input: {
     if (!row) throw new Invalid('not_found', 'Verification not found');
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${row.orgId}`}))`);
     if (input.decision.kind === 'not_me') {
+      // W03: a link-tier (sms/email) row accepts "This is not me" from any
+      // non-rejected state, but only within 24h of creation — the public link
+      // is a bearer token and must not stay a fence trigger forever.
+      if ((row.method === 'sms' || row.method === 'email') && row.createdAt.getTime() <= Date.now() - PUBLIC_REJECTION_WINDOW_MS) {
+        return view(row, null, await targetContact(row));
+      }
       await handleRejection(row.id);
+      // Record the first public decision's source; a replay never overwrites it.
+      if (input.fromIp && row.status !== 'rejected_by_user') {
+        await db.update(v).set({ decidedFromIp: input.fromIp })
+          .where(and(eq(v.id, row.id), eq(v.status, 'rejected_by_user'), isNull(v.decidedFromIp)));
+      }
       return view(await loadVerification(row.orgId, row.id), null, await targetContact(row));
     }
     const decision = input.decision;

@@ -34,6 +34,7 @@ describe('monitor definition validators (#5289)', () => {
       'composite',
       'hardware_health',
       'time_sync',
+      'container_image_currency',
     ]);
   });
 

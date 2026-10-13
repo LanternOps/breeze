@@ -62,3 +62,15 @@ describe('hardware health field (#6854)', () => {
     expect(field?.enumValues).toEqual(['ok', 'warning', 'critical', 'unknown']);
   });
 });
+
+describe('workload inventory filter fields (#8193)', () => {
+  it('mirrors the backend catalog entries', () => {
+    const hosts = getFieldDef('hostsWorkloads');
+    expect(hosts?.type).toBe('boolean');
+    expect(hosts?.operators).toEqual(['equals', 'notEquals']);
+    const runtimes = getFieldDef('workloadRuntimes');
+    expect(runtimes?.type).toBe('array');
+    expect(runtimes?.operators).toEqual(expect.arrayContaining(['hasAny', 'hasAll', 'contains']));
+    expect(runtimes?.enumValues).toEqual(['docker', 'podman', 'hyperv', 'proxmox', 'containerd']);
+  });
+});

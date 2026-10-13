@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "Awaiting the device",
+    "created": "Restore point creation confirmed {{time}}",
+    "createdNoTime": "Restore point creation confirmed",
+    "existingAccepted": "Existing point reused — created {{age}} ago (Windows limit: every {{limit}})",
+    "existingAcceptedAgeOnly": "Existing point reused — created {{age}} ago",
+    "existingAcceptedNoDetail": "Existing point reused",
+    "skippedDisabled": "Skipped — System Restore is turned off on this device",
+    "skippedDefinitionOnly": "Skipped — definitions-only update",
+    "unsupported": "Not available on this device",
+    "busy": "Skipped — the volume snapshot service was in use",
+    "insufficientPrivileges": "Skipped — not enough privileges",
+    "verificationFailed": "Could not be verified",
+    "failed": "Failed — {{message}}",
+    "failedNoMessage": "Failed",
+    "unknown": "Outcome not recognised by this version of the console"
+  },
+  "list": {
+    "title": "System Restore",
+    "disclaimer": "System Restore is not a backup. This list records when Breeze asked Windows to create a restore point and what the device reported; it does not guarantee that a restore point exists or can be restored.",
+    "loading": "Loading System Restore history…",
+    "loadError": "Could not load System Restore history.",
+    "retry": "Retry",
+    "empty": "No System Restore requests have been recorded for this device.",
+    "loadMore": "Load more",
+    "loadingMore": "Loading…",
+    "loadMoreError": "Could not load more entries.",
+    "columns": {
+      "requested": "Requested",
+      "trigger": "Triggered by",
+      "outcome": "Outcome"
+    },
+    "trigger": {
+      "patch": "Patch install",
+      "script": "Script run",
+      "software_install": "Software install"
+    },
+    "viewScriptRun": "View script run"
+  }
+}

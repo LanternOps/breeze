@@ -29,6 +29,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/collectors/hwhealth"
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
+	"github.com/breeze-rmm/agent/internal/collectors/workloads"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -115,15 +116,26 @@ type HeartbeatPayload struct {
 	VirtualizationPlatform string                         `json:"virtualizationPlatform,omitempty"`
 	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
 	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
-	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	// LogShipping is absent when no shipper runs (unknown); see logship_payload.go.
+	LogShipping   *LogShippingPayload `json:"logShipping,omitempty"`
+	HelperVersion string              `json:"helperVersion,omitempty"`
+	// HelperCapabilities is caller-verification readiness (#6354 W02): the
+	// console logins whose Assist helper can render a card right now. Always
+	// sent so a false report replaces an earlier true one; servers that do
+	// not know the key strip it.
+	HelperCapabilities callerHelperCapabilities `json:"helperCapabilities"`
 	// HelperInstallIssue is a Breeze Assist install problem the agent is stuck
 	// on (helper.InstallIssue* codes, #6925), e.g. enabled but not installed
 	// with no helper version offered. Omitted when there is none, so older
 	// servers (which strip unknown keys) and healthy devices send nothing.
-	HelperInstallIssue        string            `json:"helperInstallIssue,omitempty"`
-	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
-	BackupVersion             string            `json:"backupVersion,omitempty"`
-	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
+	HelperInstallIssue string `json:"helperInstallIssue,omitempty"`
+	WatchdogVersion    string `json:"watchdogVersion,omitempty"`
+	// WatchdogInstall describes a watchdog that is NOT installed and is being
+	// (or will not be) repaired (#8619). Omitted on a healthy host. Closed
+	// enums only; an API that predates it strips the unknown key.
+	WatchdogInstall           *WatchdogInstallReport `json:"watchdogInstall,omitempty"`
+	BackupVersion             string                 `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string      `json:"rollbackComponentVersions,omitempty"`
 	// BackupReadProtocolVersion is the brokered storage-read protocol the
 	// INSTALLED backup helper reports (breeze-backup --protocol-info), never
 	// inferred from this agent's own version. Always present, set through
@@ -196,6 +208,10 @@ type HeartbeatPayload struct {
 	// agent.yaml. A server that sees it disagree with the row answers with a
 	// signed IdentityAssertion; see identity_sync.go.
 	ReportedIdentity *ReportedIdentity `json:"reportedIdentity,omitempty"`
+	// IdentityAssertionRejection (#8382) says why this agent refused the
+	// last identity assertion, so the server stops signing one every beat
+	// for a target this agent will not adopt. Sent on one beat per refusal.
+	IdentityAssertionRejection *IdentityAssertionRejection `json:"identityAssertionRejection,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -285,8 +301,18 @@ type SecurityCapabilities struct {
 	// IdentitySyncProtocolVersion (#8317) declares that this build verifies a
 	// signed identity assertion and adopts the row's org/site. The API sends
 	// none to an agent reporting 0.
-	IdentitySyncProtocolVersion int                      `json:"identitySyncProtocolVersion,omitempty"`
-	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	IdentitySyncProtocolVersion int `json:"identitySyncProtocolVersion,omitempty"`
+	// WorkloadInventoryProtocolVersion declares that this build speaks
+	// protocol 1 of PUT /agents/{id}/workloads (container and VM inventory).
+	// The API stores it non-sticky like the others so the device page can say
+	// "agent too old" instead of "no data".
+	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
+	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	// RetainStateProtocolVersion (#8258) declares that this build honours
+	// HeartbeatResponse.RetainState (retain_state.go). Contract for the API
+	// (emission lands in a later wave): send retainState only to a beat
+	// declaring exactly 1; any other value gets the legacy response shape.
+	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -334,6 +360,9 @@ type HeartbeatResponse struct {
 	// IdentityAssertion (#8317) is present only when the row's org/site differ
 	// from this beat's ReportedIdentity. Verified before use; see identity_sync.go.
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
+	// RetainState (#8258) lists features the server made no decision about this
+	// beat (keep current state); see retain_state.go. Absent = today's semantics.
+	RetainState RetainState `json:"retainState"`
 }
 
 type HelperSettings struct {
@@ -385,6 +414,9 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// unifiCollectorWake is signalled when configUpdate says this device has
+	// UniFi collectors (#7970); see unifi_collector_hint.go.
+	unifiCollectorWake        atomic.Pointer[func()]
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
@@ -473,6 +505,7 @@ type Heartbeat struct {
 	hwDisabledQueued   bool
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
+	workloads          *workloadsRuntime
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -701,6 +734,10 @@ type Heartbeat struct {
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
 
+	// retainStreaks counts consecutive beats each feature was retained
+	// (HeartbeatResponse.RetainState, #8258); see retain_state.go.
+	retainStreaks retainStreakTracker
+
 	// uacInterceptionEnabled is set when the server's resolved 'pam' config
 	// policy turns UAC capture ON for this device. Opt-in: the zero value
 	// (disabled) means no capture until the server explicitly enables it, so a
@@ -769,16 +806,22 @@ type Heartbeat struct {
 	// PAM startup reconciliation has a separate, non-expiring REST outbox.
 	// pamReconciliationMu protects only the small in-memory staged set and
 	// availability/error markers; it is never held across disk or network I/O.
-	pamReconciliationOutbox                     *pamReconciliationOutbox
-	pamReconciliationMu                         sync.Mutex
-	pamReconciliationStaged                     map[string]pamlifetime.Result
-	pamReconciliationStagedReasons              map[string]string
-	pamReconciliationBlocked                    map[string]struct{}
-	pamReconciliationIdentityFailures           int
-	pamReconciliationManagerAvailable           bool
-	pamReconciliationWake                       chan struct{}
-	pamReconciliationRetryOnce                  sync.Once
-	pamReconciliationPassRunning                atomic.Bool
+	pamReconciliationOutbox           *pamReconciliationOutbox
+	pamReconciliationMu               sync.Mutex
+	pamReconciliationStaged           map[string]pamlifetime.Result
+	pamReconciliationStagedReasons    map[string]string
+	pamReconciliationBlocked          map[string]struct{}
+	pamReconciliationIdentityFailures int
+	pamReconciliationManagerAvailable bool
+	pamReconciliationWake             chan struct{}
+	pamReconciliationRetryOnce        sync.Once
+	pamReconciliationPassRunning      atomic.Bool
+	// pamBindingV1Fallback latches when a server refused binding protocol v2
+	// with 400 (#8206); the process then asks for v1 until it restarts.
+	pamBindingV1Fallback atomic.Bool
+	// pamRetirementRefusalsLogged bounds the refused-retirement log to once
+	// per observation and reason.
+	pamRetirementRefusalsLogged                 sync.Map
 	pamLocalReconcileRunning                    atomic.Bool
 	pamReconciliationResolverUnavailable        bool
 	pamReconciliationAcknowledgementUnavailable bool
@@ -863,8 +906,12 @@ type Heartbeat struct {
 	// FAILING target so we don't re-download + restart the service every tick.
 	watchdogUpgradeMu        sync.Mutex
 	watchdogInstalledVersion string
-	watchdogLastAttemptVer   string
-	watchdogLastAttemptAt    time.Time
+	// watchdogEnsure is the bounded install-a-missing-watchdog path (#8619),
+	// wired by EnableWatchdogEnsure on the agent's start path. nil = not
+	// wired: handleWatchdogUpgrade behaves exactly as before.
+	watchdogEnsure         *watchdogEnsureState
+	watchdogLastAttemptVer string
+	watchdogLastAttemptAt  time.Time
 	// watchdogVersionDisk caches the version parsed from the on-disk watchdog
 	// binary so we exec it at most once per process run; watchdogVersionRead
 	// records that a STABLE read happened (not installed, or a successful read).
@@ -1073,6 +1120,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.commandJournal.Recover(h.backupOutbox)
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
+	h.initWorkloads()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1972,6 +2020,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
 	h.startTimeSync()
+	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
@@ -2283,6 +2332,7 @@ func (h *Heartbeat) StopAcceptingCommands() {
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
+	h.stopWorkloads()
 	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
@@ -2305,6 +2355,7 @@ func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
+		h.stopWorkloads()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2479,6 +2530,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 			parent = upload.ctx
 		}
 	}
+	if endpoint == "workloads" {
+		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
@@ -2505,6 +2561,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "time-status" {
 		return &timeSyncSubmissionError{status: resp.StatusCode}
+	}
+	if endpoint == "workloads" {
+		return &workloadsSubmissionError{status: resp.StatusCode}
 	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
@@ -3250,6 +3309,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyNetworkContextConfig(raw)
 	}
 
+	// UniFi collector presence hint (#7970). Above the policy-probe early
+	// return below, like every key that must run on an ordinary beat.
+	ucRaw, hasUC := update["unifi_collectors_assigned"]
+	if !hasUC {
+		ucRaw, hasUC = update["unifiCollectorsAssigned"]
+	}
+	if hasUC {
+		h.applyUnifiCollectorHint(ucRaw)
+	}
+
 	hwRaw, hasHW := update["hardware_monitoring_settings"]
 	if !hasHW {
 		hwRaw, hasHW = update["hardwareMonitoringSettings"]
@@ -3344,6 +3413,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasTS {
 		h.applyTimeSyncSettings(tsRaw)
+	}
+
+	// Apply workload_inventory_settings. Same rule as warranty and time sync:
+	// this must stay above the policy-probe early return or it never runs.
+	wiRaw, hasWI := update["workload_inventory_settings"]
+	if !hasWI {
+		wiRaw, hasWI = update["workloadInventorySettings"]
+	}
+	if hasWI {
+		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -4736,11 +4815,26 @@ func (h *Heartbeat) currentHeadless() bool {
 	return headless
 }
 
-func (h *Heartbeat) sendHeartbeat() {
+// beatSkipReason reports why this process must not heartbeat now, or "" when
+// it should. A beat is also what delivers queued commands, so a process that
+// is about to be replaced skips it and leaves them queued for its successor.
+func (h *Heartbeat) beatSkipReason() string {
 	// After a successful self-update, the old process continues running until
 	// the service manager kills it. Don't send heartbeats with stale version info.
 	if h.upgradeInProgress.Load() {
-		log.Debug("skipping heartbeat, upgrade in progress")
+		return "upgrade in progress"
+	}
+	// #8382 — a restart for a new identity waits only for what is already
+	// running; see identityIntakePauseMax.
+	if h.identityIntakePaused() {
+		return "restarting to apply a server-assigned identity"
+	}
+	return ""
+}
+
+func (h *Heartbeat) sendHeartbeat() {
+	if reason := h.beatSkipReason(); reason != "" {
+		log.Debug("skipping heartbeat", "reason", reason)
 		return
 	}
 
@@ -4791,6 +4885,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// Observed by the previous heartbeat's Apply (#6925).
 		HelperInstallIssue: h.helperMgr.InstallIssue(),
 		WatchdogVersion:    h.installedWatchdogVersion(),
+		WatchdogInstall:    h.watchdogInstallReport(),
 		BackupVersion:      h.installedBackupVersion(),
 		HealthStatus:       &healthSnapshot,
 		DeviceRole:         deviceRole,
@@ -4801,6 +4896,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
+		// #8382 — why the last identity assertion was refused, once.
+		IdentityAssertionRejection: h.identityRejectionForBeat(),
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache); unknown while the probe gets
@@ -4878,6 +4975,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
+	payload.HelperCapabilities = h.callerHelperCapabilities()
 
 	// Compute uptime from boot time
 	if bootTime, err := host.BootTime(); err != nil {
@@ -4886,10 +4984,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
 	}
 
-	// Include dropped log count if any logs were lost
-	if dropped := logging.DroppedLogCount(); dropped > 0 {
-		payload.DroppedLogs = dropped
-	}
+	// Log-shipping health plus the legacy top-level droppedLogs (#8610).
+	attachLogShipping(&payload)
 
 	h.attachNetworkContext(&payload)
 
@@ -5020,7 +5116,7 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
 	// not re-reported. If the POST had failed, the count would be preserved
 	// for the next attempt.
-	logging.CommitDroppedLogCount()
+	commitDroppedLogCount()
 
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
@@ -5217,7 +5313,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// any commands from this same response are submitted to the worker pool.
 	// Enabling also precedes command admission so the first v2 apply is not
 	// falsely rejected merely because the policy and command arrived together.
-	h.handleUACInterception(response.UacInterceptionEnabled)
+	h.applyPAMDecision(response)
 
 	// Pin per-deployment manifest trust keys delivered by the server (#625).
 	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
@@ -5287,20 +5383,36 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
+	// A rollback delivered in this response becomes active only once its
+	// command runs, so look for it before anything is scheduled against it.
+	rollbackInResponse := false
+	for _, cmd := range response.Commands {
+		if cmd.Type == tools.CmdAgentRollbackV1 {
+			rollbackInResponse = true
+			break
+		}
+	}
+
 	// #8317 — after the pin above, so a deployment key first delivered in this
 	// same response already verifies the assertion that relies on it. While a
 	// restart for a new identity is pending, this process starts no binary
 	// swap or credential write: those would persist the old org/site again
-	// and race the restart. Commands still run; the restart waits for them.
-	// The server re-signals everything skipped here on the next beat.
-	identityRestarting := h.applyIdentityAssertion(response.IdentityAssertion)
+	// and race the restart. Commands from this response still run (the server
+	// already claimed them); the restart waits for them, and no later beat is
+	// sent until it lands. The server re-signals everything skipped here on
+	// the next beat.
+	//
+	// #8382 — the rollback this response starts owns the next restart; the
+	// assertion waits for a later beat (the server re-signs every beat).
+	identityAssertion := response.IdentityAssertion
+	if rollbackInResponse {
+		identityAssertion = nil
+	}
+	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
-	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
+	rollbackActive := rollbackInResponse || h.rollbackInProgress()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
-		if cmd.Type == tools.CmdAgentRollbackV1 {
-			rollbackActive = true
-		}
 		if !h.accepting.Load() {
 			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
 			break
@@ -5393,29 +5505,9 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
 
-	// Update tunnel manager policy flag
-	h.tunnelMgr.SetManagedByPolicy(response.ManageRemoteManagement)
-
-	// Update helper enabled state and apply full settings
-	h.handleHelperEnabled(response.HelperEnabled)
-	if response.HelperSettings != nil {
-		h.helperMgr.Apply(&helper.Settings{
-			Enabled:            response.HelperSettings.Enabled,
-			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
-			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
-			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
-			PortalUrl:          response.HelperSettings.PortalUrl,
-		})
-		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
-		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
-		// and cheap — the manager no-ops when the resolved mode is unchanged.
-		h.mu.Lock()
-		lc := h.helperLifecycle
-		h.mu.Unlock()
-		if lc != nil {
-			lc.SetModeOverride(response.HelperSettings.LifecycleMode)
-		}
-	}
+	// Tunnel manager policy flag, helper enabled state and full helper
+	// settings; each is skipped when the server retained it (#8258).
+	h.applyHelperAndRemoteManagement(response)
 }
 
 // IsHelperEnabled returns whether the helper chat is enabled for this device's org.
@@ -5443,9 +5535,13 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 }
 
 // handleUACInterception updates the UAC interception flag from the heartbeat
-// response and logs state transitions. nil (field absent — older server) means
-// disabled: capture is opt-in and stays off until the server sends an explicit
-// true.
+// response and logs state transitions. nil (field absent) and false are
+// identical: both turn capture off AND run the PAM lifetime disable/cleanup
+// path, on every such beat (idempotent; a cleanup that failed to verify is
+// therefore retried). Capture is opt-in and
+// stays off until the server sends an explicit true. Absence never means
+// "keep the current state" — only HeartbeatResponse.RetainState expresses
+// that, and applyPAMDecision handles it before calling here (#8258).
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	on := enabled != nil && *enabled
 	if !on {
@@ -6673,6 +6769,9 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #4026: the typed refusal code must survive too, or the server only
+		// ever sees it on the HTTP fallback and keeps classifying by prose.
+		ErrorCode: result.ErrorCode,
 		// #3525: the cancellation marker must survive this conversion — the
 		// WebSocket leg is the primary result channel, and the marker is the
 		// only proof that closes a `cancelling` execution as `cancelled`.
@@ -6709,6 +6808,19 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 			// so leaving it zero would persist a false "exited 0".
 			ExitCode: 1,
 			Error:    "agent is shutting down",
+		}
+	}
+	// #8382 — about to restart for a new identity: refuse new work the
+	// restart would cut off, as a shutting-down agent does. Commands that
+	// stop work or feed a session already open still run.
+	if h.identityIntakePaused() && !admittedDuringIdentityRestart(wsCmd.Type) {
+		log.Debug("refusing command, restarting to apply a server-assigned identity",
+			logging.KeyCommandID, wsCmd.ID, "type", wsCmd.Type)
+		return websocket.CommandResult{
+			CommandID: wsCmd.ID,
+			Status:    "failed",
+			ExitCode:  1, // synthetic: no process ran
+			Error:     identityRestartRefusal,
 		}
 	}
 
@@ -7505,6 +7617,15 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
+	// A watchdog that is not REGISTERED cannot be fixed by the swap below
+	// (Windows OpenService fails; Unix never writes the unit) and must not be
+	// retried on its uncapped in-memory cooldown. ensureWatchdog owns that
+	// case — bounded, persisted, opt-out aware — and runs before the
+	// auto-update early return so disabled_by_policy can be reported.
+	if h.watchdogEnsure != nil && h.ensureWatchdog(targetVersion) {
+		return
+	}
+
 	if !h.autoUpdate() {
 		log.Info("watchdog upgrade available but auto_update is disabled",
 			"targetVersion", targetVersion)
@@ -7597,7 +7718,13 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // the per-OS installAndRestartWatchdog implementations so the trust-verified
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
-	u := updater.New(&updater.Config{
+	return h.newWatchdogUpdater("").DownloadBinary(targetVersion)
+}
+
+// newWatchdogUpdater builds the authenticated watchdog-component updater.
+// tempDir "" downloads to the OS temp dir.
+func (h *Heartbeat) newWatchdogUpdater(tempDir string) *updater.Updater {
+	return updater.New(&updater.Config{
 		ServerURL:                   h.serverURL,
 		BackupServerURL:             h.backupServerURL(),
 		AuthToken:                   h.secureToken,
@@ -7605,8 +7732,8 @@ func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error)
 		Component:                   "watchdog",
 		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
+		TempDir:                     tempDir,
 	})
-	return u.DownloadBinary(targetVersion)
 }
 
 // handleUpgrade performs an auto-update to the specified version.
@@ -8106,14 +8233,16 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 // a fleet-wide outage rather than a degraded feature.
 func compiledSecurityCapabilities() SecurityCapabilities {
 	return SecurityCapabilities{
-		OutboundNetworkPolicyVersion:    1,
-		ScriptSecretEnvVersion:          1,
-		PeripheralPolicyProtocolVersion: 2,
-		RollbackProtocolVersion:         1,
-		RevocationLeaseProtocolVersion:  1,
-		DesktopFenceProtocolVersion:     1,
-		DesktopWsFenceProtocolVersion:   1,
-		ConsentPromptProtocolVersion:    2,
-		IdentitySyncProtocolVersion:     identitySyncProtocolVersion,
+		OutboundNetworkPolicyVersion:     1,
+		ScriptSecretEnvVersion:           1,
+		PeripheralPolicyProtocolVersion:  2,
+		RollbackProtocolVersion:          1,
+		RevocationLeaseProtocolVersion:   1,
+		DesktopFenceProtocolVersion:      1,
+		DesktopWsFenceProtocolVersion:    1,
+		ConsentPromptProtocolVersion:     2,
+		IdentitySyncProtocolVersion:      identitySyncProtocolVersion,
+		WorkloadInventoryProtocolVersion: workloads.ProtocolVersion,
+		RetainStateProtocolVersion:       retainStateProtocolVersion,
 	}
 }

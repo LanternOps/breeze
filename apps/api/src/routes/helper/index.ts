@@ -46,6 +46,8 @@ import { chooseSessionModel, resolveSessionTurn, type SessionModelChoice } from 
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { captureException } from '../../services/sentry';
 import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
+import { callerVerificationEnabled } from '../../config/env';
+import { callerHelperBranding, type CallerHelperBranding } from '../../services/callerVerification/helperBranding';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -664,6 +666,19 @@ helperRoutes.get('/config', async (c) => {
   const device = c.get('helperDevice');
   const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
 
+  // Caller verification (#6354 W02): partner branding for the Assist card,
+  // derived from the authenticated device's org (never a client value). Null
+  // while the feature is dark or on any failure — branding must never delay
+  // or break the card, and must never fail this config response.
+  let branding: CallerHelperBranding | null = null;
+  if (callerVerificationEnabled()) {
+    try {
+      branding = await callerHelperBranding(device.orgId);
+    } catch (err) {
+      console.warn('[helper] caller verification branding unavailable', { deviceId: device.id, error: err instanceof Error ? err.name : String(err) });
+    }
+  }
+
   return c.json({
     // Resolved by helperAuth (services/helperSettings — same resolver as the
     // agent heartbeat); helperAuth refuses a disabled device before this runs.
@@ -671,6 +686,7 @@ helperRoutes.get('/config', async (c) => {
     permissionLevel,
     allowScreenCapture: true,
     sessionRetentionHours: 24,
+    branding,
   });
 });
 

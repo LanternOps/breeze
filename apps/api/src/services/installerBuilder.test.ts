@@ -129,8 +129,52 @@ describe('fetchRegularMsi', () => {
     // helper, under the manifest byte ceiling.
     expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
       'https://github.com/lanternops/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519',
-      { maxBytes: 1024 * 1024 },
+      expect.objectContaining({ maxBytes: 1024 * 1024 }),
     );
+  });
+
+  // #7976: verifyGithubReleaseArtifactBuffer soft-passes (returns null) when
+  // no manifest key is configured outside production, so the GitHub MSI used
+  // to be served unverified in that configuration. It must fail closed.
+  it('refuses the GitHub MSI when no manifest public key is configured, outside production too', async () => {
+    const asset = Buffer.from('signed-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.NODE_ENV = 'development';
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_VERIFICATION;
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/public key is required/);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/breeze-agent.msi'))).toBe(false);
+  });
+
+  it('refuses GitHub MSI bytes whose sha256 does not match the signed manifest', async () => {
+    const authorized = Buffer.from('signed-msi');
+    const substituted = Buffer.from('evil!-msi!');
+    expect(substituted.length).toBe(authorized.length);
+    const signed = signedReleaseManifest('breeze-agent.msi', authorized);
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(substituted);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    }));
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/digest mismatch/);
   });
 
   it('server-only image: fetches and verifies the MSI against the paired binaries release', async () => {
@@ -281,7 +325,7 @@ describe('fetchRegularMsi', () => {
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
 
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
-    await expect(fetchRegularMsi()).rejects.toThrow(/Failed to fetch regular MSI/);
+    await expect(fetchRegularMsi()).rejects.toThrow(/Failed to fetch release artifact manifest: 500/);
 
     // A subsequent call must retry, not replay the cached rejection.
     const asset = Buffer.from('recovered-msi');
@@ -299,17 +343,26 @@ describe('fetchRegularMsi', () => {
   it('passes a bounded abort signal so a hung origin cannot hold the fetch open indefinitely', async () => {
     process.env.BINARY_SOURCE = 'github';
     process.env.BINARY_VERSION = '1.2.3';
-    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
 
-    const fetchMock = vi.fn(async () => new Response('unused'));
-    vi.stubGlobal('fetch', fetchMock);
+    const asset = Buffer.from('bounded-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    }));
 
-    await fetchRegularMsi().catch(() => undefined);
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('breeze-agent.msi'),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
+    // The manifest, its signature and the MSI itself each carry the bound.
+    for (const suffix of ['/release-artifact-manifest.json', '/release-artifact-manifest.json.ed25519', '/breeze-agent.msi']) {
+      expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`${suffix.replace(/\./g, '\\.')}$`)),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    }
   });
 });
 
@@ -780,6 +833,125 @@ describe('local source: hosted build manifest', () => {
   });
 });
 
+// #7976: the regular MSI is embedded into every Windows installer zip and
+// served by the public /s/:code and /i/:shortCode routes. A locally staged MSI
+// used to be read straight off disk with no manifest check, so a replaced file
+// on the binaries volume was handed out as the installer. It now verifies
+// against the signed release manifest pair at the volume root, the same
+// contract as the locally staged macOS pkg.
+describe('fetchRegularMsi: local source verifies against the signed manifest', () => {
+  const originalEnv = process.env;
+  const msiEntry = { platformTrust: 'windows-authenticode-required', edition: 'hosted' };
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-local-msi-'));
+    __resetRegularMsiCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+    __resetRegularMsiCache();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function stage(args: {
+    servedBytes: Buffer;
+    signed?: { manifest: Buffer; signature: Buffer; publicKey: string };
+    edition?: string;
+  }) {
+    const binaryDir = join(root, 'bin');
+    mkdirSync(binaryDir, { recursive: true });
+    writeFileSync(join(binaryDir, 'breeze-agent.msi'), args.servedBytes);
+    if (args.signed) {
+      writeFileSync(join(root, 'release-artifact-manifest.json'), args.signed.manifest);
+      writeFileSync(join(root, 'release-artifact-manifest.json.ed25519'), args.signed.signature);
+    }
+    process.env = {
+      ...originalEnv,
+      BINARY_SOURCE: 'local',
+      BINARY_VERSION: '1.2.3',
+      BINARY_EDITION: args.edition ?? 'hosted',
+      AGENT_BINARY_DIR: binaryDir,
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: args.signed?.publicKey ?? signedReleaseManifest('x', Buffer.from('x')).publicKey,
+    };
+    delete process.env.S3_BUCKET;
+    delete process.env.S3_ACCESS_KEY;
+    delete process.env.S3_SECRET_KEY;
+  }
+
+  it('serves a staged MSI whose bytes match the signed manifest entry', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });
+
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+  });
+
+  it('serves an unsigned self-host MSI from a self-host volume', async () => {
+    const asset = Buffer.from('self-host-unsigned-msi');
+    stage({
+      servedBytes: asset,
+      edition: 'self-host',
+      signed: signedReleaseManifest('breeze-agent.msi', asset, { platformTrust: 'none', edition: 'self-host' }),
+    });
+
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+  });
+
+  it('refuses a replaced MSI whose sha256 does not match the manifest', async () => {
+    const authorized = Buffer.from('hosted-signed-msi');
+    const substituted = Buffer.from('evil!!-signed-msi');
+    expect(substituted.length).toBe(authorized.length);
+    stage({ servedBytes: substituted, signed: signedReleaseManifest('breeze-agent.msi', authorized, msiEntry) });
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/digest mismatch/);
+  });
+
+  it('refuses an MSI the signed manifest does not list', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    const signed = signedReleaseManifest('breeze-agent-windows-amd64.exe', asset, msiEntry);
+    stage({ servedBytes: asset, signed });
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/does not include breeze-agent\.msi/);
+  });
+
+  it('refuses a manifest signed by a key that is not trusted', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signedReleaseManifest('x', Buffer.from('x')).publicKey;
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/signature/i);
+  });
+
+  it('refuses an MSI whose manifest edition differs from BINARY_EDITION', async () => {
+    const asset = Buffer.from('self-host-unsigned-msi');
+    stage({
+      servedBytes: asset,
+      edition: 'hosted',
+      signed: signedReleaseManifest('breeze-agent.msi', asset, { platformTrust: 'none', edition: 'self-host' }),
+    });
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/edition mismatch/);
+  });
+
+  it('refuses to serve when no signed manifest pair is staged', async () => {
+    stage({ servedBytes: Buffer.from('unverifiable-msi') });
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/Signed release manifest pair is not staged/);
+  });
+
+  it('refuses to serve when no manifest public key is configured, outside production too', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    process.env.NODE_ENV = 'development';
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/public key is not configured/);
+  });
+});
+
 // The Breeze Assist (Helper) installers are built ONLY by the public release
 // and are byte-identical for both editions; the public release manifest lists
 // them with `edition: "self-host"`. A hosted binaries volume carries the
@@ -1089,6 +1261,20 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     expect(script).toContain('#!/bin/bash');
     expect(script).toContain('breeze-agent enroll');
     expect(script).toContain('enrollment.json');
+  });
+
+  it('install.sh does not pass the deprecated --site-id to enroll (#8474)', async () => {
+    const zipBuffer = await buildMacosInstallerZip({
+      serverUrl: 'https://x.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const script = await zip.files['install.sh']!.async('string');
+    expect(script).toContain('breeze-agent enroll');
+    expect(script).not.toContain('--site-id');
   });
 
   it('install.sh detects CPU arch and downloads the matching pkg', async () => {

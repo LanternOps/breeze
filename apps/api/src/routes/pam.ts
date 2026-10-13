@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { db, runAfterDbContextExit } from '../db';
 import {
   authenticatorDevices,
+  deviceOwnershipEpochClosures,
   devices,
   elevationAudit,
   elevationRequests,
@@ -244,6 +245,26 @@ function siteScopeCondition(perms: UserPermissions | undefined): SQL | undefined
   return inArray(elevationRequests.siteId, [...allowed]);
 }
 
+/**
+ * PAM ownership epochs W5 (#8207), spec §7.3: a history row is joined to the
+ * live device only for the epoch the device is in NOW (same org, same epoch);
+ * a row from an earlier epoch renders the device from that epoch's closure
+ * snapshot instead. Joining on device_id alone would show a moved device's
+ * new hostname (owned by another org) on the old org's history.
+ * pamReadPathScoping.test.ts enforces the org match statically.
+ */
+const historyDeviceJoin = and(
+  eq(elevationRequests.deviceId, devices.id),
+  eq(elevationRequests.orgId, devices.orgId),
+  eq(elevationRequests.deviceEpoch, devices.ownershipEpoch),
+);
+const historyClosureJoin = and(
+  eq(elevationRequests.deviceId, deviceOwnershipEpochClosures.deviceId),
+  eq(elevationRequests.deviceEpoch, deviceOwnershipEpochClosures.epoch),
+  eq(elevationRequests.orgId, deviceOwnershipEpochClosures.orgId),
+);
+const historyDeviceHostname = sql<string | null>`COALESCE(${devices.hostname}, ${deviceOwnershipEpochClosures.hostnameSnapshot})`;
+
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
   const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
@@ -295,7 +316,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
     db
       .select({
         request: elevationRequests,
-        deviceHostname: devices.hostname,
+        deviceHostname: historyDeviceHostname,
         siteName: sites.name,
         approvedByName: approvedByUser.name,
         deniedByName: deniedByUser.name,
@@ -304,7 +325,8 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         ...pamEnforcementProjection,
       })
       .from(elevationRequests)
-      .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
+      .leftJoin(devices, historyDeviceJoin)
+      .leftJoin(deviceOwnershipEpochClosures, historyClosureJoin)
       .leftJoin(sites, eq(elevationRequests.siteId, sites.id))
       .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
       .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))
@@ -378,7 +400,7 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
   const rows = await db
     .select({
       request: elevationRequests,
-      deviceHostname: devices.hostname,
+      deviceHostname: historyDeviceHostname,
       siteName: sites.name,
       approvedByName: approvedByUser.name,
       deniedByName: deniedByUser.name,
@@ -386,7 +408,8 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
       ...pamEnforcementProjection,
     })
     .from(elevationRequests)
-    .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
+    .leftJoin(devices, historyDeviceJoin)
+    .leftJoin(deviceOwnershipEpochClosures, historyClosureJoin)
     .leftJoin(sites, eq(elevationRequests.siteId, sites.id))
     .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
     .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))

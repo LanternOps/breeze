@@ -94,6 +94,12 @@ export function SoftwareGroupTable({
       ? t('softwareGroupTable.patch.ready', { ready: g.patchReadyDeviceCount, total: g.deviceCount, count: g.patchReadyDeviceCount })
       : '—';
 
+  // #7071: null = some CVE has no known fix version, so the honest advice is "latest".
+  const targetLabel = (g: SoftwareGroup): string =>
+    g.targetVersion
+      ? t('softwareGroupTable.target.version', { version: g.targetVersion })
+      : t('softwareGroupTable.target.latest');
+
   const table = useMemo(
     () => (
       <table className={`min-w-full divide-y ${densityTableClasses(density)}`}>
@@ -167,7 +173,15 @@ export function SoftwareGroupTable({
                   <span className="block font-medium tabular-nums">{t('softwareGroupTable.devices', { count: g.deviceCount })}</span>
                   <span className="block text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
                 </td>
-                <td className="px-4 py-3 text-sm">{patchLabel(g)}</td>
+                <td className="px-4 py-3 text-sm">
+                  <span className="block">{patchLabel(g)}</span>
+                  <span
+                    data-testid={`software-group-target-${g.groupKey}`}
+                    className="block text-xs text-muted-foreground"
+                  >
+                    {targetLabel(g)}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -216,7 +230,10 @@ export function SoftwareGroupTable({
                   <span className="text-sm tabular-nums">{t('softwareGroupTable.devices', { count: g.deviceCount })}</span>
                   <span className="ml-1.5 text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
                 </CardField>
-                <CardField label={t('softwareGroupTable.table.patch')}><span className="text-sm">{patchLabel(g)}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.patch')}>
+                  <span className="block text-sm">{patchLabel(g)}</span>
+                  <span className="block text-xs text-muted-foreground">{targetLabel(g)}</span>
+                </CardField>
               </div>
             </DataCard>
           )),

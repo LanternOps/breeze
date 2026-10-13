@@ -84,6 +84,9 @@ const C = CommandTypes;
  * synchronous answer, so an offline device is a hard `device_offline`.
  */
 const LIVE: readonly string[] = [
+  // Caller verification (#6354 W02): a challenge with its own short deadline;
+  // delivering it after the caller hung up would prompt a user out of context.
+  C.CALLER_VERIFY,
   C.LIST_PROCESSES,
   C.GET_PROCESS,
   C.KILL_PROCESS,

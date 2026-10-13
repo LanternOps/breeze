@@ -2050,6 +2050,19 @@ describe('org routes', () => {
       const res = await patchMe({ settings: { ml: { anomalies: { enabled: 'yes' } } } });
       expect(res.status).toBe(400);
     });
+
+    it('persists settings.networkProxy.dedicatedTunnelOrigin and rejects a non-boolean value (#8155)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { rca: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const ok = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: true } } });
+      expect(ok.status).toBe(200);
+      expect(getCaptured().settings.networkProxy).toEqual({ dedicatedTunnelOrigin: true });
+
+      const bad = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: 'yes' } } });
+      expect(bad.status).toBe(400);
+    });
   });
 
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
@@ -8736,6 +8749,90 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(lockReads).not.toHaveBeenCalled();
+    });
+  });
+
+  // #6111 — Session Timeout ceiling is 720 min (12 h) at every write path, and
+  // a stored value above it (written before the cap existed) reads back clamped.
+  describe('security.sessionTimeout ceiling (#6111)', () => {
+    function primeSelect(partnerSettings: Record<string, unknown> = {}) {
+      const whereRet: any = Promise.resolve([{ partnerId: 'partner-123', id: 'partner-123', name: 'P', settings: partnerSettings }]);
+      whereRet.limit = vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: partnerSettings }]);
+      whereRet.orderBy = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereRet) })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => ({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'x', name: 'N', settings: data.settings }])
+          })
+        }))
+      } as any);
+    }
+    function send(method: string, path: string, body: unknown) {
+      return app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+    const sec = (sessionTimeout: number) => ({ settings: { security: { sessionTimeout } } });
+
+    const PATHS: Array<[string, string, string, () => void]> = [
+      ['PATCH /partners/me', 'PATCH', '/orgs/partners/me', () => setAuthContext({ scope: 'partner', partnerId: 'partner-123' })],
+      ['PATCH /partners/:id (system)', 'PATCH', '/orgs/partners/partner-1', () => {}],
+      ['PATCH /organizations/:id', 'PATCH', '/orgs/organizations/org-1', () => setAuthContext({ scope: 'partner', partnerId: 'partner-123' })],
+    ];
+
+    describe.each(PATHS)('%s', (_name, method, path, auth) => {
+      beforeEach(() => { auth(); primeSelect(); });
+
+      it('rejects 721 with 400 and never writes', async () => {
+        const res = await send(method, path, sec(721));
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('accepts 720', async () => {
+        const res = await send(method, path, sec(720));
+        expect(res.status).toBe(200);
+        expect(db.update).toHaveBeenCalled();
+      });
+    });
+
+    it.each([
+      ['POST /organizations', '/orgs/organizations', { name: 'O', slug: 'o', partnerId: '00000000-0000-4000-8000-000000000001' }],
+      ['POST /partners', '/orgs/partners', { name: 'P', slug: 'p' }],
+    ])('%s rejects security.sessionTimeout 721 with 400', async (_n, path, base) => {
+      setAuthContext({ scope: 'system' });
+      primeSelect();
+      const res = await send('POST', path, { ...base, ...sec(721) });
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-integer or zero timeout on the free-form paths, accepts null (unset)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeSelect();
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(0))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(60.5))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', { settings: { security: { sessionTimeout: null } } })).status).toBe(200);
+    });
+
+    it('GET /partners/me clamps a stored 1440 to 720', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: { security: { sessionTimeout: 1440, requireMfa: true } } }]),
+          }),
+        }),
+      } as any);
+      const res = await app.request('/orgs/partners/me');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.settings.security).toEqual({ sessionTimeout: 720, requireMfa: true });
     });
   });
 

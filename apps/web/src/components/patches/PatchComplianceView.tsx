@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { toNumber, type DevicePatchRow } from './patchHelpers';
+import { deviceNeedsUpdates, toNumber, type DevicePatchRow } from './patchHelpers';
 import { usePatchSelection } from './usePatchSelection';
 import { useBulkActions, type ResolvedInstallPatchIds } from './useBulkActions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -35,6 +35,8 @@ type ComplianceSummary = {
   criticalPatches: number;
   pendingPatches: number;
   rebootPending: number;
+  /** W06: distinct container images the registry check could not verify. */
+  imagesNotChecked: number;
 };
 
 type PatchComplianceViewProps = {
@@ -93,7 +95,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   // ring, disable export with a hint instead of firing a request that 400s.
   const canExport = currentOrgId !== null || !!ringId;
   const [devices, setDevices] = useState<DevicePatchRow[]>([]);
-  const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0 });
+  const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0, imagesNotChecked: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [searchQuery, setSearchQuery] = useState('');
@@ -159,6 +161,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             // Read it directly rather than synthesizing from (pending - approved),
             // which produced a misleading count when the field was absent.
             unapprovedMissing: toNumber(n?.unapprovedMissing ?? 0),
+            failedMissing: toNumber(n?.failedMissing ?? 0),
             criticalMissing: toNumber(n?.criticalCount ?? 0),
             importantMissing: toNumber(n?.importantCount ?? 0),
             osMissing: toNumber(n?.osMissing ?? 0),
@@ -166,6 +169,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             lastInstalledAt: n?.lastInstalledAt ? String(n.lastInstalledAt) : undefined,
             lastScannedAt: n?.lastScannedAt ? String(n.lastScannedAt) : undefined,
             pendingReboot: Boolean(n?.pendingReboot),
+            staleImages: toNumber(n?.staleImages ?? 0),
             status: raw.status ? String(raw.status) : undefined,
             orgId,
           });
@@ -175,13 +179,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       merged.sort((a, b) => b.criticalMissing - a.criticalMissing || b.pendingPatches - a.pendingPatches);
       setDevices(merged);
 
-      const nonCompliant = merged.filter(d => d.pendingPatches > 0);
+      const nonCompliant = merged.filter(deviceNeedsUpdates);
       setSummary({
         totalDevices: merged.length,
         compliantDevices: merged.length - nonCompliant.length,
         criticalPatches: nonCompliant.reduce((sum, d) => sum + d.criticalMissing, 0),
         pendingPatches: nonCompliant.reduce((sum, d) => sum + d.pendingPatches, 0),
         rebootPending: merged.filter(d => d.pendingReboot).length,
+        imagesNotChecked: toNumber(complianceData.containerImages?.unknown ?? 0),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('patchComplianceView.errors.fetchData'));
@@ -210,11 +215,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       const q = searchQuery.toLowerCase();
       list = list.filter(d => d.hostname.toLowerCase().includes(q));
     }
-    if (statusFilter === 'needs-patches') list = list.filter(d => d.pendingPatches > 0);
+    if (statusFilter === 'needs-patches') list = list.filter(deviceNeedsUpdates);
     else if (statusFilter === 'critical') list = list.filter(d => d.criticalMissing > 0);
     else if (statusFilter === 'reboot') list = list.filter(d => d.pendingReboot);
     else if (statusFilter === '3rd-party') list = list.filter(d => d.thirdPartyMissing > 0);
-    else if (statusFilter === 'compliant') list = list.filter(d => d.pendingPatches === 0);
+    else if (statusFilter === 'compliant') list = list.filter(d => !deviceNeedsUpdates(d));
     return list;
   }, [devices, searchQuery, statusFilter]);
 
@@ -379,7 +384,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
       const d = devices.find(dev => dev.id === id);
-      return d && d.approvedMissing > 0;
+      // Failed installs are split out of approvedMissing; they stay selectable
+      // so a failed approved patch can still be retried from here.
+      return d && d.approvedMissing + d.failedMissing > 0;
     });
   }, [selectedIds, devices]);
   const selectedWithPatches = selectedPatchDeviceIds.length;
@@ -389,6 +396,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   );
   const unapprovedPendingPatches = useMemo(
     () => devices.reduce((sum, d) => sum + d.unapprovedMissing, 0),
+    [devices]
+  );
+
+  const failedInstallPatches = useMemo(
+    () => devices.reduce((sum, d) => sum + d.failedMissing, 0),
     [devices]
   );
 
@@ -453,8 +465,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           {unapprovedPendingPatches > 0 && (
             <span className="text-orange-600 font-medium">{t('patchComplianceView.summary.pendingApproval', { count: unapprovedPendingPatches })}</span>
           )}
+          {failedInstallPatches > 0 && (
+            <span className="text-red-600 font-medium">{t('patchComplianceView.summary.failedInstalls', { count: failedInstallPatches })}</span>
+          )}
           {summary.criticalPatches > 0 && (
             <span className="text-red-600 font-medium">{t('patchComplianceView.summary.critical', { count: summary.criticalPatches })}</span>
+          )}
+          {summary.imagesNotChecked > 0 && (
+            <span className="text-muted-foreground">{t('patchComplianceView.summary.imagesNotChecked', { count: summary.imagesNotChecked })}</span>
           )}
           {summary.rebootPending > 0 && (
             <span className="flex items-center gap-1 text-orange-600">
@@ -595,6 +613,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               <th className="px-3 py-3">{t('patchComplianceView.table.status')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.approvedTitle')}>{t('patchComplianceView.table.approved')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.pendingApprovalTitle')}>{t('patchComplianceView.table.pendingApproval')}</th>
+              <th className="px-3 py-3" title={t('patchComplianceView.table.failedTitle')}>{t('patchComplianceView.table.failed')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.osPatchesTitle')}>{t('patchComplianceView.table.osPatches')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.thirdPartyTitle')}>{t('patchComplianceView.table.thirdParty')}</th>
               <th className="px-3 py-3" title={t('patchComplianceView.table.criticalTitle')}>{t('patchComplianceView.table.critical')}</th>
@@ -606,14 +625,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           <tbody className="divide-y">
             {filteredDevices.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={12} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {hasActiveFilters ? t('patchComplianceView.emptyFiltered') : t('patchComplianceView.empty')}
                 </td>
               </tr>
             ) : (
               filteredDevices.map(device => {
                 const isSelected = selectedIds.has(device.id);
-                const isCompliant = device.pendingPatches === 0;
+                const isCompliant = !deviceNeedsUpdates(device);
                 const activity = formatLastActivity(device.lastInstalledAt, device.lastScannedAt, t);
 
                 return (
@@ -680,6 +699,15 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                       {device.unapprovedMissing > 0 ? (
                         <span className="inline-flex items-center rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700">
                           {device.unapprovedMissing}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums" data-testid={`failed-installs-${device.id}`}>
+                      {device.failedMissing > 0 ? (
+                        <span className="inline-flex items-center rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-700">
+                          {device.failedMissing}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">-</span>

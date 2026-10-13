@@ -16,7 +16,8 @@ const HOUR_MS = 3_600_000;
 
 export interface OutcomeSummary { state: FixOutcomeState; stateReason: string | null; humanVote: FixVote | null }
 
-const summaryColumns = { state: fixOutcomes.state, stateReason: fixOutcomes.stateReason, humanVote: fixOutcomes.humanVote };
+// A function, not a module constant: built at import time it captures the schema before it is fully loaded (same trap as store.ts).
+const summaryColumns = () => ({ state: fixOutcomes.state, stateReason: fixOutcomes.stateReason, humanVote: fixOutcomes.humanVote });
 
 function toSummary(row: { state: FixOutcomeState; stateReason: string | null; humanVote: FixVote | null } | undefined): OutcomeSummary | null {
   return row ? { state: row.state, stateReason: row.stateReason ?? null, humanVote: row.humanVote ?? null } : null;
@@ -66,7 +67,7 @@ export async function recordExecutionOutcome(input: {
         state: 'pending',
         deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.pendingTimeoutHours * HOUR_MS),
       }).onConflictDoNothing({ target: fixOutcomes.suggestionId, where: sql`suggestion_id IS NOT NULL` })
-        .returning(summaryColumns);
+        .returning(summaryColumns());
       return toSummary(row);
     });
   } catch (err) {
@@ -117,7 +118,7 @@ export async function recordBuiltinOutcome(input: {
         state: 'pending',
         deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.pendingTimeoutHours * HOUR_MS),
       }).onConflictDoNothing({ target: fixOutcomes.suggestionId, where: sql`suggestion_id IS NOT NULL` })
-        .returning(summaryColumns);
+        .returning(summaryColumns());
       return toSummary(row);
     });
   } catch (err) {
@@ -137,7 +138,7 @@ export async function recordOutcomeVote(input: { suggestionId: string; orgId: st
   const [row] = await db.update(fixOutcomes).set({
     humanVote: input.vote, votedBy: input.userId, votedAt: now, recountRequestedAt: now, updatedAt: now,
   }).where(and(eq(fixOutcomes.suggestionId, input.suggestionId), eq(fixOutcomes.orgId, input.orgId)))
-    .returning(summaryColumns);
+    .returning(summaryColumns());
   return toSummary(row);
 }
 
@@ -172,14 +173,14 @@ export async function createManualStepsOutcome(input: {
     stateReason: 'manual_steps_done',
     deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),
   }).onConflictDoNothing({ target: fixOutcomes.suggestionId, where: sql`suggestion_id IS NOT NULL` })
-    .returning(summaryColumns);
+    .returning(summaryColumns());
   return toSummary(row);
 }
 
 export async function loadOutcomeSummaries(suggestionIds: readonly string[]): Promise<Map<string, OutcomeSummary>> {
   const map = new Map<string, OutcomeSummary>();
   if (suggestionIds.length === 0) return map;
-  const rows = await db.select({ suggestionId: fixOutcomes.suggestionId, ...summaryColumns }).from(fixOutcomes)
+  const rows = await db.select({ suggestionId: fixOutcomes.suggestionId, ...summaryColumns() }).from(fixOutcomes)
     .where(inArray(fixOutcomes.suggestionId, [...suggestionIds]));
   for (const r of rows) {
     const summary = toSummary(r);

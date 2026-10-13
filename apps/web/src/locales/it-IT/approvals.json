@@ -147,5 +147,18 @@
       "private_keys": "Chiavi private (SSH, GnuPG, TLS)",
       "session_tokens": "Token di sessione e credenziali cloud salvati"
     }
+  },
+  "operatorPlan": {
+    "title": "Piano per l’attività dell’operatore IA",
+    "summary_one": "{{count}} effetto, revisione {{revision}} del piano",
+    "summary_other": "{{count}} effetti, revisione {{revision}} del piano",
+    "groupBreeze": "Dispositivi Breeze",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Passaggio {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Gli effetti vengono eseguiti in questo ordine. L’accesso viene disattivato per ultimo, quindi un arresto anticipato non lascia mai la posta senza instradamento.",
+    "empty": "Questo piano non contiene effetti.",
+    "invalid": "Impossibile visualizzare questo piano per intero. Non approvarlo."
   }
 }

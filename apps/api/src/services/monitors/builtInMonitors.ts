@@ -1,8 +1,9 @@
 /**
- * Built-in default monitors — CPU, memory, disk usage, patch compliance, and
- * hardware/RAID health.
+ * Built-in default monitors — CPU, memory, disk usage, patch compliance,
+ * hardware/RAID health, time sync and container image currency.
  *
- * Every partner is provisioned eight PARTNER-WIDE monitor_definitions rows
+ * Every partner is provisioned PARTNER-WIDE monitor_definitions rows (one per
+ * entry in `BUILT_IN_MONITOR_DEFAULTS`)
  * (tagged `builtin_key`). They are NOT attached to any policy: nothing is
  * evaluated until the MSP attaches them to a configuration policy (owner
  * decision 2026-09-13 — no monitoring assigned by default).
@@ -29,7 +30,11 @@ import { monitorDefinitions, partners } from '../../db/schema';
 import { compileMonitorInTx } from './monitorCompiler';
 import { getMonitorKindSpec } from './kinds';
 import type { MonitorKind } from '@breeze/shared';
-import type { HardwareHealthCondition, TimeSyncCondition } from '../alertConditions/types';
+import type {
+  ContainerImageCurrencyCondition,
+  HardwareHealthCondition,
+  TimeSyncCondition,
+} from '../alertConditions/types';
 
 /**
  * Bump this whenever a new entry is added to `BUILT_IN_MONITOR_DEFAULTS` (and
@@ -37,7 +42,7 @@ import type { HardwareHealthCondition, TimeSyncCondition } from '../alertConditi
  * lazily — the next `ensureBuiltInMonitorsForPartner` call (route, boot
  * backfill) inserts only the defaults newer than their stored marker.
  */
-export const BUILT_IN_MONITORS_VERSION = 5;
+export const BUILT_IN_MONITORS_VERSION = 6;
 
 export interface ThresholdDefaultCondition {
   operator: 'gt' | 'gte' | 'lt' | 'lte';
@@ -47,6 +52,7 @@ export interface ThresholdDefaultCondition {
 
 export type HardwareHealthDefaultCondition = Omit<HardwareHealthCondition, 'type'>;
 export type TimeSyncDefaultCondition = Omit<TimeSyncCondition, 'type'>;
+export type ContainerImageCurrencyDefaultCondition = Omit<ContainerImageCurrencyCondition, 'type'>;
 
 export interface BuiltInMonitorDefault {
   key:
@@ -61,11 +67,16 @@ export interface BuiltInMonitorDefault {
     | 'time_source_problem'
     | 'time_sync_stale'
     | 'timezone_mismatch'
-    | 'time_policy_not_applied';
+    | 'time_policy_not_applied'
+    | 'container_image_out_of_date';
   name: string;
   description: string;
   kind: MonitorKind;
-  condition: ThresholdDefaultCondition | HardwareHealthDefaultCondition | TimeSyncDefaultCondition;
+  condition:
+    | ThresholdDefaultCondition
+    | HardwareHealthDefaultCondition
+    | TimeSyncDefaultCondition
+    | ContainerImageCurrencyDefaultCondition;
   severity: 'critical' | 'high' | 'medium' | 'low';
   cooldownMinutes: number;
   /** The `BUILT_IN_MONITORS_VERSION` that introduced this default. */
@@ -237,6 +248,19 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     severity: 'low',
     cooldownMinutes: 60,
     sinceVersion: 5,
+  },
+  {
+    // Workload inventory W06 (#8195). Evaluates only devices whose policy
+    // enables workload inventory (no rows otherwise), once attached.
+    key: 'container_image_out_of_date',
+    name: 'Container image out of date',
+    description:
+      'Alerts when a running container image has been behind its registry tag for 7 days.',
+    kind: 'container_image_currency',
+    condition: { minDaysBehind: 7 },
+    severity: 'low',
+    cooldownMinutes: 1440,
+    sinceVersion: 6,
   },
 ];
 

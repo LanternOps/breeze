@@ -22,12 +22,19 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
-const { legalHoldMock } = vi.hoisted(() => ({
+const { legalHoldMock, findEvidenceHoldMock } = vi.hoisted(() => ({
   legalHoldMock: vi.fn(async () => false),
+  findEvidenceHoldMock: vi.fn(async (_orgId: string): Promise<null | { survivorOrgId: string; mergeEventId: string }> => null),
+}));
+
+vi.mock('../../services/orgEvidenceHold', () => ({
+  EVIDENCE_HOLD_DEFERRED_ACTION: 'tenant.erasure.deferred_evidence_hold',
+  findEvidenceHold: findEvidenceHoldMock,
 }));
 
 vi.mock('../../services/tenantCascade', () => ({
   hasActiveBackupLegalHold: legalHoldMock,
+  EVIDENCE_HOLD_ACTIVE_MESSAGE: 'This organization is kept under an evidence hold.',
   LEGAL_HOLD_ACTIVE_MESSAGE:
     'This organization has one or more backup snapshots under legal hold. '
     + 'Release the hold before erasing the organization.',
@@ -144,6 +151,39 @@ describe('POST /admin/tenant-erasure', () => {
     vi.clearAllMocks();
     orgLookup.current = { id: ORG_ID, name: 'Acme Inc', partnerId: 'p-1' };
     legalHoldMock.mockResolvedValue(false);
+    findEvidenceHoldMock.mockResolvedValue(null);
+  });
+
+  it('returns 409 EVIDENCE_HOLD_ACTIVE, audits the deferral, and does not enqueue when the org is held', async () => {
+    findEvidenceHoldMock.mockResolvedValue({ survivorOrgId: 'survivor-1', mergeEventId: 'merge-evt-1' });
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/tenant-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, confirmEmail: 'admin@breeze.test' }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('EVIDENCE_HOLD_ACTIVE');
+    expect(body.error).toBe('This organization is kept under an evidence hold.');
+    expect(findEvidenceHoldMock).toHaveBeenCalledWith(ORG_ID);
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.deferred_evidence_hold',
+        resourceId: ORG_ID,
+        result: 'failure',
+        details: expect.objectContaining({
+          stage: 'admin_request',
+          reason: 'EVIDENCE_HOLD_ACTIVE',
+          survivorOrgId: 'survivor-1',
+          mergeEventId: 'merge-evt-1',
+        }),
+      }),
+    );
+    expect(createAuditLogMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'tenant.erasure.enqueued' }),
+    );
   });
 
   it('returns 409 and does not enqueue when the org has a snapshot under legal hold', async () => {

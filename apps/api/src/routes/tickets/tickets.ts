@@ -349,6 +349,7 @@ ticketsRoutes.get(
     else if (q.assignee === 'unassigned') conditions.push(isNull(tickets.assignedTo));
     else if (q.assignee) conditions.push(eq(tickets.assignedTo, q.assignee));
     if (q.categoryId) conditions.push(eq(tickets.categoryId, q.categoryId));
+    if (q.ticketType) conditions.push(inArray(tickets.ticketType, q.ticketType));
     if (q.priority) conditions.push(eq(tickets.priority, q.priority));
     if (q.slaState === 'breached') conditions.push(SLA_BREACHED);
     else if (q.slaState === 'at_risk') conditions.push(SLA_AT_RISK);
@@ -378,6 +379,7 @@ ticketsRoutes.get(
         status: tickets.status,
         priority: tickets.priority,
         source: tickets.source,
+        ticketType: tickets.ticketType,
         orgId: tickets.orgId,
         orgName: organizations.name,
         deviceId: tickets.deviceId,
@@ -702,6 +704,13 @@ ticketsRoutes.patch(
       return c.json({ error: 'Assignee is not updatable via PATCH — use POST /tickets/:id/assign' }, 400);
     }
     if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
+
+    // #4617: the budget is the customer's spend ceiling under the approval
+    // gate — a partner-staff decision. Organization scope cannot read the
+    // time entries it is measured against (time_entries has no org-axis RLS).
+    if (auth.scope === 'organization' && (body.budgetMinutes !== undefined || body.budgetAmount !== undefined)) {
+      return c.json({ error: 'The ticket budget can only be set by partner staff', code: ERROR_CODES.ACCESS_DENIED }, 403);
+    }
 
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);

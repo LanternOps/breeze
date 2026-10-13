@@ -65,6 +65,8 @@ describe('closeHourBlockPeriods (real DB) #8181', () => {
       quantity: '2.33', unitPrice: '150.00', lineTotal: '349.50',
       sourceType: 'contract', sourceId: f.blockLineId, sourceContractId: f.contractId,
       parentLineId: null, catalogItemId: null, taxable: true,
+      // #8603: the aggregated overage line spans many days; it is never dated.
+      workDate: null,
     });
     const [row] = await ledger(f);
     expect(row).toMatchObject({ overageHours: '2.33', overageUnitPrice: '150.00', currencyCode: 'USD', closeSource: 'billing_run' });
@@ -87,6 +89,17 @@ describe('closeHourBlockPeriods (real DB) #8181', () => {
     await seedEntry(f, { minutes: 20, billableMinutes: 30, endedAt: '2026-07-10T12:00:00Z' }); // seedEntry sets minimumMinutes 30
     const r = await close(f);
     expect(r.closes[0]!.consumedHours).toBe(0.5);
+  });
+
+  it('never draws time held for customer approval (#4617): it is not drawn down until released', async () => {
+    const f = await seedBlockFixture();
+    await claimPeriod(f, '2026-07-01', '2026-08-01');
+    const held = await seedEntry(f, { minutes: 90, endedAt: '2026-07-10T12:00:00Z', billingStatus: 'awaiting_approval' });
+    const settled = await seedEntry(f, { minutes: 60, endedAt: '2026-07-11T12:00:00Z' });
+    const r = await close(f);
+    expect(r.closes[0]).toMatchObject({ consumedHours: 1, entryCount: 1 });
+    expect(await entryState(held)).toEqual({ billingStatus: 'awaiting_approval', contractLineId: null });
+    expect(await entryState(settled)).toMatchObject({ billingStatus: 'contract', contractLineId: f.blockLineId });
   });
 
   it('ignores no_charge, non-billable, already-billed and card-included entries', async () => {

@@ -1,3 +1,4 @@
+import { AI_DISPATCHABLE_CONNECTION_KINDS } from '@breeze/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import type { ResolvedModel } from './resolveModel';
@@ -224,6 +225,12 @@ describe('W06 gateway kinds', () => {
   it('the binding carries no credential (the gateway secret never reaches a persisted row)', () => {
     const b = turnBindingFrom(makeResolvedModel('openai_compatible'));
     expect(JSON.stringify(b)).not.toContain('sk-fixture-upstream');
+  });
+
+  it('accepts every dispatchable connection kind and no other (#7779)', () => {
+    const b = JSON.parse(JSON.stringify(turnBindingFrom(makeResolvedModel('openai_compatible'))));
+    for (const k of AI_DISPATCHABLE_CONNECTION_KINDS) expect(parseTurnBinding({ ...b, connectionKind: k })).not.toBeNull();
+    expect(parseTurnBinding({ ...b, connectionKind: 'bedrock' })).toBeNull();
   });
 
   it('still rejects an unknown connection kind', () => {

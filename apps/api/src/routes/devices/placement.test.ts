@@ -49,7 +49,12 @@ vi.mock('../../services/assetPlacement', async (importOriginal) => {
 
 import { placementRoutes } from './placement';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
-import { deletePlacement, readPlacement, savePlacement } from '../../services/assetPlacement';
+import {
+  deletePlacement,
+  PlacementConcurrentUpdateError,
+  readPlacement,
+  savePlacement,
+} from '../../services/assetPlacement';
 import { writeRouteAudit } from '../../services/auditEvents';
 
 const device = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'core-sw-01' };
@@ -150,6 +155,22 @@ describe('PUT /devices/:id/placement', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('answers 409 PLACEMENT_CONCURRENT_UPDATE when a concurrent link wins the race, with no audit row', async () => {
+    vi.mocked(readPlacement).mockResolvedValue(null);
+    vi.mocked(savePlacement).mockRejectedValue(new PlacementConcurrentUpdateError());
+    const res = await app().request(`/devices/${DEVICE_ID}/placement`, json({ room: 'MDF' }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONCURRENT_UPDATE' });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('still lets unrelated save failures surface as 500', async () => {
+    vi.mocked(readPlacement).mockResolvedValue(null);
+    vi.mocked(savePlacement).mockRejectedValue(new Error('db down'));
+    const res = await app().request(`/devices/${DEVICE_ID}/placement`, json({ room: 'MDF' }));
+    expect(res.status).toBe(500);
+  });
+
   it('does not write for a missing device or a denied site', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(null);
     expect((await app().request(`/devices/${DEVICE_ID}/placement`, json({ room: 'MDF' }))).status).toBe(404);
@@ -171,11 +192,18 @@ describe('DELETE /devices/:id/placement', () => {
     );
   });
 
-  it('is idempotent and writes no audit when nothing existed', async () => {
+  it('is idempotent but still audits a no-op delete (marked noop)', async () => {
     vi.mocked(readPlacement).mockResolvedValue(null);
     const res = await app().request(`/devices/${DEVICE_ID}/placement`, { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'asset.placement.delete',
+        resourceId: DEVICE_ID,
+        details: { before: null, after: null, noop: true },
+      }),
+    );
   });
 
   it('is 403 for a denied site and does not delete', async () => {

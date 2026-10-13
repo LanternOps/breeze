@@ -28,6 +28,7 @@ import {
   type ContractEstimate,
   type ContractEstimateLine,
   type OverageMode,
+  type RolloverPolicy,
   type UpdateContractLinePatch,
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
@@ -36,10 +37,10 @@ import Pax8CatalogDrawer from '../settings/Pax8CatalogDrawer';
 import ContractPax8Drawer from './ContractPax8Drawer';
 import { listCatalog, resolveCatalogPrice, type CatalogItem, type ResolvedCatalogPrice } from '../../lib/api/catalog';
 import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
-import { formatMoney } from '../billing/invoiceTypes';
+import { formatDate, formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
-import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES } from './lineTypes';
+import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES, HOUR_BLOCK_TYPE } from './lineTypes';
 import DeviceCoverageNotice from './DeviceCoverageNotice';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -60,6 +61,10 @@ interface EditLineDraft {
   includedQuantity: string;
   overageMode: OverageMode;
   overageUnitPrice: string;
+  blockHours: string;
+  blockPolicy: RolloverPolicy;
+  blockCap: string;
+  blockAlert: string;
 }
 
 function integerQuantityForInput(value: string | null): string {
@@ -67,6 +72,10 @@ function integerQuantityForInput(value: string | null): string {
   const quantity = Number(value);
   return Number.isInteger(quantity) ? String(quantity) : value;
 }
+
+const hoursForInput = (v: string | null | undefined): string => (v == null ? '' : String(Number(v)));
+const sameNumber = (a: string | null | undefined, b: string | null | undefined): boolean =>
+  (a == null || a === '') ? (b == null || b === '') : (b != null && b !== '' && Number(a) === Number(b));
 
 function draftFromLine(l: ContractLine): EditLineDraft {
   return {
@@ -78,10 +87,14 @@ function draftFromLine(l: ContractLine): EditLineDraft {
     deviceRoles: (l.deviceRoles ?? []) as Exclude<DeviceRole, 'unknown'>[],
     deviceGroupId: l.deviceGroupId ?? '',
     catalogItemId: l.catalogItemId,
-    allowanceOn: l.includedQuantity != null,
+    allowanceOn: l.includedQuantity != null && l.lineType !== 'hour_block',
     includedQuantity: integerQuantityForInput(l.includedQuantity),
     overageMode: l.overageMode ?? 'bill',
     overageUnitPrice: l.overageUnitPrice ?? '',
+    blockHours: hoursForInput(l.includedQuantity),
+    blockPolicy: (l.rolloverPolicy ?? 'none') as RolloverPolicy,
+    blockCap: hoursForInput(l.rolloverCapHours),
+    blockAlert: l.hourBlockAlertPct == null ? '' : String(l.hourBlockAlertPct),
   };
 }
 
@@ -98,6 +111,19 @@ function allowanceFieldsValid(includedQuantity: string, overageMode: OverageMode
     && (overageMode === 'flag' || MONEY_RE.test(overageUnitPrice));
 }
 
+/** The block fields' grammar, shared by the add form and the edit draft. Hours are
+ *  decimals (2 dp), so MONEY_RE with > 0; the cap only matters under carry_forward. */
+function blockFieldsValid(f: { hours: string; price: string; policy: RolloverPolicy; cap: string; alert: string }): boolean {
+  const hours = f.hours.trim();
+  if (!MONEY_RE.test(hours) || !(Number(hours) > 0)) return false;
+  if (!MONEY_RE.test(f.price.trim())) return false;
+  const cap = f.cap.trim();
+  if (f.policy === 'carry_forward' && cap !== '' && !(MONEY_RE.test(cap) && Number(cap) > 0)) return false;
+  const alert = f.alert.trim();
+  if (alert !== '' && !(/^\d+$/.test(alert) && Number(alert) >= 1 && Number(alert) <= 100)) return false;
+  return true;
+}
+
 function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePatch {
   const patch: UpdateContractLinePatch = {};
   if (d.description.trim() !== l.description) patch.description = d.description.trim();
@@ -110,6 +136,19 @@ function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePa
     if (d.catalogItemId && d.catalogItemId !== l.catalogItemId) patch.catalogItemId = d.catalogItemId;
     if (d.catalogItemId === null && d.unitPrice !== l.unitPrice) patch.unitPrice = d.unitPrice;
     if (d.catalogItemId === null && d.taxable !== l.taxable) patch.taxable = d.taxable;
+  }
+
+  if (l.lineType === 'hour_block') {
+    // overageMode is never sent (Open Decision 10); the generic allowance branch below
+    // must not run for a block or a rename would send includedQuantity: null.
+    if (!sameNumber(d.blockHours, l.includedQuantity)) patch.includedQuantity = d.blockHours.trim();
+    if (!sameNumber(d.overageUnitPrice, l.overageUnitPrice)) patch.overageUnitPrice = d.overageUnitPrice.trim();
+    if (d.blockPolicy !== (l.rolloverPolicy ?? 'none')) patch.rolloverPolicy = d.blockPolicy;
+    const cap = d.blockPolicy === 'carry_forward' && d.blockCap.trim() !== '' ? d.blockCap.trim() : null;
+    if (!sameNumber(cap, l.rolloverCapHours ?? null)) patch.rolloverCapHours = cap;
+    const alert = d.blockAlert.trim() === '' ? null : Number(d.blockAlert);
+    if (alert !== (l.hourBlockAlertPct ?? null)) patch.hourBlockAlertPct = alert;
+    return patch;
   }
 
   if (l.lineType === 'manual' && d.manualQuantity !== (l.manualQuantity ?? '0')) patch.manualQuantity = d.manualQuantity;
@@ -136,6 +175,10 @@ function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePa
 
 function editDraftIncomplete(l: ContractLine, d: EditLineDraft): boolean {
   if (!d.description.trim()) return true;
+  if (l.lineType === 'hour_block') {
+    return !blockFieldsValid({ hours: d.blockHours, price: d.overageUnitPrice, policy: d.blockPolicy, cap: d.blockCap, alert: d.blockAlert })
+      || (d.catalogItemId === null && !MONEY_RE.test(d.unitPrice));
+  }
   if (l.lineType === 'per_device_role' && d.deviceRoles.length === 0) return true;
   if (l.lineType === 'per_device_group' && !d.deviceGroupId) return true;
   if (l.lineType === 'manual' && !MONEY_RE.test(d.manualQuantity)) return true;
@@ -258,6 +301,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   const [lineIncludedQty, setLineIncludedQty] = useState('');
   const [lineOverageMode, setLineOverageMode] = useState<OverageMode>('bill');
   const [lineOveragePrice, setLineOveragePrice] = useState('');
+  // #4547: block-hours add-form fields; reset whenever the line type changes.
+  const [lineBlockHours, setLineBlockHours] = useState('');
+  const [lineBlockRollover, setLineBlockRollover] = useState<RolloverPolicy>('none');
+  const [lineBlockCap, setLineBlockCap] = useState('');
+  const [lineBlockAlert, setLineBlockAlert] = useState('');
   const [lineGroupId, setLineGroupId] = useState('');
   const [editingLineId, setEditingLineId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditLineDraft | null>(null);
@@ -491,6 +539,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
     let known = 0;
     let hasAuto = false;
     for (const l of lines) {
+      if (l.lineType === 'hour_block' && l.hourBlockRetiredAt) continue;
       if (AUTO_QTY_TYPES.has(l.lineType)) { hasAuto = true; continue; }
       const qty = l.lineType === 'manual' ? Number(l.manualQuantity ?? '0') : 1;
       known += qty * Number(l.unitPrice);
@@ -565,6 +614,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   const allowanceOn = lineAllowanceOn && ALLOWANCE_TYPES.has(lineType);
   const allowanceIncomplete = allowanceOn
     && !allowanceFieldsValid(lineIncludedQty, lineOverageMode, lineOveragePrice);
+  // #4547: the block branch of the add form. One live block per contract here; the
+  // server's per-org unique index is the real guard (HOUR_BLOCK_EXISTS).
+  const blockSelected = lineType === HOUR_BLOCK_TYPE;
+  const liveBlockOnContract = lines.some((l) => l.lineType === 'hour_block' && !l.hourBlockRetiredAt);
+  const blockIncomplete = blockSelected && !blockFieldsValid({
+    hours: lineBlockHours, price: lineOveragePrice, policy: lineBlockRollover, cap: lineBlockCap, alert: lineBlockAlert,
+  });
+  const blockBlocked = blockSelected && (blockIncomplete || liveBlockOnContract);
   // #3205 W03: lines are editable on draft/active only (assertEditable). Remove
   // was gated on permission ALONE and 409'd on click for cancelled/expired.
   const linesEditable = canWrite && (contract?.status === 'draft' || contract?.status === 'active');
@@ -743,7 +800,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete) return;
+    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked) return;
     setBusy(true);
     try {
       await runAction({
@@ -761,20 +818,27 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           deviceGroupId: lineType === 'per_device_group' ? lineGroupId : undefined,
           catalogItemId: lineCatalogItem?.id,
           taxable: lineCatalogItem ? undefined : lineTaxable,
-          includedQuantity: allowanceOn ? lineIncludedQty : undefined,
-          overageMode: allowanceOn ? lineOverageMode : undefined,
-          overageUnitPrice: allowanceOn && lineOverageMode === 'bill' ? lineOveragePrice : undefined,
+          includedQuantity: blockSelected ? lineBlockHours.trim() : (allowanceOn ? lineIncludedQty : undefined),
+          overageMode: blockSelected ? 'bill' : (allowanceOn ? lineOverageMode : undefined),
+          overageUnitPrice: blockSelected
+            ? lineOveragePrice.trim()
+            : (allowanceOn && lineOverageMode === 'bill' ? lineOveragePrice : undefined),
+          rolloverPolicy: blockSelected ? lineBlockRollover : undefined,
+          rolloverCapHours: blockSelected && lineBlockRollover === 'carry_forward' && lineBlockCap.trim() !== '' ? lineBlockCap.trim() : undefined,
+          hourBlockAlertPct: blockSelected && lineBlockAlert.trim() !== '' ? Number(lineBlockAlert) : undefined,
         }),
         errorFallback: t('contracts.contractEditor.errors.addLine'),
-        friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY'
-          ? t('contracts.contractEditor.errors.noPriceForCurrency', { currency: contract.currencyCode })
-          : undefined),
+        friendly: (code) => ({
+          NO_PRICE_FOR_CURRENCY: t('contracts.contractEditor.errors.noPriceForCurrency', { currency: contract.currencyCode }),
+          HOUR_BLOCK_EXISTS: t('contracts.hourBlock.errors.exists'),
+        } as Record<string, string>)[code],
         successMessage: t('contracts.contractEditor.toast.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
       setLineRoles([]);
       setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
+      setLineBlockHours(''); setLineBlockRollover('none'); setLineBlockCap(''); setLineBlockAlert('');
       setLineGroupId('');
       setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
@@ -783,15 +847,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, lineAllowanceOn, lineIncludedQty, lineOverageMode, lineOveragePrice, allowanceOn, allowanceIncomplete, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
+  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, lineAllowanceOn, lineIncludedQty, lineOverageMode, lineOveragePrice, lineBlockHours, lineBlockRollover, lineBlockCap, lineBlockAlert, blockSelected, blockBlocked, allowanceOn, allowanceIncomplete, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
       if (!contract) return;
-      await runAction({
+      await runAction<{ data?: { ok?: boolean; retired?: boolean } }>({
         request: () => removeContractLine(contract.id, lineId),
         errorFallback: t('contracts.contractEditor.errors.removeLine'),
-        successMessage: t('contracts.contractEditor.toast.lineRemoved'),
+        successMessage: (r) => (r?.data?.retired
+          ? t('contracts.hourBlock.retire.toast')
+          : t('contracts.contractEditor.toast.lineRemoved')),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
@@ -813,6 +879,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           SITE_NOT_IN_ORG: t('contracts.contractEditor.errors.siteNotInOrg'),
           GROUP_NOT_IN_ORG: t('contracts.contractEditor.errors.groupNotInOrg'),
           INVALID_LINE_PATCH: t('contracts.contractEditor.errors.invalidLinePatch'),
+          HOUR_BLOCK_FIELD_LOCKED: t('contracts.hourBlock.errors.locked'),
+          HOUR_BLOCK_EXISTS: t('contracts.hourBlock.errors.exists'),
         } as Record<string, string>)[code],
         successMessage: t('contracts.contractEditor.toast.lineUpdated'),
         onUnauthorized: UNAUTHORIZED,
@@ -1192,6 +1260,61 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                                         </select>
                                       </label>
                                     )}
+                                    {l.lineType === 'hour_block' && (
+                                      <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground" data-testid={`line-edit-block-fields-${idx}`}>
+                                        {/* Open Decision 15: the close reads the line as it is, so an edit moves the open period's figures. */}
+                                        <span data-testid={`line-edit-block-midperiod-${idx}`}>
+                                          {liveEstimate?.hourBlock
+                                            ? t('contracts.hourBlock.form.midPeriodEdit', { start: formatDate(liveEstimate.hourBlock.periodStart), end: formatDate(liveEstimate.hourBlock.periodEnd) })
+                                            : t('contracts.hourBlock.form.midPeriodEditNoDates')}
+                                        </span>
+                                        <label className="flex flex-col gap-1">
+                                          {t('contracts.hourBlock.form.hoursPerPeriod')}
+                                          <input type="number" min="0.01" step="0.01" value={d.blockHours}
+                                            onChange={(e) => setEditDraft({ ...d, blockHours: e.target.value })}
+                                            data-testid={`line-edit-block-hours-${idx}`}
+                                            className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                                        </label>
+                                        <label className="flex flex-col gap-1">
+                                          {t('contracts.hourBlock.form.extraRate')}
+                                          <input type="number" min="0" step="0.01" value={d.overageUnitPrice}
+                                            onChange={(e) => setEditDraft({ ...d, overageUnitPrice: e.target.value })}
+                                            data-testid={`line-edit-block-extra-rate-${idx}`}
+                                            className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                                        </label>
+                                        <fieldset className="flex flex-col gap-1">
+                                          <legend>{t('contracts.hourBlock.form.rolloverMode')}</legend>
+                                          <div className="flex flex-wrap gap-3 text-sm text-foreground">
+                                            <label className="inline-flex items-center gap-1.5">
+                                              <input type="radio" name={`edit-rollover-${l.id}`} checked={d.blockPolicy === 'none'}
+                                                onChange={() => setEditDraft({ ...d, blockPolicy: 'none', blockCap: '' })}
+                                                data-testid={`line-edit-block-rollover-none-${idx}`} />
+                                              {t('contracts.hourBlock.form.rolloverExpire')}
+                                            </label>
+                                            <label className="inline-flex items-center gap-1.5">
+                                              <input type="radio" name={`edit-rollover-${l.id}`} checked={d.blockPolicy === 'carry_forward'}
+                                                onChange={() => setEditDraft({ ...d, blockPolicy: 'carry_forward' })}
+                                                data-testid={`line-edit-block-rollover-carry-${idx}`} />
+                                              {t('contracts.hourBlock.form.rolloverCarry')}
+                                            </label>
+                                          </div>
+                                        </fieldset>
+                                        <label className="flex flex-col gap-1">
+                                          {t('contracts.hourBlock.form.carryCap')}
+                                          <input type="number" min="0.01" step="0.01" value={d.blockCap} disabled={d.blockPolicy !== 'carry_forward'}
+                                            onChange={(e) => setEditDraft({ ...d, blockCap: e.target.value })}
+                                            data-testid={`line-edit-block-cap-${idx}`}
+                                            className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60" />
+                                        </label>
+                                        <label className="flex flex-col gap-1">
+                                          {t('contracts.hourBlock.form.alertPct')}
+                                          <input type="number" min="1" max="100" step="1" value={d.blockAlert}
+                                            onChange={(e) => setEditDraft({ ...d, blockAlert: e.target.value })}
+                                            data-testid={`line-edit-block-alert-${idx}`}
+                                            className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                                        </label>
+                                      </fieldset>
+                                    )}
                                     {ALLOWANCE_TYPES.has(l.lineType) && (
                                       <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground sm:col-span-2">
                                         <label className="flex items-center gap-2 text-sm text-foreground">
@@ -1404,6 +1527,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                                           : t('contracts.shared.deletedGroup', { name: l.deviceGroupName ?? '' })}
                                       </span>
                                     : null}
+                                  {l.lineType === 'hour_block'
+                                    ? <span className="block text-xs text-muted-foreground" data-testid={`line-block-summary-${idx}`}>
+                                        {l.hourBlockRetiredAt
+                                          ? t('contracts.hourBlock.row.retiredBadge')
+                                          : (l.hourBlockFirstPeriodStart ? t('contracts.hourBlock.row.startsOn', { date: formatDate(l.hourBlockFirstPeriodStart) }) : null)}
+                                      </span>
+                                    : null}
                                 </td>
                                 <td className="px-3 py-2">{l.description}</td>
                                 <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, contract?.currencyCode)}</td>
@@ -1412,7 +1542,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                                 </td>
                                 <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
                                 <td className="px-3 py-2 text-right">
-                                  {linesEditable && (
+                                  {linesEditable && !(l.lineType === 'hour_block' && l.hourBlockRetiredAt) && (
                                     <div className="flex justify-end gap-2">
                                       <button
                                         type="button"
@@ -1505,6 +1635,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                         setLineType(e.target.value as ContractLineType);
                         setLineSiteId(''); setLineRoles([]); setLineGroupId('');
                         setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
+                        setLineBlockHours(''); setLineBlockRollover('none'); setLineBlockCap(''); setLineBlockAlert('');
                       }}
                       data-testid="contract-line-type"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -1638,6 +1769,64 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                       </select>
                     </label>
                   )}
+                  {blockSelected && (
+                    <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground sm:col-span-2" data-testid="contract-line-block-fields">
+                      <span data-testid="contract-line-block-firstperiod">{t('contracts.hourBlock.form.firstPeriod')}</span>
+                      {liveBlockOnContract && (
+                        <span className="text-amber-600 dark:text-amber-500" data-testid="contract-line-block-exists">
+                          {t('contracts.hourBlock.form.onlyOne')}
+                        </span>
+                      )}
+                      <label className="flex flex-col gap-1">
+                        {t('contracts.hourBlock.form.hoursPerPeriod')}
+                        <input type="number" min="0.01" step="0.01" value={lineBlockHours}
+                          onChange={(e) => setLineBlockHours(e.target.value)} data-testid="contract-line-block-hours"
+                          className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        {t('contracts.hourBlock.form.extraRate')}
+                        <input type="number" min="0" step="0.01" value={lineOveragePrice}
+                          onChange={(e) => setLineOveragePrice(e.target.value)} data-testid="contract-line-block-extra-rate"
+                          className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                        {lineOveragePrice !== '' && !MONEY_RE.test(lineOveragePrice.trim()) && (
+                          <span className="text-xs text-destructive" data-testid="contract-line-block-extra-rate-invalid">
+                            {t('contracts.contractEditor.addLine.priceNotRepresentable', { currency: contractCurrency })}
+                          </span>
+                        )}
+                      </label>
+                      <fieldset className="flex flex-col gap-1">
+                        <legend>{t('contracts.hourBlock.form.rolloverMode')}</legend>
+                        <div className="flex flex-wrap gap-3 text-sm text-foreground">
+                          <label className="inline-flex items-center gap-1.5">
+                            <input type="radio" name="block-rollover" checked={lineBlockRollover === 'none'}
+                              onChange={() => { setLineBlockRollover('none'); setLineBlockCap(''); }}
+                              data-testid="contract-line-block-rollover-none" />
+                            {t('contracts.hourBlock.form.rolloverExpire')}
+                          </label>
+                          <label className="inline-flex items-center gap-1.5">
+                            <input type="radio" name="block-rollover" checked={lineBlockRollover === 'carry_forward'}
+                              onChange={() => setLineBlockRollover('carry_forward')} data-testid="contract-line-block-rollover-carry" />
+                            {t('contracts.hourBlock.form.rolloverCarry')}
+                          </label>
+                        </div>
+                      </fieldset>
+                      <label className="flex flex-col gap-1">
+                        {t('contracts.hourBlock.form.carryCap')}
+                        <input type="number" min="0.01" step="0.01" value={lineBlockCap} disabled={lineBlockRollover !== 'carry_forward'}
+                          onChange={(e) => setLineBlockCap(e.target.value)} data-testid="contract-line-block-cap"
+                          className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60" />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        {t('contracts.hourBlock.form.alertPct')}
+                        <input type="number" min="1" max="100" step="1" value={lineBlockAlert}
+                          onChange={(e) => setLineBlockAlert(e.target.value)} data-testid="contract-line-block-alert"
+                          className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring" />
+                      </label>
+                      {blockIncomplete && (
+                        <span className="text-amber-600 dark:text-amber-500" data-testid="contract-line-block-required">{t('contracts.hourBlock.form.required')}</span>
+                      )}
+                    </fieldset>
+                  )}
                   {ALLOWANCE_TYPES.has(lineType) && (
                     <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground sm:col-span-2">
                       <label className="flex items-center gap-2 text-sm text-foreground">
@@ -1750,7 +1939,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete}
+                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
@@ -1869,13 +2058,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           })();
         }}
         isLoading={pendingRemove ? isPending(`remove-${pendingRemove.id}`) : false}
-        title={t('contracts.contractEditor.removeLineConfirm.title')}
+        title={pendingRemove?.lineType === 'hour_block' && pendingRemove.hourBlockHasHistory
+          ? t('contracts.hourBlock.retire.title') : t('contracts.contractEditor.removeLineConfirm.title')}
         message={
           pendingRemove
-            ? t('contracts.contractEditor.removeLineConfirm.message', { description: pendingRemove.description || t('contracts.contractEditor.removeLineConfirm.thisLine') })
+            ? (pendingRemove.lineType === 'hour_block' && pendingRemove.hourBlockHasHistory
+                ? t('contracts.hourBlock.retire.message', { description: pendingRemove.description })
+                : t('contracts.contractEditor.removeLineConfirm.message', { description: pendingRemove.description || t('contracts.contractEditor.removeLineConfirm.thisLine') }))
             : ''
         }
-        confirmLabel={t('contracts.contractEditor.removeLineConfirm.confirm')}
+        confirmLabel={pendingRemove?.lineType === 'hour_block' && pendingRemove.hourBlockHasHistory
+          ? t('contracts.hourBlock.retire.confirm') : t('contracts.contractEditor.removeLineConfirm.confirm')}
         confirmTestId="contract-line-remove-confirm"
       />
     </div>

@@ -23,13 +23,15 @@ describe('version 5 time and historical hardware defaults', () => {
     'timezone_mismatch',
     'time_policy_not_applied',
   ];
+  const imageKeys = ['container_image_out_of_date'];
 
-  it('has twelve valid defaults with preserved version gates', () => {
-    expect(BUILT_IN_MONITORS_VERSION).toBe(5);
-    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(12);
+  it('has thirteen valid defaults with preserved version gates', () => {
+    expect(BUILT_IN_MONITORS_VERSION).toBe(6);
+    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(13);
     expect(defaultsToProvision(2).map((d) => d.key)).toEqual([
       ...keys,
       ...timeKeys,
+      ...imageKeys,
     ]);
     for (const d of BUILT_IN_MONITOR_DEFAULTS) {
       expect(
@@ -40,17 +42,20 @@ describe('version 5 time and historical hardware defaults', () => {
   });
 
   it('preserves historical version gates', () => {
-    expect(defaultsToProvision(null)).toHaveLength(12);
+    expect(defaultsToProvision(null)).toHaveLength(13);
     expect(defaultsToProvision(1).map((d) => d.key)).toEqual([
       'patch_compliance_low',
       ...keys,
       ...timeKeys,
+      ...imageKeys,
     ]);
-    expect(defaultsToProvision(3).map((d) => d.key)).toEqual(timeKeys);
+    expect(defaultsToProvision(3).map((d) => d.key)).toEqual([...timeKeys, ...imageKeys]);
     expect(defaultsToProvision(4).map((d) => d.key)).toEqual([
       'time_policy_not_applied',
+      ...imageKeys,
     ]);
-    expect(defaultsToProvision(5)).toEqual([]);
+    expect(defaultsToProvision(5).map((d) => d.key)).toEqual(imageKeys);
+    expect(defaultsToProvision(6)).toEqual([]);
     expect(
       BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 1).map(
         (d) => d.key,

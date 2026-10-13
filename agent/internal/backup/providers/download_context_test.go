@@ -80,6 +80,9 @@ type ctxRecordingProvider struct {
 	ctxCalls int
 	err      error
 	block    bool
+	// entered, when non-nil, is closed the first time DownloadContext runs, so
+	// a test can wait for the call instead of guessing with a timer.
+	entered chan struct{}
 }
 
 func (p *ctxRecordingProvider) Upload(string, string) error   { return nil }
@@ -99,7 +102,11 @@ func (p *ctxRecordingProvider) Download(_, localPath string) error {
 func (p *ctxRecordingProvider) DownloadContext(ctx context.Context, _, localPath string) error {
 	p.mu.Lock()
 	p.ctxCalls++
+	first := p.ctxCalls == 1
 	p.mu.Unlock()
+	if first && p.entered != nil {
+		close(p.entered)
+	}
 	if p.block {
 		<-ctx.Done()
 		return ctx.Err()
@@ -110,22 +117,70 @@ func (p *ctxRecordingProvider) DownloadContext(ctx context.Context, _, localPath
 	return os.WriteFile(localPath, []byte("ok"), 0o644)
 }
 
+func (p *ctxRecordingProvider) counts() (calls, ctxCalls int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls, p.ctxCalls
+}
+
+// The context is cancelled only after the primary has entered DownloadContext,
+// so the assertion cannot depend on how fast the runner schedules the call
+// (#8534: a 50ms wall-clock deadline expired before the first call on a loaded
+// -race runner, and the fallback correctly refused to start).
 func TestFallbackProvider_DownloadContext_PassesContextAndStopsWhenDone(t *testing.T) {
-	primary := &ctxRecordingProvider{block: true}
+	primary := &ctxRecordingProvider{block: true, entered: make(chan struct{})}
 	secondary := &ctxRecordingProvider{}
 	f := NewFallbackProvider(primary, secondary)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	out := filepath.Join(t.TempDir(), "out")
+	done := make(chan error, 1)
+	go func() {
+		done <- f.DownloadContext(ctx, "a/b", out)
+	}()
+
+	select {
+	case <-primary.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary DownloadContext was never called")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DownloadContext did not return after its context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls, ctxCalls := primary.counts(); ctxCalls != 1 || calls != 0 {
+		t.Fatalf("primary ctxCalls=%d calls=%d, want the context-aware path used once", ctxCalls, calls)
+	}
+	if calls, ctxCalls := secondary.counts(); ctxCalls != 0 || calls != 0 {
+		t.Fatalf("secondary was tried after the context expired (ctxCalls=%d calls=%d)", ctxCalls, calls)
+	}
+}
+
+// A context that is already done before the call starts must not reach any
+// provider; this is the behaviour the flaky test above used to trip over.
+func TestFallbackProvider_DownloadContext_ExpiredContextCallsNoProvider(t *testing.T) {
+	primary := &ctxRecordingProvider{}
+	secondary := &ctxRecordingProvider{}
+	f := NewFallbackProvider(primary, secondary)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	err := f.DownloadContext(ctx, "a/b", filepath.Join(t.TempDir(), "out"))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if primary.ctxCalls != 1 || primary.calls != 0 {
-		t.Fatalf("primary ctxCalls=%d calls=%d, want the context-aware path used once", primary.ctxCalls, primary.calls)
-	}
-	if secondary.ctxCalls != 0 || secondary.calls != 0 {
-		t.Fatalf("secondary was tried after the context expired (ctxCalls=%d calls=%d)", secondary.ctxCalls, secondary.calls)
+	for name, p := range map[string]*ctxRecordingProvider{"primary": primary, "secondary": secondary} {
+		if calls, ctxCalls := p.counts(); calls != 0 || ctxCalls != 0 {
+			t.Fatalf("%s called with an already-done context (ctxCalls=%d calls=%d)", name, ctxCalls, calls)
+		}
 	}
 }
 

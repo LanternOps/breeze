@@ -127,6 +127,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		onClipboardSummary: m.OnClipboardSummary,
 	}
 	session.cursorStreamEnabled.Store(false)
+	session.wireInputEpochHooks()
 
 	m.mu.Lock()
 	m.sessions[sessionID] = session
@@ -465,23 +466,32 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Handle incoming data channels (input + control from viewer)
 	peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch dc.Label() {
-		case "input":
-			session.mu.Lock()
-			session.dataChannel = dc
-			session.mu.Unlock()
+		label := dc.Label()
+		switch label {
+		case "input", "input-r":
+			reliable := isReliableOrdered(dc.Ordered(), dc.MaxRetransmits(), dc.MaxPacketLifeTime())
+			if !session.acceptViewerChannel(label, dc, reliable) {
+				_ = dc.Close()
+				return
+			}
+			if label == "input" {
+				session.mu.Lock()
+				session.dataChannel = dc
+				session.mu.Unlock()
+			}
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.onViewerDataChannelMessage("input", msg.Data)
+				session.viewerChannelMessage(label, dc, msg.Data)
 			})
-			dc.OnClose(func() { session.onViewerDataChannelClosed("input") })
+			dc.OnClose(func() { session.onViewerChannelClosed(label, dc) })
 		case "control":
 			session.mu.Lock()
 			session.controlDC = dc
 			session.mu.Unlock()
+			session.onViewerChannelAttached("control", dc)
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.onViewerDataChannelMessage("control", msg.Data)
+				session.viewerChannelMessage("control", dc, msg.Data)
 			})
-			dc.OnClose(func() { session.onViewerDataChannelClosed("control") })
+			dc.OnClose(func() { session.onViewerChannelClosed("control", dc) })
 			dc.OnOpen(func() {
 				// Send the current cached desktop state to this viewer so it
 				// gets an initial state even if it connected after the watcher

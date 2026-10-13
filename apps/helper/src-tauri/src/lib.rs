@@ -1,3 +1,4 @@
+mod app_shell;
 mod ipc;
 mod single_instance;
 mod workspace_open;
@@ -95,8 +96,8 @@ fn log_helper_error(msg: &str) {
 }
 
 fn helper_token_from_config(
-    yaml: &serde_yaml::Value,
-    secrets: Option<&serde_yaml::Value>,
+    yaml: &serde_norway::Value,
+    secrets: Option<&serde_norway::Value>,
 ) -> Option<String> {
     secrets
         .and_then(|s| s.get("helper_auth_token"))
@@ -112,10 +113,10 @@ const HELPER_TOKEN_FILE_NAME: &str = "helper_token.yaml";
 
 /// Read and parse a YAML file. Missing, unreadable (e.g. secrets.yaml, which
 /// only SYSTEM/root can read) or malformed files are simply absent.
-fn read_yaml_file(path: &Path) -> Option<serde_yaml::Value> {
+fn read_yaml_file(path: &Path) -> Option<serde_norway::Value> {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|s| serde_yaml::from_str(&s).ok())
+        .and_then(|s| serde_norway::from_str(&s).ok())
 }
 
 /// Pick the on-disk helper token from the most authoritative source this user
@@ -124,9 +125,9 @@ fn read_yaml_file(path: &Path) -> Option<serde_yaml::Value> {
 /// the agent's own LoadHelperConfig. Empty values are skipped. Never falls
 /// back to the full agent bearer token (`auth_token`).
 fn file_helper_token(
-    yaml: Option<&serde_yaml::Value>,
-    secrets: Option<&serde_yaml::Value>,
-    helper_token_file: Option<&serde_yaml::Value>,
+    yaml: Option<&serde_norway::Value>,
+    secrets: Option<&serde_norway::Value>,
+    helper_token_file: Option<&serde_norway::Value>,
 ) -> Option<String> {
     [secrets, helper_token_file, yaml]
         .into_iter()
@@ -162,7 +163,7 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         "Breeze Assist requires the Breeze agent. Ensure the Breeze agent is installed and running on this device.".to_string()
     })?;
 
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
+    let yaml: serde_norway::Value = serde_norway::from_str(&contents).map_err(|e| {
         log_helper_error(&format!(
             "failed to parse agent config at {}: {}",
             path.display(),
@@ -187,9 +188,9 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
 /// macOS/Linux agents since v0.118.0 no longer write it to agent.yaml, and the
 /// agent delivers it over IPC in any case.
 fn agent_config_from_yaml(
-    yaml: &serde_yaml::Value,
-    secrets: Option<&serde_yaml::Value>,
-    helper_token_file: Option<&serde_yaml::Value>,
+    yaml: &serde_norway::Value,
+    secrets: Option<&serde_norway::Value>,
+    helper_token_file: Option<&serde_norway::Value>,
 ) -> Result<AgentConfigFull, String> {
     let api_url = yaml
         .get("server_url")
@@ -351,7 +352,7 @@ fn resolve_helper_config_path() -> PathBuf {
 fn load_helper_config() -> HelperConfig {
     let path = resolve_helper_config_path();
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_yaml::from_str(&contents) {
+        Ok(contents) => match serde_norway::from_str(&contents) {
             Ok(cfg) => cfg,
             Err(e) => {
                 // A corrupt/partial config silently reverts the tray to the
@@ -390,7 +391,7 @@ fn load_agent_server_url() -> Result<String, String> {
         ));
         "Breeze agent configuration is unavailable.".to_string()
     })?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
+    let yaml: serde_norway::Value = serde_norway::from_str(&contents).map_err(|e| {
         log_helper_error(&format!(
             "failed to parse agent config at {}: {}",
             path.display(),
@@ -450,7 +451,7 @@ fn write_status_file(chat_active: bool) {
     };
     let path = helper_status_path();
     cleanup_legacy_status_file(&path);
-    if let Ok(yaml) = serde_yaml::to_string(&status) {
+    if let Ok(yaml) = serde_norway::to_string(&status) {
         // Atomic write: temp file + rename
         let tmp_path = path.with_extension("yaml.tmp");
         if std::fs::write(&tmp_path, &yaml).is_ok() {
@@ -689,6 +690,13 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Show the main window and bring it to focus.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        // macOS (#8399): with no Dock icon (Accessory policy) there is no
+        // other way back for a minimized window; show() and set_focus() do
+        // not deminiaturize it.
+        #[cfg(target_os = "macos")]
+        if let Err(e) = window.unminimize() {
+            eprintln!("[helper] Failed to unminimize window: {}", e);
+        }
         if let Err(e) = window.show() {
             eprintln!("[helper] Failed to show window: {}", e);
         }
@@ -785,6 +793,41 @@ fn consent_presented(app: tauri::AppHandle, nonce: String) {
 fn get_consent_request(app: tauri::AppHandle) -> Option<serde_json::Value> {
     app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>()
         .and_then(|bridge| bridge.current())
+}
+
+/// The pending caller-verification request for this window. Only the window
+/// labelled `caller-verify-<verification_id>` may read it.
+#[tauri::command]
+fn get_caller_verify_request(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::caller_verify::CallerVerifyBridge>>,
+    verification_id: String,
+) -> Result<crate::ipc::caller_verify::View, String> {
+    if !crate::ipc::caller_verify::label_matches(window.label(), &verification_id) {
+        return Err("wrong window".into());
+    }
+    bridge
+        .get(&verification_id)
+        .ok_or_else(|| "request unavailable".into())
+}
+
+/// Submit the local user's choice (`<one of the 3 numbers>` | `not_me` |
+/// `timeout`). Single-use; the Rust side enforces the deadline. Closes the
+/// window on success.
+#[tauri::command]
+fn submit_caller_verify(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::caller_verify::CallerVerifyBridge>>,
+    verification_id: String,
+    choice: String,
+) -> Result<(), String> {
+    if !crate::ipc::caller_verify::label_matches(window.label(), &verification_id) {
+        return Err("wrong window".into());
+    }
+    bridge.submit(&verification_id, &choice)?;
+    // The answer is already queued; a failed close must not look like a failed submit.
+    let _ = window.close();
+    Ok(())
 }
 
 /// Update the helper status file when chat activity changes.
@@ -1354,13 +1397,20 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_flags())
                 .build(),
-        )
+        );
+
+    // macOS (#8399): replace Tauri's default app menu, whose Quit item
+    // (Cmd+Q) terminates Assist with no chance to cancel. See app_shell.rs.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(app_shell::build_macos_app_menu);
+
+    builder
         .invoke_handler(tauri::generate_handler![
             read_agent_config,
             helper_fetch,
@@ -1374,9 +1424,18 @@ pub fn run() {
             submit_consent,
             consent_presented,
             get_consent_request,
+            get_caller_verify_request,
+            submit_caller_verify,
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
+            // macOS (#8399): menu-bar only. Accessory removes the Dock icon,
+            // the Dock's Quit entry and the menu bar; Assist is reached from
+            // the tray icon. Set before the event loop starts, so there is no
+            // Dock icon at launch.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Create main window manually (not from config) so we can set
             // a custom WebView2 data directory when running as SYSTEM.
             // The agent service spawns this process with a SYSTEM token
@@ -1505,6 +1564,11 @@ pub fn run() {
                 "open_assist" | "request_support" => {
                     show_window(&menu_handle);
                 }
+                // macOS app menu Cmd+Q (#8399): hide, never quit.
+                #[cfg(target_os = "macos")]
+                app_shell::HIDE_WINDOW_MENU_ID => {
+                    hide_window(menu_handle.clone());
+                }
                 "open_portal" => {
                     let config = load_helper_config();
                     let agent_api_url = load_agent_server_url().ok();
@@ -1540,11 +1604,11 @@ pub fn run() {
             let reload_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 let mut last_config =
-                    serde_yaml::to_string(&load_helper_config()).unwrap_or_default();
+                    serde_norway::to_string(&load_helper_config()).unwrap_or_default();
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     let new_config = load_helper_config();
-                    let new_yaml = serde_yaml::to_string(&new_config).unwrap_or_default();
+                    let new_yaml = serde_norway::to_string(&new_config).unwrap_or_default();
                     if new_yaml != last_config {
                         eprintln!("[helper] Config changed, rebuilding tray menu");
                         if let Some(tray) = reload_handle.tray_by_id("main") {
@@ -1578,9 +1642,15 @@ pub fn run() {
             // Tauri command (which the React consent window invokes).
             let bridge = std::sync::Arc::new(crate::ipc::desktop::ConsentBridge::default());
             app.manage(bridge.clone());
+            // Caller verification (W02): pending prompts for the
+            // `caller-verify-<id>` windows, shared with the IPC loop.
+            let caller_verify =
+                std::sync::Arc::new(crate::ipc::caller_verify::CallerVerifyBridge::default());
+            app.manage(caller_verify.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
                 bridge,
+                caller_verify,
             };
             let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
                 stop: stop_rx,
@@ -1593,11 +1663,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
-            // macOS: re-opening the app from the Dock or Finder while it runs
-            // hidden in the tray must bring the window back (#8138).
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                show_window(_app);
+            match _event {
+                // Re-opening the app from Finder while it runs hidden in the
+                // tray must bring the window back (#8138).
+                tauri::RunEvent::Reopen { .. } => show_window(_app),
+                // #8399 safety net: keep running on a user-initiated exit
+                // request; programmatic `app.exit(code)` always goes through.
+                // This does NOT see Cmd+Q, which ends the loop via
+                // `terminate:` -> `RunEvent::Exit`; the app menu handles that.
+                tauri::RunEvent::ExitRequested { code, api, .. }
+                    if app_shell::should_prevent_exit(code) =>
+                {
+                    api.prevent_exit();
+                }
+                _ => {}
             }
         });
 }
@@ -1745,10 +1825,41 @@ mod tests {
     // agent still carries `show_tray_icon`; it must parse and be ignored.
     #[test]
     fn helper_config_ignores_legacy_show_tray_icon_key() {
-        let cfg: HelperConfig = serde_yaml::from_str("show_tray_icon: false\n")
+        let cfg: HelperConfig = serde_norway::from_str("show_tray_icon: false\n")
             .expect("parse helper config written by a pre-#8138 agent");
         assert!(cfg.show_open_portal);
         assert!(cfg.show_request_support);
+    }
+
+    // #8487: the YAML crate was swapped (serde_yaml -> serde_norway). Pin the
+    // on-disk format the helper writes (status file) and the config it
+    // re-serialises for change detection, so a future swap can't silently
+    // change what the Go agent / the reload loop sees.
+    #[test]
+    fn yaml_round_trip_status_and_config() {
+        let status = HelperStatus {
+            version: "1.2.3".to_string(),
+            chat_active: true,
+            last_activity: "2026-10-12T00:00:00+00:00".to_string(),
+            pid: 4242,
+        };
+        let out = serde_norway::to_string(&status).expect("serialise status");
+        assert_eq!(
+            out,
+            "version: 1.2.3\nchat_active: true\nlast_activity: 2026-10-12T00:00:00+00:00\npid: 4242\n"
+        );
+        let v: serde_norway::Value = serde_norway::from_str(&out).expect("re-parse status");
+        assert_eq!(v["pid"].as_u64(), Some(4242));
+        assert_eq!(v["chat_active"].as_bool(), Some(true));
+
+        let cfg: HelperConfig =
+            serde_norway::from_str("portal_url: https://p.example\nshow_device_info: false\n")
+                .expect("parse config");
+        let again = serde_norway::to_string(&cfg).expect("serialise config");
+        let cfg2: HelperConfig = serde_norway::from_str(&again).expect("re-parse config");
+        assert_eq!(serde_norway::to_string(&cfg2).unwrap(), again);
+        assert!(!cfg2.show_device_info);
+        assert_eq!(cfg2.portal_url.as_deref(), Some("https://p.example"));
     }
 
     // #8138: the agent (re)spawns the helper on logon, updates and watcher
@@ -1774,6 +1885,23 @@ mod tests {
             "/tmp/helper_config.yaml",
             "--show",
         ])));
+    }
+
+    // #8138 + caller verification (W02): the caller-verify prompt is a
+    // separate window that surfaces only for an active request. Launch, the
+    // tray and the main-window show path must never build or show it, and the
+    // main window stays `.visible(false)` at build time. (The request-arm-only
+    // call-site proof lives in ipc::caller_verify's tests.)
+    #[test]
+    fn launch_and_tray_paths_never_surface_the_caller_verify_window() {
+        let src = include_str!("lib.rs");
+        let prod = src.split("\nmod tests {").next().unwrap();
+        assert!(!prod.contains("show_prompt_window"));
+        assert!(!prod.contains("caller_verify::window_url"));
+        assert!(!include_str!("app_shell.rs").contains("caller-verify"));
+        assert!(!include_str!("app_shell.rs").contains("caller_verify"));
+        // Main window still built hidden.
+        assert!(prod.contains(".visible(false);"));
     }
 
     // #8138: window-state must not restore VISIBLE, or a window that was open
@@ -1975,7 +2103,7 @@ mod tests {
 
     #[test]
     fn helper_token_does_not_fallback_to_full_agent_token() {
-        let yaml: serde_yaml::Value = serde_yaml::from_str(
+        let yaml: serde_norway::Value = serde_norway::from_str(
             r#"
 server_url: https://api.example.test
 agent_id: agent-1
@@ -1992,7 +2120,7 @@ auth_token: brz_full_agent
     // still load: an on-disk token is a fallback, not a requirement.
     #[test]
     fn agent_config_loads_without_file_helper_token() {
-        let yaml: serde_yaml::Value = serde_yaml::from_str(
+        let yaml: serde_norway::Value = serde_norway::from_str(
             r#"
 server_url: https://api.example.test
 agent_id: agent-1
@@ -2008,7 +2136,7 @@ agent_id: agent-1
 
     #[test]
     fn agent_config_keeps_legacy_file_helper_token() {
-        let yaml: serde_yaml::Value = serde_yaml::from_str(
+        let yaml: serde_norway::Value = serde_norway::from_str(
             r#"
 server_url: https://api.example.test
 agent_id: agent-1
@@ -2027,7 +2155,7 @@ helper_auth_token: brz_helper_agent_yaml
             "agent_id: agent-1\n",
             "server_url: https://api.example.test\n",
         ] {
-            let yaml: serde_yaml::Value = serde_yaml::from_str(doc).expect("parse yaml");
+            let yaml: serde_norway::Value = serde_norway::from_str(doc).expect("parse yaml");
             assert!(
                 agent_config_from_yaml(&yaml, None, None).is_err(),
                 "incomplete config must not load: {doc}"
@@ -2041,13 +2169,13 @@ helper_auth_token: brz_helper_agent_yaml
     // LoadHelperConfig; an empty value there falls back to agent.yaml.
     #[test]
     fn agent_config_reads_helper_token_file() {
-        let yaml = |doc: &str| -> serde_yaml::Value { serde_yaml::from_str(doc).expect("parse yaml") };
+        let yaml = |doc: &str| -> serde_norway::Value { serde_norway::from_str(doc).expect("parse yaml") };
         let base = "server_url: https://api.example.test\nagent_id: agent-1\n";
         let with_agent_yaml_token = format!("{base}helper_auth_token: brz_helper_agent_yaml\n");
         let helper_file = yaml("helper_auth_token: brz_helper_file\n");
         let empty_helper_file = yaml("helper_auth_token: \"\"\n");
 
-        let cases: [(&str, String, Option<&serde_yaml::Value>, Option<&str>); 4] = [
+        let cases: [(&str, String, Option<&serde_norway::Value>, Option<&str>); 4] = [
             ("helper file only", base.to_string(), Some(&helper_file), Some("brz_helper_file")),
             (
                 "helper file wins over agent.yaml",
@@ -2147,8 +2275,8 @@ helper_auth_token: brz_helper_agent_yaml
         let agent_yaml = dir.join("agent.yaml");
         std::fs::write(&agent_yaml, "server_url: https://api.example.test\nagent_id: agent-1\n")
             .unwrap();
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str(&std::fs::read_to_string(&agent_yaml).unwrap()).unwrap();
+        let yaml: serde_norway::Value =
+            serde_norway::from_str(&std::fs::read_to_string(&agent_yaml).unwrap()).unwrap();
         let mut cfg = agent_config_from_yaml(&yaml, None, None).expect("config loads");
         assert_eq!(cfg.file_token, None);
 
@@ -2222,7 +2350,7 @@ helper_auth_token: brz_helper_agent_yaml
 
     #[test]
     fn helper_token_prefers_helper_scoped_secret() {
-        let yaml: serde_yaml::Value = serde_yaml::from_str(
+        let yaml: serde_norway::Value = serde_norway::from_str(
             r#"
 server_url: https://api.example.test
 agent_id: agent-1
@@ -2230,7 +2358,7 @@ helper_auth_token: brz_helper_agent_yaml
 "#,
         )
         .expect("parse yaml");
-        let secrets: serde_yaml::Value = serde_yaml::from_str(
+        let secrets: serde_norway::Value = serde_norway::from_str(
             r#"
 auth_token: brz_full_agent
 helper_auth_token: brz_helper_secret

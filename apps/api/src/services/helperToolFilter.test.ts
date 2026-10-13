@@ -29,12 +29,13 @@ const ORG_WIDE = [
 ];
 
 describe('helper basic tool set (finding A, Phase 0)', () => {
-  it('basic set contains the 11 read-only device-scoped tools', () => {
+  it('basic set contains the 12 read-only device-scoped tools', () => {
     expect([...getHelperAllowedTools('basic')].sort()).toEqual(
       [
         'get_device_details',
         'get_device_hardware_health',
         'get_device_time_status',
+        'query_device_workloads',
         'list_time_sync_issues',
         'analyze_metrics',
         'analyze_disk_usage',

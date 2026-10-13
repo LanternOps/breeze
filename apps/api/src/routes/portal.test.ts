@@ -15,6 +15,14 @@ vi.mock('../services/portal/supportUsage', () => ({
   supportUsageForOrg: supportUsageForOrgMock,
 }));
 
+const { portalHourBlockForOrgMock } = vi.hoisted(() => ({
+  portalHourBlockForOrgMock: vi.fn(),
+}));
+
+vi.mock('../services/portal/hourBlock', () => ({
+  portalHourBlockForOrg: portalHourBlockForOrgMock,
+}));
+
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'nanoid-token')
 }));
@@ -82,6 +90,13 @@ vi.mock('../services/tenantStatus', () => ({
 // as the tenantStatus mock immediately above — the resolver itself is covered
 // directly by `services/portal/timezone.test.ts` and the hydration contract by
 // `routes/portal/authOrgStatusGate.test.ts`.
+// #8166: the EDR portal leg reads its own flag row; off here (no extra select).
+vi.mock('../services/portal/edrVisibility', () => ({
+  isEdrVisibilityEnabled: vi.fn(async () => false),
+  edrEndpointProtectedSql: vi.fn(),
+  edrEndpointLinkedSql: vi.fn(),
+}));
+
 vi.mock('../services/portal/timezone', () => ({
   resolveOrgTimezone: vi.fn(async () => 'UTC'),
 }));
@@ -126,6 +141,9 @@ vi.mock('../db/schema', () => ({
   deviceHardwareEvents: {},
   deviceHardwareHealth: {},
   devicePatches: {},
+  OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
+  deviceVulnerabilities: {},
+  vulnerabilities: { severity: 'vulnerabilities.severity' },
   deviceWarranty: {},
   devices: {},
   discoveredAssets: {},
@@ -1404,6 +1422,63 @@ describe('portal routes', () => {
       expect(supportUsageForOrgMock).toHaveBeenCalledWith(
         expect.objectContaining({ month: '2026-09' })
       );
+    });
+
+    describe('GET /portal/support-usage/hour-block (block hours W04)', () => {
+      const path = '/portal/support-usage/hour-block';
+
+      it('returns 401 with no Authorization header', async () => {
+        const res = await app.request(path);
+        expect(res.status).toBe(401);
+        expect(portalHourBlockForOrgMock).not.toHaveBeenCalled();
+      });
+
+      it('returns 403 PORTAL_SUPPORT_USAGE_DISABLED when the Support usage section is off (no row)', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // loginUser()
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // portalAuthMiddleware hydration
+          .mockReturnValueOnce(mockSelectLimit([]) as any); // enableSupportUsage gate: no row → fail closed
+
+        const token = await loginUser();
+        const res = await app.request(path, { headers: { Authorization: `Bearer ${token}` } });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'PORTAL_SUPPORT_USAGE_DISABLED' });
+        expect(portalHourBlockForOrgMock).not.toHaveBeenCalled();
+      });
+
+      it('returns 403 PORTAL_HOUR_BLOCK_DISABLED when Support usage is on but Support hours is off', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+          .mockReturnValueOnce(mockSelectLimit([{ enableSupportUsage: true }]) as any)
+          .mockReturnValueOnce(mockSelectLimit([{ enableHourBlock: false }]) as any);
+
+        const token = await loginUser();
+        const res = await app.request(path, { headers: { Authorization: `Bearer ${token}` } });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'PORTAL_HOUR_BLOCK_DISABLED' });
+        expect(portalHourBlockForOrgMock).not.toHaveBeenCalled();
+      });
+
+      it('returns 200 and reads only the session org when both flags are on, even with tickets disabled', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+          .mockReturnValueOnce(mockSelectLimit([{ enableSupportUsage: true }]) as any)
+          .mockReturnValueOnce(mockSelectLimit([{ enableHourBlock: true }]) as any);
+        portalHourBlockForOrgMock.mockResolvedValue({ hourBlock: null, startsOn: null });
+
+        const token = await loginUser();
+        const res = await app.request(`${path}?orgId=00000000-0000-4000-8000-000000000000`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ hourBlock: null, startsOn: null });
+        expect(portalHourBlockForOrgMock).toHaveBeenCalledWith({ orgId: portalUser.orgId });
+      });
     });
   });
 });

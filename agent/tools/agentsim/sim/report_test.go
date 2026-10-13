@@ -41,7 +41,7 @@ func TestBuildReportRatesAndDeviation(t *testing.T) {
 	}
 	rec.ObserveHTTP(RouteCrawlConfig, true, t0, time.Millisecond, 404, nil)
 	cfg := validConfig()
-	r := BuildReport(rec, cfg, t0.Add(10*time.Minute), 2)
+	r := BuildReport(rec, cfg, t0.Add(10*time.Minute), 2, nil)
 
 	if r.Schema != ReportSchema || r.Window.AgentMinutes != 20 {
 		t.Fatalf("schema %q agent-minutes %.2f", r.Schema, r.Window.AgentMinutes)
@@ -68,7 +68,7 @@ func TestBuildReportWithNoAgentMinutesHasZeroRates(t *testing.T) {
 	t0 := time.Now()
 	rec := NewRecorder("run-2", t0, t0.Add(time.Hour), t0.Add(2*time.Hour)) // window never opened
 	rec.AgentOnline(0, t0)
-	r := BuildReport(rec, validConfig(), t0.Add(time.Minute), 1)
+	r := BuildReport(rec, validConfig(), t0.Add(time.Minute), 1, nil)
 	if r.Window.AgentMinutes != 0 || r.Totals.RequestsPerAgentMinute != 0 || r.Totals.DeviationPct != 0 {
 		t.Fatalf("empty window must report zeros, got %+v", r.Totals)
 	}

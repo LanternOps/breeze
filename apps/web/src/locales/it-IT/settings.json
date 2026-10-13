@@ -123,7 +123,62 @@
     "copy": "Copia",
     "copied": "Copiato",
     "oneTimeWarning": "Questa chiave in chiaro viene mostrata una sola volta e non potrà essere recuperata in seguito.",
-    "done": "Fatto"
+    "done": "Fatto",
+    "owner": "Proprietario",
+    "unknownOwner": "Utente sconosciuto",
+    "ownerOnlyTooltip": "Solo {{owner}} può emettere o ruotare le chiavi",
+    "ownerOnlyScopeTooltip": "Solo {{owner}} può aggiungere ambiti",
+    "ownerOnlyEditNotice": "Puoi rinominare, restringere o accorciare questo principal. Solo {{owner}} può aggiungere ambiti, estenderne la scadenza o allentare gli IP di origine.",
+    "ownerOnlyWidening": "Solo {{owner}} può estendere la scadenza o allentare gli IP di origine. Annulla queste modifiche per salvare.",
+    "presetsHint": "Parti da un preset, poi modifica gli ambiti qui sotto. I preset compilano solo le caselle di controllo.",
+    "presets": {
+      "docs-sync": {
+        "label": "Sincronizzazione di documentazione e asset in sola lettura",
+        "description": "Accesso in lettura a organizzazioni, siti, dispositivi, inventario, configurazione, script, configurazione dei backup e campi personalizzati."
+      },
+      "provisioning": {
+        "label": "Provisioning dei tenant",
+        "description": "L'insieme di lettura più la creazione di organizzazioni e siti e la generazione di chiavi di registrazione. Le chiavi di registrazione richiedono una scadenza e IP di origine."
+      },
+      "alert-feed": {
+        "label": "Feed degli avvisi",
+        "description": "Lettura di organizzazioni e avvisi."
+      },
+      "ticketing": {
+        "label": "Integrazione ticketing",
+        "description": "Lettura delle organizzazioni, lettura e scrittura dei ticket."
+      },
+      "ai-mcp": {
+        "label": "Client AI / MCP",
+        "description": "Accesso MCP con ai:read. Aggiungi ai:write o ai:execute solo se il client ne ha bisogno."
+      },
+      "custom": {
+        "label": "Personalizzato",
+        "description": "Cancella la selezione e scegli ogni ambito manualmente."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Nomi, slug e tipi delle organizzazioni, per tutte le organizzazioni raggiungibili dal principal.",
+      "sites_read": "Siti (sedi) e relativi dettagli.",
+      "devices_read": "Record dei dispositivi: nome host, sistema operativo, hardware e appartenenza ai gruppi.",
+      "inventory_read": "Inventario hardware e software raccolto dai dispositivi.",
+      "configuration_read": "Policy di configurazione e relative assegnazioni.",
+      "scripts_read": "Voci della libreria di script, compreso il contenuto degli script.",
+      "backup-configuration_read": "Configurazione e pianificazioni dei backup (non i dati di backup).",
+      "custom-fields_read": "Definizioni dei campi personalizzati e valori impostati sui dispositivi.",
+      "alerts_read": "Titoli e messaggi degli avvisi, per tutte le organizzazioni raggiungibili dal principal.",
+      "tickets_read": "Oggetti, descrizioni e commenti dei ticket, scritti dai clienti, per tutte le organizzazioni raggiungibili dal principal.",
+      "device-status_read": "Stato heartbeat in tempo reale: online/offline, ultimo accesso e versione dell'agente. Non incluso in devices:read.",
+      "organizations_write": "Creazione di organizzazioni. Impossibile aggiornare o eliminare.",
+      "sites_write": "Creazione di siti. Impossibile aggiornare o eliminare.",
+      "enrollment-keys_write": "Generazione di chiavi di registrazione dei dispositivi. Richiede una scadenza e almeno un IP di origine o CIDR.",
+      "contracts_write": "Lettura, creazione e modifica di contratti e righe di contratto, e rimozione di righe. Impossibile attivare, sospendere o annullare.",
+      "tickets_write": "Creazione, aggiornamento, assegnazione, cambio di stato e commento dei ticket. Impossibile eliminare o spostare i ticket.",
+      "ai_read": "Connessione all'endpoint MCP e uso di strumenti in sola lettura. Richiesto da ogni altro ambito ai:*.",
+      "ai_write": "Strumenti MCP che modificano i dati.",
+      "ai_execute": "Strumenti MCP che eseguono azioni sui dispositivi.",
+      "ai_execute_admin": "Strumenti MCP che eseguono azioni amministrative. Concedi solo a un client di cui ti fidi completamente."
+    }
   },
   "language": {
     "title": "Lingua",
@@ -375,7 +430,8 @@
       "duplicate_model": "Questo ID modello esiste già su questa connessione.",
       "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza.",
       "key_required_for_new_endpoint": "Inserisci la chiave per il nuovo URL (oppure rimuovi la chiave).",
-      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente."
+      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente.",
+      "not_removable": "Si possono rimuovere solo i modelli aggiunti manualmente. Disattiva invece questo."
     },
     "org": {
       "title": "Modelli predefiniti",
@@ -512,7 +568,12 @@
       "verify": "Verifica",
       "verifyQueued": "Verifica del modello in coda",
       "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
-      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token)."
+      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token).",
+      "remove": "Rimuovi modello",
+      "removeTitle": "Rimuovere questo modello?",
+      "removeMessage": "«{{model}}» verrà eliminato da questa connessione. La cronologia di utilizzo e costi viene conservata. Potrai aggiungerlo di nuovo in seguito.",
+      "removed": "Modello rimosso",
+      "removeFailed": "Impossibile rimuovere il modello. Riprova."
     },
     "defaults": {
       "title": "Predefiniti per funzionalità",
@@ -1342,6 +1403,9 @@
       "invoice_number": "Numero fattura",
       "due_date": "Data di scadenza pagamento",
       "invite_url": "URL di invito",
+      "name": "Nome del destinatario",
+      "inviter_name": "Nome di chi invita",
+      "expires_days": "Giorni alla scadenza dell'invito",
       "cta_button": "Pulsante",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",
@@ -1367,7 +1431,11 @@
       "days_overdue": "Giorni di ritardo",
       "pay_link": "Link di pagamento",
       "charge_total": "Addebito totale",
-      "attempted_amount": "Importo del pagamento tentato"
+      "attempted_amount": "Importo del pagamento tentato",
+      "approval_ask": "Richiesta di approvazione",
+      "approval_snapshot": "Dati dell’approvazione",
+      "approval_expires": "Scadenza dell’approvazione",
+      "approval_status": "Stato dell’approvazione"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1379,7 +1447,10 @@
       "autopay_resumed": "Pagamenti automatici ripresi",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Ricevuta di pagamento online",
-      "payment_failed": "Impossibile completare il pagamento"
+      "payment_failed": "Impossibile completare il pagamento",
+      "ticket_approval_requested_approver": "Richiesta di approvazione dei lavori (approvatore)",
+      "ticket_approval_requested_notify": "Richiesta di approvazione dei lavori (per informazione)",
+      "ticket_approval_decided": "Decisione sull’approvazione dei lavori"
     }
   },
   "inboundEmail": {
@@ -1473,6 +1544,7 @@
     },
     "scopeMailbox": "Limita l'ambito di questa cassetta postale (Application Access Policy)",
     "reauthRequired": "È richiesto un nuovo consenso dell'amministratore prima che il polling e le risposte Microsoft 365 riprendano.",
+    "pollFailing": "Gli ultimi {{failures}} controlli di questa casella di posta non sono riusciti per un errore temporaneo di Microsoft 365. Breeze continua a riprovare; i nuovi messaggi verranno recuperati quando Microsoft 365 tornerà a rispondere.",
     "retest": "Riesegui test",
     "reconnect": "Riconnetti",
     "disconnect": "Disconnetti",
@@ -1922,9 +1994,25 @@
           "label": "Visibilità di rete",
           "description": "Mostra nel portale cliente lo stato della rete e gli asset rilevati in sola lettura."
         },
+        "enableEdrVisibility": {
+          "label": "Protezione degli endpoint (EDR)",
+          "description": "Mostra ai clienti uno stato generico «Protezione degli endpoint gestita» e il numero di minacce dei provider EDR collegati. I nomi dei fornitori non vengono mai mostrati nel portale."
+        },
         "enableNetworkAlerts": {
           "label": "Avvisi di rete",
           "description": "Mostra nel portale cliente il numero di avvisi attivi e i ticket aperti collegati agli asset di rete."
+        },
+        "enablePatchDetail": {
+          "label": "Dettaglio patch",
+          "description": "Mostra a tutti gli accessi al portale di questa organizzazione le patch in sospeso, installate e non riuscite di ogni dispositivo (titolo, gravità, versione, link KB). Rivela quali macchine non hanno le patch. Non viene attivato da Abilita tutta la visibilità."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Dettaglio vulnerabilità",
+          "description": "Mostra a ogni accesso al portale di questa organizzazione i riscontri CVE di ciascun dispositivo e la relativa gravità (ID CVE, descrizione, gravità, punteggio CVSS, disponibilità di patch, stato). Questo rivela quali macchine sono vulnerabili. Non viene attivato da Abilita tutta la visibilità."
+        },
+        "enableHourBlock": {
+          "label": "Ore di assistenza",
+          "description": "Mostra le ore prepagate del pacchetto utilizzate e rimanenti nella sezione Utilizzo assistenza del cliente. Richiede Utilizzo assistenza. Non viene attivato abilitando tutta la visibilità."
         }
       }
     },
@@ -2809,6 +2897,7 @@
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {
@@ -5524,7 +5613,8 @@
     "loading": "Caricamento impostazioni ticket...",
     "errors": {
       "load": "Impossibile caricare le impostazioni ticket.",
-      "save": "Impossibile salvare le impostazioni ticket"
+      "save": "Impossibile salvare le impostazioni ticket",
+      "savedApprovalFailed": "Impostazioni dei ticket salvate, ma non è stato possibile salvare la policy di approvazione del cliente"
     },
     "toasts": {
       "saved": "Impostazioni ticket salvate"
@@ -5550,6 +5640,28 @@
       "inherit": "Eredita",
       "billableOption": "Fatturabile",
       "nonBillableOption": "Non fatturabile"
+    },
+    "approval": {
+      "title": "Approvazione del lavoro da parte del cliente",
+      "description": "Sovrascrive il valore predefinito del partner per questa organizzazione. Scegli Eredita per usare quello del partner.",
+      "enabled": "Richiedi l’approvazione del cliente",
+      "budgetTrigger": "Chiedi quando il budget di un ticket verrebbe superato",
+      "afterHoursTrigger": "Chiedi per il lavoro fuori orario",
+      "enforcement": "Applicazione",
+      "enforcementSoft": "Morbida (avvisa, consenti la registrazione)",
+      "enforcementHard": "Rigida (blocca fino all’approvazione)",
+      "ttl": "La richiesta di approvazione scade dopo (ore)",
+      "ttlRange": "La scadenza deve essere compresa tra {{min}} e {{max}} ore",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "inherit": "Eredita",
+      "inheritValue": "Eredita ({{value}})",
+      "clear": "Rimuovi la sovrascrittura (eredita)",
+      "pendingInherit": "Dopo il salvataggio erediterà il valore predefinito",
+      "loadFailed": "Impossibile caricare le impostazioni di approvazione del cliente.",
+      "sourceOrg": "Sovrascrittura dell’organizzazione",
+      "sourcePartner": "Predefinito del partner",
+      "sourceDefault": "Predefinito integrato"
     }
   },
   "organizationForm": {
@@ -6100,6 +6212,7 @@
     "accessDenied": "Non hai l'autorizzazione per visualizzare gli utenti.",
     "title": "Utenti",
     "description": "Gestisci accessi, ruoli e autorizzazioni degli utenti.",
+    "sessionTimeoutPointer": "Il timeout di inattività della sessione si configura in Sicurezza",
     "never": "Mai",
     "actions": {
       "tryAgain": "Riprova",
@@ -6255,7 +6368,27 @@
     "locationEnabledLabel": "Suggerisci un timer quando un tecnico arriva presso la sede di un cliente",
     "locationHelp": "Ogni tecnico deve inoltre consentire la posizione sul proprio telefono. La posizione viene verificata sul telefono e non viene mai inviata a Breeze.",
     "radiusLabel": "Raggio di arrivo predefinito (m)",
-    "radiusRange": "Il raggio di arrivo deve essere compreso tra {{min}} e {{max}} metri"
+    "radiusRange": "Il raggio di arrivo deve essere compreso tra {{min}} e {{max}} metri",
+    "approval": {
+      "heading": "Approvazione del lavoro da parte del cliente",
+      "description": "Chiedi al cliente di approvare il lavoro prima che venga registrato sul suo budget o fuori dall’orario di lavoro. È il valore predefinito del partner; le organizzazioni possono sovrascriverlo.",
+      "enabledLabel": "Richiedi l’approvazione del cliente per il lavoro",
+      "budgetTriggerLabel": "Chiedi quando il budget di un ticket verrebbe superato",
+      "afterHoursTriggerLabel": "Chiedi per il lavoro fuori orario",
+      "enforcementLabel": "Applicazione",
+      "enforcementSoft": "Morbida (avvisa, consenti la registrazione)",
+      "enforcementHard": "Rigida (blocca fino all’approvazione)",
+      "ttlLabel": "La richiesta di approvazione scade dopo (ore)",
+      "ttlRange": "La scadenza deve essere compresa tra {{min}} e {{max}} ore",
+      "readOnly": "Per modificare questa policy servono i diritti di configurazione a livello di partner. Vengono mostrati i valori attuali.",
+      "loadFailed": "Impossibile caricare le impostazioni di approvazione del cliente.",
+      "source": {
+        "org": "Organizzazione",
+        "partner": "Partner",
+        "default": "Predefinito"
+      }
+    },
+    "savedApprovalFailed": "Impostazioni del tempo salvate, ma non è stato possibile salvare la policy di approvazione del cliente"
   },
   "contactsCard": {
     "title": "Contatti",
@@ -6538,7 +6671,8 @@
     "nameTaken": "Esiste già un tipo di lavoro con questo nome.",
     "rename": "Rinomina",
     "loadError": "Impossibile caricare i tipi di lavoro.",
-    "empty": "Non ci sono ancora tipi di lavoro. Aggiungi il primo qui sopra."
+    "empty": "Non ci sono ancora tipi di lavoro. Aggiungi il primo qui sopra.",
+    "afterHours": "Fuori orario (richiede l’approvazione del cliente se attivo)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo di lavoro predefinito",

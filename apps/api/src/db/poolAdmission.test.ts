@@ -221,3 +221,28 @@ describe('request pool admission registry', () => {
     expect(getRequestPoolAdmission()).toBe(gate);
   });
 });
+
+describe('waitStats (W08)', () => {
+  it('reports the oldest waiter and the p95 grant wait over the last 3 s', async () => {
+    let nowMs = 0;
+    const gate = createPoolAdmission({ permits: 3, nestedReserve: 0, now: () => nowMs });
+    const held = [await gate.acquire('a'), await gate.acquire('b'), await gate.acquire('c')];
+    // Fast-path grants waited 0 ms.
+    expect(gate.waitStats()).toEqual({ oldestWaitMs: 0, grantWaitP95Ms: 0, grantsInWindow: 3 });
+
+    const first = gate.acquire('waiter-1');
+    nowMs += 400;
+    const second = gate.acquire('waiter-2');
+    nowMs += 100;
+    expect(gate.waitStats().oldestWaitMs).toBe(500);
+
+    held[0]!.release('resolved');   // grants waiter-1 after 500 ms
+    held[1]!.release('resolved');   // grants waiter-2 after 100 ms
+    await Promise.all([first, second]);
+    // waits [0, 0, 0, 100, 500]: ceil(0.95 * 5) = 5th smallest = 500
+    expect(gate.waitStats()).toEqual({ oldestWaitMs: 0, grantWaitP95Ms: 500, grantsInWindow: 5 });
+
+    nowMs += 3_001;
+    expect(gate.waitStats()).toEqual({ oldestWaitMs: 0, grantWaitP95Ms: 0, grantsInWindow: 0 });
+  });
+});

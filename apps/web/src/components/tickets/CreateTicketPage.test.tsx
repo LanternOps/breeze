@@ -113,10 +113,34 @@ describe('CreateTicketPage', () => {
 
     const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
     const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
-    expect(body).toEqual({ orgId: 'org-a', subject: 'Printer down', priority: 'normal' });
+    // #7900: the type is always sent explicitly; the form defaults to Incident.
+    expect(body).toEqual({ orgId: 'org-a', subject: 'Printer down', priority: 'normal', ticketType: 'incident' });
     expect(body).not.toHaveProperty('deviceId');
     expect(body).not.toHaveProperty('categoryId');
     expect(body).not.toHaveProperty('description');
+  });
+
+  it('defaults the type select to Incident and sends the chosen ticketType (#7900)', async () => {
+    mockOptionsApi();
+    render(<CreateTicketPage />);
+    await screen.findByTestId('create-ticket-form');
+
+    const typeSelect = screen.getByTestId('create-ticket-type-input') as HTMLSelectElement;
+    expect(typeSelect.value).toBe('incident');
+    expect(Array.from(typeSelect.options).map((o) => o.value)).toEqual(['incident', 'service_request', 'problem', 'change']);
+
+    fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+    fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Root cause: DNS' } });
+    fireEvent.change(typeSelect, { target: { value: 'problem' } });
+    await waitFor(() => expect(screen.getByTestId('create-ticket-submit')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' }));
+    });
+    const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+    const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+    expect(body.ticketType).toBe('problem');
   });
 
   it('loads the device list for the selected organization', async () => {

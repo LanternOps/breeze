@@ -759,3 +759,115 @@ describe('revalidateApprovedIntentForRelease org-wide governance site ceiling', 
     expect(result).toMatchObject({ ok: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Recipe Library E4 (#6169) — release of a plan-approved child effect.
+//
+// Modelled on the script lane: no approval_requests row by construction, and
+// admitted only because a stronger, row-backed proof — plan membership at the
+// task's LIVE revision — revalidates against CURRENT state here, inside
+// release. `decided_via = 'plan_approval'` alone authorizes nothing.
+// ---------------------------------------------------------------------------
+
+vi.mock('../aiOperator/planApproval', () => ({
+  checkPlanEffectMembershipSystem: vi.fn(),
+  loadTaskAgentToolAllowlists: vi.fn(async () => ({ snapshot: ['google_suspend_user'], live: ['google_suspend_user'] })),
+  checkToolCeiling: vi.fn(() => ({ ok: true })),
+}));
+import {
+  checkPlanEffectMembershipSystem,
+  checkToolCeiling,
+} from '../aiOperator/planApproval';
+
+describe('revalidateApprovedIntentForRelease: decided_via = plan_approval (E4)', () => {
+  const args = { userEmail: 'dana@customer.example', reason: 'offboarding' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const planChild = (overrides: Record<string, unknown> = {}) => intentFixture({
+    requestedByUserId: 'u-approver',
+    decidedByUserId: 'u-approver',
+    source: 'mcp_api',
+    actionName: 'google_suspend_user',
+    arguments: args,
+    argumentDigest: digest,
+    decidedVia: 'plan_approval',
+    taskId: 't1',
+    taskStepKey: 'offboard',
+    operationKey: 'offboard:google_suspend_user:c1:r2:n3',
+    ...overrides,
+  });
+  const member = { ok: true, approvalId: 'p1', approverUserId: 'u-approver', approvedAssuranceLevel: 3, planRevision: 2, idempotencyClass: 'idempotent' };
+  const refuse = (refusal: string) => ({ ok: false, refusal, detail: refusal });
+
+  it('ADMITS a child that is still a member of a still-approved plan, with NO approval row', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(member as never);
+    const res = await revalidateApprovedIntentForRelease(planChild(), null);
+    expect(res.ok).toBe(true);
+    expect(checkPlanEffectMembershipSystem).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1', taskId: 't1', ordinal: 3, toolName: 'google_suspend_user', argumentDigest: digest,
+      taskStepKey: 'offboard', operationKey: 'offboard:google_suspend_user:c1:r2:n3',
+    }));
+  });
+
+  it.each(['plan_superseded', 'revision_moved', 'plan_expired', 'argument_digest_mismatch',
+    'effect_set_digest_mismatch', 'operation_identity_mismatch', 'plan_approval_missing'])(
+    'REFUSES with plan_approval_revoked when membership says %s', async (refusal) => {
+      vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(refuse(refusal) as never);
+      expect(await revalidateApprovedIntentForRelease(planChild(), null))
+        .toMatchObject({ ok: false, errorCode: 'plan_approval_revoked', details: { refusal } });
+    },
+  );
+
+  it('requires membership EVEN WHEN an approval row exists — a row never substitutes for the plan', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(refuse('plan_superseded') as never);
+    expect(await revalidateApprovedIntentForRelease(planChild(), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'plan_approval_revoked' });
+  });
+
+  it('REFUSES when the tool left the agent allowlist after approval (narrowed policy revokes)', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(member as never);
+    vi.mocked(checkToolCeiling).mockReturnValueOnce({ ok: false, detail: 'not in current allowlist' } as never);
+    expect(await revalidateApprovedIntentForRelease(planChild(), null))
+      .toMatchObject({ ok: false, errorCode: 'tool_not_in_agent_allowlist' });
+  });
+
+  it('REFUSES when the recorded approver is not the plan\'s approver', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue({ ...member, approverUserId: 'someone-else' } as never);
+    expect(await revalidateApprovedIntentForRelease(planChild(), null))
+      .toMatchObject({ ok: false, errorCode: 'plan_approval_revoked' });
+  });
+
+  it('REFUSES an agent-run-attributed row claiming plan_approval (children are human-shaped)', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(member as never);
+    expect(await revalidateApprovedIntentForRelease(planChild({ requestingAgentRunId: 'run-1', requestedByUserId: null }), null))
+      .toMatchObject({ ok: false, errorCode: 'plan_approval_revoked' });
+  });
+
+  it('REFUSES a task-less row claiming plan_approval', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(member as never);
+    expect(await revalidateApprovedIntentForRelease(planChild({ taskId: null, taskStepKey: null, operationKey: null }), null))
+      .toMatchObject({ ok: false, errorCode: 'plan_approval_revoked' });
+  });
+
+  it('still recomputes the argument digest from stored arguments (check a2)', async () => {
+    vi.mocked(checkPlanEffectMembershipSystem).mockResolvedValue(member as never);
+    const res = await revalidateApprovedIntentForRelease(
+      planChild({ arguments: { userEmail: 'someone-else@customer.example', reason: 'offboarding' } }), null,
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'digest_mismatch' });
+  });
+
+  it('a human-decided intent without decided_via=plan_approval and no approval row still fails (a)', async () => {
+    const res = await revalidateApprovedIntentForRelease(planChild({ decidedVia: 'session_tap' }), null);
+    expect(res).toMatchObject({ ok: false, errorCode: 'digest_mismatch' });
+    expect(checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+
+  it('the PLAN intent itself takes the ordinary approval-row path', async () => {
+    const res = await revalidateApprovedIntentForRelease(
+      intentFixture({ actionName: 'operator_plan', arguments: {}, argumentDigest: computeArgumentDigest(canonicalizeArguments({})), decidedVia: 'session_tap' }),
+      null,
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'digest_mismatch' });
+    expect(checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+});

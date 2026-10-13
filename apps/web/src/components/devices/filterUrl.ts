@@ -1,6 +1,7 @@
 // URL hash encoding/decoding for the v2 chip filter UI.
 // Spec section 3.3: `#filtersV2=<base64url(JSON.stringify(FilterConditionGroup))>`.
 import type { FilterConditionGroup } from '@breeze/shared';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 const HASH_KEY = 'filtersV2';
 
@@ -64,7 +65,7 @@ export function writeFilterToHash(group: FilterConditionGroup | null): void {
   const newHash = next ? `#${next}` : '';
   if (newHash !== window.location.hash) {
     // Replace, don't push, so back-button doesn't fill with filter edits.
-    history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
+    replaceUrl(`${window.location.pathname}${window.location.search}${newHash}`);
   }
 }
 

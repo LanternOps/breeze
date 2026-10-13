@@ -147,5 +147,18 @@
       "private_keys": "Chaves privadas (SSH, GnuPG, TLS)",
       "session_tokens": "Tokens de sessão e credenciais de nuvem salvos"
     }
+  },
+  "operatorPlan": {
+    "title": "Plano para a tarefa do operador de IA",
+    "summary_one": "{{count}} efeito, revisão {{revision}} do plano",
+    "summary_other": "{{count}} efeitos, revisão {{revision}} do plano",
+    "groupBreeze": "Dispositivos Breeze",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Etapa {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Os efeitos são executados nesta ordem. O login é desativado por último, então interromper antes nunca deixa e-mails sem roteamento.",
+    "empty": "Este plano não contém efeitos.",
+    "invalid": "Não foi possível exibir este plano por completo. Não o aprove."
   }
 }

@@ -213,6 +213,17 @@ func TestReplaceEvidenceOnlyCountsTheAgentsOwnEntries(t *testing.T) {
 		{name: "another entry the agent cannot inspect", root: trusted,
 			entries: map[string]programDataPathSecurity{"notes": {Exists: true, Unreadable: true}}, wantForeign: []string{"notes"}},
 		{name: "agent.yaml owner cannot be checked", root: trusted, entries: map[string]programDataPathSecurity{"agent.yaml": unchecked}, wantUnverified: true},
+		// Watchdog install retry state, opt-out marker and lock are the agent's
+		// own entries (#8619): agent-owned ones are kept, not set aside...
+		{name: "agent-owned watchdog install files are kept", root: trusted,
+			entries: map[string]programDataPathSecurity{"watchdog-install.state": trusted, "watchdog.disabled": trusted, "watchdog-install.lock": trusted}},
+		// ...and another account owning one means it could write the folder.
+		{name: "watchdog.disabled owned by a standard user", root: trusted,
+			entries: map[string]programDataPathSecurity{"watchdog.disabled": userOwned}, wantEvidence: "watchdog.disabled"},
+		{name: "watchdog-install.state is a link", root: trusted,
+			entries: map[string]programDataPathSecurity{"watchdog-install.state": link}, wantEvidence: "watchdog-install.state is a link"},
+		{name: "watchdog-install.lock owned by a standard user", root: trusted,
+			entries: map[string]programDataPathSecurity{"watchdog-install.lock": userOwned}, wantEvidence: "watchdog-install.lock"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			evidence, foreign, err := replaceEvidence(tc.root, tc.entries)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -29,6 +29,48 @@ const DEFAULTS = { enabled: false, minSessionSeconds: 120, mergeGapMinutes: 10 }
 const RADIUS_MIN = 50;
 const RADIUS_MAX = 1000;
 const LOCATION_DEFAULTS = { enabled: false, defaultRadiusM: 150 };
+
+// Customer work approval policy (#8196). Bounds mirror the API schema.
+const TTL_MIN = 1;
+const TTL_MAX = 720;
+type ApprovalSource = 'org' | 'partner' | 'default';
+type ApprovalDraft = {
+  enabled: boolean;
+  budgetTrigger: boolean;
+  afterHoursTrigger: boolean;
+  enforcement: 'soft' | 'hard';
+  requestTtlHours: string;
+};
+type ApprovalSources = Record<keyof ApprovalDraft, ApprovalSource>;
+const APPROVAL_DEFAULTS: ApprovalDraft = {
+  enabled: false,
+  budgetTrigger: true,
+  afterHoursTrigger: true,
+  enforcement: 'soft',
+  requestTtlHours: '72',
+};
+const APPROVAL_DEFAULT_SOURCES: ApprovalSources = {
+  enabled: 'default',
+  budgetTrigger: 'default',
+  afterHoursTrigger: 'default',
+  enforcement: 'default',
+  requestTtlHours: 'default',
+};
+
+function readApproval(data: unknown): { draft: ApprovalDraft; sources: ApprovalSources } {
+  const rec = data && typeof data === 'object' ? (data as Record<string, { value?: unknown; source?: unknown } | undefined>) : {};
+  const draft: ApprovalDraft = { ...APPROVAL_DEFAULTS };
+  const sources: ApprovalSources = { ...APPROVAL_DEFAULT_SOURCES };
+  (Object.keys(draft) as (keyof ApprovalDraft)[]).forEach((key) => {
+    const field = rec[key];
+    if (!field || field.value === undefined || field.value === null) return;
+    (draft as Record<string, unknown>)[key] = key === 'requestTtlHours' ? String(field.value) : field.value;
+    if (field.source === 'org' || field.source === 'partner' || field.source === 'default') {
+      sources[key] = field.source;
+    }
+  });
+  return { draft, sources };
+}
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -76,6 +118,15 @@ export default function TimeTrackingSettingsCard() {
   // those defaults over the stored settings, so Save stays disabled instead.
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Customer approval policy: PATCHing it needs partner-wide rights, so without
+  // them the section renders read-only instead of letting Save 403.
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const [approval, setApproval] = useState<ApprovalDraft>(APPROVAL_DEFAULTS);
+  const [approvalBase, setApprovalBase] = useState<ApprovalDraft>(APPROVAL_DEFAULTS);
+  const [approvalSources, setApprovalSources] = useState<ApprovalSources>(APPROVAL_DEFAULT_SOURCES);
+  const [approvalLoaded, setApprovalLoaded] = useState(false);
+  const [approvalLoadFailed, setApprovalLoadFailed] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -104,6 +155,22 @@ export default function TimeTrackingSettingsCard() {
         if (!cancelled) setLoading(false);
       }
     })();
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/ticketing/approval-settings');
+        if (!res.ok) throw new Error(`approval settings load failed: ${res.status}`);
+        const body = (await res.json()) as { data?: unknown };
+        if (cancelled) return;
+        const { draft, sources } = readApproval(body.data);
+        setApproval(draft);
+        setApprovalBase(draft);
+        setApprovalSources(sources);
+        setApprovalLoaded(true);
+      } catch (err) {
+        console.warn('[TimeTrackingSettingsCard] approval settings load failed', err);
+        if (!cancelled) setApprovalLoadFailed(true);
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
@@ -130,6 +197,24 @@ export default function TimeTrackingSettingsCard() {
     }
     setRadiusError(null);
     const locationRadius = radiusValid ? defaultRadiusM : LOCATION_DEFAULTS.defaultRadiusM;
+    // Only fields that actually changed go to the approval endpoint.
+    const approvalPatch: Record<string, unknown> = {};
+    if (approvalLoaded && canManagePartnerWide) {
+      if (approval.enabled !== approvalBase.enabled) approvalPatch.enabled = approval.enabled;
+      if (approval.budgetTrigger !== approvalBase.budgetTrigger) approvalPatch.budgetTrigger = approval.budgetTrigger;
+      if (approval.afterHoursTrigger !== approvalBase.afterHoursTrigger) approvalPatch.afterHoursTrigger = approval.afterHoursTrigger;
+      if (approval.enforcement !== approvalBase.enforcement) approvalPatch.enforcement = approval.enforcement;
+      if (approval.requestTtlHours !== approvalBase.requestTtlHours) {
+        const ttl = Number(approval.requestTtlHours);
+        if (!Number.isInteger(ttl) || ttl < TTL_MIN || ttl > TTL_MAX) {
+          setApprovalError(t('timeTrackingSettingsCard.approval.ttlRange', { min: TTL_MIN, max: TTL_MAX }));
+          return;
+        }
+        approvalPatch.requestTtlHours = ttl;
+      }
+    }
+    setApprovalError(null);
+    const hasApprovalPatch = Object.keys(approvalPatch).length > 0;
     setSaving(true);
     try {
       await runAction({
@@ -150,15 +235,46 @@ export default function TimeTrackingSettingsCard() {
             }),
           }),
         errorFallback: t('timeTrackingSettingsCard.saveFailed'),
-        successMessage: t('timeTrackingSettingsCard.saved'),
+        // With an approval patch pending, toast once after BOTH succeed.
+        successMessage: hasApprovalPatch ? undefined : t('timeTrackingSettingsCard.saved'),
         onUnauthorized: UNAUTHORIZED,
       });
+      if (hasApprovalPatch) {
+        const res = await runAction<{ data?: unknown }>({
+          request: () =>
+            fetchWithAuth('/ticketing/approval-settings', {
+              method: 'PATCH',
+              body: JSON.stringify(approvalPatch),
+            }),
+          errorFallback: t('timeTrackingSettingsCard.savedApprovalFailed'),
+          successMessage: t('timeTrackingSettingsCard.saved'),
+          onUnauthorized: UNAUTHORIZED,
+        });
+        const { draft, sources } = readApproval(res?.data);
+        setApproval(draft);
+        setApprovalBase(draft);
+        setApprovalSources(sources);
+      }
     } catch (err) {
       handleActionError(err, t('timeTrackingSettingsCard.saveFailed'));
     } finally {
       setSaving(false);
     }
-  }, [enabled, minSession, mergeGap, locationEnabled, radius, loadFailed, t]);
+  }, [enabled, minSession, mergeGap, locationEnabled, radius, loadFailed, approval, approvalBase, approvalLoaded, canManagePartnerWide, t]);
+
+  const approvalDisabled = !approvalLoaded || !canManagePartnerWide;
+  const sourceBadge = (field: keyof ApprovalDraft, testId: string) => (
+    <span
+      className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+      data-testid={`${testId}-source`}
+    >
+      {approvalSources[field] === 'org'
+        ? t('timeTrackingSettingsCard.approval.source.org')
+        : approvalSources[field] === 'partner'
+          ? t('timeTrackingSettingsCard.approval.source.partner')
+          : t('timeTrackingSettingsCard.approval.source.default')}
+    </span>
+  );
 
   return (
     <div className="rounded-lg border p-4" data-testid="time-tracking-settings-card">
@@ -244,6 +360,77 @@ export default function TimeTrackingSettingsCard() {
         )}
         {radiusError && (
           <p className="mt-2 text-sm text-destructive" data-testid="location-suggestions-error">{radiusError}</p>
+        )}
+      </div>
+
+      <div className="mt-6 border-t pt-4" data-testid="approval-section">
+        <h4 className="text-sm font-medium">{t('timeTrackingSettingsCard.approval.heading')}</h4>
+        <p className="mt-1 text-sm text-muted-foreground">{t('timeTrackingSettingsCard.approval.description')}</p>
+        {approvalLoadFailed && (
+          <p className="mt-2 text-sm text-destructive" role="alert" data-testid="approval-load-error">
+            {t('timeTrackingSettingsCard.approval.loadFailed')}
+          </p>
+        )}
+        {!canManagePartnerWide && (
+          <p className="mt-2 text-sm text-muted-foreground" data-testid="approval-readonly-note">
+            {t('timeTrackingSettingsCard.approval.readOnly')}
+          </p>
+        )}
+        <div className="mt-3 space-y-2">
+          {([
+            ['enabled', 'approval-enabled', t('timeTrackingSettingsCard.approval.enabledLabel')],
+            ['budgetTrigger', 'approval-budget-trigger', t('timeTrackingSettingsCard.approval.budgetTriggerLabel')],
+            ['afterHoursTrigger', 'approval-after-hours-trigger', t('timeTrackingSettingsCard.approval.afterHoursTriggerLabel')],
+          ] as const).map(([field, testId, label]) => (
+            <label key={field} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                data-testid={testId}
+                checked={approval[field]}
+                disabled={approvalDisabled}
+                onChange={(e) => setApproval((prev) => ({ ...prev, [field]: e.target.checked }))}
+              />
+              {label}
+              {sourceBadge(field, testId)}
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-4">
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="flex items-center gap-2">
+              {t('timeTrackingSettingsCard.approval.enforcementLabel')}
+              {sourceBadge('enforcement', 'approval-enforcement')}
+            </span>
+            <select
+              data-testid="approval-enforcement"
+              className="w-40 rounded-md border bg-background px-2 py-1"
+              value={approval.enforcement}
+              disabled={approvalDisabled}
+              onChange={(e) => setApproval((prev) => ({ ...prev, enforcement: e.target.value === 'hard' ? 'hard' : 'soft' }))}
+            >
+              <option value="soft">{t('timeTrackingSettingsCard.approval.enforcementSoft')}</option>
+              <option value="hard">{t('timeTrackingSettingsCard.approval.enforcementHard')}</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="flex items-center gap-2">
+              {t('timeTrackingSettingsCard.approval.ttlLabel')}
+              {sourceBadge('requestTtlHours', 'approval-ttl')}
+            </span>
+            <input
+              type="number"
+              data-testid="approval-ttl"
+              className="w-32 rounded-md border px-2 py-1"
+              value={approval.requestTtlHours}
+              min={TTL_MIN}
+              max={TTL_MAX}
+              disabled={approvalDisabled}
+              onChange={(e) => setApproval((prev) => ({ ...prev, requestTtlHours: e.target.value }))}
+            />
+          </label>
+        </div>
+        {approvalError && (
+          <p className="mt-2 text-sm text-destructive" data-testid="approval-error">{approvalError}</p>
         )}
       </div>
 

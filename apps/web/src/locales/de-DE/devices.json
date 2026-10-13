@@ -358,7 +358,9 @@
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
-    "toADifferentSite": "an einen anderen Standort."
+    "toADifferentSite": "an einen anderen Standort.",
+    "deviceMovedByOther": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen",
+    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -912,6 +914,7 @@
     "diskCleanup": "Datenträgerbereinigung",
     "diskUsageAnalysisAndCleanup": "Analyse und Bereinigung der Festplattennutzung",
     "bootPerf": "Boot-Perf",
+    "systemRestore": "Systemwiederherstellung",
     "startupTimeAndBootProcessAnalysis": "Analyse der Startzeit und des Bootvorgangs",
     "backup": "Sicherung",
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",
@@ -945,7 +948,9 @@
       "management": "Verwaltung",
       "history": "Verlauf & Netzwerk",
       "extensions": "Erweiterungen"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -1360,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}}): Der Server hat diesem Gerät keine Breeze-Assist-Version zur Installation angeboten, daher bleibt es ohne Installation. Prüfen Sie, ob für die Plattform dieses Geräts ein Breeze-Assist-Build veröffentlicht ist.",
       "installAbandoned": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}}): Die Installation der angebotenen Version ist wiederholt fehlgeschlagen, daher hat der Agent weitere Versuche pausiert. Er versucht es nach einigen Stunden oder bei einer neueren Version erneut; der Installationsfehler steht im Agent-Log.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}})."
+    },
+    "watchdogInstall": {
+      "gaveUp": "Der Watchdog konnte nicht automatisch installiert werden (seit {{since}}): {{reason}}. Führen Sie zum erneuten Versuch `breeze-agent service install --watchdog` auf dem Host aus.",
+      "unsupported": "Die automatische Watchdog-Installation wird auf diesem Host nicht unterstützt (seit {{since}}).",
+      "reason": {
+        "network": "der Download war nicht erreichbar",
+        "server": "der Server hat den Download abgelehnt",
+        "policy": "der Download wurde durch die Netzwerkrichtlinie blockiert",
+        "signature": "die Signaturprüfung des heruntergeladenen Watchdogs ist fehlgeschlagen",
+        "checksum": "die Integritätsprüfung des heruntergeladenen Watchdogs ist fehlgeschlagen",
+        "devBuild": "dies ist ein Entwicklungs-Build",
+        "unsupportedOs": "dieses Betriebssystem wird nicht unterstützt",
+        "installCmd": "der Installationsbefehl ist fehlgeschlagen",
+        "locked": "eine andere Installation lief bereits",
+        "unknown": "ein unbekannter Fehler ist aufgetreten"
+      }
+    },
+    "logShipping": {
+      "label": "Log-Übertragung",
+      "state": {
+        "healthy": "In Ordnung",
+        "quiet": "Ruhig",
+        "failing": "Fehlerhaft"
+      },
+      "tooltip": {
+        "healthy": "Der Agent überträgt seine Logs normal.",
+        "quiet": "Der Agent hat zuletzt keine Übertragungsversuche unternommen, daher gibt es nichts zu melden.",
+        "failing": "Log-Übertragungen schlagen seit {{since}} fehl. Grund: {{reason}}"
+      },
+      "reason": {
+        "http": "Der Server hat HTTP {{status}} zurückgegeben",
+        "timeout": "Zeitüberschreitung bei der Anfrage",
+        "dns": "Der Servername konnte nicht aufgelöst werden",
+        "connectionRefused": "Die Verbindung wurde abgelehnt",
+        "tls": "Die sichere Verbindung ist fehlgeschlagen",
+        "authRejected": "Der Server hat die Agent-Anmeldedaten abgelehnt",
+        "urlUnresolved": "Die Serveradresse konnte nicht ermittelt werden",
+        "other": "Anderer Übertragungsfehler",
+        "unspecified": "Nicht angegeben"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Protokolle nach Stufenanhebung",
+      "text": "Seit der Anhebung der Protokollstufe wurden keine Protokolle empfangen ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1826,7 +1875,11 @@
       "description": "Ausstehende vs. installierte Updates",
       "installed": "{{count}} installiert",
       "pending": "{{count}} ausstehend",
-      "title": "Patch-Konformität"
+      "title": "Patch-Konformität",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft",
+      "imagesBehind_one": "{{count}} Container-Image veraltet",
+      "imagesBehind_other": "{{count}} Container-Images veraltet"
     },
     "confirm": {
       "install": "Installieren",
@@ -1938,7 +1991,8 @@
       "excluded": "Durch Richtlinie ausgeschlossen",
       "excludedSourceTitle": "Die Quellen der Patch-Richtlinie umfassen diesen Patch nicht, daher überspringen geplante Patch-Läufe ihn.",
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
-      "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel der Patch-Richtlinie hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
+      "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
+      "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
       "pending": "Genehmigung ausstehend",
       "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",
       "needsApprovalNoRingTitle": "Mit der Patch-Richtlinie dieses Geräts ist kein Update-Ring verknüpft, daher wird dieser Patch nur nach manueller Genehmigung installiert.",
@@ -2169,20 +2223,29 @@
     "noOutput": "Keine Ausgabe",
     "output": "Ausgabe",
     "refreshing": "Wird aktualisiert...",
-    "running": "Wird ausgeführt...",
     "runAgain": "Erneut ausführen",
+    "runCount_one": "{{count}} Ausführung",
+    "runCount_other": "{{count}} Ausführungen",
+    "running": "Wird ausgeführt...",
     "scriptFallback": "Skript",
     "stderr": "Standardfehler (stderr)",
     "stdout": "Standardausgabe (stdout)",
     "table": {
       "completed": "Abgeschlossen",
       "duration": "Dauer",
+      "lastOutput": "Letzte Ausgabe",
+      "lastRun": "Letzte Ausführung",
       "script": "Skript",
       "started": "Begonnen",
       "status": "Status"
     },
     "title": "Skriptausführungsverlauf",
-    "unnamedScript": "Unbenanntes Skript"
+    "unnamedScript": "Unbenanntes Skript",
+    "view": {
+      "all": "Alle Ausführungen",
+      "label": "Skriptansicht",
+      "latest": "Letztes pro Skript"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Erkannt: {{date}}",
@@ -2234,7 +2297,8 @@
     "displayName": "Anzeigename",
     "errors": {
       "loadSites": "Die Standorte konnten nicht geladen werden",
-      "saveSettings": "Einstellungen konnten nicht gespeichert werden"
+      "saveSettings": "Einstellungen konnten nicht gespeichert werden",
+      "siteChanged": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Geräteeinstellungen gespeichert",
@@ -2623,7 +2687,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterChipBar": {
@@ -2692,7 +2757,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterHelpPopover": {
@@ -2778,7 +2844,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterValueEditor": {
@@ -3394,6 +3461,7 @@
     "ariaLabel": "Filter schnell hinzufügen",
     "chips": {
       "critical": "Kritisch",
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
       "lowDisk": "Wenig Festplattenspeicher",
       "needsPatches": "Benötigt Patches",
       "notSeen7d": "Nicht gesehen 7 T.",
@@ -3691,7 +3759,15 @@
     "cancelled": "Aktion in der Warteschlange abgebrochen",
     "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
     "loadFailed": "Warteschlangenaktionen konnten nicht geladen werden.",
-    "empty": "Keine ausstehenden Aktionen"
+    "empty": "Keine ausstehenden Aktionen",
+    "powerHold": {
+      "title": "{{action}} wartet auf einen laufenden Befehl",
+      "body": "{{action}} wird gesendet, sobald das Gerät seine laufenden Befehle abgeschlossen hat. {{command}} läuft seit {{minutes}} Min. ohne Ergebnis.",
+      "markFailed": "Als fehlgeschlagen markieren",
+      "markFailedIn": "Sie können ihn in {{minutes}} Min. als fehlgeschlagen markieren.",
+      "markedFailed": "Befehl als fehlgeschlagen markiert",
+      "markFailedFailed": "Befehl konnte nicht als fehlgeschlagen markiert werden"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Manuellen Asset hinzufügen",
@@ -3952,6 +4028,137 @@
       "dc": "Domänencontroller",
       "pdc_emulator": "PDC-Emulator der Domäne",
       "forest_root_pdc_emulator": "PDC-Emulator der Gesamtstruktur-Stammdomäne",
+      "unknown": "Unbekannt"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Workloads für dieses Gerät konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "agentTooOld": "Agent zu alt – aktualisieren Sie den Agent, damit Workloads gemeldet werden.",
+    "noRuntimes": "Auf diesem Gerät wurde keine Container- oder VM-Runtime erkannt.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unbekannt",
+    "detection": {
+      "absent": "Nicht installiert",
+      "unknown": "Erkennung nicht eindeutig"
+    },
+    "status": {
+      "ok": "Wird erfasst",
+      "disabled": "Erfassung ist aus – aktivieren Sie Workload-Inventar in einer Konfigurationsrichtlinie",
+      "unavailable": "Runtime läuft nicht",
+      "permission_denied": "Zugriff verweigert",
+      "error": "Erfassung fehlgeschlagen",
+      "unsupported": "Auf diesem Gerät nicht unterstützt"
+    },
+    "detectOnly": "Nur erkannt – Workloads für diese Runtime werden nicht aufgelistet.",
+    "counts": "{{total}} Workloads · {{running}} laufend · {{stopped}} gestoppt",
+    "partial": "Teilweiser Snapshot – einige Details konnten nicht gelesen werden, daher werden die erfassten Daten angezeigt.",
+    "truncated": "Angezeigt werden {{reported}} von {{observed}} Workloads, die die Runtime gemeldet hat.",
+    "lastError": "Letzter Fehler: {{error}}",
+    "lastCollected": "Zuletzt erfasst {{time}}",
+    "empty": "Keine Workloads gemeldet.",
+    "columns": {
+      "name": "Name",
+      "state": "Status",
+      "image": "Image / Gast-OS",
+      "compose": "Compose-Projekt",
+      "started": "Gestartet",
+      "imageStatus": "Image-Status"
+    },
+    "states": {
+      "running": "Läuft",
+      "stopped": "Gestoppt",
+      "paused": "Pausiert",
+      "restarting": "Wird neu gestartet",
+      "other": "Sonstige"
+    },
+    "policy": {
+      "title": "Workload-Inventar",
+      "description": "Container und virtuelle Maschinen auf Container- und VM-Hosts auflisten",
+      "offNote": "Runtimes werden immer erkannt, aber die Workload-Auflistung bleibt aus, bis eine Richtlinie sie aktiviert.",
+      "enabled": "Workloads auflisten",
+      "runtimesHeading": "Aufzulistende Runtimes",
+      "laterRelease": "Die Auflistung für Hyper-V und Proxmox VE folgt mit einer späteren Agent-Version; diese Schalter werden dann wirksam.",
+      "interval": "Erfassungsintervall (Minuten)",
+      "invalidInterval": "Das Intervall muss eine ganze Zahl von Minuten zwischen {{min}} und {{max}} sein."
+    },
+    "imageStatus": {
+      "behind": "Veraltet",
+      "current": "Aktuell",
+      "pinned": "Fixiert",
+      "local": "Lokaler Build",
+      "not_found": "Tag nicht gefunden",
+      "not_checked": "Nicht geprüft"
+    },
+    "imageStatusReason": {
+      "pending": "Noch nicht geprüft",
+      "private": "Private Registry – Anmeldedaten erforderlich",
+      "unsupported_registry": "Registry wird nicht unterstützt",
+      "error": "Registry-Prüfung fehlgeschlagen – wird wiederholt",
+      "behind": "Für diesen Tag ist ein neueres Image veröffentlicht",
+      "current": "Entspricht der Registry",
+      "pinned": "Auf einen Digest fixiert – kein Vergleich möglich",
+      "local": "Lokal erstellt – kein Registry-Digest",
+      "not_found": "Der Tag existiert in der Registry nicht mehr"
+    },
+    "imageFilter": {
+      "label": "Image-Status",
+      "all": "Alle",
+      "empty": "Keine Workloads mit diesem Image-Status."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Weitere EDR-Anbieter",
+    "loadError": "Einige EDR-Anbieterdaten konnten nicht geladen werden.",
+    "duplicateNotice": "Über zwei Konsolen verknüpft: Dieses Gerät erscheint in mehr als einer {{provider}}-Verbindung.",
+    "openDetections": "Offene Erkennungen",
+    "coverageHeading": "Die Abdeckung ist möglicherweise unvollständig",
+    "fields": {
+      "health": "Zustand",
+      "status": "Status",
+      "isolation": "Isolierung",
+      "agentVersion": "Agent-Version",
+      "lastSeen": "Zuletzt gesehen"
+    },
+    "health": {
+      "healthy": "Gesund",
+      "degraded": "Eingeschränkt",
+      "unhealthy": "Fehlerhaft",
+      "unknown": "Unbekannt"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Unbekannt"
+    },
+    "isolation": {
+      "isolated": "Isoliert",
+      "not_isolated": "Nicht isoliert",
+      "pending": "Ausstehend",
+      "unknown": "Unbekannt"
+    },
+    "severity": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Info",
+      "unknown": "Unbekannt"
+    },
+    "detectionStatus": {
+      "open": "Offen",
+      "in_progress": "In Bearbeitung",
+      "mitigated": "Eingedämmt",
+      "resolved": "Behoben",
+      "false_positive": "Fehlalarm",
+      "dismissed": "Verworfen",
       "unknown": "Unbekannt"
     }
   }

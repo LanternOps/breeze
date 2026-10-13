@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # Scaling W07 (#8146): the dedicated perf runner (.github/workflows/perf.yml).
+  labels:
+    - breeze-perf

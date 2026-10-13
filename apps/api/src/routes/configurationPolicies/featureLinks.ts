@@ -16,6 +16,7 @@ import {
   patchInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
+  systemProtectionInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -56,6 +57,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+import { omitUnsentLegacyApprovalKeys, PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
@@ -409,6 +411,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'system_protection' && data.inlineSettings) {
+      const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid system protection settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'compliance') {
       const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
       if (refusal) return c.json(refusal, 400);
@@ -445,6 +458,10 @@ featureLinkRoutes.post(
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
@@ -556,7 +573,9 @@ featureLinkRoutes.patch(
             400
           );
         }
-        data.inlineSettings = parsed.data;
+        // #8671: the schema defaults omitted approval keys; forward only the
+        // ones the client sent (the service keeps the stored values).
+        data.inlineSettings = omitUnsentLegacyApprovalKeys(data.inlineSettings, parsed.data);
       }
       if (existingLink.featureType === 'backup') {
         // PATCH may keep the existing profile reference (featurePolicyId
@@ -696,6 +715,16 @@ featureLinkRoutes.patch(
         }
         data.inlineSettings = parsed.data;
       }
+      if (existingLink.featureType === 'system_protection') {
+        const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid system protection settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
       if (existingLink.featureType === 'compliance') {
         const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
         if (refusal) return c.json(refusal, 400);
@@ -717,6 +746,10 @@ featureLinkRoutes.patch(
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {

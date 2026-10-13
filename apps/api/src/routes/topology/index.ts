@@ -8,6 +8,7 @@ import { topologyTemplateApplicationRoutes } from './templateApplications';
 import { topologyTemplateRoutes } from './templates';
 import { topologySettingsRoutes } from './settings';
 import { topologyGraphRoutes } from './graphs';
+import { topologyPresenceRoutes } from './presence';
 import { topologyHistoryRoutes } from './history';
 import { topologyInvestigationRoutes } from './investigation';
 import { topologyManualRoutes } from './manual';
@@ -31,6 +32,7 @@ export function createTopologyRoutes(): Hono {
   routes.route('/', topologyPolicyRoutes);
   routes.route('/', topologySettingsRoutes);
   routes.route('/', topologyGraphRoutes);
+  routes.route('/', topologyPresenceRoutes);
   routes.route('/', topologyHistoryRoutes);
   routes.route('/', topologyInvestigationRoutes);
   routes.route('/', topologyManualRoutes);

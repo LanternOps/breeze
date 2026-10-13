@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OPERATION_KEY_MAX_LENGTH,
   buildTaskOperationKey,
+  planOrdinalFromOperationKey,
   type TaskOperationKeyParts,
 } from './operationKey';
 
@@ -71,5 +72,17 @@ describe('buildTaskOperationKey (spec §6.5)', () => {
   it('targetId null renders as the literal "none" segment', () => {
     const key = buildTaskOperationKey({ ...BASE, targetId: null });
     expect(key).toContain(':none:');
+  });
+});
+
+describe('planOrdinalFromOperationKey (E4) — the one parser of the key format', () => {
+  it('round-trips the ordinal buildTaskOperationKey wrote', () => {
+    expect(planOrdinalFromOperationKey(buildTaskOperationKey({ ...BASE, ordinal: 7 }))).toBe(7);
+    expect(planOrdinalFromOperationKey(buildTaskOperationKey({ ...BASE, ordinal: 0 }))).toBe(0);
+  });
+  it('returns -1 (never a member) for anything malformed', () => {
+    for (const bad of [null, undefined, '', 'execute:x:none:r1', 'execute:x:none:r1:n', 'n3:extra', 'a:n-1']) {
+      expect(planOrdinalFromOperationKey(bad as string)).toBe(-1);
+    }
   });
 });

@@ -188,6 +188,9 @@ func TestRunBackupContextExternalCancel(t *testing.T) {
 // hand-built one): a stopped run must leave both the partial remote prefix
 // and the on-disk journal file in place.
 func TestRunBackupContext_StopPreservesRemotePrefixAndJournal(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	backing := newMockProvider()
 	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
 	dir := t.TempDir()

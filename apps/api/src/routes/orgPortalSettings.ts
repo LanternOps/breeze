@@ -55,7 +55,11 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enablePerformanceMetrics: false,
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false, // EDR framework W02: strict, fail-closed, inside "Enable all"
   enableNetworkAlerts: false,
+  enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
+  enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
+  enableVulnerabilityDetail: false, // visibility W06: sensitive, fail-closed, never in "Enable all"
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -83,7 +87,11 @@ type PortalSettingsRow = {
   enablePerformanceMetrics: boolean;
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
+  enableHourBlock: boolean;
+  enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -119,7 +127,11 @@ const portalSettingsColumns = () => ({
   enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
   enableSoftwareInventory: portalBranding.enableSoftwareInventory,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+  enableEdrVisibility: portalBranding.enableEdrVisibility,
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
+  enableHourBlock: portalBranding.enableHourBlock,
+  enablePatchDetail: portalBranding.enablePatchDetail,
+  enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -150,7 +162,11 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enablePerformanceMetrics: row.enablePerformanceMetrics,
     enableSoftwareInventory: row.enableSoftwareInventory,
     enableNetworkVisibility: row.enableNetworkVisibility,
+    enableEdrVisibility: row.enableEdrVisibility,
     enableNetworkAlerts: row.enableNetworkAlerts,
+    enableHourBlock: row.enableHourBlock,
+    enablePatchDetail: row.enablePatchDetail,
+    enableVulnerabilityDetail: row.enableVulnerabilityDetail,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
@@ -261,7 +277,8 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableHardwareInventory: row.enableHardwareInventory,
             enablePerformanceMetrics: row.enablePerformanceMetrics,
             enableSoftwareInventory: row.enableSoftwareInventory,
-            enableNetworkVisibility: row.enableNetworkVisibility
+            enableNetworkVisibility: row.enableNetworkVisibility,
+            enableEdrVisibility: row.enableEdrVisibility
           }
         });
       }

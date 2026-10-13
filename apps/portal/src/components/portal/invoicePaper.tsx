@@ -1,4 +1,5 @@
 import { Fragment } from 'react';
+import { formatWorkDate, groupLinesByDay } from '@breeze/shared';
 import { lineWorkedVsBilledNote } from '@/lib/api';
 import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { money } from '@/lib/money';
@@ -18,6 +19,7 @@ export interface PaperLine {
   lineTotal: string;
   taxable: boolean;
   workedMinutes?: number | null;
+  workDate?: string | null;
 }
 
 /** Per-line tax amount (same derivation as the API's invoice PDF). */
@@ -30,10 +32,12 @@ export function lineTax(lineTotal: string | number, taxable: boolean, rate: numb
 
 const NUM = 'hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell';
 
-export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTicket = false }: {
+export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTicket = false, lineGrouping = 'entry' }: {
   lines: PaperLine[]; currency: string; taxRate: number; showTax: boolean;
   /** The portal also names each line's ticket under its description. */
   showLineTicket?: boolean;
+  /** #8604: 'day' adds a per-day subtotal header inside each ticket group. */
+  lineGrouping?: 'entry' | 'day';
 }) {
   return (
     <div className="overflow-hidden rounded-lg border bg-card">
@@ -63,7 +67,21 @@ export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTi
                     </td>
                   </tr>
                 )}
-                {group.lines.map(l => {
+                {(lineGrouping === 'day'
+                  ? groupLinesByDay(group.lines).map(day => ({ day, rows: day.lines }))
+                  : [{ day: null, rows: group.lines }]
+                ).map(({ day, rows }) => (
+                  <Fragment key={day?.workDate ?? 'entries'}>
+                    {day && day.workDate && (
+                      <tr className="border-b" data-testid={`invoice-day-${day.workDate}`}>
+                        <td className="px-4 py-2 text-xs font-semibold text-muted-foreground sm:px-5">{formatWorkDate(day.workDate, 'en')}</td>
+                        <td className={NUM.replace('py-3', 'py-2')}>{String(Number(day.hours))}</td>
+                        <td className={NUM.replace('py-3', 'py-2')} />
+                        {showTax && <td className={NUM.replace('py-3', 'py-2')} />}
+                        <td className="whitespace-nowrap px-4 py-2 text-right text-xs font-semibold tabular-nums text-foreground sm:px-5">{money(day.total, currency)}</td>
+                      </tr>
+                    )}
+                    {rows.map(l => {
                   const index = lines.indexOf(l);
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
                   const title = (l.name ?? l.description ?? '').trim() || '—';
@@ -76,6 +94,9 @@ export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTi
                           Amount column out of the paper at phone width. */}
                       <td className="w-full min-w-0 px-4 py-3 text-foreground [overflow-wrap:anywhere] sm:px-5">
                         {title}
+                        {lineGrouping === 'entry' && l.workDate && (
+                          <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-date-${index}`}>{formatWorkDate(l.workDate, 'en')}</div>
+                        )}
                         {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
                         <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
                         {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
@@ -90,7 +111,9 @@ export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTi
                       <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
                     </tr>
                   );
-                })}
+                    })}
+                  </Fragment>
+                ))}
               </Fragment>
             ))}
           </tbody>

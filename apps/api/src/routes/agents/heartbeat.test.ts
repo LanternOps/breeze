@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- mocks ----------
@@ -269,6 +269,11 @@ vi.mock('./helpers', () => ({
     reported !== 'server' || current === 'server'),
 }));
 
+const refreshReadinessMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/bareMetalReadinessRefresh', () => ({
+  refreshReadinessAfterRecovery: refreshReadinessMock,
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
@@ -315,6 +320,18 @@ vi.mock('../../middleware/agentAuth', () => ({
   DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
 }));
 
+// #7970 — the UniFi collector presence probe. A real (registered, so reset per
+// test) TTL cache; only the SQL probe is a mock.
+const deviceHasAgentCollectorsMock = vi.hoisted(() => vi.fn(async (_db: unknown, _deviceId: string, _orgId: string) => false));
+vi.mock('../../services/unifi/unifiCollectorService', async () => {
+  const { HotPathTtlCache } = await import('../../services/hotPathCache');
+  return {
+    agentCollectorAbsenceCache: new HotPathTtlCache<string, boolean>({ name: 'unifi-agent-collector-absence', ttlMs: 300_000, maxEntries: 100 }),
+    agentCollectorAbsenceKey: (deviceId: string, orgId: string) => `${orgId}:${deviceId}`,
+    deviceHasAgentCollectors: deviceHasAgentCollectorsMock,
+  };
+});
+
 vi.mock('../../services/agentEditionAutoMigrate', () => ({
   maybeDispatchEditionMigration: vi.fn().mockResolvedValue(undefined),
   // Permissive default so the launch-gating tests below control it explicitly.
@@ -355,6 +372,11 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const recordWorkstationCapabilitiesMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+vi.mock('../../services/callerVerification/workstationCapabilities', () => ({
+  recordWorkstationCapabilities: (...args: unknown[]) => recordWorkstationCapabilitiesMock(...args),
+}));
+
 vi.mock('../../services/agentHealthObservations', () => ({
   recordAgentHealthObservation: (...args: unknown[]) =>
     recordAgentHealthObservationMock(...(args as [any])),
@@ -362,10 +384,14 @@ vi.mock('../../services/agentHealthObservations', () => ({
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
   HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS: 180_000,
+  // The resolver's real shape (#8616: `resolved` = an effective config was
+  // found). The old stub lacked `settings`, so every beat silently took the
+  // resolver's catch path.
   resolveRemoteAccessForDevice: vi.fn(async () => ({
-    helperEnabled: false,
-    helperSettings: null,
-    manageRemoteManagement: false,
+    settings: { vncRelay: false },
+    policyName: null,
+    policyId: null,
+    resolved: true,
   })),
 }));
 
@@ -419,7 +445,7 @@ vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaselin
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
 import { and, eq, notInArray } from 'drizzle-orm';
-import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
+import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
@@ -764,6 +790,74 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
 
     expect(response.status).toBe(200);
     expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+  });
+
+  describe('caller verification readiness (#6354 W02)', () => {
+    function arrange() {
+      selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+      selectMock.mockReturnValue(selectChainResolving([]));
+      updateMock.mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+      });
+      insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+      recordWorkstationCapabilitiesMock.mockClear();
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+    }
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    it('touches no readiness store fleet-wide while the feature is dark', async () => {
+      arrange();
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...minimalHeartbeatBody, helperCapabilities: { callerVerify: true, usernames: ['alex'] } }),
+      });
+      expect(response.status).toBe(200);
+      // recordWorkstationCapabilities is the only Redis write on this path.
+      expect(recordWorkstationCapabilitiesMock).not.toHaveBeenCalled();
+    });
+
+    it('replaces readiness from the authenticated device after the DB context is released', async () => {
+      arrange();
+      callOrder.length = 0;
+      recordWorkstationCapabilitiesMock.mockImplementationOnce(async () => {
+        callOrder.push('readiness:recorded');
+      });
+      const helperCapabilities = { callerVerify: true, usernames: ['alex'] };
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...minimalHeartbeatBody, helperCapabilities }),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).toHaveBeenCalledWith('org-1', 'device-1', helperCapabilities);
+      expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('readiness:recorded'));
+    });
+
+    it('clears readiness when an old main agent omits the field', async () => {
+      arrange();
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(minimalHeartbeatBody),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).toHaveBeenCalledWith('org-1', 'device-1', undefined);
+    });
+
+    // The malformed-report drop is zod-level: schemas.heartbeatTolerance.test.ts.
+
+    it('never lets a watchdog heartbeat touch readiness', async () => {
+      arrange();
+      const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentVersion: '0.65.10', role: 'watchdog', watchdogState: 'MONITORING' }),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps reachability successful and captures a health persistence failure', async () => {
@@ -1258,6 +1352,8 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     keyId: 'deploy-2026-10-09-abcdef01',
     signature: 'sig',
   };
+  let deviceRow: Record<string, unknown>;
+  const deviceUpdateSets: Array<Record<string, unknown>> = [];
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -1270,29 +1366,30 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     resetIdentitySyncLogStateForTests();
 
     // The row the agent authenticated as now lives in org B / site B.
-    selectMock.mockReturnValueOnce(
-      selectChainResolving([
-        {
-          id: DEVICE_ID,
-          orgId: ORG_B,
-          siteId: SITE_B,
-          hostname: 'host-1',
-          osType: 'linux',
-          osVersion: 'Ubuntu 22.04',
-          osBuild: null,
-          architecture: 'amd64',
-          agentVersion: '0.65.10',
-          deviceRole: 'server',
-          deviceRoleSource: 'auto',
-          agentTokenHash: 'hash',
-          tokenIssuedAt: new Date(),
-        },
-      ]),
-    );
+    deviceRow = {
+      id: DEVICE_ID,
+      orgId: ORG_B,
+      siteId: SITE_B,
+      hostname: 'host-1',
+      osType: 'linux',
+      osVersion: 'Ubuntu 22.04',
+      osBuild: null,
+      architecture: 'amd64',
+      agentVersion: '0.65.10',
+      deviceRole: 'server',
+      deviceRoleSource: 'auto',
+      agentTokenHash: 'hash',
+      tokenIssuedAt: new Date(),
+      ownershipEpoch: 1,
+      agentIdentityEpochAck: null,
+    };
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    deviceUpdateSets.length = 0;
     updateMock.mockReturnValue({
-      set: vi.fn(() => ({
-        where: vi.fn(() => whereResultWithReturning()),
-      })),
+      set: vi.fn((values: Record<string, unknown>) => {
+        deviceUpdateSets.push(values);
+        return { where: vi.fn(() => whereResultWithReturning()) };
+      }),
     });
     insertMock.mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
@@ -1381,6 +1478,276 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     });
     expect(body).not.toHaveProperty('identityAssertion');
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  // PAM ownership epochs W4 (#8206): assertion v2 carries the row's epoch.
+  describe('assertion v2 and the identity epoch ack (#8206)', () => {
+    const ackWrites = () => deviceUpdateSets.filter((set) => 'agentIdentityEpochAck' in set);
+
+    it('signs v2 with the row epoch for a v2 agent that still holds the old org', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE, ownershipEpoch: 1 },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith({
+        agentId: 'device-1',
+        deviceId: DEVICE_ID,
+        orgId: ORG_B,
+        siteId: SITE_B,
+        ownershipEpoch: 2,
+        nonce: NONCE,
+      });
+    });
+
+    it('signs nothing for a never-moved device whose v2 agent reports no epoch', async () => {
+      const body = await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+      expect(body).not.toHaveProperty('identityAssertion');
+    });
+
+    it('signs v2 for an epoch-only change (same org and site, older epoch)', async () => {
+      deviceRow.ownershipEpoch = 3;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith(expect.objectContaining({ ownershipEpoch: 3, orgId: ORG_B }));
+    });
+
+    it('keeps a v1 agent on v1: never signed for an epoch alone, v1 call unchanged after a move', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 1 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    });
+
+    it('drops a malformed epoch alone and still syncs the identity', async () => {
+      const body = await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE, ownershipEpoch: 'two' },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, ownershipEpoch: 1 }));
+      expect(body.identityAssertion).toEqual(assertion);
+      expect(ackWrites()).toHaveLength(0);
+    });
+
+    it('records the reported epoch as the ack when the agent holds the row org', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+      expect(ackWrites()).toHaveLength(1);
+    });
+
+    it('does not write the ack for another org, an epoch above the row, no epoch, or one already acked', async () => {
+      deviceRow.ownershipEpoch = 2;
+      const cases = [
+        { orgId: ORG_A, siteId: SITE_A, ownershipEpoch: 2 },
+        { orgId: ORG_B, siteId: SITE_B, ownershipEpoch: 3 },
+        { orgId: ORG_B, siteId: SITE_B },
+      ];
+      for (const reported of cases) {
+        deviceUpdateSets.length = 0;
+        selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+        await beat({
+          securityCapabilities: { identitySyncProtocolVersion: 2 },
+          reportedIdentity: { deviceId: DEVICE_ID, nonce: NONCE, ...reported },
+        });
+        expect(ackWrites()).toHaveLength(0);
+      }
+      deviceRow.agentIdentityEpochAck = 2;
+      deviceUpdateSets.length = 0;
+      selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(ackWrites()).toHaveLength(0);
+    });
+  });
+});
+
+// #8382 — follow-ups from the #8320 review: an agent that refused the
+// assertion is not signed one every beat, and a mismatched device id is logged.
+describe('POST /agents/:id/heartbeat — identity sync refusals (#8382)', () => {
+  const DEVICE_ID = '00000000-0000-4000-8000-000000000004';
+  const ORG_B = '00000000-0000-4000-8000-0000000000b1';
+  const SITE_B = '00000000-0000-4000-8000-0000000000b2';
+  const ORG_A = '00000000-0000-4000-8000-0000000000a1';
+  const SITE_A = '00000000-0000-4000-8000-0000000000a2';
+  const ORG_C = '00000000-0000-4000-8000-0000000000c1';
+  const SITE_C = '00000000-0000-4000-8000-0000000000c2';
+  const NONCE = '0123456789abcdef0123456789abcdef';
+  const REJECTION_KEY = `identity-sync:rejected:device:${DEVICE_ID}`;
+  const capable = { securityCapabilities: { identitySyncProtocolVersion: 1 } };
+  const oldIdentity = { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE };
+
+  // The row the agent authenticated as now lives in org B / site B.
+  function queueMovedDeviceRow() {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: DEVICE_ID,
+          orgId: ORG_B,
+          siteId: SITE_B,
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+  }
+
+  function fakeRedis(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial));
+    return {
+      store,
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string, ...options: unknown[]) => {
+        if (options.includes('NX') && store.has(key)) return null;
+        store.set(key, value);
+        return 'OK';
+      }),
+    };
+  }
+
+  async function useRedis(redis: ReturnType<typeof fakeRedis> | null) {
+    const { getRedis } = await import('../../services/redis');
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+  }
+
+  let warn: MockInstance<typeof console.warn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    signAgentIdentityAssertionMock.mockResolvedValue({ v: 1, orgId: ORG_B, siteId: SITE_B, signature: 'sig' });
+    const { resetWatchdogRestartLogCacheForTests, resetIdentitySyncLogStateForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    resetIdentitySyncLogStateForTests();
+    const { resetAgentIdentityRejectionLogStateForTests } = await import('../../services/agentIdentityAssertion');
+    resetAgentIdentityRejectionLogStateForTests();
+    await useRedis(null);
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    queueMovedDeviceRow();
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  afterEach(async () => {
+    warn.mockRestore();
+    await useRedis(null);
+  });
+
+  async function beat(extra: Record<string, unknown>) {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+    expect(resp.status).toBe(200);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  function identityWarnings(fragment: string) {
+    return warn.mock.calls.filter((call) => String(call[0]).includes(fragment));
+  }
+
+  it('holds the assertion back on a beat that reports the agent refused the current org/site', async () => {
+    const redis = fakeRedis();
+    await useRedis(redis);
+    const body = await beat({
+      ...capable,
+      reportedIdentity: oldIdentity,
+      identityAssertionRejection: { code: 'env_override', orgId: ORG_B, siteId: SITE_B },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    expect(JSON.parse(redis.store.get(REJECTION_KEY) ?? 'null')).toEqual({ code: 'env_override', orgId: ORG_B, siteId: SITE_B });
+    const logged = identityWarnings('refused the signed identity assertion');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.[1]).toMatchObject({ agentId: 'device-1', deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, code: 'env_override' });
+  });
+
+  it('keeps holding it back on later beats while the refusal is on record', async () => {
+    await useRedis(fakeRedis({ [REJECTION_KEY]: JSON.stringify({ code: 'unpinned_key', orgId: ORG_B, siteId: SITE_B }) }));
+    const body = await beat({ ...capable, reportedIdentity: oldIdentity });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('signs for a device moved again, whatever the agent refused for the earlier target', async () => {
+    await useRedis(fakeRedis({ [REJECTION_KEY]: JSON.stringify({ code: 'gave_up', orgId: ORG_C, siteId: SITE_C }) }));
+    const body = await beat({
+      ...capable,
+      reportedIdentity: oldIdentity,
+      identityAssertionRejection: { code: 'gave_up', orgId: ORG_C, siteId: SITE_C },
+    });
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledTimes(1);
+    expect(body).toHaveProperty('identityAssertion');
+  });
+
+  it('signs as before when Redis is unavailable and the beat reports nothing', async () => {
+    const body = await beat({ ...capable, reportedIdentity: oldIdentity });
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledTimes(1);
+    expect(body).toHaveProperty('identityAssertion');
+  });
+
+  it('ignores a refusal from an agent whose identity already matches the row', async () => {
+    const redis = fakeRedis();
+    await useRedis(redis);
+    const body = await beat({
+      ...capable,
+      reportedIdentity: { ...oldIdentity, orgId: ORG_B, siteId: SITE_B },
+      identityAssertionRejection: { code: 'invalid', orgId: ORG_B, siteId: SITE_B },
+    });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('warns, rate-limited, when the reported device id is not the row, and still sends nothing', async () => {
+    const otherDevice = '00000000-0000-4000-8000-000000000099';
+    const body = await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('identityAssertion');
+    const mismatch = identityWarnings('device id that is not the device its credential belongs to');
+    expect(mismatch).toHaveLength(1);
+    expect(mismatch[0]?.[1]).toEqual({ agentId: 'device-1', reportedDeviceId: otherDevice, rowDeviceId: DEVICE_ID });
+
+    queueMovedDeviceRow();
+    await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(1);
+  });
+
+  it('does not warn about a device id from an agent without the capability', async () => {
+    await beat({ reportedIdentity: { ...oldIdentity, deviceId: '00000000-0000-4000-8000-000000000099' } });
+    expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(0);
   });
 });
 
@@ -3934,6 +4301,15 @@ describe('uninstallIntentAt clearing (#2764)', () => {
   });
 });
 
+describe('normalizeRetainStateProtocolVersion (#8616)', () => {
+  it('maps exactly the number 1 to 1 and everything else to 0', () => {
+    expect(normalizeRetainStateProtocolVersion(1)).toBe(1);
+    for (const v of [0, 2, -1, 1.5, '1', true, null, undefined, {}, [1], NaN]) {
+      expect(normalizeRetainStateProtocolVersion(v)).toBe(0);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------
 // PAM config delivery (#uacInterceptionEnabled in heartbeat response)
 // ---------------------------------------------------------------------
@@ -4438,6 +4814,249 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
 });
 
 // ---------------------------------------------------------------------
+// #8616 — retain-state: a beat advertising retainStateProtocolVersion 1 gets
+// `retainState` for features with no decision instead of a false/absent value;
+// every other beat gets the legacy payload, byte for byte.
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const V1 = { retainStateProtocolVersion: 1 };
+
+  async function beatRaw(securityCapabilities?: Record<string, unknown>) {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(securityCapabilities ? { ...minimalHeartbeatBody, securityCapabilities } : minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    return resp.text();
+  }
+  async function beat(securityCapabilities?: Record<string, unknown>) {
+    return JSON.parse(await beatRaw(securityCapabilities)) as Record<string, unknown>;
+  }
+  /** Re-arm the authenticated device row for a second beat in the same test. */
+  function rearmDevice() {
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+  }
+
+  it('v1 beat + pam resolver throws: retainState has pam, no uacInterceptionEnabled key, Sentry still told', async () => {
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect(body.helperEnabled).toBe(true);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'pam boom' }));
+  });
+
+  it('pam resolver throws: a beat without the capability, or with any value but 1, gets the legacy payload byte for byte', async () => {
+    const helpers = await import('./helpers');
+    const variants: Array<Record<string, unknown> | undefined> = [
+      undefined,
+      {},
+      { retainStateProtocolVersion: 0 },
+      { retainStateProtocolVersion: 2 },
+      { retainStateProtocolVersion: '1' },
+      { retainStateProtocolVersion: true },
+      { retainStateProtocolVersion: -1 },
+    ];
+    const raws: string[] = [];
+    for (const [i, caps] of variants.entries()) {
+      if (i > 0) rearmDevice();
+      vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+      raws.push(await beatRaw(caps));
+    }
+    const legacy = JSON.parse(raws[0]!) as Record<string, unknown>;
+    expect(legacy.uacInterceptionEnabled).toBe(false);
+    expect(legacy.helperEnabled).toBe(false);
+    expect('retainState' in legacy).toBe(false);
+    for (const raw of raws) expect(raw).toBe(raws[0]);
+  });
+
+  it('kill switch off (HEARTBEAT_RETAIN_STATE_ENABLED=false) + v1 beat: legacy payload byte for byte', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    const legacyRaw = await beatRaw();
+
+    vi.stubEnv('HEARTBEAT_RETAIN_STATE_ENABLED', 'false');
+    rearmDevice();
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    const killedRaw = await beatRaw(V1);
+
+    expect(killedRaw).toBe(legacyRaw);
+    expect(JSON.parse(killedRaw).uacInterceptionEnabled).toBe(false);
+  });
+
+  it('device hierarchy missing mid-beat + v1: pam and helper retained, policy blocks still omitted', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(null as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
+    expect('helperSettings' in body).toBe(false);
+    expect(vi.mocked(helpers.buildPamConfigUpdate)).not.toHaveBeenCalled();
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.monitoring_settings).toBeUndefined();
+    expect(configUpdate?.event_log_settings).toBeUndefined();
+  });
+
+  it('helper throws, pam decided true + v1: uacInterceptionEnabled:true sent, only helper retained', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildHelperConfigUpdate).mockRejectedValueOnce(new Error('helper boom'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const body = await beat(V1);
+
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect(body.retainState).toEqual(['helper']);
+    expect('helperEnabled' in body).toBe(false);
+    expect('helperSettings' in body).toBe(false);
+  });
+
+  it('pam decided false (admin disabled) + v1: uacInterceptionEnabled:false sent explicitly, nothing retained', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: false });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const body = await beat(V1);
+
+    expect(body.uacInterceptionEnabled).toBe(false);
+    expect(body.helperEnabled).toBe(false);
+    expect('retainState' in body).toBe(false);
+  });
+
+  it('remote-access resolver throws: v1 retains remoteManagement, legacy keeps the absent key, Sentry is told', async () => {
+    const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(resolveRemoteAccessForDevice).mockRejectedValueOnce(new Error('remote boom'));
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const v1 = await beat(V1);
+    expect(v1.retainState).toEqual(['remoteManagement']);
+    expect('manageRemoteManagement' in v1).toBe(false);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'remote boom' }));
+
+    rearmDevice();
+    vi.mocked(resolveRemoteAccessForDevice).mockRejectedValueOnce(new Error('remote boom'));
+    const legacy = await beat();
+    expect('manageRemoteManagement' in legacy).toBe(false);
+    expect('retainState' in legacy).toBe(false);
+  });
+
+  it('remote-access resolved:false (no effective config) + v1: remoteManagement retained even though the default is on; legacy still sends the default', async () => {
+    const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+    const unresolved = { settings: { vncRelay: true }, policyName: null, policyId: null, resolved: false };
+    vi.mocked(resolveRemoteAccessForDevice).mockResolvedValueOnce(unresolved as never);
+
+    const v1 = await beat(V1);
+    expect(v1.retainState).toEqual(expect.arrayContaining(['remoteManagement']));
+    expect('manageRemoteManagement' in v1).toBe(false);
+
+    rearmDevice();
+    vi.mocked(resolveRemoteAccessForDevice).mockResolvedValueOnce(unresolved as never);
+    const legacy = await beat();
+    expect(legacy.manageRemoteManagement).toBe(true);
+  });
+
+  it('hierarchy load ERRORS + v1: pam and helper retained although the resolvers returned defaults, and their cache writes are skipped', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: false });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
+    // Decision 13 (approved override of the plan's OD13): no per-device Redis
+    // write of a value read without the beat's own hierarchy.
+    expect(vi.mocked(helpers.buildPamConfigUpdate))
+      .toHaveBeenCalledWith('device-1', expect.objectContaining({ skipCacheWrite: true }));
+    expect(vi.mocked(helpers.buildHelperConfigUpdate))
+      .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ skipCacheWrite: true }));
+  });
+
+  it('hierarchy load ERRORS, legacy beat: the resolver values are still delivered exactly as before', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const body = await beat();
+
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect(body.helperEnabled).toBe(true);
+    expect('retainState' in body).toBe(false);
+  });
+
+  it('loaded hierarchy: builders may write their caches, and a helper cache hit counts as a decision', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.readCachedHelperSettings).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const body = await beat(V1);
+
+    expect(body.helperEnabled).toBe(true);
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect('retainState' in body).toBe(false);
+    expect(vi.mocked(helpers.buildHelperConfigUpdate)).not.toHaveBeenCalled();
+    expect(vi.mocked(helpers.buildPamConfigUpdate))
+      .toHaveBeenCalledWith('device-1', expect.objectContaining({ skipCacheWrite: false }));
+  });
+
+  it('the policy context fails to open + v1: pam and helper retained instead of false', async () => {
+    withDbAccessContextMock
+      .mockImplementationOnce(orgDbAccessContextPassthrough)
+      .mockImplementationOnce(async () => {
+        throw new Error('policy context failed to open');
+      });
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
 // #8053 / #8142 — the post-commit readers share ONE context. Since #8142 it
 // is org-scoped (the org block's own dbContext), not a system context; the
 // helper and policy-probe readers run first inside it, each behind its own
@@ -4567,8 +5186,9 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the probe's cache-miss savepoint; the helper resolves in memory.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
+    // hierarchy/set savepoint + the policy probe's and the UniFi collector
+    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {
@@ -7774,9 +8394,11 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(recoverySetCalls[0]!.checkedInAt).toBeInstanceOf(Date);
     expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
     expect(deviceSetCalls[0]!.recoveredFromSnapshotId).toBe('snap-1');
+    expect(refreshReadinessMock).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
+    refreshReadinessMock.mockClear();
     arrange([recoveryRow({ nonceHash: hashRecoveryNonce('b'.repeat(64)) })]);
 
     const res = await beatWithMarker();
@@ -7790,6 +8412,7 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
       (c) => (c[1] as { action?: string })?.action === 'bmr.recovery.checked_in',
     );
     expect(failureCall?.[1]).toMatchObject({ result: 'failure' });
+    expect(refreshReadinessMock).not.toHaveBeenCalled();
   });
 
   it('ignores a marker for a recovery in a terminal failed state', async () => {
@@ -8278,5 +8901,77 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const body = (await resp.json()) as Record<string, unknown>;
     expect(Object.keys(body)).toContain('configUpdate');
     expect(Object.keys(body)).toContain('manifestTrustKeys');
+  });
+});
+
+describe('POST /agents/:id/heartbeat — UniFi collector presence hint (#7970)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    deviceHasAgentCollectorsMock.mockReset();
+  });
+
+  async function beatConfig(): Promise<Record<string, unknown>> {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    return (((await resp.json()) as Record<string, unknown>).configUpdate ?? {}) as Record<string, unknown>;
+  }
+
+  it('sends true for a collector device, probing by the token org and device inside a savepoint of the policy context', async () => {
+    deviceHasAgentCollectorsMock.mockImplementation(async () => {
+      callOrder.push('unifi:probe');
+      return true;
+    });
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(true);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledWith(expect.anything(), 'device-1', 'org-1');
+    const probe = callOrder.indexOf('unifi:probe');
+    expect(callOrder[probe - 1]).toBe('savepoint');
+    expect(probe).toBeGreaterThan(callOrder.lastIndexOf('dbContext:opened'));
+    expect(probe).toBeLessThan(callOrder.lastIndexOf('dbContext:released'));
+  });
+
+  it('sends false for a collector-less device and serves later beats from the shared negative cache', async () => {
+    deviceHasAgentCollectorsMock.mockResolvedValue(false);
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(false);
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1', osType: 'windows',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto', agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(false);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches "present": a collector device probes on every beat', async () => {
+    deviceHasAgentCollectorsMock.mockResolvedValue(true);
+    await beatConfig();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1', osType: 'windows',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto', agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    expect((await beatConfig()).unifi_collectors_assigned).toBe(true);
+    expect(deviceHasAgentCollectorsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('omits the key (agent: no change) when the probe fails, and still delivers the heartbeat', async () => {
+    const { captureException } = await import('../../services/sentry');
+    deviceHasAgentCollectorsMock.mockRejectedValue(new Error('probe failed'));
+    const config = await beatConfig();
+    expect(config).not.toHaveProperty('unifi_collectors_assigned');
+    expect(captureException).toHaveBeenCalled();
   });
 });

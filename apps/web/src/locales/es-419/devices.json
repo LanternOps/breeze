@@ -358,7 +358,9 @@
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
-    "toADifferentSite": "a un sitio diferente."
+    "toADifferentSite": "a un sitio diferente.",
+    "deviceMovedByOther": "Alguien más movió este dispositivo: recarga para ver su sitio actual",
+    "policyNote": "Al moverlo cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a {{device}}. Breeze no lo devolverá automáticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "No se pudo crear el grupo",
@@ -912,6 +914,7 @@
     "diskCleanup": "Limpieza de disco",
     "diskUsageAnalysisAndCleanup": "Análisis y limpieza del uso del disco.",
     "bootPerf": "Rendimiento de arranque",
+    "systemRestore": "Restaurar sistema",
     "startupTimeAndBootProcessAnalysis": "Análisis del tiempo de inicio y del proceso de arranque.",
     "backup": "Respaldo",
     "backupStatusJobsSnapshotsAndVerification": "Estado de la copia de seguridad, trabajos, instantáneas y verificación",
@@ -945,7 +948,9 @@
       "management": "Administración",
       "history": "Historial y red",
       "extensions": "Extensiones"
-    }
+    },
+    "workloads": "Cargas de trabajo",
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -1360,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
       "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
       "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
+    },
+    "watchdogInstall": {
+      "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute `breeze-agent service install --watchdog` en el equipo para reintentar.",
+      "unsupported": "La instalación automática del watchdog no es compatible con este equipo (desde {{since}}).",
+      "reason": {
+        "network": "no se pudo acceder a la descarga",
+        "server": "el servidor rechazó la descarga",
+        "policy": "la política de red bloqueó la descarga",
+        "signature": "el watchdog descargado no superó la verificación de firma",
+        "checksum": "el watchdog descargado no superó la verificación de integridad",
+        "devBuild": "esta es una compilación de desarrollo",
+        "unsupportedOs": "este sistema operativo no es compatible",
+        "installCmd": "el comando de instalación falló",
+        "locked": "ya había otra instalación en curso",
+        "unknown": "ocurrió un error no reconocido"
+      }
+    },
+    "logShipping": {
+      "label": "Envío de registros",
+      "state": {
+        "healthy": "Correcto",
+        "quiet": "Inactivo",
+        "failing": "Con fallas"
+      },
+      "tooltip": {
+        "healthy": "El agente está enviando sus registros con normalidad.",
+        "quiet": "El agente no ha hecho intentos de envío recientes, por lo que no hay nada que informar.",
+        "failing": "El envío de registros falla desde {{since}}. Motivo: {{reason}}"
+      },
+      "reason": {
+        "http": "El servidor devolvió HTTP {{status}}",
+        "timeout": "La solicitud agotó el tiempo de espera",
+        "dns": "No se pudo resolver el nombre del servidor",
+        "connectionRefused": "Se rechazó la conexión",
+        "tls": "Falló la conexión segura",
+        "authRejected": "El servidor rechazó las credenciales del agente",
+        "urlUnresolved": "No se pudo determinar la dirección del servidor",
+        "other": "Otro error de envío",
+        "unspecified": "Sin especificar"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Registros tras subir el nivel",
+      "text": "No se han recibido registros desde que se subió el nivel de registro ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1826,7 +1875,11 @@
       "description": "Actualizaciones pendientes vs instaladas",
       "installed": "{{count}} instalado",
       "pending": "{{count}} pendiente",
-      "title": "Cumplimiento de parches"
+      "title": "Cumplimiento de parches",
+      "imagesNotChecked_one": "{{count}} imagen de contenedor sin verificar",
+      "imagesNotChecked_other": "{{count}} imágenes de contenedor sin verificar",
+      "imagesBehind_one": "{{count}} imagen de contenedor desactualizada",
+      "imagesBehind_other": "{{count}} imágenes de contenedor desactualizadas"
     },
     "confirm": {
       "install": "Instalar",
@@ -1938,7 +1991,8 @@
       "excluded": "Excluido por la directiva",
       "excludedSourceTitle": "Los orígenes de la directiva de parches no incluyen este parche, así que las ejecuciones programadas lo omiten.",
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
-      "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación de la directiva de parches retiene este parche, así que las ejecuciones programadas lo omiten.",
+      "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
+      "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
       "pending": "Aprobación pendiente",
       "needsApprovalRingTitle": "El anillo de actualización {{ring}} no aprueba este parche automáticamente. Apruébelo manualmente para instalarlo.",
       "needsApprovalNoRingTitle": "La directiva de parches de este dispositivo no tiene un anillo de actualización vinculado, así que este parche solo se instala tras una aprobación manual.",
@@ -2169,20 +2223,29 @@
     "noOutput": "Sin salida",
     "output": "Salida",
     "refreshing": "Actualizando...",
-    "running": "En ejecución...",
     "runAgain": "Ejecutar de nuevo",
+    "runCount_one": "{{count}} ejecución",
+    "runCount_other": "{{count}} ejecuciones",
+    "running": "En ejecución...",
     "scriptFallback": "Script",
     "stderr": "Error estándar (stderr)",
     "stdout": "Salida estándar (salida estándar)",
     "table": {
       "completed": "Terminado",
       "duration": "Duración",
+      "lastOutput": "Última salida",
+      "lastRun": "Última ejecución",
       "script": "Script",
       "started": "Iniciado",
       "status": "Estado"
     },
     "title": "Historial de ejecución de scripts",
-    "unnamedScript": "Script sin nombre"
+    "unnamedScript": "Script sin nombre",
+    "view": {
+      "all": "Todas las ejecuciones",
+      "label": "Vista de scripts",
+      "latest": "Último por script"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Detectado: {{date}}",
@@ -2234,7 +2297,8 @@
     "displayName": "Nombre para mostrar",
     "errors": {
       "loadSites": "No se pudieron cargar los sitios",
-      "saveSettings": "No se pudo guardar la configuración"
+      "saveSettings": "No se pudo guardar la configuración",
+      "siteChanged": "Alguien más movió este dispositivo: recarga para ver su sitio actual"
     },
     "hostname": "Nombre de host: {{hostname}}",
     "saved": "Configuración del dispositivo guardada",
@@ -2623,7 +2687,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterChipBar": {
@@ -2692,7 +2757,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterHelpPopover": {
@@ -2778,7 +2844,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterValueEditor": {
@@ -3394,6 +3461,7 @@
     "ariaLabel": "Filtros de adición rápida",
     "chips": {
       "critical": "Crítico",
+      "logShippingFailing": "Envío de registros con fallas",
       "lowDisk": "Disco bajo",
       "needsPatches": "Necesita parches",
       "notSeen7d": "No visto 7 d",
@@ -3691,7 +3759,15 @@
     "cancelled": "Acción en cola cancelada",
     "cancelFailed": "No se pudo cancelar la acción en cola",
     "loadFailed": "No se pudieron cargar las acciones en cola.",
-    "empty": "No hay acciones en cola"
+    "empty": "No hay acciones en cola",
+    "powerHold": {
+      "title": "{{action}} está esperando un comando en ejecución",
+      "body": "{{action}} se enviará cuando el dispositivo termine los comandos en ejecución. {{command}} lleva {{minutes}} min en ejecución sin resultado.",
+      "markFailed": "Marcar como fallido",
+      "markFailedIn": "Podrás marcarlo como fallido en {{minutes}} min.",
+      "markedFailed": "Comando marcado como fallido",
+      "markFailedFailed": "No se pudo marcar el comando como fallido"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Agregar activo manual",
@@ -3952,6 +4028,137 @@
       "dc": "Controlador de dominio",
       "pdc_emulator": "Emulador de PDC del dominio",
       "forest_root_pdc_emulator": "Emulador de PDC de la raíz del bosque",
+      "unknown": "Desconocido"
+    }
+  },
+  "workloads": {
+    "loadFailed": "No se pudieron cargar las cargas de trabajo de este dispositivo.",
+    "retry": "Reintentar",
+    "agentTooOld": "Agente demasiado antiguo: actualice el agente para informar cargas de trabajo.",
+    "noRuntimes": "No se detectó ningún runtime de contenedores o VM en este dispositivo.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Versión {{version}}",
+    "versionUnknown": "Versión desconocida",
+    "detection": {
+      "absent": "No instalado",
+      "unknown": "Detección no concluyente"
+    },
+    "status": {
+      "ok": "Recopilando",
+      "disabled": "La recopilación está desactivada: habilite Inventario de cargas de trabajo en una política de configuración",
+      "unavailable": "El runtime no se está ejecutando",
+      "permission_denied": "Permiso denegado",
+      "error": "Falló la recopilación",
+      "unsupported": "No compatible con este dispositivo"
+    },
+    "detectOnly": "Solo detectado: las cargas de trabajo de este runtime no se enumeran.",
+    "counts": "{{total}} cargas de trabajo · {{running}} en ejecución · {{stopped}} detenidas",
+    "partial": "Instantánea parcial: no se pudieron leer algunos detalles, por lo que se muestra lo recopilado.",
+    "truncated": "Se muestran {{reported}} de {{observed}} cargas de trabajo informadas por el runtime.",
+    "lastError": "Último error: {{error}}",
+    "lastCollected": "Última recopilación {{time}}",
+    "empty": "No se informaron cargas de trabajo.",
+    "columns": {
+      "name": "Nombre",
+      "state": "Estado",
+      "image": "Imagen / OS invitado",
+      "compose": "Proyecto de Compose",
+      "started": "Iniciado",
+      "imageStatus": "Estado de la imagen"
+    },
+    "states": {
+      "running": "En ejecución",
+      "stopped": "Detenida",
+      "paused": "En pausa",
+      "restarting": "Reiniciando",
+      "other": "Otro"
+    },
+    "policy": {
+      "title": "Inventario de cargas de trabajo",
+      "description": "Enumera los contenedores y las máquinas virtuales en hosts de contenedores y VM",
+      "offNote": "Los runtimes siempre se detectan, pero la lista de cargas de trabajo permanece desactivada hasta que una política la habilite.",
+      "enabled": "Enumerar cargas de trabajo",
+      "runtimesHeading": "Runtimes a enumerar",
+      "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
+      "interval": "Intervalo de recopilación (minutos)",
+      "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Desactualizada",
+      "current": "Actualizada",
+      "pinned": "Fijada",
+      "local": "Compilación local",
+      "not_found": "Etiqueta no encontrada",
+      "not_checked": "Sin verificar"
+    },
+    "imageStatusReason": {
+      "pending": "Aún sin verificar",
+      "private": "Registro privado: se requieren credenciales",
+      "unsupported_registry": "Registro no compatible",
+      "error": "Falló la verificación del registro; se reintentará",
+      "behind": "Hay una imagen más reciente publicada para esta etiqueta",
+      "current": "Coincide con el registro",
+      "pinned": "Fijada a un digest: no hay nada que comparar",
+      "local": "Compilada localmente: sin digest de registro",
+      "not_found": "La etiqueta ya no existe en el registro"
+    },
+    "imageFilter": {
+      "label": "Estado de la imagen",
+      "all": "Todas",
+      "empty": "Ninguna carga de trabajo coincide con este estado de imagen."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Otros proveedores de EDR",
+    "loadError": "No se pudieron cargar algunos datos de proveedores de EDR.",
+    "duplicateNotice": "Vinculado por dos consolas: este dispositivo aparece en más de una conexión de {{provider}}.",
+    "openDetections": "Detecciones abiertas",
+    "coverageHeading": "La cobertura podría estar incompleta",
+    "fields": {
+      "health": "Estado de salud",
+      "status": "Estado",
+      "isolation": "Aislamiento",
+      "agentVersion": "Versión del agente",
+      "lastSeen": "Última vez visto"
+    },
+    "health": {
+      "healthy": "Saludable",
+      "degraded": "Degradado",
+      "unhealthy": "No saludable",
+      "unknown": "Desconocido"
+    },
+    "online": {
+      "online": "En línea",
+      "offline": "Sin conexión",
+      "unknown": "Desconocido"
+    },
+    "isolation": {
+      "isolated": "Aislado",
+      "not_isolated": "No aislado",
+      "pending": "Pendiente",
+      "unknown": "Desconocido"
+    },
+    "severity": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa",
+      "unknown": "Desconocida"
+    },
+    "detectionStatus": {
+      "open": "Abierta",
+      "in_progress": "En curso",
+      "mitigated": "Mitigada",
+      "resolved": "Resuelta",
+      "false_positive": "Falso positivo",
+      "dismissed": "Descartada",
       "unknown": "Desconocido"
     }
   }

@@ -9,9 +9,12 @@
  * - resolve_device_context (Tier 2): Mark context entry as resolved
  * - manage_tags (Tier 2): List/add/remove device tags
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
+ * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status
  */
 
 import {
+  WORKLOAD_RUNTIMES,
+  WORKLOAD_STATES,
   TIME_SYNC_DOMAIN_ROLES,
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
@@ -33,9 +36,12 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
-import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
+import { queryDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
+import { getDeviceWorkloadsView } from './workloads/view';
+import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
@@ -360,6 +366,40 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       ),
   });
 
+  // get_fleet_device_stats - Tier 1 (auto-execute). #6797
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    searchHint: 'how many devices, device count, online offline totals, fleet size, devices by status',
+    definition: {
+      name: 'get_fleet_device_stats',
+      description:
+        'Exact live fleet device counts: total, online, offline, byStatus, migrationRequiredCount, logShippingFailingCount. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      // Same tenant narrowing as GET /devices/stats (routes/devices/scope.ts):
+      // org axis + optional orgId (denied when inaccessible), plus the site and
+      // exact-device axes that only the AI surface carries.
+      if (orgId && !auth.canAccessOrg(orgId)) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+      const scope = and(
+        auth.orgCondition(devices.orgId),
+        siteScopeCondition(auth, devices.siteId),
+        deviceScopeCondition(auth, devices.id),
+        orgId ? eq(devices.orgId, orgId) : undefined,
+      );
+      return JSON.stringify(await queryDeviceStats(scope));
+    },
+  });
+
   // get_device_hardware_health - Tier 1 (auto-execute)
   // ============================================
 
@@ -445,6 +485,44 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth);
       if ('error' in access) return JSON.stringify({ error: access.error });
       return JSON.stringify(await getDeviceTimeStatusView(deviceId));
+    },
+  });
+
+  // query_device_workloads - Tier 1 (auto-execute, read-only)
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint:
+      'containers, virtual machines, Docker, Podman, Hyper-V, Proxmox, workload inventory, compose projects',
+    definition: {
+      name: 'query_device_workloads',
+      description:
+        'List containers and VMs (Docker, Podman, Hyper-V, Proxmox) on a device with per-runtime status and counts; workloads are capped (see truncated). containerd is detect-only (no counts). Collection is off by default until a configuration policy enables "Workload inventory".',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+          runtime: { type: 'string', enum: [...WORKLOAD_RUNTIMES], description: 'Only workloads of this runtime' },
+          state: { type: 'string', enum: [...WORKLOAD_STATES], description: 'Only workloads in this state' },
+          limit: { type: 'integer', minimum: 1, maximum: 200, default: 200, description: 'Max workloads returned (default 200, max 200)' },
+        },
+        required: ['deviceId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const view = await getDeviceWorkloadsView(deviceId);
+      if (!view) return JSON.stringify({ error: 'Device not found or access denied' });
+      return JSON.stringify(
+        projectWorkloadsForAi(deviceId, access.device?.hostname, view, {
+          runtime: input.runtime as (typeof WORKLOAD_RUNTIMES)[number] | undefined,
+          state: input.state as (typeof WORKLOAD_STATES)[number] | undefined,
+          limit: typeof input.limit === 'number' ? input.limit : undefined,
+        }),
+      );
     },
   });
 

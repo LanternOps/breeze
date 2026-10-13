@@ -16,6 +16,7 @@ import {
   mergeFilesystemAnalysisPayload,
   readPlanPreviewCandidates,
   readExecutedActions,
+  findInFlightFilesystemScan,
 } from './filesystemAnalysis';
 
 beforeEach(() => {
@@ -384,5 +385,40 @@ describe('clearFilesystemScanGeneration', () => {
 
     expect(set).toHaveBeenCalledWith({ scanGeneration: null });
     expect(generation).toBe(current === 'failed-command' ? null : 'newer-command');
+  });
+});
+
+describe('findInFlightFilesystemScan (#8509)', () => {
+  function mockSelect(rows: unknown[]) {
+    const limit = vi.fn().mockResolvedValue(rows);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+    return { where };
+  }
+
+  it('looks for a pending/sent filesystem_analysis on the device, bounded by the command timeout', async () => {
+    const { where } = mockSelect([]);
+    const now = new Date('2026-10-12T12:00:00Z');
+    await expect(findInFlightFilesystemScan('device-1', now)).resolves.toBeNull();
+
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/"device_commands"\."device_id" = \$1/);
+    expect(query.sql).toMatch(/"device_commands"\."type" = \$2/);
+    expect(query.sql).toMatch(/"device_commands"\."status" in \(\$3, \$4\)/);
+    expect(query.sql).toMatch(/"device_commands"\."created_at" >= \$5/);
+    // Device-wide: no per-volume path predicate.
+    expect(query.sql).not.toMatch(/payload/);
+    expect(query.params.slice(0, 4)).toEqual(['device-1', 'filesystem_analysis', 'pending', 'sent']);
+    // A silent device cannot hold the slot past the server-side timeout (30 min).
+    expect(new Date(query.params[4] as string).toISOString()).toBe('2026-10-12T11:30:00.000Z');
+  });
+
+  it('returns the in-flight command with the volume it is scanning', async () => {
+    const createdAt = new Date('2026-10-12T11:55:00Z');
+    mockSelect([{ id: 'cmd-1', status: 'sent', createdAt, payload: { path: 'C:\\', trigger: 'threshold' } }]);
+    await expect(findInFlightFilesystemScan('device-1')).resolves.toEqual({
+      id: 'cmd-1', status: 'sent', createdAt, scanPath: 'C:\\',
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { connectWebRTC, type WebRTCDeps } from './webrtc';
+import { connectWebRTC, openReliableInputChannel, type WebRTCDeps } from './webrtc';
 import { AgentSessionError, type AuthenticatedConnectionParams } from '../webrtc';
 
 const globalScope = globalThis as Record<string, unknown>;
@@ -206,5 +206,28 @@ describe('connectWebRTC — consent wait (#6818)', () => {
     deps.onAwaitingUserApproval = vi.fn();
     await expect(connectWebRTC(auth, deps)).resolves.not.toBeNull();
     expect(deps.onAwaitingUserApproval).toHaveBeenCalledOnce();
+  });
+});
+
+describe('openReliableInputChannel — input-r (W03, #8239)', () => {
+  it('opens input-r ordered and fully reliable: no maxRetransmits, no maxPacketLifeTime', () => {
+    const channel = { label: 'input-r' } as unknown as RTCDataChannel;
+    const createDataChannel = vi.fn(() => channel);
+    const pc = { createDataChannel, signalingState: 'stable' } as unknown as RTCPeerConnection;
+    expect(openReliableInputChannel(pc)).toBe(channel);
+    expect(createDataChannel).toHaveBeenCalledWith('input-r', { ordered: true });
+  });
+
+  it('returns null on a closed peer connection or when createDataChannel throws', () => {
+    const closedCreate = vi.fn();
+    const closed = { createDataChannel: closedCreate, signalingState: 'closed' } as unknown as RTCPeerConnection;
+    expect(openReliableInputChannel(closed)).toBeNull();
+    expect(closedCreate).not.toHaveBeenCalled();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const throwing = {
+      createDataChannel: vi.fn(() => { throw new Error('InvalidStateError'); }),
+      signalingState: 'stable',
+    } as unknown as RTCPeerConnection;
+    expect(openReliableInputChannel(throwing)).toBeNull();
   });
 });

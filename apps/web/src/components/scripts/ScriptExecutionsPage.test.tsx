@@ -264,6 +264,33 @@ describe('ScriptExecutionsPage post-run navigation (#4886 mirror)', () => {
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/devices/device-1#scripts/execution-new'));
   });
 
+  it('does not navigate or close the modal when a fully admitted run carries warnings', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    vi.mocked(navigateTo).mockClear();
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) return jsonResponse({ executions: [listRow] });
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-new' }],
+          warnings: ['GROUP_REFUSED:group-2'],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)).toBe(true));
+
+    expect(screen.getByText('Confirm Execute')).toBeTruthy();
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
   it('does not navigate when every target was rejected', async () => {
     const { navigateTo } = await import('@/lib/navigation');
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {

@@ -42,14 +42,42 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
-// #5876: the baseline marker section fetches its list once the snapshot has
-// rendered, so a queued (Once) response sequence must answer that request
-// between the snapshot and any later offenders request.
-const noBaselines = () => makeJsonResponse({ baselines: [] });
+// #8429: answer each request by URL, never by call order. The snapshot is
+// fetched on mount, the baseline marker list (#5876) from a passive effect
+// once the snapshot renders, and /offenders straight from the drill-down
+// click handler — so under CI load the click can fire before the marker-list
+// effect flushes, and a positional mockResolvedValueOnce queue hands each
+// request the other's response. `offenders` responses are consumed in order;
+// an unexpected extra offenders request is rejected, not served a stale
+// canned response.
+const routeFetch = ({
+  snapshot,
+  offenders = [],
+}: {
+  snapshot: unknown;
+  offenders?: Array<Response | Promise<Response>>;
+}) => {
+  const offenderQueue = [...offenders];
+  fetchWithAuthMock.mockImplementation(async (url: string) => {
+    if (url.endsWith('/offenders')) {
+      const next = offenderQueue.shift();
+      if (!next) throw new Error(`unexpected extra request: ${url}`);
+      return next;
+    }
+    if (url.endsWith('/baselines')) return makeJsonResponse({ baselines: [] });
+    if (url === '/reliability/dev-1') return makeJsonResponse(snapshot);
+    throw new Error(`unexpected request: ${url}`);
+  });
+};
+
+const callsTo = (url: string) => fetchWithAuthMock.mock.calls.filter(([calledUrl]) => calledUrl === url);
 
 describe('DeviceReliabilityPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps queued mock*Once responses and implementations; a
+    // test that times out mid-queue would leak them into every later test.
+    fetchWithAuthMock.mockReset();
     showToast.mockReset();
     useMlFeatureFlagsMock.mockReturnValue({
       flags: {},
@@ -594,19 +622,16 @@ describe('DeviceReliabilityPanel', () => {
   });
 
   it('expands the offenders drill-down from a problem row details link', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          snapshot: baseSnapshot({
-            reliabilityScore: 63,
-            serviceFailureCount30d: 24,
-            drivers: workstationDrivers(),
-          }),
-          history: [],
+    routeFetch({
+      snapshot: {
+        snapshot: baseSnapshot({
+          reliabilityScore: 63,
+          serviceFailureCount30d: 24,
+          drivers: workstationDrivers(),
         }),
-      )
-      .mockResolvedValueOnce(noBaselines())
-      .mockResolvedValueOnce(
+        history: [],
+      },
+      offenders: [
         makeJsonResponse({
           deviceId: 'dev-1',
           days: 30,
@@ -616,7 +641,8 @@ describe('DeviceReliabilityPanel', () => {
             hangs: [],
           },
         }),
-      );
+      ],
+    });
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
@@ -640,12 +666,9 @@ describe('DeviceReliabilityPanel', () => {
   });
 
   it('lazily loads and renders top offenders when the drill-down is expanded (issue #1907)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
-      )
-      .mockResolvedValueOnce(noBaselines())
-      .mockResolvedValueOnce(
+    routeFetch({
+      snapshot: { snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] },
+      offenders: [
         makeJsonResponse({
           deviceId: 'dev-1',
           days: 30,
@@ -657,14 +680,15 @@ describe('DeviceReliabilityPanel', () => {
             hangs: [],
           },
         }),
-      );
+      ],
+    });
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     // Offenders are NOT fetched on mount — only the snapshot (and the
     // baseline marker list) requests fire.
     await screen.findByText('Reliability');
-    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/reliability/dev-1/offenders', expect.anything());
+    expect(callsTo('/reliability/dev-1/offenders')).toHaveLength(0);
 
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
 
@@ -676,17 +700,16 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(screen.getByTestId('reliability-offenders-toggle'));
     fireEvent.click(screen.getByTestId('reliability-offenders-toggle'));
     expect(await screen.findByText('Spooler')).toBeInTheDocument();
-    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3); // snapshot + baselines + one offenders fetch
+    expect(callsTo('/reliability/dev-1/offenders')).toHaveLength(1);
+    // Toggling the drill-down must not refetch the score either.
+    expect(callsTo('/reliability/dev-1')).toHaveLength(1);
   });
 
   it('surfaces an offenders load failure with a working Retry (issue #1907)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
-      )
-      .mockResolvedValueOnce(noBaselines())
-      .mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 500))
-      .mockResolvedValueOnce(
+    routeFetch({
+      snapshot: { snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] },
+      offenders: [
+        makeJsonResponse({ error: 'boom' }, false, 500),
         makeJsonResponse({
           deviceId: 'dev-1',
           days: 30,
@@ -696,7 +719,8 @@ describe('DeviceReliabilityPanel', () => {
             hangs: [],
           },
         }),
-      );
+      ],
+    });
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
@@ -711,12 +735,10 @@ describe('DeviceReliabilityPanel', () => {
   });
 
   it('treats a 200 with a malformed offenders body as a failure, not a blank panel (issue #1907)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
-      )
-      .mockResolvedValueOnce(noBaselines())
-      .mockResolvedValueOnce(makeJsonResponse({ deviceId: 'dev-1', days: 30 })); // no `offenders` field
+    routeFetch({
+      snapshot: { snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] },
+      offenders: [makeJsonResponse({ deviceId: 'dev-1', days: 30 })], // no `offenders` field
+    });
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
@@ -727,14 +749,12 @@ describe('DeviceReliabilityPanel', () => {
   });
 
   it('shows the empty state when the drill-down returns no offenders (issue #1907)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
-      )
-      .mockResolvedValueOnce(noBaselines())
-      .mockResolvedValueOnce(
+    routeFetch({
+      snapshot: { snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] },
+      offenders: [
         makeJsonResponse({ deviceId: 'dev-1', days: 30, offenders: { services: [], hardware: [], hangs: [] } }),
-      );
+      ],
+    });
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
@@ -812,21 +832,21 @@ describe('DeviceReliabilityPanel', () => {
 
     it('aborts an in-flight offenders request on unmount', async () => {
       const offenders = deferred();
-      fetchWithAuthMock
-        .mockResolvedValueOnce(
-          makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
-        )
-        .mockResolvedValueOnce(noBaselines())
-        .mockReturnValueOnce(offenders.promise);
+      routeFetch({
+        snapshot: { snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] },
+        offenders: [offenders.promise],
+      });
+      const offendersSignal = () =>
+        (callsTo('/reliability/dev-1/offenders')[0]?.[1] as RequestInit | undefined)?.signal;
 
       const { unmount } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
       fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
-      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3)); // snapshot + baselines + offenders
-      expect(fetchWithAuthMock.mock.calls[2][0]).toBe('/reliability/dev-1/offenders');
-      expect(signalOf(2)?.aborted).toBe(false);
+      await waitFor(() => expect(callsTo('/reliability/dev-1/offenders')).toHaveLength(1));
+      expect(offendersSignal()).toBeInstanceOf(AbortSignal);
+      expect(offendersSignal()?.aborted).toBe(false);
 
       unmount();
-      expect(signalOf(2)?.aborted).toBe(true);
+      expect(offendersSignal()?.aborted).toBe(true);
     });
   });
 });
@@ -845,6 +865,7 @@ describe('DeviceReliabilityPanel Ask AI gating (#6396)', () => {
   };
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset(); // drop any leaked mock*Once queue (#8429)
     useMlFeatureFlagsMock.mockReturnValue({ flags: {}, loaded: true, error: null, isDisabled: () => false, reload: vi.fn() });
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse(healthySnapshot));
   });
@@ -884,6 +905,7 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset(); // drop any leaked mock*Once queue (#8429)
     useMlFeatureFlagsMock.mockReturnValue({ flags: {}, loaded: true, error: null, isDisabled: () => false, reload: vi.fn() });
   });
 
@@ -1217,7 +1239,7 @@ describe('DeviceReliabilityPanel baselines (#5876)', () => {
       fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
       expect(await screen.findByText('Spooler')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByTestId('reliability-baseline-history-toggle'));
+      fireEvent.click(await screen.findByTestId('reliability-baseline-history-toggle'));
       fireEvent.click(await screen.findByTestId('reliability-baseline-clear-b1'));
       fireEvent.click(await screen.findByTestId('reliability-baseline-clear-confirm'));
 

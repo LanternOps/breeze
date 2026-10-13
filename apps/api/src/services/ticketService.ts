@@ -10,17 +10,22 @@ import { createAuditLogAsync } from './auditService';
 import { HUMAN_AUTHORITATIVE_PROVENANCE_SQL_LIST, isHumanAuthoritativeProvenance } from './ticketProvenance';
 import { resolveSlaTargets, type TicketSlaPriority } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
-import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
+import { readOrgStampingDefaults, readOrgStampingDefaultsMany, OrgCurrencyServiceError } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
+import { assertNoPendingApprovalRequest } from './ticketMoveApprovalGuard';
 import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
+import { lockOrgTicketLinks } from './ticketLinkLock';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
-import type { AddinTicketSummary } from '@breeze/shared';
+import type { AddinTicketSummary, TicketType } from '@breeze/shared';
+import { defaultTicketTypeForSource } from './ticketType';
+import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
 
@@ -596,6 +601,7 @@ export function toAddinTicketSummary(
     subject: string;
     status: string;
     priority: string | null;
+    ticketType?: TicketType;
     updatedAt: Date;
     submitterEmail: string | null;
   },
@@ -626,6 +632,7 @@ export async function listOrgTicketsForAddin(input: {
     subject: tickets.subject,
     status: tickets.status,
     priority: tickets.priority,
+    ticketType: tickets.ticketType,
     updatedAt: tickets.updatedAt,
     submitterEmail: tickets.submitterEmail
   };
@@ -832,6 +839,12 @@ interface BaseCreateTicketInput {
    * resolveSlaTargetsForWorkKind.
    */
   workKind?: TicketWorkKind;
+  /**
+   * #7900: the ITIL type. Omitted -> defaultTicketTypeForSource (incident;
+   * service_request for planned work), with NO field provenance. An explicit
+   * value is the caller's decision and is stamped with its provenance.
+   */
+  ticketType?: TicketType;
 }
 
 export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
@@ -1109,6 +1122,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
   const workKind: TicketWorkKind = input.workKind ?? 'support';
+  const ticketType: TicketType =
+    input.ticketType ?? defaultTicketTypeForSource(input.source, { plannedWork: workKind !== 'support' });
   const [effectiveSla, statusId] = await Promise.all([
     resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
     getSystemStatusId(org.partnerId, initialCoreStatus),
@@ -1139,6 +1154,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     responseSlaMinutes: effectiveSla.responseMinutes,
     resolutionSlaMinutes: effectiveSla.resolutionMinutes,
     workKind,
+    ticketType,
+    // Provenance keys follow the update path's field names (camelCase).
+    fieldProvenance: input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
     tags: intake?.defaultTags.length ? intake.defaultTags : undefined,
     customFields: intake ? intake.intakeSnapshot : undefined
   } satisfies typeof tickets.$inferInsert;
@@ -1596,6 +1614,11 @@ export interface UpdateTicketFieldsInput {
   resolutionSlaMinutes?: number | null;
   deviceId?: string | null;
   tags?: string[];
+  /**
+   * #7900: reclassify. A classification edit only: it does NOT restamp SLA
+   * targets or re-run category rules (those key off category/priority).
+   */
+  ticketType?: TicketType;
   // Requester edit. Handled outside UPDATE_FIELD_LABELS' generic diff loop:
   // picking a portal user (submittedBy) backfills name/email, and the three
   // columns surface as one "requester" change in the feed. submittedBy=null
@@ -1609,14 +1632,71 @@ export interface UpdateTicketFieldsInput {
    * the ticket's org before any write; `null` clears the link.
    */
   requesterContactId?: string | null;
+  /**
+   * #4617 spec §4.2 — the ticket budget (a document value). `budgetAmount` is
+   * stamped with the org's currency (`budget_currency_code`) at write time;
+   * `null` clears the amount AND its currency. Handled outside the generic
+   * diff loop: one "budget" feed label, and the org currency read under the
+   * org SHARE lock before the ticket row is written.
+   */
+  budgetMinutes?: number | null;
+  budgetAmount?: string | null;
 }
 
-// Fields handled by the generic diff loop. The requester fields are excluded —
-// they're resolved/diffed separately (portal-user backfill, single "requester" label).
+// Fields handled by the generic diff loop. The requester and budget fields are
+// excluded — they're resolved/diffed separately (portal-user backfill, single
+// "requester" label; currency stamp, single "budget" label).
 type DiffFieldKey = Exclude<
   keyof UpdateTicketFieldsInput,
-  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId'
+  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId' | 'budgetMinutes' | 'budgetAmount'
 >;
+
+type BudgetPatch = { budgetMinutes?: number | null; budgetAmount?: string | null; budgetCurrencyCode?: string | null };
+
+/**
+ * The budget half of a ticket PATCH. When an amount is set, the org currency
+ * is read with `readOrgStampingDefaults` (organizations FOR SHARE) — the same
+ * lock the approval gate and the time-entry writers take FIRST, before the
+ * ticket row — so a concurrent org currency change cannot leave a budget
+ * stamped in the old currency, and this path cannot deadlock against them.
+ * MUST run before any ticket-row lock in the caller's transaction.
+ */
+async function resolveBudgetPatch(
+  ticket: { orgId: string; budgetMinutes?: number | null; budgetAmount?: string | null; budgetCurrencyCode?: string | null },
+  fields: Pick<UpdateTicketFieldsInput, 'budgetMinutes' | 'budgetAmount'>,
+): Promise<BudgetPatch> {
+  const patch: BudgetPatch = {};
+  if (fields.budgetMinutes !== undefined && (fields.budgetMinutes ?? null) !== (ticket.budgetMinutes ?? null)) {
+    patch.budgetMinutes = fields.budgetMinutes;
+  }
+  if (fields.budgetAmount === null) {
+    if (ticket.budgetAmount != null || ticket.budgetCurrencyCode != null) {
+      patch.budgetAmount = null;
+      patch.budgetCurrencyCode = null;
+    }
+  } else if (fields.budgetAmount !== undefined) {
+    let currencyCode: string;
+    try {
+      ({ currencyCode } = await readOrgStampingDefaults(db, ticket.orgId));
+    } catch (err) {
+      if (err instanceof OrgCurrencyServiceError) throw new TicketServiceError('Ticket not found', 404);
+      throw err;
+    }
+    const minor = toMinorUnits(fields.budgetAmount, currencyCode);
+    const normalized = fromMinorUnits(minor, currencyCode);
+    // A currency with no minor unit (e.g. JPY) cannot carry '100.50'; refuse
+    // rather than silently round the customer's ceiling.
+    if (minor <= 0 || Number(normalized) !== Number(fields.budgetAmount)) {
+      throw new TicketServiceError(`The budget amount is not a valid ${currencyCode} amount`, 400);
+    }
+    const sameAmount = ticket.budgetAmount != null && Number(ticket.budgetAmount) === Number(normalized);
+    if (!sameAmount || ticket.budgetCurrencyCode !== currencyCode) {
+      patch.budgetAmount = normalized;
+      patch.budgetCurrencyCode = currencyCode;
+    }
+  }
+  return patch;
+}
 
 /** Humanized labels for the system feed entry, in canonical field order. */
 const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
@@ -1628,7 +1708,8 @@ const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
   responseSlaMinutes: 'response SLA',
   resolutionSlaMinutes: 'resolution SLA',
   deviceId: 'device',
-  tags: 'tags'
+  tags: 'tags',
+  ticketType: 'type'
 };
 
 function ticketFieldChanged(key: DiffFieldKey, oldValue: unknown, newValue: unknown): boolean {
@@ -1802,7 +1883,11 @@ export async function updateTicketFields(
       changed.push(key);
     }
   }
-  if (changed.length === 0 && !requesterChanged) return ticket;
+  // #4617: org SHARE (when an amount is set) is taken here, before the ticket
+  // row is written below — the gate's lock order.
+  const budgetPatch = await resolveBudgetPatch(ticket, fields);
+  const budgetChanged = Object.keys(budgetPatch).length > 0;
+  if (changed.length === 0 && !requesterChanged && !budgetChanged) return ticket;
 
   // #6691 — amends SLA-engine plan D2 (originally "category changes after
   // create do not restamp"). When categoryId or priority ACTUALLY changes
@@ -1840,11 +1925,14 @@ export async function updateTicketFields(
 
   // Feed/event labels: typed field keys plus a single "requester" token.
   // Restamped SLA targets ride the same diff so the timeline shows them.
-  const changedForLog: string[] = [...changed, ...restamped, ...(requesterChanged ? ['requester'] : [])];
+  const changedForLog: string[] = [
+    ...changed, ...restamped, ...(requesterChanged ? ['requester'] : []), ...(budgetChanged ? ['budget'] : []),
+  ];
   const changedLabels: string[] = [
     ...changed.map((k) => UPDATE_FIELD_LABELS[k]),
     ...restamped.map((k) => UPDATE_FIELD_LABELS[k]),
     ...(requesterChanged ? ['requester'] : []),
+    ...(budgetChanged ? ['budget'] : []),
   ];
 
   const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
@@ -1853,6 +1941,7 @@ export async function updateTicketFields(
   }
   Object.assign(patch, slaRestampPatch);
   if (requesterChanged) Object.assign(patch, requesterPatch);
+  if (budgetChanged) Object.assign(patch, budgetPatch);
 
   // P2-4 (#4191): stamp field_provenance, in the SAME transaction/statement
   // as the field write itself — the human-set-field authority the release-
@@ -1888,7 +1977,12 @@ export async function updateTicketFields(
     ...actorAuthorFields(actor),
     commentType: 'system',
     content: `Updated ${changedLabels.join(', ')}`,
-    isPublic: false
+    isPublic: false,
+    // #7900: the one field whose old/new the feed records on this entry — a
+    // reclassification is reportable history (incident -> problem).
+    ...(changed.includes('ticketType')
+      ? { oldValue: ticket.ticketType ?? null, newValue: fields.ticketType ?? null }
+      : {})
   });
 
   await emitTicketEvent({
@@ -1950,7 +2044,14 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
-  if (assigneeId && ticket.status === 'new') patch.status = 'open';
+  const implicitOpen = Boolean(assigneeId) && ticket.status === 'new';
+  if (implicitOpen) {
+    patch.status = 'open';
+    // Keep statusId in step with status (as changeTicketStatus does), so the
+    // row and the ticket.status_changed payload below agree.
+    const partnerId = await resolveTicketPartnerId(ticket);
+    patch.statusId = partnerId ? await getSystemStatusId(partnerId, 'open') : null;
+  }
 
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db
@@ -1987,6 +2088,16 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     ...actorEventIdentity(actor),
     partnerId: ticket.partnerId ?? null,
   });
+  // #8367: assigning a `new` ticket also moves it to `open`. Webhook / Partner
+  // API consumers only see the outbox, so announce that transition too, in the
+  // same transaction as `ticket.assigned`. Payload mirrors changeTicketStatus.
+  if (implicitOpen) {
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+      from: 'new',
+      to: 'open',
+      statusId: updated[0]?.statusId ?? null,
+    });
+  }
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
@@ -3183,6 +3294,7 @@ export async function moveTicketOrg(
 
   let updated: typeof tickets.$inferSelect | undefined;
   let guard: MoveCurrencyGuardDetails | null = null;
+  let removedLinks: RemovedTicketLink[] = [];
   await db.transaction(async (tx) => {
     // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
     // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
@@ -3206,12 +3318,21 @@ export async function moveTicketOrg(
     // reason as the two above it — and the Partner API tickets surface adds
     // the fourth and fifth, ticket_external_refs_ticket_org_fk and
     // partner_api_idempotency_keys_ticket_org_fk. Still BY NAME, never `ALL`.
+    // #7900 W02 adds ticket_links_source_org_fk / ticket_links_target_org_fk:
+    // a link to or from this ticket is DELETED after the rewrite loop below
+    // (TICKET_ORG_MOVE_DELETE_TABLES), so the ticket UPDATE must not check it
+    // first; at COMMIT no such row remains.
     //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED`
     );
+    // #7900 W02: the per-org ticket_links lock, SHARED, before any row lock —
+    // so this move and a link add/remove of the same org never interleave
+    // (they would lock ticket and link rows in opposite orders: 40P01). Moves
+    // do not block each other. See services/ticketLinkLock.ts.
+    await lockOrgTicketLinks(tx, ticket.orgId, 'shared');
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → ai_operator_task_targets
@@ -3499,6 +3620,10 @@ export async function moveTicketOrg(
         eq(ticketComments.ticketId, ticketId),
         or(isNotNull(ticketComments.agentRunId), isNotNull(ticketComments.proposedByRunId)),
       ));
+    // #4617: a pending customer approval request (approvers frozen from this
+    // org) blocks the move (409 APPROVAL_REQUEST_PENDING). No lock: the ticket
+    // row lock held here already excludes every request writer.
+    await assertNoPendingApprovalRequest(tx, { ticketIds: [ticketId] });
     // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME). Same
     // lock order as the currency guard, which re-locks a subset of these rows.
     await assertNoHourBlockDrawnTime(tx, { ticketIds: [ticketId] });
@@ -3510,11 +3635,36 @@ export async function moveTicketOrg(
       acceptCurrencyMismatch: opts.acceptCurrencyMismatch === true
     });
     // SET org_id only — currency_code snapshots are never touched by a move.
+    // One exception (#8356): time_entries.site_id is a plain FK to sites, and
+    // tickets carry no site, so a moved entry's site link would otherwise keep
+    // naming a SOURCE-org site. It is nulled in the SAME statement (still one
+    // UPDATE per table, in array order, so the shared lock order holds) — the
+    // ruling timeEntryService already applies when an entry relinks across
+    // orgs. The device axis re-points it to the device's target site instead.
     for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
       await tx.execute(
-        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
+        table === 'time_entries'
+          ? sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid, site_id = NULL WHERE ticket_id = ${ticketId}::uuid`
+          : sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
       );
     }
+    // #7900 W02 — TICKET_ORG_MOVE_DELETE_TABLES, the tail of the shared lock
+    // order (ticketOrgMoveLockOrder.ts). A link cannot follow its ticket: its
+    // counterpart stays in the source org, and both composite FKs share one
+    // org_id. So every link touching this ticket is deleted (approved decision
+    // 10), under the FK deferral at the top of this transaction. The surviving
+    // counterparts are noted AFTER commit (below), never here: a comment
+    // insert takes the counterpart's ticket row lock (feed re-stamp trigger),
+    // and two concurrent moves of the two ends of one link would then wait on
+    // each other. Inside the move the only extra lock is the link row itself.
+    // "After commit" means the outermost transaction (a request path runs this
+    // as a savepoint), hence runAfterDbContextCommit in the scheduler.
+    const removedLinkRows = await tx.execute(sql`
+      DELETE FROM ticket_links WHERE source_ticket_id = ${ticketId}::uuid OR target_ticket_id = ${ticketId}::uuid
+      RETURNING org_id, source_ticket_id, target_ticket_id, link_type,
+                (source_ticket_id = ${ticketId}::uuid) AS source_moved,
+                (target_ticket_id = ${ticketId}::uuid) AS target_moved`);
+    removedLinks = removedTicketLinksFromRows(removedLinkRows);
     const strandedCount = guard?.accepted ? guard.unbilledTimeEntries + guard.unbilledParts : 0;
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
@@ -3532,6 +3682,8 @@ export async function moveTicketOrg(
     });
   });
   if (!updated) throw new TicketServiceError('Ticket not found', 404);
+  // After the OUTERMOST transaction commits, best-effort: see the DELETE above.
+  scheduleTicketLinkRemovalNotes(removedLinks);
 
   await emitTicketEvent({
     type: 'ticket.updated',

@@ -11,16 +11,16 @@ import type { createCrosswalkService } from '../services/crosswalkService';
 import type { createEnrichmentService } from '../services/enrichmentService';
 import type { createIngestJobsService } from '../services/ingestJobsService';
 import type { createIngestJobRunner } from '../services/ingestJobRunner';
-import { getOrgSettings, putOrgSettings, type DlpConfig } from '../services/orgSettingsService';
+import { DEFAULT_DLP_CONFIG, getOrgSettings, putOrgSettings, type DetectorId, type DlpConfig } from '../services/orgSettingsService';
 import { isTransientIngestError } from '../services/ingestErrors';
-import { adminGate, WORKSPACE_RESOURCE, type WorkspaceRouteEnv } from './adminGate';
+import { adminGate, contentSubpath, WORKSPACE_RESOURCE, type WorkspaceRouteEnv } from './adminGate';
 import { DLP_MAX_CUSTOM_RULES, validateDlpPattern } from '@breeze/shared/validators';
 
 // Paths exempt from the content-enabled 404 gate below: the settings switch
 // itself, and (W3) the admin job API — job visibility (and the ability to
 // trigger/advance a job) must survive content-off, same rationale as
 // /content/settings.
-const CONTENT_FLAG_GATE_EXEMPT_SUFFIXES = ['/content/settings', '/content/jobs', '/content/jobs/advance'];
+const CONTENT_FLAG_GATE_EXEMPT_PATHS: ReadonlySet<string> = new Set(['settings', 'jobs', 'jobs/advance']);
 
 export interface ContentRouteDeps {
   contentIngestService: Pick<ReturnType<typeof createContentIngestService>, 'run' | 'status'>;
@@ -45,10 +45,14 @@ const ingestRunSchema = z.strictObject({
 // them against the known DlpAction set and collapses anything unrecognized
 // (e.g. a typo'd action) to the safe per-detector default. This schema only
 // enforces shape and rejects unknown keys.
+const DETECTOR_IDS = Object.keys(DEFAULT_DLP_CONFIG.detectors) as [DetectorId, ...DetectorId[]];
+
 const putSettingsSchema = z.strictObject({
   contentEnabled: z.boolean().optional(),
   dlpConfig: z.strictObject({
-    detectors: z.record(z.string(), z.string()).optional(),
+    // Keys are checked strictly (a typo'd detector id is a 400, not a silent
+    // drop); values stay plain strings for normalizeDlp, per the note above.
+    detectors: z.partialRecord(z.enum(DETECTOR_IDS), z.string()).optional(),
     customPatterns: z.array(z.strictObject({
       name: z.string(),
       pattern: z.string(),
@@ -77,9 +81,10 @@ export function createContentRoutes(deps: ContentRouteDeps): Hono<WorkspaceRoute
     // /content/settings is the switch that flips contentEnabled, and (W3) the
     // admin job endpoints must stay reachable so job visibility/triggering
     // survives content-off — both are exempt from this gate.
-    if (CONTENT_FLAG_GATE_EXEMPT_SUFFIXES.some((suffix) => c.req.path.endsWith(suffix))) return next();
+    const subpath = contentSubpath(c.req.path);
+    if (subpath !== null && CONTENT_FLAG_GATE_EXEMPT_PATHS.has(subpath)) return next();
     const s = await getOrgSettings(deps.db, c.get('workspaceOrgId'));
-    if (!s.contentEnabled) return c.json({ error: 'not_found' }, 404);
+    if (!s.contentEnabled) return c.json({ error: 'not found' }, 404);
     await next();
   });
 

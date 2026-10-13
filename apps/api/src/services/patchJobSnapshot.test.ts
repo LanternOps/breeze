@@ -11,7 +11,6 @@ function makePolicyLocal(overrides: {
       autoApprove: false,
       autoApproveSeverities: [],
       autoApproveDeferralDays: 0,
-      apps: [],
       ...overrides.settings,
     },
     ring: {
@@ -37,7 +36,9 @@ describe('buildPatchesSnapshot', () => {
         autoApprove: true,
         autoApproveSeverities: ['critical', 'important'],
         autoApproveDeferralDays: 7,
-        apps: [
+      },
+      ring: {
+        appRules: [
           { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
           { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
         ],
@@ -61,7 +62,10 @@ describe('buildPatchesSnapshot', () => {
         { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
         { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
       ],
-      ringAppRules: [],
+      ringAppRules: [
+        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+        { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
+      ],
       ringValidation: {
         classification: 'valid_ring',
         valid: true,
@@ -69,20 +73,22 @@ describe('buildPatchesSnapshot', () => {
     });
   });
 
-  // #8184 W01: ring rules ride in their own key; the legacy `apps` key keeps
-  // carrying only the policy's rules in this wave.
-  it('snapshots the ring app rules under ringAppRules, leaving apps as the policy list', () => {
-    const snapshot = buildPatchesSnapshot(makePolicyLocal({
-      settings: { apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }] },
-      ring: {
-        appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'pin', pinnedVersion: '120' }],
-      },
-    }));
+  // #8186 W02: the ring owns the rules. The legacy `apps` key mirrors them so
+  // an executor that predates `ringAppRules` (rolling deploy) still enforces
+  // them; the policy's own inline list is not snapshotted at all.
+  it('legacy apps key mirrors ring rules', () => {
+    const ringRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }] as const;
+    const policyLocal = {
+      ...makePolicyLocal({ ring: { appRules: [...ringRules] } }),
+    };
+    // A loaded policy still carries its stale inline list until W04 strips it.
+    (policyLocal.settings as Record<string, unknown>).apps = [{ source: 'custom', packageId: 'corp-tool', action: 'block' }];
 
-    expect(snapshot.ringAppRules).toEqual([
-      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'pin', pinnedVersion: '120' },
-    ]);
-    expect(snapshot.apps).toEqual([{ source: 'custom', packageId: 'corp-tool', action: 'block' }]);
+    const snapshot = buildPatchesSnapshot(policyLocal);
+
+    expect(snapshot.apps).toEqual(snapshot.ringAppRules);
+    expect(snapshot.ringAppRules).toEqual(ringRules);
+    expect(JSON.stringify(snapshot)).not.toContain('corp-tool');
   });
 
   it('maps policyAutoApprove from settings.autoApprove/autoApproveSeverities/autoApproveDeferralDays', () => {
@@ -101,7 +107,7 @@ describe('buildPatchesSnapshot', () => {
     });
   });
 
-  it('falls back to schema defaults for legacy settings missing auto-approve fields and apps', () => {
+  it('falls back to schema defaults for legacy settings missing auto-approve fields', () => {
     // Legacy stored settings predate these fields — the fallbacks mirror the
     // patchInlineSettingsSchema defaults and are deliberate.
     const snapshot = buildPatchesSnapshot({

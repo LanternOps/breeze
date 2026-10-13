@@ -13,6 +13,8 @@ vi.mock('../../db', () => ({
   // #8053 per-org cache (services/hotPathCache.ts); no ambient context here.
   hasDbAccessContext: () => false,
   runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  // W05 (#8144): cluster caches publish their invalidation after commit.
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 vi.mock('../../db/partnerAxisRead', () => ({
   readWithPartnerAxisVisibility: partnerRead,

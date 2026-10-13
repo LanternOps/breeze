@@ -261,6 +261,10 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   ChecklistActor: 'ticket checklist write provenance — { userId } only, no allowlist',
   ContactActor: 'contact write provenance — { userId } only, no allowlist',
   ContactImportActor: 'contact import provenance — { userId } only, no allowlist',
+  // #4617 W02. ticket_approval_requests is ticket-scoped (org_id + ticket_id,
+  // no site column); the decider is a frozen approver email or a staff
+  // on-behalf recorder, and the route gates ticket access before the call.
+  DecisionActor: 'customer approval decision on a ticket-scoped request — no site_id on ticket_approval_requests',
   DefinitionImportActor: 'custom-field definition import provenance — { userId } only',
   OrgImportActor: 'org import provenance — { userId } only, no allowlist',
   ValueImportActor: 'custom-field value import provenance — { userId } only',

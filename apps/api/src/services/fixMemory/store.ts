@@ -178,8 +178,8 @@ async function deleteOrphans(scope: SQL, keep: ReadonlySet<string>): Promise<num
   return orphanIds.length;
 }
 
-async function lock(key: string): Promise<void> {
-  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+async function lock(key: string, executor: FixMemoryTx = db): Promise<void> {
+  await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 
 /**
@@ -225,6 +225,7 @@ export function identityLockKey(i: IdentityKey): string {
  * (counted_at) while skipping its aggregate.
  */
 export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promise<FixOutcomeRow> {
+  assertSystemScope('fillOutcomeSignature');
   if (row.signatureKey) return row;
   const ref = sourceRefFor(row);
   if (!ref) return row;
@@ -280,6 +281,7 @@ async function erasedPendingOrgIds(identity: IdentityKey): Promise<string[]> {
 }
 
 export async function recomputeIdentity(identity: IdentityKey, now: Date, opts: { clearStale?: boolean } = {}): Promise<void> {
+  assertSystemScope('recomputeIdentity');
   // Lock BEFORE reading contributions: a READ COMMITTED read taken after the
   // lock sees every earlier holder's committed outcome, so no writer can
   // replace a newer aggregate with an older one.
@@ -431,6 +433,7 @@ export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date =
     // Outer columns are written table-qualified on purpose: an unqualified
     // column inside this subquery would bind to fix_outcomes o and always match.
     sql`EXISTS (SELECT 1 FROM fix_outcomes o WHERE o.org_id = ${orgId} AND o.counted_at IS NOT NULL
+         AND o.signature_version = fix_memory.signature_version
          AND o.signature_key = fix_memory.signature_key AND o.os_type = fix_memory.os_type
          AND o.fix_identity = fix_memory.fix_identity)`,
   )!;
@@ -595,20 +598,129 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
  * through stale_since, so a retry never depends on staleness surviving. This is
  * the retry for a post-cascade rebuild that failed or never ran (crash between
  * cascade and rebuild).
+ *
+ * Order: partners with any never-attempted candidate row first (bool_or, since
+ * MIN() ignores NULLs), then least recently ATTEMPTED, then
+ * oldest stale, then partner id. Ordering by oldest stale alone let partners
+ * that can never be un-staled take every slot: a pending request for an org
+ * whose erasure keeps failing, or a rebuild that throws every time, keeps the
+ * oldest stale_since forever, and everyone behind them starves (#7278). The
+ * sweeper stamps rebuild_attempted_at before each attempt
+ * (stampRebuildAttempt), so every candidate partner gets a turn within
+ * ceil(candidates / limit) sweeps.
  */
 export async function stalePartnerIds(limit: number): Promise<string[]> {
-  // Oldest stale first, then partner id: a deterministic order, so the LIMIT
-  // cannot keep returning the same arbitrary partners while others wait. A
-  // partner whose rebuild keeps failing still takes only one slot per sweep.
   const rows = await db.execute<{ partner_id: string }>(sql`
     SELECT COALESCE(m.partner_id, o.partner_id) AS partner_id
     FROM fix_memory m LEFT JOIN organizations o ON o.id = m.org_id
     WHERE (m.stale_since IS NOT NULL OR cardinality(m.rebuild_pending_org_ids) > 0)
       AND COALESCE(m.partner_id, o.partner_id) IS NOT NULL
     GROUP BY 1
-    ORDER BY MIN(m.stale_since) ASC NULLS LAST, partner_id ASC
+    ORDER BY bool_or(m.rebuild_attempted_at IS NULL) DESC, MIN(m.rebuild_attempted_at) ASC NULLS FIRST,
+      MIN(m.stale_since) ASC NULLS LAST, partner_id ASC
     LIMIT ${limit}`);
   return [...rows].map((r) => r.partner_id).filter((id): id is string => typeof id === 'string');
+}
+
+/**
+ * Record that the sweeper is about to rebuild `partnerId`, on exactly the rows
+ * that make it a candidate (stale, or carrying an erasure request). The
+ * sweeper runs this in its OWN committed system transaction BEFORE the
+ * rebuild: a rebuild that throws rolls back, so a stamp written inside it
+ * would never land and the failing partner would stay first in
+ * stalePartnerIds. Same lock protocol as the marks: SELECT the rows, lock
+ * their identities in sorted order, then UPDATE exactly those rows.
+ * Returns the number of rows stamped.
+ */
+export async function stampRebuildAttempt(partnerId: string, now: Date = new Date()): Promise<number> {
+  assertSystemScope('stampRebuildAttempt');
+  const targets = await db.select({
+    id: fixMemory.id, signatureVersion: fixMemory.signatureVersion,
+    signatureKey: fixMemory.signatureKey, osType: fixMemory.osType, fixIdentity: fixMemory.fixIdentity,
+  }).from(fixMemory).where(and(
+    partnerScope(partnerId),
+    or(isNotNull(fixMemory.staleSince), sql`cardinality(${fixMemory.rebuildPendingOrgIds}) > 0`),
+  ));
+  if (targets.length === 0) return 0;
+  // Every row in partnerScope is keyed by this partner's identity lock (an org
+  // row's identity partner is its organization's partner).
+  await lockIdentitiesSorted(targets.map((t) => ({
+    partnerId, signatureVersion: t.signatureVersion, signatureKey: t.signatureKey, osType: t.osType, fixIdentity: t.fixIdentity,
+  })));
+  await db.update(fixMemory).set({ rebuildAttemptedAt: now }).where(inArray(fixMemory.id, targets.map((t) => t.id)));
+  return targets.length;
+}
+
+/** Structural executor: the device-delete cascade's own transaction handle. */
+export interface FixMemoryTx { execute(query: SQL): Promise<unknown> }
+
+/**
+ * Device hard-delete (services/deviceDeletion.ts deleteDeviceCascade): delete
+ * the device's fix_outcomes AND stale-mark every aggregate identity a deleted
+ * COUNTED outcome contributed to, in the caller's transaction (#7278).
+ * Deleting the outcomes alone left fix_memory counting attempts that no
+ * longer exist until some unrelated recompute of each identity.
+ *
+ * DELETE ... RETURNING, not SELECT-then-DELETE: the identities marked are
+ * exactly the rows deleted, so an outcome counted between a read and the
+ * delete cannot be missed.
+ *
+ * Lock order: the outcome rows (row-locked by the DELETE) BEFORE the identity
+ * locks, which is the global order recomputeForOutcome and transitionOutcome
+ * use (outcome row -> identity lock). Taking the identity locks first would
+ * deadlock against a transitionOutcome that holds an outcome row and waits on
+ * that identity. Identity locks are taken sorted and before the fix_memory
+ * UPDATEs, so this cannot invert against a rebuild either. A rebuild of the
+ * same partner that is in flight makes this wait; deleteDeviceCascade has
+ * already restored the caller's lock_timeout by then, so its 3s bound does
+ * not cover that wait.
+ *
+ * Race: a recompute that took an identity lock first read the outcomes while
+ * the delete was uncommitted; this mark waits for it and lands after, so the
+ * row stays stale until a rebuild that sees the delete. A recompute after this
+ * commits never sees the outcomes. stale_since alone is enough here: the
+ * device's org still exists, so there is no erasure request to persist.
+ */
+export async function deleteDeviceFixOutcomes(
+  tx: FixMemoryTx,
+  deviceId: string,
+  now: Date = new Date(),
+): Promise<{ deleted: number; identitiesMarked: number }> {
+  assertSystemScope('deleteDeviceFixOutcomes');
+  const deleted = await tx.execute(sql`
+    DELETE FROM fix_outcomes WHERE device_id = ${deviceId}
+    RETURNING partner_id, signature_version, signature_key, os_type, fix_identity, counted_at`) as Iterable<{
+      partner_id: string; signature_version: number | null; signature_key: string | null; os_type: string | null;
+      fix_identity: string | null; counted_at: Date | string | null;
+    }>;
+  const rows = [...deleted];
+  const identities = new Map<string, IdentityKey>();
+  for (const r of rows) {
+    // Uncounted rows never fed an aggregate. Counted-but-unsigned rows never did
+    // either: loadContributions only reads rows with a full identity, and such a
+    // row is still waiting on recomputeForOutcome. Neither leaves anything stale.
+    if (r.counted_at === null || r.signature_version === null || !r.signature_key || !r.os_type || !r.fix_identity) continue;
+    const id: IdentityKey = {
+      partnerId: r.partner_id, signatureVersion: r.signature_version, signatureKey: r.signature_key,
+      osType: r.os_type, fixIdentity: r.fix_identity,
+    };
+    identities.set(identityLockKey(id), id);
+  }
+  const keys = [...identities.keys()].sort();
+  for (const key of keys) await lock(key, tx);
+  const at = now.toISOString();
+  for (const key of keys) {
+    const i = identities.get(key)!;
+    // Same scope as recomputeIdentity (partnerScope + identity): partner-owned
+    // AND org-owned rows of this identity both derive from these outcomes.
+    await tx.execute(sql`
+      UPDATE fix_memory
+         SET stale_since = COALESCE(stale_since, ${at}::timestamptz), updated_at = ${at}::timestamptz
+       WHERE (partner_id = ${i.partnerId} OR org_id IN (SELECT id FROM organizations WHERE partner_id = ${i.partnerId}))
+         AND signature_version = ${i.signatureVersion} AND signature_key = ${i.signatureKey}
+         AND os_type = ${i.osType} AND fix_identity = ${i.fixIdentity}`);
+  }
+  return { deleted: rows.length, identitiesMarked: keys.length };
 }
 
 /** Counted outcomes waiting for an aggregate recount (re-vote, or the inline script hook's terminal verdict). */

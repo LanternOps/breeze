@@ -452,6 +452,83 @@ describe('featureLinks routes', () => {
     });
   });
 
+  // #8671: patchInlineSettingsSchema defaults `apps` / `autoApprove*`, so a
+  // PATCH that omits them must not reach the service as an explicit `[]` /
+  // `false` — the service would judge that as an approval-rule edit and, on a
+  // ring change, the write would wipe the link's stored legacy rules.
+  describe('PATCH /:id/features/:linkId — patch legacy approval keys (#8671)', () => {
+    const LEGACY_KEYS = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'];
+    const RING_ID = '44444444-4444-4444-8444-444444444444';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_PATCH_LINK);
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+    });
+
+    function sentInline(): Record<string, unknown> {
+      return updateFeatureLinkMock.mock.calls[0]![1].inlineSettings;
+    }
+
+    it('does not forward schema-defaulted approval keys the client did not send', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { scheduleTime: '04:00' } }),
+      });
+      expect(res.status).toBe(200);
+      const inline = sentInline();
+      expect(inline).toMatchObject({ scheduleTime: '04:00', sources: ['os'] });
+      for (const key of LEGACY_KEYS) expect(inline).not.toHaveProperty(key);
+    });
+
+    it('does not forward them on a ring change either', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { scheduleTime: '04:00' } }),
+      });
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock.mock.calls[0]![1].featurePolicyId).toBe(RING_ID);
+      for (const key of LEGACY_KEYS) expect(sentInline()).not.toHaveProperty(key);
+    });
+
+    it('forwards explicitly sent approval keys, parsed, so the service still judges them', async () => {
+      const apps = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { apps, autoApprove: true, autoApproveSeverities: ['critical'] } }),
+      });
+      expect(res.status).toBe(200);
+      expect(sentInline()).toMatchObject({ apps, autoApprove: true, autoApproveSeverities: ['critical'] });
+      expect(sentInline()).not.toHaveProperty('autoApproveDeferralDays');
+    });
+
+    it('forwards an explicit empty apps list as []', async () => {
+      await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(sentInline()).toMatchObject({ apps: [] });
+    });
+
+    it('maps the service refusal to 400 APPROVAL_RULES_MOVED_TO_RING', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
+    });
+  });
+
   describe('feature link reserved export material validation', () => {
     it.each([
       'security', 'software_policy', 'peripheral_control',
@@ -549,6 +626,51 @@ describe('featureLinks routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(String(body.error)).toMatch(/full partner org access/);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWS the system_protection feature on a partner-owned policy → 201, storing the parsed settings (#4754)', async () => {
+      // Inline-only feature: not in ORG_SCOPED_ONLY_FEATURE_TYPES, and
+      // deliberately NOT in PARTNER_LINKABLE_FEATURE_TYPES (that set governs
+      // featurePolicyId links to standalone tables; system_protection has none).
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'system_protection', inlineSettings: { beforeScripts: true } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'system_protection',
+        undefined,
+        { beforePatching: true, beforeScripts: true, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+        expect.anything(),
+      );
+    });
+
+    it('still denies a system_protection write on a partner-wide policy without full partner org access → 403 (#4754)', async () => {
+      const appSelected = new Hono();
+      appSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_POLICY.partnerId,
+          partnerOrgAccess: 'selected',
+        }));
+        await next();
+      });
+      appSelected.route('/', featureLinkRoutes);
+
+      const res = await appSelected.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'system_protection', inlineSettings: { beforeScripts: true } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(String((await res.json()).error)).toMatch(/full partner org access/);
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
@@ -1278,6 +1400,70 @@ describe('featureLinks routes', () => {
   // #6312 — maintenance inlineSettings are schema-validated on both sites
   // ============================================================
 
+  describe('system_protection inlineSettings validation (#4754)', () => {
+    const STUB_POLICY_WITH_SP_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'system_protection', inlineSettings: {} }],
+    };
+
+    beforeEach(() => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      // Armed so an UNVALIDATED route would actually complete the write.
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'system_protection' });
+    });
+
+    it('rejects an unknown key on ADD instead of persisting it', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'system_protection',
+          inlineSettings: { beforeScripts: true, beforeRemoteTerminal: true },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid system protection settings' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-boolean toggle on UPDATE instead of writing it', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_SP_LINK);
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { beforePatching: 'sometimes' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid system protection settings' });
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the parsed, default-filled settings on UPDATE', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_SP_LINK);
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { beforePatching: false } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+        LINK_ID,
+        expect.objectContaining({
+          inlineSettings: { beforePatching: false, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+        }),
+        POLICY_ID,
+        expect.anything(),
+      );
+    });
+  });
+
   describe('maintenance inlineSettings validation', () => {
     const STUB_POLICY_WITH_MAINTENANCE_LINK = {
       ...STUB_POLICY,
@@ -1504,6 +1690,39 @@ describe('featureLinks routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('approval rules moved to the Update Ring (#8186)', () => {
+    it('maps a PolicyApprovalFieldMovedError on add to a 400 with its code', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      addFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: { sources: ['os'] } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
+        code: 'APPROVAL_RULES_MOVED_TO_RING',
+      });
+    });
+
+    it('maps a PolicyApprovalFieldMovedError on update to a 400 with its code', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: {} }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
     });
   });
 

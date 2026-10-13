@@ -85,6 +85,9 @@ var allCommandTypes = []string{
 	tools.CmdHypervDiscover, tools.CmdHypervBackup, tools.CmdHypervRestore,
 	tools.CmdHypervCheckpoint, tools.CmdHypervVMState,
 
+	// handlers_vault_forward.go init()
+	tools.CmdVaultSync, tools.CmdVaultStatus, tools.CmdVaultConfigure,
+
 	// handlers_systemstate_forward.go init()
 	tools.CmdSystemStateCollect, tools.CmdHardwareProfile,
 
@@ -94,6 +97,8 @@ var allCommandTypes = []string{
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
+	// caller_verify.go (#6354 W02)
+	cmdCallerVerify,
 
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,

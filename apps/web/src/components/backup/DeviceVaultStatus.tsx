@@ -24,7 +24,26 @@ type DeviceVault = {
   lastSyncStatus?: string | null;
   lastSyncAt?: string | null;
   lastSyncError?: string | null;
+  isActive?: boolean;
+  createdAt?: string | null;
 };
+
+// A device holds ONE vault: the server pushes the newest ACTIVE vault (by
+// createdAt) to it, so that is the one to show. list[0] could be an inactive or
+// older vault (#8385). All-inactive means the device holds no vault.
+function pickDeviceVault(list: unknown[]): DeviceVault | null {
+  const time = (v: DeviceVault) => {
+    const n = v.createdAt ? Date.parse(v.createdAt) : NaN;
+    return Number.isNaN(n) ? 0 : n;
+  };
+  let best: DeviceVault | null = null;
+  for (const item of list) {
+    const v = item as DeviceVault;
+    if (v.isActive === false) continue;
+    if (!best || time(v) > time(best)) best = v;
+  }
+  return best;
+}
 
 const statusConfig: Record<VaultStatus, { icon: typeof CheckCircle2; className: string; label: string }> = {
   syncing: { icon: RefreshCw, className: 'text-primary bg-primary/10', label: 'Syncing' },
@@ -101,7 +120,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
       const data = asList(payload);
       const list = Array.isArray(data) ? data : [];
       if (invalid()) return;
-      setVault(list[0] ?? null);
+      setVault(pickDeviceVault(list));
     } catch {
       if (invalid()) return;
       // A transport/HTTP failure on load surfaces as an error card rather than

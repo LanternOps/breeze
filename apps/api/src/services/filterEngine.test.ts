@@ -238,7 +238,7 @@ describe('filterEngine field provenance (server-controlled vs. agent-reported)',
   });
 
   it('treats every agent-reported device attribute as agent-reported, default-deny', () => {
-    for (const key of ['hostname', 'displayName', 'agentVersion', 'helperVersion', 'tags', 'deviceRole', 'deviceFunction', 'lastUser', 'isHeadless', 'osType', 'osVersion', 'osBuild', 'architecture', 'hardware.model', 'network.ipAddress', 'metrics.cpuPercent', 'software.installed']) {
+    for (const key of ['hostname', 'displayName', 'agentVersion', 'helperVersion', 'tags', 'deviceRole', 'deviceFunction', 'lastUser', 'isHeadless', 'hostsWorkloads', 'workloadRuntimes', 'osType', 'osVersion', 'osBuild', 'architecture', 'hardware.model', 'network.ipAddress', 'metrics.cpuPercent', 'software.installed']) {
       expect(isAgentReportedFilterField(key), key).toBe(true);
     }
   });
@@ -260,6 +260,12 @@ describe('filterEngine field provenance (server-controlled vs. agent-reported)',
 describe('filterEngine execution-target field tiering (denylist option)', () => {
   it('refuses high-targeting-value agent-reported fields', () => {
     for (const key of ['hostname', 'displayName', 'tags', 'deviceRole', 'lastUser', 'helperVersion', 'agentVersion']) {
+      expect(isExecutionRefusedFilterField(key), key).toBe(true);
+    }
+  });
+
+  it('refuses workload inventory fields — agent-reported container-host claims', () => {
+    for (const key of ['hostsWorkloads', 'workloadRuntimes']) {
       expect(isExecutionRefusedFilterField(key), key).toBe(true);
     }
   });
@@ -690,5 +696,106 @@ describe('filterEngine datetime binding (#3369)', () => {
     });
 
     expect(params).toEqual([10, 90]);
+  });
+});
+
+describe('filterEngine workload inventory fields (W04)', () => {
+  it('registers hostsWorkloads as boolean and workloadRuntimes as array', () => {
+    expect(getFieldDefinition('hostsWorkloads')?.type).toBe('boolean');
+    expect(getFieldDefinition('workloadRuntimes')?.type).toBe('array');
+    expect(getFieldDefinition('workloadRuntimes')?.operators).toEqual(expect.arrayContaining(['hasAny', 'hasAll', 'isEmpty', 'isNotEmpty']));
+  });
+
+  it('hostsWorkloads compiles to a direct boolean column comparison', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'hostsWorkloads', operator: 'equals', value: true }));
+    expect(q.sql).toMatch(/"hosts_workloads" = \$/i);
+    expect(q.sql).not.toMatch(/exists/i);
+  });
+
+  it('workloadRuntimes hasAny/hasAll compile to array overlap/containment on the column', () => {
+    const any = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'hasAny', value: ['docker', 'podman'] }));
+    expect(any.sql).toMatch(/"workload_runtimes"(::text\[\])? && /i);
+    expect(any.params).toEqual(expect.arrayContaining(['docker', 'podman']));
+    const all = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'hasAll', value: ['docker'] }));
+    expect(all.sql).toMatch(/"workload_runtimes"(::text\[\])? @> /i);
+  });
+
+  it('workloadRuntimes contains matches a single runtime by array containment (not ILIKE)', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'contains', value: 'docker' }));
+    expect(q.sql).toMatch(/"workload_runtimes"(::text\[\])? @> /i);
+    expect(q.sql).not.toMatch(/ilike/i);
+    expect(q.params).toContain('docker');
+  });
+
+  it('workloadRuntimes with an empty selection is no constraint (matches the software.installed hasAny convention)', () => {
+    // A freshly added "has any of" chip has no values yet; it must not hide the whole fleet.
+    for (const operator of ['hasAny', 'hasAll'] as const) {
+      const q = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator, value: [] }));
+      expect(q.sql).toBe('TRUE');
+    }
+  });
+
+  it('workloadRuntimes isEmpty/isNotEmpty use cardinality, not a text[] literal compare', () => {
+    // varchar[] = '{}'::text[] has no operator in Postgres (42883) — found by
+    // running the filter preview against a real database.
+    const empty = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'isEmpty', value: [] }));
+    expect(empty.sql).toMatch(/cardinality\("devices"\."workload_runtimes"\) = 0/i);
+    expect(empty.sql).not.toMatch(/text\[\]/i);
+    const nonEmpty = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'isNotEmpty', value: [] }));
+    expect(nonEmpty.sql).toMatch(/cardinality\("devices"\."workload_runtimes"\) > 0/i);
+  });
+});
+
+// Log-shipping health W04 (#8611, feature #8607): a fleet filter for devices
+// whose log shipping has been failing for a sustained episode. The predicate
+// must agree with deriveLogShipping (services/logShippingHealth.ts); the
+// row-level agreement table runs against real Postgres in
+// __tests__/integration/logShippingFailingFilter.integration.test.ts.
+describe('filterEngine logShippingFailing (#8611)', () => {
+  const norm = (s: string) => s.replace(/"/g, '');
+
+  it('registers logShippingFailing as a yes/no boolean field with equals/notEquals', () => {
+    const def = getFieldDefinition('logShippingFailing');
+    expect(def).toBeDefined();
+    expect(def?.type).toBe('boolean');
+    expect(def?.operators).toEqual(['equals', 'notEquals']);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'equals', value: 'yes' } as FilterCondition).valid).toBe(true);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'contains', value: 'x' } as FilterCondition).valid).toBe(false);
+  });
+
+  it('equals yes emits the full predicate, with IS NOT NULL literally so the partial index is usable', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'logShippingFailing', operator: 'equals', value: 'yes' }));
+    const s = norm(q.sql);
+    expect(s).toContain("devices.status = 'online'");
+    expect(s).toContain("devices.log_shipping_state = 'failing'");
+    expect(s).toContain('devices.log_shipping_failure_started_at IS NOT NULL');
+    // The window comes from LOG_SHIPPING_SUSTAINED_MS (30 min), not a re-typed literal.
+    expect(s).toContain("devices.log_shipping_failure_started_at <= NOW() - (1800000 * interval '1 millisecond')");
+    expect(s).not.toMatch(/^not /i);
+    // No user value is bound: the predicate is entirely server-defined.
+    expect(q.params).toEqual([]);
+  });
+
+  it.each([
+    ['equals', 'no'],
+    ['equals', false],
+    ['equals', 'false'],
+    ['notEquals', 'yes'],
+  ] as const)('%s %s → negated, NULL-safe (COALESCE) so unknown devices read "not failing"', (operator, value) => {
+    const s = norm(render({ field: 'logShippingFailing', operator, value } as FilterCondition));
+    expect(s).toMatch(/^NOT COALESCE\(/);
+    expect(s).toContain('log_shipping_failure_started_at IS NOT NULL');
+  });
+
+  it('notEquals no → double negative resolves positive', () => {
+    const s = render({ field: 'logShippingFailing', operator: 'notEquals', value: 'no' });
+    expect(s).not.toMatch(/^not /i);
+    expect(norm(s)).toContain("devices.log_shipping_state = 'failing'");
+  });
+
+  it('is refused as an execution-target field (derived from agent-reported data)', () => {
+    expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
+    expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
+    expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
   });
 });

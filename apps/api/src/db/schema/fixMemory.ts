@@ -101,6 +101,8 @@ export const fixMemory = pgTable('fix_memory', {
   staleSince: timestamp('stale_since', { withTimezone: true }),
   /** Durable org-erasure rebuild requests; stale_since cannot clear while non-empty (see migration). */
   rebuildPendingOrgIds: uuid('rebuild_pending_org_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  /** When the sweeper last tried to rebuild this row's partner; rotates its retry order (#7278). */
+  rebuildAttemptedAt: timestamp('rebuild_attempted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

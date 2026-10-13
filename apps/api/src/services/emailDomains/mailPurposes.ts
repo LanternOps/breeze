@@ -81,6 +81,10 @@ export const MAIL_PURPOSES = {
   'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  // Caller verification (#6354 W03): the request-confirmation link sent to the
+  // customer contact. Customer-facing, so it rides the partner's support stream
+  // (their sending domain when verified, company-name fallback otherwise).
+  'security.caller_verification_link': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   // #6635: "your provider recorded your acceptance" — sent to the customer
   // when a tech accepts on their behalf. Same envelope as the quote itself;

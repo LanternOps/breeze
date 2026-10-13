@@ -31,7 +31,11 @@ type PortalSettings = {
   enablePerformanceMetrics: boolean;
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
+  enableHourBlock: boolean;
+  enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -79,12 +83,17 @@ type VisibilityToggleKey =
   | 'enablePerformanceMetrics'
   | 'enableSoftwareInventory'
   | 'enableNetworkVisibility'
-  | 'enableNetworkAlerts';
+  | 'enableEdrVisibility'
+  | 'enableNetworkAlerts'
+  | 'enableHourBlock'
+  | 'enablePatchDetail'
+  | 'enableVulnerabilityDetail';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
   labelKey: string;
   descriptionKey: string;
+  requires?: VisibilityToggleKey;
 }> = [
   {
     key: 'enableDevices',
@@ -156,6 +165,11 @@ const VISIBILITY_TOGGLES: Array<{
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.description',
   },
+  {
+    key: 'enableEdrVisibility',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.description',
+  },
   // Distinct sensitivity tier from asset inventory (enableNetworkVisibility
   // above), gated by its own flag -- listed here so an org admin can toggle
   // it individually, but deliberately left out of enableAllVisibility()
@@ -164,6 +178,32 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableNetworkAlerts',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.description',
+  },
+  // Billing-sensitive (a prepaid-hours balance) and only meaningful inside the
+  // Support usage section, so it has its own fail-closed flag and is
+  // deliberately left out of enableAllVisibility() below (block hours W04,
+  // #8179; same pattern as enableNetworkAlerts above).
+  {
+    key: 'enableHourBlock',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.description',
+    requires: 'enableSupportUsage',
+  },
+  // Sensitive (visibility W05, #7735): shows every portal login of the org which
+  // devices are missing patches. Deliberately left out of enableAllVisibility()
+  // below; listed in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enablePatchDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.description',
+  },
+  // Sensitive (visibility W06, #7736): shows every portal login of the org which
+  // devices have which CVEs. Deliberately left out of enableAllVisibility(); listed
+  // in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enableVulnerabilityDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.description',
   },
 ];
 
@@ -231,6 +271,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enablePerformanceMetrics: true,
     // Opt in individually until the customer-facing software page ships.
     enableNetworkVisibility: true,
+    enableEdrVisibility: true,
   });
 
   const save = useCallback(async () => {
@@ -259,7 +300,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enablePerformanceMetrics: draft.enablePerformanceMetrics,
             enableSoftwareInventory: draft.enableSoftwareInventory,
             enableNetworkVisibility: draft.enableNetworkVisibility,
+            enableEdrVisibility: draft.enableEdrVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
+            enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
+            enablePatchDetail: draft.enablePatchDetail,
+            enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
@@ -348,6 +393,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             key,
             labelKey,
             descriptionKey,
+            requires,
           }) => (
             <label
               key={key}
@@ -356,8 +402,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               <input
                 type="checkbox"
                 checked={draft[key]}
+                disabled={requires !== undefined && !draft[requires]}
                 onChange={(e) => update({
                   [key]: e.target.checked,
+                  // Turning Support usage off also turns off what lives inside it.
+                  ...(key === 'enableSupportUsage' && !e.target.checked ? { enableHourBlock: false } : {}),
                 } as Partial<PortalSettings>)}
                 className="mt-0.5"
                 data-testid={`org-portal-toggle-${key}`}

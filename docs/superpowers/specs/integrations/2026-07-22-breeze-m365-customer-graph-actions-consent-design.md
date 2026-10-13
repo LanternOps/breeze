@@ -110,8 +110,8 @@ body-hash internal auth, already shipped).
   `profile='customer-graph-actions'`, `credential_domain='customer-graph-actions'`.
 
 The two app-role assignments added to the actions manifest (§7 below), for reference:
-`User.ReadWrite.All` → `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4`;
-`User-PasswordProfile.ReadWrite.All` → `56760768-b641-451f-8906-e1b8ab31bca7` (resource =
+`User.ReadWrite.All` → `741f803b-c850-494e-b5df-cde7c675a1ca`;
+`User-PasswordProfile.ReadWrite.All` → `cc117bb9-00cf-4eb8-b580-ea2a878fe8f7` (resource =
 Microsoft Graph `00000003-0000-0000-c000-000000000000`). These are asserted in
 `profiles.test.ts` and re-verified against the tenant's Graph service-principal `appRoles`
 during real-tenant acceptance.

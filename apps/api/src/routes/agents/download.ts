@@ -1250,9 +1250,6 @@ if [[ "\$OS" == "darwin" ]]; then
   # Enroll agent
   info "Enrolling agent with Breeze server..."
   ENROLL_ARGS=(enroll --server "\$BREEZE_SERVER")
-  if [[ -n "\$BREEZE_SITE_ID" ]]; then
-    ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
-  fi
   if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
     ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
   fi
@@ -1411,9 +1408,6 @@ success "Config directory ready"
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
 ENROLL_ARGS=(enroll --server "\$BREEZE_SERVER")
-if [[ -n "\$BREEZE_SITE_ID" ]]; then
-  ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
-fi
 if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
   ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
 fi

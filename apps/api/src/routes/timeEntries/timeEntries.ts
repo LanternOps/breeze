@@ -137,7 +137,9 @@ function writeBulkTimeEntryAudits(
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TimeEntryServiceError) {
-    return c.json({ error: err.message, code: err.code }, err.status);
+    // `details` carries the machine-readable half of a code (e.g. #4617
+    // APPROVAL_REQUIRED's { trigger, pendingRequestId }); absent otherwise.
+    return c.json({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) }, err.status);
   }
   throw err;
 }

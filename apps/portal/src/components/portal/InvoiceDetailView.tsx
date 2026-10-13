@@ -274,7 +274,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           preparedForName={invoice.billToName ?? undefined}
         />
 
-        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} showLineTicket />
+        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} showLineTicket lineGrouping={invoice.lineGrouping ?? 'entry'} />
 
         <InvoiceTotals currency={currency} subtotal={invoice.subtotal} taxTotal={invoice.taxTotal} taxPct={taxPct}
           total={invoice.total} amountPaid={invoice.amountPaid} balance={invoice.balance} paid={invoice.status === 'paid'}

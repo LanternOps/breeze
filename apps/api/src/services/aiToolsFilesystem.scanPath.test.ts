@@ -45,6 +45,7 @@ vi.mock('./filesystemAnalysis', () => ({
   saveFilesystemSnapshot: vi.fn(),
   setFilesystemScanGeneration: vi.fn(),
   clearFilesystemScanGeneration: vi.fn(),
+  findInFlightFilesystemScan: vi.fn(async () => null),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash'],
 }));
 
@@ -57,6 +58,7 @@ import {
   saveFilesystemSnapshot,
   setFilesystemScanGeneration,
   clearFilesystemScanGeneration,
+  findInFlightFilesystemScan,
 } from './filesystemAnalysis';
 import { registerFilesystemTools } from './aiToolsFilesystem';
 
@@ -70,6 +72,7 @@ const AUTH = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(setFilesystemScanGeneration).mockReset();
+  vi.mocked(findInFlightFilesystemScan).mockReset().mockResolvedValue(null);
   vi.mocked(waitForCommandResult).mockReset();
   vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-scan' } } as never);
   vi.mocked(waitForCommandResult).mockResolvedValue({ status: 'completed', result: { status: 'completed', stdout: '{}' } } as never);
@@ -124,6 +127,32 @@ describe('analyze_disk_usage — path (spec §9)', () => {
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
     expect(vi.mocked(setFilesystemScanGeneration).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(aiExecuteCommand).mock.invocationCallOrder[0]!);
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('reports the scan already in flight instead of dispatching a second (#8509)', async () => {
+    withDevice('windows');
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null as never);
+    const createdAt = new Date('2026-10-12T11:55:00Z');
+    vi.mocked(findInFlightFilesystemScan).mockResolvedValueOnce({
+      id: 'cmd-running', status: 'sent', createdAt, scanPath: 'C:\\',
+    });
+
+    const raw = await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true, path: 'd:/' }, AUTH);
+    const out = JSON.parse(raw);
+
+    expect(findInFlightFilesystemScan).toHaveBeenCalledWith(DEVICE_ID);
+    expect(out).toMatchObject({
+      inFlight: true,
+      commandId: 'cmd-running',
+      status: 'sent',
+      scanPath: 'C:\\',
+      requestedScanPath: 'D:\\',
+    });
+    expect(typeof out.message).toBe('string');
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+    // Must not repoint the generation: the running scan's result would be
+    // dropped as superseded.
+    expect(setFilesystemScanGeneration).not.toHaveBeenCalled();
   });
 
   it('commits the generation before polling outside the ambient transaction', async () => {

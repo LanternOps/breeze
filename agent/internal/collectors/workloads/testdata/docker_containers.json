@@ -1,0 +1,67 @@
+[
+  {
+    "Id": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    "Names": ["/shop-web-1"],
+    "Image": "nginx:1.27",
+    "ImageID": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "Command": "nginx -g 'daemon off;' --api-key=FIXTURE_CMD_SECRET",
+    "Created": 1759307400,
+    "Ports": [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp"}],
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "web",
+      "com.docker.compose.project.working_dir": "/srv/shop",
+      "com.docker.compose.project.config_files": "/srv/shop/compose.yaml",
+      "com.example.owner": "FIXTURE_LABEL_SECRET"
+    },
+    "State": "running",
+    "Status": "Up 3 hours",
+    "HostConfig": {"NetworkMode": "shop_default"},
+    "NetworkSettings": {"Networks": {"shop_default": {"IPAddress": "172.18.0.2"}}},
+    "Mounts": [{"Type": "bind", "Source": "/srv/shop/secrets", "Destination": "/run/secrets"}],
+    "Env": ["DB_PASSWORD=FIXTURE_ENV_SECRET"]
+  },
+  {
+    "Id": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+    "Names": ["/cache"],
+    "Image": "redis",
+    "ImageID": "sha256:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "Command": "docker-entrypoint.sh redis-server --requirepass FIXTURE_CMD_SECRET",
+    "Created": 1759000000,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 5 days",
+    "Mounts": []
+  },
+  {
+    "Id": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+    "Names": ["/builder", "/legacy-alias/builder"],
+    "Image": "myapp:dev",
+    "ImageID": "sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "Command": "/app",
+    "Created": 1757000000,
+    "Labels": null,
+    "State": "exited",
+    "Status": "Exited (0) 2 days ago"
+  },
+  {
+    "Id": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+    "Names": ["/pinned"],
+    "Image": "ghcr.io/o/r@sha256:e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+    "ImageID": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "Created": 1758000000,
+    "Labels": {"com.docker.compose.project": "tools"},
+    "State": "restarting",
+    "Status": "Restarting (1) 5 seconds ago"
+  },
+  {
+    "Id": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+    "Names": ["/old-web"],
+    "Image": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "ImageID": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "Created": 1756000000,
+    "Labels": {},
+    "State": "dead",
+    "Status": "Dead"
+  }
+]

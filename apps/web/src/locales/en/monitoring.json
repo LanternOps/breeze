@@ -192,7 +192,8 @@
     "script": "Script check",
     "network_check": "Network check",
     "hardware_health": "Hardware health",
-    "time_sync": "Time synchronization"
+    "time_sync": "Time synchronization",
+    "container_image_currency": "Container image currency"
   },
   "fields": {
     "operator": "Comparison",
@@ -244,7 +245,9 @@
     "expectedValue": "Expected value",
     "nameserver": "Nameserver",
     "degradedIsFailure": "Treat degraded as failure",
-    "maxResponseMs": "Fail when slower than (ms)"
+    "maxResponseMs": "Fail when slower than (ms)",
+    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level.",
+    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", so this rule only matches its Error or Critical events. Collected providers: {{providers}}."
   },
   "operators": {
     "gt": "greater than",
@@ -268,6 +271,7 @@
     "system": "System"
   },
   "eventLevels": {
+    "info": "Information",
     "warning": "Warning",
     "error": "Error",
     "critical": "Critical"
@@ -359,7 +363,7 @@
   "legacy": {
     "title": "Legacy alert rules",
     "description": "Standalone alert rules that are not managed by a monitor. Convert them to get responses, delivery and escalation in one place.",
-    "empty": "No legacy rules.",
+    "empty": "No standalone alert rules need conversion.",
     "columns": {
       "name": "Name",
       "template": "Template",
@@ -535,6 +539,7 @@
       "more": "Load more",
       "empty": "No conversion history.",
       "system": "System",
+      "unknownUser": "Unknown user",
       "reverted": "Reverted",
       "deadline": "Undo is unavailable after the legacy alerting retirement removes the source runtime."
     },
@@ -643,6 +648,9 @@
           "policy_not_applied": "Time policy was not applied",
           "policy_conflict_gpo": "Group Policy controls time settings"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Minimum days behind"
       }
     }
   },
