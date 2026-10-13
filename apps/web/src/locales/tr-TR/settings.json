@@ -1993,6 +1993,10 @@
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."
         },
+        "enableEdrVisibility": {
+          "label": "Uç nokta koruması (EDR)",
+          "description": "Müşterilere genel bir “Yönetilen uç nokta koruması” durumunu ve bağlı EDR sağlayıcılarından gelen tehdit sayılarını gösterir. Sağlayıcı adları portalda asla gösterilmez."
+        },
         "enableNetworkAlerts": {
           "label": "Ağ uyarıları",
           "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."

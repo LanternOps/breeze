@@ -39,6 +39,7 @@ const SETTINGS = {
   enablePerformanceMetrics: false,
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false,
   enableHourBlock: false,
   enablePatchDetail: false,
   enableVulnerabilityDetail: false,
@@ -244,6 +245,26 @@ describe('OrgPortalSettingsEditor', () => {
     expect(JSON.parse(String(patchCall![1]!.body)).enableSoftwareInventory).toBe(true);
   });
 
+  it('shows the EDR visibility toggle and saves it when toggled individually', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    const toggle = (await screen.findByTestId('org-portal-toggle-enableEdrVisibility')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableEdrVisibility).toBe(true);
+  });
+
+  it('"Enable all" turns EDR visibility on (not a sensitive flag)', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableEdrVisibility');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    expect((screen.getByTestId('org-portal-toggle-enableEdrVisibility') as HTMLInputElement).checked).toBe(true);
+  });
+
   it('keeps patch detail (sensitive) off through "Enable all" and saves it when toggled individually', async () => {
     expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
     mockApi();
@@ -350,6 +371,7 @@ describe('OrgPortalSettingsEditor', () => {
       enablePerformanceMetrics: true,
       enableSoftwareInventory: false,
       enableNetworkVisibility: true,
+      enableEdrVisibility: true,
     });
   });
 

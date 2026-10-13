@@ -1993,6 +1993,10 @@
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."
         },
+        "enableEdrVisibility": {
+          "label": "Endpoint protection (EDR)",
+          "description": "Show customers a generic “Managed endpoint protection” status and threat counts from connected EDR providers. Vendor names are never shown in the portal."
+        },
         "enableNetworkAlerts": {
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."

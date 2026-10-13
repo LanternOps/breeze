@@ -1993,6 +1993,10 @@
           "label": "Visibilité réseau",
           "description": "Affiche dans le portail client l’état du réseau et les actifs découverts en lecture seule."
         },
+        "enableEdrVisibility": {
+          "label": "Protection des terminaux (EDR)",
+          "description": "Affiche aux clients un état générique « Protection des terminaux gérée » et le nombre de menaces provenant des fournisseurs EDR connectés. Les noms des fournisseurs ne sont jamais affichés dans le portail."
+        },
         "enableNetworkAlerts": {
           "label": "Alertes réseau",
           "description": "Affiche dans le portail client le nombre d'alertes actives et les tickets ouverts liés aux actifs réseau."

@@ -1993,6 +1993,10 @@
           "label": "Netzwerksichtbarkeit",
           "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."
         },
+        "enableEdrVisibility": {
+          "label": "Endpunktschutz (EDR)",
+          "description": "Zeigt Kunden einen allgemeinen Status „Verwalteter Endpunktschutz“ und Bedrohungszahlen der verbundenen EDR-Anbieter. Herstellernamen werden im Portal nie angezeigt."
+        },
         "enableNetworkAlerts": {
           "label": "Netzwerkwarnungen",
           "description": "Zeigt im Kundenportal die Anzahl aktiver Warnungen und verknüpfter offener Tickets für Netzwerk-Assets an."
