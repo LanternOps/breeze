@@ -387,3 +387,15 @@ describe('PUBLIC_DEVICE_FIELDS — log-shipping raw columns stay private (#8608)
     },
   );
 });
+
+// #8620 — the raw watchdog_install_* columns surface only through the derived
+// `watchdogInstall` banner view on the device detail response.
+describe('PUBLIC_DEVICE_FIELDS — watchdog install raw columns stay private (#8620)', () => {
+  it.each(['watchdogInstallState', 'watchdogInstallErrorClass', 'watchdogInstallSince'])(
+    'excludes %s',
+    (field) => {
+      expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain(field);
+      expect(projectPublicDevice({ id: 'd', [field]: 'x' } as Record<string, unknown>)).not.toHaveProperty(field);
+    },
+  );
+});

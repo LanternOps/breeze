@@ -1366,6 +1366,22 @@
       "installAbandoned": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): a instalação da versão oferecida falhou repetidamente, então o agente pausou as novas tentativas. Ele tentará de novo em algumas horas ou quando uma versão mais recente for oferecida; o log do agente contém o erro de instalação.",
       "unknown": "O Breeze Assist está ativado, mas não instalado (desde {{since}})."
     },
+    "watchdogInstall": {
+      "gaveUp": "Não foi possível instalar o watchdog automaticamente (desde {{since}}): {{reason}}. Execute `breeze-agent service install --watchdog` no host para tentar novamente.",
+      "unsupported": "A instalação automática do watchdog não é compatível com este host (desde {{since}}).",
+      "reason": {
+        "network": "não foi possível acessar o download",
+        "server": "o servidor recusou o download",
+        "policy": "o download foi bloqueado pela política de rede",
+        "signature": "o watchdog baixado falhou na verificação de assinatura",
+        "checksum": "o watchdog baixado falhou na verificação de integridade",
+        "devBuild": "esta é uma build de desenvolvimento",
+        "unsupportedOs": "este sistema operacional não é compatível",
+        "installCmd": "o comando de instalação falhou",
+        "locked": "outra instalação já estava em andamento",
+        "unknown": "ocorreu um erro não reconhecido"
+      }
+    },
     "logShipping": {
       "label": "Envio de logs",
       "state": {

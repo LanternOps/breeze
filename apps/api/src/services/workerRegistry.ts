@@ -1533,6 +1533,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4120: daily fold of expired `llm_egress_events` rows into
+    // `llm_egress_daily_rollups`. db + services only — `global`.
+    name: 'llmEgressRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/llmEgressRetention');
+      return { init: m.initializeLlmEgressRetention, shutdown: m.shutdownLlmEgressRetention };
+    },
+  },
+  {
     // #7608 W10: daily AI chargeback close. Its closure is db + services only
     // (no route graph, no socket import) — `global`, like the retention workers.
     name: 'aiChargebackWorker',

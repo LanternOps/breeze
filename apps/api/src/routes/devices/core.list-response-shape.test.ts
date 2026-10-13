@@ -474,6 +474,27 @@ describe('GET /devices — response shape', () => {
     }
   });
 
+  // Watchdog install W02 (#8620): the banner view is a DETAIL-only field. List
+  // rows must carry neither the raw watchdog_install_* columns nor a derived
+  // `watchdogInstall` key, even if the row source happens to include them.
+  it('never forwards watchdog install columns or the derived view on list rows', async () => {
+    rigDeviceListRows([
+      {
+        id: '11111111-1111-4111-8111-111111111111', orgId: 'org-1', siteId: 'site-1', agentId: 'a',
+        hostname: 'h', displayName: null, osType: 'linux', status: 'online',
+        watchdogInstallState: 'gave_up', watchdogInstallErrorClass: 'signature',
+        watchdogInstallSince: new Date(),
+      },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const row = (await res.json()).data[0];
+    expect(row).not.toHaveProperty('watchdogInstallState');
+    expect(row).not.toHaveProperty('watchdogInstallErrorClass');
+    expect(row).not.toHaveProperty('watchdogInstallSince');
+    expect(row).not.toHaveProperty('watchdogInstall');
+  });
+
   // Filtering on hardware health goes through the shared filter engine
   // (`hardware.health`), not a bespoke list query param.
   it('does not filter on a hardwareHealth query param', async () => {

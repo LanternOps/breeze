@@ -174,6 +174,11 @@ export const heartbeatSchema = z.object({
   // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
   // it separately (a bad value is `invalid`, never coerced to a healthy zero).
   logShipping: z.unknown().optional(),
+  // #8620 — watchdog install health. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
+  // separately (a bad value is `invalid`: no state change, never coerced).
+  watchdogInstall: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),

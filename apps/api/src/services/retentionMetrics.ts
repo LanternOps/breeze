@@ -38,6 +38,7 @@ export const RETENTION_JOB_NAMES = [
   'filesystem_cleanup_run_retention',
   'intent_outbox_retention',
   'ip_history_retention',
+  'llm_egress_retention',
   'm365_sync_retention',
   'metric_anomaly_incident_retention',
   'metric_rollup_maintenance',

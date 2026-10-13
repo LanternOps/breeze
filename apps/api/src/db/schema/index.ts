@@ -149,6 +149,7 @@ export * from './stripePayments';
 export * from './llmProviderCatalog';
 export * from './aiPlatformModels';
 export * from './llmEgressEvents';
+export * from './llmEgressDailyRollups';
 export * from './invoiceDocuments';
 export * from './contracts';
 export * from './serviceDeliverables';

@@ -422,6 +422,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // an org_id-only UPDATE breaks the moment the two orgs' partners differ).
   // Same disposition as ai_agent_runs: history stays with the source org and
   // dies with the loser shell; the preview discloses the row count.
+  // llm_egress_daily_rollups (#4120): the long-term daily summary of the same
+  // telemetry. Same disposition and same composite FK; a repoint would also
+  // collide on the (org_id, day, surface, host) primary key whenever both
+  // orgs dialled the same host on the same day.
+  llm_egress_daily_rollups: { kind: 'leave-for-erasure', note: 'daily egress summary is per-org history like llm_egress_events; composite (org_id, partner_id) FK and the (org_id, day, surface, host) PK make a repoint fragile — rows die with the loser shell' },
   llm_egress_events: { kind: 'leave-for-erasure', note: 'egress telemetry is per-org history; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
   // ai_unattended_exposure (Wave 5 Part A, #3827): the blast-cap reservation
   // ledger shared by the act lane and the policy-decide lane. Same

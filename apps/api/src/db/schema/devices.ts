@@ -346,6 +346,13 @@ export const devices = pgTable('devices', {
   // the current episode began.
   helperInstallIssue: varchar('helper_install_issue', { length: 50 }),
   helperInstallIssueSince: timestamp('helper_install_issue_since', { withTimezone: true }),
+  // #8620 — agent-reported watchdog install health (#8618 / #7583). NULL =
+  // not reported. State and error class are closed vocabularies (see
+  // services/watchdogInstallHealth); written by the heartbeat ONLY on a
+  // transition. `since` is the server-clock time of the last state change.
+  watchdogInstallState: varchar('watchdog_install_state', { length: 20 }),
+  watchdogInstallErrorClass: varchar('watchdog_install_error_class', { length: 20 }),
+  watchdogInstallSince: timestamp('watchdog_install_since', { withTimezone: true }),
   // #8608 — agent-reported log-shipping health (#8406). Classified per beat by
   // services/logShippingHealth and written ONLY on a state change. NULL state =
   // unknown (old agent / field absent), never healthy and never failing.

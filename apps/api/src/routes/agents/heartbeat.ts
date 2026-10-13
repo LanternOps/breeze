@@ -104,6 +104,7 @@ import {
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
+import { parseWatchdogInstall, planWatchdogInstallWrite } from '../../services/watchdogInstallHealth';
 import {
   agentIdentityAssertionRefused,
   agentIdentityAssertionVersionToSign,
@@ -1166,6 +1167,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // does not report it (old agent / downgrade) -> reset to unknown; a malformed
   // object changes nothing (neither clears nor extends an episode).
   Object.assign(deviceUpdates, planLogShippingWrite(device, parseLogShipping(data.logShipping), new Date()));
+
+  // #8620 — watchdog install health (#8618). Same contract as above: the plan
+  // is compared to the already-loaded `device` row, so a steady-state beat adds
+  // zero keys. Absent = healthy/unreported -> cleared; malformed = no change.
+  Object.assign(
+    deviceUpdates,
+    planWatchdogInstallWrite(device, parseWatchdogInstall(data.watchdogInstall), new Date()),
+  );
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
