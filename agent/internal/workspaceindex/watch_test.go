@@ -10,9 +10,12 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type watchEventsPayload struct {
@@ -40,7 +43,12 @@ func TestExcludedWalkPathHelperCoversHiddenAndGlobbedPaths(t *testing.T) {
 }
 
 func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
-	const debounce = 250 * time.Millisecond
+	// The debounce firing is driven by the test (flushC) rather than a wall-clock
+	// timer: on a loaded runner the file operations below can take longer than any
+	// fixed debounce, which split the batch into two posts (#8568).
+	flushC := make(chan time.Time)
+	removeSeen := make(chan struct{})
+	var removeOnce sync.Once
 	profileDir := filepath.Join(t.TempDir(), "alice")
 	documentsDir := filepath.Join(profileDir, "Documents")
 	if err := os.MkdirAll(documentsDir, 0o755); err != nil {
@@ -72,8 +80,16 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 		Client:        client,
 		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Enumerate:     func() []ProfileRoot { return []ProfileRoot{{Username: "alice", Dir: profileDir}} },
-		WatchDebounce: debounce,
+		WatchDebounce: time.Hour,
 		WatchDirCap:   16,
+		watchFlushC:   flushC,
+		watchEventHandled: func(e fsnotify.Event) {
+			// Events arrive in order, so once the last operation's Remove has been
+			// handled every earlier event is already pending.
+			if e.Op&fsnotify.Remove != 0 && filepath.Base(e.Name) == "doomed.txt" {
+				removeOnce.Do(func() { close(removeSeen) })
+			}
+		},
 	}, SourceConfig{ID: "source-watch", Kind: "local_profile", Watch: true})
 	defer stop()
 
@@ -88,10 +104,21 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 		t.Fatalf("remove doomed file: %v", err)
 	}
 
+	select {
+	case <-removeSeen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for watcher to observe the remove event")
+	}
+	select {
+	case flushC <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("watcher never armed its debounce flush")
+	}
+
 	var payload watchEventsPayload
 	select {
 	case payload = <-payloads:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for debounced events request")
 	}
 
@@ -112,7 +139,7 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 	select {
 	case extra := <-payloads:
 		t.Fatalf("received second PostEvents payload after coalescing: %+v", extra)
-	case <-time.After(4 * debounce):
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 

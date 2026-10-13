@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
@@ -66,6 +68,12 @@ type Deps struct {
 	TickInterval  time.Duration
 	WatchDebounce time.Duration
 	WatchDirCap   int
+
+	// Test seams (unexported). watchFlushC, when non-nil, replaces the wall-clock
+	// debounce timer: a receive on it is the debounce firing. watchEventHandled,
+	// when non-nil, is called after the watcher loop has processed each event.
+	watchFlushC       <-chan time.Time
+	watchEventHandled func(fsnotify.Event)
 }
 
 func (d Deps) withDefaults() Deps {
