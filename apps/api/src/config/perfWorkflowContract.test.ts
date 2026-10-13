@@ -173,6 +173,14 @@ describe('perf-rules.yml — PR-triggered rules + comparator check (#8146)', () 
   it('pins every action to a SHA', () => {
     expectPinnedActions(text, 'perf-rules.yml');
   });
+
+  it('actually runs the rule unit tests and the comparator tests', () => {
+    // Deleting either step would leave every suite green while the recording-rule
+    // arithmetic and the 15 % gate stop being tested anywhere in CI.
+    expect(text).toMatch(/prom\/prometheus:v\d+\.\d+\.\d+ check rules \/rules\/breeze-rules\.yml/);
+    expect(text).toMatch(/prom\/prometheus:v\d+\.\d+\.\d+ test rules \/rules\/tests\/breeze-capacity-kpis\.test\.yml/);
+    expect(text).toMatch(/^\s+run: node --test perf\/\*\.test\.mjs$/m);
+  });
 });
 
 describe('ci.yml stays out of the perf gate', () => {

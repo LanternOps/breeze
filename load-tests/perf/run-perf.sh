@@ -64,16 +64,46 @@ if [ -e "$ENV_FILE" ] && [ "$(head -n1 "$ENV_FILE")" != "$MARKER" ]; then
   exit 2
 fi
 
+SAMPLER_PID=""
+SIM_PID=""
+stop_sampler() {
+  if [ -n "$SAMPLER_PID" ]; then
+    kill "$SAMPLER_PID" 2>/dev/null || true
+    wait "$SAMPLER_PID" 2>/dev/null || true
+    SAMPLER_PID=""
+  fi
+}
+# The simulator runs in the background under `wait`, so a cancel or a job
+# timeout (TERM/INT/HUP) is acted on at once instead of after the whole run.
+stop_sim() {
+  if [ -n "$SIM_PID" ]; then
+    pkill -TERM -P "$SIM_PID" 2>/dev/null || true
+    kill -TERM "$SIM_PID" 2>/dev/null || true
+    wait "$SIM_PID" 2>/dev/null || true
+    SIM_PID=""
+  fi
+}
+
 cleanup() {
   local rc=$?
   trap - EXIT
   set +e
-  ( cd "$REPO" && pnpm wt-stack down ) || echo "run-perf: pnpm wt-stack down failed; check for a leftover stack" >&2
+  stop_sim
+  stop_sampler
+  if ! ( cd "$REPO" && pnpm wt-stack down ); then
+    echo "run-perf: pnpm wt-stack down failed; a stack may still be running on this host" >&2
+    # A run that leaves a stack behind must not look green: the next run on a
+    # persistent runner would collide with it.
+    [ "$rc" -eq 0 ] && rc=1
+  fi
   rm -rf "$SIM/.state"
   rm -f "$ENV_FILE"
   exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 METRICS_SCRAPE_TOKEN="$(openssl rand -hex 24)"
 export METRICS_SCRAPE_TOKEN
@@ -117,17 +147,10 @@ chmod 700 "$SIM/.state"
 ( umask 077; "$SIM/lab-setup.sh" >"$SIM/.state/lab.env" )
 
 # --- 4. Idle sample, no agents.
-SAMPLER_PID=""
-stop_sampler() {
-  if [ -n "$SAMPLER_PID" ]; then
-    kill "$SAMPLER_PID" 2>/dev/null || true
-    wait "$SAMPLER_PID" 2>/dev/null || true
-    SAMPLER_PID=""
-  fi
-}
 "$HERE/sample.sh" "$OUT/idle.csv" &
 SAMPLER_PID=$!
-sleep "${IDLE_SECONDS:-120}"
+sleep "${IDLE_SECONDS:-120}" &
+wait $!
 stop_sampler
 
 # --- 5. Measured run. Every profile flag is explicit so simulator default
@@ -137,7 +160,10 @@ stop_sampler
 SAMPLER_PID=$!
 sim_rc=0
 "$SIM/run.sh" --agents "$AGENTS" --ramp "$RAMP" --warmup "$WARMUP" --duration "$DURATION" \
-  --start "$START" --report "$OUT/agentsim.json" --ws="$WS" --commands-per-minute "$CPM" || sim_rc=$?
+  --start "$START" --report "$OUT/agentsim.json" --ws="$WS" --commands-per-minute "$CPM" &
+SIM_PID=$!
+wait "$SIM_PID" || sim_rc=$?
+SIM_PID=""
 stop_sampler
 if [ "$sim_rc" -ne 0 ]; then
   echo "run-perf: simulator exited $sim_rc" >&2
@@ -156,9 +182,11 @@ KERNEL="$(uname -r)"
 DOCKER_VERSION="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
 if [ "$(uname -s)" = "Linux" ]; then
   CPU_MODEL="$(awk -F': *' '/^model name/ {print $2; exit}' "$PROC/cpuinfo")"
+  # ARM kernels have no "model name" in /proc/cpuinfo; lscpu derives one.
+  [ -n "$CPU_MODEL" ] || CPU_MODEL="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ {print $2; exit}')"
   CPUS="$(nproc)"
   MEM_KB="$(awk '/^MemTotal:/ {print $2; exit}' "$PROC/meminfo")"
-  MEM_GIB=$((MEM_KB / 1048576))
+  MEM_GIB=$(( ${MEM_KB:-0} / 1048576 ))
   GRADE=true
 else
   # Not baseline-grade: the figures describe the Docker VM, not a fixed machine.
@@ -166,6 +194,11 @@ else
   MEM_GIB=$((MEM_BYTES / 1073741824))
   CPU_MODEL="$(sysctl -n machdep.cpu.brand_string)"
   GRADE=false
+fi
+# An empty field would make two different machines compare as equal (D9).
+if [ -z "$CPU_MODEL" ] || [ -z "$CPUS" ] || [ -z "$MEM_GIB" ] || [ "$CPUS" = 0 ] || [ "$MEM_GIB" = 0 ]; then
+  echo "run-perf: incomplete hardware fingerprint (cpuModel='$CPU_MODEL' cpus='$CPUS' memGiB='$MEM_GIB'); run is invalid" >&2
+  exit 2
 fi
 jq -n --arg m "$CPU_MODEL" --argjson c "$CPUS" --argjson g "$MEM_GIB" --arg k "$KERNEL" --arg d "$DOCKER_VERSION" --argjson b "$GRADE" \
   '{cpuModel: $m, cpus: $c, memGiB: $g, kernel: $k, dockerVersion: $d, baselineGrade: $b}' >"$OUT/hardware.json"

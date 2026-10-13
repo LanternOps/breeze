@@ -38,7 +38,7 @@ SQL
   # Value of an unlabelled series, or NaN.
   m() { awk -v n="$1" '$1==n {print $2; f=1; exit} END {if(!f) print "NaN"}' <<<"$SCRAPE"; }
   # Sum of every labelled sample of a series, or NaN when none is present.
-  msum() { awk -v n="$1" 'index($1, n"{")==1 {s+=$2; f=1} END {if(f) print s+0; else print "NaN"}' <<<"$SCRAPE"; }
+  msum() { awk -v n="$1" 'index($1, n"{")==1 {s+=$2; f=1} END {if(f) printf "%.15g\n", s; else print "NaN"}' <<<"$SCRAPE"; }
   CPU="$(msum breeze_process_cpu_seconds_total)"
   case "$XACT" in ''|*[!0-9]*) XACT="NaN" ;; esac
   FIELDS="$CPU,$XACT,$(m breeze_agent_ws_connections),$(m breeze_nodejs_eventloop_utilization),$(m breeze_nodejs_eventloop_lag_max_seconds),$(m breeze_db_pool_admission_waiting)"

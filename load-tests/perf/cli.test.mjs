@@ -158,7 +158,11 @@ test('--expect regression swaps 0/1 and requires both cost and p95 named', () =>
   assert.equal(r.code, 0, r.out + r.err);
   r = run(['compare', '--baseline', BASE, '--candidate', costOnly, '--expect', 'regression']);
   assert.equal(r.code, 1);
-  assert.match(r.err + r.out, /heartbeatP95Ms/);
+  assert.match(r.err, /missing heartbeatP95Ms/);
+  const p95Only = candidate(dir, 'p95.json', { heartbeatP95Ms: 70 });
+  r = run(['compare', '--baseline', BASE, '--candidate', p95Only, '--expect', 'regression']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /missing agentCostCpuMsPerAgentMin/);
   r = run(['compare', '--baseline', BASE, '--candidate', clean, '--expect', 'regression']);
   assert.equal(r.code, 1);
   // invalid stays invalid

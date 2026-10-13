@@ -15,7 +15,7 @@ Rules:
 - A KPI regresses when it is worse than the baseline by more than 15% **and** by more than an absolute floor: 2 CPU-ms (agent cost), 10 ms (heartbeat p95), 0.25 tx (DB intensity). The floors stop a small wobble on a small number from reading as a regression.
 - Improvements never fail. A KPI more than 15% better prints `consider re-baselining`.
 - If the first run regresses, the workflow runs once more and fails only if the confirm run regresses on at least one of the same KPIs.
-- An invalid run exits 2 instead of passing or failing on percentages. Causes: the simulator's acceptance check failed; a gated KPI is missing or not finite; `agentMinutes` is 0; a window edge has no good sample within 30 s; a counter went down inside the window (a restart); the report schema is not `breeze.agentsim.report/v1`; or the hardware fingerprint (`cpuModel`, `cpus`, `memGiB`), `baselineGrade`, stack profile or role, or profile differs from the baseline.
+- An invalid run exits 2 instead of passing or failing on percentages. Causes: the simulator's acceptance check failed; a gated KPI is missing or not finite; `agentMinutes` is 0; a window edge has no good sample within 30 s, or the window has a gap of more than 30 s without one (the API was not observed); a counter went down inside the window (a restart); the report schema is not `breeze.agentsim.report/v1`; the hardware fingerprint is incomplete; or the hardware fingerprint (`cpuModel`, `cpus`, `memGiB`), `baselineGrade`, stack profile or role, or profile differs from the baseline.
 
 Idle CPU, p50/p99, request mix, event-loop and pool figures are recorded in the record for reading but are not gated.
 
@@ -39,7 +39,7 @@ load-tests/perf/run-perf.sh --profile smoke --out-dir /tmp/perf-smoke
 
 `smoke` is 20 agents for about 5 minutes. `nightly-200` is 200 agents for about 23 minutes plus stack up and down. Output: `kpi.json`, `agentsim.json`, `samples.csv`, `idle.csv`, `hardware.json`, `stack.json`.
 
-The script needs no root `.env`. It generates a throwaway one with random secrets, uses it for the stack and deletes it on exit. If a root `.env` exists that it did not generate, it refuses and exits 2, because that file may hold real provider keys. On exit it also runs `pnpm wt-stack down` and removes `agentsim/.state`.
+The script needs no root `.env`. It generates a throwaway one with random secrets, uses it for the stack and deletes it on exit. If a root `.env` exists that it did not generate, it refuses and exits 2, because that file may hold real provider keys. On exit, including a cancel or job timeout (TERM/INT/HUP), it stops the simulator and the sampler, runs `pnpm wt-stack down` and removes `agentsim/.state`. If `down` fails, the run exits non-zero even if everything else passed.
 
 On macOS the record has `hardware.baselineGrade: false`: the figures describe the Docker VM, not fixed hardware. The comparator will not compare it with a baseline-grade record, so a local macOS run is for looking at numbers only.
 

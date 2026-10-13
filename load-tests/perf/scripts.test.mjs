@@ -2,7 +2,7 @@
 // throwaway fake repo (they locate the repo from their own path), so nothing here
 // touches docker, pnpm, git or a real .env.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -73,6 +73,8 @@ function makeFixture({ envExample = true } = {}) {
     '#!/usr/bin/env bash\n' +
       'echo "run.sh $*" >> "$STUB_LOG"\n' +
       'prev=""; for a in "$@"; do [ "$prev" = --report ] && echo "{}" > "$a"; prev="$a"; done\n' +
+      'echo "run.sh pid $$" >> "$STUB_LOG"\n' +
+      '[ -n "${STUB_RUN_SLEEP:-}" ] && sleep "$STUB_RUN_SLEEP"\n' +
       '[ -n "${STUB_RUN_FAIL:-}" ] && exit 1\nexit 0\n',
   );
   script(path.join(agentsim, 'lab-setup.sh'), '#!/usr/bin/env bash\necho "lab-setup" >> "$STUB_LOG"\necho "AGENTSIM_STORE=/stub/store.json"\n');
@@ -97,12 +99,15 @@ function makeFixture({ envExample = true } = {}) {
       '  echo "ENROLL_LIMIT=$AGENT_ENROLL_RATE_LIMIT" >> "$STUB_LOG"\n' +
       '  echo "ADMISSION=$BREEZE_ADMISSION_MODE" >> "$STUB_LOG"\n' +
       '  [ -f .env ] && cp .env "$STUB_ENV_SNAPSHOT"\n' +
-      'fi\nexit 0\n',
+      'fi\n' +
+      'if [ "$1 $2" = "wt-stack down" ] && [ -n "${STUB_DOWN_FAIL:-}" ]; then exit 1; fi\n' +
+      'exit 0\n',
   );
   script(path.join(bin, 'git'), '#!/usr/bin/env bash\ncase "$*" in *rev-parse*) echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;; esac\nexit 0\n');
   script(path.join(bin, 'uname'), '#!/usr/bin/env bash\ncase "$1" in -s) echo "${STUB_UNAME:-Darwin}" ;; -r) echo 6.8.0-stub ;; *) echo stub ;; esac\n');
   script(path.join(bin, 'sysctl'), '#!/usr/bin/env bash\necho "Stub CPU Brand"\n');
   script(path.join(bin, 'nproc'), '#!/usr/bin/env bash\necho 4\n');
+  script(path.join(bin, 'lscpu'), '#!/usr/bin/env bash\n[ -n "${STUB_LSCPU_MODEL:-}" ] && echo "Model name:          $STUB_LSCPU_MODEL"\nexit 0\n');
   const scrapeFile = path.join(root, 'scrape.txt');
   writeFileSync(scrapeFile, SCRAPE);
   return { root, repo, perf, bin, scrapeFile, log: path.join(root, 'stub.log'), envSnapshot: path.join(root, 'env.snapshot') };
@@ -297,4 +302,75 @@ test('run-perf.sh hardware fingerprint: macOS fallback is not baseline-grade, Li
     { cpuModel: lhw.cpuModel, cpus: lhw.cpus, memGiB: lhw.memGiB, baselineGrade: lhw.baselineGrade, kernel: lhw.kernel },
     { cpuModel: 'Stub Linux CPU @ 2.00GHz', cpus: 4, memGiB: 16, baselineGrade: true, kernel: '6.8.0-stub' },
   );
+});
+
+test('sample.sh keeps full precision on large CPU counters', () => {
+  const fx = makeFixture();
+  writeFileSync(fx.scrapeFile, SCRAPE.replace('{mode="user"} 12.5', '{mode="user"} 123456.789'));
+  const csv = path.join(fx.root, 'big.csv');
+  assert.equal(run(fx, 'sample.sh', [csv], { MAX_SAMPLES: '1' }).code, 0);
+  assert.equal(readFileSync(csv, 'utf8').trim().split('\n')[1].split(',')[1], '123459.289');
+});
+
+test('run-perf.sh: a failed wt-stack down fails an otherwise green run', () => {
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', path.join(fx.root, 'o')], { STUB_DOWN_FAIL: '1' });
+  assert.notEqual(r.code, 0, 'a stack left running must not look green');
+  assert.match(r.err, /wt-stack down failed/);
+  assert.equal(existsSync(path.join(fx.repo, '.env')), false);
+});
+
+test('run-perf.sh: SIGTERM mid-run (cancel, timeout) tears down promptly and exits non-zero', async () => {
+  const fx = makeFixture();
+  writeFileSync(fx.log, '');
+  const child = spawn('bash', [path.join(fx.perf, 'run-perf.sh'), '--profile', 'smoke', '--out-dir', path.join(fx.root, 'o')], {
+    env: {
+      ...process.env,
+      PATH: `${fx.bin}${path.delimiter}${process.env.PATH}`,
+      STUB_LOG: fx.log, STUB_SCRAPE: fx.scrapeFile, STUB_ENV_SNAPSHOT: fx.envSnapshot,
+      INTERVAL: '1', IDLE_SECONDS: '0', STUB_RUN_SLEEP: '60',
+    },
+    stdio: 'ignore',
+  });
+  const started = Date.now();
+  while (!readFileSync(fx.log, 'utf8').includes('run.sh ')) {
+    assert.ok(Date.now() - started < 20_000, 'simulator never started');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const killedAt = Date.now();
+  child.kill('SIGTERM');
+  const code = await new Promise((r) => child.on('exit', (c, sig) => r(c ?? sig)));
+  assert.ok(Date.now() - killedAt < 10_000, 'teardown waited for the simulator instead of acting on the signal');
+  assert.notEqual(code, 0);
+  const log = readFileSync(fx.log, 'utf8');
+  assert.match(log, /pnpm wt-stack down/);
+  assert.equal(existsSync(path.join(fx.repo, '.env')), false);
+  // No orphans left on a persistent runner: the simulator and the sampler are gone.
+  await new Promise((r) => setTimeout(r, 300));
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const simPid = Number(log.match(/^run\.sh pid (\d+)$/m)?.[1]);
+  assert.ok(simPid > 0, log);
+  assert.equal(alive(simPid), false, 'simulator still running after teardown');
+  const ps = spawnSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8' }).stdout;
+  const samplers = ps.split('\n').filter((l) => l.includes(path.join(fx.perf, 'sample.sh')));
+  assert.deepEqual(samplers, [], 'sampler still running after teardown');
+});
+
+test('run-perf.sh on Linux refuses an empty hardware fingerprint, falling back to lscpu first', () => {
+  const fx = makeFixture();
+  const proc = path.join(fx.root, 'proc');
+  mkdirSync(proc);
+  writeFileSync(path.join(proc, 'cpuinfo'), 'processor\t: 0\nBogoMIPS\t: 50.00\n'); // ARM: no "model name"
+  writeFileSync(path.join(proc, 'meminfo'), 'MemTotal:       16777216 kB\n');
+  const env = { STUB_UNAME: 'Linux', PERF_PROC_DIR: proc };
+
+  const viaLscpu = path.join(fx.root, 'lscpu');
+  assert.equal(run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', viaLscpu], { ...env, STUB_LSCPU_MODEL: 'Stub ARM Core' }).code, 0);
+  assert.equal(JSON.parse(readFileSync(path.join(viaLscpu, 'hardware.json'), 'utf8')).cpuModel, 'Stub ARM Core');
+
+  const r = run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', path.join(fx.root, 'none')], env);
+  assert.equal(r.code, 2, r.err);
+  assert.match(r.err, /hardware fingerprint/);
+  assert.doesNotMatch(r.log, /cli build/);
+  assert.match(r.log, /pnpm wt-stack down/);
 });

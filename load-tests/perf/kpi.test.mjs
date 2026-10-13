@@ -230,3 +230,29 @@ test('8. a failed scrape at a window edge is invalid; mid-window failures are ig
   const rec = build({ samples: mid });
   assert.ok(Math.abs(rec.kpis.agentCostCpuMsPerAgentMin - 41.7) < 0.01);
 });
+
+test('8b. a failed scrape at the closing window edge is invalid too', () => {
+  const edge = readSamples('samples.csv');
+  // window closes 03:40:05; the bracketing samples are 03:40:00 and 03:40:10
+  const i = edge.findIndex((x) => x.ts.toISOString() === '2026-10-13T03:40:00.000Z');
+  edge[i].scrapeOk = false;
+  assert.throws(() => build({ samples: edge }), (e) => e instanceof InvalidRunError && /scrape failed at window edge/.test(e.message));
+});
+
+test('8c. a mid-window outage longer than 30 s without a good sample is invalid', () => {
+  // two consecutive failed scrapes at a 10 s interval leave a 30 s gap: still fine
+  const ok = readSamples('samples.csv');
+  for (const t of ['03:30:00', '03:30:10']) {
+    const k = ok.findIndex((x) => x.ts.toISOString() === `2026-10-13T${t}.000Z`);
+    ok[k].scrapeOk = false;
+  }
+  assert.ok(Number.isFinite(build({ samples: ok }).kpis.agentCostCpuMsPerAgentMin));
+
+  // three in a row leave a 40 s gap: the run did not watch the API through the window
+  const gap = readSamples('samples.csv');
+  for (const t of ['03:30:00', '03:30:10', '03:30:20']) {
+    const k = gap.findIndex((x) => x.ts.toISOString() === `2026-10-13T${t}.000Z`);
+    gap[k].scrapeOk = false;
+  }
+  assert.throws(() => build({ samples: gap }), (e) => e instanceof InvalidRunError && /no good sample for 40 s/.test(e.message));
+});

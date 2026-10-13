@@ -73,6 +73,30 @@ function counterDelta(samples, field, start, end) {
   return last - first;
 }
 
+/**
+ * Every point of the window must be within 30 s of a good sample on each side.
+ * The edges are interpolated, so a mid-window outage (API stalled or
+ * crash-looping) would otherwise vanish into a straight line between two
+ * distant samples.
+ */
+function checkCoverage(samples, start, end) {
+  const a = toMs(start);
+  const b = toMs(end);
+  const good = samples
+    .filter((s) => s.scrapeOk && isFiniteNumber(s.cpuSeconds) && isFiniteNumber(s.xactCommit))
+    .map((s) => toMs(s.ts))
+    .filter((t) => t >= a - EDGE_MAX_GAP_MS && t <= b + EDGE_MAX_GAP_MS)
+    .sort((x, y) => x - y);
+  for (let i = 1; i < good.length; i++) {
+    const gap = good[i] - good[i - 1];
+    if (good[i] > a && good[i - 1] < b && gap > EDGE_MAX_GAP_MS) {
+      throw new InvalidRunError(
+        `no good sample for ${Math.round(gap / 1000)} s inside the window (${new Date(good[i - 1]).toISOString()} → ${new Date(good[i]).toISOString()}): the API was not observed`,
+      );
+    }
+  }
+}
+
 function windowSamples(samples, start, end) {
   const a = toMs(start);
   const b = toMs(end);
@@ -117,6 +141,7 @@ export function buildKpiRecord({ report, samples, idle, hardware, stack, gitSha,
   }
   if (!Array.isArray(samples)) throw new InvalidRunError('samples must be an array');
 
+  checkCoverage(samples, start, end);
   const cpuDelta = counterDelta(samples, 'cpuSeconds', start, end);
   const xactDelta = counterDelta(samples, 'xactCommit', start, end);
   const inWindow = windowSamples(samples, start, end);
