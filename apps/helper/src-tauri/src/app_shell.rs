@@ -44,6 +44,8 @@ pub(crate) fn should_prevent_exit(code: Option<i32>) -> bool {
 /// without `PredefinedMenuItem::quit`, plus a Cmd+Q "Hide Window" item. The
 /// View (fullscreen) and empty Help submenus are dropped too: under
 /// `Accessory` no menu bar is drawn, so only key equivalents matter.
+/// Hide / Hide Others (Cmd+H, Cmd+Opt+H) are dropped as well: `[NSApp hide:]`
+/// on an app with no Dock icon is one more way to strand the window.
 ///
 /// Edit stays: its key equivalents (Cmd+C/V/X/A/Z) are how copy and paste
 /// reach the webview. The File/Window "Close Window" items send
@@ -82,9 +84,6 @@ pub(crate) fn build_macos_app_menu(
                     &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::hide(app, None)?,
-                    &PredefinedMenuItem::hide_others(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
                     &hide_window,
                 ],
