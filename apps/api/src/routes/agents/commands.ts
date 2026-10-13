@@ -363,6 +363,31 @@ commandsRoutes.post(
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
     const acceptsResult = commandAcceptsAgentResult(command.status, command.result, command.type);
+
+    // Caller verification (#6354 W02): "This is not me" must survive a
+    // command that is already terminal. The row was authorized above (this
+    // device, agent role); the receipt is merged into it without reopening
+    // it, and the decision runs in the same savepoint — a failure rolls both
+    // back and the agent's retry re-applies it.
+    if (!acceptsResult && command.type === 'caller_verify') {
+      const late = await import('../../services/callerVerification/workstationResult');
+      const lateStdout = commandResultToStdout(data);
+      if (late.isCallerNotMe(lateStdout, data.result)) {
+        await withDbTransaction(async () => {
+          const recorded = await late.persistCallerNotMeReceipt({
+            commandId, deviceId: command.deviceId, stdout: lateStdout, result: data.result,
+          });
+          if (recorded) {
+            await late.handleCallerVerifyResult({
+              agentId: agent.agentId ?? agentId, command, commandId, result: data,
+              resolvedDeviceId: command.deviceId, stdout: lateStdout,
+            });
+          }
+        });
+      }
+      return c.json({ success: true });
+    }
+
     if (!acceptsResult && command.type !== 'file_delete' && command.type !== 'system_cleanup_run') {
       return c.json({ success: true });
     }

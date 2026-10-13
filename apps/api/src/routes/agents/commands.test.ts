@@ -176,7 +176,25 @@ vi.mock('../../services/commandResultHandlers', () => ({
     pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     pam_cleanup_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
+    caller_verify: (...args: unknown[]) => callerRegistryHandlerMock(...(args as [])),
   },
+}));
+
+// #6354 W02: the late-rejection branch imports the caller leaf module directly.
+const { callerReceiptMock, callerLateDecisionMock, callerRegistryHandlerMock } = vi.hoisted(() => ({
+  callerReceiptMock: vi.fn(),
+  callerLateDecisionMock: vi.fn(),
+  callerRegistryHandlerMock: vi.fn(),
+}));
+vi.mock('../../services/callerVerification/workstationResult', () => ({
+  isCallerNotMe: (stdout: string | undefined, result: unknown) => {
+    try {
+      const value = stdout !== undefined ? JSON.parse(stdout) : result;
+      return (value as { choice?: string } | null)?.choice === 'not_me';
+    } catch { return false; }
+  },
+  persistCallerNotMeReceipt: (...args: unknown[]) => callerReceiptMock(...args),
+  handleCallerVerifyResult: (...args: unknown[]) => callerLateDecisionMock(...args),
 }));
 
 vi.mock('../../services/pamReconciliationRateLimit', () => ({
@@ -394,6 +412,60 @@ describe('agent commands routes', () => {
   // #3097 — a script result submitted over HTTP used to reach no per-type
   // handler at all, so script_executions kept whatever status the reaper had
   // written while the real output sat in device_commands.result.
+  describe('caller_verify (#6354 W02)', () => {
+    const post = (body: Record<string, unknown>) => app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, ...body }),
+    });
+
+    it('dispatches a first result to the shared caller handler', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: commandId, deviceId: 'device-1', type: 'caller_verify', status: 'sent', payload: {} }]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+      callerRegistryHandlerMock.mockResolvedValue(undefined);
+      const stdout = JSON.stringify({ delivered: true, choice: '42', principal: { uid: 501, username: 'alex' } });
+      const res = await post({ status: 'completed', stdout });
+      expect(res.status).toBe(200);
+      expect(callerRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, resolvedDeviceId: 'device-1', stdout }));
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['completed', 'failed', 'cancelled'])('honours a late rejection after the command was %s', async (status) => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: commandId, deviceId: 'device-1', type: 'caller_verify', targetRole: 'agent', status, result: { status }, payload: {} }]));
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockResolvedValue(undefined);
+      const res = await post({ status: 'completed', result: { delivered: true, choice: 'not_me' } });
+      expect(res.status).toBe(200);
+      expect(callerReceiptMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, deviceId: 'device-1' }));
+      expect(callerLateDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, resolvedDeviceId: 'device-1' }));
+      expect(callerRegistryHandlerMock).not.toHaveBeenCalled();
+    });
+
+    it('ignores a late number on a terminal command', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: commandId, deviceId: 'device-1', type: 'caller_verify', status: 'completed', result: { status: 'completed' }, payload: {} }]));
+      const res = await post({ status: 'completed', stdout: JSON.stringify({ delivered: true, choice: '42', principal: { uid: 1, username: 'a' } }) });
+      expect(res.status).toBe(200);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 (so the agent retries) when the late decision fails', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: commandId, deviceId: 'device-1', type: 'caller_verify', status: 'completed', result: { status: 'completed' }, payload: {} }]));
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockRejectedValue(new Error('db down'));
+      const res = await post({ status: 'completed', result: { delivered: true, choice: 'not_me' } });
+      expect(res.status).toBe(500);
+    });
+
+    it('rejects a foreign command before recording a receipt', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await post({ status: 'completed', result: { delivered: true, choice: 'not_me' } });
+      expect(res.status).toBe(404);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('dispatches a script result to the shared handler over the HTTP path', async () => {
     const command = {
       id: commandId,

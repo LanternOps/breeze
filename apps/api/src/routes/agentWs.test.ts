@@ -34,6 +34,22 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
 }));
 
+// #6354 W02: the late caller-rejection branch imports the caller leaf module.
+const { callerReceiptMock, callerLateDecisionMock } = vi.hoisted(() => ({
+  callerReceiptMock: vi.fn(),
+  callerLateDecisionMock: vi.fn(),
+}));
+vi.mock('../services/callerVerification/workstationResult', () => ({
+  isCallerNotMe: (stdout: string | undefined, result: unknown) => {
+    try {
+      const value = stdout !== undefined ? JSON.parse(stdout) : result;
+      return (value as { choice?: string } | null)?.choice === 'not_me';
+    } catch { return false; }
+  },
+  persistCallerNotMeReceipt: (...args: unknown[]) => callerReceiptMock(...args),
+  handleCallerVerifyResult: (...args: unknown[]) => callerLateDecisionMock(...args),
+}));
+
 // #6503: the WS close/error handlers delegate the actual offline transition +
 // transition-effects persistence to offlineDetector.ts's transitionDeviceOffline
 // (which itself opens a BullMQ queue / hits offlineEffectsStore internals this
@@ -1827,6 +1843,63 @@ describe('agent websocket command results', () => {
 
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  describe('late caller_verify rejection (#6354 W02)', () => {
+    const commandId = '44444444-4444-4444-8444-444444444444';
+    const owned = { id: commandId, type: 'caller_verify', targetRole: 'agent', status: 'completed', deviceId: 'device-123', payload: {} };
+    const authorizedDevice = [{ status: 'online', agentTokenSuspendedAt: null, orgType: 'customer' }];
+    const notMe = { type: 'command_result', commandId, status: 'completed', result: { delivered: true, choice: 'not_me' } };
+
+    it.each(['completed', 'failed', 'cancelled'])('honours a rejection after the command was %s', async (status) => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // terminal: the accepting lookup misses
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: { ...owned, status }, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockResolvedValue(undefined);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, deviceId: 'device-123' }));
+      expect(callerLateDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, resolvedDeviceId: 'device-123' }));
+      expect(db.update).not.toHaveBeenCalled(); // never reopens the command row
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
+
+    it('never records a receipt for a command another agent owns', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+        .mockReturnValue(selectWithInnerJoin([]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('re-checks containment before writing anything', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice([{ status: 'decommissioned', agentTokenSuspendedAt: null, orgType: 'customer' }]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the committed receipt when the decision fails (reconciliation finishes it)', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockRejectedValue(new Error('db down'));
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledTimes(1);
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
   });
 
   it('updates command result when command belongs to connected agent', async () => {
