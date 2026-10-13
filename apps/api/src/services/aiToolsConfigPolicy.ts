@@ -12,9 +12,12 @@ import {
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
+  securityAgentsInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
+import { checkSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
@@ -99,7 +102,30 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // error instead of surfacing as the generic tool error. Normalized so the
   // JSONB stores the default-filled object, matching the HTTP route.
   system_protection: { schema: systemProtectionInlineSettingsSchema, normalize: true },
+  // #6960: strict, so a guessed key (or a pasted secret) is named in the error.
+  // Arming (enabled:true) and featurePolicyId are refused earlier, by
+  // securityAgentsToolRefusal.
+  security_agents: { schema: securityAgentsInlineSettingsSchema, normalize: true },
 };
+
+/**
+ * #6960: an assistant never arms installs. Runs the shared security_agents
+ * link-write check with arming NOT authorized, ahead of schema validation, and
+ * maps the arming refusal to the same message every other AI install path uses.
+ * Returns a tool result string, or null when the write may proceed.
+ */
+function securityAgentsToolRefusal(featurePolicyId: unknown, inlineSettings: unknown): string | null {
+  const check = checkSecurityAgentsLinkWrite({
+    featurePolicyId: featurePolicyId === undefined ? undefined : (featurePolicyId as string | null),
+    inlineSettings,
+    armAuthorized: false,
+  });
+  if (check.ok) return null;
+  if (check.refusal.body.code === 'security_agents_execute_required') {
+    return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+  }
+  return JSON.stringify({ error: check.refusal.body.error, code: check.refusal.body.code });
+}
 
 /**
  * Refuses an assistant-authored automation action that asks to run a script
@@ -244,6 +270,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   hardware_monitoring: `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.`,
   time_sync: `{ enforceNtp: false, ntpServers: [], pollIntervalMinutes: 60, timezone: { expected: 'site', pinnedTimezone: null, autoFix: false } } — inline-only domain-aware Windows time settings. Up to 5 NTP hosts, no flags or ports; at least one host when enforceNtp is true. pollIntervalMinutes is an integer in 15..1440. A pinned IANA timezone must have a Windows mapping and overrides the site timezone. Workgroup, Entra-only and forest-root PDC devices use manual peers; members, DCs and other PDCs use the domain hierarchy. Unknown roles are skipped. GPO wins. autoFix defaults to false.`,
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
+  security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
 };
 
@@ -1127,6 +1154,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
+        if (featureType === 'security_agents') {
+          const refusal = securityAgentsToolRefusal(input.featurePolicyId ?? null, input.inlineSettings ?? null);
+          if (refusal) return refusal;
+        }
+
         let inlineSettings: unknown = input.inlineSettings;
         const validated = validateInlineSettingsForFeature(featureType, inlineSettings);
         if ('error' in validated) return JSON.stringify({ error: validated.error });
@@ -1162,6 +1194,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         const featureLinkId = input.featureLinkId as string | undefined;
         if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for update' });
+
+        if (existingFeatureType === 'security_agents') {
+          const refusal = securityAgentsToolRefusal(input.featurePolicyId, input.inlineSettings);
+          if (refusal) return refusal;
+        }
 
         const updates: { featurePolicyId?: string | null; inlineSettings?: unknown } = {};
         if (input.featurePolicyId !== undefined) updates.featurePolicyId = input.featurePolicyId as string | null;

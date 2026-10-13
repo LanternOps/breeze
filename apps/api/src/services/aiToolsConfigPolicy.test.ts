@@ -142,6 +142,7 @@ import {
 } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
+import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction, isToolWhollyMfaGated, mfaGatedActionsForTool } from './aiToolMfaGate';
 
@@ -1828,5 +1829,83 @@ describe('manage_configuration_policy owner-org authority (#6667, #6668)', () =>
 
     expect(JSON.parse(output).success).toBe(true);
     expect(vi.mocked(updateConfigPolicy)).toHaveBeenCalledWith(POLICY_ID, { name: 'Renamed' }, expect.any(Object));
+  });
+});
+
+// ============================================================
+// manage_policy_feature_link — security_agents (#6960 W01)
+// ============================================================
+
+describe('manage_policy_feature_link security_agents (#6960)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
+  const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+
+  async function add(args: Record<string, unknown>) {
+    return JSON.parse(await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'security_agents', ...args,
+    }, makeAuth()));
+  }
+
+  it('refuses enabled:true with the AI auto-install refusal — an assistant never arms installs', async () => {
+    const out = await add({ inlineSettings: ENABLED });
+    expect(out.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a featurePolicyId', async () => {
+    const out = await add({ featurePolicyId: '44444444-4444-4444-4444-444444444444', inlineSettings: DISABLED });
+    expect(out.error).toMatch(/featurePolicyId/);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown key with a field-level error and does not echo the value', async () => {
+    const out = await add({ inlineSettings: { ...DISABLED, apiKey: '<acct-key>' } });
+    expect(out.error).toMatch(/apiKey|unrecognized/i);
+    expect(JSON.stringify(out)).not.toContain('<acct-key>');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('saves a disabled-only link without claiming arming authority', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'security_agents' } as any);
+    const out = await add({ inlineSettings: DISABLED });
+    expect(out.success).toBe(true);
+    const call = vi.mocked(addFeatureLink).mock.calls[0]!;
+    expect(call.slice(0, 4)).toEqual([POLICY_ID, 'security_agents', null, DISABLED]);
+    // No options argument → securityAgentsArmAuthorized is absent (false).
+    expect((call[6] as { securityAgentsArmAuthorized?: boolean } | undefined)?.securityAgentsArmAuthorized).not.toBe(true);
+  });
+
+  it('update: refuses enabled:true and a featurePolicyId on an existing security_agents link', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'security_agents' }]);
+    const armed = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1', inlineSettings: ENABLED,
+    }, makeAuth()));
+    expect(armed.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
+
+    mockSelectRows([{ featureType: 'security_agents' }]);
+    const linked = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1', featurePolicyId: '44444444-4444-4444-4444-444444444444',
+    }, makeAuth()));
+    expect(linked.error).toMatch(/featurePolicyId/);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
   });
 });

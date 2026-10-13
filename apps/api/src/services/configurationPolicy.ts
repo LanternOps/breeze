@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
+import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -1161,6 +1162,7 @@ async function decomposeInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -1280,6 +1282,7 @@ async function deleteNormalizedRows(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -1588,6 +1591,7 @@ async function assembleInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -1797,6 +1801,12 @@ async function reloadMonitorsInterval(
  */
 export type FeatureLinkWriteOptions = {
   executionAuthority?: SensitiveDataAuthorityValues | null;
+  /**
+   * `security_agents` links only (#6960): the caller has verified the writer may
+   * arm installs (devices.execute + MFA). Absent means NOT authorized, so a
+   * caller that never checked (the AI tool, a future job) cannot enable a vendor.
+   */
+  securityAgentsArmAuthorized?: boolean;
 };
 
 export async function addFeatureLink(
@@ -1851,6 +1861,17 @@ export async function addFeatureLink(
   }
 
   if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+
+  // #6960: service-level backstop for the route/AI checks (arming authorization,
+  // NULL featurePolicyId, strict settings, enableable vendors). A link without
+  // settings is invalid, so `null` is validated rather than skipped.
+  if (featureType === 'security_agents') {
+    inlineSettings = assertSecurityAgentsLinkWrite({
+      featurePolicyId: featurePolicyId ?? null,
+      inlineSettings: inlineSettings ?? null,
+      armAuthorized: options.securityAgentsArmAuthorized === true,
+    });
+  }
 
   // #8186: app rules live on the Update Ring. A new link may carry an `apps`
   // list only when the ring it links already enforces exactly that list: the
@@ -2082,6 +2103,16 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // #6960: same backstop as addFeatureLink, on whichever fields are sent.
+    if (existing.featureType === 'security_agents') {
+      const parsed = assertSecurityAgentsLinkWrite({
+        featurePolicyId: updates.featurePolicyId,
+        inlineSettings: updates.inlineSettings,
+        armAuthorized: options.securityAgentsArmAuthorized === true,
+      });
+      if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
     }
 
     // #5511 W02: same consent rule as addFeatureLink, but with the row's
@@ -3101,6 +3132,11 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // selection profile; partner-wide links resolve each device org's DEFAULT
   // destination at job time (backup_configs stays org-owned — credentials).
   'backup',
+  // security_agents (#6960): inline-only and always partner-wide capable. Its
+  // featurePolicyId must stay NULL (validateFeaturePolicyExists refuses one);
+  // the generated software policy is owned on the config policy's own axis and
+  // found via software_policies.managed_by_link_id.
+  'security_agents',
 ]);
 
 /**
@@ -3141,6 +3177,13 @@ export async function validateFeaturePolicyExists(
   featurePolicyId: string | undefined | null,
   owner: { orgId: string | null; partnerId: string | null }
 ): Promise<{ valid: boolean; error?: string }> {
+  // #6960: inline-only. No linked table, so any featurePolicyId is refused.
+  if (featureType === 'security_agents') {
+    return featurePolicyId
+      ? { valid: false, error: 'A security_agents feature link carries its settings inline; featurePolicyId must not be set.' }
+      : { valid: true };
+  }
+
   if (featureType === 'patch') {
     if (!featurePolicyId) {
       return { valid: true };
