@@ -2,11 +2,8 @@
   "title": "Verify caller",
   "open": "Verify caller",
   "close": "Close",
-  "cancel": "Cancel",
-  "back": "Back",
   "loading": "Loading…",
   "retry": "Try again",
-  "refresh": "Refresh",
   "tier": "Tier {{tier}}",
   "actions": {
     "any": "General support request",
@@ -90,10 +87,8 @@
     "pollFailed": "Lost contact with the server. Retrying…"
   },
   "result": {
-    "verified": "Caller verified for {{action}}.",
     "usableUntil": "Usable once for {{action}}; expires in {{minutes}} min.",
     "anotherTechnician": "Started by {{technician}}; usability is checked when the action runs.",
-    "reverify": "Verify again",
     "grantExpired": "Verification expired",
     "consumed": "Already used for {{action}}.",
     "consumedUnknown": "Already used.",
@@ -116,8 +111,7 @@
     "pending": "Verification pending",
     "none": "Not verified",
     "failed": "Verification failed",
-    "loadFailed": "Status unavailable",
-    "age": "{{time}}"
+    "loadFailed": "Status unavailable"
   },
   "drawer": {
     "title": "Caller verification",
@@ -152,7 +146,10 @@
     "sync": "Sync now",
     "destinations": "Contact details used for links",
     "noDestinations": "No contact details on file.",
-    "destinationKind": { "email": "Email", "mobile": "Mobile" },
+    "destinationKind": {
+      "email": "Email",
+      "mobile": "Mobile"
+    },
     "established": "Trusted",
     "notEstablished": "Not yet trusted",
     "attested": "Confirmed {{time}}",
@@ -167,7 +164,11 @@
     "allOrgs": "All organizations",
     "inherited": "Inherited: {{value}}",
     "inherit": "Inherit",
-    "source": { "default": "Default", "partner": "Partner", "org": "Organization" },
+    "source": {
+      "default": "Default",
+      "partner": "Partner",
+      "org": "Organization"
+    },
     "ignored": "Some settings are looser than the partner baseline and are ignored: {{fields}}",
     "readOnly": "You can view this policy but not change it.",
     "save": "Save policy",
@@ -191,8 +192,13 @@
       "coolingOffHours": "Block after a rejection (hours)"
     },
     "roles": {
-      "billing": "Billing", "technical": "Technical", "escalation": "Escalation", "admin": "Admin",
-      "site": "Site", "after_hours": "After hours", "portal": "Portal"
+      "billing": "Billing",
+      "technical": "Technical",
+      "escalation": "Escalation",
+      "admin": "Admin",
+      "site": "Site",
+      "after_hours": "After hours",
+      "portal": "Portal"
     }
   },
   "refusal": {

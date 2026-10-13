@@ -134,8 +134,8 @@ const directoryShape = (v: DirectorySearch): DirectorySearch => {
 
 /** Human copy for a server refusal token; undefined lets runAction keep its own message. */
 export function refusalMessage(token: string): string | undefined {
-  if (token === 'Rate limited') return i18n.t(`${ns}:errors.rateLimited`);
-  if (token === 'MFA_REQUIRED' || token === 'MFA required') return i18n.t(`${ns}:errors.mfaRequired`);
+  if (token === 'Rate limited') return i18n.t('callerVerificationTech:errors.rateLimited');
+  if (token === 'MFA_REQUIRED' || token === 'MFA required') return i18n.t('callerVerificationTech:errors.mfaRequired');
   const key = `${ns}:errors.${token}`;
   // i18n-dynamic: server error codes are runtime values.
   return i18n.exists(key) ? i18n.t(/* i18n-dynamic */ key) : undefined;
@@ -146,7 +146,7 @@ async function read<T>(path: string, pin: string | null, signal?: AbortSignal): 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
     const code = body && typeof body === 'object' ? (body as { code?: unknown }).code : undefined;
-    throw new ActionError(i18n.t(`${ns}:errors.loadFailed`), response.status, typeof code === 'string' ? code : undefined, body);
+    throw new ActionError(i18n.t('callerVerificationTech:errors.loadFailed'), response.status, typeof code === 'string' ? code : undefined, body);
   }
   return unwrapData<T>(await response.json());
 }
@@ -157,7 +157,7 @@ function mutate<T>(
 ): Promise<T> {
   return runAction<T>({
     request: () => fetchWithAuth(path, { method, orgIdOverride: pin, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
-    errorFallback: i18n.t(`${ns}:errors.saveFailed`),
+    errorFallback: i18n.t('callerVerificationTech:errors.saveFailed'),
     ...(successKey ? { successMessage: i18n.t(/* i18n-dynamic */ `${ns}:${successKey}`) } : {}),
     parseSuccess: (data) => validate(unwrapData<T>(data)),
     friendly: (token) => refusalMessage(token),
@@ -240,7 +240,7 @@ export interface ContactOption { id: string; name: string | null; email: string 
 export async function contactsPage(orgId: string, page: number, signal?: AbortSignal): Promise<{ data: ContactOption[]; total: number }> {
   const response = await fetchWithAuth(`/orgs/organizations/${seg(orgId)}/contacts?${new URLSearchParams({ page: String(page), limit: '100' })}`,
     { method: 'GET', signal, orgIdOverride: orgId });
-  if (!response.ok) throw new ActionError(i18n.t(`${ns}:errors.loadFailed`), response.status);
+  if (!response.ok) throw new ActionError(i18n.t('callerVerificationTech:errors.loadFailed'), response.status);
   const body = await response.json() as { data?: ContactOption[]; pagination?: { total?: number } };
   if (!Array.isArray(body.data)) throw new Error('Missing API data envelope');
   return { data: body.data, total: body.pagination?.total ?? body.data.length };

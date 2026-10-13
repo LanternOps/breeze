@@ -33,6 +33,11 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Caller verification W04 (#6354): technician client + the three components that mutate through it.
+  'src/lib/api/callerVerification.ts',
+  'src/components/callerVerification/VerifyCallerModal.tsx',
+  'src/components/callerVerification/ContactVerificationDrawer.tsx',
+  'src/components/callerVerification/CallerVerificationPolicyForm.tsx',
   // #8385: vault sync/deactivate/save mutations must surface failures (they were silently swallowed)
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
@@ -915,7 +920,9 @@ describe('no silent mutations in targeted set', () => {
     // Reliability baselines (#5876) add devices/ReliabilityBaseline{Dialog,Section}.tsx: 220 → 222.
     // DeviceSettingsModal.tsx (tag/name/site save moved to runAction) makes 223.
     // #8385 adds backup/VaultDashboard.tsx and backup/VaultConfigDialog.tsx: 223 → 225.
-    expect(absoluteFiles.length).toBe(225);
+    // Caller verification W04 (#6354) adds lib/api/callerVerification.ts and
+    // callerVerification/{VerifyCallerModal,ContactVerificationDrawer,CallerVerificationPolicyForm}.tsx: 225 → 229.
+    expect(absoluteFiles.length).toBe(229);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
