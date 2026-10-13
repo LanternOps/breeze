@@ -256,7 +256,7 @@ export async function getActiveTrustKeysetCached(): Promise<ManifestTrustKey[]> 
 export function invalidateManifestTrustCaches(): void {
   // Whole cache (key null on the wire): the only key is a fixed literal.
   trustKeysetCache.invalidateAroundCommit();
-  delegationRowsCache.invalidate();
+  delegationRowsCache.invalidateAroundCommit();
 }
 
 // =====================================================================
@@ -525,6 +525,7 @@ const delegationRowsCache = new HotPathTtlCache<'unexpired', DelegationRow[]>({
   name: 'manifest-key-delegations',
   ttlMs: MANIFEST_TRUST_CACHE_TTL_MS,
   maxEntries: 1,
+  cluster: true,
 });
 
 /** Cached {@link getActiveManifestKeyDelegations} for the heartbeat hot path (#8053). */

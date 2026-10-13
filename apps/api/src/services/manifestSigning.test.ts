@@ -557,6 +557,11 @@ describe('trust caches are cluster-invalidated (W05 #8144)', () => {
     await ensureActiveSigningKey();
     expect(publishedFor('manifest-trust-keyset')).toEqual([null]);
   });
+
+  it('C7: invalidateManifestTrustCaches publishes the whole delegation cache (key null)', () => {
+    invalidateManifestTrustCaches();
+    expect(publishedFor('manifest-key-delegations')).toEqual([null]);
+  });
 });
 
 describe('signManifestKeyDelegation / verifyManifestKeyDelegation', () => {
