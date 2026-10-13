@@ -28,7 +28,8 @@ interface TicketLinkRow {
   other: {
     id: string;
     ticketNumber: string;
-    subject: string;
+    /** null when the counterpart is trashed and the caller cannot manage tickets (#8747). */
+    subject: string | null;
     status: TicketStatus;
     ticketType: TicketType | string | null;
     /** Soft-deleted counterpart (#8679): shown, not linked, still removable. */
@@ -329,7 +330,9 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
                   // cap and the duplicate/cycle rules until it is removed.
                   <span className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
                     <span className="shrink-0 font-mono text-xs">{row.other.ticketNumber}</span>
-                    <span className="truncate line-through">{row.other.subject}</span>
+                    {row.other.subject !== null && (
+                      <span className="truncate line-through" data-testid={`ticket-link-deleted-subject-${row.id}`}>{row.other.subject}</span>
+                    )}
                     <span
                       className="shrink-0 rounded-md border px-1.5 py-0.5 text-xs font-medium"
                       data-testid={`ticket-link-deleted-${row.id}`}

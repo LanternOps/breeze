@@ -1125,7 +1125,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for list_links action' });
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
-        const links = await listTicketLinks(found.id, { counterpartFilter: ticketCounterpartScopeCondition(auth) });
+        // A trashed counterpart's subject is manager-only (#8747), as in the route.
+        const links = await listTicketLinks(found.id, {
+          counterpartFilter: ticketCounterpartScopeCondition(auth),
+          canManage: await canManageAnyTicketComment(auth),
+        });
         return JSON.stringify({ links });
       }
 
