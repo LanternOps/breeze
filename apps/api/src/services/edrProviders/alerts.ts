@@ -26,6 +26,7 @@ import { EVENT_TYPES, publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import { edrProviderLabel } from './providerKeys';
+import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
 /** `alerts.context->>'source'` for every alert this module writes. */
 export const EDR_ALERT_SOURCE = 'edr_provider';
@@ -120,6 +121,8 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
       .where(and(
         eq(edrDetections.connectionId, connectionId),
         isNull(edrDetections.detachedAt),
+        // No EDR alert or event is raised under the holding org (backupProviders precedent).
+        notInHoldingOrgCondition(edrDetections.orgId),
         sql`${edrDetections.status} IN ('open', 'in_progress', 'unknown')`,
         sql`${edrDetections.notifiedSeverity} IS DISTINCT FROM ${edrDetections.severity}`,
       ))
@@ -296,7 +299,11 @@ export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{
       })
       .from(edrEndpoints)
       .leftJoin(devices, eq(devices.id, edrEndpoints.breezeDeviceId))
-      .where(and(eq(edrEndpoints.connectionId, connectionId), isNotNull(edrEndpoints.breezeDeviceId)));
+      .where(and(
+        eq(edrEndpoints.connectionId, connectionId),
+        isNotNull(edrEndpoints.breezeDeviceId),
+        notInHoldingOrgCondition(edrEndpoints.orgId),
+      ));
     const open = await db
       .select({
         id: alerts.id,

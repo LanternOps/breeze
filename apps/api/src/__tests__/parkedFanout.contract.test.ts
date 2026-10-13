@@ -213,6 +213,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
   'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
   'services/restorePointRequest.ts': 'reads the org/OS of the ONE device a claimed command already targets (by id) to re-stamp its restore-point snapshot at delivery; selects no targets',
+  'services/edrProviders/read.ts': 'request-path EDR read model (#8166): joins only the device already linked to a visible EDR row, and resolves the caller\'s allowed-site device ids; selects no targets and dispatches no work',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
   'services/diagnosticAccess/delivery.ts': 'derived: looks up the device a queued diag_file_* command already names, at delivery; command delivery refuses parked devices',
   'services/diagnosticAccess/grants.ts': 'derived: device lookup by an existing grant\'s own device, to re-check approver site access',
