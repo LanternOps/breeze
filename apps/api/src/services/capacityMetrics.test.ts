@@ -35,3 +35,28 @@ describe('capacityMetrics: process CPU', () => {
     expect(src).toMatch(/^import '\.\/capacityMetrics';$/m);
   });
 });
+
+describe('capacityMetrics: owned agent sockets', () => {
+  it('publishes 0 when no source is registered (worker role)', async () => {
+    vi.resetModules();
+    const { metricsRegistry: fresh } = await import('./metricsRegistry');
+    await import('./capacityMetrics');
+    expect(sample(await fresh.metrics(), 'breeze_agent_ws_connections')).toBe(0);
+  });
+
+  it('reads the registered source at scrape time', async () => {
+    vi.resetModules();
+    const { metricsRegistry: fresh } = await import('./metricsRegistry');
+    const { registerConnectedAgentSource } = await import('./capacityMetrics');
+    registerConnectedAgentSource(() => 7);
+    expect(sample(await fresh.metrics(), 'breeze_agent_ws_connections')).toBe(7);
+    registerConnectedAgentSource(() => 3);
+    expect(sample(await fresh.metrics(), 'breeze_agent_ws_connections')).toBe(3);
+  });
+
+  it('routes/agentWs.ts registers its socket count as the source', () => {
+    const src = readFileSync(new URL('../routes/agentWs.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/^import \{ registerConnectedAgentSource \} from '\.\.\/services\/capacityMetrics';$/m);
+    expect(src).toMatch(/^registerConnectedAgentSource\(getConnectedAgentCount\);$/m);
+  });
+});
