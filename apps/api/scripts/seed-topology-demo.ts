@@ -74,6 +74,7 @@ const { sql } = await import('drizzle-orm');
 const { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } = await import('../src/db');
 const { networkContextFullSchema } = await import('@breeze/shared');
 const { resolveTopologyFlags, withResolvedTopologyFlags } = await import('../src/services/topology/flags');
+const { invalidateAgentOrgSettingsCaches } = await import('../src/services/agentOrgSettingsCache');
 const { topologyHeartbeat } = await import('../src/services/topology/heartbeat');
 const { importLegacyTopologySite } = await import('../src/services/topology/legacyImport');
 const { reconcileTopologySite } = await import('../src/services/topology/reconcile');
@@ -136,6 +137,8 @@ async function resetDemo(owner: { userId: string; email: string; partnerId: stri
   log(`erasing previous demo org ${existing.orgId} through cascadeDeleteOrg…`);
   // Stop the API's topology workers from re-dirtying the site mid-erasure.
   await system(() => db.execute(sql`UPDATE organizations SET settings=COALESCE(settings,'{}'::jsonb)-'topologyFeatureFlags' WHERE id=${existing.orgId}::uuid`), 'demo flags off');
+  // W05 (#8144): running API instances drop their cached topology flags for this org now.
+  invalidateAgentOrgSettingsCaches(existing.orgId);
   await retrying('erase demo org', () => cascadeDeleteOrg(existing.orgId, owner.userId, owner.email));
 }
 
@@ -214,6 +217,7 @@ async function seedInventory(partnerId: string, devices: DemoDevice[], assets: D
 async function enableTopology(scope: Scope) {
   await system(() => db.execute(sql`UPDATE organizations
     SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{topologyFeatureFlags}',${JSON.stringify(FLAGS)}::jsonb,true) WHERE id=${scope.orgId}::uuid`), 'demo flags on');
+  invalidateAgentOrgSettingsCaches(scope.orgId);
   for (let pass = 0; pass < 50; pass++) {
     const result = await retrying('legacy import', () => system(
       () => withResolvedTopologyFlags({ orgId: scope.orgId, flags: resolvedFlags }, () => importLegacyTopologySite(scope, { batchSize: 200 })), 'demo legacy import'));
