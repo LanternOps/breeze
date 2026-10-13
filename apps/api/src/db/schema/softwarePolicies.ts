@@ -15,6 +15,7 @@ import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
+import { configPolicyFeatureLinks } from './configurationPolicies';
 
 export const softwarePolicyModeEnum = pgEnum('software_policy_mode', [
   'allowlist',
@@ -118,11 +119,23 @@ export const softwarePolicies = pgTable('software_policies', {
    * never enforces a policy shape that was edited after it was queued.
    */
   approvalGeneration: integer('approval_generation').notNull().default(1),
+  /**
+   * Set only on a policy GENERATED from a `security_agents` config-policy
+   * feature link (#6960). Such a row is read-only to callers (the routes and AI
+   * tools answer 409 and point at the config policy) and resolves through its
+   * own dimension (`resolveDeviceIdsForSoftwarePolicy`). Only the generator
+   * writes it; write schemas never accept it. ON DELETE CASCADE: removing the
+   * link removes the generated policy (never an uninstall).
+   */
+  managedByLinkId: uuid('managed_by_link_id').references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
 }, (table) => ({
   orgIdIdx: index('software_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('software_policies_partner_id_idx').on(table.partnerId),
   targetTypeIdx: index('software_policies_target_type_idx').on(table.targetType),
   activePriorityIdx: index('software_policies_active_priority_idx').on(table.isActive, table.priority),
+  managedByLinkIdx: index('software_policies_managed_by_link_idx')
+    .on(table.managedByLinkId)
+    .where(sql`${table.managedByLinkId} IS NOT NULL`),
 }));
 
 export const softwareComplianceStatus = pgTable('software_compliance_status', {
