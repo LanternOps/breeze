@@ -6,6 +6,7 @@ import {
   mappingToRows,
   parameterBindingKey,
   rowsToMapping,
+  toScriptSubmitValues,
   runtimeParameters,
   scriptSchema,
   SUPPRESS_SEVERITY,
@@ -39,9 +40,12 @@ describe('rowsToMapping / mappingToRows', () => {
     ]);
   });
 
-  it('returns undefined when given no rows', () => {
+  it('returns undefined when the field is absent', () => {
     expect(rowsToMapping(undefined)).toBeUndefined();
-    expect(rowsToMapping([])).toBeUndefined();
+  });
+
+  it('returns null for an emptied list so a save clears the stored mapping (#8590)', () => {
+    expect(rowsToMapping([])).toBeNull();
   });
 
   it('returns an empty array when given no mapping', () => {
@@ -216,5 +220,22 @@ describe('secretsBlockedForRun', () => {
     expect(secretsBlockedForRun({ runAs: 'system', targetSessionId: 3 })).toBe(true);
     expect(secretsBlockedForRun({ runAs: 'system', targetSessionId: 0 })).toBe(true);
     expect(secretsBlockedForRun({ targetSessionId: 1 })).toBe(true);
+  });
+});
+
+describe('toScriptSubmitValues (#8590)', () => {
+  const base = { name: 'S', category: 'Custom', language: 'powershell', content: 'exit 1' } as never;
+
+  it('sends null when every mapping row was removed', () => {
+    const out = toScriptSubmitValues({ ...(base as object), exitCodeSeverityMapping: [] } as never);
+    expect(out.exitCodeSeverityMapping).toBeNull();
+  });
+
+  it('converts remaining rows to the wire mapping', () => {
+    const out = toScriptSubmitValues({
+      ...(base as object),
+      exitCodeSeverityMapping: [{ exitCode: '1', severity: 'high' }],
+    } as never);
+    expect(out.exitCodeSeverityMapping).toEqual({ '1': 'high' });
   });
 });

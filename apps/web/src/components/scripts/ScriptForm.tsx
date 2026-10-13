@@ -39,7 +39,7 @@ import { getJwtClaims } from '@/lib/authScope';
 import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
-  rowsToMapping, parameterBindingKey, parameterSource, stripSecretParameterValueFields,
+  toScriptSubmitValues, parameterBindingKey, parameterSource, stripSecretParameterValueFields,
   type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -490,11 +490,7 @@ export default function ScriptForm({
     void handleSubmit(
       async values => {
         try {
-          const { exitCodeSeverityMapping, ...rest } = values;
-          await onSubmit?.(
-            { ...rest, exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping) },
-            { navigate: false }
-          );
+          await onSubmit?.(toScriptSubmitValues(values), { navigate: false });
           // Baseline on the SAVED snapshot, keeping the live buffer: edits
           // typed while the PUT was in flight stay dirty (so the next run
           // re-saves them and the nav guard still protects them).
@@ -588,12 +584,7 @@ export default function ScriptForm({
         // onSubmit so it's true before navigateTo dispatches the event.
         skipGuardRef.current = true;
         try {
-          const { exitCodeSeverityMapping, ...rest } = values;
-          const submitValues: ScriptSubmitValues = {
-            ...rest,
-            exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping),
-          };
-          await onSubmit?.(submitValues);
+          await onSubmit?.(toScriptSubmitValues(values));
         } catch {
           // Save failed — re-arm the nav guard so user doesn't lose work
           skipGuardRef.current = false;

@@ -426,6 +426,41 @@ describe('scripts routes', () => {
     expect(res.status).toBe(200);
   });
 
+  // Pins the contract the web fix for #8590 relies on: an explicit null clears
+  // the stored mapping (an absent field leaves it untouched).
+  it('stores null when PUT sends exitCodeSeverityMapping: null', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: SCRIPT_ID_1,
+            name: 'Script One',
+            content: 'echo hi',
+            version: 1,
+            isSystem: false,
+            orgId: ORG_ID,
+            exitCodeSeverityMapping: { '1': 'high' }
+          }])
+        })
+      })
+    } as any);
+    const set = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, exitCodeSeverityMapping: null, version: 1 }])
+      })
+    });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ exitCodeSeverityMapping: null })
+    });
+
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ exitCodeSeverityMapping: null }));
+  });
+
   it('should update a script and return updated record', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({

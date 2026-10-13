@@ -354,6 +354,31 @@ describe('ScriptForm unknown-variable notice', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
   });
 
+  it('builds both save payloads (Save and the pre-test-run save) with toScriptSubmitValues (#8590)', () => {
+    expect(scriptFormSource.match(/onSubmit\?\.\(toScriptSubmitValues\(values\)/g)).toHaveLength(2);
+    expect(scriptFormSource).not.toMatch(/rowsToMapping\(/);
+  });
+
+  it('sends a null exit-code mapping when every row is removed, so the save clears it (#8590)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        onSubmit={onSubmit}
+        defaultValues={{
+          ...draft,
+          content: 'exit 1',
+          exitCodeSeverityMapping: [{ exitCode: '1', severity: 'high' }],
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTitle('Remove mapping'));
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0].exitCodeSeverityMapping).toBeNull();
+  });
+
   it('does not warn on ${{var.x}} or on a {{org.name}} token from another namespace', async () => {
     render(
       <ScriptForm

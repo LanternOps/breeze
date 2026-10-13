@@ -244,17 +244,30 @@ export function stripSecretParameterValueFields<T>(values: T): T {
 export type ExitCodeSeverityMapping = Record<string, Severity | null>;
 
 export type ScriptSubmitValues = Omit<ScriptFormValues, 'exitCodeSeverityMapping'> & {
-  exitCodeSeverityMapping?: ExitCodeSeverityMapping;
+  // null clears a saved mapping; the update route skips an absent field (#8590).
+  exitCodeSeverityMapping?: ExitCodeSeverityMapping | null;
   availability?: 'org' | 'partner';
   orgId?: string | null;
 };
 
-export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCodeSeverityMapping | undefined {
-  if (!rows || rows.length === 0) return undefined;
+export function rowsToMapping(
+  rows: ExitCodeSeverityRow[] | undefined
+): ExitCodeSeverityMapping | null | undefined {
+  if (!rows) return undefined;
+  // An emptied list is sent as null so the update route clears the stored
+  // mapping. Returning undefined dropped the field and kept the old rows (#8590).
+  if (rows.length === 0) return null;
   return rows.reduce<ExitCodeSeverityMapping>((acc, { exitCode, severity }) => {
     acc[exitCode] = severity === SUPPRESS_SEVERITY ? null : severity;
     return acc;
   }, {});
+}
+
+// Form values -> submit payload. Shared by the Save button and the save that
+// runs before a test run, so both send the same mapping (#8590).
+export function toScriptSubmitValues(values: ScriptFormValues): ScriptSubmitValues {
+  const { exitCodeSeverityMapping, ...rest } = values;
+  return { ...rest, exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping) };
 }
 
 export function mappingToRows(mapping: ExitCodeSeverityMapping | null | undefined): ExitCodeSeverityRow[] {
