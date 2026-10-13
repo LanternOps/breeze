@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
 
 const posture = vi.hoisted(() => ({ trend: vi.fn() }));
 const catalog = vi.hoisted(() => ({ lookup: vi.fn() }));
+const edrFlag = vi.hoisted(() => ({ enabled: vi.fn() }));
 
 vi.mock('../../db', () => ({
   db: {
@@ -52,6 +53,11 @@ vi.mock('../securityPosture', () => ({
   getSecurityPostureTrend: posture.trend,
 }));
 
+vi.mock('./edrVisibility', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./edrVisibility')>()),
+  isEdrVisibilityEnabled: edrFlag.enabled,
+}));
+
 vi.mock('./vulnerabilityCatalog', () => ({
   vulnerabilitySeverityForFindings: catalog.lookup,
 }));
@@ -84,6 +90,7 @@ describe('dashboard security tiles', () => {
     state.selects.length = 0;
     posture.trend.mockResolvedValue([]);
     catalog.lookup.mockResolvedValue(new Map());
+    edrFlag.enabled.mockResolvedValue(false);
   });
 
   it('returns the latest score, PDF band, 30-day delta, and stale status', async () => {
@@ -196,6 +203,7 @@ describe('securityReadModel', () => {
     state.selects.length = 0;
     posture.trend.mockResolvedValue([]);
     catalog.lookup.mockResolvedValue(new Map());
+    edrFlag.enabled.mockResolvedValue(false);
   });
 
   it('returns the canonical score, threat-event, and vulnerability fields', async () => {
@@ -397,5 +405,159 @@ describe('securityReadModel', () => {
       data: [],
       pagination: { page: 2, limit: 25, total: 25 },
     });
+  });
+});
+
+// EDR provider framework W02 (#8166): strict enableEdrVisibility flag, vendor-neutral leg.
+describe('EDR leg of the portal security read model', () => {
+  const GENERIC_LABEL = 'Managed endpoint protection';
+  const overviewArgs = { days: 30, timezone: 'UTC', now: NOW };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.rows.length = 0;
+    state.wheres.length = 0;
+    state.joins.length = 0;
+    state.orderBys.length = 0;
+    state.selects.length = 0;
+    posture.trend.mockResolvedValue([]);
+    catalog.lookup.mockResolvedValue(new Map());
+    edrFlag.enabled.mockResolvedValue(false);
+  });
+
+  const baseOverviewRows = () => [
+    [{ detectedAt: new Date('2026-08-31T00:00:00Z'), resolvedAt: null }],
+    [{ detectedAt: new Date('2026-08-30T00:00:00Z'), resolvedAt: new Date('2026-09-01T00:00:00Z') }],
+    [{ detectedAt: new Date('2026-08-29T00:00:00Z'), resolvedAt: null }],
+    [{ vulnerabilityId: 'v-1', detectedAt: new Date('2026-08-28T00:00:00Z') }],
+  ];
+  const edrDetectionRows = () => [
+    { detectedAt: new Date('2026-08-31T00:00:00Z'), resolvedAt: new Date('2026-09-01T00:00:00Z'), provider: 'bitdefender', title: 'GravityZone threat' },
+    { detectedAt: new Date('2026-08-31T01:00:00Z'), resolvedAt: null, provider: 'bitdefender', title: 'GravityZone threat' },
+  ];
+
+  it('flag off: overview is byte-identical with and without EDR rows, and runs no EDR query', async () => {
+    state.rows.push(...baseOverviewRows());
+    const without = await securityOverview(ORG_ID, overviewArgs);
+    const selectsWithout = state.selects.length;
+
+    state.rows.length = 0;
+    state.selects.length = 0;
+    state.rows.push(...baseOverviewRows(), edrDetectionRows());
+    const withEdrRows = await securityOverview(ORG_ID, overviewArgs);
+
+    expect(JSON.stringify(withEdrRows)).toBe(JSON.stringify(without));
+    expect(state.selects.length).toBe(selectsWithout);
+    expect(JSON.stringify(withEdrRows)).not.toContain('"edr"');
+  });
+
+  it('flag off: an org with ONLY EDR rows is still no_data', async () => {
+    state.rows.push([], [], [], [], edrDetectionRows());
+    const result = await securityOverview(ORG_ID, overviewArgs);
+    expect(result.dataStatus).toBe('no_data');
+  });
+
+  it('flag on: counts edr detections per week, keeps the vendor out of the DTO, org-scopes and excludes tombstones', async () => {
+    edrFlag.enabled.mockResolvedValue(true);
+    state.rows.push(...baseOverviewRows(), edrDetectionRows());
+
+    const result = await securityOverview(ORG_ID, overviewArgs);
+
+    const detected = result.threatEvents.weeks.reduce((n, w) => n + (w.detectedBySource.edr ?? 0), 0);
+    const resolved = result.threatEvents.weeks.reduce((n, w) => n + (w.resolvedBySource.edr ?? 0), 0);
+    expect(detected).toBe(2);
+    expect(resolved).toBe(1);
+    for (const week of result.threatEvents.weeks) {
+      expect(week.detectedBySource.edr).toBeTypeOf('number');
+      expect(week.resolvedBySource.edr).toBeTypeOf('number');
+    }
+    // totals include the edr events (detected = sum of sources)
+    expect(result.threatEvents.weeks.reduce((n, w) => n + w.detected, 0)).toBe(1 + 1 + 1 + 2);
+
+    const json = JSON.stringify(result);
+    expect(json).not.toMatch(/bitdefender/i);
+    expect(json).not.toMatch(/gravityzone/i);
+
+    const edrWhere = compiledWheres().find(({ sql }) => sql.includes('"edr_detections"'));
+    expect(edrWhere).toBeDefined();
+    expect(edrWhere!.sql).toContain('"edr_detections"."org_id" = $');
+    expect(edrWhere!.params).toContain(ORG_ID);
+    expect(edrWhere!.sql).toMatch(/"edr_detections"\."detached_at" is null/i);
+  });
+
+  it('flag on: EDR-only data makes the overview dataStatus ok', async () => {
+    edrFlag.enabled.mockResolvedValue(true);
+    state.rows.push([], [], [], [], edrDetectionRows());
+    const result = await securityOverview(ORG_ID, overviewArgs);
+    expect(result.dataStatus).toBe('ok');
+  });
+
+  it('tile, flag off: no EDR column is selected and a stray hasEdrEndpoint is ignored', async () => {
+    state.rows.push([{
+      id: 'd-1', realTimeProtection: null, provider: null,
+      hasS1Agent: false, hasHuntressAgent: false, hasEdrEndpoint: true,
+    }]);
+    const tile = await devicesProtectedTile(ORG_ID, NOW);
+    expect(tile).toMatchObject({ protected: 0, unprotected: 0, unknown: 1 });
+    expect(Object.keys(state.selects[0]!)).not.toContain('hasEdrEndpoint');
+  });
+
+  it('tile, flag on: healthy+online linked endpoint is protected; predicate is org-scoped, healthy AND online', async () => {
+    edrFlag.enabled.mockResolvedValue(true);
+    state.rows.push([
+      { id: 'd-edr', realTimeProtection: null, provider: null, hasS1Agent: false, hasHuntressAgent: false, hasEdrEndpoint: true },
+      { id: 'd-bad', realTimeProtection: null, provider: null, hasS1Agent: false, hasHuntressAgent: false, hasEdrEndpoint: false },
+    ]);
+
+    const tile = await devicesProtectedTile(ORG_ID, NOW);
+    expect(tile).toMatchObject({ protected: 1, unknown: 1, unprotected: 0, total: 2 });
+
+    const col = compiledSelectColumn(0, 'hasEdrEndpoint');
+    expect(col.sql).toContain('edr_endpoints');
+    expect(col.sql).toContain('e.org_id = $');
+    expect(col.params).toContain(ORG_ID);
+    expect(col.sql).toContain('e.breeze_device_id = "devices"."id"');
+    expect(col.sql).toContain("e.health = 'healthy'");
+    expect(col.sql).toContain('e.online is true');
+  });
+
+  const pageRow = (overrides: Record<string, unknown>) => ({
+    id: 'd-1', hostname: 'host-1', displayName: null, provider: null, avProducts: null,
+    realTimeProtection: null, definitionsDate: null, encryptionStatus: null, firewallEnabled: null,
+    securityUpdatedAt: null, hasS1Agent: false, hasHuntressAgent: false, pendingCriticalPatches: 0,
+    ...overrides,
+  });
+
+  it('devices page, flag off: no generic label, no EDR protection, no EDR columns', async () => {
+    state.rows.push([{ count: 1 }], [pageRow({ hasEdrEndpoint: true, hasEdrLinked: true })]);
+    const page = await securityDevicesPage(ORG_ID, { page: 1, limit: 25, timezone: 'UTC', now: NOW });
+    expect(page.data[0]).toMatchObject({ protection: 'unknown', avProducts: [] });
+    expect(Object.keys(state.selects[1]!)).not.toContain('hasEdrEndpoint');
+    expect(JSON.stringify(page)).not.toContain(GENERIC_LABEL);
+  });
+
+  it('devices page, flag on: protected + generic label only, never vendor/provider/product names', async () => {
+    edrFlag.enabled.mockResolvedValue(true);
+    state.rows.push([{ count: 2 }], [
+      pageRow({ id: 'd-1', hasEdrEndpoint: true, hasEdrLinked: true, edrProvider: 'bitdefender', edrProduct: 'GravityZone' }),
+      pageRow({ id: 'd-2', hasEdrEndpoint: false, hasEdrLinked: true }),
+    ]);
+    const page = await securityDevicesPage(ORG_ID, { page: 1, limit: 25, timezone: 'UTC', now: NOW });
+
+    expect(page.data[0]).toMatchObject({ id: 'd-1', protection: 'protected', avProducts: [GENERIC_LABEL] });
+    // linked but unhealthy/offline: label shown, never upgraded to protected
+    expect(page.data[1]).toMatchObject({ id: 'd-2', protection: 'unknown', avProducts: [GENERIC_LABEL] });
+    const json = JSON.stringify(page);
+    expect(json).not.toMatch(/bitdefender/i);
+    expect(json).not.toMatch(/gravityzone/i);
+
+    const col = compiledSelectColumn(1, 'hasEdrEndpoint');
+    expect(col.sql).toContain('e.org_id = $');
+    expect(col.params).toContain(ORG_ID);
+    expect(col.sql).toContain("e.health = 'healthy'");
+    expect(col.sql).toContain('e.online is true');
+    const linked = compiledSelectColumn(1, 'hasEdrLinked');
+    expect(linked.sql).toContain('e.org_id = $');
+    expect(linked.params).toContain(ORG_ID);
   });
 });

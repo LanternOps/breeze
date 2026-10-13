@@ -830,6 +830,8 @@ export interface BrandingConfig {
   enablePerformanceMetrics?: boolean;
   enableSoftwareInventory?: boolean;
   enableNetworkVisibility?: boolean;
+  /** EDR framework W02 (#8166): MSP turned managed endpoint protection on for this org. */
+  enableEdrVisibility?: boolean;
   /** Block hours W04 (#8179): MSP turned the Support hours card on for this org. */
   enableHourBlock?: boolean;
   /** Visibility W05 (#7735): MSP turned sensitive per-host patch detail on for this org. */

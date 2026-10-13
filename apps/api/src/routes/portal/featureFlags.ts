@@ -147,6 +147,14 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalGateFlag,{ error: string; code:
     error: 'Vulnerability detail is not enabled for this portal',
     code: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
   },
+  // EDR provider framework W02 (#8166). No portal route is mounted behind this
+  // gate: it controls whether EDR state feeds the security read model. The
+  // entry exists so the flag is a registered strict portal feature and the
+  // portal knows the code (visibilityGate.ts parity).
+  enableEdrVisibility: {
+    error: 'Managed endpoint protection is not enabled for this portal',
+    code: 'PORTAL_EDR_VISIBILITY_DISABLED',
+  },
   enableHourBlock: {
     error: 'Support hours are not enabled for this portal',
     code: 'PORTAL_HOUR_BLOCK_DISABLED',

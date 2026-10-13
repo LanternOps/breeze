@@ -130,4 +130,32 @@ describe('classifyDeviceProtection', () => {
         .toBe(reportBucket);
     },
   );
+
+  // EDR provider framework W02 (#8166). The read model only passes
+  // hasEdrEndpoint=true for a healthy + online linked endpoint (SQL predicate,
+  // asserted in securityReadModel.test.ts); unhealthy/degraded/unknown rows
+  // arrive as false and must fall through to the existing logic.
+  it.each([
+    ['healthy+online EDR endpoint, no status row', null, true, 'protected'],
+    ['healthy+online EDR endpoint beats RTP off', status({ realTimeProtection: false }), true, 'protected'],
+    ['healthy+online EDR endpoint beats a null RTP reading', status({ realTimeProtection: null }), true, 'protected'],
+    ['EDR endpoint not healthy/online (false) + no status row stays unknown', null, false, 'unknown'],
+    ['EDR endpoint not healthy/online (false) + RTP off stays unprotected', status({ realTimeProtection: false }), false, 'unprotected'],
+    ['EDR endpoint not healthy/online (false) + Defender RTP on stays protected via native', status(), false, 'protected'],
+  ] as const)('EDR: %s', (_, securityStatus, hasEdrEndpoint, expected) => {
+    expect(classifyDeviceProtection({
+      securityStatus,
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+      hasEdrEndpoint,
+    })).toBe(expected);
+  });
+
+  it('EDR: an omitted hasEdrEndpoint behaves exactly like false (other callers unchanged)', () => {
+    expect(classifyDeviceProtection({
+      securityStatus: null,
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+    })).toBe('unknown');
+  });
 });

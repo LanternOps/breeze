@@ -84,6 +84,7 @@ describe('GET /branding (authenticated)', () => {
       enableHourBlock: true,
       enablePatchDetail: true,
       enableVulnerabilityDetail: true,
+      enableEdrVisibility: true,
     }];
 
     const response = await authenticatedApp.request('/branding');
@@ -106,6 +107,7 @@ describe('GET /branding (authenticated)', () => {
         enableHourBlock: true,
         enablePatchDetail: true,
         enableVulnerabilityDetail: true,
+        enableEdrVisibility: true,
       },
     });
 
@@ -136,6 +138,7 @@ describe('GET /branding (authenticated)', () => {
         'enableHourBlock',
         'enablePatchDetail',
         'enableVulnerabilityDetail',
+        'enableEdrVisibility',
       ]),
     );
   });
@@ -174,6 +177,7 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableHourBlock');
     expect(body).not.toHaveProperty('enablePatchDetail');
     expect(body).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body).not.toHaveProperty('enableEdrVisibility');
   });
 
   it('applies private cache headers scoped to the authenticated viewer', async () => {
@@ -246,6 +250,7 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableHourBlock');
     expect(body.branding).not.toHaveProperty('enablePatchDetail');
     expect(body.branding).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body.branding).not.toHaveProperty('enableEdrVisibility');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
     // Same reasoning as the authenticated case: the mock ignores the
@@ -270,6 +275,7 @@ describe('GET /branding/:domain (public)', () => {
       'enableHourBlock',
       'enablePatchDetail',
       'enableVulnerabilityDetail',
+      'enableEdrVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
     }

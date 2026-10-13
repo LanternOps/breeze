@@ -279,6 +279,10 @@ describe('updatePortalSettingsSchema W04 flags', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableVulnerabilityDetail: true }).success).toBe(true);
     expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enableVulnerabilityDetail');
   });
+  it.each([true, false])('accepts the strict EDR visibility flag=%s and keeps it in "Enable all"', (enableEdrVisibility) => {
+    expect(updatePortalSettingsSchema.parse({ enableEdrVisibility })).toEqual({ enableEdrVisibility });
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableEdrVisibility');
+  });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);
   });

@@ -129,6 +129,9 @@ export const updatePortalSettingsSchema = z.object({
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
   enableNetworkAlerts: z.boolean().optional(),
+  // EDR provider framework W02 (#8166): managed endpoint protection, fail closed.
+  // Strict but NOT sensitive: "Enable all" sets it.
+  enableEdrVisibility: z.boolean().optional(),
   // Block hours W04 (#8179): fail closed, default false. NOT a visibility
   // flag ("Enable all" never sets it).
   enableHourBlock: z.boolean().optional(),

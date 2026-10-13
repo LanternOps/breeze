@@ -122,6 +122,7 @@ brandingRoutes.get('/branding', async (c) => {
       enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
       enableSoftwareInventory: portalBranding.enableSoftwareInventory,
       enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+      enableEdrVisibility: portalBranding.enableEdrVisibility,
       enableHourBlock: portalBranding.enableHourBlock,
       enablePatchDetail: portalBranding.enablePatchDetail,
       enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail
