@@ -85,6 +85,16 @@ vi.mock('../services/automationReferenceAuthorization', () => ({
   resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
 }));
 
+// #8598 — target-shape validation has its own unit suite
+// (services/automationTargetValidation.test.ts); here it is a seam the
+// create/update routes must call, defaulting to "valid".
+const { validateAutomationTargetConditionsMock } = vi.hoisted(() => ({
+  validateAutomationTargetConditionsMock: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock('../services/automationTargetValidation', () => ({
+  validateAutomationTargetConditions: validateAutomationTargetConditionsMock,
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -282,6 +292,7 @@ describe('automations routes', () => {
 	      unbounded: false,
 	    } as any);
 	    projectAutomationRunsToSitesMock.mockImplementation(async (runs: unknown[]) => runs);
+	    validateAutomationTargetConditionsMock.mockImplementation(async () => ({ ok: true }));
 	    scanProjectedAutomationRunsMock.mockResolvedValue({
 	      rows: [], total: 0, statusCounts: { completed: 0, failed: 0, partial: 0 },
 	    });
@@ -2946,5 +2957,133 @@ describe('automations routes — POST /runs/:runId/cancel (#3525 W05)', () => {
     const res = await post({ graceSeconds: 999 });
     expect(res.status).toBe(400);
     expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('automations routes — target validation on write (#8598)', () => {
+  let app: Hono;
+  const G1 = '99999999-9999-4999-8999-999999999991';
+  const AUTOMATION_ID = '11111111-1111-4111-8111-111111111111';
+  const invalidGroup = {
+    ok: false,
+    code: 'INVALID_TARGET',
+    error: `Device group(s) not found in this automation's organization: ${G1}`,
+    groupIds: [G1],
+  };
+
+  const orgAutomation = {
+    id: AUTOMATION_ID,
+    name: 'Automation One',
+    orgId: 'org-123',
+    partnerId: null,
+    enabled: true,
+    trigger: { type: 'manual' },
+    conditions: { type: 'all' },
+    actions: [],
+  };
+
+  function mockSelectAutomationOnce(row: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([row]) }),
+      }),
+    } as any);
+  }
+
+  const send = (method: string, path: string, body: unknown) => app.request(path, {
+    method,
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+    body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.permissions = undefined;
+    mockState.auth = undefined;
+    validateAutomationTargetConditionsMock.mockImplementation(async () => ({ ok: true }));
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+    app = new Hono();
+    app.route('/automations', automationRoutes);
+  });
+
+  it('create validates the conditions against the resolved owner and rejects with 400 before writing', async () => {
+    validateAutomationTargetConditionsMock.mockResolvedValueOnce(invalidGroup);
+
+    const res = await send('POST', '/automations', {
+      name: 'Group target',
+      trigger: { type: 'manual' },
+      conditions: { type: 'groups', groupIds: [G1] },
+      actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: invalidGroup.error, code: 'INVALID_TARGET', groupIds: [G1] });
+    expect(validateAutomationTargetConditionsMock).toHaveBeenCalledWith({
+      owner: { orgId: 'org-123', partnerId: null },
+      conditions: { type: 'groups', groupIds: [G1] },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(checkAutomationTargetsWithinSiteScope).not.toHaveBeenCalled();
+  });
+
+  it('create passes a partner-wide owner to the validator', async () => {
+    mockState.auth = {
+      user: { id: 'user-123', email: 'admin@example.com', name: 'Partner Admin' },
+      scope: 'partner',
+      partnerId: 'partner-1',
+      partnerOrgAccess: 'all',
+      orgId: null,
+      token: { sub: 'user-123' },
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123',
+    };
+    validateAutomationTargetConditionsMock.mockResolvedValueOnce({
+      ok: false, code: 'INVALID_TARGET', error: 'Partner-wide automations cannot target specific device groups',
+    });
+
+    const res = await send('POST', '/automations', {
+      ownerScope: 'partner',
+      name: 'Partner group target',
+      trigger: { type: 'manual' },
+      conditions: { type: 'groups', groupIds: [G1] },
+      actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+    });
+
+    expect(res.status).toBe(400);
+    expect(validateAutomationTargetConditionsMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: { orgId: null, partnerId: 'partner-1' },
+    }));
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(['PATCH', 'PUT'])('%s validates new conditions against the stored owner', async (method) => {
+    mockSelectAutomationOnce(orgAutomation);
+    validateAutomationTargetConditionsMock.mockResolvedValueOnce(invalidGroup);
+
+    const res = await send(method, `/automations/${AUTOMATION_ID}`, { conditions: { type: 'groups', groupIds: [G1] } });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'INVALID_TARGET', groupIds: [G1] });
+    expect(validateAutomationTargetConditionsMock).toHaveBeenCalledWith({
+      owner: { orgId: 'org-123', partnerId: null },
+      conditions: { type: 'groups', groupIds: [G1] },
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('an update that omits conditions skips target validation', async () => {
+    mockSelectAutomationOnce(orgAutomation);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...orgAutomation, enabled: false }]),
+        }),
+      }),
+    } as any);
+
+    const res = await send('PATCH', `/automations/${AUTOMATION_ID}`, { enabled: false });
+
+    expect(res.status).toBe(200);
+    expect(validateAutomationTargetConditionsMock).not.toHaveBeenCalled();
   });
 });

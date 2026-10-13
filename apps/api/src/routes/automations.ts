@@ -39,6 +39,10 @@ import {
   resolveAutomationReferencesForOwner,
   withWebhookDefaults,
 } from '../services/automationRuntime';
+import {
+  validateAutomationTargetConditions,
+  type AutomationTargetValidationResult,
+} from '../services/automationTargetValidation';
 import { AutomationReferenceAuthorizationError } from '../services/automationReferenceAuthorization';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import {
@@ -294,6 +298,18 @@ const requireValidRunId = requireUuidParam('runId', 'Automation run not found');
  * Unrestricted callers always pass, with an empty `targetDeviceIds` (the
  * dispatch path resolves its own target set in that case, same as before).
  */
+function automationTargetInvalid(
+  c: Context,
+  result: Extract<AutomationTargetValidationResult, { ok: false }>,
+): Response {
+  return c.json({
+    error: result.error,
+    code: result.code,
+    ...(result.groupIds ? { groupIds: result.groupIds } : {}),
+    ...(result.deviceIds ? { deviceIds: result.deviceIds } : {}),
+  }, 400);
+}
+
 async function enforceAutomationSiteScope(
   c: Context,
   automation: Parameters<typeof checkAutomationTargetsWithinSiteScope>[0],
@@ -1327,6 +1343,13 @@ automationRoutes.post(
       return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
     }
 
+    // #8598 — the target shape and every group/device id it names, checked
+    // against the resolved owner before anything is written.
+    const targetCheck = await validateAutomationTargetConditions({ owner, conditions: data.conditions });
+    if (!targetCheck.ok) {
+      return automationTargetInvalid(c, targetCheck);
+    }
+
     try {
       const automationId = randomUUID();
       const trigger = withWebhookDefaults(
@@ -1445,6 +1468,18 @@ async function handleUpdateAutomation(c: Context) {
   // partner — administrable only with the partner-wide capability (#2133).
   if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+
+  // #8598 — only when the update replaces the target; ownership never changes
+  // on update, so the stored owner is the one to check against.
+  if (data.conditions !== undefined) {
+    const targetCheck = await validateAutomationTargetConditions({
+      owner: { orgId: automation.orgId, partnerId: automation.partnerId },
+      conditions: data.conditions,
+    });
+    if (!targetCheck.ok) {
+      return automationTargetInvalid(c, targetCheck);
+    }
   }
 
   try {
