@@ -182,6 +182,33 @@ Retries are bounded and persisted across agent restarts. After a failure the age
 
 The agent does nothing when its `auto_update` setting is off, when it is a development build, when the host is not yet enrolled (it waits for enrollment), when the host's init system is unsupported (Linux without systemd), or when the operator opted out with `service install --no-watchdog`. See [Installing the agent](/agents/installation#what-gets-installed) for how to opt out and re-enable.
 
+### Retry timeline
+
+| Attempt | Waits before the next attempt after a failure |
+|---|---|
+| 1 | about 5 minutes |
+| 2 | about 15 minutes |
+| 3 | about 45 minutes |
+| 4 | about 2 hours 15 minutes |
+| 5–7 | about 6 hours |
+| 8 | gives up; one probe attempt per day afterwards |
+| Signature, checksum or network-policy failure (any attempt) | gives up at once; one probe attempt per week afterwards |
+
+The first attempt happens on the first heartbeat after enrollment in which the server offers a watchdog version. All waits have ±20% jitter.
+
+### Troubleshooting a watchdog that is not installed
+
+The device's **Info** tab shows a banner when the watchdog could not be installed:
+
+- **Gave up**: the attempts above are used up, or a failure that retrying cannot fix occurred. The banner names the reason (for example a failed download, a signature or integrity check, or a failed install command) and the date it started.
+- **Not supported**: the host cannot run the watchdog service, for example Linux without systemd.
+
+A host that is still retrying, that opted out with `--no-watchdog`, or whose `auto_update` setting is off shows no banner. For those, check the agent log or the device's diagnostic logs.
+
+To retry right away, run `service install --watchdog` on the host (`sudo breeze-agent service install --watchdog` on Linux and macOS, `breeze-agent.exe service install --watchdog` on Windows). It clears any opt-out, resets the retry state, and installs the watchdog now. Fix the cause first when the reason is a signature, integrity or network-policy failure, otherwise the next attempt fails the same way. Deleting `watchdog-install.state` from the agent's config directory also resets the retry budget without installing anything.
+
+The banner clears when the agent stops reporting the failure. `service install --watchdog` restarts an enrolled agent, so the banner clears after its next heartbeat. If you install the watchdog another way (for example `breeze-watchdog service install`), restart the agent service afterwards to clear the banner.
+
 ---
 
 ## Watchdog Logs API
