@@ -1658,20 +1658,19 @@ describe('portal ticket ownership — compiled WHERE at every read site', () => 
   });
 });
 
-// ── ticketType is staff-only this wave (#7900 W01) ───────────────────────────
-// The portal neither accepts nor exposes tickets.ticket_type. These pin the
-// CURRENT behaviour: create strips the key (plain z.object, never .strict()) and
-// forwards explicit fields only; list/detail select explicit columns and map rows
-// explicitly. `tickets` in the schema mock is the real table, so a regression
-// that selects tickets.ticketType shows up as a `ticketType` key on the select.
+// ── ticketType: read-only on the portal (#8596, #7900 W04) ───────────────────
+// The portal SHOWS the type (badge) but never lets the customer choose it:
+// create strips the key (plain z.object, never .strict()) and forwards explicit
+// fields only, so a portal ticket always gets the service default. `tickets` in
+// the schema mock is the real table, so the select projection is the real one.
 
-describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
+describe('portal ticketType is read-only (#8596)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('POST /tickets: body ticketType is not a 400 and is not forwarded to createTicket', async () => {
-    createTicketMock.mockResolvedValue(CREATED_TICKET);
+    createTicketMock.mockResolvedValue({ ...CREATED_TICKET, ticketType: 'incident' });
     const res = await buildPostApp().request('/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1682,10 +1681,12 @@ describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
     expect(createTicketMock).toHaveBeenCalledTimes(1);
     expect(createTicketMock.mock.calls[0]![0]).not.toHaveProperty('ticketType');
     const body = await res.json();
-    expect(body.ticket).not.toHaveProperty('ticketType');
+    // The response reports what was stored (the service default), never the
+    // value the customer sent.
+    expect(body.ticket.ticketType).toBe('incident');
   });
 
-  it('GET /tickets: select omits ticketType and response rows do not carry it', async () => {
+  it('GET /tickets: selects ticketType and returns it on each row', async () => {
     dbSelectMock.mockImplementation(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => Promise.resolve([{ count: 1 }])),
@@ -1704,16 +1705,16 @@ describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
     const res = await buildApp().request('/tickets', { headers: { Authorization: 'Bearer portal-token' } });
 
     expect(res.status).toBe(200);
-    const selectArgs = dbSelectMock.mock.calls.map((c) => c[0] as Record<string, unknown>);
-    expect(selectArgs.length).toBeGreaterThanOrEqual(2);
-    for (const cols of selectArgs) expect(cols).not.toHaveProperty('ticketType');
+    const listSelect = dbSelectMock.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((cols) => cols && 'subject' in cols);
+    expect(listSelect).toHaveProperty('ticketType');
     const body = await res.json();
     expect(body.data).toHaveLength(1);
-    expect(body.data[0]).not.toHaveProperty('ticketType');
-    expect(JSON.stringify(body)).not.toContain('problem');
+    expect(body.data[0].ticketType).toBe('problem');
   });
 
-  it('GET /tickets/:id: select omits ticketType and the response does not carry it', async () => {
+  it('GET /tickets/:id: selects ticketType and returns it on the ticket', async () => {
     let callCount = 0;
     dbSelectMock.mockImplementation(() => {
       callCount++;
@@ -1722,7 +1723,7 @@ describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
           from: vi.fn(() => ({
             leftJoin: vi.fn(() => ({
               where: vi.fn(() => ({
-                limit: vi.fn(() => Promise.resolve([{ ...TICKET_ROW, ticketType: 'problem', statusName: 'New' }]))
+                limit: vi.fn(() => Promise.resolve([{ ...TICKET_ROW, ticketType: 'service_request', statusName: 'New' }]))
               }))
             }))
           }))
@@ -1738,9 +1739,133 @@ describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
     const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
 
     expect(res.status).toBe(200);
-    expect(dbSelectMock.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+    expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('ticketType');
     const body = await res.json();
-    expect(JSON.stringify(body)).not.toContain('ticketType');
-    expect(JSON.stringify(body)).not.toContain('problem');
+    expect(body.ticket.ticketType).toBe('service_request');
+  });
+});
+
+// ── Ticket links never reach the portal (#8596, plan Open Decision 7) ────────
+// A link names ANOTHER ticket (number, subject) that may be internal or owned
+// by a different requester. Until a counterpart-visibility predicate exists,
+// no portal ticket route may carry link data. Two independent pins:
+//   1. structural: a deep walk of every portal ticket route's JSON response
+//      finds no link-shaped key at any depth, and no select projection asks
+//      for one (the mock returns what the route projects PLUS a decoy `links`
+//      value on every row and service result, so a DTO that spreads a row or
+//      a service result leaks it);
+//   2. static: no portal route/read-model module references the links table
+//      or service, so a "helpful" join cannot be added without failing here.
+
+const LINK_KEY = /^(links?|ticketLinks?|ticket_links?|relatedTickets?|linkedTickets?)$/i;
+
+function linkKeyPaths(value: unknown, path = '$'): string[] {
+  if (Array.isArray(value)) return value.flatMap((v, i) => linkKeyPaths(v, `${path}[${i}]`));
+  // Plain objects only: a select projection's leaves are Drizzle columns
+  // (cyclic class instances), and a JSON body has no other kind of object.
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => [
+      ...(LINK_KEY.test(k) ? [`${path}.${k}`] : []),
+      ...linkKeyPaths(v, `${path}.${k}`),
+    ]);
+  }
+  return [];
+}
+
+describe('portal ticket routes never carry ticket-link data (#8596)', () => {
+  const DECOY_LINKS = [{ id: 'l-1', other: { ticketNumber: 'T-SECRET', subject: 'Internal problem' } }];
+
+  /** Every chain method returns the node; awaiting yields one row carrying
+   *  exactly the select's own keys, as Postgres would. A projection that asked
+   *  for link data is caught by the projection test; the decoys below sit on
+   *  the SERVICE results, which the routes could pass through wholesale. */
+  function rigProjectingDb() {
+    const source: Record<string, unknown> = {
+      ...TICKET_ROW, statusName: 'New', ticketType: 'incident', count: 1, partnerId: 'p-1',
+      authorName: 'Tech', authorType: 'technician', senderPortalUserId: null, content: 'reply',
+    };
+    dbSelectMock.mockImplementation((columns?: Record<string, unknown>) => {
+      const row: Record<string, unknown> = {};
+      for (const key of Object.keys(columns ?? source)) row[key] = key in source ? source[key] : null;
+      const node: Record<string, unknown> = {};
+      const passthrough = () => node;
+      Object.assign(node, {
+        from: passthrough, leftJoin: passthrough, innerJoin: passthrough,
+        where: passthrough, orderBy: passthrough, limit: passthrough, offset: passthrough,
+        then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+          Promise.resolve([row]).then(resolve, reject),
+      });
+      return node;
+    });
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: COMMENT_ID, authorName: 'Test User', authorType: 'portal', senderPortalUserId: PORTAL_USER.id,
+          content: 'thanks', createdAt: new Date(),
+        }])),
+      })),
+    }) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rigProjectingDb();
+    createTicketMock.mockResolvedValue({ ...CREATED_TICKET, ticketType: 'incident', links: DECOY_LINKS });
+    listTicketFormsForOrgMock.mockResolvedValue([]);
+    portalCommentMutableMock.mockResolvedValue({ ok: true });
+    editTicketCommentMock.mockResolvedValue({ id: COMMENT_ID, content: 'edited', links: DECOY_LINKS });
+    deleteTicketCommentMock.mockResolvedValue({ id: COMMENT_ID, links: DECOY_LINKS });
+  });
+
+  const AUTH = { Authorization: 'Bearer portal-token' };
+  const JSON_AUTH = { ...AUTH, ...portalJsonHeaders };
+  const routes: Array<[string, (app: ReturnType<typeof buildApp>) => Promise<Response> | Response]> = [
+    ['GET /tickets', (app) => app.request('/tickets', { headers: AUTH })],
+    ['GET /tickets/:id', (app) => app.request(`/tickets/${TICKET_ID}`, { headers: AUTH })],
+    ['POST /tickets', (app) => app.request('/tickets', { method: 'POST', headers: JSON_AUTH, body: JSON.stringify({ subject: 's', description: 'd' }) })],
+    ['POST /tickets/:id/comments', (app) => app.request(`/tickets/${TICKET_ID}/comments`, { method: 'POST', headers: JSON_AUTH, body: JSON.stringify({ content: 'thanks' }) })],
+    ['PATCH /tickets/:id/comments/:commentId', (app) => app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, { method: 'PATCH', headers: JSON_AUTH, body: JSON.stringify({ content: 'edited' }) })],
+    ['DELETE /tickets/:id/comments/:commentId', (app) => app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, { method: 'DELETE', headers: AUTH })],
+    ['GET /tickets/forms', (app) => app.request('/tickets/forms', { headers: AUTH })],
+  ];
+
+  it.each(routes)('%s: no link-shaped key anywhere in the response', async (_name, run) => {
+    const res = await run(buildApp());
+    expect(res.status).toBeLessThan(500);
+    const text = await res.text();
+    const body = text ? JSON.parse(text) : null;
+    expect(linkKeyPaths(body)).toEqual([]);
+    expect(text).not.toContain('T-SECRET');
+  });
+
+  it.each(routes)('%s: no select projection asks for link data', async (_name, run) => {
+    await run(buildApp());
+    for (const call of dbSelectMock.mock.calls) {
+      expect(linkKeyPaths(call[0] ?? {})).toEqual([]);
+    }
+  });
+
+  it('the walker is not vacuous: it finds a nested link key', () => {
+    expect(linkKeyPaths({ ticket: { comments: [{ id: 'c', links: [] }] } })).toEqual(['$.ticket.comments[0].links']);
+  });
+
+  it('no portal route or read-model module references the ticket-links table or service', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const dirs = [here, join(here, '../../services/portal')];
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const dir of dirs) {
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.ts') || name.endsWith('.test.ts')) continue;
+        scanned++;
+        const src = readFileSync(join(dir, name), 'utf8');
+        if (/\bticketLinks\b|ticket_links|ticketLinkService|listTicketLinks/.test(src)) offenders.push(name);
+      }
+    }
+    expect(scanned).toBeGreaterThan(10);
+    expect(offenders).toEqual([]);
   });
 });

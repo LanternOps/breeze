@@ -275,3 +275,20 @@ describe('TicketDetails — column sits against the sheet edge', () => {
     expect(src).not.toMatch(/mx-auto max-w-3xl|max-w-3xl mx-auto/);
   });
 });
+
+describe('TicketDetails — ticket type (#8596)', () => {
+  it('shows the type label in the header', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: 'service_request' })} />);
+    expect(screen.getByTestId('portal-ticket-type').textContent).toBe('Service request');
+  });
+
+  it('renders no type label when the API omits ticketType', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: undefined })} />);
+    expect(screen.queryByTestId('portal-ticket-type')).toBeNull();
+  });
+
+  it('does not render an unknown type value raw at the customer', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: 'mystery' as never })} />);
+    expect(screen.queryByTestId('portal-ticket-type')).toBeNull();
+  });
+});

@@ -13,7 +13,7 @@ import {
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
-import { ticketStatusLabel, ticketStatusTone } from './ticketMarks';
+import { ticketStatusLabel, ticketStatusTone, ticketTypeLabel } from './ticketMarks';
 import { TicketSlaBadge } from './TicketList';
 
 /** Activity copy derived from the ticket's own status. This component only ever
@@ -246,6 +246,7 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
   }
 
   const tone = ticketStatusTone(ticket.status);
+  const typeLabel = ticketTypeLabel(ticket.ticketType);
 
   return (
     <div className="max-w-3xl">
@@ -284,7 +285,15 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
           <h1 className="font-display text-2xl font-semibold leading-tight tracking-tight text-foreground">
             {ticket.subject}
           </h1>
-          <p className="text-figures mt-1 text-sm text-muted-foreground">#{ticket.ticketNumber}</p>
+          <p className="text-figures mt-1 text-sm text-muted-foreground">
+            #{ticket.ticketNumber}
+            {typeLabel && (
+              <>
+                {' · '}
+                <span data-testid="portal-ticket-type">{typeLabel}</span>
+              </>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-4 pt-1.5">
           <StatusMark tone={tone}>

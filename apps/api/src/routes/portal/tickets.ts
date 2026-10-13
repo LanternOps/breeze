@@ -203,6 +203,8 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
       subject: tickets.subject,
       status: tickets.status,
       priority: tickets.priority,
+      // Read-only on the portal (#8596): shown as a badge, never settable here.
+      ticketType: tickets.ticketType,
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt,
       statusName: ticketStatuses.name,
@@ -222,6 +224,7 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
     subject: row.subject,
     status: row.status,
     priority: row.priority,
+    ticketType: row.ticketType,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     statusName: row.statusName,
@@ -294,6 +297,9 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
     description: created.description,
     status: created.status,
     priority: created.priority,
+    // What was stored (the service default): the create schema strips any
+    // ticketType the customer sends, so the portal can never choose it.
+    ticketType: created.ticketType,
     createdAt: created.createdAt,
     updatedAt: created.updatedAt,
   };
@@ -328,6 +334,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       description: tickets.description,
       status: tickets.status,
       priority: tickets.priority,
+      ticketType: tickets.ticketType,
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt,
       statusName: ticketStatuses.name,
@@ -407,6 +414,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     description: ticket.description,
     status: ticket.status,
     priority: ticket.priority,
+    ticketType: ticket.ticketType,
     createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt,
     statusName: ticket.statusName,
