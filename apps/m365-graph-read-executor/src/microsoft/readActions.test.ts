@@ -61,6 +61,7 @@ function createStubGraphClient(options: {
 const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAction> = {
   'm365.user.list': { type: 'm365.user.list' },
   'm365.user.get': { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+  'm365.user.mailboxes': { type: 'm365.user.mailboxes', userId: DEVICE_ID },
   'm365.signins.list': { type: 'm365.signins.list' },
   'm365.intune.device.list': { type: 'm365.intune.device.list' },
   'm365.intune.device.get': { type: 'm365.intune.device.get', deviceId: DEVICE_ID },
@@ -76,6 +77,7 @@ const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAct
 const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
   'm365.user.list': '/users',
   'm365.user.get': `/users/${encodeURIComponent('ada@contoso.com')}`,
+  'm365.user.mailboxes': `/users/${encodeURIComponent(DEVICE_ID)}`,
   'm365.signins.list': '/auditLogs/signIns',
   'm365.intune.device.list': '/deviceManagement/managedDevices',
   'm365.intune.device.get': `/deviceManagement/managedDevices/${encodeURIComponent(DEVICE_ID)}`,
@@ -93,12 +95,22 @@ const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
 // first item into a `resource` result — goes through readCollection.
 const RESOURCE_ACTION_IDS = new Set<M365InteractiveReadActionId>([
   'm365.user.get',
+  'm365.user.mailboxes',
   'm365.intune.device.get',
   'm365.group.get',
   'm365.site.get',
 ]);
 
 describe('executeGraphReadAction — dispatch table', () => {
+  it('m365.user.mailboxes returns exactly the four-field projection, keeping explicit empty aliases (#6354 W03)', async () => {
+    const { client, readResourceCalls } = createStubGraphClient({ resource: {
+      id: DEVICE_ID, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [], displayName: 'Alex', passwordProfile: { password: 'x' },
+    } });
+    expect(await executeGraphReadAction({ type: 'm365.user.mailboxes', userId: DEVICE_ID }, { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW }))
+      .toEqual({ success: true, kind: 'resource', resource: { id: DEVICE_ID, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [] } });
+    expect(readResourceCalls[0]!.select).toEqual(['id', 'userPrincipalName', 'mail', 'proxyAddresses']);
+  });
+
   it.each(M365_INTERACTIVE_READ_ACTION_IDS)('%s calls the fixed path with the full field allowlist as $select', async (actionId) => {
     const { client, readResourceCalls, readCollectionCalls } = createStubGraphClient();
     const action = SAMPLE_ACTIONS[actionId];
