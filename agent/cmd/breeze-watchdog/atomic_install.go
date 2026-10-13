@@ -26,7 +26,7 @@ func installBinaryAtomically(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open source binary: %w", err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }() // read-only handle
 
 	dir := filepath.Dir(dst)
 	staging, err := os.CreateTemp(dir, ".breeze-watchdog-*.new")
@@ -42,11 +42,11 @@ func installBinaryAtomically(src, dst string) error {
 	}()
 
 	if _, err := io.Copy(staging, in); err != nil {
-		staging.Close()
+		_ = staging.Close() // already failing; original error is returned
 		return fmt.Errorf("copy binary bytes: %w", err)
 	}
 	if err := staging.Sync(); err != nil {
-		staging.Close()
+		_ = staging.Close() // already failing; original error is returned
 		return fmt.Errorf("sync staging binary: %w", err)
 	}
 	if err := staging.Close(); err != nil {
@@ -79,11 +79,11 @@ func writeFileAtomically(dst string, data []byte, mode os.FileMode) error {
 	}()
 
 	if _, err := staging.Write(data); err != nil {
-		staging.Close()
+		_ = staging.Close() // already failing; original error is returned
 		return fmt.Errorf("write staging file: %w", err)
 	}
 	if err := staging.Sync(); err != nil {
-		staging.Close()
+		_ = staging.Close() // already failing; original error is returned
 		return fmt.Errorf("sync staging file: %w", err)
 	}
 	if err := staging.Close(); err != nil {

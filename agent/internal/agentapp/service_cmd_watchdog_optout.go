@@ -64,7 +64,7 @@ func applyWatchdogFlags(d watchdogFlagDeps, noWatchdog, watchdog bool) (skip boo
 		if err := d.store.SetOptedOut(true); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(out, "Watchdog opt-out recorded: neither this install nor the running agent will install the watchdog (use --watchdog to re-enable).")
+		_, _ = fmt.Fprintln(out, "Watchdog opt-out recorded: neither this install nor the running agent will install the watchdog (use --watchdog to re-enable).")
 		return true, nil
 	case watchdog:
 		// Best effort: exclude a reconcile running in the agent right now. A
@@ -82,7 +82,7 @@ func applyWatchdogFlags(d watchdogFlagDeps, noWatchdog, watchdog bool) (skip boo
 		return false, nil
 	}
 	if d.store.OptedOut() {
-		fmt.Fprintln(out, "watchdog install skipped: opted out (use --watchdog to re-enable)")
+		_, _ = fmt.Fprintln(out, "watchdog install skipped: opted out (use --watchdog to re-enable)")
 		return true, nil
 	}
 	return false, nil

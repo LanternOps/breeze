@@ -258,7 +258,7 @@ func (h *Heartbeat) ensureMissingWatchdog(e *watchdogEnsureState, version string
 	}
 
 	now := e.now()
-	rec, ok := e.loadDue(now, h.agentVersion, true)
+	_, ok := e.loadDue(now, h.agentVersion, true)
 	if !ok {
 		return
 	}
@@ -308,7 +308,8 @@ func (h *Heartbeat) ensureMissingWatchdog(e *watchdogEnsureState, version string
 		return
 	}
 	now = e.now()
-	if rec, ok = e.loadDue(now, h.agentVersion, false); !ok {
+	rec, ok := e.loadDue(now, h.agentVersion, false)
+	if !ok {
 		return
 	}
 
