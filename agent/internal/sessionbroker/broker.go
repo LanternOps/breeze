@@ -2741,8 +2741,12 @@ func roleIdentityRejection(role ipc.HelperRole, sid string, uid uint32, peerWinS
 	// Unix: watchdog and system-role helpers must run as root. The macOS
 	// desktop helper runs in the GUI user/loginwindow session, so it must
 	// authenticate as user-role and receives only desktop scope. The assist
-	// helper is Windows-only; on Unix it would receive only the inert "assist"
-	// scope, so no identity gate is required here.
+	// helper (Breeze Assist) also runs on macOS/Linux as the console user and
+	// receives assist + consent_ui there, which caller verification (#6354 W02)
+	// relies on. No role gate is needed for it here: it is unprivileged, and
+	// caller_verify binds the answer to the helper's kernel-verified peer UID
+	// against the console user at selection time (caller_verify.go), not to
+	// anything the helper claims.
 	switch {
 	case role == ipc.HelperRoleWatchdog && uid != 0:
 		return "watchdog role requires root identity", true

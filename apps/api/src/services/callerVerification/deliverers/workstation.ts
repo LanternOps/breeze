@@ -6,7 +6,8 @@
  *  - `prepareWorkstationVerification` runs INSIDE `start`'s transaction
  *    (`ports.prepare`). It re-checks the technician-selected device and OS
  *    username against live helper readiness and partner trust, then persists
- *    the `caller_verify` device command and links it to the verification —
+ *    the `caller_verify` device command (through the gated
+ *    `insertQueuedCommandInTransaction` chokepoint) and links it to the verification —
  *    all on the caller's transaction, so a rolled-back start leaves neither.
  *    It never sends anything.
  *
@@ -17,14 +18,16 @@
  *    is only reachable by HTTP polling claims the same row on its next
  *    heartbeat, before `deliverBy` (= the verification's expiry).
  */
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { and, eq, gt } from 'drizzle-orm';
 import { db, assertInTransaction, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import { deviceCommands, devices, organizations } from '../../../db/schema';
 import { callerVerifications as v } from '../../../db/schema/callerVerification';
 import { callerVerificationEnabled } from '../../../config/env';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../partnerTrust.commands';
-import { isParkedDevice } from '../../unassignedPool/deliveryEligibility';
+import { ParkedDeviceCommandRefusedError } from '../../unassignedPool/deliveryEligibility';
+import { insertQueuedCommandInTransaction } from '../../commandQueueInsert';
+import type { CommandQueueTx } from '../../commandQueue';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '../../commandDispatch';
 import { dispatchCommandToAgent } from '../../agentCommandRelay';
 import { captureException } from '../../sentry';
@@ -100,24 +103,31 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
   if (!parsed.success) throw new Invalid('invalid_request', 'Workstation challenge cannot be built from this request');
   const payload: WorkstationCommand = parsed.data;
 
-  // Inserted directly on the caller's transaction. Not through queueCommand:
-  // that module statically reaches the socket registry, which would drag
-  // socket-local dispatch into the global publisher worker's closure. The
-  // checks it would add are made explicitly here: partner trust (above), the
-  // parked-device refusal (below), and created_by is the initiating
-  // technician, a real users row by construction.
-  if (await isParkedDevice(db, device.id)) throw new Invalid('not_found', 'Device not found');
-  const [command] = await db.insert(deviceCommands).values({
-    deviceId: device.id,
-    type: CALLER_VERIFY_COMMAND,
-    targetRole: 'agent',
-    status: 'pending',
-    payload,
-    createdBy: row.initiatedByUserId,
-    submittedOrgId: row.orgId,
-    deliverBy: row.expiresAt,
-  }).returning({ id: deviceCommands.id });
-  if (!command) throw new Error('caller verification command insert returned no row');
+  // Persisted through the gated insert chokepoint on the caller's own
+  // transaction (`db` is the request transaction here — asserted above). Not
+  // through queueCommand: that module statically reaches the socket registry,
+  // which would drag socket-local dispatch into the global publisher worker's
+  // closure; commandQueueInsert is the leaf half that exists for exactly this.
+  // The chokepoint refuses a parked device on the same snapshot (mapped to
+  // not-found, like any device this context cannot act on); partner trust is
+  // checked above; created_by is the initiating technician, a real users row
+  // by construction, so resolveCommandCreatedBy's degrade never applies.
+  let command: { id: string };
+  try {
+    command = await insertQueuedCommandInTransaction(db as unknown as CommandQueueTx, {
+      id: randomUUID(),
+      deviceId: device.id,
+      type: CALLER_VERIFY_COMMAND,
+      targetRole: 'agent',
+      payload,
+      createdBy: row.initiatedByUserId,
+      submittedOrgId: row.orgId,
+      deliverBy: row.expiresAt,
+    });
+  } catch (err) {
+    if (err instanceof ParkedDeviceCommandRefusedError) throw new Invalid('not_found', 'Device not found');
+    throw err;
+  }
   const linked = await db.update(v).set({ agentCommandId: command.id, challengeChoices: choices })
     .where(and(eq(v.id, row.id), eq(v.orgId, row.orgId), eq(v.status, 'pending')))
     .returning({ id: v.id });

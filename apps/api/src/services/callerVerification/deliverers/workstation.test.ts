@@ -7,7 +7,7 @@ const m = vi.hoisted(() => ({
   enabled: true,
   ready: vi.fn(),
   trust: vi.fn(),
-  parked: vi.fn(),
+  insertCommand: vi.fn(),
   claim: vi.fn(),
   release: vi.fn(),
   dispatch: vi.fn(),
@@ -27,14 +27,20 @@ vi.mock('../../partnerTrust.commands', async () => {
   }
   return { TrustDeniedError, assertDeviceExecuteAllowed: m.trust };
 });
-vi.mock('../../unassignedPool/deliveryEligibility', () => ({ isParkedDevice: m.parked }));
+vi.mock('../../unassignedPool/deliveryEligibility', () => {
+  class ParkedDeviceCommandRefusedError extends Error {}
+  return { ParkedDeviceCommandRefusedError };
+});
+vi.mock('../../commandQueueInsert', () => ({ insertQueuedCommandInTransaction: m.insertCommand }));
 vi.mock('../../commandDispatch', () => ({ claimPendingCommandForDelivery: m.claim, releaseClaimedCommandDelivery: m.release }));
 vi.mock('../../agentCommandRelay', () => ({ dispatchCommandToAgent: m.dispatch }));
 
+import { db } from '../../../db';
 import { makeDbMock } from '../testing';
 import { deliverWorkstation, prepareWorkstationVerification } from './workstation';
 import { CallerVerificationValidationError } from '../errors';
 import { TrustDeniedError } from '../../partnerTrust.commands';
+import { ParkedDeviceCommandRefusedError } from '../../unassignedPool/deliveryEligibility';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const CMD = '22222222-2222-4222-8222-222222222222';
@@ -47,31 +53,35 @@ const row = {
 } as any;
 
 let state: ReturnType<typeof makeDbMock>;
-const inserted = () => state.calls.filter((c) => c.name === 'values').map((c) => c.args[0] as Record<string, any>);
+const inserted = () => m.insertCommand.mock.calls.map((c) => c[1] as Record<string, any>);
 beforeEach(() => {
   vi.clearAllMocks();
   m.contexts = []; m.inTx = true; m.enabled = true;
   state = makeDbMock(); m.db = state.db;
   m.ready.mockImplementation(async (_org: string, ids: string[]) => new Map(ids.map((id) => [id, ['alex']])));
   m.trust.mockResolvedValue(undefined);
-  m.parked.mockResolvedValue(false);
+  m.insertCommand.mockImplementation(async () => ({ id: CMD }));
 });
 
 describe('prepareWorkstationVerification', () => {
   function arrangeHappy() {
-    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: CMD }], [{ id: ID }]);
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: ID }]);
   }
 
   it('persists the command and links it on the caller transaction only', async () => {
     arrangeHappy();
     await prepareWorkstationVerification(row);
     expect(m.contexts).toEqual([]); // no detached context inside start
-    expect(inserted()).toHaveLength(1);
+    // Persisted through the gated insert chokepoint on the caller's own
+    // transaction (the request-scoped db), never a hand-rolled insert.
+    expect(m.insertCommand).toHaveBeenCalledTimes(1);
+    expect(m.insertCommand.mock.calls[0]![0]).toBe(db);
     const values = inserted()[0]!;
     expect(values).toMatchObject({
-      deviceId: 'device-1', type: 'caller_verify', targetRole: 'agent', status: 'pending', createdBy: 'user-1',
+      deviceId: 'device-1', type: 'caller_verify', targetRole: 'agent', createdBy: 'user-1',
       submittedOrgId: 'org-1', deliverBy: row.expiresAt,
     });
+    expect(values.id).toMatch(/^[0-9a-f-]{36}$/);
     const payload = values.payload;
     expect(payload).toMatchObject({
       verificationId: ID, username: 'alex', technicianName: 'Sam', orgName: 'Acme',
@@ -150,15 +160,15 @@ describe('prepareWorkstationVerification', () => {
   });
 
   it('fails the start when the verification could not be linked', async () => {
-    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: CMD }], []);
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], []);
     await expect(prepareWorkstationVerification(row)).rejects.toThrow('link');
   });
 
   it('refuses a device parked in a holding org', async () => {
     state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }]);
-    m.parked.mockResolvedValue(true);
+    m.insertCommand.mockRejectedValue(new ParkedDeviceCommandRefusedError('device-1', 'caller_verify'));
     await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'not_found' });
-    expect(inserted()).toHaveLength(0);
+    expect(state.calls.some((c) => c.name === 'set')).toBe(false);
   });
 });
 

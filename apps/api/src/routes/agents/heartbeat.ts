@@ -35,6 +35,7 @@ import {
 } from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
+import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
   maybeQueueThresholdFilesystemAnalysis,
@@ -2246,8 +2247,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // device's org — never a body-supplied identity. Replaced on every main
   // agent beat (absent = cleared, so an old agent reads as unavailable);
   // watchdog beats do not describe the user session and never touch it.
-  // Redis only, after the org transaction released; it never throws.
-  if (agent.role !== 'watchdog') {
+  // Redis only, after the org transaction released; it never throws. Skipped
+  // entirely while the feature is dark, so a fleet-wide beat makes no Redis
+  // call for it; readiness written before a flag-off lapses on its TTL.
+  if (agent.role !== 'watchdog' && callerVerificationEnabled()) {
     await recordWorkstationCapabilities(scoped.deviceOrgId, scoped.deviceId, data.helperCapabilities);
   }
 

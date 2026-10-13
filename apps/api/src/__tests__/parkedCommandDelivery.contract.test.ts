@@ -220,6 +220,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'chokepoint',
     reason: 'Pushes a diagnostic row only after claimPendingCommandForDelivery claimed it',
   },
+  'services/callerVerification/deliverers/workstation.ts': {
+    kind: 'chokepoint',
+    reason: 'caller_verify rows persist only through insertQueuedCommandInTransaction (parked refused as not-found); the post-commit dispatchCommandToAgent push sends only a row claimPendingCommandForDelivery claimed',
+  },
 
   // --- remote_gated ---------------------------------------------------------
   'routes/terminalWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },

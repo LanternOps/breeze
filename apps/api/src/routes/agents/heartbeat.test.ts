@@ -797,7 +797,22 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       });
       insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
       recordWorkstationCapabilitiesMock.mockClear();
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
     }
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    it('touches no readiness store fleet-wide while the feature is dark', async () => {
+      arrange();
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...minimalHeartbeatBody, helperCapabilities: { callerVerify: true, usernames: ['alex'] } }),
+      });
+      expect(response.status).toBe(200);
+      // recordWorkstationCapabilities is the only Redis write on this path.
+      expect(recordWorkstationCapabilitiesMock).not.toHaveBeenCalled();
+    });
 
     it('replaces readiness from the authenticated device after the DB context is released', async () => {
       arrange();
