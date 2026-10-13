@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Building2, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { usePermissions } from '@/lib/permissions';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { statusColors, statusLabelKeys } from '@/lib/orgStatus';
 import type { Organization } from '@/stores/orgStore';
@@ -46,6 +47,8 @@ export default function OrgRecordHeader({
 }: OrgRecordHeaderProps) {
   const { t } = useTranslation('organizations');
   const { t: tSettings } = useTranslation('settings');
+  const { can } = usePermissions();
+  const canSendMessage = can('endpoint_messages', 'send');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -148,7 +151,7 @@ export default function OrgRecordHeader({
               {t('orgRecord.actions.workHere')}
             </button>
           )}
-          {!archived && onSendMessage && (
+          {!archived && onSendMessage && canSendMessage && (
             <button
               type="button"
               data-testid="org-record-send-message"

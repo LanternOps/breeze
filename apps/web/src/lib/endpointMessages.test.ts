@@ -6,7 +6,7 @@ vi.mock('@breeze/shared', async () => {
   return { ...actual, agentSupportsEndpointMessaging: supports };
 });
 
-import { deviceMessagingCapability } from './endpointMessages';
+import { deviceMessagingCapability, endpointMessageIssueKey } from './endpointMessages';
 
 describe('deviceMessagingCapability', () => {
   beforeEach(() => supports.mockReset());
@@ -27,5 +27,19 @@ describe('deviceMessagingCapability', () => {
     expect(deviceMessagingCapability({ osType: 'windows', agentVersion: '9.0.0' })).toBe('assist_card');
     expect(deviceMessagingCapability({ osType: 'macos', agentVersion: '9.0.0' })).toBe('native');
     expect(deviceMessagingCapability({ osType: 'linux', agentVersion: '9.0.0' })).toBe('native');
+  });
+});
+
+describe('endpointMessageIssueKey', () => {
+  it.each([
+    ['body: html is not allowed', 'html'],
+    ['body: images are not allowed', 'images'],
+    ['body: links must use https', 'httpsLinks'],
+    ['body: reference links are not allowed', 'referenceLinks'],
+    ['title: html is not allowed', 'titleHtml'],
+    ['title: links are not allowed', 'titleLinks'],
+    ['something new from a future validator', 'invalid'],
+  ])('maps %s to %s', (issue, key) => {
+    expect(endpointMessageIssueKey(issue)).toBe(key);
   });
 });

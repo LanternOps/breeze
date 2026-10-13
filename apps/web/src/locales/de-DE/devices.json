@@ -4220,7 +4220,20 @@
       "rate_limited": "Zu viele Nachrichten in letzter Zeit. Versuchen Sie es später erneut.",
       "cap_exceeded": "Dieser Versand überschreitet das zulässige Limit.",
       "feature_disabled": "Endpunkt-Nachrichten sind für diese Organisation nicht aktiviert.",
-      "queue_failed": "Die Nachricht konnte für dieses Gerät nicht eingereiht werden."
+      "queue_failed": "Die Nachricht konnte für dieses Gerät nicht eingereiht werden.",
+      "in_progress": "Diese Nachricht wird bereits gesendet. Warten Sie einen Moment und prüfen Sie dann das Ergebnis.",
+      "unavailable": "Das Senden von Nachrichten ist vorübergehend nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+      "no_devices_resolved": "Für diese Auswahl wurden keine Geräte gefunden.",
+      "idempotency_conflict": "Diese Nachrichten-ID wurde bereits für eine andere Nachricht verwendet. Bearbeiten Sie die Nachricht und senden Sie sie erneut."
+    },
+    "issues": {
+      "html": "HTML ist im Nachrichtentext nicht erlaubt.",
+      "images": "Bilder sind im Nachrichtentext nicht erlaubt.",
+      "httpsLinks": "Links im Nachrichtentext müssen https verwenden.",
+      "referenceLinks": "Verweis-Links sind nicht erlaubt. Verwenden Sie stattdessen Inline-Links.",
+      "titleHtml": "HTML ist im Titel nicht erlaubt.",
+      "titleLinks": "Links sind im Titel nicht erlaubt.",
+      "invalid": "Die Nachricht enthält nicht erlaubte Inhalte."
     }
   }
 }

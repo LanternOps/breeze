@@ -28,6 +28,23 @@ const h = vi.hoisted(() => ({
   releaseIdem: vi.fn(async () => {}),
   requirePermission: vi.fn(),
   auth: {} as Record<string, unknown>,
+  outsideDepth: 0,
+}));
+
+// Counts how deep inside runOutsideDbContext a call runs, so a test can prove
+// every Redis round-trip left the request's held DB transaction.
+vi.mock('../../db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../db')>()),
+  runOutsideDbContext: <T,>(fn: () => T): T => {
+    h.outsideDepth += 1;
+    const done = () => { h.outsideDepth -= 1; };
+    try {
+      const r = fn();
+      if (r instanceof Promise) return r.finally(done) as T;
+      done();
+      return r;
+    } catch (e) { done(); throw e; }
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -122,6 +139,7 @@ describe('POST /endpoint-messages (#8741)', () => {
     h.partnerLimit.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
     h.claimCritical.mockResolvedValue(true);
     h.claimIdem.mockResolvedValue({ state: 'claimed' });
+    h.outsideDepth = 0;
   });
 
   it('requires the endpoint_messages:send permission', () => {
@@ -289,8 +307,8 @@ describe('POST /endpoint-messages (#8741)', () => {
 
   it('claims idempotency per (actor, messageId) and stores the 200 body for replay', async () => {
     const { json } = await post(baseBody());
-    expect(h.claimIdem).toHaveBeenCalledWith(USER, MSG);
-    expect(h.completeIdem).toHaveBeenCalledWith(USER, MSG, json);
+    expect(h.claimIdem).toHaveBeenCalledWith(USER, MSG, expect.stringMatching(/^[0-9a-f]{64}$/));
+    expect(h.completeIdem).toHaveBeenCalledWith(USER, MSG, expect.stringMatching(/^[0-9a-f]{64}$/), json);
   });
 
   it('a concurrent duplicate while the first is in flight gets 409 in_progress and queues nothing', async () => {
@@ -471,6 +489,59 @@ describe('POST /endpoint-messages (#8741)', () => {
     h.resolveTargetsDetailed.mockRejectedValue(new Error('db down'));
     const { res } = await post(baseBody());
     expect(res.status).toBe(500);
+    expect(h.releaseIdem).toHaveBeenCalledWith(USER, MSG);
+  });
+
+  // --- Redis round-trips must run outside the held DB context ----------------
+  it('runs every Redis round-trip (idempotency, limits, critical slot) outside the held DB context', async () => {
+    const seen: Record<string, number> = {};
+    const rec = (name: string, v: unknown) => async () => { seen[name] = h.outsideDepth; return v; };
+    h.claimIdem.mockImplementation(rec('claim', { state: 'claimed' }));
+    h.completeIdem.mockImplementation(async () => { seen.complete = h.outsideDepth; });
+    h.actorLimit.mockImplementation(rec('actor', { allowed: true, retryAfterSeconds: 0 }));
+    h.partnerLimit.mockImplementation(rec('partner', { allowed: true, retryAfterSeconds: 0 }));
+    h.claimCritical.mockImplementation(rec('critical', true));
+    const { res } = await post(baseBody({ severity: 'critical' }));
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ claim: 1, actor: 1, partner: 1, critical: 1, complete: 1 });
+  });
+
+  it('releases (idempotency + critical slot) outside the held DB context too', async () => {
+    const seen: Record<string, number> = {};
+    h.releaseIdem.mockImplementation(async () => { seen.releaseIdem = h.outsideDepth; });
+    h.releaseCritical.mockImplementation(async () => { seen.releaseCritical = h.outsideDepth; });
+    h.queue.mockResolvedValue({ error: 'offline', command: undefined });
+    const { res } = await post(baseBody({ severity: 'critical' }));
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ releaseIdem: 1, releaseCritical: 1 });
+  });
+
+  // --- idempotency fingerprint ------------------------------------------------
+  it('a replay of the same id with a DIFFERENT request returns 409 idempotency_conflict and queues nothing', async () => {
+    h.claimIdem.mockResolvedValue({ state: 'conflict' });
+    const { res, json } = await post(baseBody());
+    expect(res.status).toBe(409);
+    expect(json).toEqual({ error: 'idempotency_conflict' });
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.resolveTargetsDetailed).not.toHaveBeenCalled();
+    expect(h.releaseIdem).not.toHaveBeenCalled();
+  });
+
+  it('the claim fingerprint ignores confirmedCount but changes with the body', async () => {
+    await post(baseBody());
+    await post(baseBody({ confirmedCount: 1 }));
+    await post(baseBody({ body: 'Something else entirely.' }));
+    const fp = h.claimIdem.mock.calls.map((c) => c[2]);
+    expect(fp[0]).toBe(fp[1]);
+    expect(fp[2]).not.toBe(fp[0]);
+  });
+
+  it('a 200 with zero queued devices releases the key instead of caching the response', async () => {
+    h.supports.mockReturnValue(false);
+    const { res, json } = await post(baseBody());
+    expect(res.status).toBe(200);
+    expect(json.results[0].status).toBe('failed');
+    expect(h.completeIdem).not.toHaveBeenCalled();
     expect(h.releaseIdem).toHaveBeenCalledWith(USER, MSG);
   });
 });

@@ -4220,7 +4220,20 @@
       "rate_limited": "Troppi messaggi inviati di recente. Riprova più tardi.",
       "cap_exceeded": "Questo invio supera il limite consentito.",
       "feature_disabled": "I messaggi agli endpoint non sono abilitati per questa organizzazione.",
-      "queue_failed": "Impossibile mettere in coda il messaggio per questo dispositivo."
+      "queue_failed": "Impossibile mettere in coda il messaggio per questo dispositivo.",
+      "in_progress": "Questo messaggio è già in corso di invio. Attendi un momento, poi controlla il risultato.",
+      "unavailable": "L'invio dei messaggi è temporaneamente non disponibile. Riprova tra poco.",
+      "no_devices_resolved": "Nessun dispositivo corrisponde a questa selezione.",
+      "idempotency_conflict": "Questo ID messaggio è già stato usato per un messaggio diverso. Modifica il messaggio e invialo di nuovo."
+    },
+    "issues": {
+      "html": "L'HTML non è consentito nel corpo del messaggio.",
+      "images": "Le immagini non sono consentite nel corpo del messaggio.",
+      "httpsLinks": "I link nel corpo del messaggio devono usare https.",
+      "referenceLinks": "I link di riferimento non sono consentiti. Usa invece link inline.",
+      "titleHtml": "L'HTML non è consentito nel titolo.",
+      "titleLinks": "I link non sono consentiti nel titolo.",
+      "invalid": "Il messaggio contiene contenuti non consentiti."
     }
   }
 }

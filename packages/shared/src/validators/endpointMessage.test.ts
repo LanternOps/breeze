@@ -84,6 +84,41 @@ describe('endpointMessageSendSchema', () => {
     }
   });
 
+  it('rejects reference definitions, reference links/images, protocol-relative and bare non-https schemes', () => {
+    for (const b of [
+      'see [x][1]\n\n[1]: https://a.example',
+      '[1]: https://a.example',
+      '  [ref]: //evil.example',
+      'pic ![alt][img]',
+      'see [x][]',
+      'go [here](//evil.example/x)',
+      'write to mailto:it@example.com',
+      'call tel:5550100 now',
+      'open ms-settings:network',
+      'open MS-MSDT:/id',
+      'open sms:5550100',
+    ]) {
+      expect(endpointMessageSendSchema.safeParse(body({ body: b })).success, b).toBe(false);
+    }
+  });
+
+  it('does not reject ordinary prose that merely contains colons', () => {
+    for (const b of [
+      'Note: call us',
+      'Maintenance at 10:30 and 22:45',
+      'Reminder:save your work',
+      'Status: OK. Time: 5pm',
+      'Ratio 3:1, see https://a.example/?q=tel:5 for details',
+      'Ping [status](https://a.example/mailto:x)',
+    ]) {
+      expect(endpointMessageSendSchema.safeParse(body({ body: b })).success, b).toBe(true);
+    }
+  });
+
+  it('documents: a label that looks like another https host is accepted (the helper renderer shows the real host)', () => {
+    expect(endpointMessageContentIssues('ok', '[label https://ok.example.com](https://evil.example.com)')).toEqual([]);
+  });
+
   it('rejects html and links in the title', () => {
     expect(endpointMessageContentIssues('<b>x</b>', 'ok').length).toBeGreaterThan(0);
     expect(endpointMessageContentIssues('[x](https://a.example)', 'ok').length).toBeGreaterThan(0);

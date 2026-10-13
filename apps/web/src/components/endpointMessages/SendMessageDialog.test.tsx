@@ -191,4 +191,32 @@ describe('SendMessageDialog', () => {
     expect(row.textContent).toContain('agent');
     fireEvent.click(screen.getByTestId('send-message-close'));
   });
+
+  it.each([
+    ['in_progress', 409, 'already being sent'],
+    ['unavailable', 503, 'temporarily unavailable'],
+    ['no_devices_resolved', 400, 'No devices matched'],
+    ['idempotency_conflict', 409, 'already used for a different message'],
+  ])('shows a specific localized message for the %s error code', async (code, status, text) => {
+    fetchMock.mockResolvedValue(json({ error: code }, status));
+    const ds = devices(1);
+    render(<SendMessageDialog open onClose={() => {}} targets={{ deviceIds: [ds[0]!.id] }} devices={ds} />);
+    await compose();
+    await userEvent.click(screen.getByTestId('send-message-submit'));
+    const el = await screen.findByTestId('send-message-error');
+    expect(el.textContent).toContain(text);
+  });
+
+  it('renders content issues as localized messages, never the validator\'s raw English', async () => {
+    const ds = devices(1);
+    render(<SendMessageDialog open onClose={() => {}} targets={{ deviceIds: [ds[0]!.id] }} devices={ds} />);
+    fireEvent.change(screen.getByTestId('send-message-title'), { target: { value: '<b>x</b>' } });
+    fireEvent.change(screen.getByTestId('send-message-body'), { target: { value: '![i](https://a.example/i.png) <b>y</b> [z](http://a.example)' } });
+    const list = screen.getByTestId('send-message-issues');
+    expect(list.textContent).not.toMatch(/is not allowed$|must use https$|body:|title:/m);
+    expect(list.textContent).toContain('Images are not allowed in the message body.');
+    expect(list.textContent).toContain('HTML is not allowed in the message body.');
+    expect(list.textContent).toContain('Links in the message body must use https.');
+    expect(list.textContent).toContain('HTML is not allowed in the title.');
+  });
 });

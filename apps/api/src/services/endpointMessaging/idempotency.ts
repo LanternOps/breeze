@@ -17,21 +17,24 @@ export type IdempotencyClaim =
   | { state: 'claimed' }
   | { state: 'replay'; body: unknown }
   | { state: 'in_progress' }
+  | { state: 'conflict' }
   | { state: 'unavailable' };
 
 const key = (actorId: string, messageId: string) => `endpoint-msg:idem:${actorId}:${messageId}`;
 
-export async function claimMessageIdempotency(actorId: string, messageId: string): Promise<IdempotencyClaim> {
+export async function claimMessageIdempotency(actorId: string, messageId: string, fingerprint: string): Promise<IdempotencyClaim> {
   const redis = getRedis();
   if (!redis) return { state: 'unavailable' };
   try {
     const k = key(actorId, messageId);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const won = await redis.set(k, JSON.stringify({ state: 'pending' }), 'EX', PENDING_TTL_SECONDS, 'NX');
+      const won = await redis.set(k, JSON.stringify({ state: 'pending', fingerprint }), 'EX', PENDING_TTL_SECONDS, 'NX');
       if (won === 'OK') return { state: 'claimed' };
       const existing = await redis.get(k);
       if (existing === null) continue; // expired or released between the two calls
-      const parsed = JSON.parse(existing) as { state?: string; body?: unknown };
+      const parsed = JSON.parse(existing) as { state?: string; body?: unknown; fingerprint?: string };
+      // Same id, different request: never replay (or wait on) someone else's send.
+      if (parsed.fingerprint !== fingerprint) return { state: 'conflict' };
       return parsed.state === 'done' ? { state: 'replay', body: parsed.body } : { state: 'in_progress' };
     }
     return { state: 'in_progress' };
@@ -41,9 +44,9 @@ export async function claimMessageIdempotency(actorId: string, messageId: string
   }
 }
 
-export async function completeMessageIdempotency(actorId: string, messageId: string, body: unknown): Promise<void> {
+export async function completeMessageIdempotency(actorId: string, messageId: string, fingerprint: string, body: unknown): Promise<void> {
   try {
-    await getRedis()?.set(key(actorId, messageId), JSON.stringify({ state: 'done', body }), 'EX', DONE_TTL_SECONDS);
+    await getRedis()?.set(key(actorId, messageId), JSON.stringify({ state: 'done', fingerprint, body }), 'EX', DONE_TTL_SECONDS);
   } catch (err) {
     // The commands are already queued; losing the replay cache only weakens
     // double-click protection for this one message. Surface it, don't fail the send.

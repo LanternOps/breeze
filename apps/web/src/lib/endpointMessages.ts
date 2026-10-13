@@ -15,7 +15,38 @@ export type EndpointMessageErrorCode =
   | 'rate_limited'
   | 'cap_exceeded'
   | 'feature_disabled'
-  | 'queue_failed';
+  | 'queue_failed'
+  | 'in_progress'
+  | 'unavailable'
+  | 'no_devices_resolved'
+  | 'idempotency_conflict';
+
+export type EndpointMessageIssueKey =
+  | 'html'
+  | 'images'
+  | 'httpsLinks'
+  | 'referenceLinks'
+  | 'titleHtml'
+  | 'titleLinks'
+  | 'invalid';
+
+/**
+ * Maps one English issue string from the shared validator
+ * (`endpointMessageContentIssues`) to a locale key under
+ * `endpointMessages.issues.*`, so the UI never renders raw English.
+ */
+export function endpointMessageIssueKey(issue: string): EndpointMessageIssueKey {
+  if (issue.startsWith('title:')) {
+    if (issue.includes('html')) return 'titleHtml';
+    if (issue.includes('link')) return 'titleLinks';
+    return 'invalid';
+  }
+  if (issue.includes('reference')) return 'referenceLinks';
+  if (issue.includes('image')) return 'images';
+  if (issue.includes('html')) return 'html';
+  if (issue.includes('https')) return 'httpsLinks';
+  return 'invalid';
+}
 
 export interface EndpointMessageResult {
   deviceId: string;

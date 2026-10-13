@@ -4220,7 +4220,20 @@
       "rate_limited": "Muitas mensagens enviadas recentemente. Tente novamente mais tarde.",
       "cap_exceeded": "Este envio excede o limite permitido.",
       "feature_disabled": "A mensagem para endpoints não está habilitada para esta organização.",
-      "queue_failed": "Não foi possível colocar a mensagem na fila para este dispositivo."
+      "queue_failed": "Não foi possível colocar a mensagem na fila para este dispositivo.",
+      "in_progress": "Esta mensagem já está sendo enviada. Aguarde um momento e verifique o resultado.",
+      "unavailable": "O envio de mensagens está temporariamente indisponível. Tente novamente em instantes.",
+      "no_devices_resolved": "Nenhum dispositivo corresponde a esta seleção.",
+      "idempotency_conflict": "Este ID de mensagem já foi usado para uma mensagem diferente. Edite a mensagem e envie novamente."
+    },
+    "issues": {
+      "html": "HTML não é permitido no corpo da mensagem.",
+      "images": "Imagens não são permitidas no corpo da mensagem.",
+      "httpsLinks": "Os links no corpo da mensagem devem usar https.",
+      "referenceLinks": "Links de referência não são permitidos. Use links em linha.",
+      "titleHtml": "HTML não é permitido no título.",
+      "titleLinks": "Links não são permitidos no título.",
+      "invalid": "A mensagem contém conteúdo não permitido."
     }
   }
 }

@@ -4220,7 +4220,20 @@
       "rate_limited": "Yakın zamanda çok fazla mesaj gönderildi. Daha sonra tekrar deneyin.",
       "cap_exceeded": "Bu gönderim izin verilen sınırı aşıyor.",
       "feature_disabled": "Bu kuruluş için uç nokta mesajlaşması etkin değil.",
-      "queue_failed": "Mesaj bu cihaz için kuyruğa alınamadı."
+      "queue_failed": "Mesaj bu cihaz için kuyruğa alınamadı.",
+      "in_progress": "Bu mesaj zaten gönderiliyor. Biraz bekleyin, ardından sonucu kontrol edin.",
+      "unavailable": "Mesaj gönderimi geçici olarak kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+      "no_devices_resolved": "Bu seçimle eşleşen cihaz bulunamadı.",
+      "idempotency_conflict": "Bu mesaj kimliği daha önce farklı bir mesaj için kullanıldı. Mesajı düzenleyip yeniden gönderin."
+    },
+    "issues": {
+      "html": "Mesaj gövdesinde HTML kullanılamaz.",
+      "images": "Mesaj gövdesinde görsel kullanılamaz.",
+      "httpsLinks": "Mesaj gövdesindeki bağlantılar https kullanmalıdır.",
+      "referenceLinks": "Referans tarzı bağlantılara izin verilmez. Bunun yerine satır içi bağlantılar kullanın.",
+      "titleHtml": "Başlıkta HTML kullanılamaz.",
+      "titleLinks": "Başlıkta bağlantı kullanılamaz.",
+      "invalid": "Mesaj izin verilmeyen içerik barındırıyor."
     }
   }
 }

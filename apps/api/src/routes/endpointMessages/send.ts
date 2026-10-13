@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { ENDPOINT_MESSAGE_LIMITS, endpointMessageSendSchema, type EndpointMessageSendInput } from '@breeze/shared';
+import { runOutsideDbContext } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -24,6 +25,7 @@ import {
   completeMessageIdempotency,
   releaseMessageIdempotency,
 } from '../../services/endpointMessaging/idempotency';
+import { computeSendFingerprint } from '../../services/endpointMessaging/requestFingerprint';
 import { resolveTargetsDetailed, type TargetGroup } from './resolveTargets';
 
 export type SendErrorCode =
@@ -107,7 +109,7 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
     return { status: 409 as const, body: { error: 'confirmation_required', deviceCount } };
   }
 
-  const actor = await checkActorSendLimit(auth.user.id);
+  const actor = await runOutsideDbContext(() => checkActorSendLimit(auth.user.id));
   if (!actor.allowed) {
     return { status: 429 as const, body: { error: 'rate_limited', retryAfterSeconds: actor.retryAfterSeconds } };
   }
@@ -130,7 +132,7 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
   }
   for (const [partnerId, cost] of eligibleByPartner) {
     if (cost <= 0) continue;
-    const partner = await checkPartnerDeliveryLimit(partnerId, cost);
+    const partner = await runOutsideDbContext(() => checkPartnerDeliveryLimit(partnerId, cost));
     if (!partner.allowed) {
       return { status: 429 as const, body: { error: 'rate_limited', retryAfterSeconds: partner.retryAfterSeconds } };
     }
@@ -170,7 +172,7 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
     let slotClaimed = false;
     try {
       if (input.severity === 'critical') {
-        if (!(await claimCriticalSlot(deviceId))) {
+        if (!(await runOutsideDbContext(() => claimCriticalSlot(deviceId)))) {
           return { deviceId, orgId, status: 'failed', errorCode: 'rate_limited' };
         }
         slotClaimed = true;
@@ -203,13 +205,13 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
         },
       );
       if (res.error || !res.command) {
-        if (slotClaimed) await releaseCriticalSlot(deviceId);
+        if (slotClaimed) await runOutsideDbContext(() => releaseCriticalSlot(deviceId));
         console.error('[endpoint-messages] queue refused', { deviceId, error: res.error });
         return { deviceId, orgId, status: 'failed', errorCode: queueErrorCode(res) };
       }
       return { deviceId, orgId, status: 'queued', commandId: res.command.id };
     } catch (err) {
-      if (slotClaimed) await releaseCriticalSlot(deviceId);
+      if (slotClaimed) await runOutsideDbContext(() => releaseCriticalSlot(deviceId));
       // Never echo the error into the response: it can carry internals.
       console.error('[endpoint-messages] queue threw', { deviceId, error: err instanceof Error ? err.message : String(err) });
       return { deviceId, orgId, status: 'failed', errorCode: 'queue_failed' };
@@ -266,24 +268,31 @@ sendRoutes.post(
     const actorId = auth.user.id;
 
     // Idempotency first: a replay must consume no budget and touch no device.
-    const claim = await claimMessageIdempotency(actorId, input.messageId);
+    // Redis round-trips run outside the request's held DB transaction.
+    const fingerprint = computeSendFingerprint(input);
+    const claim = await runOutsideDbContext(() => claimMessageIdempotency(actorId, input.messageId, fingerprint));
     if (claim.state === 'replay') return c.json(claim.body as object, 200);
     if (claim.state === 'in_progress') return c.json({ error: 'in_progress' }, 409);
+    if (claim.state === 'conflict') return c.json({ error: 'idempotency_conflict' }, 409);
     if (claim.state === 'unavailable') return c.json({ error: 'unavailable' }, 503);
+
+    const release = () => runOutsideDbContext(() => releaseMessageIdempotency(actorId, input.messageId));
 
     let outcome: Awaited<ReturnType<typeof handleSend>>;
     try {
       outcome = await handleSend(c, input);
     } catch (err) {
-      await releaseMessageIdempotency(actorId, input.messageId);
+      await release();
       throw err;
     }
 
-    if (outcome.status === 200) {
-      await completeMessageIdempotency(actorId, input.messageId, outcome.body);
+    const queuedAny = outcome.status === 200 && outcome.body.results.some((r) => r.status === 'queued');
+    if (queuedAny) {
+      await runOutsideDbContext(() => completeMessageIdempotency(actorId, input.messageId, fingerprint, outcome.body));
     } else {
-      // A refused send must not burn the id: fix the problem, resend.
-      await releaseMessageIdempotency(actorId, input.messageId);
+      // A refused send, or a 200 that queued nothing, must not burn the id:
+      // fix the problem, resend.
+      await release();
     }
     return c.json(outcome.body, outcome.status);
   },

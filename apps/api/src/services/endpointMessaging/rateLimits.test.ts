@@ -91,40 +91,40 @@ describe('message idempotency', () => {
   });
 
   it('first claim wins; a concurrent duplicate sees in_progress', async () => {
-    expect(await claimMessageIdempotency('u1', 'm1')).toEqual({ state: 'claimed' });
-    expect(await claimMessageIdempotency('u1', 'm1')).toEqual({ state: 'in_progress' });
+    expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({ state: 'claimed' });
+    expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({ state: 'in_progress' });
   });
 
   it('after completion a replay returns the stored first 200 body', async () => {
-    await claimMessageIdempotency('u1', 'm1');
-    await completeMessageIdempotency('u1', 'm1', { batchId: 'b', deviceCount: 1, results: [] });
-    expect(await claimMessageIdempotency('u1', 'm1')).toEqual({
+    await claimMessageIdempotency('u1', 'm1', 'fp');
+    await completeMessageIdempotency('u1', 'm1', 'fp', { batchId: 'b', deviceCount: 1, results: [] });
+    expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({
       state: 'replay',
       body: { batchId: 'b', deviceCount: 1, results: [] },
     });
   });
 
   it('is scoped per (actor, messageId): another actor with the same id is a fresh claim', async () => {
-    await claimMessageIdempotency('u1', 'm1');
-    expect(await claimMessageIdempotency('u2', 'm1')).toEqual({ state: 'claimed' });
+    await claimMessageIdempotency('u1', 'm1', 'fp');
+    expect(await claimMessageIdempotency('u2', 'm1', 'fp')).toEqual({ state: 'claimed' });
   });
 
   it('completion is kept for 24 hours', async () => {
-    await claimMessageIdempotency('u1', 'm1');
-    await completeMessageIdempotency('u1', 'm1', { ok: true });
+    await claimMessageIdempotency('u1', 'm1', 'fp');
+    await completeMessageIdempotency('u1', 'm1', 'fp', { ok: true });
     const lastSet = h.redis!.set.mock.calls.at(-1)!;
     expect(lastSet[2]).toBe('EX');
     expect(lastSet[3]).toBe(24 * 3600);
   });
 
   it('release lets the same messageId be retried (a rejected send must not burn the id)', async () => {
-    await claimMessageIdempotency('u1', 'm1');
+    await claimMessageIdempotency('u1', 'm1', 'fp');
     await releaseMessageIdempotency('u1', 'm1');
-    expect(await claimMessageIdempotency('u1', 'm1')).toEqual({ state: 'claimed' });
+    expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({ state: 'claimed' });
   });
 
   it('is unavailable (fail closed) without Redis', async () => {
     h.redis = null;
-    expect(await claimMessageIdempotency('u1', 'm1')).toEqual({ state: 'unavailable' });
+    expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({ state: 'unavailable' });
   });
 });

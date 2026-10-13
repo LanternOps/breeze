@@ -12,6 +12,7 @@ import { showToast } from '@/components/shared/Toast';
 import { ActionError } from '@/lib/runAction';
 import {
   deviceMessagingCapability,
+  endpointMessageIssueKey,
   sendEndpointMessage,
   type EndpointMessageRequest,
   type EndpointMessageSendResponse,
@@ -49,6 +50,8 @@ const EXPIRY_OPTIONS = [
 ] as const;
 
 const HASH_KEY = 'send-message';
+// Codes whose localized text is also used as the failure toast.
+const FRIENDLY_CODES = new Set(['feature_disabled', 'rate_limited', 'cap_exceeded', 'in_progress', 'unavailable', 'no_devices_resolved', 'idempotency_conflict']);
 
 /** Mirror the step into the URL hash without a `hashchange`: host pages (org
  *  record, site detail) read the hash as their tab id and would flip tabs. */
@@ -147,7 +150,7 @@ export default function SendMessageDialog({ open, onClose, targets, devices }: S
         // The 409 is an expected "show me the count" outcome, not a failure toast.
         suppressErrorToast: (status) => status === 409,
         friendly: (code) =>
-          code === 'feature_disabled' || code === 'rate_limited' || code === 'cap_exceeded'
+          FRIENDLY_CODES.has(code)
             ? errorLabel(code)
             : undefined,
       });
@@ -225,8 +228,9 @@ export default function SendMessageDialog({ open, onClose, targets, devices }: S
               </label>
               {issues.length > 0 && (
                 <ul data-testid="send-message-issues" className="list-disc pl-5 text-xs text-destructive">
-                  {issues.map((issue) => (
-                    <li key={issue}>{issue}</li>
+                  {[...new Set(issues.map(endpointMessageIssueKey))].map((key) => (
+                    // i18n-dynamic: key is a closed union from endpointMessageIssueKey
+                    <li key={key}>{t(/* i18n-dynamic */ `endpointMessages.issues.${key}`)}</li>
                   ))}
                 </ul>
               )}

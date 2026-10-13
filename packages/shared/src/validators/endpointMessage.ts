@@ -51,6 +51,18 @@ const AUTOLINK = /<([A-Za-z][A-Za-z0-9+.-]*:[^>\s]*)>/g;
 const BARE_URL = /\b([A-Za-z][A-Za-z0-9+.-]*):\/\/[^\s)>\]]+/g;
 const BARE_DANGEROUS_SCHEME = /\b(?:javascript|data|vbscript|file):/i;
 
+// Reference-style markdown is not part of the allowed subset: a definition
+// line hides its target away from the visible link text, and `[a][b]` /
+// `![a][b]` / `[a][]` resolve through one.
+const REFERENCE_DEFINITION = /^[ \t]*\[[^\]]+\]:[ \t]*\S+/m;
+const REFERENCE_LINK = /!?\[[^\]]+\][ \t]?\[[^\]]*\]/;
+// Bare non-https scheme tokens a renderer or the OS may act on (mailto:, tel:,
+// ms-settings: ...). A closed list plus the `ms-` / `x-` families, not "any
+// word followed by a colon", so "Note: call us", "10:30" and "Status:ok" stay fine.
+const BARE_OTHER_SCHEME =
+  /\b(?:mailto|tel|sms|smsto|callto|facetime|skype|sip|sips|xmpp|geo|intent|market|slack|zoommtg|zoomus|msteams|teams|ssh|telnet|smb|ldap|ldaps|vnc|rdp|steam|news|nntp|irc|about|blob|view-source|(?:ms|x)-[a-z0-9-]+):/i;
+const HTTPS_URL_RUN = /https:\/\/[^\s)>\]]+/gi;
+
 function isHttpsUrl(raw: string): boolean {
   try {
     const u = new URL(raw);
@@ -76,6 +88,10 @@ function bodyIssues(body: string): string[] {
     if ((m[1] ?? '').toLowerCase() !== 'https') issues.push('links must use https');
   }
   if (BARE_DANGEROUS_SCHEME.test(body)) issues.push('links must use https');
+  // Scan for other schemes with the (allowed) https URLs removed, so a
+  // `?next=tel:5` inside a legitimate https link is not a false positive.
+  if (BARE_OTHER_SCHEME.test(body.replace(HTTPS_URL_RUN, ' '))) issues.push('links must use https');
+  if (REFERENCE_DEFINITION.test(body) || REFERENCE_LINK.test(body)) issues.push('reference links are not allowed');
   return [...new Set(issues)];
 }
 

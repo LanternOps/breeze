@@ -840,6 +840,7 @@ export default function DeviceList({
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
+  const canSendMessage = can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
@@ -2945,17 +2946,19 @@ export default function DeviceList({
                   {t("deviceList.rebootSelected")}
                   {agentOnlySuffix}
                 </button>
-                <button
-                  type="button"
-                  data-testid="bulk-send-message"
-                  onClick={() => handleBulkAction("send-message")}
-                  disabled={agentOnlyDisabled}
-                  title={agentOnlyTitle}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {t("endpointMessages.sendAction")}
-                  {agentOnlySuffix}
-                </button>
+                {canSendMessage && (
+                  <button
+                    type="button"
+                    data-testid="bulk-send-message"
+                    onClick={() => handleBulkAction("send-message")}
+                    disabled={agentOnlyDisabled}
+                    title={agentOnlyTitle}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("endpointMessages.sendAction")}
+                    {agentOnlySuffix}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleBulkAction("run-script")}

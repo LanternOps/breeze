@@ -4220,7 +4220,20 @@
       "rate_limited": "Trop de messages envoyés récemment. Réessayez plus tard.",
       "cap_exceeded": "Cet envoi dépasse la limite autorisée.",
       "feature_disabled": "La messagerie des terminaux n'est pas activée pour cette organisation.",
-      "queue_failed": "Le message n'a pas pu être mis en file pour cet appareil."
+      "queue_failed": "Le message n'a pas pu être mis en file pour cet appareil.",
+      "in_progress": "Ce message est déjà en cours d'envoi. Patientez un instant, puis vérifiez le résultat.",
+      "unavailable": "L'envoi de messages est temporairement indisponible. Réessayez dans un instant.",
+      "no_devices_resolved": "Aucun appareil ne correspond à cette sélection.",
+      "idempotency_conflict": "Cet identifiant de message a déjà été utilisé pour un autre message. Modifiez le message puis renvoyez-le."
+    },
+    "issues": {
+      "html": "Le HTML n'est pas autorisé dans le corps du message.",
+      "images": "Les images ne sont pas autorisées dans le corps du message.",
+      "httpsLinks": "Les liens du corps du message doivent utiliser https.",
+      "referenceLinks": "Les liens de référence ne sont pas autorisés. Utilisez plutôt des liens en ligne.",
+      "titleHtml": "Le HTML n'est pas autorisé dans le titre.",
+      "titleLinks": "Les liens ne sont pas autorisés dans le titre.",
+      "invalid": "Le message contient du contenu non autorisé."
     }
   }
 }
