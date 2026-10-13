@@ -9,11 +9,11 @@
 //!    `PredefinedMenuItem::quit`, which sends `[NSApp terminate:]`. That path
 //!    never reaches `RunEvent::ExitRequested` (tao only implements
 //!    `applicationWillTerminate:`, which ends the loop with `RunEvent::Exit`),
-//!    so `prevent_exit()` cannot stop it. The key equivalent stays live while
-//!    the chat window is key even under `Accessory`, because key equivalents
-//!    dispatch through `NSApp.mainMenu` whether or not the menu bar is drawn.
-//!    [`build_macos_app_menu`] therefore rebuilds the default menu without
-//!    Quit and binds Cmd+Q to a "Hide Window" item instead.
+//!    so `prevent_exit()` cannot stop it. AppKit dispatches key equivalents
+//!    through `NSApp.mainMenu` whether or not the menu bar is drawn, so the
+//!    shortcut is expected to stay live under `Accessory` while the chat
+//!    window is key (lab-verify). [`build_macos_app_menu`] therefore rebuilds
+//!    the menu without Quit and binds Cmd+Q to a "Hide Window" item instead.
 //!
 //! Logout, restart and shutdown still terminate Assist: they reach
 //! `terminate:` through Apple Events, not through the menu.
@@ -41,7 +41,9 @@ pub(crate) fn should_prevent_exit(code: Option<i32>) -> bool {
 }
 
 /// Tauri's default macOS menu (tauri 2.12.1 `src/menu/menu.rs`, `Menu::default`)
-/// minus `PredefinedMenuItem::quit`, plus a Cmd+Q "Hide Window" item.
+/// without `PredefinedMenuItem::quit`, plus a Cmd+Q "Hide Window" item. The
+/// View (fullscreen) and empty Help submenus are dropped too: under
+/// `Accessory` no menu bar is drawn, so only key equivalents matter.
 ///
 /// Edit stays: its key equivalents (Cmd+C/V/X/A/Z) are how copy and paste
 /// reach the webview. The File/Window "Close Window" items send
@@ -136,14 +138,16 @@ mod tests {
     #[test]
     fn app_menu_has_no_quit_path() {
         let code: String = include_str!("app_shell.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .unwrap_or("")
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        for forbidden in ["PredefinedMenuItem::quit", ".exit(", "process::exit"] {
+        // The scan must actually cover the menu builder.
+        assert!(code.contains("fn build_macos_app_menu("));
+        for forbidden in ["::quit(", ".exit(", "process::exit", "terminate"] {
             assert!(
                 !code.contains(forbidden),
                 "app_shell.rs must not use {forbidden}"

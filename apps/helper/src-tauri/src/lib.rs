@@ -690,6 +690,13 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Show the main window and bring it to focus.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        // macOS (#8399): with no Dock icon (Accessory policy) there is no
+        // other way back for a minimized window; show() and set_focus() do
+        // not deminiaturize it.
+        #[cfg(target_os = "macos")]
+        if let Err(e) = window.unminimize() {
+            eprintln!("[helper] Failed to unminimize window: {}", e);
+        }
         if let Err(e) = window.show() {
             eprintln!("[helper] Failed to show window: {}", e);
         }
