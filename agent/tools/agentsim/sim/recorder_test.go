@@ -122,6 +122,40 @@ func TestHeartbeatGapIsTimeBetweenSuccesses(t *testing.T) {
 	}
 }
 
+func TestLegacyTransportIgnoresRetryAfter(t *testing.T) {
+	var calls atomic.Int32 // the handler runs on the server's goroutine; -race flags a plain int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	rec := newTestRecorder()
+	client := newAgentHTTPClient(rec, 2*time.Second)
+	client.Transport = &stripRetryAfter{base: client.Transport}
+	cfg := httputil.RetryConfig{MaxRetries: 3, InitialDelay: 10 * ms, MaxDelay: 40 * ms, BackoffFactor: 2}
+	start := time.Now()
+	resp, err := httputil.Do(withLogicalRequest(context.Background()), client, http.MethodPost, srv.URL+"/api/v1/agents/a/process-sample", nil, http.Header{}, cfg)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if n := calls.Load(); n != 4 || time.Since(start) > 2*time.Second {
+		t.Fatalf("legacy agent made %d attempts in %s; want 4 quick ones (Retry-After 30 ignored)", n, time.Since(start))
+	}
+}
+
+func TestLegacyCohortIsTheFirstFraction(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := testConfig(f, t.TempDir())
+	cfg.Agents, cfg.LegacyRetryFraction = 8, 0.25
+	for i, want := range []bool{true, true, false, false} {
+		a := NewAgent(&cfg, newTestRecorder(), Identity{Index: i}, nil)
+		if _, legacy := a.client.Transport.(*stripRetryAfter); legacy != want {
+			t.Errorf("agent %d legacy=%v, want %v (round(0.25·8) = 2)", i, legacy, want)
+		}
+	}
+}
+
 func TestRecordingTransportCountsOneRequestAcrossRetries(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

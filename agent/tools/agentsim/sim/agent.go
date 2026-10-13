@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -63,12 +64,22 @@ func NewAgent(cfg *Config, rec *Recorder, id Identity, reenroll func(context.Con
 		commands: make(chan agentws.Command, 16),
 		seen:     map[string]struct{}{},
 	}
+	if isLegacy(cfg, id.Index) {
+		a.client.Transport = &stripRetryAfter{base: a.client.Transport}
+	}
 	a.payloads = NewPayloads(cfg, rand.New(rand.NewPCG(seed, 0xfeed)))
 	if cfg.WSEnabled {
 		a.ws = newWSSession(a)
 	}
 	return a
 }
+
+// legacyCount is how many agents (the lowest indexes) are in the legacy-retry cohort.
+func legacyCount(cfg *Config) int {
+	return int(math.Round(cfg.LegacyRetryFraction * float64(cfg.Agents)))
+}
+
+func isLegacy(cfg *Config, index int) bool { return index < legacyCount(cfg) }
 
 // newAgentHTTPClient clones http.DefaultTransport per agent, as heartbeat.go
 // newHeartbeatHTTPClient does, so each simulated agent holds its own

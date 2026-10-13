@@ -65,6 +65,7 @@ type AgentReport struct {
 	ReusedFromStore    int `json:"reusedFromStore"`
 	Reenrolled         int `json:"reenrolled"`
 	EnrollFailures     int `json:"enrollFailures"`
+	Legacy             int `json:"legacy,omitempty"` // legacy-retry cohort size (ignores Retry-After)
 }
 
 type WindowReport struct {
@@ -207,6 +208,7 @@ func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int, storm 
 			Configured: cfg.Agents, Started: started, OnlineAtWindowOpen: onlineAtOpen,
 			EnrolledThisRun: int(rec.enrolled.Load()), ReusedFromStore: int(rec.reused.Load()),
 			Reenrolled: int(rec.reenrolled.Load()), EnrollFailures: int(rec.enrollFailed.Load()),
+			Legacy: legacyCount(&cfg),
 		},
 		Window: WindowReport{Start: rec.WindowOpen.UTC(), End: windowEnd.UTC(), Seconds: seconds, AgentMinutes: minutes},
 	}
