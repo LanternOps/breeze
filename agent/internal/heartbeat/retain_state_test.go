@@ -282,3 +282,101 @@ func TestProcessHeartbeatResponseHonoursRetainState(t *testing.T) {
 		t.Fatal("processHeartbeatResponse without retainState must keep legacy semantics")
 	}
 }
+
+func captureRetainStreakWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := logRetainStreakWarning
+	logRetainStreakWarning = func(feature string, beats int64) { got = append(got, feature) }
+	t.Cleanup(func() { logRetainStreakWarning = old })
+	return &got
+}
+
+func TestRetainStreakWarnsOncePerStreak(t *testing.T) {
+	got := captureRetainStreakWarnings(t)
+	h := newRetainTestHeartbeat()
+	beat := &HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}}
+	for i := 0; i < retainStreakWarnBeats-1; i++ {
+		h.applySettingsDecisions(beat)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("no warning before %d consecutive retained beats, got %v", retainStreakWarnBeats, *got)
+	}
+	h.applySettingsDecisions(beat)
+	if len(*got) != 1 || (*got)[0] != "remoteManagement" {
+		t.Fatalf("want exactly one remoteManagement warning at beat %d, got %v", retainStreakWarnBeats, *got)
+	}
+	for i := 0; i < 2*retainStreakWarnBeats; i++ {
+		h.applySettingsDecisions(beat)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("one warning per streak, got %v", *got)
+	}
+}
+
+func TestRetainStreakResetsOnDecidedBeatAndIsPerFeature(t *testing.T) {
+	got := captureRetainStreakWarnings(t)
+	h := newRetainTestHeartbeat()
+	for i := 0; i < retainStreakWarnBeats-1; i++ {
+		h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
+	}
+	// A beat that decides remoteManagement (helper retained) resets the
+	// remoteManagement streak only: remoteManagement=0, helper=1.
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{Helper: true}})
+	for i := 0; i < retainStreakWarnBeats-2; i++ {
+		h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true, Helper: true}})
+	}
+	// remoteManagement=threshold-2, helper=threshold-1.
+	if len(*got) != 0 {
+		t.Fatalf("a decided beat must reset that feature's streak, got %v", *got)
+	}
+	// Helper decided here (reset), remoteManagement reaches threshold-1.
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
+	if len(*got) != 0 {
+		t.Fatalf("no feature at the threshold yet, got %v", *got)
+	}
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
+	if len(*got) != 1 || (*got)[0] != "remoteManagement" {
+		t.Fatalf("remoteManagement reaches the threshold after its reset, got %v", *got)
+	}
+	// After a decided beat, a new streak warns again.
+	h.applySettingsDecisions(&HeartbeatResponse{})
+	for i := 0; i < retainStreakWarnBeats; i++ {
+		h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
+	}
+	if len(*got) != 2 {
+		t.Fatalf("a new streak after a decided beat warns again, got %v", *got)
+	}
+}
+
+func TestRetainStreakCountsEachFeature(t *testing.T) {
+	got := captureRetainStreakWarnings(t)
+	h, _ := newPamReadyTestHeartbeat(t)
+	for i := 0; i < retainStreakWarnBeats; i++ {
+		h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{PAM: true, Helper: true, RemoteManagement: true}})
+	}
+	want := map[string]bool{"pam": true, "helper": true, "remoteManagement": true}
+	if len(*got) != 3 {
+		t.Fatalf("want one warning per feature, got %v", *got)
+	}
+	for _, f := range *got {
+		if !want[f] {
+			t.Fatalf("unexpected feature %q in %v", f, *got)
+		}
+		delete(want, f)
+	}
+}
+
+// The streak is log-only: a long retain never reverts the retained state.
+func TestRetainStreakNeverRevertsState(t *testing.T) {
+	captureRetainStreakWarnings(t)
+	h, fake := newPamReadyTestHeartbeat(t)
+	enablePAM(t, h)
+	before := len(fake.setEnabledCalls)
+	for i := 0; i < 3*retainStreakWarnBeats; i++ {
+		h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{PAM: true}})
+	}
+	if !h.IsUACInterceptionEnabled() || len(fake.setEnabledCalls) != before {
+		t.Fatal("a retain streak must never revert PAM")
+	}
+}

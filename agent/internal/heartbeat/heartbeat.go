@@ -723,6 +723,10 @@ type Heartbeat struct {
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
 
+	// retainStreaks counts consecutive beats each feature was retained
+	// (HeartbeatResponse.RetainState, #8258); see retain_state.go.
+	retainStreaks retainStreakTracker
+
 	// uacInterceptionEnabled is set when the server's resolved 'pam' config
 	// policy turns UAC capture ON for this device. Opt-in: the zero value
 	// (disabled) means no capture until the server explicitly enables it, so a

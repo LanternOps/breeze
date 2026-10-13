@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"bytes"
 	"encoding/json"
+	"sync/atomic"
 
 	"github.com/breeze-rmm/agent/internal/helper"
 )
@@ -126,5 +127,40 @@ func (h *Heartbeat) applyHelperAndRemoteManagement(resp *HeartbeatResponse) {
 	}
 }
 
-// noteRetainStreak is replaced in the next commit (retain-streak warning).
-func (h *Heartbeat) noteRetainStreak(RetainState) {}
+// retainStreakWarnBeats is the number of consecutive beats a feature may be
+// retained before the agent logs a warning (about 30 minutes at the default
+// interval). Log only: the state is never reverted (#8258 OD10), because
+// reverting would reintroduce the enforcement downgrade retain exists to stop.
+const retainStreakWarnBeats = 30
+
+// logRetainStreakWarning is the log seam for the retain-streak warning, so
+// tests can count the lines an agent would actually emit.
+var logRetainStreakWarning = func(feature string, beats int64) {
+	log.Warn("server has made no decision for this feature on consecutive heartbeats; keeping the last applied state",
+		"feature", feature, "consecutiveBeats", beats)
+}
+
+// retainStreakTracker counts, per feature, consecutive beats on which the
+// server retained it. A beat that decides the feature resets its counter.
+type retainStreakTracker struct {
+	pam, helper, remoteManagement atomic.Int64
+}
+
+func noteRetainStreakFeature(counter *atomic.Int64, retained bool, feature string) {
+	if !retained {
+		counter.Store(0)
+		return
+	}
+	// Exactly once per streak: only the beat that reaches the threshold logs.
+	if n := counter.Add(1); n == retainStreakWarnBeats {
+		logRetainStreakWarning(feature, n)
+	}
+}
+
+// noteRetainStreak advances the per-feature counters for one beat. Called
+// exactly once per response, from applyPAMDecision.
+func (h *Heartbeat) noteRetainStreak(r RetainState) {
+	noteRetainStreakFeature(&h.retainStreaks.pam, r.PAM, "pam")
+	noteRetainStreakFeature(&h.retainStreaks.helper, r.Helper, "helper")
+	noteRetainStreakFeature(&h.retainStreaks.remoteManagement, r.RemoteManagement, "remoteManagement")
+}
