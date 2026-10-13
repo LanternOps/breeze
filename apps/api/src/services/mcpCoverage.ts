@@ -410,6 +410,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/processSamples.ts': { gap: '#6783' },
   'devices/provision.ts': { exempt: 'identity' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
+  'devices/restorePoints.ts': { exempt: 'internal_plumbing', note: 'Read-only console list of the System Restore request ledger (#4759 W08); no AI-tool consumer yet and neither the plan nor the spec calls for a tool.' },
   'devices/scripts.ts': { tools: ['run_script', 'get_script_execution_history'] },
   'devices/sessions.ts': { tools: ['get_active_users', 'get_user_experience_metrics'] },
   'devices/software.ts': { gap: '#6782' },
