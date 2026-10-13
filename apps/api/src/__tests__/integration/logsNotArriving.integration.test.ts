@@ -15,13 +15,29 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { agentLogs, deviceCommands, devices } from '../../db/schema';
 import { coreRoutes } from '../../routes/devices/core';
 import { createAccessToken } from '../../services/jwt';
+import { db } from '../../db';
+
+// Lets one test make the real service fail at the Postgres level (not a JS
+// throw), so the route's handling of an aborted statement is exercised.
+const failInPostgres = vi.hoisted(() => ({ on: false }));
+vi.mock('../../services/logsNotArriving', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/logsNotArriving')>();
+  return {
+    ...actual,
+    logsNotArriving: async (...args: Parameters<typeof actual.logsNotArriving>) => {
+      if (failInPostgres.on) await db.execute(sql`SELECT 1 / 0`);
+      return actual.logsNotArriving(...args);
+    },
+  };
+});
+afterEach(() => { failInPostgres.on = false; });
 
 const MIN = 60_000;
 
@@ -106,6 +122,17 @@ describe('logsNotArriving on device detail (real breeze_app PostgreSQL)', () => 
       .where(and(eq(agentLogs.deviceId, f.deviceId), gte(agentLogs.createdAt, f.completedAt))) as [{ n: number }];
     expect(n).toBe(0);
 
+    const body = await f.detail();
+    expect(body.logsNotArriving).toBeNull();
+  });
+
+  it('a Postgres error inside the check does not poison the request transaction', async () => {
+    // The detail route runs in one request transaction. Without a savepoint,
+    // the failed statement aborts it (25P02): every later read in the handler
+    // fails and the commit rejects, so the whole detail load errors instead of
+    // degrading to logsNotArriving: null.
+    const f = await fixture();
+    failInPostgres.on = true;
     const body = await f.detail();
     expect(body.logsNotArriving).toBeNull();
   });

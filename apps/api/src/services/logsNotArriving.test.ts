@@ -205,19 +205,14 @@ describe('logsNotArriving — negatives (null)', () => {
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
-  it('throttle regression: devices.last_log_at older than completedAt but a fresh agent_logs row exists → null', async () => {
-    // The service is never handed last_log_at; a fresh agent_logs row alone
-    // decides it.
+  it('a fresh agent_logs row since the command was created → null (the probe, not devices.last_log_at, decides)', async () => {
+    // The service is never handed last_log_at, so a throttled last_log_at
+    // cannot cause a false alarm. Which rows the probe can see (the createdAt
+    // bound, so a canary stored before completedAt counts) is pinned by the
+    // compiled-SQL test above and by the integration test.
     rigSelect([commandRow()]);
     rigSelect([{ one: 1 }]);
     expect(await logsNotArriving(DEVICE_ID, NOW, CANARY_CAPABLE)).toBeNull();
-  });
-
-  it('canary row timestamped between command creation and completedAt → null', async () => {
-    // The probe is bounded by createdAt, so a row at 11:49 (after 11:48
-    // creation, before 11:50 completion) is found and suppresses the line.
-    rigSelect([commandRow()]);
-    rigSelect([{ one: 1 }]);
-    expect(await logsNotArriving(DEVICE_ID, NOW, CANARY_CAPABLE)).toBeNull();
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 });

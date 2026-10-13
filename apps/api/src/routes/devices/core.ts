@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, asc, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
@@ -1724,12 +1724,15 @@ coreRoutes.get(
     // an online agent that reports `logShipping` (has the W03 canary) can
     // produce a non-null answer, so every other detail load pays nothing.
     // Observational and non-critical: a failure never fails the response.
+    // The savepoint is what makes that true: a Postgres error here would
+    // otherwise abort the request transaction and fail the reads below and
+    // the commit (pinned by logsNotArriving.integration.test.ts).
     let logsNotArriving: { since: string } | null = null;
     if (device.status === 'online' && device.logShippingState != null) {
       try {
-        const raised = await checkLogsNotArriving(deviceId, new Date(), {
+        const raised = await withDbTransaction(() => checkLogsNotArriving(deviceId, new Date(), {
           logShippingState: device.logShippingState,
-        });
+        }));
         logsNotArriving = raised ? { since: raised.raisedAt } : null;
       } catch (err) {
         captureException(err, c);
