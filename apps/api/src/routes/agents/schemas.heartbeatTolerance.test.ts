@@ -35,6 +35,22 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
+  // Agents from #8618 W1 send a bounded `watchdogInstall` object. Until the API
+  // ingests it (W2), a beat carrying it — well-formed or not — must still be
+  // accepted, with the unknown key stripped rather than rejected.
+  it('accepts and strips the agent watchdogInstall report it does not ingest yet (#8619)', () => {
+    for (const watchdogInstall of [
+      { state: 'gave_up', attempts: 8, lastAttemptAt: '2026-10-12T12:00:00Z', lastErrorClass: 'signature' },
+      { state: 'retrying' },
+      'garbage',
+      { state: 'x'.repeat(500), attempts: 1e9 },
+    ]) {
+      const r = heartbeatSchema.safeParse({ ...minimal, watchdogInstall });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data).not.toHaveProperty('watchdogInstall');
+    }
+  });
+
   it('drops malformed PAM reconciliation telemetry independently', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,
