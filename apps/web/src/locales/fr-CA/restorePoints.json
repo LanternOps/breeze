@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "En attente de l’appareil",
+    "created": "Création du point de restauration confirmée {{time}}",
+    "createdNoTime": "Création du point de restauration confirmée",
+    "existingAccepted": "Point existant réutilisé — créé il y a {{age}} (limite de Windows : toutes les {{limit}})",
+    "existingAcceptedAgeOnly": "Point existant réutilisé — créé il y a {{age}}",
+    "existingAcceptedNoDetail": "Point existant réutilisé",
+    "skippedDisabled": "Ignoré — la Restauration du système est désactivée sur cet appareil",
+    "skippedDefinitionOnly": "Ignoré — mise à jour des définitions seulement",
+    "unsupported": "Non disponible sur cet appareil",
+    "busy": "Ignoré — le service de cliché instantané de volume était occupé",
+    "insufficientPrivileges": "Ignoré — privilèges insuffisants",
+    "verificationFailed": "Vérification impossible",
+    "failed": "Échec — {{message}}",
+    "failedNoMessage": "Échec",
+    "unknown": "Résultat non reconnu par cette version de la console"
+  },
+  "list": {
+    "title": "Restauration du système",
+    "disclaimer": "La Restauration du système n’est pas une sauvegarde. Cette liste indique quand Breeze a demandé à Windows de créer un point de restauration et ce que l’appareil a signalé; elle ne garantit pas qu’un point de restauration existe ni qu’il peut être restauré.",
+    "loading": "Chargement de l’historique de la Restauration du système…",
+    "loadError": "Impossible de charger l’historique de la Restauration du système.",
+    "retry": "Réessayer",
+    "empty": "Aucune demande de Restauration du système n’a été enregistrée pour cet appareil.",
+    "loadMore": "Charger plus",
+    "loadingMore": "Chargement…",
+    "loadMoreError": "Impossible de charger d’autres entrées.",
+    "columns": {
+      "requested": "Demandé",
+      "trigger": "Déclenché par",
+      "outcome": "Résultat"
+    },
+    "trigger": {
+      "patch": "Installation de correctifs",
+      "script": "Exécution de script",
+      "software_install": "Installation de logiciel"
+    },
+    "viewScriptRun": "Voir l’exécution du script"
+  }
+}

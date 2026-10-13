@@ -124,6 +124,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 40, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
@@ -292,6 +293,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 33, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
@@ -462,6 +464,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 18,
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
@@ -649,6 +652,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 17,
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
@@ -850,6 +854,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 53,
+    'restorePoints.json': 0,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the standard
@@ -1005,6 +1010,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 51,
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
@@ -1136,6 +1142,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 4,
     'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     'scripts.json': 38,
     'security.json': 86,
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
