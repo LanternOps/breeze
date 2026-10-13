@@ -279,8 +279,12 @@ describe('presence visibility — cross-site leak tests', () => {
     expect(suggested(await body(f.users.onlyA.token, f.siteA))).toBe(0);
   });
 
-  it('a confirmed device carries its confirmation (no site named) and no suggestion', async () => {
+  it('a confirmed device carries its confirmation (no site named) and no suggestion, even before re-evaluation', async () => {
+    await suggest('MIS1', f.siteB);
     await getTestDb().execute(sql`UPDATE devices SET site_assignment_confirmed_at = '2026-10-02T09:30:00Z' WHERE id = ${f.ids.MIS1!}::uuid`);
+    const both = await body(f.users.both.token, f.siteA);
+    expect(entry(both, 'MIS1')).toMatchObject({ siteAssignmentConfirmedAt: '2026-10-02T09:30:00.000Z', suggestion: null });
+    expect((await body(f.users.both.token, f.siteB)).visitors.find((v) => v.deviceId === f.ids.MIS1)!.suggestion).toBeNull();
     const onlyA = await body(f.users.onlyA.token, f.siteA);
     expect(entry(onlyA, 'MIS1')).toMatchObject({ siteAssignmentConfirmedAt: '2026-10-02T09:30:00.000Z', suggestion: null });
     expect(onlyA.raw).not.toContain('Lakeside');

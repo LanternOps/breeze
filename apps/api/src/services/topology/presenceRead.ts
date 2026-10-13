@@ -67,9 +67,12 @@ function asNotCurrent(row: PresenceRow): PresenceAssignedEntry {
     siteAssignmentConfirmedAt: iso(row.confirmed_at),
   };
 }
-/** The stored suggestion, if it names `site` (a ref the caller has already gated) and is complete. */
+/**
+ * The stored suggestion, if it names `site` (a ref the caller has already gated) and is complete. A confirmed device
+ * ("Keep at <site>") carries none even before the evaluator next clears the stored suggestion (S§11 suppression).
+ */
 function suggestionFor(row: PresenceRow, site: PresenceSiteRef): PresenceSuggestion | null {
-  if (row.suggested_site_id !== site.id || row.suggestion_days === null || !row.suggestion_first_at || !row.suggestion_last_at) return null;
+  if (row.confirmed_at || row.suggested_site_id !== site.id || row.suggestion_days === null || !row.suggestion_first_at || !row.suggestion_last_at) return null;
   return { siteId: site.id, siteName: site.name, days: row.suggestion_days, firstObservedAt: iso(row.suggestion_first_at)!, lastObservedAt: iso(row.suggestion_last_at)! };
 }
 
