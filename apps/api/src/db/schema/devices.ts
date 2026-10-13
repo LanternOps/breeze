@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
@@ -339,6 +340,15 @@ export const devices = pgTable('devices', {
   // the current episode began.
   helperInstallIssue: varchar('helper_install_issue', { length: 50 }),
   helperInstallIssueSince: timestamp('helper_install_issue_since', { withTimezone: true }),
+  // #8608 — agent-reported log-shipping health (#8406). Classified per beat by
+  // services/logShippingHealth and written ONLY on a state change. NULL state =
+  // unknown (old agent / field absent), never healthy and never failing.
+  // 'failing' episodes are timed on the server receive clock via
+  // logShippingFailureStartedAt; the "sustained" verdict is derived at read time.
+  // lastError is a closed vocabulary (never raw error text), shown only while failing.
+  logShippingState: varchar('log_shipping_state', { length: 16 }),
+  logShippingFailureStartedAt: timestamp('log_shipping_failure_started_at', { withTimezone: true }),
+  logShippingLastError: varchar('log_shipping_last_error', { length: 200 }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
@@ -359,6 +369,9 @@ export const devices = pgTable('devices', {
 }, (table) => ({
   idOrgSiteUnique: uniqueIndex('devices_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
+  logShippingFailingIdx: index('devices_log_shipping_failing_idx')
+    .on(table.logShippingFailureStartedAt)
+    .where(sql`log_shipping_failure_started_at IS NOT NULL`),
 }));
 
 // Linked device profiles for multi-boot systems (#2138). One row per physical

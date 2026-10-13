@@ -152,6 +152,10 @@ export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
   networkContextReset: z.unknown().optional(),
+  // #8608 — log-shipping health. z.unknown() so a malformed object can never
+  // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
+  // it separately (a bad value is `invalid`, never coerced to a healthy zero).
+  logShipping: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),

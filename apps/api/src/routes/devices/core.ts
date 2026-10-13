@@ -98,6 +98,7 @@ import {
 
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
+import { deriveLogShipping } from '../../services/logShippingHealth';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
  * These get SET NULL rather than deleted during cascade.
@@ -1316,6 +1317,11 @@ coreRoutes.get(
         // #6925 — agent-reported Breeze Assist install problem; drives the
         // "Assist enabled but not installed" list badge (#7023).
         helperInstallIssue: devices.helperInstallIssue,
+        // #8608 — raw log-shipping columns, consumed ONLY by deriveLogShipping
+        // below; they are never forwarded in the response.
+        logShippingState: devices.logShippingState,
+        logShippingFailureStartedAt: devices.logShippingFailureStartedAt,
+        logShippingLastError: devices.logShippingLastError,
         // #7067 — latest agent-logs ingest time; drives the "logs silent"
         // list badge.
         lastLogAt: devices.lastLogAt
@@ -1530,6 +1536,7 @@ coreRoutes.get(
         updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
         updateAttemptLastAt: d.updateAttemptLastAt ?? null,
         helperInstallIssue: d.helperInstallIssue ?? null,
+        logShipping: deriveLogShipping(d, new Date()),
         lastLogAt: d.lastLogAt ?? null,
         metrics: latestMetrics
           ? {
@@ -1716,6 +1723,8 @@ coreRoutes.get(
 
     return c.json({
       ...projectPublicDevice(device),
+      // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
+      logShipping: deriveLogShipping(device, new Date()),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { heartbeatSchema } from './schemas';
 
 // Tolerant-heartbeat contract: optional informational fields that fail
@@ -868,5 +869,51 @@ describe('heartbeatSchema — identity sync tolerance (#8317)', () => {
     const data = parse({ securityCapabilities: { identitySyncProtocolVersion: 'one', outboundNetworkPolicyVersion: 1 } });
     expect(data.securityCapabilities?.identitySyncProtocolVersion).toBeUndefined();
     expect(data.securityCapabilities?.outboundNetworkPolicyVersion).toBe(1);
+  });
+});
+
+// Log-shipping health W01 (#8608). The wire field is z.unknown() so a malformed
+// object can never reject the beat; strict parsing lives in parseLogShipping.
+describe('heartbeatSchema — logShipping tolerance (#8608)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const valid = {
+    schemaVersion: 1,
+    lastAttemptAt: '2026-10-12T10:00:00Z',
+    lastSuccessAt: '2026-10-12T09:59:00Z',
+    lastAttemptOk: false,
+    lastError: 'http 503',
+    queueDepth: 412,
+    droppedLogs: 0,
+  };
+
+  it('carries a well-formed logShipping object through untouched', () => {
+    const r = heartbeatSchema.safeParse({ ...minimal, logShipping: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).logShipping).toEqual(valid);
+  });
+
+  it('leaves logShipping undefined when absent (old agent)', () => {
+    const r = heartbeatSchema.safeParse(minimal);
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).logShipping).toBeUndefined();
+  });
+
+  it.each([
+    ['a string', 'garbage'],
+    ['a number', 42],
+    ['null', null],
+    ['wrong types', { schemaVersion: 'x', queueDepth: 'many' }],
+    ['a 5KB lastError', { ...valid, lastError: 'x'.repeat(5000) }],
+    ['negative ints', { ...valid, queueDepth: -1, droppedLogs: -1 }],
+  ])('never rejects the heartbeat for %s', (_label, bad) => {
+    expect(heartbeatSchema.safeParse({ ...minimal, logShipping: bad }).success).toBe(true);
+  });
+
+  it('new payload against the PRE-change schema snapshot parses and strips the key (new agent / old API)', () => {
+    // The shape heartbeatSchema had before this wave: non-strict, no logShipping.
+    const preChange = z.object({ status: z.enum(['ok', 'warning', 'error']), agentVersion: z.string() });
+    const r = preChange.safeParse({ ...minimal, logShipping: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).not.toHaveProperty('logShipping');
   });
 });
