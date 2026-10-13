@@ -863,14 +863,14 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     selfManagedDbContext: true,
     definition: {
       name: 'run_script',
-      description: "Run a saved scriptId or reviewed proposalId from propose_script on deviceIds or one device groupId (max 10 devices); never both of either pair. A pending proposalId is refused with proposal_review_pending — poll get_script_proposal until it finishes, then retry. Maintenance-window suppression is deferred, not failure. Approval is required.",
+      description: "Run a saved scriptId or reviewed proposalId (from propose_script) on deviceIds or one groupId, max 10 devices; give one of each pair. A pending proposalId returns proposal_review_pending: poll get_script_proposal, then retry. Maintenance-window deferral is not failure. Needs approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing library script to run' },
           proposalId: { type: 'string', description: 'UUID of a REVIEWED AI-authored proposal from propose_script; mutually exclusive with scriptId. If pending, poll get_script_proposal until done, then retry.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on (max 10). Give exactly one of deviceIds or groupId.' },
-          groupId: { type: 'string', description: 'Saved device group UUID to run on instead of deviceIds. Resolved to its current members when approval is requested, and that list is what runs; refused if it exceeds 10 devices.' },
+          groupId: { type: 'string', description: 'Saved device group UUID to run on instead of deviceIds. Its members are frozen when approval is requested and that list runs; refused above 10 devices.' },
           parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
           expectedContentSha256: { type: 'string', description: 'Optional: contentSha256 from get_script_details. If the script changed, nothing runs and it returns error script_content_mismatch.' },
           // #4888 — see services/scriptRunRequest.ts. Shared with the three
