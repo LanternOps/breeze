@@ -305,12 +305,15 @@ function shapeEffectiveConfig(
     if (opts.featureType && featureType !== opts.featureType) continue;
     // `featureType` repeats the map key, and the inheritedFrom* pair is null
     // unless the link came from a parent policy — both dropped when redundant.
-    const { inlineSettings, featureType: _key, inheritedFromPolicyId, inheritedFromPolicyName, ...rest } = feature;
+    const { inlineSettings, featureType: _key, inheritedFromPolicyId, inheritedFromPolicyName, sourceTargetId, ...rest } = feature;
     const inherited = inheritedFromPolicyId ? { inheritedFromPolicyId, inheritedFromPolicyName } : {};
     const hasInlineSettings = inlineSettings !== null && inlineSettings !== undefined
       && !(typeof inlineSettings === 'object' && Object.keys(inlineSettings as object).length === 0);
+    // The compact default page drops sourceTargetId: inheritanceChain carries
+    // the (level, target, policy) triple for every winning assignment, and one
+    // id per feature type is what kept the page from fitting the chat budget.
     features[featureType] = opts.includeSettings
-      ? { ...rest, ...inherited, inlineSettings }
+      ? { ...rest, sourceTargetId, ...inherited, inlineSettings }
       : { ...rest, ...inherited, hasInlineSettings };
   }
   const inheritanceChain = opts.featureType

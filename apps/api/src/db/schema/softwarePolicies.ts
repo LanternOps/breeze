@@ -15,7 +15,6 @@ import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
-import { configPolicyFeatureLinks } from './configurationPolicies';
 
 export const softwarePolicyModeEnum = pgEnum('software_policy_mode', [
   'allowlist',
@@ -126,8 +125,13 @@ export const softwarePolicies = pgTable('software_policies', {
    * own dimension (`resolveDeviceIdsForSoftwarePolicy`). Only the generator
    * writes it; write schemas never accept it. ON DELETE CASCADE: removing the
    * link removes the generated policy (never an uninstall).
+   *
+   * The FK (-> config_policy_feature_links(id) ON DELETE CASCADE) lives in the
+   * SQL migration only: a drizzle .references() would import
+   * ./configurationPolicies from here and close an import cycle through its
+   * schema dependencies (same reason as config_policy_backup_settings).
    */
-  managedByLinkId: uuid('managed_by_link_id').references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  managedByLinkId: uuid('managed_by_link_id'),
 }, (table) => ({
   orgIdIdx: index('software_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('software_policies_partner_id_idx').on(table.partnerId),
