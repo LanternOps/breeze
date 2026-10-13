@@ -174,13 +174,12 @@ ALTER TABLE backup_snapshot_retirements
   ADD COLUMN IF NOT EXISTS key_layout text NOT NULL DEFAULT 'legacy_flat';
 ALTER TABLE backup_snapshot_retirements ADD COLUMN IF NOT EXISTS key_prefix text;
 
--- Widen the snapshot layout CHECK. NOT VALID + VALIDATE keeps the
--- ACCESS EXCLUSIVE window to the catalog change; VALIDATE scans under
--- SHARE UPDATE EXCLUSIVE.
+-- Widen the snapshot layout CHECK. autoMigrate runs this whole file in ONE
+-- transaction, so the ACCESS EXCLUSIVE lock is held through the validation
+-- scan; a NOT VALID/VALIDATE split would buy nothing here.
 ALTER TABLE backup_snapshots DROP CONSTRAINT IF EXISTS backup_snapshots_key_layout_chk;
 ALTER TABLE backup_snapshots ADD CONSTRAINT backup_snapshots_key_layout_chk
-  CHECK (key_layout IN ('legacy_flat', 'prefixed_flat', 'device_scoped')) NOT VALID;
-ALTER TABLE backup_snapshots VALIDATE CONSTRAINT backup_snapshots_key_layout_chk;
+  CHECK (key_layout IN ('legacy_flat', 'prefixed_flat', 'device_scoped'));
 
 DO $$
 DECLARE t text;
@@ -191,8 +190,7 @@ BEGIN
       'ALTER TABLE %I ADD CONSTRAINT %I CHECK ('
       || '((key_layout = ''prefixed_flat'') = (key_prefix IS NOT NULL))'
       || ' AND (key_prefix IS NULL OR (key_prefix <> '''' AND key_prefix !~ ''(^/|/$|//)'' AND length(key_prefix) <= 256))'
-      || ') NOT VALID', t, t || '_key_prefix_chk');
-    EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I', t, t || '_key_prefix_chk');
+      || ')', t, t || '_key_prefix_chk');
   END LOOP;
 END $$;
 
@@ -217,7 +215,7 @@ END $$;
    - When a reservation is `FOUND`, raise `unique_violation` / `backup_snapshot_id_reservations_pkey` if `(r.key_layout, r.key_prefix) IS DISTINCT FROM (NEW.key_layout, NEW.key_prefix)`.
    - The synthesizing `INSERT` (the `legacy_published` branch) copies `NEW.key_layout, NEW.key_prefix`.
 
-   The function runs as an AFTER trigger, so it cannot rewrite `NEW`. Publish therefore has to *send* the reservation's pair (W01 Task 7), and the trigger proves it did.
+   The function runs as an AFTER trigger (verified: `AFTER INSERT OR UPDATE OF snapshot_id ON backup_snapshots`, `2026-11-08-120000-backup-snapshot-id-reservations.sql:354`), so it cannot rewrite `NEW`. Publish therefore has to *send* the reservation's pair (W01 Task 7), and the trigger proves it did.
 3. **Erasure evidence keeps the root.** Add `key_layout text` and `key_prefix text` (both nullable) to `backup_erasure_targets` (`2026-12-11-100000-backup-erasure-fences.sql`). `CREATE OR REPLACE` `public.breeze_backup_erasure_fence_on_delete()` from its latest definition so that a fenced `snapshot_prefix` target records `OLD.key_layout, OLD.key_prefix` from whichever source row is being deleted. `backup_erasure_targets` has **no `org_id`**: it is platform evidence with a system-only policy. So it needs no cascade or export-policy entry, and the integration suites confirm that.
 
 `backup_snapshot_attestations_key_layout_chk` stays `= 'legacy_flat'` (I6).
