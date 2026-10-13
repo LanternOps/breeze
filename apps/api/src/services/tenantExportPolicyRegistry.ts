@@ -277,8 +277,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "caller_verifications": tablePolicy("org_id", {
     "included":["id","org_id","contact_id","requester_binding_id","target_binding_id","target_entra_tenant_id","target_entra_oid","initiated_by_user_id","technician_label","action_scope","target_label","method","reason","stepup_session_id","stepup_auth_epoch","stepup_verified_at","status","tier","tier_reason","destination_id","destination_redacted","workstation_device_ref","device_hostname","os_username","os_principal_observed","agent_command_id","ticket_ref","ticket_number","attempt_no","expires_at","decided_at","decided_from_ip","consumed_intent_ref","consumed_at","attestation_note","fence_override_until","delivery_published_at","rejection_notified_at","created_at"],
     "reviewedIncluded":[],
-    // Challenge choices, reverse code and link-token hash are verifier material.
-    "excludedSensitive":["challenge_token_hash","match_value","decoy_values","reverse_code"],
+    // Challenge choices (incl. W03 display order), reverse code, link-token hash
+    // and the sealed W03 link token are verifier material.
+    "excludedSensitive":["challenge_token_hash","match_value","decoy_values","reverse_code","sealed_link_token","challenge_choices"],
     "excludedOpen":[],
     "specific":{"stepup_mfa_epoch":{"decision":"include","reviewedSensitiveName":true,"rationale":"Non-secret MFA epoch snapshot, included per caller-verification spec."}},
   }),
