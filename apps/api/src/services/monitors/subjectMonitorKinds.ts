@@ -11,7 +11,7 @@
  *    outbox (`subjectAlertOutbox.stagePendingSubjectEscalations`), because
  *    the subject path never calls `fireEscalationLatch`.
  */
-export const SUBJECT_MONITOR_KINDS = ['hardware_health', 'time_sync'] as const;
+export const SUBJECT_MONITOR_KINDS = ['hardware_health', 'time_sync', 'container_image_currency'] as const;
 
 export type SubjectMonitorKind = (typeof SUBJECT_MONITOR_KINDS)[number];
 

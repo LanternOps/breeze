@@ -691,6 +691,8 @@ export const PARTNER_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold', 're
 export const PARTNER_TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 export const PARTNER_TICKET_SOURCES = ['portal', 'email', 'alert', 'manual', 'api', 'ai'] as const;
 export const PARTNER_TICKET_WORK_KINDS = ['support', 'deliverable', 'project_task'] as const;
+// #7900: the fixed ITIL classification (separate from workKind).
+export const PARTNER_TICKET_TYPES = ['incident', 'service_request', 'problem', 'change'] as const;
 export const PARTNER_TICKET_COMMENT_TYPES = ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system'] as const;
 export const PARTNER_TICKET_ORIGIN_PRINCIPAL_KINDS = ['user', 'ai_agent', 'system', 'service_principal', 'unknown'] as const;
 /** Long free-text ticket fields are capped in the DTO (see alerts.message). */
@@ -719,6 +721,7 @@ export const partnerTicketExportRecordSchema = z.object({
   priority: z.enum(PARTNER_TICKET_PRIORITIES),
   source: z.enum(PARTNER_TICKET_SOURCES),
   workKind: z.enum(PARTNER_TICKET_WORK_KINDS),
+  ticketType: z.enum(PARTNER_TICKET_TYPES),
   categoryId: nullableUuid,
   assigneeId: nullableUuid,
   deviceId: nullableUuid,

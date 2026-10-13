@@ -293,6 +293,15 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       max: 10,
     },
   ],
+  container_image_currency: [
+    {
+      key: 'minDaysBehind',
+      labelKey: 'monitoring:monitors.fields.container_image_currency.minDaysBehind',
+      kind: 'number',
+      min: 0,
+      max: 365,
+    },
+  ],
 };
 
 /**
@@ -379,5 +388,7 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
         findings: ['sync_stale', 'sync_disabled'],
         consecutiveSnapshots: 2,
       };
+    case 'container_image_currency':
+      return { minDaysBehind: 7 };
   }
 }

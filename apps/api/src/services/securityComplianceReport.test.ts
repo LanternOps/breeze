@@ -13,6 +13,13 @@ const backupProviderMocks = vi.hoisted(() => ({
   loadBackupProviderEvidence: vi.fn(),
 }));
 vi.mock('./securityComplianceReportBackupProviders', () => backupProviderMocks);
+// EDR provider framework (#8164) coverage has its own module + suite
+// (securityComplianceReportEdr.test.ts, securityComplianceReport.edr.test.ts);
+// here it is a seam returning "no EDR", so the positional sequence is unchanged.
+vi.mock('./securityComplianceReportEdr', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./securityComplianceReportEdr')>()),
+  loadEdrDeviceCoverage: vi.fn(async () => new Set<string>()),
+}));
 // The partner approval-security policy is read through loadPartnerPolicy (a
 // system-context partner-axis read), not the positional db.select sequence.
 vi.mock('./authenticatorPolicy', async (importOriginal) => ({

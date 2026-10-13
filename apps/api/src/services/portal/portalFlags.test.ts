@@ -19,7 +19,7 @@ import {
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the thirteen visibility flags', () => {
+  it('lists exactly the fourteen visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
@@ -33,7 +33,8 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableHardwareInventory',
       'enablePerformanceMetrics',
       'enableSoftwareInventory',
-      'enableNetworkVisibility'
+      'enableNetworkVisibility',
+      'enableEdrVisibility'
     ]);
   });
 });
@@ -52,6 +53,11 @@ describe('PORTAL_SENSITIVE_FLAG_KEYS', () => {
   it('keeps the sensitive patch detail flag out of "Enable all"', () => {
     // enablePatchDetail (portal visibility W05) shows per-host missing patches.
     expect(PORTAL_VISIBILITY_FLAG_KEYS).not.toContain('enablePatchDetail');
+  });
+
+  it('keeps managed endpoint protection IN "Enable all" (strict but not sensitive, EDR #8164)', () => {
+    expect(PORTAL_VISIBILITY_FLAG_KEYS).toContain('enableEdrVisibility');
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableEdrVisibility');
   });
 
   it('keeps the sensitive vulnerability detail flag out of "Enable all"', () => {
@@ -81,6 +87,7 @@ describe('onPortalFlagsChanged', () => {
     enablePerformanceMetrics: false,
     enableSoftwareInventory: false,
     enableNetworkVisibility: false,
+    enableEdrVisibility: false,
   };
 
   beforeEach(() => {

@@ -116,6 +116,10 @@ export interface ThreatSourceCounts {
   native: number;
   sentinelOne: number;
   huntress: number;
+  /** EDR provider framework W02 (#8166): managed endpoint protection, vendor-neutral.
+   *  Present only when the org's enableEdrVisibility flag is on; omitted otherwise
+   *  so a portal that never enabled it keeps its previous payload byte-for-byte. */
+  edr?: number;
 }
 
 export interface ThreatWeekDto {

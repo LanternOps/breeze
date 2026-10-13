@@ -885,6 +885,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   analyze_metrics: { resource: 'devices', action: 'read' },
   get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
+  get_edr_status: { resource: 'devices', action: 'read' },
+  list_edr_detections: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },

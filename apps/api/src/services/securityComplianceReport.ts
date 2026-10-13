@@ -38,6 +38,8 @@ import {
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
+import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
+import { edrReportEvidenceAllowed } from './portal/edrVisibility';
 import { classifyDeviceProtection } from './portal/protection';
 
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
@@ -287,6 +289,12 @@ export async function generateSecurityCompliancePostureReport(
   // Device-scoped like the Huntress/SentinelOne evidence above, so it is
   // included for a site-restricted caller too — limited to their devices.
   const backupProviders = await loadBackupProviderEvidence(orgId, deviceIds);
+  // EDR provider framework (#8164): devices an EDR connector reports healthy.
+  // Same device scoping as the Huntress/SentinelOne evidence above.
+  // A portal (customer self-service) run honours the strict portal EDR flag.
+  const edrDevices = (await edrReportEvidenceAllowed(orgId, authority))
+    ? await loadEdrDeviceCoverage(orgId, deviceIds)
+    : new Set<string>();
 
   const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
   const orgWideEvidence = includeOrgWideEvidence
@@ -436,20 +444,27 @@ export async function generateSecurityCompliancePostureReport(
     const managed: string[] = [];
     if (huntressDevices.has(d.id)) managed.push('Huntress');
     if (s1Devices.has(d.id)) managed.push('SentinelOne');
+    // Generic label: the report is a customer deliverable (see
+    // securityComplianceReportEdr.ts), so the EDR vendor is never named.
+    if (edrDevices.has(d.id)) managed.push(EDR_PRODUCT_LABEL);
     const isManaged = managed.length > 0;
     const rtp = ss?.realTimeProtection ?? null;
     const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && ss.provider !== 'unknown' && rtp === true);
 
-    const protection = classifyDeviceProtection({
-      securityStatus: ss
-        ? {
-            provider: ss.provider,
-            realTimeProtection: ss.realTimeProtection,
-          }
-        : null,
-      hasS1Agent: s1Devices.has(d.id),
-      hasHuntressAgent: huntressDevices.has(d.id),
-    });
+    // A healthy EDR endpoint is managed protection, exactly like an S1 or
+    // Huntress agent (it outranks native AV state).
+    const protection = edrDevices.has(d.id)
+      ? 'protected'
+      : classifyDeviceProtection({
+          securityStatus: ss
+            ? {
+                provider: ss.provider,
+                realTimeProtection: ss.realTimeProtection,
+              }
+            : null,
+          hasS1Agent: s1Devices.has(d.id),
+          hasHuntressAgent: huntressDevices.has(d.id),
+        });
 
     if (ss) reporting += 1;
     if (isManaged) managedEdr += 1;
@@ -549,6 +564,15 @@ export async function generateSecurityCompliancePostureReport(
       active: true,
       lastSyncStatus: null,
       deviceIds: s1Devices
+    });
+  }
+  if (edrDevices.size > 0) {
+    productEvidence.push({
+      product: EDR_PRODUCT_LABEL,
+      category: 'edr',
+      active: true,
+      lastSyncStatus: null,
+      deviceIds: edrDevices
     });
   }
   for (const row of ssRows) {

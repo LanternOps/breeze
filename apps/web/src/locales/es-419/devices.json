@@ -1855,7 +1855,11 @@
       "description": "Actualizaciones pendientes vs instaladas",
       "installed": "{{count}} instalado",
       "pending": "{{count}} pendiente",
-      "title": "Cumplimiento de parches"
+      "title": "Cumplimiento de parches",
+      "imagesNotChecked_one": "{{count}} imagen de contenedor sin verificar",
+      "imagesNotChecked_other": "{{count}} imágenes de contenedor sin verificar",
+      "imagesBehind_one": "{{count}} imagen de contenedor desactualizada",
+      "imagesBehind_other": "{{count}} imágenes de contenedor desactualizadas"
     },
     "confirm": {
       "install": "Instalar",
@@ -4036,7 +4040,8 @@
       "state": "Estado",
       "image": "Imagen / OS invitado",
       "compose": "Proyecto de Compose",
-      "started": "Iniciado"
+      "started": "Iniciado",
+      "imageStatus": "Estado de la imagen"
     },
     "states": {
       "running": "En ejecución",
@@ -4054,6 +4059,30 @@
       "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
       "interval": "Intervalo de recopilación (minutos)",
       "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Desactualizada",
+      "current": "Actualizada",
+      "pinned": "Fijada",
+      "local": "Compilación local",
+      "not_found": "Etiqueta no encontrada",
+      "not_checked": "Sin verificar"
+    },
+    "imageStatusReason": {
+      "pending": "Aún sin verificar",
+      "private": "Registro privado: se requieren credenciales",
+      "unsupported_registry": "Registro no compatible",
+      "error": "Falló la verificación del registro; se reintentará",
+      "behind": "Hay una imagen más reciente publicada para esta etiqueta",
+      "current": "Coincide con el registro",
+      "pinned": "Fijada a un digest: no hay nada que comparar",
+      "local": "Compilada localmente: sin digest de registro",
+      "not_found": "La etiqueta ya no existe en el registro"
+    },
+    "imageFilter": {
+      "label": "Estado de la imagen",
+      "all": "Todas",
+      "empty": "Ninguna carga de trabajo coincide con este estado de imagen."
     }
   }
 }

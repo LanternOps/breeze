@@ -1,21 +1,13 @@
 import { bitdefenderAdapter } from './bitdefender/adapter';
 import type { EdrProviderAdapter } from './types';
+import { EDR_PROVIDER_KEYS, isEdrProviderKey, type EdrProviderKey } from './providerKeys';
 
-/**
- * Every EDR vendor Breeze can talk to. `edr_connections.provider` is a plain
- * varchar, so this list — not a migration — is the single place a vendor is added.
- */
-export const EDR_PROVIDER_KEYS = ['bitdefender'] as const;
-
-export type EdrProviderKey = (typeof EDR_PROVIDER_KEYS)[number];
+// The key list lives in the import-free ./providerKeys so validators can use it.
+export { EDR_PROVIDER_KEYS, isEdrProviderKey, type EdrProviderKey };
 
 const ADAPTERS: Record<EdrProviderKey, EdrProviderAdapter> = {
   bitdefender: bitdefenderAdapter,
 };
-
-export function isEdrProviderKey(key: string): key is EdrProviderKey {
-  return (EDR_PROVIDER_KEYS as readonly string[]).includes(key);
-}
 
 /** Adapter for `key`, or a loud throw. Membership first so `__proto__`/`constructor` never resolve. */
 export function getEdrProvider(key: string): EdrProviderAdapter {

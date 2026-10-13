@@ -214,6 +214,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_dr_execution_status',
   // W01 (#6755) follow-up
   'get_dr_plan_details',
+  'get_edr_status', // EDR provider framework (#8166) Tier-1 read
   'get_effective_configuration',
   // W01 (#6755)
   'get_elevation_history',
@@ -286,6 +287,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',
+  'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
   // W01 (#6755)

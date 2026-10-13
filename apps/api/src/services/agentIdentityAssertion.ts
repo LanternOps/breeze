@@ -22,12 +22,24 @@
  *
  * This never creates the deployment key (see getActiveSigningKeyId): on a
  * deployment that has none, no assertion is sent.
+ *
+ * Protocol v2 (PAM ownership epochs, #8202 W4) adds the device's ownership
+ * epoch to the signed bytes, under its own domain. It is signed only to an
+ * agent advertising identitySyncProtocolVersion >= 2, and also when org/site
+ * match but the agent holds an older epoch than the row. The agent persists
+ * the epoch with org/site and restarts; the next beat reports it and the
+ * heartbeat records it in devices.agent_identity_epoch_ack, which the PAM
+ * dispatch gate compares with devices.ownership_epoch. v1 bytes and the v1
+ * signing decision are unchanged.
  */
+import { sql, type SQL } from 'drizzle-orm';
+import { devices } from '../db/schema';
 import type { IdentityAssertionRejection } from '../routes/agents/schemas';
 import { getActiveSigningKeyId, signBytesWithActiveKey } from './manifestSigning';
 import { getRedis } from './redis';
 
 export const AGENT_IDENTITY_ASSERTION_DOMAIN = 'breeze-agent-identity-v1';
+export const AGENT_IDENTITY_ASSERTION_DOMAIN_V2 = 'breeze-agent-identity-v2';
 // Informational: the nonce, not the clock, makes an assertion fresh. The agent
 // only checks that the stated window is well formed and at most an hour.
 export const AGENT_IDENTITY_ASSERTION_LIFETIME_MS = 15 * 60 * 1000;
@@ -45,22 +57,38 @@ export type AgentIdentityAssertionV1 = {
   signature: string;
 };
 
+export type AgentIdentityAssertionV2 = Omit<AgentIdentityAssertionV1, 'v'> & {
+  v: 2;
+  ownershipEpoch: number;
+};
+
+export type AgentIdentityAssertion = AgentIdentityAssertionV1 | AgentIdentityAssertionV2;
+
 export type UnsignedAgentIdentityAssertionV1 = Omit<AgentIdentityAssertionV1, 'signature'>;
+export type UnsignedAgentIdentityAssertionV2 = Omit<AgentIdentityAssertionV2, 'signature'>;
+export type UnsignedAgentIdentityAssertion = UnsignedAgentIdentityAssertionV1 | UnsignedAgentIdentityAssertionV2;
 
 export type ReportedAgentIdentity = {
   deviceId: string;
   orgId: string;
   siteId: string;
   nonce: string;
+  /** Epoch the agent loaded (v2 agents, #8206); absent while it has none. */
+  ownershipEpoch?: number;
 };
 
+export type IdentitySyncProtocolVersion = 0 | 1 | 2;
+
 /**
- * Normalize the only identity-sync protocol version implemented here. Absent,
- * malformed or a future version is 0, and no assertion is sent: an agent that
- * cannot verify one would only ignore it.
+ * Normalize the agent's identity-sync capability. 1 is v1; 2 or any later
+ * integer is v2, the newest version implemented here (a later agent still
+ * verifies v2). Absent or malformed is 0, and no assertion is sent: an agent
+ * that cannot verify one would only ignore it.
  */
-export function normalizeIdentitySyncProtocolVersion(value: unknown): 0 | 1 {
-  return value === 1 ? 1 : 0;
+export function normalizeIdentitySyncProtocolVersion(value: unknown): IdentitySyncProtocolVersion {
+  if (value === 1) return 1;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 2) return 2;
+  return 0;
 }
 
 /**
@@ -78,23 +106,112 @@ export function agentIdentityNeedsSync(
   return reported.orgId !== device.orgId || reported.siteId !== device.siteId;
 }
 
+/**
+ * Which assertion version this beat gets (0 = none).
+ *
+ * - v1 agent: v1 when org/site differ, exactly as before.
+ * - v2 agent: v2 when org/site differ, or when the epoch it holds is older
+ *   than the row's. An agent that reports no epoch is treated as holding
+ *   epoch 1, the epoch every device starts in, so a never-moved device is
+ *   never signed for (agents upgrading to v2 do not all restart). An agent
+ *   reporting an epoch above the row is never signed for: it would refuse a
+ *   lower epoch anyway.
+ */
+export function agentIdentityAssertionVersionToSign(
+  reported: ReportedAgentIdentity | undefined,
+  device: { id: string; orgId: string; siteId: string; ownershipEpoch: number },
+  protocolVersion: IdentitySyncProtocolVersion,
+): IdentitySyncProtocolVersion {
+  if (!reported || protocolVersion === 0 || reported.deviceId !== device.id) return 0;
+  const identityDiffers = agentIdentityNeedsSync(reported, device);
+  if (protocolVersion === 1) return identityDiffers ? 1 : 0;
+  const reportedEpoch = reported.ownershipEpoch ?? 1;
+  return identityDiffers || reportedEpoch < device.ownershipEpoch ? 2 : 0;
+}
+
+/**
+ * The epoch to record in devices.agent_identity_epoch_ack for this beat, or
+ * null to leave it. Only an epoch the agent reported, only while it reports
+ * the row's device and org (the epoch belongs to that org's identity), never
+ * above the row's epoch, and only forward. The write is also monotonic and
+ * bounded in SQL, so a concurrent move cannot be overtaken.
+ */
+export function agentIdentityEpochAckToRecord(
+  reported: ReportedAgentIdentity | undefined,
+  device: { id: string; orgId: string; ownershipEpoch: number; agentIdentityEpochAck: number | null },
+): number | null {
+  const epoch = reported?.ownershipEpoch;
+  if (!reported || epoch === undefined || !Number.isSafeInteger(epoch) || epoch < 1) return null;
+  if (reported.deviceId !== device.id || reported.orgId !== device.orgId) return null;
+  if (epoch > device.ownershipEpoch) return null;
+  if (epoch <= (device.agentIdentityEpochAck ?? 0)) return null;
+  return epoch;
+}
+
+/**
+ * The SET expression for devices.agent_identity_epoch_ack given an epoch from
+ * agentIdentityEpochAckToRecord. Evaluated against the row at write time:
+ * monotonic (GREATEST with the stored ack) and never above the row's current
+ * ownership_epoch, so a concurrent move or a stale read cannot lower the ack
+ * or push it past the row.
+ */
+export function agentIdentityEpochAckUpdateSql(epoch: number): SQL {
+  return sql`CASE
+    WHEN ${epoch}::integer <= ${devices.ownershipEpoch}
+      THEN GREATEST(COALESCE(${devices.agentIdentityEpochAck}, 0), ${epoch}::integer)
+    ELSE ${devices.agentIdentityEpochAck}
+  END`;
+}
+
 function secondPrecision(d: Date): string {
   return `${d.toISOString().slice(0, 19)}Z`;
 }
 
-export function canonicalAgentIdentityAssertionBytes(a: UnsignedAgentIdentityAssertionV1): Buffer {
-  if (a.v !== 1) throw new Error('unsupported agent identity assertion version');
-  const lines = [
-    AGENT_IDENTITY_ASSERTION_DOMAIN,
-    a.agentId,
-    a.deviceId,
-    a.orgId,
-    a.siteId,
-    a.nonce,
-    a.issuedAt,
-    a.expiresAt,
-    a.keyId,
-  ];
+/**
+ * The exact bytes signed: the domain and one field per line.
+ *
+ * v1: breeze-agent-identity-v1, agentId, deviceId, orgId, siteId, nonce,
+ *     issuedAt, expiresAt, keyId.
+ * v2: breeze-agent-identity-v2, agentId, deviceId, orgId, siteId,
+ *     ownershipEpoch (positive integer, decimal), nonce, issuedAt, expiresAt,
+ *     keyId.
+ *
+ * Pinned byte-for-byte by golden tests here and in the agent
+ * (heartbeat/identity_sync_test.go and identity_sync_v2_test.go).
+ */
+export function canonicalAgentIdentityAssertionBytes(a: UnsignedAgentIdentityAssertion): Buffer {
+  let lines: string[];
+  if (a.v === 1) {
+    lines = [
+      AGENT_IDENTITY_ASSERTION_DOMAIN,
+      a.agentId,
+      a.deviceId,
+      a.orgId,
+      a.siteId,
+      a.nonce,
+      a.issuedAt,
+      a.expiresAt,
+      a.keyId,
+    ];
+  } else if (a.v === 2) {
+    if (!Number.isSafeInteger(a.ownershipEpoch) || a.ownershipEpoch < 1) {
+      throw new Error('agent identity assertion ownership epoch must be a positive integer');
+    }
+    lines = [
+      AGENT_IDENTITY_ASSERTION_DOMAIN_V2,
+      a.agentId,
+      a.deviceId,
+      a.orgId,
+      a.siteId,
+      String(a.ownershipEpoch),
+      a.nonce,
+      a.issuedAt,
+      a.expiresAt,
+      a.keyId,
+    ];
+  } else {
+    throw new Error('unsupported agent identity assertion version');
+  }
   for (const line of lines) {
     if (line.length === 0) throw new Error('agent identity assertion field is empty');
     // eslint-disable-next-line no-control-regex
@@ -103,32 +220,50 @@ export function canonicalAgentIdentityAssertionBytes(a: UnsignedAgentIdentityAss
   return Buffer.from(lines.join('\n'), 'utf8');
 }
 
-/**
- * Sign the row's identity as the answer to one heartbeat. Returns null when
- * the deployment has no signing key yet; this path never creates one.
- */
-export async function signAgentIdentityAssertion(input: {
+type SignAgentIdentityAssertionInput = {
   agentId: string;
   deviceId: string;
   orgId: string;
   siteId: string;
   nonce: string;
   now?: Date;
-}): Promise<AgentIdentityAssertionV1 | null> {
+};
+
+/**
+ * Sign the row's identity as the answer to one heartbeat: v2 when an
+ * ownershipEpoch is given, v1 (byte-identical to before) otherwise. Returns
+ * null when the deployment has no signing key yet; this path never creates one.
+ */
+export async function signAgentIdentityAssertion(
+  input: SignAgentIdentityAssertionInput & { ownershipEpoch: number },
+): Promise<AgentIdentityAssertionV2 | null>;
+export async function signAgentIdentityAssertion(
+  input: SignAgentIdentityAssertionInput & { ownershipEpoch?: undefined },
+): Promise<AgentIdentityAssertionV1 | null>;
+export async function signAgentIdentityAssertion(
+  input: SignAgentIdentityAssertionInput & { ownershipEpoch?: number },
+): Promise<AgentIdentityAssertion | null>;
+export async function signAgentIdentityAssertion(
+  input: SignAgentIdentityAssertionInput & { ownershipEpoch?: number },
+): Promise<AgentIdentityAssertion | null> {
   const keyId = await getActiveSigningKeyId();
   if (!keyId) return null;
   const now = input.now ?? new Date();
-  const unsigned: UnsignedAgentIdentityAssertionV1 = {
-    v: 1,
+  const identity = {
     agentId: input.agentId,
     deviceId: input.deviceId,
     orgId: input.orgId,
     siteId: input.siteId,
+  };
+  const freshness = {
     nonce: input.nonce,
     issuedAt: secondPrecision(now),
     expiresAt: secondPrecision(new Date(now.getTime() + AGENT_IDENTITY_ASSERTION_LIFETIME_MS)),
     keyId,
   };
+  const unsigned: UnsignedAgentIdentityAssertion = input.ownershipEpoch === undefined
+    ? { v: 1, ...identity, ...freshness }
+    : { v: 2, ...identity, ownershipEpoch: input.ownershipEpoch, ...freshness };
   const signed = await signBytesWithActiveKey(canonicalAgentIdentityAssertionBytes(unsigned));
   if (signed.keyId !== keyId) {
     throw new Error('active signing key rotated while signing an agent identity assertion');

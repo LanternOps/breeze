@@ -3,6 +3,12 @@ import type { ProtectionState } from '@breeze/shared';
 
 export type { ProtectionState };
 
+/**
+ * Generic, vendor-neutral label the customer portal shows for any EDR
+ * integration. No provider key, vendor name or product name may ever reach a
+ * portal DTO (EDR provider framework W02, #8166).
+ */
+export const PORTAL_EDR_LABEL = 'Managed endpoint protection';
 type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
 
 /**
@@ -22,8 +28,16 @@ export function classifyDeviceProtection(input: {
   } | null;
   hasS1Agent: boolean;
   hasHuntressAgent: boolean;
+  /**
+   * EDR provider framework W02 (#8166): a linked `edr_endpoints` row that is
+   * `health = 'healthy' AND online IS TRUE`. The caller computes this (SQL) and
+   * passes false when the org's enableEdrVisibility flag is off. Unhealthy,
+   * degraded, unknown or offline endpoints must arrive as false: they never
+   * upgrade a device to protected. Optional so existing callers are unchanged.
+   */
+  hasEdrEndpoint?: boolean;
 }): ProtectionState {
-  if (input.hasS1Agent || input.hasHuntressAgent) {
+  if (input.hasS1Agent || input.hasHuntressAgent || input.hasEdrEndpoint === true) {
     return 'protected';
   }
 

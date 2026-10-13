@@ -35,6 +35,8 @@ export const PORTAL_DISABLED_CODES = [
   'PORTAL_PATCH_DETAIL_DISABLED',
   // Portal advanced visibility W06 (#7736): sensitive vulnerability detail, strict fail-closed.
   'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  // EDR provider framework W02 (#8166): strict flag; gates the EDR leg of the security view, no page of its own.
+  'PORTAL_EDR_VISIBILITY_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);

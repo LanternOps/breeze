@@ -1855,7 +1855,11 @@
       "description": "Atualizações pendentes vs. instaladas",
       "installed": "{{count}} instaladas",
       "pending": "{{count}} pendentes",
-      "title": "Conformidade de patches"
+      "title": "Conformidade de patches",
+      "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas",
+      "imagesBehind_one": "{{count}} imagem de contêiner desatualizada",
+      "imagesBehind_other": "{{count}} imagens de contêiner desatualizadas"
     },
     "confirm": {
       "install": "Instalar",
@@ -4036,7 +4040,8 @@
       "state": "Estado",
       "image": "Imagem / OS convidado",
       "compose": "Projeto Compose",
-      "started": "Iniciado"
+      "started": "Iniciado",
+      "imageStatus": "Status da imagem"
     },
     "states": {
       "running": "Em execução",
@@ -4054,6 +4059,30 @@
       "laterRelease": "A listagem de Hyper-V e Proxmox VE chegará em uma versão posterior do agente; essas opções passarão a valer então.",
       "interval": "Intervalo de coleta (minutos)",
       "invalidInterval": "O intervalo deve ser um número inteiro de minutos entre {{min}} e {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Desatualizada",
+      "current": "Atualizada",
+      "pinned": "Fixada",
+      "local": "Build local",
+      "not_found": "Tag não encontrada",
+      "not_checked": "Não verificada"
+    },
+    "imageStatusReason": {
+      "pending": "Ainda não verificada",
+      "private": "Registro privado — credenciais necessárias",
+      "unsupported_registry": "Registro não suportado",
+      "error": "Falha na verificação do registro — será repetida",
+      "behind": "Uma imagem mais recente foi publicada para esta tag",
+      "current": "Corresponde ao registro",
+      "pinned": "Fixada em um digest — nada a comparar",
+      "local": "Criada localmente — sem digest de registro",
+      "not_found": "A tag não existe mais no registro"
+    },
+    "imageFilter": {
+      "label": "Status da imagem",
+      "all": "Todas",
+      "empty": "Nenhuma carga de trabalho corresponde a este status de imagem."
     }
   }
 }

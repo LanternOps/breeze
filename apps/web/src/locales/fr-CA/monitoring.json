@@ -192,7 +192,8 @@
     "script": "Vérification de script",
     "network_check": "Vérification réseau",
     "hardware_health": "État du matériel",
-    "time_sync": "Synchronisation de l’heure"
+    "time_sync": "Synchronisation de l’heure",
+    "container_image_currency": "Actualité des images de conteneur"
   },
   "fields": {
     "operator": "Comparaison",
@@ -647,6 +648,9 @@
           "policy_not_applied": "La stratégie horaire n’a pas été appliquée",
           "policy_conflict_gpo": "Une stratégie de groupe contrôle les paramètres horaires"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Nombre minimal de jours de retard"
       }
     }
   },

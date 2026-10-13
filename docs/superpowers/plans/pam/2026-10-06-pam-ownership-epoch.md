@@ -976,6 +976,106 @@ Windows lab (per the `devpush_to_remote_vm_gotchas` recipe):
 Repeat with a v1 agent build: there must be no wedge (admission opens via
 `stale`). Record the lab evidence in the PR.
 
+### W4 shipped wire contract (#8206)
+
+W4 shipped against a redesign. The signed identity sync from #8317 already
+existed when W4 started, so the agent learns its identity in one way only:
+the signed identity assertion, `config.PersistServerIdentity`, then the
+existing service restart.
+
+**Dropped from this plan:**
+- Task 4.2. There is no identity snapshot, no `Subscribe()` and no in-place
+  rollback-engine rebuild. A restart reloads every identity reader.
+- The delivery half of Task 4.4. Identity is never sent unsigned, neither on
+  the heartbeat response nor on the WS connect frame. The restart also
+  reconnects the socket, which closes W3's concern about a socket that
+  stays connected with its connect-time org.
+
+**Assertion v2.** The agent advertises
+`securityCapabilities.identitySyncProtocolVersion: 2`. The server treats any
+integer ≥ 2 as v2 and signs v2 only to those agents. v1 agents get v1
+assertions, with the same bytes and the same decision as before.
+
+The v2 signed bytes are the following lines, joined with `\n`:
+
+```
+breeze-agent-identity-v2
+<agentId>
+<deviceId>
+<orgId>
+<siteId>
+<ownershipEpoch>        positive integer, decimal, no sign or leading zeros
+<nonce>
+<issuedAt>
+<expiresAt>
+<keyId>
+```
+
+- The JSON key on the assertion is `ownershipEpoch` (a number) and `v` is `2`.
+- The Ed25519 signature uses the same deployment key, the same pin set and the
+  same nonce echo as v1.
+- A v1 assertion that carries `ownershipEpoch` is refused, because that field
+  is unsigned.
+- A golden fixture pins these bytes and one signature on both sides:
+  `agentIdentityAssertion.test.ts` and `identity_sync_v2_test.go`.
+
+**When the server signs (v2 agent).** It signs when the org or site differs
+from the row. It also signs when the agent's reported epoch is lower than
+`devices.ownership_epoch`; an absent reported epoch counts as 1. So:
+- A device that never moved is never signed for.
+- It is never signed for when the reported epoch is above the row's.
+
+**Agent rules.**
+- Refuse an epoch lower than the loaded one.
+- Refuse an org change at an unchanged epoch. A site change at the same epoch
+  is accepted.
+- Persist the epoch with org/site, and never lower it on disk. Non-identity
+  saves keep the on-disk epoch.
+- Then restart, also when only the epoch changed.
+- The restart marker records the epoch. The existing cooldown and attempt cap
+  therefore also bound a restart for an epoch-only change.
+- The next heartbeat reports `reportedIdentity.ownershipEpoch`, which is
+  omitted while the agent has no epoch.
+
+**Ack.**
+- `devices.agent_identity_epoch_ack` (integer, nullable) is set by the
+  heartbeat route. The value is the epoch the agent reported.
+- It is written only when the reported device and org match the row and the
+  epoch is ≥ 1.
+- It is written monotonically, `GREATEST(coalesce(ack, 0), reported)`, and
+  never above `ownership_epoch`. The SQL checks both at write time.
+- It rides the existing per-beat device update.
+
+**Dispatch gate.** `jobs/pamActuationWorker.ts` sends an apply only when
+`ack = ownership_epoch`.
+- A null ack counts as acknowledged only at `ownership_epoch = 1`.
+- An apply that fails the gate is failed closed with
+  `failure_code = agent_identity_epoch_unacknowledged`. This follows the
+  protocol-v2 gate, because nothing re-drives a skipped actuation.
+- Cleanup is not gated.
+
+**Reconciliation v2.**
+- The binding request asks for protocol v2. A 400 drops it to v1 for the
+  process lifetime, with one v1 retry per chunk.
+- Result and received-observation acknowledgements stay v1.
+- `retired` retires the ledger entry through an optional
+  `lifecycleManager.Retire` capability, which takes the operation gate. It
+  refuses entries that are unresolved, entries with a live job or owned
+  process, and generation mismatches. A refusal keeps the observation staged,
+  and admission stays closed.
+- On already-queued outbox entries, `retired` behaves like `stale`.
+
+**Carry-forwards for W6:**
+- Hosted deployments without a deployment signing key never send an
+  assertion. Moved devices there never reach the new epoch ack, so PAM stays
+  closed on them (fails closed).
+- On an A → B → A return trip, the agent's stale B-epoch ledger entries block
+  admission until v2 reconciliation retires them after the restart (fails
+  closed).
+- An agent that advertises v2 against a server older than W4 receives no
+  assertion at all, because the older server accepts exactly `1`. Normal
+  rollout is server first.
+
 ---
 
 ## Wave 5 — Merge evidence holds and survivor read access

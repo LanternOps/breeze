@@ -34,7 +34,8 @@ func init() {
 	serviceCmd.AddCommand(serviceUninstallCmd)
 	serviceCmd.AddCommand(serviceStartCmd)
 	serviceCmd.AddCommand(serviceStopCmd)
-	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation and remember the choice (the running agent will not install it either)")
+	serviceInstallCmd.Flags().BoolVar(&watchdogOptIn, "watchdog", false, watchdogOptInUsage)
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -72,6 +73,19 @@ var serviceInstallCmd = &cobra.Command{
 				return fmt.Errorf("the agent config folder %s cannot be used: %w", config.MachineConfigDir(), err)
 			}
 		}
+		// Persist --no-watchdog / --watchdog (or honour a standing opt-out)
+		// before any install side effect: a failed marker write aborts here.
+		// On a fresh host the machine config folder may not exist yet; it is
+		// created with the agent's own private descriptor only when the
+		// opt-out marker must be written.
+		skipWatchdog, err := applyWatchdogFlags(defaultWatchdogFlagDeps(func() error {
+			_, err := config.PrepareMainAgentLockDir()
+			return err
+		}), noWatchdog, watchdogOptIn)
+		if err != nil {
+			return err
+		}
+
 		existingCfg, cfgErr := config.Load(cfgFile)
 		agentID := ""
 		if existingCfg != nil {
@@ -122,7 +136,7 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		if !noWatchdog {
+		if !skipWatchdog {
 			serverURL := persistedServerURLForInstall()
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: serviceExePath,

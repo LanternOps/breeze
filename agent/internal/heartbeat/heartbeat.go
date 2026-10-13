@@ -126,10 +126,14 @@ type HeartbeatPayload struct {
 	// on (helper.InstallIssue* codes, #6925), e.g. enabled but not installed
 	// with no helper version offered. Omitted when there is none, so older
 	// servers (which strip unknown keys) and healthy devices send nothing.
-	HelperInstallIssue        string            `json:"helperInstallIssue,omitempty"`
-	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
-	BackupVersion             string            `json:"backupVersion,omitempty"`
-	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
+	HelperInstallIssue string `json:"helperInstallIssue,omitempty"`
+	WatchdogVersion    string `json:"watchdogVersion,omitempty"`
+	// WatchdogInstall describes a watchdog that is NOT installed and is being
+	// (or will not be) repaired (#8619). Omitted on a healthy host. Closed
+	// enums only; an API that predates it strips the unknown key.
+	WatchdogInstall           *WatchdogInstallReport `json:"watchdogInstall,omitempty"`
+	BackupVersion             string                 `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string      `json:"rollbackComponentVersions,omitempty"`
 	// BackupReadProtocolVersion is the brokered storage-read protocol the
 	// INSTALLED backup helper reports (breeze-backup --protocol-info), never
 	// inferred from this agent's own version. Always present, set through
@@ -800,16 +804,22 @@ type Heartbeat struct {
 	// PAM startup reconciliation has a separate, non-expiring REST outbox.
 	// pamReconciliationMu protects only the small in-memory staged set and
 	// availability/error markers; it is never held across disk or network I/O.
-	pamReconciliationOutbox                     *pamReconciliationOutbox
-	pamReconciliationMu                         sync.Mutex
-	pamReconciliationStaged                     map[string]pamlifetime.Result
-	pamReconciliationStagedReasons              map[string]string
-	pamReconciliationBlocked                    map[string]struct{}
-	pamReconciliationIdentityFailures           int
-	pamReconciliationManagerAvailable           bool
-	pamReconciliationWake                       chan struct{}
-	pamReconciliationRetryOnce                  sync.Once
-	pamReconciliationPassRunning                atomic.Bool
+	pamReconciliationOutbox           *pamReconciliationOutbox
+	pamReconciliationMu               sync.Mutex
+	pamReconciliationStaged           map[string]pamlifetime.Result
+	pamReconciliationStagedReasons    map[string]string
+	pamReconciliationBlocked          map[string]struct{}
+	pamReconciliationIdentityFailures int
+	pamReconciliationManagerAvailable bool
+	pamReconciliationWake             chan struct{}
+	pamReconciliationRetryOnce        sync.Once
+	pamReconciliationPassRunning      atomic.Bool
+	// pamBindingV1Fallback latches when a server refused binding protocol v2
+	// with 400 (#8206); the process then asks for v1 until it restarts.
+	pamBindingV1Fallback atomic.Bool
+	// pamRetirementRefusalsLogged bounds the refused-retirement log to once
+	// per observation and reason.
+	pamRetirementRefusalsLogged                 sync.Map
 	pamLocalReconcileRunning                    atomic.Bool
 	pamReconciliationResolverUnavailable        bool
 	pamReconciliationAcknowledgementUnavailable bool
@@ -894,8 +904,12 @@ type Heartbeat struct {
 	// FAILING target so we don't re-download + restart the service every tick.
 	watchdogUpgradeMu        sync.Mutex
 	watchdogInstalledVersion string
-	watchdogLastAttemptVer   string
-	watchdogLastAttemptAt    time.Time
+	// watchdogEnsure is the bounded install-a-missing-watchdog path (#8619),
+	// wired by EnableWatchdogEnsure on the agent's start path. nil = not
+	// wired: handleWatchdogUpgrade behaves exactly as before.
+	watchdogEnsure         *watchdogEnsureState
+	watchdogLastAttemptVer string
+	watchdogLastAttemptAt  time.Time
 	// watchdogVersionDisk caches the version parsed from the on-disk watchdog
 	// binary so we exec it at most once per process run; watchdogVersionRead
 	// records that a STABLE read happened (not installed, or a successful read).
@@ -4869,6 +4883,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// Observed by the previous heartbeat's Apply (#6925).
 		HelperInstallIssue: h.helperMgr.InstallIssue(),
 		WatchdogVersion:    h.installedWatchdogVersion(),
+		WatchdogInstall:    h.watchdogInstallReport(),
 		BackupVersion:      h.installedBackupVersion(),
 		HealthStatus:       &healthSnapshot,
 		DeviceRole:         deviceRole,
@@ -7602,6 +7617,15 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
+	// A watchdog that is not REGISTERED cannot be fixed by the swap below
+	// (Windows OpenService fails; Unix never writes the unit) and must not be
+	// retried on its uncapped in-memory cooldown. ensureWatchdog owns that
+	// case — bounded, persisted, opt-out aware — and runs before the
+	// auto-update early return so disabled_by_policy can be reported.
+	if h.watchdogEnsure != nil && h.ensureWatchdog(targetVersion) {
+		return
+	}
+
 	if !h.autoUpdate() {
 		log.Info("watchdog upgrade available but auto_update is disabled",
 			"targetVersion", targetVersion)
@@ -7694,7 +7718,13 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // the per-OS installAndRestartWatchdog implementations so the trust-verified
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
-	u := updater.New(&updater.Config{
+	return h.newWatchdogUpdater("").DownloadBinary(targetVersion)
+}
+
+// newWatchdogUpdater builds the authenticated watchdog-component updater.
+// tempDir "" downloads to the OS temp dir.
+func (h *Heartbeat) newWatchdogUpdater(tempDir string) *updater.Updater {
+	return updater.New(&updater.Config{
 		ServerURL:                   h.serverURL,
 		BackupServerURL:             h.backupServerURL(),
 		AuthToken:                   h.secureToken,
@@ -7702,8 +7732,8 @@ func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error)
 		Component:                   "watchdog",
 		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
+		TempDir:                     tempDir,
 	})
-	return u.DownloadBinary(targetVersion)
 }
 
 // handleUpgrade performs an auto-update to the specified version.

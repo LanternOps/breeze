@@ -6,7 +6,7 @@ The actions executor serves the consent operations as well as mutations. Behind 
 
 ## Scope and trust boundary
 
-Customer Graph Actions uses one dedicated multitenant Entra application, the fixed `customer-graph-actions` profile (manifest version 1), certificate client authentication, and app-only (application-permission) tokens. It is **separate** from — and must not reuse the application, certificate, vault secret, or signing key of — the Customer Graph Read executor, the legacy direct M365 connector, delegated communications, or PowerShell.
+Customer Graph Actions uses one dedicated multitenant Entra application, the fixed `customer-graph-actions` profile (manifest version 2), certificate client authentication, and app-only (application-permission) tokens. It is **separate** from — and must not reuse the application, certificate, vault secret, or signing key of — the Customer Graph Read executor, the legacy direct M365 connector, delegated communications, or PowerShell.
 
 Only the actions-executor deployment receives its vault's data-plane access. The Breeze API owns authorization, org→tenant mapping, the durable approval layer, lifecycle, and audit. It calls only the private operations `POST /v1/verify-identity`, `POST /v1/retest`, and `POST /v1/execute-action`. `GET /healthz` proves process health, not Key Vault or Microsoft Graph access.
 
@@ -42,12 +42,12 @@ Because mutations use **app-only** authentication (certificate client-credential
 
 ## Entra application and permission manifest
 
-Create one dedicated multitenant application for Customer Graph Actions. Do not reuse the read application or any other. The authoritative manifest is the shared code profile `customer-graph-actions` (manifest version 1) in `packages/shared/src/m365/profiles.ts`; configure exactly these Microsoft Graph **application** permissions and grant customer-admin consent through Breeze:
+Create one dedicated multitenant application for Customer Graph Actions. Do not reuse the read application or any other. The authoritative manifest is the shared code profile `customer-graph-actions` (manifest version 2) in `packages/shared/src/m365/profiles.ts`; configure exactly these Microsoft Graph **application** permissions and grant customer-admin consent through Breeze:
 
 | Permission | App role ID | Purpose |
 |---|---|---|
-| `User.ReadWrite.All` | `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4` | Disable a user (`accountEnabled=false`); base for user mutations. |
-| `User-PasswordProfile.ReadWrite.All` | `56760768-b641-451f-8906-e1b8ab31bca7` | Reset a user's password (`passwordProfile` with `forceChangePasswordNextSignIn`). |
+| `User.ReadWrite.All` | `741f803b-c850-494e-b5df-cde7c675a1ca` | Disable a user (`accountEnabled=false`); base for user mutations. |
+| `User-PasswordProfile.ReadWrite.All` | `cc117bb9-00cf-4eb8-b580-ea2a878fe8f7` | Reset a user's password (`passwordProfile` with `forceChangePasswordNextSignIn`). |
 
 Both belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. This is the **complete, exact** current manifest — `applicationPermissionAssignments` in `profiles.ts` carries exactly these two app-role GUIDs, and a real-tenant consent must reconcile to exactly these two grants, no more and no fewer (see the [real-tenant runbook](../runbooks/m365-customer-graph-actions-real-tenant.md)). The only mutations currently shipped are `m365.user.disable` (`m365_disable_user`, needs `User.ReadWrite.All`) and `m365.user.reset_password` (`m365_reset_password`, needs `User-PasswordProfile.ReadWrite.All`).
 

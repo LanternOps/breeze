@@ -192,7 +192,8 @@
     "script": "Verificação de script",
     "network_check": "Verificação de rede",
     "hardware_health": "Integridade do hardware",
-    "time_sync": "Sincronização de horário"
+    "time_sync": "Sincronização de horário",
+    "container_image_currency": "Atualização de imagens de contêiner"
   },
   "fields": {
     "operator": "Comparação",
@@ -647,6 +648,9 @@
           "policy_not_applied": "A política de hora não foi aplicada",
           "policy_conflict_gpo": "A Política de Grupo controla as configurações de hora"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Mínimo de dias desatualizada"
       }
     }
   },

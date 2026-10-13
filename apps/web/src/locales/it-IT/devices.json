@@ -1855,7 +1855,11 @@
       "description": "Aggiornamenti in sospeso rispetto a quelli installati",
       "installed": "{{count}} installati",
       "pending": "{{count}} in sospeso",
-      "title": "Conformità patch"
+      "title": "Conformità patch",
+      "imagesNotChecked_one": "{{count}} immagine container non verificata",
+      "imagesNotChecked_other": "{{count}} immagini container non verificate",
+      "imagesBehind_one": "{{count}} immagine container non aggiornata",
+      "imagesBehind_other": "{{count}} immagini container non aggiornate"
     },
     "confirm": {
       "install": "Installa",
@@ -4036,7 +4040,8 @@
       "state": "Stato",
       "image": "Immagine / OS guest",
       "compose": "Progetto Compose",
-      "started": "Avviato"
+      "started": "Avviato",
+      "imageStatus": "Stato dell'immagine"
     },
     "states": {
       "running": "In esecuzione",
@@ -4054,6 +4059,30 @@
       "laterRelease": "L’elenco di Hyper-V e Proxmox VE arriverà con una release successiva dell’agente; questi interruttori avranno effetto allora.",
       "interval": "Intervallo di raccolta (minuti)",
       "invalidInterval": "L’intervallo deve essere un numero intero di minuti compreso tra {{min}} e {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Non aggiornata",
+      "current": "Aggiornata",
+      "pinned": "Fissata",
+      "local": "Build locale",
+      "not_found": "Tag non trovato",
+      "not_checked": "Non verificata"
+    },
+    "imageStatusReason": {
+      "pending": "Non ancora verificata",
+      "private": "Registro privato: credenziali richieste",
+      "unsupported_registry": "Registro non supportato",
+      "error": "Verifica del registro non riuscita: verrà ritentata",
+      "behind": "Per questo tag è pubblicata un'immagine più recente",
+      "current": "Corrisponde al registro",
+      "pinned": "Fissata a un digest: niente da confrontare",
+      "local": "Compilata localmente: nessun digest del registro",
+      "not_found": "Il tag non esiste più nel registro"
+    },
+    "imageFilter": {
+      "label": "Stato dell'immagine",
+      "all": "Tutte",
+      "empty": "Nessun carico di lavoro corrisponde a questo stato dell'immagine."
     }
   }
 }

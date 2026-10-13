@@ -182,6 +182,11 @@ export const JOB_SCHEDULES = {
   // never pruned). Hour 20 was entirely free; :03 keeps it in the
   // daily = 3 (mod 5) lane.
   'monitor-episode-retention': '3 20 * * *',
+  // #8164 (EDR provider framework, W02) — daily prune of terminal
+  // edr_detections rows (resolved/dismissed/false_positive/mitigated) past 180
+  // days; open/in_progress/unknown are never pruned. Hour 20 held :03 and :27;
+  // :08 keeps the daily = 3 (mod 5) lane.
+  'edr-detection-retention': '8 20 * * *',
   // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from

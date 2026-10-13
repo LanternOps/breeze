@@ -1333,6 +1333,8 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     keyId: 'deploy-2026-10-09-abcdef01',
     signature: 'sig',
   };
+  let deviceRow: Record<string, unknown>;
+  const deviceUpdateSets: Array<Record<string, unknown>> = [];
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -1345,29 +1347,30 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     resetIdentitySyncLogStateForTests();
 
     // The row the agent authenticated as now lives in org B / site B.
-    selectMock.mockReturnValueOnce(
-      selectChainResolving([
-        {
-          id: DEVICE_ID,
-          orgId: ORG_B,
-          siteId: SITE_B,
-          hostname: 'host-1',
-          osType: 'linux',
-          osVersion: 'Ubuntu 22.04',
-          osBuild: null,
-          architecture: 'amd64',
-          agentVersion: '0.65.10',
-          deviceRole: 'server',
-          deviceRoleSource: 'auto',
-          agentTokenHash: 'hash',
-          tokenIssuedAt: new Date(),
-        },
-      ]),
-    );
+    deviceRow = {
+      id: DEVICE_ID,
+      orgId: ORG_B,
+      siteId: SITE_B,
+      hostname: 'host-1',
+      osType: 'linux',
+      osVersion: 'Ubuntu 22.04',
+      osBuild: null,
+      architecture: 'amd64',
+      agentVersion: '0.65.10',
+      deviceRole: 'server',
+      deviceRoleSource: 'auto',
+      agentTokenHash: 'hash',
+      tokenIssuedAt: new Date(),
+      ownershipEpoch: 1,
+      agentIdentityEpochAck: null,
+    };
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    deviceUpdateSets.length = 0;
     updateMock.mockReturnValue({
-      set: vi.fn(() => ({
-        where: vi.fn(() => whereResultWithReturning()),
-      })),
+      set: vi.fn((values: Record<string, unknown>) => {
+        deviceUpdateSets.push(values);
+        return { where: vi.fn(() => whereResultWithReturning()) };
+      }),
     });
     insertMock.mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
@@ -1456,6 +1459,100 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     });
     expect(body).not.toHaveProperty('identityAssertion');
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  // PAM ownership epochs W4 (#8206): assertion v2 carries the row's epoch.
+  describe('assertion v2 and the identity epoch ack (#8206)', () => {
+    const ackWrites = () => deviceUpdateSets.filter((set) => 'agentIdentityEpochAck' in set);
+
+    it('signs v2 with the row epoch for a v2 agent that still holds the old org', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE, ownershipEpoch: 1 },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith({
+        agentId: 'device-1',
+        deviceId: DEVICE_ID,
+        orgId: ORG_B,
+        siteId: SITE_B,
+        ownershipEpoch: 2,
+        nonce: NONCE,
+      });
+    });
+
+    it('signs nothing for a never-moved device whose v2 agent reports no epoch', async () => {
+      const body = await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+      expect(body).not.toHaveProperty('identityAssertion');
+    });
+
+    it('signs v2 for an epoch-only change (same org and site, older epoch)', async () => {
+      deviceRow.ownershipEpoch = 3;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith(expect.objectContaining({ ownershipEpoch: 3, orgId: ORG_B }));
+    });
+
+    it('keeps a v1 agent on v1: never signed for an epoch alone, v1 call unchanged after a move', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 1 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    });
+
+    it('drops a malformed epoch alone and still syncs the identity', async () => {
+      const body = await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE, ownershipEpoch: 'two' },
+      });
+      expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, ownershipEpoch: 1 }));
+      expect(body.identityAssertion).toEqual(assertion);
+      expect(ackWrites()).toHaveLength(0);
+    });
+
+    it('records the reported epoch as the ack when the agent holds the row org', async () => {
+      deviceRow.ownershipEpoch = 2;
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+      expect(ackWrites()).toHaveLength(1);
+    });
+
+    it('does not write the ack for another org, an epoch above the row, no epoch, or one already acked', async () => {
+      deviceRow.ownershipEpoch = 2;
+      const cases = [
+        { orgId: ORG_A, siteId: SITE_A, ownershipEpoch: 2 },
+        { orgId: ORG_B, siteId: SITE_B, ownershipEpoch: 3 },
+        { orgId: ORG_B, siteId: SITE_B },
+      ];
+      for (const reported of cases) {
+        deviceUpdateSets.length = 0;
+        selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+        await beat({
+          securityCapabilities: { identitySyncProtocolVersion: 2 },
+          reportedIdentity: { deviceId: DEVICE_ID, nonce: NONCE, ...reported },
+        });
+        expect(ackWrites()).toHaveLength(0);
+      }
+      deviceRow.agentIdentityEpochAck = 2;
+      deviceUpdateSets.length = 0;
+      selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+      await beat({
+        securityCapabilities: { identitySyncProtocolVersion: 2 },
+        reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE, ownershipEpoch: 2 },
+      });
+      expect(ackWrites()).toHaveLength(0);
+    });
   });
 });
 

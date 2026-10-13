@@ -197,6 +197,12 @@ var reclaimAgentEntries = map[string]bool{
 	"logs":         true,
 	"run":          true,
 	"sessions":     true,
+	// Watchdog install retry (#8619): disposable attempt state, the durable
+	// operator opt-out marker, and the cross-process install lock. Names
+	// mirror watchdoginstall.StateFileName / OptOutFileName / LockFileName.
+	"watchdog-install.state": true,
+	"watchdog.disabled":      true,
+	"watchdog-install.lock":  true,
 }
 
 // replaceEvidence decides, from the folder's security and that of each entry

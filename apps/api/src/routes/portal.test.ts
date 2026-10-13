@@ -90,6 +90,13 @@ vi.mock('../services/tenantStatus', () => ({
 // as the tenantStatus mock immediately above — the resolver itself is covered
 // directly by `services/portal/timezone.test.ts` and the hydration contract by
 // `routes/portal/authOrgStatusGate.test.ts`.
+// #8166: the EDR portal leg reads its own flag row; off here (no extra select).
+vi.mock('../services/portal/edrVisibility', () => ({
+  isEdrVisibilityEnabled: vi.fn(async () => false),
+  edrEndpointProtectedSql: vi.fn(),
+  edrEndpointLinkedSql: vi.fn(),
+}));
+
 vi.mock('../services/portal/timezone', () => ({
   resolveOrgTimezone: vi.fn(async () => 'UTC'),
 }));

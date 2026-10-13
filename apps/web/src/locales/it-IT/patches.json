@@ -86,7 +86,9 @@
       "failedInstalls_one": "{{count}} installazione non riuscita",
       "failedInstalls_other": "{{count}} installazioni non riuscite",
       "critical": "{{count}} critiche",
-      "reboot": "{{count}} riavvii"
+      "reboot": "{{count}} riavvii",
+      "imagesNotChecked_one": "{{count}} immagine container non verificata",
+      "imagesNotChecked_other": "{{count}} immagini container non verificate"
     },
     "filters": {
       "allDevices": "Tutti i dispositivi ({{count}})",

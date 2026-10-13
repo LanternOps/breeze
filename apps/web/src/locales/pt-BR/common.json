@@ -408,7 +408,9 @@
       "unratedPending": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "unratedPending_one": "{{count}} patch não avaliado pendente (não será aprovado automaticamente)",
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
-      "empty": "Ainda sem dados de patches"
+      "empty": "Ainda sem dados de patches",
+      "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
     },
     "vuln": {
       "title": "Vulnerabilidades",

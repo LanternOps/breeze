@@ -192,7 +192,8 @@
     "script": "Betik denetimi",
     "network_check": "Ağ denetimi",
     "hardware_health": "Donanım sağlığı",
-    "time_sync": "Saat eşitleme"
+    "time_sync": "Saat eşitleme",
+    "container_image_currency": "Kapsayıcı imajı güncelliği"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -647,6 +648,9 @@
           "policy_not_applied": "Saat ilkesi uygulanmadı",
           "policy_conflict_gpo": "Grup İlkesi saat ayarlarını denetliyor"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "En az gecikme günü"
       }
     }
   },

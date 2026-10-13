@@ -167,7 +167,7 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
 
 /**
  * Stage a pending `alert.triggered` envelope for every subject-monitor
- * (`SUBJECT_MONITOR_KINDS`: hardware_health, time_sync) (monitor, device)
+ * (`SUBJECT_MONITOR_KINDS`: hardware_health, time_sync, container_image_currency) (monitor, device)
  * pair that has latched recurrence escalation but has not yet had its
  * escalation alert raised. Legacy (non-subject) recurrence escalation still
  * runs synchronously through `fireEscalationLatch` — the subject path never

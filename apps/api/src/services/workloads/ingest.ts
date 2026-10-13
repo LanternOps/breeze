@@ -10,6 +10,9 @@ import { deviceWorkloadRuntimes, deviceWorkloads, devices } from '../../db/schem
 import { lockDeviceInventory } from '../inventoryChildSync';
 import { planWorkloadSync, type WorkloadRuntimePlan } from './plan';
 import { getDeviceWorkloadInventorySettings } from './settings';
+import { behindSinceOnIngestUpsert } from './behindSince';
+import { resolveAlertsForRetiredImages } from './retire';
+import { containerImageSubjectKey } from '../alertConditions/handlers/containerImageCurrency';
 
 export interface IngestWorkloadsArgs {
   deviceId: string;
@@ -168,7 +171,45 @@ function upstreamUpsertSet(incompleteSnapshot: boolean) {
     upstreamStatus: sql`CASE WHEN ${unchanged} THEN ${t.upstreamStatus} ELSE 'pending' END`,
     upstreamDigest: sql`CASE WHEN ${unchanged} THEN ${t.upstreamDigest} ELSE NULL END`,
     upstreamCheckedAt: sql`CASE WHEN ${unchanged} THEN ${t.upstreamCheckedAt} ELSE NULL END`,
+    behindSince: behindSinceOnIngestUpsert(unchanged, sql`${t.behindSince}`),
   };
+}
+
+type StoredImageRow = {
+  runtime: string;
+  kind: string;
+  imageRepository: string | null;
+  imageTag: string | null;
+};
+
+/**
+ * W06 (spec §10.2): an image subject referenced before this report by a
+ * runtime whose outcome is definitive (`retiresSubjects`) and by NO container
+ * row on the device afterwards (any runtime) retires its open
+ * container_image_currency alert, in this transaction. Covers both a deleted
+ * last container and a last container that now runs another image.
+ */
+async function retireDroppedImageSubjects(
+  deviceId: string,
+  runtimes: readonly WorkloadRuntimePlan[],
+  stored: readonly StoredImageRow[],
+): Promise<void> {
+  const definitive = new Set(runtimes.filter((r) => r.applied && r.retiresSubjects).map((r) => r.runtime));
+  const before = new Set<string>();
+  for (const row of stored) {
+    if (definitive.has(row.runtime as WorkloadRuntime) && row.kind === 'container' && row.imageRepository && row.imageTag) {
+      before.add(containerImageSubjectKey(row.imageRepository, row.imageTag));
+    }
+  }
+  if (before.size === 0) return;
+  const remaining = await db
+    .selectDistinct({ imageRepository: deviceWorkloads.imageRepository, imageTag: deviceWorkloads.imageTag })
+    .from(deviceWorkloads)
+    .where(and(eq(deviceWorkloads.deviceId, deviceId), eq(deviceWorkloads.kind, 'container')));
+  for (const row of remaining) {
+    if (row.imageRepository && row.imageTag) before.delete(containerImageSubjectKey(row.imageRepository, row.imageTag));
+  }
+  await resolveAlertsForRetiredImages(deviceId, [...before].sort());
 }
 
 /**
@@ -210,6 +251,9 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
             runtime: deviceWorkloads.runtime,
             workloadId: deviceWorkloads.workloadId,
             lastSeenAt: deviceWorkloads.lastSeenAt,
+            kind: deviceWorkloads.kind,
+            imageRepository: deviceWorkloads.imageRepository,
+            imageTag: deviceWorkloads.imageTag,
           })
           .from(deviceWorkloads)
           .where(and(eq(deviceWorkloads.deviceId, args.deviceId), inArray(deviceWorkloads.runtime, enumerated)))
@@ -229,6 +273,7 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     for (const runtimePlan of plan.runtimes) {
       if (runtimePlan.applied) await applyRuntimePlan(args, runtimePlan);
     }
+    await retireDroppedImageSubjects(args.deviceId, plan.runtimes, storedWorkloads);
     if (plan.host.changed) {
       await db
         .update(devices)

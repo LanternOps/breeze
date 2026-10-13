@@ -25,12 +25,12 @@ Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Ne
 
 ## Authoritative permission manifest — exactly two grants
 
-The expected profile is `customer-graph-actions`, manifest version `1`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with **exactly** these two application roles — no more, no fewer:
+The expected profile is `customer-graph-actions`, manifest version `2`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with **exactly** these two application roles — no more, no fewer:
 
 | Permission | App role ID |
 |---|---|
-| `User.ReadWrite.All` | `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4` |
-| `User-PasswordProfile.ReadWrite.All` | `56760768-b641-451f-8906-e1b8ab31bca7` |
+| `User.ReadWrite.All` | `741f803b-c850-494e-b5df-cde7c675a1ca` |
+| `User-PasswordProfile.ReadWrite.All` | `cc117bb9-00cf-4eb8-b580-ea2a878fe8f7` |
 
 This differs from the read profile's thirteen-role manifest: the actions app registration should request and be consented for only these two scopes for this acceptance run. Do **not** pre-consent any of the four roadmap scopes documented in the [deploy runbook's permission manifest section](../deploy/m365-customer-graph-actions-executor.md#entra-application-and-permission-manifest) — they are not wired to any shipped action, and consenting them widens the mutation blast radius for no test value.
 
@@ -74,7 +74,7 @@ A name/ID mismatch, omitted role, extra role, or presence of any roadmap scope i
 3. Choose **Grant admin actions…**, review the pre-flight (it lists the four steps: identity, confirm, consent, verify), choose **Continue to Microsoft**, complete current MFA, and sign in as the eligible administrator.
 4. On the confirm-tenant screen, confirm it shows the disposable tenant's ID and the eligible administrator's username, then choose **Continue to Microsoft consent**.
 5. Capture consent-screen copy per the section above and accept. Confirm the terminal browser location resolves to the actions card in an `active` state and the card refreshes.
-6. Verify status `active`, manifest version 1, the signed tenant GUID, organization display name, exactly two observed assignments, `last_verified_at`, and `grants_verified_at`.
+6. Verify status `active`, manifest version 2, the signed tenant GUID, organization display name, exactly two observed assignments, `last_verified_at`, and `grants_verified_at`.
 7. Verify `tenant_binding_verified` has outcome `active`; audit details contain only the fixed profile, attempt/correlation identifiers, manifest version, bounded outcome, and verified tenant after proof.
 
 ### A2. Exact two-grant reconciliation

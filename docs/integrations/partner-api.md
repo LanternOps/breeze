@@ -588,7 +588,8 @@ Each feed item is one of two shapes:
   (`requester.contactId` / `requester.portalUserId`, plus the name/email
   snapshot taken at creation), `tags`, `externalTicketId` /
   `externalTicketUrl` (this principal's ref), SLA targets and stamps,
-  `source`, `workKind`, `changeVersion` and `revision`. Free text
+  `source`, `workKind`, `ticketType` (`incident` | `service_request` |
+  `problem` | `change`), `changeVersion` and `revision`. Free text
   (`description`, `resolutionNote`, `pendingReason`) is capped at 12,000
   characters with a trailing `…`. Raw `custom_fields`, `field_provenance`,
   attachments and time entries are not exported.
@@ -705,8 +706,8 @@ partner, Service Management must be on, and the status FSM is enforced.
 
 | Route | Body | Notes |
 |---|---|---|
-| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
-| `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
+| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `ticketType?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `ticketType` defaults to `incident`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
+| `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `ticketType`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
 | `POST /tickets/<id>/status` | exactly one of `status` (core value) or `statusId` (a custom status of the partner); `resolutionNote` (required when resolving), `pendingReason?` | Same coherence rules as the staff route, without AI drafts. Invalid transitions → `400 INVALID_TRANSITION`. |
 | `POST /tickets/<id>/assign` | `assigneeId` (a technician of the partner, or `null` to unassign) | Assigning a `new` ticket opens it. |
 | `POST /tickets/<id>/comments` | `content`, `isPublic` (**required**, no default) | `isPublic: true` is a customer-visible reply and emails the requester; `false` is an internal note. Supports `X-Idempotency-Key`. Returns `201` with the comment. |

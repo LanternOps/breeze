@@ -94,12 +94,20 @@ type fakeManager struct {
 	created   *fakeService
 	openErr   error
 	createErr error
+	// appearsAfterCreate is what Open returns once Create has been attempted
+	// (a concurrent installer won the race); nil keeps the existing behaviour.
+	appearsAfterCreate *fakeService
+	createAttempted    bool
 }
 
 func (m *fakeManager) Open(name string) (Service, error) {
 	m.rec = append(m.rec, "open")
 	if m.openErr != nil {
 		return nil, m.openErr
+	}
+	if m.createAttempted && m.appearsAfterCreate != nil {
+		m.appearsAfterCreate.rec = &m.rec
+		return m.appearsAfterCreate, nil
 	}
 	if m.existing == nil {
 		return nil, ErrNotInstalled
@@ -110,6 +118,7 @@ func (m *fakeManager) Open(name string) (Service, error) {
 
 func (m *fakeManager) Create(spec Spec, exePath string) (Service, error) {
 	m.rec = append(m.rec, "create")
+	m.createAttempted = true
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -597,5 +606,50 @@ func TestStartAndWaitStillFailsWhenAnAlreadyRunningServiceIsFoundStopped(t *test
 	}
 	if !strings.Contains(err.Error(), "1067") {
 		t.Errorf("error does not report the exit code: %v", err)
+	}
+}
+
+// Another installer can create the service between our Open (not installed)
+// and our Create. That must fall through to the update-in-place path.
+func TestWinInstall_ConcurrentCreateFallsThroughToUpdate(t *testing.T) {
+	winner := &fakeService{}
+	m := &fakeManager{createErr: ErrAlreadyExists, appearsAfterCreate: winner}
+
+	out, err := Install(m, newRequest(m, StartWhenRunningOrEnrolled(false)))
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	want := "open | stage | create | open | reconfigure | recovery"
+	if got := seq(m.rec); got != want {
+		t.Fatalf("call sequence =\n  %q\nwant\n  %q", got, want)
+	}
+	if winner.gotExePath != testExePath {
+		t.Errorf("Reconfigure exePath = %q, want %q", winner.gotExePath, testExePath)
+	}
+	if !out.Installed || !out.Existed {
+		t.Errorf("outcome = %+v, want Installed and Existed", out)
+	}
+	if !winner.closed {
+		t.Error("re-opened handle was not closed")
+	}
+}
+
+func TestWinInstall_ConcurrentCreateReopenFailureFails(t *testing.T) {
+	m := &fakeManager{createErr: ErrAlreadyExists}
+	// Re-open sees nothing (ErrNotInstalled): must surface an error, not succeed.
+	if _, err := Install(m, newRequest(m, StartWhenRunningOrEnrolled(false))); err == nil {
+		t.Fatal("expected error when re-open after ErrAlreadyExists fails")
+	}
+}
+
+func TestWinInstall_CreateOtherErrorStillFails(t *testing.T) {
+	boom := errors.New("access denied")
+	m := &fakeManager{createErr: boom}
+	_, err := Install(m, newRequest(m, StartWhenRunningOrEnrolled(false)))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it to wrap %v", err, boom)
+	}
+	if got, want := seq(m.rec), "open | stage | create"; got != want {
+		t.Fatalf("call sequence = %q, want %q", got, want)
 	}
 }

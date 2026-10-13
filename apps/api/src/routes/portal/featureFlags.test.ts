@@ -74,6 +74,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableHourBlock', 'PORTAL_HOUR_BLOCK_DISABLED'],
     ['enablePatchDetail', 'PORTAL_PATCH_DETAIL_DISABLED'],
     ['enableVulnerabilityDetail', 'PORTAL_VULNERABILITY_DETAIL_DISABLED'],
+    ['enableEdrVisibility', 'PORTAL_EDR_VISIBILITY_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {

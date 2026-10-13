@@ -164,6 +164,13 @@ vi.mock('../../services/patchInstallFailures', () => ({
   loadFailedInstallPairs: vi.fn(async () => [])
 }));
 
+// W06 image term — real SQL is covered by
+// services/workloads/imageCompliance.integration.test.ts; no workload rows here.
+vi.mock('../../services/workloads/imageCompliance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/workloads/imageCompliance')>()),
+  containerImageComplianceTerms: vi.fn(async () => new Map())
+}));
+
 vi.mock('../../services/commandQueue', () => ({
   queueCommand: vi.fn(),
   queueCommandForExecution: vi.fn()

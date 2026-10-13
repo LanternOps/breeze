@@ -91,7 +91,7 @@ describe('completeConsentOperation / retestOperation', () => {
       tenantId: TENANT,
       applicationId: CLIENT_ID,
       organizationDisplayName: 'Example',
-      manifestVersion: 1,
+      manifestVersion: 2,
       grantReconciliation: 'unavailable',
       errorCode: 'grant_reconciliation_unavailable',
       observedGrants: null,
@@ -118,8 +118,8 @@ describe('completeConsentOperation / retestOperation', () => {
 
   it('reconciles observed grants against the fixed customer-graph-actions manifest', async () => {
     const observedGrants = [
-      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4', value: 'User.ReadWrite.All' },
-      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7', value: 'User-PasswordProfile.ReadWrite.All' },
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca', value: 'User.ReadWrite.All' },
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7', value: 'User-PasswordProfile.ReadWrite.All' },
     ];
     const d = deps();
     d.graphClient.probeTenant = vi.fn().mockResolvedValue({

@@ -272,9 +272,32 @@ When running `breeze-agent service install` manually, the agent fetches the matc
   </TabItem>
 </Tabs>
 
+`--no-watchdog` is remembered. It writes a marker file named `watchdog.disabled` in the agent's config directory (`/etc/breeze` on Linux, `/Library/Application Support/Breeze` on macOS, `C:\ProgramData\Breeze` on Windows). A later plain `service install`, for example from an upgrade script, keeps honouring the opt-out and prints `watchdog install skipped: opted out (use --watchdog to re-enable)`. The agent's automatic watchdog repair (below) also stays off while the marker exists.
+
+To re-enable the watchdog, run `service install --watchdog`. It removes the marker, resets the retry state, and installs the watchdog. `--watchdog` and `--no-watchdog` cannot be combined.
+
+<Tabs>
+  <TabItem label="Linux / macOS">
+    ```bash
+    sudo ./breeze-agent service install --watchdog
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    .\breeze-agent.exe service install --watchdog
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside type="note">
+Hosts that ran `--no-watchdog` with an agent version older than this behaviour have no marker file. On air-gapped fleets that deliberately run without a watchdog, re-run `service install --no-watchdog` once after upgrading so the opt-out is recorded.
+</Aside>
+
 On macOS the desktop helper is resolved the same way: `breeze-agent service install` uses a `breeze-desktop-helper` binary staged next to the agent if there is one, and otherwise downloads the matching-version signed binary from GitHub releases. If neither is available (for example on an air-gapped host), the install prints a warning and continues -- the agent service is still installed and running, and only the helper's features are unavailable until you place the binary next to `breeze-agent` and re-run `service install`. The agent binary is never installed under the helper's name: doing so would give the helper the agent's code-signing identity, and macOS would drop the Screen Recording and Accessibility grants once a real helper replaced it. The macOS `.pkg` always ships the signed helper, so this only affects raw-binary installs.
 
-If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. It records whether the agent service was running before the install, rewrites and re-enables the unit, and starts the service again if it was running before or the host is already enrolled -- a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions instead of exiting successfully. It also registers the missing watchdog, which is always restarted so a newly staged binary takes over. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
+If the watchdog could not be installed during `service install` (for example because the download failed), you no longer need to re-run the command on an enrolled host. The running agent installs the watchdog later by itself when the Breeze server offers a watchdog version for the device. See [Automatic repair of a missing watchdog](/features/watchdog#automatic-repair-of-a-missing-watchdog) for what it does, when it stays off, and the retry schedule. `service install` still exits 0 when the watchdog bootstrap fails.
+
+You can still re-run `breeze-agent service install` yourself to add the watchdog immediately. It records whether the agent service was running before the install, rewrites and re-enables the unit, and starts the service again if it was running before or the host is already enrolled -- a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions instead of exiting successfully. It also registers the missing watchdog, which is always restarted so a newly staged binary takes over. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
 
 <Aside type="note">
 On agent v0.110.0 and earlier, `service install` stopped the service and did not start it again. On those versions, follow it with `sudo systemctl restart breeze-agent breeze-watchdog` (Linux), or prefer the in-band auto-update instead.

@@ -976,9 +976,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // EDR provider framework W01 (#8164). 'global': its import closure reaches no socket-local
-    // dispatch (no alerts/events until W02 — re-verify placement then with
-    // workerEntrypointClosure.contract.test.ts).
+    // EDR provider framework (#8164). 'global': its import closure reaches no socket-local
+    // dispatch. Re-verified in W02 (#8166) after the Phase 4 notifier added alertService +
+    // eventBus imports: workerEntrypointClosure.contract.test.ts stays green.
     name: 'edrProviderSyncWorker',
     placement: 'global',
     load: async () => {
@@ -1713,6 +1713,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return {
         init: m.initializeMonitorEpisodeRetention,
         shutdown: m.shutdownMonitorEpisodeRetention,
+      };
+    },
+  },
+  {
+    // #8164 (EDR provider framework, W02) — daily prune of terminal
+    // edr_detections rows past the 180-day retention window.
+    name: 'edrDetectionRetentionWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/edrDetectionRetention');
+      return {
+        init: m.initializeEdrDetectionRetention,
+        shutdown: m.shutdownEdrDetectionRetention,
       };
     },
   },

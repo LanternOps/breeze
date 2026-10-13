@@ -55,6 +55,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enablePerformanceMetrics: false,
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false, // EDR framework W02: strict, fail-closed, inside "Enable all"
   enableNetworkAlerts: false,
   enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
   enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
@@ -86,6 +87,7 @@ type PortalSettingsRow = {
   enablePerformanceMetrics: boolean;
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
@@ -125,6 +127,7 @@ const portalSettingsColumns = () => ({
   enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
   enableSoftwareInventory: portalBranding.enableSoftwareInventory,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+  enableEdrVisibility: portalBranding.enableEdrVisibility,
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
   enableHourBlock: portalBranding.enableHourBlock,
   enablePatchDetail: portalBranding.enablePatchDetail,
@@ -159,6 +162,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enablePerformanceMetrics: row.enablePerformanceMetrics,
     enableSoftwareInventory: row.enableSoftwareInventory,
     enableNetworkVisibility: row.enableNetworkVisibility,
+    enableEdrVisibility: row.enableEdrVisibility,
     enableNetworkAlerts: row.enableNetworkAlerts,
     enableHourBlock: row.enableHourBlock,
     enablePatchDetail: row.enablePatchDetail,
@@ -273,7 +277,8 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableHardwareInventory: row.enableHardwareInventory,
             enablePerformanceMetrics: row.enablePerformanceMetrics,
             enableSoftwareInventory: row.enableSoftwareInventory,
-            enableNetworkVisibility: row.enableNetworkVisibility
+            enableNetworkVisibility: row.enableNetworkVisibility,
+            enableEdrVisibility: row.enableEdrVisibility
           }
         });
       }

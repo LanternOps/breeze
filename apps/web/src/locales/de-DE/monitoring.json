@@ -192,7 +192,8 @@
     "script": "Skriptprüfung",
     "network_check": "Netzwerkprüfung",
     "hardware_health": "Hardwarezustand",
-    "time_sync": "Zeitsynchronisierung"
+    "time_sync": "Zeitsynchronisierung",
+    "container_image_currency": "Aktualität von Container-Images"
   },
   "fields": {
     "operator": "Vergleich",
@@ -647,6 +648,9 @@
           "policy_not_applied": "Zeitrichtlinie wurde nicht angewendet",
           "policy_conflict_gpo": "Gruppenrichtlinie steuert die Zeiteinstellungen"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Mindestanzahl Tage veraltet"
       }
     }
   },

@@ -207,6 +207,8 @@ export const TOOL_TIERS = {
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
+  get_edr_status: 1,
+  list_edr_detections: 1,
   s1_isolate_device: 3,
   s1_threat_action: 3,
   sync_huntress_data: 2,
@@ -1790,6 +1792,29 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_s1_threats', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_edr_status',
+      registryDescription('get_edr_status'),
+      {
+        orgId: uuid.optional(),
+      },
+      makeHandler('get_edr_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_edr_detections',
+      registryDescription('list_edr_detections'),
+      {
+        orgId: uuid.optional(),
+        deviceId: uuid.optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+        status: z.enum(['open', 'all']).optional(),
+        provider: z.string().max(30).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_edr_detections', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

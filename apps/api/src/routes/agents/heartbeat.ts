@@ -100,10 +100,12 @@ import { recordAgentHealthObservation } from '../../services/agentHealthObservat
 import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
 import {
   agentIdentityAssertionRefused,
-  agentIdentityNeedsSync,
+  agentIdentityAssertionVersionToSign,
+  agentIdentityEpochAckToRecord,
+  agentIdentityEpochAckUpdateSql,
   normalizeIdentitySyncProtocolVersion,
   signAgentIdentityAssertion,
-  type AgentIdentityAssertionV1,
+  type AgentIdentityAssertion,
 } from '../../services/agentIdentityAssertion';
 
 /**
@@ -711,7 +713,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -1451,6 +1453,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         },
       });
     }
+  }
+
+  // #8206 — record which ownership epoch's identity the agent has loaded, so
+  // PAM dispatch (jobs/pamActuationWorker.ts) waits until the agent holds the
+  // identity of the row's current epoch. Rides this beat's existing guarded
+  // UPDATE (one write per beat at most, none when nothing advances). The SQL is
+  // monotonic and bounded by the row's epoch at write time, so a concurrent
+  // move or a stale snapshot can neither lower the ack nor push it past the row.
+  const identityEpochAck = agentIdentityEpochAckToRecord(data.reportedIdentity, {
+    id: device.id,
+    orgId: device.orgId,
+    ownershipEpoch: device.ownershipEpoch,
+    agentIdentityEpochAck: device.agentIdentityEpochAck ?? null,
+  });
+  if (identityEpochAck !== null) {
+    deviceUpdates.agentIdentityEpochAck = agentIdentityEpochAckUpdateSql(identityEpochAck);
   }
 
   // agentAuthMiddleware 403s quarantined devices and every decommissioned
@@ -2193,6 +2211,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   return {
     deviceOrgId: device.orgId,
     deviceSiteId: device.siteId,
+    deviceOwnershipEpoch: device.ownershipEpoch,
     deviceId: device.id,
     mainResponse: {
       commands: deliverableCommands,
@@ -2303,18 +2322,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #8382 — an agent that refused the assertion for this org/site says so on
   // its next beat; the assertion is then held back for a while (Redis TTL)
   // instead of being signed, and refused, on every beat.
-  let identityAssertion: AgentIdentityAssertionV1 | undefined;
-  const reportedIdentity =
-    normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
-      ? data.reportedIdentity
-      : undefined;
-  const identityRow = { id: scoped.deviceId, orgId: scoped.deviceOrgId, siteId: scoped.deviceSiteId };
+  //
+  // #8206 — a v2 agent gets a v2 assertion carrying the row's ownership epoch,
+  // also when only the epoch it holds is behind (see
+  // agentIdentityAssertionVersionToSign: an unreported epoch counts as 1, so a
+  // never-moved device is never signed for). A v1 agent is unchanged.
+  let identityAssertion: AgentIdentityAssertion | undefined;
+  const identitySyncVersion = normalizeIdentitySyncProtocolVersion(
+    data.securityCapabilities?.identitySyncProtocolVersion,
+  );
+  const reportedIdentity = identitySyncVersion !== 0 ? data.reportedIdentity : undefined;
+  const identityRow = {
+    id: scoped.deviceId,
+    orgId: scoped.deviceOrgId,
+    siteId: scoped.deviceSiteId,
+    ownershipEpoch: scoped.deviceOwnershipEpoch,
+  };
   if (reportedIdentity && reportedIdentity.deviceId !== identityRow.id) {
     warnIdentityDeviceMismatch(agentId, reportedIdentity.deviceId, identityRow.id);
   }
+  const identityAssertionVersion = agentIdentityAssertionVersionToSign(reportedIdentity, identityRow, identitySyncVersion);
   if (
     reportedIdentity
-    && agentIdentityNeedsSync(reportedIdentity, identityRow)
+    && identityAssertionVersion !== 0
     && !(await agentIdentityAssertionRefused({
       agentId,
       deviceId: identityRow.id,
@@ -2323,13 +2353,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }))
   ) {
     try {
-      const signed = await signAgentIdentityAssertion({
+      const identity = {
         agentId,
         deviceId: identityRow.id,
         orgId: identityRow.orgId,
         siteId: identityRow.siteId,
-        nonce: reportedIdentity.nonce,
-      });
+      };
+      const signed = identityAssertionVersion === 2
+        ? await signAgentIdentityAssertion({
+          ...identity,
+          ownershipEpoch: identityRow.ownershipEpoch,
+          nonce: reportedIdentity.nonce,
+        })
+        : await signAgentIdentityAssertion({ ...identity, nonce: reportedIdentity.nonce });
       if (signed) {
         identityAssertion = signed;
       } else {

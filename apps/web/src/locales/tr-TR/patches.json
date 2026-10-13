@@ -86,7 +86,9 @@
       "failedInstalls_one": "{{count}} başarısız kurulum",
       "failedInstalls_other": "{{count}} başarısız kurulum",
       "critical": "{{count}} kritik",
-      "reboot": "{{count}} yeniden başlat"
+      "reboot": "{{count}} yeniden başlat",
+      "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
     },
     "filters": {
       "allDevices": "Tüm Cihazlar ({{count}})",

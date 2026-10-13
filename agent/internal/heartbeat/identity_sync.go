@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,10 +42,22 @@ import (
 // then persisted and applied by a service restart (updater.RestartSelf):
 // those ids are read without locking all over the agent, so a restart is the
 // one way every component reloads them consistently.
+//
+// Protocol v2 (PAM ownership epochs, #8202 W4) adds the device's ownership
+// epoch to the signed bytes, under the domain breeze-agent-identity-v2. The
+// agent advertises identitySyncProtocolVersion 2, reports the epoch it loaded,
+// and accepts a v2 assertion only when the epoch does not go backwards and an
+// org change comes with a higher epoch. The epoch is persisted with org/site
+// by the same PersistServerIdentity call and applied by the same restart; the
+// heartbeat after the restart reports it, which is how the server learns the
+// agent holds the new epoch's identity (devices.agent_identity_epoch_ack).
+// A v1 assertion (a server that does not sign v2) is still accepted and
+// leaves the stored epoch alone.
 
 const (
-	identitySyncProtocolVersion = 1
+	identitySyncProtocolVersion = 2
 	identityAssertionDomain     = "breeze-agent-identity-v1"
+	identityAssertionDomainV2   = "breeze-agent-identity-v2"
 	// Structural bound on the window the server may state. The nonce, not
 	// the clock, is what makes an assertion fresh.
 	identityAssertionMaxLifetime = time.Hour
@@ -110,40 +123,71 @@ type ReportedIdentity struct {
 	OrgID    string `json:"orgId"`
 	SiteID   string `json:"siteId"`
 	Nonce    string `json:"nonce"`
+	// OwnershipEpoch is the epoch this process loaded (#8206); omitted while
+	// the agent has never received one.
+	OwnershipEpoch uint64 `json:"ownershipEpoch,omitempty"`
 }
 
 // IdentityAssertion is the server-signed identity of the row this agent
 // authenticates as.
 type IdentityAssertion struct {
-	Version   int    `json:"v"`
-	AgentID   string `json:"agentId"`
-	DeviceID  string `json:"deviceId"`
-	OrgID     string `json:"orgId"`
-	SiteID    string `json:"siteId"`
-	Nonce     string `json:"nonce"`
-	IssuedAt  string `json:"issuedAt"`
-	ExpiresAt string `json:"expiresAt"`
-	KeyID     string `json:"keyId"`
-	Signature string `json:"signature"`
+	Version  int    `json:"v"`
+	AgentID  string `json:"agentId"`
+	DeviceID string `json:"deviceId"`
+	OrgID    string `json:"orgId"`
+	SiteID   string `json:"siteId"`
+	// OwnershipEpoch is signed in v2 only; a v1 assertion must not carry it.
+	OwnershipEpoch uint64 `json:"ownershipEpoch,omitempty"`
+	Nonce          string `json:"nonce"`
+	IssuedAt       string `json:"issuedAt"`
+	ExpiresAt      string `json:"expiresAt"`
+	KeyID          string `json:"keyId"`
+	Signature      string `json:"signature"`
 }
 
 // canonicalBytes is the exact byte string the server signed: the domain and
 // one field per line. Empty fields and control characters are rejected so no
 // field can smuggle a line break into a neighbour's position.
+//
+// v1: domain, agentId, deviceId, orgId, siteId, nonce, issuedAt, expiresAt,
+// keyId. v2: the v2 domain and the same lines with the ownership epoch (a
+// positive decimal, no sign or leading zeros) inserted after siteId.
 func (a *IdentityAssertion) canonicalBytes() ([]byte, error) {
-	if a.Version != 1 {
+	var lines []string
+	switch a.Version {
+	case 1:
+		if a.OwnershipEpoch != 0 {
+			return nil, errors.New("v1 identity assertion carries an unsigned ownership epoch")
+		}
+		lines = []string{
+			identityAssertionDomain,
+			a.AgentID,
+			a.DeviceID,
+			a.OrgID,
+			a.SiteID,
+			a.Nonce,
+			a.IssuedAt,
+			a.ExpiresAt,
+			a.KeyID,
+		}
+	case 2:
+		if a.OwnershipEpoch == 0 {
+			return nil, errors.New("v2 identity assertion has no ownership epoch")
+		}
+		lines = []string{
+			identityAssertionDomainV2,
+			a.AgentID,
+			a.DeviceID,
+			a.OrgID,
+			a.SiteID,
+			strconv.FormatUint(a.OwnershipEpoch, 10),
+			a.Nonce,
+			a.IssuedAt,
+			a.ExpiresAt,
+			a.KeyID,
+		}
+	default:
 		return nil, fmt.Errorf("unsupported identity assertion version %d", a.Version)
-	}
-	lines := []string{
-		identityAssertionDomain,
-		a.AgentID,
-		a.DeviceID,
-		a.OrgID,
-		a.SiteID,
-		a.Nonce,
-		a.IssuedAt,
-		a.ExpiresAt,
-		a.KeyID,
 	}
 	for i, line := range lines {
 		if line == "" {
@@ -210,11 +254,26 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 // identityRestartMarker records the identity the last restart was for and how
 // many restarts it took, so a persisted identity that does not take effect
 // cannot trigger a restart loop. It is removed once the identity is in effect.
+//
+// OwnershipEpoch (#8206) is the epoch the restart was for, 0 for a v1
+// assertion. It is part of the identity the marker matches and clears on, so
+// an epoch-only restart is bounded by the same cooldown and attempt cap.
 type identityRestartMarker struct {
-	RestartedAt time.Time `json:"restartedAt"`
-	OrgID       string    `json:"orgId"`
-	SiteID      string    `json:"siteId"`
-	Attempts    int       `json:"attempts"`
+	RestartedAt    time.Time `json:"restartedAt"`
+	OrgID          string    `json:"orgId"`
+	SiteID         string    `json:"siteId"`
+	OwnershipEpoch uint64    `json:"ownershipEpoch,omitempty"`
+	Attempts       int       `json:"attempts"`
+}
+
+// appliedBy reports whether the identity this marker was written for is the
+// one in cfg: org and site equal and the epoch reached.
+func (m identityRestartMarker) appliedBy(orgID, siteID string, epoch uint64) bool {
+	return m.OrgID == orgID && m.SiteID == siteID && epoch >= m.OwnershipEpoch
+}
+
+func (m identityRestartMarker) isFor(orgID, siteID string, epoch uint64) bool {
+	return m.OrgID == orgID && m.SiteID == siteID && m.OwnershipEpoch == epoch
 }
 
 // Seams for tests.
@@ -277,7 +336,10 @@ func (h *Heartbeat) reportIdentityForBeat() *ReportedIdentity {
 		return nil
 	}
 	h.identitySync.nonce.Store(&nonce)
-	return &ReportedIdentity{DeviceID: h.config.DeviceID, OrgID: h.config.OrgID, SiteID: h.config.SiteID, Nonce: nonce}
+	return &ReportedIdentity{
+		DeviceID: h.config.DeviceID, OrgID: h.config.OrgID, SiteID: h.config.SiteID, Nonce: nonce,
+		OwnershipEpoch: h.config.OwnershipEpoch,
+	}
 }
 
 // logIdentitySyncFailure logs once per distinct reason, so a server that
@@ -301,7 +363,7 @@ func (h *Heartbeat) logIdentitySyncFailure(level string, msg, reason string) {
 func (h *Heartbeat) clearAppliedIdentityRestartMarker() {
 	path := identityRestartMarkerPath()
 	m, ok := readIdentityRestartMarker(path)
-	if !ok || m.OrgID != h.config.OrgID || m.SiteID != h.config.SiteID {
+	if !ok || !m.appliedBy(h.config.OrgID, h.config.SiteID, h.config.OwnershipEpoch) {
 		return
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -385,12 +447,33 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		h.noteIdentityRejection(identityRejectionCode(err), a.OrgID, a.SiteID)
 		return false
 	}
-	fromOrg, fromSite := h.config.OrgID, h.config.SiteID
-	if a.OrgID == fromOrg && a.SiteID == fromSite {
+	fromOrg, fromSite, fromEpoch := h.config.OrgID, h.config.SiteID, h.config.OwnershipEpoch
+	// toEpoch is what PersistServerIdentity stores: the asserted epoch for v2,
+	// 0 (unchanged) for v1, whose bytes do not cover an epoch.
+	toEpoch := uint64(0)
+	if a.Version >= 2 {
+		toEpoch = a.OwnershipEpoch
+		if toEpoch < fromEpoch {
+			h.logIdentitySyncFailure("warn", "ignoring server identity assertion",
+				fmt.Sprintf("ownership epoch %d is lower than the loaded epoch %d", toEpoch, fromEpoch))
+			h.noteIdentityRejection(identityRejectionInvalid, a.OrgID, a.SiteID)
+			return false
+		}
+		if toEpoch == fromEpoch && a.OrgID != fromOrg {
+			// Also what an org pinned by BREEZE_ORG_ID looks like after the
+			// restart: the epoch loaded from disk, the org from the environment.
+			h.logIdentitySyncFailure("warn", "ignoring server identity assertion",
+				"org change without an ownership epoch advance; org_id may be overridden by the environment (BREEZE_ORG_ID)")
+			h.noteIdentityRejection(identityEpochRefusalCode(), a.OrgID, a.SiteID)
+			return false
+		}
+	}
+	epochChanged := toEpoch != 0 && toEpoch != fromEpoch
+	if a.OrgID == fromOrg && a.SiteID == fromSite && !epochChanged {
 		return false
 	}
 
-	target := a.OrgID + "|" + a.SiteID
+	target := a.OrgID + "|" + a.SiteID + "|" + strconv.FormatUint(toEpoch, 10)
 	if p := h.identitySync.gaveUpOn.Load(); p != nil && *p == target {
 		h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
 		return false
@@ -408,12 +491,12 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 	now := identitySyncNow()
 	attempts := 1
 	previousMarker, hadMarker := readIdentityRestartMarker(markerPath)
-	if m := previousMarker; hadMarker && m.OrgID == a.OrgID && m.SiteID == a.SiteID {
+	if m := previousMarker; hadMarker && m.isFor(a.OrgID, a.SiteID, toEpoch) {
 		previous := max(m.Attempts, 1)
 		if previous >= identityRestartMaxAttempts {
 			h.identitySync.gaveUpOn.Store(&target)
 			log.Error("server-assigned identity did not take effect after restarting for it; not restarting for it again in this process",
-				"orgId", a.OrgID, "siteId", a.SiteID, "attempts", previous,
+				"orgId", a.OrgID, "siteId", a.SiteID, "ownershipEpoch", toEpoch, "attempts", previous,
 				"hint", "org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
 			h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
 			return false
@@ -430,12 +513,12 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		return true
 	}
 	h.identitySync.restartRequestedAt.Store(now.UnixNano())
-	if err := persistServerIdentityFn(config.ActiveConfigFile(), a.OrgID, a.SiteID); err != nil {
+	if err := persistServerIdentityFn(config.ActiveConfigFile(), a.OrgID, a.SiteID, toEpoch); err != nil {
 		h.identitySync.restartRequested.Store(false)
 		h.logIdentitySyncFailure("error", "failed to persist the server-assigned identity; keeping the enrolled one", err.Error())
 		return false
 	}
-	if err := writeIdentityRestartMarker(markerPath, identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, Attempts: attempts}); err != nil {
+	if err := writeIdentityRestartMarker(markerPath, identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, OwnershipEpoch: toEpoch, Attempts: attempts}); err != nil {
 		// The marker is the only thing bounding these restarts across
 		// processes: without it a new process counts attempt 1 again, so an
 		// identity that never takes effect would restart the agent forever.
@@ -450,7 +533,8 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 	pausedUntil := now.Add(identityIntakePauseMax)
 	h.identitySync.intakePausedUntil.Store(&pausedUntil)
 	log.Info("device was reassigned by the server; restarting to load the new identity",
-		"fromOrgId", fromOrg, "toOrgId", a.OrgID, "fromSiteId", fromSite, "toSiteId", a.SiteID)
+		"fromOrgId", fromOrg, "toOrgId", a.OrgID, "fromSiteId", fromSite, "toSiteId", a.SiteID,
+		"fromOwnershipEpoch", fromEpoch, "toOwnershipEpoch", toEpoch)
 	var restore *identityRestartMarker
 	if hadMarker {
 		restore = &previousMarker
@@ -587,6 +671,16 @@ func identityGiveUpCode() string {
 		return identityRejectionEnvOverride
 	}
 	return identityRejectionGaveUp
+}
+
+// identityEpochRefusalCode names an org change refused because the epoch did
+// not advance: an environment override when one is set (the org loaded from
+// BREEZE_ORG_ID while the epoch came from agent.yaml), otherwise invalid.
+func identityEpochRefusalCode() string {
+	if os.Getenv("BREEZE_ORG_ID") != "" || os.Getenv("BREEZE_SITE_ID") != "" {
+		return identityRejectionEnvOverride
+	}
+	return identityRejectionInvalid
 }
 
 // noteIdentityRejection records a refusal for the next beat to report. Only

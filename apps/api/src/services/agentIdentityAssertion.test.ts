@@ -26,16 +26,20 @@ vi.mock('./redis', () => ({
 
 import {
   AGENT_IDENTITY_ASSERTION_DOMAIN,
+  AGENT_IDENTITY_ASSERTION_DOMAIN_V2,
   AGENT_IDENTITY_ASSERTION_LIFETIME_MS,
   AGENT_IDENTITY_REJECTION_LOG_TTL_SECONDS,
   AGENT_IDENTITY_REJECTION_TTL_SECONDS,
   agentIdentityAssertionRefused,
+  agentIdentityAssertionVersionToSign,
+  agentIdentityEpochAckToRecord,
   agentIdentityNeedsSync,
   resetAgentIdentityRejectionLogStateForTests,
   canonicalAgentIdentityAssertionBytes,
   normalizeIdentitySyncProtocolVersion,
   signAgentIdentityAssertion,
   type UnsignedAgentIdentityAssertionV1,
+  type UnsignedAgentIdentityAssertionV2,
 } from './agentIdentityAssertion';
 
 const GOLDEN: UnsignedAgentIdentityAssertionV1 = {
@@ -81,14 +85,16 @@ describe('canonicalAgentIdentityAssertionBytes', () => {
   });
 
   it('refuses an unknown version', () => {
-    expect(() => canonicalAgentIdentityAssertionBytes({ ...GOLDEN, v: 2 as unknown as 1 })).toThrow(/version/);
+    expect(() => canonicalAgentIdentityAssertionBytes({ ...GOLDEN, v: 3 as unknown as 1 })).toThrow(/version/);
   });
 });
 
 describe('normalizeIdentitySyncProtocolVersion', () => {
-  it('recognizes exactly version 1', () => {
+  it('recognizes version 1, and version 2 or later as 2 (#8206)', () => {
     expect(normalizeIdentitySyncProtocolVersion(1)).toBe(1);
-    for (const value of [undefined, null, 0, 2, '1', 1.5]) {
+    expect(normalizeIdentitySyncProtocolVersion(2)).toBe(2);
+    expect(normalizeIdentitySyncProtocolVersion(7)).toBe(2);
+    for (const value of [undefined, null, 0, -1, '1', '2', 1.5, 2.5]) {
       expect(normalizeIdentitySyncProtocolVersion(value)).toBe(0);
     }
   });
@@ -281,5 +287,152 @@ describe('agentIdentityAssertionRefused', () => {
     await expect(refused({ code: 'unpinned_key', ...TARGET })).resolves.toBe(true);
     await expect(refused()).resolves.toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// PAM ownership epochs W4 (#8206): assertion v2 adds the device's ownership
+// epoch, signed after siteId. The same Ed25519 vector is pinned in the agent's
+// identity_sync_v2_test.go.
+const GOLDEN_V2: UnsignedAgentIdentityAssertionV2 = {
+  v: 2,
+  agentId: 'a'.repeat(64),
+  deviceId: '00000000-0000-4000-8000-000000000004',
+  orgId: '00000000-0000-4000-8000-000000000001',
+  siteId: '00000000-0000-4000-8000-000000000003',
+  ownershipEpoch: 2,
+  nonce: '0123456789abcdef0123456789abcdef',
+  issuedAt: '2026-10-09T19:00:00Z',
+  expiresAt: '2026-10-09T19:15:00Z',
+  keyId: KEY_ID,
+};
+const GOLDEN_SIGNATURE_V2 =
+  'l9O75BerNFJAHZ0QFh3YXoJyWtIaQaTL1+y7nyZB+9rAOmXxNUT8DDo7LwY1/8qnXZKcpYsqtvIMc7iwSha9AQ==';
+
+describe('canonicalAgentIdentityAssertionBytes v2', () => {
+  it('inserts the ownership epoch after siteId under the v2 domain (pinned in the agent too)', () => {
+    expect(canonicalAgentIdentityAssertionBytes(GOLDEN_V2).toString('utf8')).toBe(
+      [
+        'breeze-agent-identity-v2',
+        'a'.repeat(64),
+        '00000000-0000-4000-8000-000000000004',
+        '00000000-0000-4000-8000-000000000001',
+        '00000000-0000-4000-8000-000000000003',
+        '2',
+        '0123456789abcdef0123456789abcdef',
+        '2026-10-09T19:00:00Z',
+        '2026-10-09T19:15:00Z',
+        KEY_ID,
+      ].join('\n'),
+    );
+    expect(AGENT_IDENTITY_ASSERTION_DOMAIN_V2).toBe('breeze-agent-identity-v2');
+  });
+
+  it('produces the golden v2 signature the agent test verifies', () => {
+    const signature = sign(null, canonicalAgentIdentityAssertionBytes(GOLDEN_V2), PRIVATE_KEY).toString('base64');
+    expect(signature).toBe(GOLDEN_SIGNATURE_V2);
+  });
+
+  it('refuses an epoch that is not a positive integer', () => {
+    for (const ownershipEpoch of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => canonicalAgentIdentityAssertionBytes({ ...GOLDEN_V2, ownershipEpoch })).toThrow(/epoch/);
+    }
+  });
+});
+
+describe('agentIdentityAssertionVersionToSign', () => {
+  const device = { id: 'device-1', orgId: 'org-b', siteId: 'site-b', ownershipEpoch: 1 };
+  const reported = { deviceId: 'device-1', orgId: 'org-b', siteId: 'site-b', nonce: 'n' };
+
+  it('never signs for a never-moved device whose v2 agent reports no epoch (no fleet restart on upgrade)', () => {
+    expect(agentIdentityAssertionVersionToSign(reported, device, 2)).toBe(0);
+    expect(agentIdentityAssertionVersionToSign({ ...reported, ownershipEpoch: 1 }, device, 2)).toBe(0);
+  });
+
+  it('signs v2 when a v2 agent holds an older epoch than the row, even with org and site matching', () => {
+    expect(agentIdentityAssertionVersionToSign(reported, { ...device, ownershipEpoch: 2 }, 2)).toBe(2);
+    expect(agentIdentityAssertionVersionToSign({ ...reported, ownershipEpoch: 2 }, { ...device, ownershipEpoch: 3 }, 2)).toBe(2);
+  });
+
+  it('never signs when the agent reports an epoch above the row', () => {
+    expect(agentIdentityAssertionVersionToSign({ ...reported, ownershipEpoch: 4 }, { ...device, ownershipEpoch: 3 }, 2)).toBe(0);
+  });
+
+  it('signs v2 after a move for a v2 agent and v1 for a v1 agent', () => {
+    const moved = { ...reported, orgId: 'org-a', siteId: 'site-a' };
+    expect(agentIdentityAssertionVersionToSign(moved, { ...device, ownershipEpoch: 2 }, 2)).toBe(2);
+    expect(agentIdentityAssertionVersionToSign(moved, { ...device, ownershipEpoch: 2 }, 1)).toBe(1);
+  });
+
+  it('keeps v1 behaviour byte-identical: a v1 agent is never signed for an epoch alone', () => {
+    expect(agentIdentityAssertionVersionToSign(reported, { ...device, ownershipEpoch: 2 }, 1)).toBe(0);
+  });
+
+  it('signs nothing for an agent without identity sync or for another device id', () => {
+    expect(agentIdentityAssertionVersionToSign({ ...reported, orgId: 'org-a' }, device, 0)).toBe(0);
+    expect(agentIdentityAssertionVersionToSign({ ...reported, deviceId: 'device-2', orgId: 'org-a' }, device, 2)).toBe(0);
+    expect(agentIdentityAssertionVersionToSign(undefined, device, 2)).toBe(0);
+  });
+});
+
+describe('agentIdentityEpochAckToRecord', () => {
+  const device = { id: 'device-1', orgId: 'org-b', ownershipEpoch: 3, agentIdentityEpochAck: null as number | null };
+  const reported = { deviceId: 'device-1', orgId: 'org-b', siteId: 'site-b', nonce: 'n', ownershipEpoch: 3 };
+
+  it('records the epoch the agent reported for the row it holds', () => {
+    expect(agentIdentityEpochAckToRecord(reported, device)).toBe(3);
+    expect(agentIdentityEpochAckToRecord({ ...reported, ownershipEpoch: 2 }, device)).toBe(2);
+  });
+
+  it('only moves forward', () => {
+    expect(agentIdentityEpochAckToRecord(reported, { ...device, agentIdentityEpochAck: 3 })).toBeNull();
+    expect(agentIdentityEpochAckToRecord({ ...reported, ownershipEpoch: 2 }, { ...device, agentIdentityEpochAck: 3 })).toBeNull();
+  });
+
+  it('never records an epoch above the row or one the agent did not report', () => {
+    expect(agentIdentityEpochAckToRecord({ ...reported, ownershipEpoch: 4 }, device)).toBeNull();
+    const { ownershipEpoch: _omit, ...noEpoch } = reported;
+    expect(agentIdentityEpochAckToRecord(noEpoch, device)).toBeNull();
+    expect(agentIdentityEpochAckToRecord(undefined, device)).toBeNull();
+  });
+
+  it('never records for an agent holding another org or device', () => {
+    expect(agentIdentityEpochAckToRecord({ ...reported, orgId: 'org-a' }, device)).toBeNull();
+    expect(agentIdentityEpochAckToRecord({ ...reported, deviceId: 'device-2' }, device)).toBeNull();
+  });
+});
+
+describe('signAgentIdentityAssertion v2', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveSigningKeyIdMock.mockResolvedValue(KEY_ID);
+    signBytesWithActiveKeyMock.mockImplementation(async (bytes: Uint8Array) => ({
+      keyId: KEY_ID,
+      signature: sign(null, Buffer.from(bytes), PRIVATE_KEY).toString('base64'),
+    }));
+  });
+
+  it('signs a v2 assertion carrying the row epoch when one is given', async () => {
+    const assertion = await signAgentIdentityAssertion({
+      agentId: GOLDEN_V2.agentId,
+      deviceId: GOLDEN_V2.deviceId,
+      orgId: GOLDEN_V2.orgId,
+      siteId: GOLDEN_V2.siteId,
+      ownershipEpoch: 2,
+      nonce: GOLDEN_V2.nonce,
+      now: new Date('2026-10-09T19:00:00.987Z'),
+    });
+    expect(assertion).toEqual({ ...GOLDEN_V2, signature: GOLDEN_SIGNATURE_V2 });
+  });
+
+  it('still signs byte-identical v1 without an epoch', async () => {
+    const assertion = await signAgentIdentityAssertion({
+      agentId: GOLDEN.agentId,
+      deviceId: GOLDEN.deviceId,
+      orgId: GOLDEN.orgId,
+      siteId: GOLDEN.siteId,
+      nonce: GOLDEN.nonce,
+      now: new Date('2026-10-09T19:00:00.987Z'),
+    });
+    expect(assertion).toEqual({ ...GOLDEN, signature: GOLDEN_SIGNATURE });
   });
 });

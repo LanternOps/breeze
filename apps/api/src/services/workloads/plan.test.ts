@@ -68,6 +68,33 @@ describe('incompleteSnapshot (W05 digest-unknown flag)', () => {
   });
 });
 
+describe('retiresSubjects (W06 image alert retirement)', () => {
+  it.each([
+    ['ok + complete', { collection: 'ok', complete: true, workloads: [item('a')] }, true],
+    ['ok + incomplete', { collection: 'ok', complete: false, workloads: [item('a')] }, false],
+    ['ok + truncated (observed > reported)', { collection: 'ok', complete: true, observedCount: 5, workloads: [item('a')] }, false],
+    ['error', { collection: 'error', complete: false, error: 'x' }, false],
+    ['permission denied', { collection: 'permission_denied', complete: false, error: 'x' }, false],
+    ['unavailable', { collection: 'unavailable', complete: false, error: 'x' }, false],
+    ['runtime absent', { detection: 'absent', collection: 'unavailable', complete: false }, true],
+  ])('%s', (_name, over, expected) => {
+    expect(onlyPlan({ runtimes: [runtimeReport(over)] }).retiresSubjects).toBe(expected);
+  });
+
+  it('is true when the policy turns collection off (its rows are deleted)', () => {
+    expect(onlyPlan({ runtimes: [runtimeReport({ workloads: [item('a')] })], isEnabled: () => false }).retiresSubjects).toBe(true);
+  });
+
+  it('is false for a runtime the ordering guard skipped', () => {
+    const plan = onlyPlan({
+      runtimes: [runtimeReport({ workloads: [item('a')] })],
+      storedRuntimes: [{ runtime: 'docker', collectedAt: NOW }],
+    });
+    expect(plan.applied).toBe(false);
+    expect(plan.retiresSubjects).toBe(false);
+  });
+});
+
 describe('ordering guard', () => {
   it.each([
     ['older', hoursAgo(1)],

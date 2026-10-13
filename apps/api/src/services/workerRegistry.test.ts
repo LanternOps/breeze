@@ -104,6 +104,8 @@ const EXPECTED_WORKER_NAMES = [
   // #5290 (Monitoring & automation unification, W03) — daily prune of closed
   // monitor_episodes rows past the 400-day retention window.
   'monitorEpisodeRetention',
+  // EDR provider framework W02 (#8164) — daily prune of terminal edr_detections.
+  'edrDetectionRetentionWorker',
   // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.

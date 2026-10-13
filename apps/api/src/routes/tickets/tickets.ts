@@ -349,6 +349,7 @@ ticketsRoutes.get(
     else if (q.assignee === 'unassigned') conditions.push(isNull(tickets.assignedTo));
     else if (q.assignee) conditions.push(eq(tickets.assignedTo, q.assignee));
     if (q.categoryId) conditions.push(eq(tickets.categoryId, q.categoryId));
+    if (q.ticketType) conditions.push(inArray(tickets.ticketType, q.ticketType));
     if (q.priority) conditions.push(eq(tickets.priority, q.priority));
     if (q.slaState === 'breached') conditions.push(SLA_BREACHED);
     else if (q.slaState === 'at_risk') conditions.push(SLA_AT_RISK);
@@ -378,6 +379,7 @@ ticketsRoutes.get(
         status: tickets.status,
         priority: tickets.priority,
         source: tickets.source,
+        ticketType: tickets.ticketType,
         orgId: tickets.orgId,
         orgName: organizations.name,
         deviceId: tickets.deviceId,

@@ -86,7 +86,9 @@
       "failedInstalls_one": "{{count}} failed install",
       "failedInstalls_other": "{{count}} failed installs",
       "critical": "{{count}} critical",
-      "reboot": "{{count}} reboot"
+      "reboot": "{{count}} reboot",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked"
     },
     "filters": {
       "allDevices": "All Devices ({{count}})",
