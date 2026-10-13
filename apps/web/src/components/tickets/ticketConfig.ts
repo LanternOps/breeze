@@ -61,6 +61,8 @@ export interface TicketDetail extends TicketSummary {
   // submitterName/Email are the display name + reply address (also set for
   // free-text requesters that have no portal account).
   submittedBy: string | null;
+  // org contact the ticket is for (caller verification keys on it); absent on older APIs.
+  requesterContactId?: string | null;
   submitterName: string | null;
   submitterEmail: string | null;
   pendingReason: string | null;
