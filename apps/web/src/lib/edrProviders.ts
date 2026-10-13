@@ -341,6 +341,25 @@ export function deleteEdrConnection(id: string, counts: EdrDeleteConfirmCounts |
   return mutate<{ success: boolean }>(`/edr/connections/${id}${suffix}`, 'DELETE', opts);
 }
 
+// ---------------------------------------------------------------- labels
+
+/**
+ * Display labels for EDR-framework provider keys, mirroring
+ * `apps/api/src/services/edrProviders/providerKeys.ts` (`EDR_PROVIDER_LABELS`).
+ * Surfaces that receive only a key (the incidents feed `source`) use this;
+ * surfaces that receive `providerLabel`/`label` from the API prefer that.
+ * Vendor product names are not translated.
+ */
+export const EDR_PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  bitdefender: 'Bitdefender GravityZone',
+};
+
+/** The known label for a provider key, or null so callers render a translated generic fallback. */
+export function edrProviderLabel(key: string | null | undefined): string | null {
+  if (!key) return null;
+  return Object.prototype.hasOwnProperty.call(EDR_PROVIDER_LABELS, key) ? (EDR_PROVIDER_LABELS[key] ?? null) : null;
+}
+
 /** `orgId: null` = deliberately leave unmapped. The key is always sent (`{}` is invalid). */
 export function mapEdrTenant(tenantId: string, orgId: string | null, opts: EdrActionOptions) {
   return mutate<{ data: unknown }>(`/edr/tenants/${tenantId}/mapping`, 'PUT', opts, { orgId });

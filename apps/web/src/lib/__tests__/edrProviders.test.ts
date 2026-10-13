@@ -14,6 +14,7 @@ import { HttpError } from '../httpError';
 import {
   createEdrConnection,
   deleteEdrConnection,
+  edrProviderLabel,
   fetchEdrConnections,
   fetchEdrDetections,
   fetchEdrEndpoints,
@@ -112,6 +113,15 @@ describe('edrProviders client — mutations', () => {
     const err = await testEdrConnection(ID, { errorFallback: 'fallback' }).catch((e) => e);
     expect(err).toBeInstanceOf(ActionError);
     expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('edrProviderLabel', () => {
+  it('maps a known key; unknown, prototype and empty keys are null', () => {
+    expect(edrProviderLabel('bitdefender')).toBe('Bitdefender GravityZone');
+    expect(edrProviderLabel('acme')).toBeNull();
+    expect(edrProviderLabel('toString')).toBeNull();
+    expect(edrProviderLabel(null)).toBeNull();
   });
 });
 
