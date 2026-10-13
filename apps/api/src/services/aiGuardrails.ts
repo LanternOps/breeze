@@ -966,6 +966,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'invoices', action: 'write' },
     assemble_from_org: { resource: 'invoices', action: 'write' },
     assemble_from_ticket: { resource: 'invoices', action: 'write' },
+    refresh_time_lines: { resource: 'invoices', action: 'write' },
     issue: { resource: 'invoices', action: 'send' },
     void: { resource: 'invoices', action: 'send' },
     record_payment: { resource: 'invoices', action: 'send' },

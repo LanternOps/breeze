@@ -470,7 +470,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum([
       'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
       'update_line', 'remove_line', 'update_header', 'delete_draft',
-      'assemble_from_org', 'assemble_from_ticket',
+      'assemble_from_org', 'assemble_from_ticket', 'refresh_time_lines',
       'issue', 'void', 'record_payment', 'void_payment', 'create_pay_link',
     ]),
     orgId: uuid.optional(),

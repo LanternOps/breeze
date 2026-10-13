@@ -36,6 +36,7 @@ import {
   addCatalogLine,
   addBundleLine,
   updateLine,
+  refreshDraftTimeLines,
   removeLine,
   updateInvoice,
   deleteDraftInvoice,
@@ -118,6 +119,7 @@ const MANAGE_INVOICES_REQUIRED: Record<string, readonly string[]> = {
   add_bundle_line: ['invoiceId', 'bundleId', 'quantity'],
   add_contract_line: ['invoiceId', 'contractId', 'contractLineId'],
   update_line: ['invoiceId', 'lineId', 'patch'],
+  refresh_time_lines: ['invoiceId'],
   remove_line: ['invoiceId', 'lineId'],
   update_header: ['invoiceId', 'patch'],
   delete_draft: ['invoiceId'],
@@ -241,17 +243,17 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_invoices',
       description:
-        "Invoices; issue/void/payments need approval. Never sum currencies. Actions:create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,issue,void,record_payment,void_payment,create_pay_link.",
+        "Issue/void/payments need approval. Never sum currencies. create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,refresh_time_lines,issue,void,record_payment,void_payment,create_pay_link",
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
-            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link.',
+            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link. refresh_time_lines: drafts only; keeps amounts.',
             enum: [
               'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
               'update_line', 'remove_line', 'update_header', 'delete_draft',
-              'assemble_from_org', 'assemble_from_ticket',
+              'assemble_from_org', 'assemble_from_ticket', 'refresh_time_lines',
               'issue', 'void', 'record_payment', 'void_payment', 'create_pay_link',
             ],
           },
@@ -415,6 +417,10 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             ));
           case 'remove_line':
             return JSON.stringify(await removeLine(String(input.invoiceId), String(input.lineId), actor));
+          case 'refresh_time_lines':
+            // #8606: draft-only (NOT_A_DRAFT 409 otherwise). Never changes
+            // quantity, price, totals or a hand-edited description.
+            return JSON.stringify(await refreshDraftTimeLines(String(input.invoiceId), actor));
           case 'update_header':
             return JSON.stringify(await updateInvoice(
               String(input.invoiceId),
