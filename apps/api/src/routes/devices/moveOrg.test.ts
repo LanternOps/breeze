@@ -649,8 +649,12 @@ describe('POST /devices/:id/move-org', () => {
       // and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
+        // Move-delete tables (topology_device_presence, extension move-delete
+        // tables) are DELETED below, never restamped first: a presence row's
+        // (matched_site_id, org_id) names a source-org site, so a restamp 23503s.
         ...getDeviceOrgDenormalizedTables().filter(
-          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
+          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never)
+            && !getDeviceOrgMoveDeleteTables().includes(table),
         ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
@@ -693,6 +697,11 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements).toContain(
         `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,
       );
+      expect(getDeviceOrgMoveDeleteTables()).toContain('topology_device_presence');
+      expect(statements).toContain(
+        `DELETE FROM topology_device_presence WHERE device_id = ${DEVICE_ID}`,
+      );
+      expect(collapsed.some((s) => s.startsWith('UPDATE topology_device_presence SET'))).toBe(false);
 
       // After the move, the live WS for this agent MUST be closed so the
       // reconnect handshake resolves the new org_id. Otherwise every

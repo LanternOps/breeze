@@ -191,6 +191,7 @@ export * from './topologyOperations';
 export * from './topologyMonitoring';
 
 export * from './topologyTemplates';
+export * from './topologyPresence';
 export * from './emailSendingDomains';
 export * from './backupProviders';
 export * from './edrProviders';

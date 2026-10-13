@@ -945,6 +945,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "topology_change_outbox": tablePolicy("org_id", {"included":["id","org_id","site_id","event_kind","aggregate_id","source_revision","idempotency_key","attempt_count","next_attempt_at","last_attempt_at","delivered_at","last_error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   // topology_view_exclusions (M2 Task 7): scalar-only reversible view hides;
   // reason is operator-authored free text, actors are bare user uuids.
+  // Topology site location W2 (#7886): the presence read model. Derived scalars, arrays of ids and
+  // network addresses are `included`; the two jsonb columns (per-MAC observer lists, per-attachment
+  // evidence) are open containers -> excludedOpen.
+  "topology_org_presence_state": tablePolicy("org_id", {"included":["org_id","fingerprint_version","coverage","coverage_reason","dirty_at","evaluated_at","next_evaluation_at","input_digest","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "topology_site_fingerprints": tablePolicy("org_id", {"included":["id","org_id","site_id","family","prefix","gateway_address","status","consumer_default","declared_by","declaration_ids","observer_device_ids","neighbor_coverage","fingerprint_version","evaluated_at","expires_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["gateway_macs"]}),
+  "topology_device_presence": tablePolicy("org_id", {"included":["device_id","org_id","assigned_site_id","state","reason","matched_site_id","declaring_site_ids","prefix","gateway_address","gateway_mac","mac_corroborated","observed_at","fresh_until","fingerprint_version","evaluated_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence"]}),
   "topology_view_exclusions": tablePolicy("org_id", {"included":["id","org_id","site_id","relationship_id","view","reason","created_by","revoked_at","revoked_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_layout": tablePolicy("org_id", {"included":["id","org_id","site_id","node_type","node_id","x","y","pinned","updated_by","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_manual_nodes": tablePolicy("org_id", {"included":["id","org_id","site_id","label","role","notes","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

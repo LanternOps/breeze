@@ -501,6 +501,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   client_ai_tenant_mappings: { kind: 'keep-survivor' }, // verified: client_ai_tenant_mappings_org_uniq; also UNIQUE(entra_tenant_id): two different tenants can't both map to survivor
   google_workspace_connections: { kind: 'keep-survivor' }, // verified: google_workspace_connections_org_uniq (google.ts)
   user_risk_policies: { kind: 'keep-survivor' }, // verified: user_risk_policy_org_idx (userRisk.ts)
+  // Topology site location W2 (#7886): one derived presence-state row per org. NOT keep-survivor (the plan's
+  // first choice): the merge's own devices / discovery_profiles / network_baselines repoints fire the presence
+  // invalidation triggers DURING the move phase, which upsert the survivor's row after the resolve phase has
+  // already decided whether to drop the loser's, so a later keep-survivor repoint of the loser's row would hit the
+  // survivor's primary key (23505) and abort the merge. The loser's row is inert state (its fingerprint and
+  // presence rows repoint and then fail the survivor's version check, spec S§7.3); it is erased with the shell.
+  topology_org_presence_state: { kind: 'leave-for-erasure', note: 'derived per-org presence state; the merge\'s devices/declaration repoints mark the survivor dirty through triggers mid-walk, so a keep-survivor repoint would collide on the PK — the loser row is inert and dies with the shell' },
 
   // Unique-key tables — drop loser rows that would collide, move the rest:
   m365_connections: { kind: 'repoint-dedupe', key: ['profile'] }, // verified: m365_connections_org_profile_uniq (org_id, profile)
@@ -1178,6 +1185,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_collection_sources",
   "topology_config_template_versions",
   "topology_config_templates",
+  "topology_device_presence",
   "topology_diagnostic_runs",
   "topology_diagnostic_steps",
   "topology_interface_samples",
@@ -1195,6 +1203,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_probe_targets",
   "topology_relationship_support",
   "topology_relationships",
+  "topology_site_fingerprints",
   "topology_site_state",
   "topology_site_template_bindings",
   "topology_telemetry_arms",

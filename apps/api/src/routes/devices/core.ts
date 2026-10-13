@@ -315,6 +315,10 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   // org never authorizes anything in the new one.
   'diagnostic_access_grants',
   'topology_node_bindings',
+  // Topology site location W2 (#7886): listed for the coverage contract, but a cross-org move never restamps a
+  // presence row — breeze_topology_presence_device_moved (BEFORE UPDATE on devices) deletes it first, and it is in
+  // CORE_DEVICE_ORG_MOVE_DELETE_TABLES, which the restamp loop skips (its matched_site_id names a source-org site).
+  'topology_device_presence',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -431,7 +435,11 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [];
+const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+  // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
+  // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
+  'topology_device_presence',
+];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
   return withExtensionDeviceOrgMoveDelete(CORE_DEVICE_ORG_MOVE_DELETE_TABLES);
@@ -615,6 +623,7 @@ export async function rewriteDeviceSiteDenormalizedTables(
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'topology_node_bindings',
+  'topology_device_presence',
   'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
