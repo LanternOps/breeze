@@ -47,7 +47,10 @@ vi.mock('../../middleware/requireAgentRole', () => ({
   requireAgentRole: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
 }));
 
-vi.mock('../../services/callerVerification/loginObservation', () => ({
+vi.mock('../../services/callerVerification/loginObservation', async (importOriginal) => ({
+  // The predicate is pure and decides whether the route takes the device lock,
+  // so keep the real one; only the DB-writing observer is mocked.
+  isObservablePrincipal: (await importOriginal<typeof import('../../services/callerVerification/loginObservation')>()).isObservablePrincipal,
   observeSessionPrincipal: vi.fn(),
 }));
 
@@ -161,6 +164,20 @@ describe('PUT /agents/:id/sessions', () => {
     });
     expect(withIdentity.status).toBe(200);
     expect(deviceLockModes).toEqual(['share']);
+  });
+
+  it('takes no lock for a principal that cannot bind (no UPN) — steady-state report (#6354 W02)', async () => {
+    deviceLockModes.length = 0;
+    mockDeviceLookup();
+    const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessions: [{ username: 'simuser', sessionType: 'ssh', sessionId: '1', principal: { uid: 1000, username: 'simuser' } }],
+        events: [{ type: 'login', username: 'simuser', sessionType: 'ssh', principal: { uid: 1000, username: 'simuser' } }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(deviceLockModes).toEqual([]);
   });
 
   it('refuses to observe when the device moved org during the report (#6354 W02)', async () => {

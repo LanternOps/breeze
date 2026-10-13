@@ -22,6 +22,7 @@ import { devices, deviceCommands } from '../../db/schema/devices';
 import { incidents } from '../../db/schema/incidentResponse';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { callerVerificationEnabled } from '../../config/env';
+import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import type {
   CallerVerificationAction, CallerVerificationActor, CallerVerificationMethod, CallerVerificationStatus,
   CallerVerificationActionScope, VerificationRow,
@@ -413,6 +414,7 @@ export async function cancel(actor: CallerVerificationActor, orgId: string, id: 
     await db.update(deviceCommands).set({
       status: 'cancelled', completedAt: new Date(),
       result: { status: 'cancelled', reason: 'caller_verification_cancelled' },
+      ...terminalPayloadErasureSet(),
     }).where(and(eq(deviceCommands.id, row.agentCommandId), eq(deviceCommands.status, 'pending')));
   }
   return get(actor, orgId, id);

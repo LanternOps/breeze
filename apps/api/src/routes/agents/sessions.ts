@@ -8,7 +8,7 @@ import { publishEvent } from '../../services/eventBus';
 import { submitSessionsSchema } from './schemas';
 import { sanitizeTimestamp } from './helpers';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
-import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
+import { isObservablePrincipal, observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
 
 export const sessionsRoutes = new Hono();
 // Session ingest is the main agent's job; reject watchdog-role tokens.
@@ -151,12 +151,15 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
     });
 
     // Caller verification (#6354 W02): only when the report carries OS identity
-    // evidence, share-lock the device for the rest of the request so a device
-    // org move (FOR UPDATE on this row before it revokes workstation grants)
-    // cannot interleave with the observation. Taken late, and only then, so
-    // ordinary session reports never queue concurrent heartbeat writes.
-    const observes = activeSessions.some((session) => session.principal)
-      || (data.events ?? []).some((event) => event.type === 'login' && event.principal);
+    // that can actually bind (isObservablePrincipal — the same predicate
+    // observeSessionPrincipal gates its writes on), share-lock the device for
+    // the rest of the request so a device org move (FOR UPDATE on this row
+    // before it revokes workstation grants) cannot interleave with the
+    // observation. Taken late, and only then, so ordinary session reports —
+    // including principals without a UPN — pay no extra statement and never
+    // queue concurrent heartbeat writes (agentHotPathQueryBudget pins this).
+    const observes = activeSessions.some((session) => isObservablePrincipal(session.username, session.principal))
+      || (data.events ?? []).some((event) => event.type === 'login' && isObservablePrincipal(event.username, event.principal));
     if (observes) {
       const [locked] = await db.select({ orgId: devices.orgId }).from(devices)
         .where(eq(devices.id, device.id)).limit(1).for('share');
