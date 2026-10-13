@@ -80,6 +80,8 @@ func TestCallerVerifySessionWindows(t *testing.T) {
 		unverifiedWin bool
 		wrongSID      bool
 		listErr       bool
+		helperSession string
+		consoleID     string
 		want          string
 	}{
 		{name: "explicit", user: "alex", session: "7", assist: true, capable: true},
@@ -95,11 +97,17 @@ func TestCallerVerifySessionWindows(t *testing.T) {
 		{name: "native only", user: "alex", session: "7", native: true, capable: true, want: "helper_outdated"},
 		{name: "wrong SID", user: "alex", session: "7", assist: true, capable: true, wrongSID: true, want: "helper_outdated"},
 		{name: "self-reported win session", user: "alex", session: "7", assist: true, capable: true, unverifiedWin: true, want: "helper_outdated"},
+		{name: "helper in another session", user: "alex", session: "7", helperSession: "9", assist: true, capable: true, want: "helper_outdated"},
+		{name: "no console session", user: "alex", session: "7", consoleID: "none", assist: true, capable: true, want: "session_not_console"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := New("test", nil)
 			b.SetGOOSForTest("windows")
-			b.SetConsoleSessionIDFunc(func() string { return "7" })
+			console := "7"
+			if tc.consoleID == "none" {
+				console = "" // WTSGetActiveConsoleSessionId failed / nobody attached
+			}
+			b.SetConsoleSessionIDFunc(func() string { return console })
 			sessionType := tc.sessionType
 			if sessionType == "" {
 				sessionType = "console"
@@ -115,6 +123,9 @@ func TestCallerVerifySessionWindows(t *testing.T) {
 			add := func(role ipc.HelperRole, scope string) *Session {
 				s := NewSession(nil, 0, "S-1-5-21-1", "helper-claimed-name", "", string(role)+tc.name, []string{scope})
 				s.WinSessionID = tc.session
+				if tc.helperSession != "" {
+					s.WinSessionID = tc.helperSession
+				}
 				s.WinSessionVerified = !tc.unverifiedWin
 				s.HelperRole = role
 				s.SetCapabilities(&ipc.Capabilities{CallerVerify: tc.capable})
@@ -254,4 +265,18 @@ func addCallerSession(b *Broker, s *Session) {
 	b.sessions[s.SessionID] = s
 	b.publishSnapshotLocked()
 	b.mu.Unlock()
+}
+
+func TestCallerVerifyWindowsAmbiguousConsoleLoginRefused(t *testing.T) {
+	withCallerOwnsLogin(t, func(string, string) bool { return true })
+	b := New("test", nil)
+	b.SetGOOSForTest("windows")
+	b.SetConsoleSessionIDFunc(func() string { return "7" })
+	det := admissionTestDetector{sessions: []DetectedSession{
+		{Username: "alex", Session: "7", Type: "console", State: "active"},
+		{Username: "ALEX", Session: "7", Type: "console", State: "active"},
+	}}
+	if _, _, reason := b.CallerVerifySession("alex", det); reason != "session_not_console" {
+		t.Fatalf("ambiguous windows console login must be refused, got %q", reason)
+	}
 }

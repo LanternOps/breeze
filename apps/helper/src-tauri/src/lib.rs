@@ -1896,7 +1896,7 @@ mod tests {
     fn launch_and_tray_paths_never_surface_the_caller_verify_window() {
         let src = include_str!("lib.rs");
         let prod = src.split("\nmod tests {").next().unwrap();
-        assert!(!prod.contains("caller_verify::show_window"));
+        assert!(!prod.contains("show_prompt_window"));
         assert!(!prod.contains("caller_verify::window_url"));
         assert!(!include_str!("app_shell.rs").contains("caller-verify"));
         assert!(!include_str!("app_shell.rs").contains("caller_verify"));

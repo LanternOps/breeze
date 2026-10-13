@@ -7,7 +7,7 @@
 //! boolean or a principal; the agent decides what the choice means.
 //!
 //! START-HIDDEN (#8138): this window is a separate webview that may surface
-//! ONLY for an active `caller_verify_request` (see `show_window`'s single call
+//! ONLY for an active `caller_verify_request` (see `show_prompt_window`'s single call
 //! site in `client.rs`). It never touches the main Assist window.
 
 use std::collections::HashMap;
@@ -127,17 +127,24 @@ pub struct CallerVerifyBridge {
 }
 
 impl CallerVerifyBridge {
+    /// The state is a plain map + sender; a panic elsewhere while holding the
+    /// lock leaves nothing half-written that matters, so recover instead of
+    /// letting a poisoned mutex take down the IPC loop.
+    fn locked(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Start a session: drops anything pending from a previous one.
     pub fn connect(&self) -> mpsc::UnboundedReceiver<Response> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.locked();
         state.pending.clear();
         state.sender = Some(tx);
         rx
     }
 
     pub fn clear(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.locked();
         state.pending.clear();
         state.sender = None;
     }
@@ -145,7 +152,7 @@ impl CallerVerifyBridge {
     /// Validate and register a request. The deadline starts now (Rust-owned).
     pub fn insert(&self, envelope_id: String, request: Request) -> Result<(), String> {
         request.validate()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.locked();
         if state.sender.is_none() || state.pending.contains_key(&request.verification_id) {
             return Err("request unavailable".into());
         }
@@ -211,7 +218,7 @@ impl CallerVerifyBridge {
     /// Answer `timeout` for every request past its deadline; returns their ids
     /// so the caller can close the windows. Polled by the IPC loop.
     pub fn expire_due(&self) -> Vec<String> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.locked();
         let now = Instant::now();
         let due: Vec<String> = state
             .pending
@@ -251,7 +258,7 @@ pub fn close_window(app: &tauri::AppHandle, id: &str) {
 
 /// Show the prompt window for an already-inserted request. The ONLY place a
 /// caller-verify window is built (#8138: never at launch or from the tray).
-pub fn show_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+pub(super) fn show_prompt_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     WebviewWindowBuilder::new(
         app,
         window_label(id),
@@ -414,7 +421,7 @@ mod tests {
     }
 
     // #8138 start-hidden: the caller-verify window may be constructed only by
-    // this module, and `show_window` may be called only from the
+    // this module, and `show_prompt_window` may be called only from the
     // `caller_verify_request` arm of the IPC loop -- never at launch, from the
     // tray, or from the main-window show path.
     #[test]
@@ -431,18 +438,18 @@ mod tests {
         let prod = prod_of(me);
         assert_eq!(prod.matches("WebviewWindowBuilder::new").count(), 1);
         for (name, src) in [("lib.rs", lib), ("app_shell.rs", shell), ("desktop.rs", desktop), ("client.rs", client)] {
-            assert!(!src.contains("caller_verify::show_window") || name == "client.rs", "{name} calls show_window");
+            assert!(!src.contains("caller_verify::show_prompt_window") || name == "client.rs", "{name} calls show_prompt_window");
         }
-        assert!(!lib.contains("caller_verify::show_window"));
+        assert!(!lib.contains("caller_verify::show_prompt_window"));
         assert!(!shell.contains("caller_verify"));
         assert!(!desktop.contains("caller_verify"));
 
         // client.rs: exactly one call, inside the request arm.
-        assert_eq!(client.matches("caller_verify::show_window").count(), 1);
+        assert_eq!(client.matches("caller_verify::show_prompt_window").count(), 1);
         let arm = client.find("\"caller_verify_request\" =>").expect("request arm");
-        let call = client.find("caller_verify::show_window").unwrap();
+        let call = client.find("caller_verify::show_prompt_window").unwrap();
         let next_arm = client[arm..].find("\"banner_show\" =>").map(|i| i + arm).unwrap();
-        assert!(arm < call && call < next_arm, "show_window outside the request arm");
+        assert!(arm < call && call < next_arm, "show_prompt_window outside the request arm");
 
         // Never touches the main window.
         assert!(!prod.contains("get_webview_window(\"main\")"));

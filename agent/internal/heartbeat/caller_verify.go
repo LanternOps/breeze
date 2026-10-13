@@ -119,11 +119,27 @@ func runCallerVerify(req ipc.CallerVerifyRequest, resolve callerVerifyResolver, 
 	if errors.Is(err, sessionbroker.ErrDuplicateCommand) {
 		return callerVerifyResult{duplicate: true}
 	}
-	if err != nil || resp == nil || resp.Error != "" {
+	// Each of these reports "timeout" (never an approval), but the cause is
+	// logged so a broken helper is distinguishable from an ignored prompt.
+	if err != nil {
+		if errors.Is(err, sessionbroker.ErrCommandTimeout) {
+			log.Info("caller verification: no answer before the deadline", "verificationId", req.VerificationID)
+		} else {
+			log.Warn("caller verification: helper exchange failed", "verificationId", req.VerificationID, "error", err.Error())
+		}
+		return timedOut
+	}
+	if resp == nil || resp.Error != "" {
+		helperErr := ""
+		if resp != nil {
+			helperErr = resp.Error
+		}
+		log.Warn("caller verification: helper returned an error", "verificationId", req.VerificationID, "error", helperErr)
 		return timedOut
 	}
 	var answer ipc.CallerVerifyResponse
-	if json.Unmarshal(resp.Payload, &answer) != nil || !req.AnswerAllowed(answer.Choice) {
+	if err := json.Unmarshal(resp.Payload, &answer); err != nil || !req.AnswerAllowed(answer.Choice) {
+		log.Warn("caller verification: helper answer malformed or not offered", "verificationId", req.VerificationID)
 		return timedOut
 	}
 	if answer.Choice == ipc.CallerVerifyChoiceTimeout {

@@ -49,6 +49,7 @@ func (b *Broker) CallerVerifySession(username string, detector SessionDetector) 
 	}
 	logins, err := detector.ListSessions()
 	if err != nil {
+		log.Warn("caller verification: session detector failed", "error", err.Error())
 		return nil, DetectedSession{}, CallerVerifyNoSession
 	}
 	return b.callerVerifySessionFrom(username, logins)
@@ -80,6 +81,7 @@ func (b *Broker) CallerVerifyUsers(detector SessionDetector) []string {
 	}
 	logins, err := detector.ListSessions()
 	if err != nil {
+		log.Warn("caller verification readiness: session detector failed", "error", err.Error())
 		return users
 	}
 	seen := map[string]bool{}

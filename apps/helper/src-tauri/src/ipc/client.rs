@@ -421,7 +421,7 @@ where
                             if env.id != format!("caller-verify-{id}") {
                                 eprintln!("[helper] caller_verify_request: envelope id mismatch");
                             } else if ctx.caller_verify.insert(env.id.clone(), req).is_ok() {
-                                if let Err(e) = super::caller_verify::show_window(&ctx.app, &id) {
+                                if let Err(e) = super::caller_verify::show_prompt_window(&ctx.app, &id) {
                                     eprintln!("[helper] caller verify window could not be shown: {}", e);
                                     let _ = ctx.caller_verify.submit(&id, "timeout");
                                 }

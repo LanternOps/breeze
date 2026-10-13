@@ -2477,16 +2477,18 @@ Recorded at implementation (#6356). Where it differs from the tasks above, **thi
 - Selection (`Broker.CallerVerifySession`): explicit OS login (WTS/loginctl/console user) → it must be the single active console login (Windows: kernel-verified session id = active console id, type `console`; macOS: console; Linux: `seat0` + x11/wayland/mir; never remote) → an Assist helper with `consent_ui` + `callerVerify` whose kernel identity owns that login (Windows: `WinSessionVerified` + SID→account; Unix: peer UID). Refusals: `no_session_for_user`, `session_not_console`, `helper_outdated`.
 - Agent wait: `timeoutMs + 2 s`. Timeout, disconnect, error envelope, unoffered answer → `choice:"timeout"`. Unoffered answers are also dropped at the broker (`responseValidator`). A number is never reported without the agent-verified principal; `not_me` always is. A re-delivered command already waiting on the helper reports the `duplicate` marker.
 - Helper: deadline owned in Rust from insert; any choice at/after it becomes `timeout` (`not_me` excepted); single-use; pending prompts and `caller-verify-*` windows cleared on IPC disconnect.
-- Tauri commands: `get_caller_verify_request(verificationId)` → `{ request, deadlineMs }`, `submit_caller_verify(verificationId, choice)`; both refuse unless `window.label() == "caller-verify-<verificationId>"`. Window URL `index.html#caller-verify/<id>`; it is built only from the `caller_verify_request` arm (never at launch or from the tray, #8138). Text limits: 320 characters on API, agent and helper.
+- Agent logs the cause of every non-answer (IPC timeout vs helper error vs malformed answer) while still reporting `timeout`.
+- Tauri commands: `get_caller_verify_request(verificationId)` → `{ request, deadlineMs }`, `submit_caller_verify(verificationId, choice)`; both refuse unless `window.label() == "caller-verify-<verificationId>"`. Window URL `index.html#caller-verify/<id>`; it is built only by `show_prompt_window` (`pub(super)` in `ipc`, called only from the `caller_verify_request` arm; never at launch or from the tray, #8138). Text limits: 320 characters on API, agent and helper.
 
 ### Readiness telemetry
 
 - Heartbeat field `helperCapabilities: { callerVerify: boolean, usernames: string[] (≤32, 1–255) }`, always sent by current agents (main role only; watchdog beats never touch it). Malformed → absent.
-- Stored in Redis `caller-verify-cap:<orgId>:<deviceId>` (TTL 180 s), replaced every beat; absent/false/empty deletes it. Exact username match. Telemetry is a hint; the agent re-resolves on every dispatch.
+- Stored in Redis `caller-verify-cap:<orgId>:<deviceId>` (TTL 180 s), replaced every beat; absent/false/empty deletes it. Exact username match, read with one `MGET` per suggestion set. Telemetry is a hint; the agent re-resolves on every dispatch.
+- A missing/failing readiness store is logged and reported to Sentry (throttled) and surfaces as `readiness_unavailable` (start error code; suggestion `unavailableReason`), never as `helper_outdated`.
 
 ### API surface
 
-- `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=<uuid>` → `{ data: Array<{ deviceId, hostname, username, hasBinding, available, unavailableReason?: 'helper_outdated' }> }`. Chain: auth → scope → readiness gate (404 `feature_disabled`) → id check → `orgs:read`; contact org + site reach. Matches `devices.last_user` against the contact's name, email (and local part), and active bindings' OS username/UPN (and local part). Never sets a tier.
+- `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=<uuid>` → `{ data: Array<{ deviceId, hostname, username, hasBinding, available, unavailableReason?: 'helper_outdated' | 'readiness_unavailable' }> }`. Chain: auth → scope → readiness gate (404 `feature_disabled`) → id check → `orgs:read`; contact org + site reach. Matches `devices.last_user` against the contact's name, email (and local part), and active bindings' OS username/UPN (and local part). Never sets a tier.
 - `methodsForContact`: workstation is available iff any suggestion is ready, else `helper_outdated`. `start` with a hand-picked `deviceId` bypasses only that aggregate; `ports.prepare` then requires that exact device online + ready for that username + partner trust + not parked.
 - `/api/v1/helper/config` adds `branding: { partnerName, logoUrl (https only) } | null` (null while dark or on error).
 
@@ -2494,5 +2496,6 @@ Recorded at implementation (#6356). Where it differs from the tasks above, **thi
 
 - HTTP: a `not_me` for a terminal command merges `{"callerVerificationNotMe": true}` into the owned row's `result` (status untouched) and applies the decision in the same savepoint; failure → 500, agent retries.
 - WS: owned lookup by the socket's agent, containment re-check, receipt committed in its own system context, decision in the agent's org context; failure is left to reconciliation.
-- `callerVerificationReconciliation` (BullMQ, every 30 s, concurrency 1, `socket-owner`): replays (a) still-pending verifications whose command is terminal and (b) unapplied receipts, through `handleCallerVerifyResult`; 30-day bound. Expiry stays with the publisher (now `socket-owner` too).
-- Device org move: unchanged W01 hook (`moveDeviceOrgInTransaction`); the result handler and session ingestion share-lock the device row, so they serialize with the move's `FOR UPDATE`.
+- `callerVerificationReconciliation` (BullMQ, every 30 s, concurrency 1, `socket-owner`): replays (a) still-pending verifications whose command is terminal (a server-side command timeout reads as expiry) and (b) unapplied receipts, through `handleCallerVerifyResult`; 30-day bound. Expiry stays with the publisher (now `socket-owner` too).
+- `cancel` withdraws the linked command while it is still `pending` (`status='cancelled'`, `result.reason='caller_verification_cancelled'`); a card already on screen expires on its own and its answer is a no-op.
+- Device org move: unchanged W01 hook (`moveDeviceOrgInTransaction`); the result handler share-locks the device row, and session ingestion does so only for reports carrying an OS principal, so both serialize with the move's `FOR UPDATE`.
