@@ -770,7 +770,7 @@ func TestDownloadFile_SendsAgentUserAgent(t *testing.T) {
 	})
 	mux.HandleFunc("/pkg.exe", func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.UserAgent())
-		if strings.HasPrefix(r.UserAgent(), "Go-http-client") {
+		if ua := r.UserAgent(); ua == "" || strings.HasPrefix(ua, "Go-http-client") {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -785,9 +785,12 @@ func TestDownloadFile_SendsAgentUserAgent(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("expected 2 requests (redirect + download), got %d: %q", len(seen), seen)
 	}
+	// Independent literal, not the production constant, so emptying or
+	// changing the constant fails here too.
+	const want = "BreezeRMM-Agent/1.0"
 	for i, ua := range seen {
-		if ua != softwareDownloadUserAgent {
-			t.Fatalf("request %d sent User-Agent %q, want %q", i, ua, softwareDownloadUserAgent)
+		if ua != want {
+			t.Fatalf("request %d sent User-Agent %q, want %q", i, ua, want)
 		}
 	}
 }
