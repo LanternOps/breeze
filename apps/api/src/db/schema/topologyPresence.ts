@@ -116,7 +116,7 @@ export const topologyDevicePresence = pgTable('topology_device_presence', {
  * W3 (#7887, spec S§7.1, S§10.1): prospective daily presence summaries, one row per (device, UTC day, assigned
  * site, match key), written by the evaluator at most once per 60 minutes per row and pruned after 35 days.
  * `assigned_site_id` is the historical assignment, never rewritten. Migration:
- * 2026-12-26-120000-topology-presence-days-and-confirmation.sql (SQL owns the DEFERRABLE composite FKs).
+ * 2026-12-26-190000-topology-presence-days-and-confirmation.sql (SQL owns the DEFERRABLE composite FKs).
  */
 export const topologyDevicePresenceDays = pgTable('topology_device_presence_days', {
   id: uuid('id').primaryKey().defaultRandom(),
