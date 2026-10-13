@@ -10,6 +10,8 @@
  * The I/O half (lookup, push, re-push, void) follows the pure half.
  */
 import { createHash } from 'node:crypto';
+import { formatWorkDate } from '@breeze/shared';
+import { capWithSuffix } from './accountingLineDescription';
 import { AccountingProviderError, isAccountingProviderError, providerErrorKindOf } from './accountingProviderError';
 import { allocateInvoiceTax, isZeroAmount } from './accountingTaxAllocation';
 import { parseXeroDate, requireXeroBody, xeroApiGet, xeroApiWrite, xeroArray, xeroQuery, type XeroCallContext } from './xeroHttp';
@@ -114,9 +116,22 @@ function exactNumber(n: bigint, scale: number): number | null {
   return scaled(String(num), scale) === n ? num : null;
 }
 
-function description(text: string, suffix = ''): string {
-  const base = text.trim() || EMPTY_DESCRIPTION;
-  return `${base.slice(0, DESCRIPTION_MAX - suffix.length)}${suffix}`;
+/**
+ * The Xero line text. Xero has no per-line date field, so a line's service
+ * date (#8605: present only when the invoice's frozen line detail shows dates)
+ * is appended as ` — Sep 16, 2026`, the accounting copy's plain-English style.
+ * Then the case-(c) amount fallback, if any. A description that fits is sent
+ * exactly as before; an over-long one is truncated BEFORE the worked-vs-billed
+ * disclosure and the date, which stay whole with the fallback, and never
+ * splits a surrogate pair (accountingLineDescription).
+ */
+function description(
+  line: Pick<AccountingInvoiceLinePayload, 'description' | 'descriptionSuffix' | 'serviceDate'>,
+  fallback = '',
+): string {
+  const date = line.serviceDate ? ` — ${formatWorkDate(line.serviceDate, 'en')}` : '';
+  const base = `${line.description}${date}`.trim() || EMPTY_DESCRIPTION;
+  return `${capWithSuffix(base, `${line.descriptionSuffix ?? ''}${date}`, DESCRIPTION_MAX - fallback.length)}${fallback}`;
 }
 
 /**
@@ -126,7 +141,7 @@ function description(text: string, suffix = ''): string {
  * for numeric(12,2) data) rather than sending a nearby float.
  */
 export function xeroLineAmounts(
-  line: Pick<AccountingInvoiceLinePayload, 'description' | 'quantity' | 'unitPrice' | 'lineTotal'>,
+  line: Pick<AccountingInvoiceLinePayload, 'description' | 'descriptionSuffix' | 'serviceDate' | 'quantity' | 'unitPrice' | 'lineTotal'>,
 ): { Description: string; Quantity: number; UnitAmount: number } {
   const q = scaled(line.quantity, 4);  // 1e-4 units; null past 4 places (unitdp=4)
   const u = scaled(line.unitPrice, 4); // 1e-4 units
@@ -136,10 +151,10 @@ export function xeroLineAmounts(
     const target = t * 1_000_000n;     // cents → 1e-8 units, the scale of q × u
     // (a) as stored, when the product is exact
     const stored = u !== null && q * u === target ? exactNumber(u, 4) : null;
-    if (stored !== null) return { Description: description(line.description), Quantity: quantity, UnitAmount: stored };
+    if (stored !== null) return { Description: description(line), Quantity: quantity, UnitAmount: stored };
     // (b) the quantity with a unit exact to 4 places
     const derived = q !== 0n && target % q === 0n ? exactNumber(target / q, 4) : null;
-    if (derived !== null) return { Description: description(line.description), Quantity: quantity, UnitAmount: derived };
+    if (derived !== null) return { Description: description(line), Quantity: quantity, UnitAmount: derived };
   }
   // (c) quantity 1 at the line total, the stored figures kept in the text
   const total = t === null ? null : exactNumber(t, 2);
@@ -147,7 +162,7 @@ export function xeroLineAmounts(
     throw validation('Xero invoice payload', `An invoice line total (${line.lineTotal}) cannot be sent to Xero as an exact amount. Review the invoice lines, then push again.`);
   }
   const suffix = ` (${line.quantity} × ${line.unitPrice})`;
-  return { Description: description(line.description, suffix), Quantity: 1, UnitAmount: total };
+  return { Description: description(line, suffix), Quantity: 1, UnitAmount: total };
 }
 
 export function buildXeroInvoice(

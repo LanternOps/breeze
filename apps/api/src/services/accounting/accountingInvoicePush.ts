@@ -631,9 +631,19 @@ function buildLinePayload(line: InvoiceLineRow, detail: InvoiceLineDetail): Acco
   // #7161: a hidden line is KEPT with its description and quantity but pushed
   // at zero — see pushedLineAmounts (accountingInvoiceTotals.ts).
   const { unitPrice, lineTotal } = pushedLineAmounts(line);
+  const note = accountingLineNote(line, detail);
+  // #8605 W04: the work date travels as structured data — only under the
+  // invoice's frozen showDate, and only for a line that has one (held or
+  // block-drawn entries never become dated lines). Unlike the PDF, per-day
+  // grouping does not move the date to a header: each accounting line is
+  // standalone, so it keeps its own date.
+  const serviceDate = detail.showDate ? line.workDate ?? null : null;
   return {
     invoiceLineId: line.id,
-    description: `${title}${accountingLineNote(line, detail)}`,
+    description: `${title}${note}`,
+    // The disclosure is the suffix a provider cap must keep whole.
+    ...(note ? { descriptionSuffix: note } : {}),
+    ...(serviceDate ? { serviceDate } : {}),
     quantity: line.quantity,
     unitPrice,
     lineTotal,

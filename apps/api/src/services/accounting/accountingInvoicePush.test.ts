@@ -995,6 +995,51 @@ describe('pushInvoiceToAccounting', () => {
         expect(JSON.stringify(pushedLines())).not.toContain('2026-09-16');
       });
     });
+
+    // #8605 W04: with the frozen showDate ON, a dated time-entry line carries
+    // its partner-local work date as a structured `serviceDate` on the neutral
+    // line. The neutral description does not change (each provider decides how
+    // to show the date), and the worked-vs-billed disclosure is marked as the
+    // suffix a provider cap must keep.
+    describe('date on (#8605)', () => {
+      const lines: Partial<LineRow>[] = [
+        { ...detailLines[0], workDate: '2026-09-16' },
+        { ...detailLines[1], workDate: '2026-09-17' },
+        detailLines[2]!, // manual line: no work date
+        // Time-entry line with no work date (held/block-drawn, or pre-W02).
+        { id: 'line-4', name: null, description: 'Remote check', sourceType: 'time_entry', quantity: '1.00', lineTotal: '150.00', workedMinutes: 60, workDate: null },
+      ];
+      const pushedLines = () => pushInvoiceMock.mock.calls[0]![1].lines as Array<Record<string, unknown>>;
+
+      it('dated lines carry serviceDate; undated lines do not; descriptions unchanged', async () => {
+        setup({ invoice: { lineShowDate: true }, lines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedLines().map((l) => l.serviceDate ?? null)).toEqual(['2026-09-16', '2026-09-17', null, null]);
+        expect(pushedDescriptions()).toEqual([...BASELINE, 'Remote check']);
+        expect(pushedLines().map((l) => l.descriptionSuffix ?? '')).toEqual([
+          ' — 0.50 h worked, 1.00 h billed', ' — 2.50 h worked, 2.00 h billed', '', '',
+        ]);
+      });
+
+      it('note off + date on: the Labor line still gets its date', async () => {
+        setup({ invoice: { lineShowDate: true, lineShowNote: false }, lines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedLines()[0]).toMatchObject({ description: 'Labor — 0.50 h worked, 1.00 h billed', serviceDate: '2026-09-16' });
+      });
+
+      it('worked time off + date on: no disclosure suffix, date kept', async () => {
+        setup({ invoice: { lineShowDate: true, lineShowWorkedTime: false }, lines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedLines()[0]).toMatchObject({ description: 'Rebuilt the print queue', serviceDate: '2026-09-16' });
+        expect(pushedLines()[0]!.descriptionSuffix ?? '').toBe('');
+      });
+
+      it('per-day grouping does not drop the per-line date from the accounting copy', async () => {
+        setup({ invoice: { lineShowDate: true, lineGrouping: 'day' }, lines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedLines()[0]!.serviceDate).toBe('2026-09-16');
+      });
+    });
   });
 
   it('flags synced_with_tax_variance when remoteTaxTotal differs from invoice taxTotal by more than 1 cent', async () => {

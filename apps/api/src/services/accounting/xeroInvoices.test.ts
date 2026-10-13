@@ -120,6 +120,55 @@ describe('xeroLineAmounts (refinement 3)', () => {
     expect(out.length).toBeLessThanOrEqual(4000);
   });
 
+  // #8605 W04: Xero has no per-line date field, so a line with a service
+  // date (sent only when the invoice's frozen showDate is on) gets the date as
+  // text, in the accounting copy's plain-English style.
+  describe('service date suffix and truncation (#8605)', () => {
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const WB = ' — 0.50 h worked, 1.00 h billed';
+    const FALLBACK = { quantity: '1.50', unitPrice: '10.95', lineTotal: '16.43' };
+
+    it('appends the date after the disclosure', () => {
+      expect(xeroLineAmounts(line({ description: `Labor${WB}`, descriptionSuffix: WB, serviceDate: '2026-09-16' })).Description)
+        .toBe(`Labor${WB} — Sep 16, 2026`);
+    });
+
+    it('appends the date before the amount fallback suffix', () => {
+      expect(xeroLineAmounts(line({ description: 'Labor', serviceDate: '2026-09-16', ...FALLBACK })).Description)
+        .toBe('Labor — Sep 16, 2026 (1.50 × 10.95)');
+    });
+
+    it('a null serviceDate adds nothing', () => {
+      expect(xeroLineAmounts(line({ description: `Labor${WB}`, descriptionSuffix: WB, serviceDate: null })).Description).toBe(`Labor${WB}`);
+    });
+
+    it('4500-character note: truncates the note, keeps disclosure + date + fallback whole', () => {
+      const out = xeroLineAmounts(line({ description: `${'x'.repeat(4500)}${WB}`, descriptionSuffix: WB, serviceDate: '2026-09-16', ...FALLBACK })).Description;
+      const tail = `${WB} — Sep 16, 2026 (1.50 × 10.95)`;
+      expect(out).toHaveLength(4000);
+      expect(out.endsWith(tail)).toBe(true);
+      expect(out).toBe(`${'x'.repeat(4000 - tail.length)}${tail}`);
+    });
+
+    it('emoji note: no split surrogate pair, suffixes whole, within 4000 UTF-16 units', () => {
+      const out = xeroLineAmounts(line({ description: `${'😀'.repeat(3000)}${WB}`, descriptionSuffix: WB, serviceDate: '2026-09-16' })).Description;
+      expect(out.length).toBeLessThanOrEqual(4000);
+      expect(out.length).toBeGreaterThanOrEqual(3999);
+      expect(LONE_SURROGATE.test(out)).toBe(false);
+      expect(out.endsWith(`${WB} — Sep 16, 2026`)).toBe(true);
+    });
+
+    it('date off: an over-long note keeps the disclosure (it used to be cut off)', () => {
+      const out = xeroLineAmounts(line({ description: `${'x'.repeat(4500)}${WB}`, descriptionSuffix: WB })).Description;
+      expect(out).toHaveLength(4000);
+      expect(out.endsWith(WB)).toBe(true);
+    });
+
+    it('CJK note within the cap is untouched', () => {
+      expect(xeroLineAmounts(line({ description: '再起動', serviceDate: '2026-09-16' })).Description).toBe('再起動 — Sep 16, 2026');
+    });
+  });
+
   it("never exceeds Xero's 4000-character description", () => {
     expect(xeroLineAmounts(line({ description: 'x'.repeat(5000), quantity: '1.50', unitPrice: '10.95', lineTotal: '16.43' })).Description).toHaveLength(4000);
   });
