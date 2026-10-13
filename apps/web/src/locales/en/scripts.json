@@ -1017,7 +1017,7 @@
         "tooManyTargets": "These groups resolve to {{count}} devices, above the limit of {{max}} per run. Deselect a group or split the run.",
         "perGroup": "Devices per group: {{groups}}.",
         "groupNotFound": "{{count}} selected group(s) no longer exist or are not accessible. Reload the list and try again.",
-        "noTargets": "None of the selected groups has a device this script can run on right now; nothing was run."
+        "noTargets": "The selected groups contain no devices this run can target; nothing was run."
       }
     }
   },

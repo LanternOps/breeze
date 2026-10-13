@@ -1017,7 +1017,7 @@
         "tooManyTargets": "Bu gruplar {{count}} cihaza karşılık geliyor; bu, çalıştırma başına {{max}} sınırını aşıyor. Bir grubun seçimini kaldırın veya çalıştırmayı bölün.",
         "perGroup": "Grup başına cihazlar: {{groups}}.",
         "groupNotFound": "Seçilen {{count}} grup artık mevcut değil veya erişilemiyor. Listeyi yeniden yükleyip tekrar deneyin.",
-        "noTargets": "Seçilen grupların hiçbirinde şu anda bu betiğin çalışabileceği bir cihaz yok; hiçbir şey çalıştırılmadı."
+        "noTargets": "Seçilen gruplar bu çalıştırmanın hedefleyebileceği hiçbir cihaz içermiyor; hiçbir şey çalıştırılmadı."
       }
     }
   },

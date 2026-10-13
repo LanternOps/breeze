@@ -1017,7 +1017,7 @@
         "tooManyTargets": "Diese Gruppen ergeben {{count}} Geräte und überschreiten das Limit von {{max}} pro Lauf. Entfernen Sie eine Gruppe oder teilen Sie den Lauf auf.",
         "perGroup": "Geräte pro Gruppe: {{groups}}.",
         "groupNotFound": "{{count}} ausgewählte Gruppe(n) existieren nicht mehr oder sind nicht zugänglich. Laden Sie die Liste neu und versuchen Sie es erneut.",
-        "noTargets": "Keine der ausgewählten Gruppen enthält derzeit ein Gerät, auf dem dieses Skript laufen kann; es wurde nichts ausgeführt."
+        "noTargets": "Die ausgewählten Gruppen enthalten keine Geräte, auf die dieser Lauf zielen kann; es wurde nichts ausgeführt."
       }
     }
   },

@@ -205,7 +205,9 @@ export default function ScriptsPage() {
       // script's execution-history list instead.
       // Keep partial admission results visible so the operator can inspect
       // blocked or suppressed targets before leaving the execute flow.
-      if (admittedTargets.length !== data.targets.length) return data;
+      // Same for group-run warnings (e.g. a refused group): navigating would
+      // tear the modal down before the operator ever sees them.
+      if (admittedTargets.length !== data.targets.length || (data.warnings?.length ?? 0) > 0) return data;
       if (!isGroupTarget(target) && target.length === 1) {
         void navigateTo(deviceScriptsHref(target[0]!, admittedTargets[0]?.executionId));
       } else {

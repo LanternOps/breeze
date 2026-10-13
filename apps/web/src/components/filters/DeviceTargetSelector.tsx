@@ -316,6 +316,7 @@ export function DeviceTargetSelector({
                     >
                       <input
                         type="checkbox"
+                        data-testid={`group-checkbox-${group.id}`}
                         checked={checked}
                         disabled={disabled}
                         onChange={(e) => handleGroupToggle(group.id, e.target.checked)}

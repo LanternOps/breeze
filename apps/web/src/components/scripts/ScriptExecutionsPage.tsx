@@ -220,6 +220,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       // multi-device run has no single "the" device, so it stays on this
       // execution-history page (already the right place) via a self-navigate
       // that picks up the just-fetched row.
+      // Keep the modal (and its warnings, e.g. a refused group) visible.
+      if ((admission.warnings?.length ?? 0) > 0) return admission;
       if (!isGroupTarget(target) && target.length === 1) {
         void navigateTo(deviceScriptsHref(target[0]!, admittedTargets[0]?.executionId));
       } else {

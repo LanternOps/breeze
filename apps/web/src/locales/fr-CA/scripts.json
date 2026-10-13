@@ -1017,7 +1017,7 @@
         "tooManyTargets": "Ces groupes représentent {{count}} appareils, au-delà de la limite de {{max}} par exécution. Désélectionnez un groupe ou scindez l'exécution.",
         "perGroup": "Appareils par groupe : {{groups}}.",
         "groupNotFound": "{{count}} groupe(s) sélectionné(s) n'existent plus ou ne sont pas accessibles. Rechargez la liste et réessayez.",
-        "noTargets": "Aucun des groupes sélectionnés ne contient actuellement d'appareil sur lequel ce script peut s'exécuter ; rien n'a été exécuté."
+        "noTargets": "Les groupes sélectionnés ne contiennent aucun appareil que cette exécution puisse cibler ; rien n'a été exécuté."
       }
     }
   },

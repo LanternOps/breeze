@@ -216,7 +216,7 @@ export default function GroupTargetPicker({
           className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
         >
           <span>{t('scriptExecutionModal.groups.loadFailed')}</span>
-          <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="text-xs font-medium underline">
+          <button type="button" data-testid="group-list-retry" onClick={() => setReloadKey((k) => k + 1)} className="text-xs font-medium underline">
             {t('scriptExecutionModal.groups.retry')}
           </button>
         </div>
@@ -298,7 +298,7 @@ export default function GroupTargetPicker({
           className="flex items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-400"
         >
           <span>{t('scriptExecutionModal.groups.countFailed')}</span>
-          <button type="button" onClick={retryMembers} className="font-medium underline">
+          <button type="button" data-testid="group-summary-retry" onClick={retryMembers} className="font-medium underline">
             {t('scriptExecutionModal.groups.retry')}
           </button>
         </div>
