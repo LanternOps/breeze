@@ -584,8 +584,8 @@ func safeDownloadError(err error) string {
 }
 
 // softwareDownloadUserAgent replaces Go's default "Go-http-client/x.y", which
-// some vendor CDNs reject with 403 while serving the same URL to any other
-// client (#8711).
+// some vendor CDNs reject with 403 while serving the same URL when an
+// explicit User-Agent is sent (#8711).
 const softwareDownloadUserAgent = "BreezeRMM-Agent/1.0"
 
 // downloadFile fetches the package with the caller-supplied policy client.

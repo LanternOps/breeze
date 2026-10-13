@@ -757,9 +757,9 @@ func TestDownloadFile_WritesThePackage(t *testing.T) {
 	}
 }
 
-// Some CDNs (Cloudflare bot rules in front of vendor download hosts) answer
-// Go's default "Go-http-client" User-Agent with 403 while serving the same
-// URL to any other client. Every hop, redirects included, must carry the
+// Some vendor download CDNs answer Go's default "Go-http-client" User-Agent
+// with 403 while serving the same URL when an explicit User-Agent is sent
+// (#8711). Every hop, redirects included, must carry the
 // agent's own User-Agent.
 func TestDownloadFile_SendsAgentUserAgent(t *testing.T) {
 	var seen []string
