@@ -60,7 +60,7 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   // W02 (time sync) — 2026-11-10-110100-monitor-kind-time-sync.sql
   'time_sync',
   // W06 (workload inventory) —
-  // 2026-12-25-100000-container-image-currency-monitor.sql
+  // 2026-12-26-180000-container-image-currency-monitor.sql
   'container_image_currency',
 ]);
 
