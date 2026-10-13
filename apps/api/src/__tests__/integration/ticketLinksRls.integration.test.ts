@@ -100,7 +100,7 @@ describe('ticket_links RLS and constraints (real driver, breeze_app)', () => {
   it('cannot link a ticket of org A to a ticket of org B even under org A’s own org_id (composite FK, 23503)', async () => {
     const f = await seed();
     const cause = await captureCause(() =>
-      insertLink(orgContext(f.orgA, f.userId), { orgId: f.orgA, sourceTicketId: f.a[0], targetTicketId: f.ticketB, linkType: 'related' }),
+      insertLink(orgContext(f.orgA, f.userId), { orgId: f.orgA, sourceTicketId: f.a[0], targetTicketId: f.ticketB, linkType: 'caused_by' }),
     );
     expect(cause?.code).toBe('23503');
     expect(cause?.constraint_name).toBe('ticket_links_target_org_fk');
