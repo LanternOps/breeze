@@ -713,7 +713,7 @@ commandsRoutes.post(
         });
       } catch (err) {
         console.error(`[agents] restore-point ledger ingest failed for ${commandId}; result unaffected:`, err);
-        captureException(err);
+        captureException(err, undefined, { restore_point_ingest: 'call_site' });
       }
     }
 

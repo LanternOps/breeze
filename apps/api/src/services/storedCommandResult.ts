@@ -48,8 +48,8 @@ export function buildStoredCommandResult(
     errorCode: result.errorCode,
     // #4609 W06: the validated checkpoint outcome, only when the agent sent
     // one and it parsed (unknown keys stripped; an invalid outcome is not
-    // persisted). No redaction pass -- typed status fields the server asked
-    // for, no agent output. Absent key -> nothing added, so results from every
+    // persisted). Its free-text message/description are redacted by the parse
+    // (classifyRestorePointOutcome). Absent key -> nothing added, so results from every
     // agent shipped to date store exactly what they did before.
     ...(result.restorePoint !== undefined ? restorePointStoredField(result.restorePoint) : {}),
   };

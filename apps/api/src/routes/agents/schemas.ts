@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { redactSecretsFromOutput } from '../../services/secretRedaction';
 
 // ============================================
 // Enrollment
@@ -640,7 +641,21 @@ export type RestorePointOutcomeClassification =
  */
 export function classifyRestorePointOutcome(raw: unknown): RestorePointOutcomeClassification {
   const parsed = restorePointOutcomeSchema.safeParse(raw);
-  if (parsed.success) return { ok: true, outcome: parsed.data };
+  if (parsed.success) {
+    // #2434: `message` / `description` are agent-authored free text (a VSS or
+    // PowerShell error can embed a path or token). Redacted HERE, at the one
+    // parse point, so both consumers -- the stored device_commands result and
+    // the ledger row (exported as `included`) -- only ever see redacted text.
+    const outcome = parsed.data;
+    return {
+      ok: true,
+      outcome: {
+        ...outcome,
+        ...(outcome.message !== undefined ? { message: redactSecretsFromOutput(outcome.message) } : {}),
+        ...(outcome.description !== undefined ? { description: redactSecretsFromOutput(outcome.description) } : {}),
+      },
+    };
+  }
   const statusIsUnknownString =
     raw !== null &&
     typeof raw === 'object' &&

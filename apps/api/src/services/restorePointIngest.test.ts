@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
+const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
 const { state, dbMock, contextCalls, captureMock } = vi.hoisted(() => {
   const state = {
     updateReturning: [] as Array<{ id: string }>,
@@ -51,7 +52,7 @@ vi.mock('../db', () => ({
     return fn();
   },
 }));
-vi.mock('./sentry', () => ({ captureException: captureMock }));
+vi.mock('./sentry', () => ({ captureException: captureMock, captureMessage: captureMessageMock }));
 
 import { ingestRestorePointOutcome } from './restorePointIngest';
 import { RESTORE_POINT_SUPERSEDED_MESSAGE } from './restorePointRequest';
@@ -91,6 +92,7 @@ beforeEach(() => {
   state.selects = 0;
   contextCalls.length = 0;
   captureMock.mockReset();
+  captureMessageMock.mockReset();
   dbMock.update.mockClear();
   dbMock.select.mockClear();
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -158,7 +160,7 @@ describe('ingestRestorePointOutcome — terminalisation', () => {
     expect(state.sets[0]!.sequenceNumber).toBeNull();
   });
 
-  it.each(['', 'not a date', '2026-13-45T99:99:99Z'])('stores attemptedAt null for an unparseable agent timestamp %j', async (attemptedAt) => {
+  it.each(['', 'not a date', '2026-13-45T99:99:99Z', '0000-01-01T00:00:00Z', '+275760-09-13T00:00:00.000Z'])('stores attemptedAt null for an unparseable agent timestamp %j', async (attemptedAt) => {
     const res = await ingestRestorePointOutcome(outcome({ attemptedAt }), ctx);
     expect(res.outcome).toBe('terminalised');
     expect(state.sets[0]!.attemptedAt).toBeNull();
@@ -190,6 +192,34 @@ describe('ingestRestorePointOutcome — invalid outcomes never write (decision 2
     expect(logged).toContain(reason);
     expect(logged).toContain(DEVICE_ID);
     expect(logged).not.toContain('xxxxxxxxxx');
+  });
+});
+
+describe('ingestRestorePointOutcome — alertable signals', () => {
+  it('reports an unknown status (version skew) to Sentry by event code only', async () => {
+    await ingestRestorePointOutcome(outcome({ status: 'probably_fine' }), ctx);
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock.mock.calls[0]![1]).toEqual({ eventCode: 'restore_point_outcome_unknown_status' });
+  });
+
+  it('does not report a merely malformed outcome to Sentry', async () => {
+    await ingestRestorePointOutcome(outcome({ sequenceNumber: 42 }), ctx);
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an outcome for an unrecorded request, but not the expected skipped_disabled case', async () => {
+    state.updateReturning = [];
+    await ingestRestorePointOutcome(outcome({ status: 'skipped_disabled' }), ctx);
+    expect(captureMessageMock).not.toHaveBeenCalled();
+    await ingestRestorePointOutcome(outcome(), ctx);
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock.mock.calls[0]![1]).toEqual({ eventCode: 'restore_point_outcome_unrequested' });
+  });
+
+  it('tags the write-failure capture with a bounded label', async () => {
+    state.updateError = new Error('connection reset');
+    await ingestRestorePointOutcome(outcome(), ctx);
+    expect(captureMock.mock.calls[0]![2]).toEqual({ restore_point_ingest: 'write_failed' });
   });
 });
 

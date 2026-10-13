@@ -3,7 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceRestorePointAttempts } from '../db/schema/deviceRestorePointAttempts';
 import { classifyRestorePointOutcome } from '../routes/agents/schemas';
 import { RESTORE_POINT_SUPERSEDED_MESSAGE } from './restorePointRequest';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 
 /**
  * Terminalise the System Restore checkpoint ledger from an agent result
@@ -47,11 +47,19 @@ export interface RestorePointIngestContext {
 
 const LOG_PREFIX = '[restorePointIngest]';
 
-/** Agent clock, parsed defensively: unparseable -> null, never a throw. */
+// Bounds for an agent-clock timestamp. Date.parse accepts years Postgres
+// rejects (year 0, +275760), and a rejected write would lose the whole
+// terminalisation over a cosmetic field.
+const MIN_AGENT_TIMESTAMP_MS = Date.UTC(1970, 0, 1);
+const MAX_AGENT_TIMESTAMP_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+
+/** Agent clock, parsed defensively: unparseable or out of range -> null, never a throw. */
 function parseAgentTimestamp(value: string): Date | null {
   if (!value) return null;
   const ms = Date.parse(value);
-  return Number.isFinite(ms) ? new Date(ms) : null;
+  return Number.isFinite(ms) && ms >= MIN_AGENT_TIMESTAMP_MS && ms <= MAX_AGENT_TIMESTAMP_MS
+    ? new Date(ms)
+    : null;
 }
 
 export async function ingestRestorePointOutcome(
@@ -68,6 +76,13 @@ export async function ingestRestorePointOutcome(
       deviceId: ctx.deviceId,
       deviceCommandId: ctx.deviceCommandId ?? null,
     });
+    if (classified.reason === 'unknown_status') {
+      // Agent/API version skew: the row stays `requested` until the API learns
+      // the status, so make it alertable rather than a console line.
+      captureMessage('restore-point outcome with an unknown status', {
+        eventCode: 'restore_point_outcome_unknown_status',
+      });
+    }
     return { outcome: 'invalid', reason: classified.reason };
   }
 
@@ -136,6 +151,11 @@ export async function ingestRestorePointOutcome(
             });
           } else {
             console.warn(`${LOG_PREFIX} discarded outcome`, { ...logFields, reason: 'no_requested_row' });
+            // An outcome for a request the ledger never recorded: a forged id,
+            // or a creation site that stamped without writing its row.
+            captureMessage('restore-point outcome for an unrecorded request', {
+              eventCode: 'restore_point_outcome_unrequested',
+            });
           }
           return { outcome: 'discarded', reason: 'no_requested_row' };
         }
@@ -145,8 +165,6 @@ export async function ingestRestorePointOutcome(
           console.warn(`${LOG_PREFIX} discarded outcome`, { ...logFields, reason: 'tenant_mismatch' });
           captureException(new Error(`${LOG_PREFIX} restore-point outcome for a request owned by another device`), undefined, {
             restore_point_ingest: 'tenant_mismatch',
-            requestId: outcome.requestId,
-            deviceId: ctx.deviceId,
           });
           return { outcome: 'discarded', reason: 'tenant_mismatch' };
         }
@@ -163,8 +181,6 @@ export async function ingestRestorePointOutcome(
     console.error(`${LOG_PREFIX} ledger write failed; the command result is unaffected`, { ...logFields, err });
     captureException(err, undefined, {
       restore_point_ingest: 'write_failed',
-      requestId: outcome.requestId,
-      deviceId: ctx.deviceId,
     });
     return { outcome: 'failed' };
   }

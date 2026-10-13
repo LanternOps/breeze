@@ -1497,6 +1497,15 @@ describe('agent commands routes', () => {
       expect(updateChain.set.mock.calls[0][0].result.restorePoint).toEqual(outcome);
     });
 
+    it('terminalises for a FAILED command result too (the command went terminal)', async () => {
+      ingestRestorePointOutcomeMock.mockResolvedValueOnce({ outcome: 'terminalised' });
+      const updateChain = queueCommand([{ id: commandId }]);
+      const res = await postResult({ status: 'failed', exitCode: 1, restorePoint: { ...outcome, status: 'failed' } });
+      expect(res.status).toBe(200);
+      expect(updateChain.set.mock.calls[0][0].status).toBe('failed');
+      expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    });
+
     it('does NOT terminalise when the CAS lost', async () => {
       queueCommand([]);
       const res = await postResult({ restorePoint: outcome });

@@ -2564,7 +2564,7 @@ async function processCommandResult(
         });
       } catch (err) {
         console.error(`[AgentWs] restore-point ledger ingest failed for ${result.commandId}; result unaffected:`, err);
-        captureException(err);
+        captureException(err, undefined, { restore_point_ingest: 'call_site' });
       }
     }
 

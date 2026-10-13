@@ -7342,6 +7342,15 @@ describe('#4757: restore-point outcome ingest after the WS terminal CAS', () => 
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  it('terminalises for a FAILED command result too (the command went terminal)', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'terminalised' });
+    const failedOutcome = { ...outcome, status: 'failed', sequenceNumber: undefined, message: 'vss error' };
+    const { sets } = await driveResult({ status: 'failed', exitCode: 1, restorePoint: failedOutcome });
+    expect(sets[0]!.status).toBe('failed');
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(ingestRestorePointOutcomeMock.mock.calls[0]![0]).toMatchObject({ status: 'failed', message: 'vss error' });
+  });
+
   it('does NOT terminalise when the CAS lost (duplicate / late frame)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

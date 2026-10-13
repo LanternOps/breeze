@@ -120,6 +120,18 @@ describe('restorePointOutcomeSchema / classifyRestorePointOutcome', () => {
     expect(parseRestorePointOutcome(raw)).toBeNull();
   });
 
+  it('redacts secrets from the agent-authored message and description (#2434)', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----';
+    const parsed = parseRestorePointOutcome(outcome({ status: 'failed', message: `vss said ${pem}`, description: `d ${pem}` }));
+    expect(parsed?.message).toContain('vss said');
+    expect(parsed?.message).not.toContain('MIIabc');
+    expect(parsed?.description).not.toContain('MIIabc');
+    const stored = buildStoredCommandResult(
+      'script', { status: 'completed', restorePoint: outcome({ status: 'failed', message: pem }) }, undefined,
+    ) as { restorePoint?: { message?: string } };
+    expect(stored.restorePoint?.message).not.toContain('MIIabc');
+  });
+
   it('accepts the int64 bounds exactly', () => {
     expect(classifyRestorePointOutcome(outcome({ sequenceNumber: '-9223372036854775808' })).ok).toBe(true);
     expect(classifyRestorePointOutcome(outcome({ sequenceNumber: '9223372036854775808' })).ok).toBe(false);
