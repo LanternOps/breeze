@@ -54,6 +54,9 @@ export async function logsNotArriving(
 ): Promise<{ raisedAt: string } | null> {
   if (device.logShippingState == null) return null;
 
+  // Served by the partial index idx_device_commands_set_log_level_device_completed
+  // (device_id, completed_at DESC) WHERE type = 'set_log_level' — keep the
+  // predicate and sort aligned with it (2026-12-27-090000 migration).
   const [cmd] = await db
     .select({
       status: deviceCommands.status,
