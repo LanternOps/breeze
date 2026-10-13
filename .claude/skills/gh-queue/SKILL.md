@@ -1,16 +1,16 @@
 ---
 name: gh-queue
-description: Use when reviewing, triaging, or managing the incoming GitHub backlog on the Breeze repo — PRs, Discussions, AND Issues. Stateful manager with a shared queue file, contributor profiles, parallel pr-review-toolkit dispatch, GraphQL discussion recipes, comment-style conventions, and session-log bookkeeping. Auto-detects object type from the request; bare invocation triages all three. Triggers on "review PR", "PR queue", "triage PRs/discussions/issues", "review discussions", "check open issues", "what's waiting on me", "gh queue", "repo queue", "review #NNN", or any request about managing the open-PR/discussion/issue backlog.
+description: Use when reviewing, triaging, or managing the incoming GitHub backlog on the Breeze repo — PRs, Discussions, Issues, AND Security Advisories. Stateful manager with a shared queue file, contributor profiles, parallel pr-review-toolkit dispatch, GraphQL discussion recipes, comment-style conventions, and session-log bookkeeping. Auto-detects object type from the request; bare invocation triages all four. Triggers on "review PR", "PR queue", "triage PRs/discussions/issues", "security advisories", "GHSA", "vulnerability reports", "review discussions", "check open issues", "what's waiting on me", "gh queue", "repo queue", "review #NNN", or any request about managing the open-PR/discussion/issue backlog.
 ---
 
 # Breeze GH Queue Manager
 
 ## Overview
 
-Long-running manager for the **incoming** GitHub backlog on the Breeze repo (`LanternOps/breeze`) — across three object types: **Pull Requests, Discussions, and Issues** (community + Billy + any agent-authored). State persists across sessions in two co-located files:
+Long-running manager for the **incoming** GitHub backlog on the Breeze repo (`LanternOps/breeze`) — across four object types: **Pull Requests, Discussions, Issues, and Security Advisories** (community + Billy + any agent-authored; advisories = private vulnerability reports and our own repository advisories). State persists across sessions in two co-located files:
 
 - **`queue.md`** — live snapshot, split into `## PRs`, `## Discussions`, `## Issues` sections (each with waiting-on-me / in-flight / recently-closed), plus one rolling session log at the bottom.
-- **`contributors.md`** — per-contributor profiles and review heuristics (apply across all three object types — Billy's patterns show up in PRs *and* discussions).
+- **`contributors.md`** — per-contributor profiles and review heuristics (apply across all object types — Billy's patterns show up in PRs *and* discussions).
 
 Both files are gitignored (the entire `.claude/skills/` tree is in `.gitignore`), so they're a private scratchpad that travels with the repo on this machine but doesn't leak into commits.
 
@@ -23,9 +23,10 @@ Pick scope from the request — no explicit flag required:
 - "review PR #5" / "PR queue" / "triage PRs" → **PRs only**
 - "triage discussions" / "review discussions" / "discussion #968" → **Discussions only**
 - "any new issues" / "triage issues" / "issue #710" → **Issues only**
-- bare "what's waiting on me" / "/pr" / "triage the backlog" / "gh queue" → **all three**
+- "security advisories" / "any vuln reports" / "GHSA-…" → **Advisories only**
+- bare "what's waiting on me" / "/pr" / "triage the backlog" / "gh queue" → **all four**
 
-When ambiguous, default to all three but lead with whatever the user named.
+When ambiguous, default to all four but lead with whatever the user named.
 
 ## When to invoke
 
@@ -90,6 +91,7 @@ An unlabeled issue is invisible to all three, so **label on sight** — that's w
   If `last commit > bounce date`, it's waiting on **me** → re-review (Tier-1 manual; scope is bounded to the original feedback).
 - **Discussions:** the `comments(last:1)` author in the re-orient query. `isAnswered=false` on a Q&A I already answered = I still owe an "accept answer." Do NOT read `isAnswered=null` on non-Q&A categories as "open" — that field is null for Ideas/Show-and-tell by design; use last-comment author instead. (Misread this once and flagged a pile of already-closed discussions as open.)
 - **Issues:** last comment author + date. A reporter who replied after my last comment is waiting on me.
+- **Advisories:** last comment author + date on the advisory page — see §1a. A reporter who replied after me is waiting on me, and the advisory's `updated_at` will NOT tell you.
 
 **Issues: the staleness sweep is a FULL pass, never an activity window.** Iterate every open issue whose author is not me, regardless of `updatedAt`, and compare the last comment's author+date against my last comment. A round that only looks at items updated "since the last round" misses everything that landed during a gap between rounds — that is exactly how #2987 (08-18), #3876 (08-25), #4000 (08-25) and #3386 (08-27) went unanswered for 18 days after a two-week outage in rounds, while the log claimed "every community issue last-comment = Todd." Two corollaries: (1) **a community issue with ZERO comments is waiting on me** — a last-comment check returns nothing and silently drops it, which is what hid the p1 #4000; (2) **never age a prior round's "not waiting on me" verdict** — re-run the comparison on every item every round, because a reporter can nudge after a sign-off (#3386). The one-liner:
 
@@ -100,6 +102,50 @@ gh issue list --repo LanternOps/breeze --state open --limit 400 --json number,au
   | grep -v 'last=ToddHebebrand'
 ```
 Anything that prints is 🔴 until the thread is opened and read.
+
+### 1a. Security advisories (private — every round, full pass)
+
+Private vulnerability reports arrive as repository security advisories, not issues, so the PR/issue/discussion queries never see them. SECURITY.md promises acknowledgment within **48 hours**, and the OpenSSF Best Practices badge requires a first response within **14 days** for every report in the last 6 months.
+
+**List them** (API works for state, reporter, dates):
+
+```bash
+gh api repos/LanternOps/breeze/security-advisories --paginate \
+  --jq '.[] | select(.state!="closed") | [.ghsa_id,.state,.created_at[:10],(.submission!=null|tostring),([.credits_detailed[]?|select(.type=="reporter")|.user.login]|join(","))] | @tsv'
+```
+
+`state=triage` is a new inbound report nobody has accepted yet. `submission=true` (or a reporter credit) means an outside person filed it, so they are owed replies.
+
+**Comments are NOT in the API, and `updated_at` does not move when someone comments.** A triage advisory answered two days after filing still shows `updated_at == created_at` (2026-10-12: a report that had been answered on time was misread this way as never answered). The only source of truth is the advisory page, read logged in as me. Use the `ego-browser` skill:
+
+```bash
+gh api repos/LanternOps/breeze/security-advisories --paginate \
+  --jq '.[] | select(.state!="closed") | .ghsa_id' > /tmp/ghsa.txt
+ego-browser nodejs <<'EOF'
+const fs = await import("node:fs/promises");
+const ids = (await fs.readFile("/tmp/ghsa.txt", "utf8")).trim().split("\n");
+const task = await taskSpace("gh-queue advisories");
+const page = task.page("p1");
+for (const id of ids) {
+  await page.goto(`https://github.com/LanternOps/breeze/security/advisories/${id}`);
+  const c = await page.evaluate(() => [...document.querySelectorAll(".timeline-comment")]
+    .map(x => ({ who: x.querySelector(".author")?.innerText.trim(),
+                 at: x.querySelector("relative-time")?.getAttribute("datetime")?.slice(0, 10) }))
+    .filter(x => x.who));
+  const last = c.at(-1);
+  console.log(`${id} comments=${c.length} last=${last ? last.who + "@" + last.at : "NONE"}`);
+}
+EOF
+```
+
+About 1 s per advisory. Do the whole list every round; never only the triage ones, since a reporter can comment on a draft or published advisory too.
+
+**Bucketing:**
+- 🔴 **Waiting on me:** an externally reported advisory with no comment from ToddHebebrand, OR any advisory whose last comment is from someone else. Note the days since that comment against the 48 h / 14 day clocks.
+- 🟡 **Their court:** my comment is last and asks the reporter for something (hashes, repro, version).
+- 🟢 **Nothing owed:** advisories we filed ourselves with no outside comments (most published ones).
+
+**Privacy — this file is public.** Advisory content never goes in a PR, issue, discussion, commit, or this skill. In `queue.md` (gitignored) record only the GHSA id, state, and last-comment author + date. Triage notes, draft replies, and verdicts live in the private intake record `~/breeze-security/remediation/<YYYY-MM-DD>-<GHSA-id>-triage.md`; read it before replying. Advisory comments can only be posted in the GitHub UI (no API), so draft the reply there and hand it to me to paste.
 
 **Drafts — `isDraft=true` ≠ "not on me."** A draft whose *body* asks for early design/approach feedback ("opening for early feedback," "thoughts before I build the rest") is genuinely waiting on me. Read the body of every incoming draft before bucketing it author-blocked (missed once on #976). Respond with a design-level COMMENT review, not an approve/merge gate. **The draft flag also never auto-flips on a comment-thread handoff** — #859 sat 18 days bucketed "author-blocked draft" after the author had addressed every blocker and a reviewer posted "leaving the merge decision to @ToddHebebrand," because the staleness check stopped at `isDraft=true`. The last-activity-author rule OUTRANKS the draft flag: apply it to drafts too, every round — if the last substantive comment hands me the ball (LGTM-pending-maintainer, "no rush" posted *after* fixes landed), the item is 🔴 waiting-on-me regardless of draft status.
 
@@ -194,7 +240,7 @@ Then read the commit **body** before closing, not the subject: several deliberat
 ### 6. After every action
 
 Update `queue.md`:
-- Move closed/merged items out of the waiting section of the right type (`## PRs` / `## Discussions` / `## Issues`)
+- Move closed/merged items out of the waiting section of the right type (`## PRs` / `## Discussions` / `## Issues` / `## Advisories` — ids and dates only)
 - Add a one-line entry to the session log at the bottom with today's **absolute** date (`### 2026-05-30 — ...`), never "today"/"yesterday"
 - If you learned a contributor pattern, update `contributors.md`
 
