@@ -43,6 +43,7 @@ export const orgTopologyFlagsCache = new HotPathTtlCache<string, TopologyFlags>(
   name: 'org-topology-flags',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 /**

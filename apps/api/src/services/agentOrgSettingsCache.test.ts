@@ -66,3 +66,15 @@ describe('org-agent-update-config is cluster-invalidated (W05 #8144, C1)', () =>
     expect(publishedFor('org-agent-update-config')).toEqual(['org-1']);
   });
 });
+
+describe('org-topology-flags is cluster-invalidated (W05 #8144, C2)', () => {
+  it('an org write publishes that org id', () => {
+    invalidateAgentOrgSettingsCaches('org-1');
+    expect(publishedFor('org-topology-flags')).toEqual(['org-1']);
+  });
+
+  it('a partner write publishes the whole cache (key null)', () => {
+    invalidateAgentOrgSettingsCaches();
+    expect(publishedFor('org-topology-flags')).toEqual([null]);
+  });
+});
