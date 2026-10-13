@@ -689,6 +689,7 @@
     "loading": "Verknüpfte Tickets werden geladen …",
     "loadFailed": "Verknüpfte Tickets konnten nicht geladen werden.",
     "empty": "Keine verknüpften Tickets.",
+    "deleted": "Gelöscht",
     "add": "Ticket verknüpfen",
     "addTitle": "Ticket verknüpfen",
     "linkType": "Dieses Ticket …",

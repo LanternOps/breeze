@@ -689,6 +689,7 @@
     "loading": "Loading related tickets…",
     "loadFailed": "Could not load related tickets.",
     "empty": "No related tickets.",
+    "deleted": "Deleted",
     "add": "Link a ticket",
     "addTitle": "Link a ticket",
     "linkType": "This ticket…",

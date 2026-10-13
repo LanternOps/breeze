@@ -689,6 +689,7 @@
     "loading": "Carregando chamados relacionados…",
     "loadFailed": "Não foi possível carregar os chamados relacionados.",
     "empty": "Nenhum chamado relacionado.",
+    "deleted": "Excluído",
     "add": "Vincular um chamado",
     "addTitle": "Vincular um chamado",
     "linkType": "Este chamado…",

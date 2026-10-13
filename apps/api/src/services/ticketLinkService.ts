@@ -78,6 +78,12 @@ export interface TicketLinkView {
     subject: string;
     status: (typeof tickets.$inferSelect)['status'];
     ticketType: (typeof tickets.$inferSelect)['ticketType'];
+    /**
+     * The counterpart is soft-deleted (#8679). Still listed: the link keeps
+     * counting toward the cap, the duplicate rules and the cycle walk, so it
+     * must stay visible and removable.
+     */
+    deleted: boolean;
   };
   createdAt: string;
 }
@@ -93,9 +99,11 @@ function canonical(sourceId: string, targetId: string, linkType: TicketLinkType)
 }
 
 /**
- * Links of one ticket, as seen from it. A counterpart that is soft-deleted, or
- * that `counterpartFilter` (the caller's site scope, written against `tickets`)
- * excludes, is omitted — the caller never learns it exists.
+ * Links of one ticket, as seen from it. A counterpart that `counterpartFilter`
+ * (the caller's site scope, written against `tickets`) excludes is omitted —
+ * the caller never learns it exists. A soft-deleted counterpart is listed with
+ * `other.deleted: true` (#8679): hiding it left a link nobody could remove that
+ * still counted toward the cap and the duplicate/cycle rules.
  */
 export async function listTicketLinks(
   ticketId: string,
@@ -114,12 +122,12 @@ export async function listTicketLinks(
       subject: tickets.subject,
       status: tickets.status,
       ticketType: tickets.ticketType,
+      deletedAt: tickets.deletedAt,
     })
     .from(ticketLinks)
     .innerJoin(tickets, sql`${tickets.id} = ${counterpartId}`)
     .where(and(
       or(eq(ticketLinks.sourceTicketId, ticketId), eq(ticketLinks.targetTicketId, ticketId)),
-      isNull(tickets.deletedAt),
       opts.counterpartFilter,
     ))
     .orderBy(asc(ticketLinks.createdAt), asc(ticketLinks.id));
@@ -136,6 +144,7 @@ export async function listTicketLinks(
         subject: r.subject,
         status: r.status,
         ticketType: r.ticketType,
+        deleted: r.deletedAt !== null,
       },
       createdAt: r.createdAt.toISOString(),
     };

@@ -689,6 +689,7 @@
     "loading": "Chargement des tickets liés…",
     "loadFailed": "Impossible de charger les tickets liés.",
     "empty": "Aucun ticket lié.",
+    "deleted": "Supprimé",
     "add": "Lier un ticket",
     "addTitle": "Lier un ticket",
     "linkType": "Ce ticket…",

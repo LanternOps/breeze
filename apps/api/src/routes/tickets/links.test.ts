@@ -44,7 +44,12 @@ vi.mock('./tickets', () => ({
   actorFrom: (c: any) => ({ kind: 'user', userId: c.get('auth').user.id, name: c.get('auth').user.name }),
 }));
 
-vi.mock('./siteScope', () => ({ ticketSiteScopeCondition: () => 'SITE_SCOPE_SQL' }));
+// The predicate itself is unit-tested in siteScope.counterpart.test.ts; here
+// only that the route hands the caller's counterpart scope to the service.
+vi.mock('./siteScope', () => ({
+  ticketCounterpartScopeCondition: (auth: { allowedDeviceIds?: string[] }) =>
+    (auth.allowedDeviceIds ? 'SITE_AND_DEVICE_SQL' : 'SITE_SCOPE_SQL'),
+}));
 
 vi.mock('../../services/ticketLinkService', async () => {
   const actual = await vi.importActual<typeof import('../../services/ticketLinkService')>('../../services/ticketLinkService');
@@ -95,9 +100,7 @@ describe('GET /tickets/:id/links', () => {
     authRef.current = { ...authRef.current!, allowedDeviceIds: ['dev-1'] };
     expect((await app().request(`/tickets/${T1}/links`)).status).toBe(200);
     const filter = svc.listTicketLinks.mock.calls[0]![1].counterpartFilter;
-    // Not the bare site condition: the device clause is ANDed onto it.
-    expect(filter).not.toBe('SITE_SCOPE_SQL');
-    expect(filter).toBeTruthy();
+    expect(filter).toBe('SITE_AND_DEVICE_SQL');
   });
 
   it('401 without auth; 404 (not 403) for a ticket outside the caller scope', async () => {
@@ -177,6 +180,19 @@ describe('DELETE /tickets/:id/links/:linkId', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(svc.removeTicketLink).toHaveBeenCalledWith(T1, L1, expect.objectContaining({ userId: 'u-1' }));
+  });
+
+  it('removes a link whose counterpart is soft-deleted (#8679): counterpart resolved with includeDeleted, scope still applied', async () => {
+    svc.getTicketLinkForTicket.mockResolvedValue({ id: L1, otherTicketId: T2 });
+    // T2 is soft-deleted: only an includeDeleted lookup finds it.
+    getScopedTicketOr404Mock.mockImplementation(async (_a: unknown, id: string, opts?: { includeDeleted?: boolean }) =>
+      (id === T2 && !opts?.includeDeleted ? null : ticket(id)));
+    const res = await app().request(`/tickets/${T1}/links/${L1}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(getScopedTicketOr404Mock).toHaveBeenCalledWith(expect.anything(), T2, { includeDeleted: true });
+    // The ticket the caller is on must still be live.
+    expect(getScopedTicketOr404Mock).toHaveBeenCalledWith(expect.anything(), T1);
+    expect(svc.removeTicketLink).toHaveBeenCalledWith(T1, L1, expect.anything());
   });
 
   it('404 for a link of another ticket, or whose counterpart is out of scope', async () => {

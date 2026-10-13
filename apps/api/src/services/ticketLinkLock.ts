@@ -18,8 +18,15 @@ type SqlExecutor = { execute: (query: ReturnType<typeof sql>) => Promise<unknown
  *   ticket row through the comment feed re-stamp trigger; the device cascade
  *   locks a device's tickets in its own scan order), which is a 40P01.
  *
- * Both sides acquire it FIRST, holding no row lock while they wait, so it
- * cannot itself close a wait cycle.
+ * Link writers and moveTicketOrg acquire it FIRST, holding no row lock while
+ * they wait. The device mover is the exception on one path (#8679):
+ * assignParkedDevice calls moveDeviceOrgInTransaction AFTER it has taken the
+ * partner holding-area advisory lock and the parked device row FOR UPDATE.
+ * That still cannot close a wait cycle with a link writer: a writer holding
+ * this lock goes on to lock only ticket and ticket_links rows (and, through
+ * the comment feed trigger, the same ticket rows), never a device row or the
+ * holding-area lock. Keep it that way: a link writer that ever locks a device
+ * row must take it before this lock, or that path becomes a 40P01.
  */
 export async function lockOrgTicketLinks(tx: SqlExecutor, orgId: string, mode: 'exclusive' | 'shared'): Promise<void> {
   const key = `ticket_links:${orgId}`;

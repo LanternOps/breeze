@@ -169,15 +169,28 @@ describe('ticketLinkService (real DB)', () => {
     expect((await systemNotes(b.id)).some((n) => n.content.startsWith('Unlinked'))).toBe(true);
   });
 
-  it('lists omit soft-deleted counterparts and apply the caller counterpart filter', async () => {
+  it('lists flag soft-deleted counterparts (#8679) and apply the caller counterpart filter', async () => {
     const f = await seed();
     const a = await f.mk(); const b = await f.mk(); const c = await f.mk();
     await add(f, a, b, 'caused_by');
     await add(f, a, c, 'resolves');
     await sys(() => db.update(tickets).set({ deletedAt: new Date() }).where(eq(tickets.id, b.id)));
     const list = await asA(f, () => listTicketLinks(a.id));
-    expect(list.map((l) => l.other.id)).toEqual([c.id]);
+    // A hidden link would still count toward the cap, the duplicate rules and
+    // the cycle walk, with nothing in the UI able to remove it.
+    expect(list.map((l) => [l.other.id, l.other.deleted])).toEqual([[b.id, true], [c.id, false]]);
     const filtered = await asA(f, () => listTicketLinks(a.id, { counterpartFilter: eq(tickets.id, randomUUID()) }));
     expect(filtered).toEqual([]);
+  });
+
+  it('a link to a soft-deleted ticket can be removed, which frees the duplicate slot (#8679)', async () => {
+    const f = await seed();
+    const a = await f.mk(); const b = await f.mk(); const c = await f.mk();
+    const view = await add(f, a, b, 'duplicate_of');          // a duplicates b
+    await sys(() => db.update(tickets).set({ deletedAt: new Date() }).where(eq(tickets.id, b.id)));
+    expect(await codeOf(add(f, a, c, 'duplicate_of'))).toBe('SOURCE_ALREADY_DUPLICATE');
+    await asA(f, () => removeTicketLink(a.id, view.id, actor(f)));
+    expect(await codeOf(add(f, a, c, 'duplicate_of'))).toBeUndefined();
+    expect((await systemNotes(a.id)).some((n) => n.content.startsWith('Unlinked'))).toBe(true);
   });
 });

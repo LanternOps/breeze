@@ -17,8 +17,9 @@ import { isTicketType, type TicketType } from './ticketType';
 /**
  * Web-side view of GET /tickets/:id/links (`TicketLinkView` in the API's
  * ticketLinkService; kept local on purpose so the API service is not a web
- * dependency). Counterparts the caller cannot see, and soft-deleted ones, are
- * already omitted server-side.
+ * dependency). Counterparts the caller cannot see are already omitted
+ * server-side; a soft-deleted one is listed with `deleted: true` (#8679) so the
+ * link stays removable.
  */
 interface TicketLinkRow {
   id: string;
@@ -30,6 +31,8 @@ interface TicketLinkRow {
     subject: string;
     status: TicketStatus;
     ticketType: TicketType | string | null;
+    /** Soft-deleted counterpart (#8679): shown, not linked, still removable. */
+    deleted?: boolean;
   };
 }
 
@@ -320,16 +323,32 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
                 className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm"
                 data-testid={`ticket-link-row-${row.id}`}
               >
-                <a
-                  // The full-page view by id: the queue (`/tickets#<number>`) only holds
-                  // the open tab, so a resolved/closed counterpart would not be found.
-                  href={`/tickets/${encodeURIComponent(row.other.id)}`}
-                  className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
-                  data-testid={`ticket-link-open-${row.id}`}
-                >
-                  <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.other.ticketNumber}</span>
-                  <span className="truncate">{row.other.subject}</span>
-                </a>
+                {row.other.deleted ? (
+                  // A deleted ticket's page 404s, so it is not a link; it is
+                  // still listed because the link keeps counting toward the
+                  // cap and the duplicate/cycle rules until it is removed.
+                  <span className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
+                    <span className="shrink-0 font-mono text-xs">{row.other.ticketNumber}</span>
+                    <span className="truncate line-through">{row.other.subject}</span>
+                    <span
+                      className="shrink-0 rounded-md border px-1.5 py-0.5 text-xs font-medium"
+                      data-testid={`ticket-link-deleted-${row.id}`}
+                    >
+                      {t('ticketLinks.deleted')}
+                    </span>
+                  </span>
+                ) : (
+                  <a
+                    // The full-page view by id: the queue (`/tickets#<number>`) only holds
+                    // the open tab, so a resolved/closed counterpart would not be found.
+                    href={`/tickets/${encodeURIComponent(row.other.id)}`}
+                    className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
+                    data-testid={`ticket-link-open-${row.id}`}
+                  >
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.other.ticketNumber}</span>
+                    <span className="truncate">{row.other.subject}</span>
+                  </a>
+                )}
                 <span
                   className={cn(
                     'shrink-0 rounded-md border px-1.5 py-0.5 text-xs font-medium',

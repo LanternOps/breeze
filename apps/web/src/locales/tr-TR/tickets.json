@@ -689,6 +689,7 @@
     "loading": "İlişkili biletler yükleniyor…",
     "loadFailed": "İlişkili biletler yüklenemedi.",
     "empty": "İlişkili bilet yok.",
+    "deleted": "Silindi",
     "add": "Bilet bağla",
     "addTitle": "Bilet bağla",
     "linkType": "Bu bilet…",

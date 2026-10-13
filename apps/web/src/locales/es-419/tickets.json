@@ -689,6 +689,7 @@
     "loading": "Cargando tickets relacionados…",
     "loadFailed": "No se pudieron cargar los tickets relacionados.",
     "empty": "No hay tickets relacionados.",
+    "deleted": "Eliminado",
     "add": "Vincular un ticket",
     "addTitle": "Vincular un ticket",
     "linkType": "Este ticket…",

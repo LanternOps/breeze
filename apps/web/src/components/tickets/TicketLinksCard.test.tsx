@@ -139,6 +139,21 @@ describe('TicketLinksCard — list', () => {
     expect(screen.queryByTestId('ticket-links-incident-count')).toBeNull();
   });
 
+  it('a soft-deleted counterpart is marked deleted, not linked, and stays removable (#8679)', async () => {
+    const gone = link({ id: 'l2' });
+    mockApi({ links: [link({ id: 'l1' }), { ...gone, other: { ...gone.other, id: 't-gone', deleted: true } as Link['other'] }] });
+    render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    await screen.findByTestId('ticket-link-row-l2');
+    expect(screen.getByTestId('ticket-link-deleted-l2')).toHaveTextContent('Deleted');
+    // Its page would 404, so it is not a link.
+    expect(screen.queryByTestId('ticket-link-open-l2')).toBeNull();
+    expect(screen.getByTestId('ticket-link-row-l2')).toHaveTextContent('Other ticket');
+    expect(screen.getByTestId('ticket-link-remove-l2')).toBeInTheDocument();
+    // A live counterpart is unchanged.
+    expect(screen.getByTestId('ticket-link-open-l1')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-link-deleted-l1')).toBeNull();
+  });
+
   it('read-only users see no remove buttons', async () => {
     mockApi({ links: [link({ id: 'l1' })] });
     render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite={false} />);

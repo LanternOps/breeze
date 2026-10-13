@@ -131,9 +131,16 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  * row touching a moved ticket, after their rewrite statements. Kept apart from
  * {@link TICKET_ORG_DENORMALIZED_TABLES} / `CUSTOM_ORG_REWRITE_TABLES` because
  * those lists drive `UPDATE … SET org_id WHERE ticket_id = …` statements, and
- * ticket_links has no `ticket_id`. ticketOrgMoveLockOrder.test.ts projects
+ * ticket_links has no `ticket_id`.
+ *
+ * Declarative (#8679): no code iterates this list. Each mover's DELETE is
+ * hand-written, because a link has two ticket legs and the statement is not
+ * the `WHERE ticket_id = …` shape the rewrite lists generate. Tests keep the
+ * list and the statements in step: ticketOrgMoveLockOrder.test.ts projects
  * `[...rewrite, ...delete]` on each axis onto the canonical order, and
- * moveOrg.coverage.test.ts pins that both movers delete on both legs.
+ * routes/devices/moveOrg.coverage.test.ts pins that both movers delete on both
+ * legs and defer both FKs. A new delete-only table needs an entry here AND a
+ * hand-written DELETE in both movers.
  */
 export const TICKET_ORG_MOVE_DELETE_TABLES = ['ticket_links'] as const;
 
