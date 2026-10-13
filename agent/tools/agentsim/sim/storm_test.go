@@ -62,6 +62,8 @@ func TestLoadScenarioRefuses(t *testing.T) {
 		"negative":       `{"name":"x","events":[{"name":"e","at":"-2m","start":[{"internal":"drop-sockets"}]}]}`,
 		"no events":      `{"name":"x","events":[]}`,
 		"empty argv":     `{"name":"x","events":[{"name":"e","at":"2m","start":[{"exec":[]}]}]}`,
+		"duplicate name": `{"name":"x","events":[{"name":"e","at":"2m","start":[{"internal":"drop-sockets"}]},
+		                   {"name":"e","at":"20m","start":[{"internal":"drop-sockets"}]}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

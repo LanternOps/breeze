@@ -150,8 +150,13 @@ func (sc *Scenario) validate(pre time.Duration) error {
 	if len(sc.Events) == 0 {
 		errs = append(errs, errors.New("scenario needs at least one event"))
 	}
+	names := map[string]bool{}
 	for i := range sc.Events {
 		ev := &sc.Events[i]
+		if names[ev.Name] {
+			errs = append(errs, fmt.Errorf("event name %q is used twice: each event's phases are reported by name", ev.Name))
+		}
+		names[ev.Name] = true
 		if ev.Recovery.D == 0 {
 			ev.Recovery.D = defaultRecovery
 		}
