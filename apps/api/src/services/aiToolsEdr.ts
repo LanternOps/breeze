@@ -71,7 +71,7 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
 /** Actions the model may request today (an adapter implements them). */
 const EDR_AI_ENDPOINT_ACTIONS = ['isolate', 'unisolate', 'scan'] as const;
 /** Tier-2 actions (no approval). Everything else — including unknown — needs an approved intent. */
-const EDR_AI_TIER2_ACTIONS: ReadonlySet<string> = new Set(['scan', 'update_agent']);
+const EDR_AI_TIER2_ACTIONS: ReadonlySet<string> = new Set(['scan']);
 
 function readErrorResult(err: unknown): string {
   if (err instanceof EdrReadError) return JSON.stringify({ error: err.message });
@@ -180,7 +180,7 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3,
     domain: 'integrations',
-    searchHint: 'EDR response action: isolate, release isolation, or scan a device through its EDR vendor',
+    searchHint: 'EDR containment: isolate, release or scan a device',
     deviceArgs: ['deviceId'],
     // dispatchEdrAction commits its ledger row before the vendor call and must
     // not run inside a caller-held transaction (#1105).

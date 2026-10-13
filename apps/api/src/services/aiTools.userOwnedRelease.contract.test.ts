@@ -117,9 +117,8 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `requestedBy: auth.user.id` handed to dispatchEdrAction, which writes
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
   // guard: the action flows straight into the dispatch. The model is offered
-  // isolate/unisolate/scan today; update_agent/kill_process are classified and
-  // allowlisted ahead of their adapters, and reach the same line.
-  ['services/aiToolsEdr.ts:233', ['isolate', 'unisolate', 'scan', 'update_agent', 'kill_process']],
+  // isolate/unisolate/scan, the whole input_schema enum (proven below).
+  ['services/aiToolsEdr.ts:233', ['isolate', 'unisolate', 'scan']],
 ]);
 
 /**

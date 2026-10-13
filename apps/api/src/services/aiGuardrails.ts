@@ -66,9 +66,10 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
-  // action — isolate, release, and any value not offered yet (update_agent
-  // and kill_process have no adapter; the approvalScope contract forbids
-  // classifying actions outside the real enum) — stays Tier 3 / four_eyes.
+  // action — isolate, release, and any value not offered yet (no adapter
+  // implements the agent-update or process-kill actions; the approvalScope
+  // contract forbids classifying actions outside the real enum) — stays
+  // Tier 3 / four_eyes.
   edr_endpoint_action: ['scan'],
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
