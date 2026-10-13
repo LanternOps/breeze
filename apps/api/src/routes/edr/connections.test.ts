@@ -379,6 +379,32 @@ describe('EDR connection routes', () => {
       expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('rotated-key');
     });
 
+    it('credentials resolving to a DIFFERENT vendorRootId -> 409 VENDOR_ROOT_MISMATCH, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await patch({ credentials: { apiKey: 'other-console-key' } });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '1000', newVendorRootId: '2000',
+      });
+      expect(dbState.updated).toHaveLength(0);
+      expect(encryptMock).not.toHaveBeenCalled();
+    });
+
+    it('credentials resolving to the SAME vendorRootId still rotate', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
+      expect(dbState.updated).toHaveLength(1);
+    });
+
+    it('a stored connection with no vendorRootId yet may adopt the first resolved root', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: null })];
+      expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
+      expect(dbState.updated[0]).toMatchObject({ vendorRootId: '1000' });
+    });
+
     it('failed rotation -> 422 and the stored credential is untouched', async () => {
       dbState.connections = [connectionRow()];
       adapterState.test = { ok: false, error: 'rejected', reauth: true };
@@ -415,6 +441,17 @@ describe('EDR connection routes', () => {
       expect(await res.json()).toMatchObject({ success: true, tenantCount: 3 });
       expect(ctxState.testCalledInContext).toBe(false);
       expect(dbState.updated[0]).toMatchObject({ status: 'connected', vendorRootId: '1000' });
+    });
+
+    it('a test that resolves a DIFFERENT vendorRootId -> 409 and does not overwrite the stored root', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await post(app, `/edr/connections/${CONNECTION_ID}/test`, {});
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH' });
+      expect(dbState.updated).toHaveLength(0);
     });
 
     it('a reauth failure flips status to reauth_required; a transient one persists nothing', async () => {
