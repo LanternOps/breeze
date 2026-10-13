@@ -112,18 +112,14 @@ func serviceInstallCmd() *cobra.Command {
 			}
 
 			if exePath != watchdogBinaryPath {
-				data, err := os.ReadFile(exePath)
-				if err != nil {
-					return fmt.Errorf("failed to read binary: %w", err)
-				}
-				if err := os.WriteFile(watchdogBinaryPath, data, 0755); err != nil {
+				if err := installBinaryAtomically(exePath, watchdogBinaryPath); err != nil {
 					return fmt.Errorf("failed to copy binary to %s: %w", watchdogBinaryPath, err)
 				}
 				fmt.Printf("Binary installed to %s\n", watchdogBinaryPath)
 			}
 
 			// Write launchd plist.
-			if err := os.WriteFile(watchdogPlistDst, []byte(watchdogPlist), 0644); err != nil {
+			if err := writeFileAtomically(watchdogPlistDst, []byte(watchdogPlist), 0o644); err != nil {
 				return fmt.Errorf("failed to write plist: %w", err)
 			}
 			fmt.Printf("LaunchDaemon plist installed to %s\n", watchdogPlistDst)
