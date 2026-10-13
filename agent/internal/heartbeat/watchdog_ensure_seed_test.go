@@ -142,12 +142,12 @@ func TestSeedWatchdogInstallReport_FirstBeatAfterRestart(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "registered, not running, open record (interrupted install)",
+			name: "registered, not running, open record seeds nothing (no later signal would clear it)",
 			setup: func(t *testing.T, dir string, f *ensureFake, _ *Heartbeat) {
 				saveRec(t, dir, watchdoginstall.Record{BudgetVersion: ensureAgentVersion, Attempts: 2, LastAttemptAt: lastAttempt, LastClass: watchdoginstall.ClassInstallCmd})
 				f.status = watchdoginstall.StatusRegistered
 			},
-			want: &WatchdogInstallReport{State: "retrying", Attempts: 2, LastAttemptAt: "2026-10-11T09:30:00Z", LastErrorClass: "install_cmd"},
+			want: nil,
 		},
 		{
 			name: "record from an older agent version is reported as persisted",

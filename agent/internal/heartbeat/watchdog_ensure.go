@@ -135,9 +135,12 @@ func (h *Heartbeat) EnableWatchdogEnsure() {
 // It follows the read-only checks of ensureWatchdog / ensureMissingWatchdog,
 // in the same order, and never downloads, takes a lock, or writes or resets
 // the state file. Deliberate differences from the first evaluation:
-//   - A registered watchdog seeds nothing unless it is the not-running
-//     leftover of an interrupted install of ours (open record). A stale record
-//     must not raise a banner that no later signal would clear.
+//   - A registered watchdog always seeds nothing, even with an open record and
+//     the service not running: right after a reboot that races the watchdog's
+//     own startup, and the API signals watchdogUpgradeTo only for an older or
+//     empty installed version, so nothing later would clear the banner. The
+//     first evaluation still handles an interrupted install. This also keeps
+//     process exec off the startup path.
 //   - A missing, corrupt or unreadable record seeds nothing; the first
 //     evaluation persists the corrupt record's fail-closed form and reports it.
 //   - The record is reported as persisted even when its budget belongs to an
@@ -156,10 +159,7 @@ func (h *Heartbeat) seedWatchdogInstallReport() {
 	switch e.detect() {
 	case watchdoginstall.StatusMissing:
 	case watchdoginstall.StatusRegistered:
-		// watchdogInterruptedInstall without its Reset.
-		if !open || e.waitRunning(0) {
-			return
-		}
+		return
 	case watchdoginstall.StatusUnsupported:
 		e.setReport(&WatchdogInstallReport{State: watchdogInstallUnsupported})
 		return
