@@ -122,7 +122,7 @@ func TestPamReconciliationTransportResolverRejectsInvalidResponses(t *testing.T)
 		{name: "missing disposition", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[]}`},
 		{name: "unknown observation", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"unresolved","observationId":"20000000-0000-4000-8000-000000000099"}]}`},
 		{name: "invalid status", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"accepted","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
-		{name: "bound missing command", status: http.StatusOK, body: `{"protocolVersion":1,"dispositions":[{"status":"bound","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
+		{name: "bound missing command", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"bound","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
