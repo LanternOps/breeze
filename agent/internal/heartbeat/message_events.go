@@ -129,7 +129,13 @@ func (h *Heartbeat) handleMessageEventFromHelper(s *sessionbroker.Session, env *
 			"type", env.Type, "sessionId", s.SessionID)
 		return
 	}
-	var ref ipc.MessageDismissed // superset of MessageRef
+	// One struct reads all three payload shapes (MessageRef, MessagePresented,
+	// MessageDismissed); the fields that do not apply stay empty.
+	var ref struct {
+		MessageID string `json:"messageId"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}
 	if err := json.Unmarshal(env.Payload, &ref); err != nil || ref.MessageID == "" {
 		log.Warn("invalid message event payload", "type", env.Type, "sessionId", s.SessionID)
 		return
@@ -143,7 +149,19 @@ func (h *Heartbeat) handleMessageEventFromHelper(s *sessionbroker.Session, env *
 	}
 	switch env.Type {
 	case ipc.TypeMessagePresented:
-		h.emitMessageEvent(newMessageEvent(show, messageEventDisplayed, s))
+		switch ref.Status {
+		case "":
+			h.emitMessageEvent(newMessageEvent(show, messageEventDisplayed, s))
+		case ipc.MessagePresentedAlreadyResolved:
+			// The user closed it in this helper process but the ack/dismiss
+			// frame never arrived: retire it so it is not replayed again. No
+			// event — which terminal action the user took is unknown.
+			store.MarkTerminal(ref.MessageID)
+		default:
+			// Not drawn: keep it stored for the next helper auth.
+			log.Warn("replayed message card was not drawn",
+				"messageId", ref.MessageID, "status", ref.Status)
+		}
 	case ipc.TypeMessageAck:
 		if store.MarkTerminal(ref.MessageID) {
 			h.emitMessageEvent(newMessageEvent(show, messageEventAcknowledged, s))
