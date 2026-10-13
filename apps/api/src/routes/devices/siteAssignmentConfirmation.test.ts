@@ -100,6 +100,14 @@ describe('site-assignment confirmation routes', () => {
     }));
   });
 
+  it('marks the org presence dirty on both verbs so the evaluator re-runs soon (suggestion back after "Turn on")', async () => {
+    await call('PUT');
+    await call('DELETE');
+    const dirty = vi.mocked(db.execute).mock.calls.map(([q]) => dialect.sqlToQuery(q as never).sql).filter((t) => t.includes('topology_org_presence_state'));
+    expect(dirty).toHaveLength(2);
+    expect(dirty[0]).toMatch(/dirty_seq = dirty_seq \+ 1/);
+  });
+
   it('DELETE clears it ("Turn on") and audits', async () => {
     returning = [{ confirmedAt: null }];
     const res = await call('DELETE');

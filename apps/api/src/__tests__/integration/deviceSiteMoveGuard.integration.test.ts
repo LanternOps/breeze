@@ -174,8 +174,13 @@ describe('PATCH /devices/:id site-move guard (real Postgres)', () => {
   it('PUT/DELETE site-assignment-confirmation set and clear the confirmation, audit it, and never move the device', async () => {
     const call = (method: 'PUT' | 'DELETE') => app.request(`/devices/${f.deviceId}/site-assignment-confirmation`, {
       method, headers: { Authorization: `Bearer ${f.token}` } });
+    await getTestDb().execute(sql`INSERT INTO topology_org_presence_state (org_id, coverage) VALUES (${f.orgId}::uuid, 'complete')
+      ON CONFLICT (org_id) DO UPDATE SET dirty_at = NULL`);
     const confirmed = await call('PUT');
     expect(confirmed.status).toBe(200);
+    // Marked dirty under the request's RLS context, so the evaluator clears or restores the suggestion soon.
+    const [state] = (await getTestDb().execute(sql`SELECT dirty_at FROM topology_org_presence_state WHERE org_id = ${f.orgId}::uuid`)) as unknown as { dirty_at: unknown }[];
+    expect(state!.dirty_at).not.toBeNull();
     const body = await confirmed.json() as { confirmedAt: string };
     expect(Date.parse(body.confirmedAt)).toBeGreaterThan(Date.now() - 60_000);
     expect(await currentSite(f.deviceId)).toBe(f.siteA);
