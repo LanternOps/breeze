@@ -60,7 +60,7 @@ Labels: **[V]** read in code at `origin/main` `6859e6f749`. **[I]** inferred.
 | C1 | `orgAgentUpdateConfigCache` (`org-agent-update-config`) | `services/agentOrgSettingsCache.ts:35` | org id → `AgentUpdateConfig` | 60 s / 20,000 | `invalidateAgentOrgSettingsCaches(orgId?)` from `routes/orgs.ts:1379` (`PATCH /partners/me`, all orgs), `:1569` (partner settings, all orgs), `:2858` (org update, one org) | per-org update config |
 | C2 | `orgTopologyFlagsCache` (`org-topology-flags`) | `agentOrgSettingsCache.ts:41` | org id → `TopologyFlags` | 60 s / 20,000 | same as C1 | topology flags |
 | C3 | `orgHelperSettingsCache` (`org-helper-legacy-settings`) | `agentOrgSettingsCache.ts:88` | org id → `{enabled}` | 60 s / 20,000 | `invalidateOrgHelperSettingsCache` from `routes/agents/mtls.ts:1790`; also cleared by `invalidateAgentOrgSettingsCaches` | — |
-| C4 | `orgPolicyProbeCache` (`org-policy-probe`) | `agentOrgSettingsCache.ts:82` | org id → `PolicyProbeConfigUpdate \| null` | 60 s / 20,000 | `invalidateOrgPolicyProbeCache` from `routes/policyManagement/actions.ts:92` (deactivate). **Gap:** org merge re-points `automation_policies` and invalidates nothing (`agentOrgSettingsCache.ts` comment) | — |
+| C4 | `orgPolicyProbeCache` (`org-policy-probe`) | `agentOrgSettingsCache.ts:82` | org id → `PolicyProbeConfigUpdate \| null` | 60 s / 20,000 | `invalidateOrgPolicyProbeCache` from `routes/policyManagement/actions.ts:92` (deactivate). **Gap:** org merge re-points `automation_policies` and invalidates none of the hot-path caches (`agentOrgSettingsCache.ts` comment) | — |
 | C5 | `orgPamFallbackCache` (`org-pam-fallback`) | `agentOrgSettingsCache.ts:94` | org id → `PamSettings` | 60 s / 20,000 | **No writer exists** for `pam_org_config.uac_interception_enabled` (`routes/pam.ts:1682` upserts only `defaultUnmatchedVerdict`) | — |
 | C6 | `trustKeysetCache` (`manifest-trust-keyset`) | `services/manifestSigning.ts:242` | `'active'` → `ManifestTrustKey[]` | 60 s / 1 | `invalidateManifestTrustCaches()` (plain `invalidate`) from `ensureActiveSigningKey` (`:173`). **Gap:** the rotation CLI `apps/api/scripts/manifest-key-rotation.ts` (`:414-456`) runs in its own process and invalidates nothing | trust keyset |
 | C7 | `delegationRowsCache` (`manifest-key-delegations`) | `manifestSigning.ts:521` | `'unexpired'` → `DelegationRow[]` | 60 s / 1 | same as C6 | delegations |
@@ -89,7 +89,7 @@ Labels: **[V]** read in code at `origin/main` `6859e6f749`. **[I]** inferred.
 
 | Item | Why not |
 |---|---|
-| `helper:settings:device:*` (`services/helperSettings.ts:192`), and the other device-keyed Redis policy caches in #8257 | These live in Redis, which all instances share. They are not process-local. #8257 (binding them to the org) is its own issue |
+| `helper:settings:device:*` (`services/helperSettings.ts:209`), and the other device-keyed Redis policy caches in #8257 | These live in Redis, which all instances share. They are not process-local. #8257 (binding them to the org) is its own issue |
 | Monitoring "no policy applies" cache | It does not exist. W03 decided against it (`2026-10-08-scaling-w03-batched-policy-read.md`, finding 10) |
 | Partner trust | It is per-socket state in `activeConnections` with its own channel (`agentWs.ts:283`), not a TTL cache |
 | `agentAuthNegativeCache`, partner scope-policy and allowlist caches, other module-level `Map`s | Spec W4 ("Per-process caches … Classify each; anything that needs cluster consistency moves to the W1b primitive"). Once this wave lands, W4 can move them with one option each |
@@ -100,7 +100,8 @@ Labels: **[V]** read in code at `origin/main` `6859e6f749`. **[I]** inferred.
 | File | Responsibility |
 |---|---|
 | Create `apps/api/src/services/clusterCacheMetrics.ts` | prom-client series (leaf: `prom-client` + `metricsRegistry` only) |
-| Create `apps/api/src/services/clusterCacheBus.ts` (+ `clusterCacheBus.test.ts`) | The channel, message codec, publish, the one subscriber, reconnect resync, the process default bus |
+| Create `apps/api/src/services/clusterCacheRegistry.ts` | Leaf (no imports): name → cluster cache target, replace-on-duplicate (D12) |
+| Create `apps/api/src/services/clusterCacheBus.ts` (+ `clusterCacheBus.test.ts`) | The channel, message codec, publish (time-bounded), the one subscriber, reconnect resync, the process default bus |
 | Modify `apps/api/src/services/hotPathCache.ts` (+ `hotPathCache.test.ts`) | The `cluster` option; publish from `invalidateAroundCommit`; hit/miss/bypass counters |
 | Create `apps/api/src/__tests__/integration/clusterCache.integration.test.ts` | Two buses, one real Redis: A→B within 1 s, commit-only, in-flight race, rollback, reconnect, degraded |
 | Modify `apps/api/src/index.ts` | Start the subscriber before `serve()`; stop it in `runShutdownPhases` |
@@ -135,11 +136,13 @@ W05 does not touch `routes/agents/heartbeat.ts`, `routes/agents/helpers.ts` or `
 | D3 | When to publish | `runAfterDbContextCommit` from `invalidateAroundCommit` | Pre-commit publish lets B cache pre-commit rows for a TTL. A publish on rollback is harmless but noisy; commit-only is the contract #7277 built |
 | D4 | What the receiver does | `cache.invalidate(key)` (generation bump) | Keeps an in-flight load on B out of the cache. A raw delete would not |
 | D5 | Self-echo | Drop messages whose `origin === INSTANCE_ID` (counted as `self`) | The writer already dropped locally; a self-delivery would only pollute the lag histogram |
-| D6 | Reconnect | On every `ready` after the first, `invalidate()` every attached cache once | Pub/sub is at-most-once. One miss burst per reconnect is cheap (one reload per org per process) and closes the gap |
+| D6 | Reconnect | Track `seenReady` on the event itself. On every `ready` after the first, **re-issue `subscribe(CLUSTER_CACHE_CHANNEL)` (idempotent), await it, and only then** `invalidate()` every cluster cache once | Pub/sub is at-most-once. ioredis fires `ready` and re-subscribes in the same step, so a clear run straight from `ready` can land before SUBSCRIBE reaches the server; a message published in that window would be lost after the clear. Awaiting our own subscribe first closes it. One miss burst per reconnect is cheap (one reload per org per process) |
 | D7 | Whole-cache invalidation | `key: null` | The partner settings writers already clear every org (`invalidateAgentOrgSettingsCaches()` with no id) |
-| D8 | Which processes subscribe | The API entrypoint (`index.ts`) only. Any process may **publish** (worker jobs, the rotation CLI) | Only the API serves heartbeats and holds these caches warm. Publishing needs no subscription |
-| D9 | Boot behaviour when Redis is down | Subscribe with a 1 s bound (`CLUSTER_CACHE_SUBSCRIBE_TIMEOUT_MS`, a code constant like `AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS`). On failure or timeout: warn, `subscriber_up 0`, keep booting, TTL-only. ioredis keeps retrying, and the first successful `ready` after that counts as a reconnect, so it resyncs | Today's behaviour is the floor, never worse |
-| D10 | Keys | Cluster caches must have string keys. The constructor cannot check `K`, so `invalidateAroundCommit` throws on a non-string key for a cluster cache; the codec rejects keys over 256 chars | Ids only (§7) |
+| D8 | Which processes subscribe | The API entrypoint (`index.ts`) only. Any process may **publish** (worker jobs, the rotation CLI) | Only the API serves heartbeats and holds these caches warm. Publishing needs no subscription. Consequence, stated in the PR's Merge Danger: if a `BREEZE_ROLE=worker` process ever reads one of these caches, it stays TTL-only (follow-up 5 checks whether any does) |
+| D9 | Boot behaviour when Redis is down | `start()` waits at most 1 s (`CLUSTER_CACHE_SUBSCRIBE_TIMEOUT_MS`, a code constant like `AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS`) and then returns `'timeout'` so boot continues TTL-only, with `subscriber_up 0` and one warning. **It does not disconnect the subscriber.** The pending `subscribe` stays attached (with a `.catch` so it can never become an unhandled rejection), ioredis keeps reconnecting, and when the subscribe eventually resolves the bus sets `subscriber_up 1` and clears every cluster cache once (the same resync as D6) | Today's behaviour is the floor, never worse, and the instance recovers without a restart |
+| D10 | Keys | Cluster caches must have string keys. A constructor overload types `cluster` caches as `HotPathTtlCache<string, V>`. At runtime, `invalidateAroundCommit` checks the key **before** touching anything and, for a non-string key on a cluster cache, logs an error and invalidates the whole cache locally and cluster-wide instead of throwing (a cache bug must not fail a settings write). The codec rejects keys over 256 chars | Ids only (§7) |
+| D12 | Binding caches to the bus | `cluster: true` registers the cache in a leaf registry (`clusterCacheRegistry.ts`, no imports, like `hotPathCacheRegistry.ts`). The bus is resolved **lazily, at publish time**, through `getClusterCacheBus()`, and `start()`/resync/receive look targets up in the registry by name. Registering a second cache under an existing name replaces the first and logs a warning | The eight caches are built at module load. Binding a bus at construction would make `__setClusterCacheBusForTests` useless for any test that imports a module that imports them, and throwing on duplicates would break `vi.resetModules()` re-imports. An explicit `cluster: { bus }` (integration tests only) bypasses the registry and attaches to that bus |
+| D13 | Publish bound | `publish` races the Redis call against `CLUSTER_CACHE_PUBLISH_TIMEOUT_MS` (1 s) and returns `'failed'` on timeout | During a reconnect `getRedis()` still returns a client and commands sit in ioredis's offline queue; the rotation CLI awaits its publish and must not stall |
 | D11 | KPI ≤60 CPU-ms/agent-min | Not gated by this PR | The KPI is measured by W07's dashboard on fixed hardware. Cross-instance invalidation does not change the per-beat CPU cost: it adds no read-path work. Task 13 records the statement budget as unchanged; the KPI is read when W07 lands |
 
 ## Metrics and logs
@@ -293,7 +296,7 @@ export function recordResync(): void { resyncs.inc(); }
 export function registerCacheSizeSource(cache: string, size: () => number): void { sizeSources.set(cache, size); }
 ```
 
-Check the `getSingleMetric` re-registration guard against how `middleware/agentAuthNegativeCache.ts:74-78` does it, and match that file's pattern exactly if it differs.
+Check the `getSingleMetric` re-registration guard against how `middleware/agentAuthNegativeCache.ts:73-79` does it, and match that file's pattern exactly if it differs.
 
 - [ ] **Step 4: Run the test and the worker-closure contract**
 
@@ -311,6 +314,7 @@ git commit -m "feat(api): cluster cache metrics series (#8144)"
 ### Task 2: The cluster cache bus
 
 **Files:**
+- Create: `apps/api/src/services/clusterCacheRegistry.ts` (leaf, no imports: `registerClusterCache(target)` replacing by name with a `console.warn`, `clusterCacheTargets()`, `getClusterCacheTarget(name)`)
 - Create: `apps/api/src/services/clusterCacheBus.ts`
 - Create: `apps/api/src/services/clusterCacheBus.test.ts`
 
@@ -319,6 +323,7 @@ git commit -m "feat(api): cluster cache metrics series (#8144)"
 ```ts
 export const CLUSTER_CACHE_CHANNEL = 'breeze:cluster-cache:invalidate';
 export const CLUSTER_CACHE_SUBSCRIBE_TIMEOUT_MS = 1_000;
+export const CLUSTER_CACHE_PUBLISH_TIMEOUT_MS = 1_000;
 export const CLUSTER_CACHE_MAX_KEY_LENGTH = 256;
 
 export interface ClusterInvalidationMessage {
@@ -352,7 +357,10 @@ export interface ClusterCacheBusOptions {
   getPublisher: () => PublisherLike | null;
   createSubscriber: () => SubscriberLike | null;
   subscribeTimeoutMs?: number;
+  publishTimeoutMs?: number;
   now?: () => number;
+  /** Where receive/resync find targets. Default: clusterCacheRegistry. */
+  targets?: () => Iterable<ClusterCacheTarget>;
 }
 
 export type StartOutcome = 'subscribed' | 'unavailable' | 'timeout' | 'failed';
@@ -360,8 +368,9 @@ export type { PublishOutcome } from './clusterCacheMetrics'; // defined once, in
 
 export class ClusterCacheBus {
   constructor(options: ClusterCacheBusOptions);
-  attach(target: ClusterCacheTarget): void;          // throws on a duplicate name
-  publish(cache: string, key: string | null): Promise<PublishOutcome>; // never throws
+  /** Explicit targets (integration tests). Without any, the bus reads clusterCacheRegistry. Replaces by name. */
+  attach(target: ClusterCacheTarget): void;
+  publish(cache: string, key: string | null): Promise<PublishOutcome>; // never throws; bounded by CLUSTER_CACHE_PUBLISH_TIMEOUT_MS
   start(): Promise<StartOutcome>;                     // idempotent; never throws
   stop(): Promise<void>;
   readonly subscribed: boolean;
@@ -381,14 +390,19 @@ Use a fake subscriber built on `node:events` `EventEmitter` (with `subscribe` re
 
 1. `decodeInvalidation` accepts a valid message and returns `null` for: bad JSON; `v !== 1`; missing or empty `cache`; `key` that is not a string or `null`; `key` longer than 256; missing `origin`; non-finite `sentAtMs`.
 2. `publish` returns `'published'` and sends exactly `encodeInvalidation({ v: 1, cache, key, origin, sentAtMs: now() })` on `CLUSTER_CACHE_CHANNEL`.
-3. `publish` returns `'unavailable'` when `getPublisher()` returns `null`, and `'failed'` when `publish` rejects; neither throws.
+3. `publish` returns `'unavailable'` when `getPublisher()` returns `null`, `'failed'` when `publish` rejects, and `'failed'` when `publish` never settles within `publishTimeoutMs` (fake timers); none throws.
 4. A message from another origin calls `target.invalidate(key)` on the attached cache with that name, and `target.invalidate()` (no argument) for `key: null`.
 5. A message from the bus's own origin does not call `invalidate`.
 6. A message for an unattached cache name, and a malformed message, call nothing and do not throw.
-7. `attach` twice with the same name throws.
-8. `start()` resolves `'subscribed'` when `subscribe` resolves; `'unavailable'` when `createSubscriber()` returns `null`; `'timeout'` (and disconnects the subscriber) when `subscribe` never resolves within `subscribeTimeoutMs` (use fake timers); `'failed'` when it rejects. Calling `start()` twice returns the same promise.
-9. **Resync (D6):** after `start()` succeeded, emitting `ready` once more calls `invalidate()` on every attached cache exactly once. The first `ready` (before or during subscribe) does not.
+7. `attach` twice with the same name replaces the first target (the second receives, the first does not).
+8. `start()` resolves `'subscribed'` when `subscribe` resolves; `'unavailable'` when `createSubscriber()` returns `null`; `'failed'` when it rejects. When `subscribe` does not resolve within `subscribeTimeoutMs` (fake timers), `start()` resolves `'timeout'`, does **not** disconnect, and when the subscribe later resolves, `subscribed` becomes true and every target is invalidated once (D9). A later rejection of that pending subscribe raises no unhandled rejection. Calling `start()` twice returns the same promise.
+9. **Resync (D6):**
+   - The first `ready` (including one that fires while the first subscribe is still pending) clears nothing.
+   - A second `ready` re-issues `subscribe`; with the fake `subscribe` resolving only after a deferred, no target is invalidated until it resolves, then each exactly once.
+   - Two reconnects produce two clears.
+   - After `stop()`, a late `ready` or `message` invalidates nothing (listeners removed).
 10. A target whose `invalidate` throws does not stop delivery to the others on resync, and does not throw out of the `message` handler.
+11. With no explicit `attach`, the bus finds targets through `clusterCacheRegistry` (register a target there, deliver a message, it is invalidated).
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -400,8 +414,9 @@ Expected: FAIL, cannot resolve `./clusterCacheBus`. 1 file.
 Rules the implementation must keep:
 - `publish` is `async` and wraps everything in `try/catch`. It records `recordInvalidationPublished(cache, outcome)` and logs `unavailable`/`failed` at most once per minute per outcome.
 - The `message` handler checks `channel === CLUSTER_CACHE_CHANNEL`, decodes, and then: `null` → `recordInvalidationReceived('unknown', 'malformed')`; own origin → `'self'`; unknown cache → `recordInvalidationReceived('unknown', 'unknown_cache')`; otherwise call `target.invalidate(key ?? undefined)` inside `try/catch`, record `'applied'`, and record lag `(now() - sentAtMs) / 1000`. A lag over 1 s logs a rate-limited warning.
-- `start()` registers the handlers **before** `subscribe`, races `subscribe` against the timeout, sets `setSubscriberUp(true)` on success, and on timeout or failure disconnects the subscriber, sets `subscriberUp` to 0 and logs once. A `ready` event after the subscription succeeded triggers the resync: `invalidate()` on every target, `recordResync()`, one log line. An `end` event sets `subscriberUp` to 0.
-- After a timed-out start, keep it simple: the bus stays unsubscribed for the life of the process and the caches are TTL-only, which is today's behaviour. Do not build a retry loop. (A later `start()` call by the boot sequence after Redis recovers is out of scope; see follow-up 3.)
+- `start()` registers the handlers **before** `subscribe`, then races `subscribe` against the timeout. Success: `setSubscriberUp(true)`. Rejection: disconnect, `subscriberUp` 0, log once, `'failed'`. Timeout: return `'timeout'`, log once, but leave the subscriber and its pending subscribe in place, with a `.catch` attached; when it resolves later, set `subscriberUp` 1 and run the resync (D9).
+- `ready` handling (D6): the handler sets `seenReady` on the first event and returns. On every later `ready` it awaits `subscribe(CLUSTER_CACHE_CHANNEL)`, then calls `invalidate()` on every target, `recordResync()`, one log line. A failed re-subscribe logs and leaves `subscriberUp` 0. An `end` event sets `subscriberUp` to 0.
+- `stop()` removes the bus's listeners before quitting, so nothing fires after shutdown.
 - `getClusterCacheBus()` builds the default lazily. `createSubscriber` returns `getRedis()?.duplicate({ connectionName: 'breeze:cluster-cache' }) ?? null`, guarding `typeof redis.duplicate === 'function'` like `agentWs.ts:351`.
 - `stop()` calls `quit()` on the subscriber (falling back to `disconnect()`), and resets `subscribed`.
 
@@ -433,16 +448,18 @@ export interface HotPathTtlCacheOptions {
   maxEntries: number;
   /**
    * W05 (#8144): also drop this cache's entries on every other API instance.
-   * `true` uses the process bus; tests pass their own. Keys must be strings (ids only).
+   * `true` registers in clusterCacheRegistry and publishes through getClusterCacheBus()
+   * resolved at publish time (D12); `{ bus }` attaches to that bus (integration tests).
+   * Keys must be strings (ids only).
    */
   cluster?: true | { bus: ClusterCacheBus };
 }
 ```
 
 Behaviour:
-- Constructor: when `cluster` is set, `bus.attach(this)` and `registerCacheSizeSource(name, () => this.size)`. Size sources are registered for every cache, cluster or not.
+- Constructor: `cluster: true` → `registerClusterCache(this)` (leaf registry, D12); `cluster: { bus }` → `bus.attach(this)`. Every cache, cluster or not, calls `registerCacheSizeSource(name, () => this.size)`.
 - `invalidate(key?)`: unchanged. **Local only.** The bus and the test reset registry call it.
-- `invalidateAroundCommit(key?)`: unchanged local behaviour, plus, for a cluster cache, `runAfterDbContextCommit(\`hotPathCache.${name}.publish\`, () => void bus.publish(name, key ?? null))`. Throws `TypeError` if `key` is defined and not a string.
+- `invalidateAroundCommit(key?)`: first, for a cluster cache, if `key` is defined and not a string, log `[clusterCache] non-string key` and continue with `key = undefined` (whole cache; D10). Then the unchanged local behaviour, plus, for a cluster cache, `runAfterDbContextCommit(\`hotPathCache.${name}.publish\`, () => void resolveBus().publish(name, key ?? null))`, where `resolveBus()` is the explicit bus or `getClusterCacheBus()` at that moment.
 - `getOrLoad`: `recordCacheLookup(name, 'bypass')` inside a DB context; `'hit'` on a live entry; `'miss'` before a load.
 - `DeferredCacheFills.through`: `'hit'` on a `peek` hit; `'miss'` when the miss is cacheable, `'bypass'` when it is not.
 - Update the class doc comment: replace "Invalidation is process-local: another API instance keeps its entry until the TTL expires" with the cluster rule, and add "A cluster cache publishes only from `invalidateAroundCommit`, and only after the outermost transaction commits".
@@ -456,8 +473,8 @@ Extend the `vi.mock('../db', …)` block with `runAfterDbContextCommit`. Inside 
 3. `invalidateAroundCommit()` publishes `key: null`.
 4. Inside a context: no publish until the commit list is flushed; then exactly one. If the list is discarded (rollback), no publish ever, but the local entry is still dropped (unchanged behaviour).
 5. A non-cluster cache never publishes.
-6. `invalidateAroundCommit(42 as never)` on a cluster cache throws `TypeError`.
-7. Two cluster caches with the same name on one bus: the second constructor throws.
+6. `invalidateAroundCommit(42 as never)` on a cluster cache does not throw, clears the whole local cache, and publishes `key: null`.
+7. A `cluster: true` cache publishes through whatever bus `__setClusterCacheBusForTests` installed **after** the cache was constructed (D12). Two `cluster: true` caches with the same name: the second replaces the first in the registry, no throw.
 8. Lookup counters: a hit, a miss and an in-context bypass each move `breeze_hot_path_cache_lookups_total` for that cache name (read with `metricsRegistry.getSingleMetricAsString`).
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -498,7 +515,7 @@ Tests:
 3. **Publish waits for COMMIT.** Inside `withSystemDbAccessContext(async () => { … })`: call `cacheA.invalidateAroundCommit('org-1')`, then publish a sentinel straight through `busA.publish(name, 'sentinel')` and wait until B applies it, then assert `cacheB.peek('org-1')` is still defined (the queued publish has not run). After the context returns, `waitUntil` B drops `org-1` within 1 s.
 4. **Rollback publishes nothing.** Same as 3, but the context throws after `invalidateAroundCommit`. After it rejects, send a sentinel and wait for it. Then `cacheB.peek('org-1')` is still defined.
 5. **An in-flight load on B is not stored.** `cacheB.getOrLoad('org-3', loader)` where the loader awaits a deferred promise. While it waits, `cacheA.invalidateAroundCommit('org-3')`, and wait until `breeze_cluster_cache_invalidations_received_total{cache=name,result="applied"}` moves (or poll a test-only hook). Resolve the loader with `'stale'`. The `getOrLoad` call returns `'stale'` to its caller, and `cacheB.peek('org-3')` is `undefined`.
-6. **Self-echo is ignored.** After test 1, `received_total{result="self"}` on A moved and A's `applied` count for that name did not.
+6. **Self-echo is ignored.** Wrap `cacheA.invalidate` and `cacheB.invalidate` in `vi.spyOn` before test 1's write. After B has applied it: `cacheB.invalidate` was called once with `'org-1'`; `cacheA.invalidate` was called only by A's own `invalidateAroundCommit` (twice: the immediate drop and the after-exit drop), never a third time from its own echo. Do not use the Prometheus series to tell A from B: both buses share one process registry and the same `cache` label.
 7. **Reconnect resyncs.** Seed `org-1` on B. Force B's subscriber to drop and reconnect (`subscriberB.disconnect(true)`; ioredis reconnects and re-emits `ready`). `waitUntil` `cacheB.size === 0` within 5 s, and `breeze_cluster_cache_resyncs_total` moved.
 8. **Degraded: Redis unavailable.** A bus whose `getPublisher` returns `null` and whose `createSubscriber` returns `null`: `start()` resolves `'unavailable'`; `invalidateAroundCommit('org-1')` on its cache drops the local entry, does not throw, and `published_total{outcome="unavailable"}` moved.
 9. **Timing evidence.** Test 1 logs the measured elapsed ms with `console.info('[clusterCache.it] A→B invalidation ms=', ms)` so the PR can quote it.
@@ -513,7 +530,7 @@ With the test stack up (`pnpm test-stack up`, then source its env file per `docs
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/clusterCache.integration.test.ts
 ```
 
-Expected first: PASS, 1 file, 8 tests. Then make each mutation, run, see the named test fail, and revert:
+Expected first: PASS, 1 file, 8 tests (item 9 is a log line inside test 1, not a test). Then make each mutation, run, see the named test fail, and revert:
 - In `hotPathCache.ts`, publish with `runAfterDbContextExit` instead of `runAfterDbContextCommit` → test 4 fails.
 - Publish synchronously inside `invalidateAroundCommit` (no defer) → test 3 fails.
 - In the bus handler, replace `target.invalidate(key)` with a raw delete (expose a test-only `deleteEntry`, or temporarily call `invalidate` without bumping generation) → test 5 fails.
@@ -552,7 +569,9 @@ Each task below is the same shape:
 3. **Comment:** update the cache's doc comment. Replace "process-local invalidation only until W1b" and "other API instances … up to one TTL" with: "Writers below invalidate every API instance within about 1 s through the cluster bus (W05). Writers not listed rely on the TTL."
 4. Run the test file plus `src/services/hotPathCache.test.ts`. Typecheck. Commit one cache per commit: `feat(api): cluster-invalidate <cache name> (#8144)`.
 
-Construction-order note: `agentOrgSettingsCache.ts` and `manifestSigning.ts` build their caches at module load, so `cluster: true` resolves the bus at construction. `getClusterCacheBus()` must therefore be safe to call at import time: it must not touch Redis until `publish` or `start`. Task 2's lazy default covers this. In unit tests, call `__setClusterCacheBusForTests` **before** importing the module under test (use `vi.hoisted` + dynamic `import()`), or have the test bus re-attach by name. Settle this once in Task 6 and reuse it.
+Construction-order note: `agentOrgSettingsCache.ts` and `manifestSigning.ts` build their caches at module load. Because `cluster: true` resolves the bus at publish time (D12), a test can install its recording bus with `__setClusterCacheBusForTests(bus)` in `beforeEach`, after the imports, and reset it with `null` in `afterEach`.
+
+**Commit-ordering check (every task below, and Task 12).** "Publish only after commit" holds only when the invalidator runs inside a DB context opened by `withDbAccessContext`/`withSystemDbAccessContext`, or after the write's context has already exited. `runAfterDbContextCommit` runs at once when no context is held, so a call inside a bare `db.transaction(...)` or a self-managed route **before** its commit would publish pre-commit. For each publishing writer: confirm which of the two cases it is (record it in the task's commit message), and add one unit assertion: an in-context writer's publish appears only after the modelled commit; an outside-context writer's publish is ordered after the write call. If a writer is neither, move its invalidator after the commit.
 
 #### Task 6: C1 `orgAgentUpdateConfigCache` (spec: per-org update config)
 
@@ -577,8 +596,8 @@ Construction-order note: `agentOrgSettingsCache.ts` and `manifestSigning.ts` bui
 - **Files:** as Task 6; plus `apps/api/src/services/orgMerge.ts` and its test.
 - **Triggers:**
   - `invalidateOrgPolicyProbeCache(orgId?)` from `POST /policies/:id/deactivate` (`routes/policyManagement/actions.ts:92`; `key: null` for a partner-wide policy).
-  - **New:** org merge re-points `automation_policies` and devices from the loser org to the survivor, and today invalidates nothing. Step 0: `grep -n "withSystemDbAccessContext" apps/api/src/services/orgMerge.ts` and find the transaction that runs the registry repoint (around `:548-612` at `6859e6f749`). At the end of that transaction's callback, after the repoint and before it returns, call `invalidateAgentOrgSettingsCaches(loserId)`, `invalidateAgentOrgSettingsCaches(survivorId)`, `invalidateOrgPolicyProbeCache(loserId)` and `invalidateOrgPolicyProbeCache(survivorId)`. Because they use `invalidateAroundCommit`, the publishes run only if the merge commits.
-- **Tests:** `invalidateOrgPolicyProbeCache('org-1')` publishes `('org-policy-probe', 'org-1')`, and with no argument publishes `null`. In the orgMerge unit test (it already mocks `dbModule.withSystemDbAccessContext`), assert the four invalidator calls happen inside the repoint transaction's callback (spy on the exports of `agentOrgSettingsCache`).
+  - **New:** org merge re-points `automation_policies` (`orgMergeRegistry.ts:776`), `unifi_collectors` and devices from the loser org to the survivor, and keeps the survivor's `pam_org_config` (`:499`, `keep-survivor`). It already calls `invalidateAgentTenantCache([loser.id])` (`orgMerge.ts:515`, a different cache) but none of the hot-path caches. Step 0: confirm those registry rows, then find the repoint transaction: `executeOrgMerge` (`orgMerge.ts:1116`), whose `withSystemDbAccessContext` opens at `:1164` and calls `runPolicy` at `:1238` (at `6859e6f749`). At the end of that callback, after the repoint, call for both `loserId` and `survivorId`: `invalidateAgentOrgSettingsCaches(id)` (C1–C3), `invalidateOrgPolicyProbeCache(id)` (C4) and `invalidateOrgPamFallbackCache(id)` (C5; Task 10 adds the helper, so do Task 10 first or add it here); plus `agentCollectorAbsenceCache.invalidateAroundCommit()` once (C8, whole cache: a merge turns loser-org keys into survivor-org keys). Because they use `invalidateAroundCommit`, the publishes run only if the merge commits.
+- **Tests:** `invalidateOrgPolicyProbeCache('org-1')` publishes `('org-policy-probe', 'org-1')`, and with no argument publishes `null`. In the orgMerge unit test (it already mocks `dbModule.withSystemDbAccessContext`), assert the invalidator calls above happen inside the repoint transaction's callback (spy on the exports of `agentOrgSettingsCache` and on `agentCollectorAbsenceCache.invalidateAroundCommit`).
 
 #### Task 10: C5 `orgPamFallbackCache` (no writer today)
 
@@ -609,7 +628,7 @@ These two caches have one invalidator and one out-of-process writer, so they sha
 
 C1–C3 are derived from `organizations.settings` and `partners.settings`. 28 non-test files run `.update(organizations)` or `.update(partners)` [V, grep at `6859e6f749`]. Most write other columns or other `settings` keys. Auditing them by judgment once does not stop the next one.
 
-- [ ] **Step 1: Write the test.** Walk `apps/api/src` and `apps/api/scripts` (skip `*.test.ts` and `__tests__/`). Collect every file matching `/\.update\((organizations|partners)\)/`. Compare against a classified allowlist in the test:
+- [ ] **Step 1: Write the test.** Walk `apps/api/src` and `apps/api/scripts` (skip `*.test.ts` and `__tests__/`). Collect every file matching `/\.update\(\s*(organizations|partners)\b/` (whitespace and newlines allowed) **or** raw SQL `/UPDATE\s+(organizations|partners)\b/i`. Expect about 28 at `6859e6f749`; a multiline grep also hit `services/orgImport/index.ts`, so classify whatever the walk returns. Compare against a classified allowlist in the test:
 
 ```ts
 type Classification =
@@ -623,9 +642,9 @@ const WRITERS: Record<string, Classification> = {
 };
 ```
 
-Assert: (a) the set of matching files equals the allowlist's keys (a new writer fails with "classify <file> in orgSettingsWriters.contract.test.ts"); (b) every `invalidates` file's source contains its `via` name.
+Assert: (a) the set of matching files equals the allowlist's keys (a new writer fails with "classify <file> in orgSettingsWriters.contract.test.ts"); (b) every `invalidates` file's source contains a call `${via}(`, not just the name (an import alone does not count).
 
-- [ ] **Step 2: Classify.** Run it; it fails listing every unclassified file. Open each one and classify it. A file that **does** write one of the agent-relevant `settings` keys and does not invalidate is a bug: add `invalidateAgentOrgSettingsCaches(orgId)` (inside its transaction, so the publish waits for commit), classify it `invalidates`, and list it in the PR body. Expected candidates to check carefully: `services/partnerActivation.ts`, `routes/agents/enrollment.ts:801`, `modules/mcpInvites/tools/configureDefaults.ts:91`, `services/orgArchive.ts`, `services/tenantOffboarding.ts`.
+- [ ] **Step 2: Classify.** Run it; it fails listing every unclassified file. Open each one and classify it. A file that **does** write one of the agent-relevant `settings` keys and does not invalidate is a bug: add `invalidateAgentOrgSettingsCaches(orgId)` inside a held DB context (`withDbAccessContext`/`withSystemDbAccessContext`, not a bare `db.transaction`) or after its commit (see the commit-ordering check above), classify it `invalidates`, and list it in the PR body. Expected candidates to check carefully: `services/partnerActivation.ts`, `routes/agents/enrollment.ts:801`, `modules/mcpInvites/tools/configureDefaults.ts:91`, `services/orgArchive.ts`, `services/tenantOffboarding.ts`.
 - [ ] **Step 3: Mutation red.** Add a dummy `.update(organizations)` line to a scratch copy of an allowlisted-free file under `src/`, run, see the failure name it, delete it.
 - [ ] **Step 4: Run** `cd apps/api && npx vitest run src/__tests__/orgSettingsWriters.contract.test.ts` (PASS, 1 file), typecheck, commit (`test(api): ratchet org/partner settings writers onto the cache invalidators (#8144)`).
 
@@ -638,7 +657,7 @@ Assert: (a) the set of matching files equals the allowlist's keys (a new writer 
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts
 ```
 
-Expected: PASS with **no edit** to its constants (steady 14 statements, 2 transactions). The cluster layer adds Redis work on writes only.
+Expected: PASS with **no edit** to its assertions (steady ≤15 statements at `:824`, warm 14 at `:828`, `ROUTE_ONLY_STEADY_HEARTBEAT_TX = 2`). The cluster layer adds Redis work on writes only.
 
 - [ ] **Step 3: Affected unit suites** (small batches; the host may be loaded):
 
@@ -682,6 +701,7 @@ cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/inte
 
 **Merge Danger (for the implementation PR):**
 - **Door:** two-way. Revert the PR. No schema, no data, no agent change, no env var. With one API instance (today's topology) the only visible change is metrics plus one extra Redis connection.
+- **Worker processes** do not subscribe (D8); any cache read there stays TTL-only, as today.
 - **Blast radius:** freshness of heartbeat-delivered config (update policy, topology flags, helper flag, policy probe, PAM fallback, trust keyset, delegations, collector absence) on every API instance. Failure modes: subscriber down → today's TTL-only behaviour; a publish that ran before commit → a stale value for one TTL on other instances (guarded by Task 4 tests 3–4); a boot that waits on Redis → bounded at 1 s (Task 5).
 
 ## Rollout
@@ -692,8 +712,9 @@ Server-side only; ships with the next API release. No flag. After deploy, on eac
 
 1. Spec W4: classify the other per-process caches (`agentAuthNegativeCache`, partner scope-policy and allowlist caches, module-level `Map`s) and move the cluster-unsafe ones onto `cluster: true`.
 2. With W07 hit-rate data, revisit the TTLs. With cross-instance invalidation, the 60 s TTLs on C1–C4 and C6–C7 are now a backstop for writers outside the ratchet, and could be longer.
-3. If production shows the subscriber timing out at boot, retry `start()` when Redis recovers (the boot sequence's existing "Redis came back" hook, `index.ts` ~405-430).
+3. If production shows the subscriber failing (not timing out) at boot, retry `start()` when Redis recovers (the boot sequence's existing "Redis came back" hook, `index.ts` ~405-430). A timeout already recovers on its own (D9).
 4. #8257 (device-keyed Redis policy caches bound to org) stays open and separate.
+5. Check whether any `BREEZE_ROLE=worker` code path reads C1–C8 (for example via `manifestSigning`). If one does, start the subscriber from `worker.ts` too.
 
 ## Self-review
 
