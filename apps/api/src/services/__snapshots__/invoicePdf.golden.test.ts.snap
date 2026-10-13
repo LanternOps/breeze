@@ -1,0 +1,905 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`invoice renderers — golden (default line-detail settings) > HTML is unchanged (taxed) 1`] = `
+"<!DOCTYPE html>
+<html><head><meta charset="utf-8" /><title>Invoice INV-2026-0042</title></head>
+<body style="margin:0;background:#f9fafb;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:680px;margin:0 auto;padding:24px;">
+    <div style="background:#ffffff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;">
+      <div style="padding:24px;border-bottom:4px solid #0ea5e9;display:flex;justify-content:space-between;align-items:center;">
+        <div><div style="font-size:22px;font-weight:700;color:#0ea5e9;">Example MSP</div></div>
+        <div style="text-align:right;">
+          <div style="font-size:20px;font-weight:700;color:#111827;">INVOICE</div>
+          <div style="font-size:13px;color:#6b7280;">INV-2026-0042</div>
+        </div>
+      </div>
+      <div style="padding:24px;display:flex;justify-content:space-between;gap:24px;">
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">From</div>
+          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">Example MSP</div>
+          
+          
+          
+          
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">Bill to</div>
+          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">An hourly client</div>
+          <div style="font-size:13px;color:#4b5563;">1 Example Way</div><div style="font-size:13px;color:#4b5563;">Springfield, IL, 62704</div><div style="font-size:13px;color:#4b5563;">US</div>
+          
+          
+        </div>
+        <div style="text-align:right;font-size:13px;color:#4b5563;">
+          <div>Issued: Sep 30, 2026</div>
+          <div>Due: Oct 30, 2026</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;padding:0 24px;">
+        <thead>
+          <tr>
+            <th style="padding:8px;text-align:left;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Description</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Qty</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Unit price</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Tax</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Amount</th>
+          </tr>
+        </thead>
+        <tbody><tr><td colspan="5" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">Ticket #1042: Printer offline <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">Hardware</span></td></tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Replaced fuser unit</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">&mdash;</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Diagnosed paper jam<div style="font-size:11px;color:#6b7280;margin-top:2px;">1.83 h worked · 1.50 h billed</div></td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1.5</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">&mdash;</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$150.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Tested print queue</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">0.5</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">&mdash;</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$50.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Fuser unit</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">$8.50</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Onsite visit<div style="font-size:11px;color:#6b7280;margin-top:2px;">Travel and setup</div></td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$75.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">&mdash;</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$75.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Block hours overage</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1.2</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        <td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">&mdash;</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$120.00</td>
+      </tr></tbody>
+      </table>
+      <div style="padding:16px 24px;display:flex;justify-content:flex-end;">
+        <table style="width:280px;border-collapse:collapse;">
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Subtotal</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">$595.00</td></tr>
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Tax (8.50%)</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">$8.50</td></tr>
+          <tr><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;border-top:2px solid #e5e7eb;">Total</td><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;text-align:right;border-top:2px solid #e5e7eb;">$603.50</td></tr>
+          
+        </table>
+      </div>
+      <div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">Thanks for your business</div>
+      
+      
+      <div style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">Net 30.</div>
+    </div>
+  </div>
+</body></html>"
+`;
+
+exports[`invoice renderers — golden (default line-detail settings) > HTML is unchanged (untaxed) 1`] = `
+"<!DOCTYPE html>
+<html><head><meta charset="utf-8" /><title>Invoice INV-2026-0042</title></head>
+<body style="margin:0;background:#f9fafb;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:680px;margin:0 auto;padding:24px;">
+    <div style="background:#ffffff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;">
+      <div style="padding:24px;border-bottom:4px solid #0ea5e9;display:flex;justify-content:space-between;align-items:center;">
+        <div><div style="font-size:22px;font-weight:700;color:#0ea5e9;">Example MSP</div></div>
+        <div style="text-align:right;">
+          <div style="font-size:20px;font-weight:700;color:#111827;">INVOICE</div>
+          <div style="font-size:13px;color:#6b7280;">INV-2026-0042</div>
+        </div>
+      </div>
+      <div style="padding:24px;display:flex;justify-content:space-between;gap:24px;">
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">From</div>
+          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">Example MSP</div>
+          
+          
+          
+          
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">Bill to</div>
+          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">An hourly client</div>
+          <div style="font-size:13px;color:#4b5563;">1 Example Way</div><div style="font-size:13px;color:#4b5563;">Springfield, IL, 62704</div><div style="font-size:13px;color:#4b5563;">US</div>
+          
+          
+        </div>
+        <div style="text-align:right;font-size:13px;color:#4b5563;">
+          <div>Issued: Sep 30, 2026</div>
+          <div>Due: Oct 30, 2026</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;padding:0 24px;">
+        <thead>
+          <tr>
+            <th style="padding:8px;text-align:left;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Description</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Qty</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Unit price</th>
+            
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Amount</th>
+          </tr>
+        </thead>
+        <tbody><tr><td colspan="4" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">Ticket #1042: Printer offline <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">Hardware</span></td></tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Replaced fuser unit</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Diagnosed paper jam<div style="font-size:11px;color:#6b7280;margin-top:2px;">1.83 h worked · 1.50 h billed</div></td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1.5</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$150.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Tested print queue</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">0.5</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$50.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Fuser unit</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Onsite visit<div style="font-size:11px;color:#6b7280;margin-top:2px;">Travel and setup</div></td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$75.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$75.00</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">Block hours overage</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">1.2</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$100.00</td>
+        
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">$120.00</td>
+      </tr></tbody>
+      </table>
+      <div style="padding:16px 24px;display:flex;justify-content:flex-end;">
+        <table style="width:280px;border-collapse:collapse;">
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Subtotal</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">$595.00</td></tr>
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Tax</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">$0.00</td></tr>
+          <tr><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;border-top:2px solid #e5e7eb;">Total</td><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;text-align:right;border-top:2px solid #e5e7eb;">$595.00</td></tr>
+          
+        </table>
+      </div>
+      <div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">Thanks for your business</div>
+      
+      
+      <div style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">Net 30.</div>
+    </div>
+  </div>
+</body></html>"
+`;
+
+exports[`invoice renderers — golden (default line-detail settings) > PDF text, positions and page count are unchanged (taxed) 1`] = `
+{
+  "pages": 1,
+  "text": [
+    {
+      "page": 0,
+      "text": "Example MSP",
+      "x": 50,
+      "y": 64.36,
+    },
+    {
+      "page": 0,
+      "text": "INVOICE",
+      "x": 495.66,
+      "y": 59.18,
+    },
+    {
+      "page": 0,
+      "text": "INV-2026-0042",
+      "x": 411.26,
+      "y": 80.36,
+    },
+    {
+      "page": 0,
+      "text": "FROM",
+      "x": 50,
+      "y": 126.462,
+    },
+    {
+      "page": 0,
+      "text": "Example MSP",
+      "x": 50,
+      "y": 140.616,
+    },
+    {
+      "page": 0,
+      "text": "BILL TO",
+      "x": 322.404,
+      "y": 126.462,
+    },
+    {
+      "page": 0,
+      "text": "An hourly client",
+      "x": 322.404,
+      "y": 140.616,
+    },
+    {
+      "page": 0,
+      "text": "1 Example Way",
+      "x": 322.404,
+      "y": 155.18,
+    },
+    {
+      "page": 0,
+      "text": "Springfield, IL, 62704",
+      "x": 322.404,
+      "y": 168.18,
+    },
+    {
+      "page": 0,
+      "text": "US",
+      "x": 322.404,
+      "y": 181.18,
+    },
+    {
+      "page": 0,
+      "text": "Issued: Sep 30, 2026",
+      "x": 322.404,
+      "y": 194.18,
+    },
+    {
+      "page": 0,
+      "text": "Due: Oct 30, 2026",
+      "x": 322.404,
+      "y": 208.18,
+    },
+    {
+      "page": 0,
+      "text": "DESCRIPTION",
+      "x": 50,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "QTY",
+      "x": 265.3056,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "UNIT PRICE",
+      "x": 323.7625,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "TAX",
+      "x": 442.371,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "AMOUNT",
+      "x": 507.982,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "Ticket #1042: Printer offline",
+      "x": 50,
+      "y": 265.821,
+    },
+    {
+      "page": 0,
+      "text": "Category: Hardware",
+      "x": 50,
+      "y": 277.408,
+    },
+    {
+      "page": 0,
+      "text": "Replaced fuser unit",
+      "x": 50,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 277.2216,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 335.792,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "",
+      "x": 448.606,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 509.14,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "Diagnosed paper jam",
+      "x": 50,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "1.83 h worked · 1.50 h billed",
+      "x": 50,
+      "y": 321.968,
+    },
+    {
+      "page": 0,
+      "text": "1.5",
+      "x": 268.8816,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 335.792,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "",
+      "x": 448.606,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "$150.00",
+      "x": 509.14,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "Tested print queue",
+      "x": 50,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "0.5",
+      "x": 268.8816,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 335.792,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "",
+      "x": 448.606,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "$50.00",
+      "x": 514.7,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "Fuser unit",
+      "x": 50,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 277.2216,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 335.792,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "$8.50",
+      "x": 433.586,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 509.14,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "Onsite visit",
+      "x": 50,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "Travel and setup",
+      "x": 50,
+      "y": 389.088,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 277.2216,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "$75.00",
+      "x": 341.352,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "",
+      "x": 448.606,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "$75.00",
+      "x": 514.7,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "Block hours overage",
+      "x": 50,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "1.2",
+      "x": 268.8816,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 335.792,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "",
+      "x": 448.606,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "$120.00",
+      "x": 509.14,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "Subtotal",
+      "x": 277.8288,
+      "y": 439.725,
+    },
+    {
+      "page": 0,
+      "text": "$595.00",
+      "x": 509.14,
+      "y": 439.725,
+    },
+    {
+      "page": 0,
+      "text": "Tax (8.50%)",
+      "x": 277.8288,
+      "y": 453.725,
+    },
+    {
+      "page": 0,
+      "text": "$8.50",
+      "x": 520.26,
+      "y": 453.725,
+    },
+    {
+      "page": 0,
+      "text": "Total",
+      "x": 277.8288,
+      "y": 470.597,
+    },
+    {
+      "page": 0,
+      "text": "$603.50",
+      "x": 494.684,
+      "y": 470.597,
+    },
+    {
+      "page": 0,
+      "text": "NOTES",
+      "x": 50,
+      "y": 501.007,
+    },
+    {
+      "page": 0,
+      "text": "Thanks for your business",
+      "x": 50,
+      "y": 513.725,
+    },
+    {
+      "page": 0,
+      "text": "Net 30.",
+      "x": 50,
+      "y": 738.352,
+    },
+  ],
+}
+`;
+
+exports[`invoice renderers — golden (default line-detail settings) > PDF text, positions and page count are unchanged (untaxed) 1`] = `
+{
+  "pages": 1,
+  "text": [
+    {
+      "page": 0,
+      "text": "Example MSP",
+      "x": 50,
+      "y": 64.36,
+    },
+    {
+      "page": 0,
+      "text": "INVOICE",
+      "x": 495.66,
+      "y": 59.18,
+    },
+    {
+      "page": 0,
+      "text": "INV-2026-0042",
+      "x": 411.26,
+      "y": 80.36,
+    },
+    {
+      "page": 0,
+      "text": "FROM",
+      "x": 50,
+      "y": 126.462,
+    },
+    {
+      "page": 0,
+      "text": "Example MSP",
+      "x": 50,
+      "y": 140.616,
+    },
+    {
+      "page": 0,
+      "text": "BILL TO",
+      "x": 322.404,
+      "y": 126.462,
+    },
+    {
+      "page": 0,
+      "text": "An hourly client",
+      "x": 322.404,
+      "y": 140.616,
+    },
+    {
+      "page": 0,
+      "text": "1 Example Way",
+      "x": 322.404,
+      "y": 155.18,
+    },
+    {
+      "page": 0,
+      "text": "Springfield, IL, 62704",
+      "x": 322.404,
+      "y": 168.18,
+    },
+    {
+      "page": 0,
+      "text": "US",
+      "x": 322.404,
+      "y": 181.18,
+    },
+    {
+      "page": 0,
+      "text": "Issued: Sep 30, 2026",
+      "x": 322.404,
+      "y": 194.18,
+    },
+    {
+      "page": 0,
+      "text": "Due: Oct 30, 2026",
+      "x": 322.404,
+      "y": 208.18,
+    },
+    {
+      "page": 0,
+      "text": "DESCRIPTION",
+      "x": 50,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "QTY",
+      "x": 327.2156,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "UNIT PRICE",
+      "x": 390.6253,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "AMOUNT",
+      "x": 507.982,
+      "y": 241.103,
+    },
+    {
+      "page": 0,
+      "text": "Ticket #1042: Printer offline",
+      "x": 50,
+      "y": 265.821,
+    },
+    {
+      "page": 0,
+      "text": "Category: Hardware",
+      "x": 50,
+      "y": 277.408,
+    },
+    {
+      "page": 0,
+      "text": "Replaced fuser unit",
+      "x": 50,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 339.1316,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 402.6548,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 509.14,
+      "y": 291.485,
+    },
+    {
+      "page": 0,
+      "text": "Diagnosed paper jam",
+      "x": 50,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "1.83 h worked · 1.50 h billed",
+      "x": 50,
+      "y": 321.968,
+    },
+    {
+      "page": 0,
+      "text": "1.5",
+      "x": 330.7916,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 402.6548,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "$150.00",
+      "x": 509.14,
+      "y": 309.485,
+    },
+    {
+      "page": 0,
+      "text": "Tested print queue",
+      "x": 50,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "0.5",
+      "x": 330.7916,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 402.6548,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "$50.00",
+      "x": 514.7,
+      "y": 340.605,
+    },
+    {
+      "page": 0,
+      "text": "Fuser unit",
+      "x": 50,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 339.1316,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 402.6548,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 509.14,
+      "y": 358.605,
+    },
+    {
+      "page": 0,
+      "text": "Onsite visit",
+      "x": 50,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "Travel and setup",
+      "x": 50,
+      "y": 389.088,
+    },
+    {
+      "page": 0,
+      "text": "1",
+      "x": 339.1316,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "$75.00",
+      "x": 408.2148,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "$75.00",
+      "x": 514.7,
+      "y": 376.605,
+    },
+    {
+      "page": 0,
+      "text": "Block hours overage",
+      "x": 50,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "1.2",
+      "x": 330.7916,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "$100.00",
+      "x": 402.6548,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "$120.00",
+      "x": 509.14,
+      "y": 407.725,
+    },
+    {
+      "page": 0,
+      "text": "Subtotal",
+      "x": 277.8288,
+      "y": 439.725,
+    },
+    {
+      "page": 0,
+      "text": "$595.00",
+      "x": 509.14,
+      "y": 439.725,
+    },
+    {
+      "page": 0,
+      "text": "Tax",
+      "x": 277.8288,
+      "y": 453.725,
+    },
+    {
+      "page": 0,
+      "text": "$0.00",
+      "x": 520.26,
+      "y": 453.725,
+    },
+    {
+      "page": 0,
+      "text": "Total",
+      "x": 277.8288,
+      "y": 470.597,
+    },
+    {
+      "page": 0,
+      "text": "$595.00",
+      "x": 494.684,
+      "y": 470.597,
+    },
+    {
+      "page": 0,
+      "text": "NOTES",
+      "x": 50,
+      "y": 501.007,
+    },
+    {
+      "page": 0,
+      "text": "Thanks for your business",
+      "x": 50,
+      "y": 513.725,
+    },
+    {
+      "page": 0,
+      "text": "Net 30.",
+      "x": 50,
+      "y": 738.352,
+    },
+  ],
+}
+`;
