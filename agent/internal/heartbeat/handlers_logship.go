@@ -69,6 +69,16 @@ func handleSetLogLevel(_ *Heartbeat, cmd Command) tools.CommandResult {
 			"level", level, "error", st.PersistError)
 	}
 
+	if st.Raised {
+		// Canary (#8610): exactly one Info line per raise, on the persisted
+		// and in-memory paths alike. It ships at the raised level, so the
+		// server can tell "logs not arriving" from an agent with nothing to
+		// say. Lowering or re-stating the base level emits nothing.
+		log.Info("log shipping level raised",
+			"level", st.Level, "baseLevel", st.BaseLevel,
+			"expiresAt", st.ExpiresAt.UTC().Format(time.RFC3339), "persisted", st.Persisted)
+	}
+
 	result := map[string]any{
 		// newLevel is kept for API builds that predate appliedLevel.
 		"newLevel":        st.Level,
