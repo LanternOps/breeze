@@ -297,6 +297,11 @@ type SecurityCapabilities struct {
 	// "agent too old" instead of "no data".
 	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
 	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	// RetainStateProtocolVersion (#8258) declares that this build honours
+	// HeartbeatResponse.RetainState (retain_state.go). The API sends
+	// retainState only to a beat declaring exactly 1; any other value gets
+	// the legacy response shape.
+	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -8197,5 +8202,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		ConsentPromptProtocolVersion:     2,
 		IdentitySyncProtocolVersion:      identitySyncProtocolVersion,
 		WorkloadInventoryProtocolVersion: workloads.ProtocolVersion,
+		RetainStateProtocolVersion:       retainStateProtocolVersion,
 	}
 }
