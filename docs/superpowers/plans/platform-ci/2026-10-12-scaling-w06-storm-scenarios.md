@@ -44,7 +44,7 @@ The report stays `breeze.agentsim.report/v1`; the new sections are additive and 
 
 ## Review Focus
 
-1. **A curve that lies.** The reconnect curve must count *sockets that are actually open* (incremented when `serve` starts, decremented when it returns), not connect events. Test: Task 1 (gauge) and Task 6 (`TestRunStormDropSocketsShowsTroughAndRecovery`).
+1. **A curve that lies.** The reconnect curve must count *sockets that are actually open* (incremented when `serve` starts, decremented when it returns), not connect events. Test: Task 2 (`TestLiveGaugeFollowsTheSocket`), Task 6 (`TestRunStormShowsTroughAndRecovery`, a fake API kill) and Task 8 (`TestReconnectCurve`, deterministic).
 2. **Latency that hides failures.** `ObserveHTTP` records latency only for attempts that got a response. A storm where every heartbeat times out would show a fine p95. Expected: every per-phase latency block is reported next to its per-phase transport-error count and the event's logical-loss count, and the `heartbeat-p95` gate fails when both the storm and recovery phases have zero samples (losses are gated by `lost-pct`). Test: Task 8.
 3. **Exec safety.** Only `docker`; only `STORM_*` expansion; empty expansion refused; no shell. Test: Task 4.
 4. **A scheduler that drifts or overlaps.** Events run at offsets from the steady-window open; validation refuses a scenario whose events (with their 60 s `pre` window and `recovery`) overlap or run past `--duration`. Test: Task 4 and Task 5.
@@ -96,7 +96,7 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 | `breeze_nodejs_eventloop_lag_window_max_seconds` | 88 | Loop lag per sample |
 | `breeze_admission_level` | (W08) | Shed level; `0` = normal |
 
-`/metrics/scrape` accepts `Authorization: Bearer <METRICS_SCRAPE_TOKEN>`, with an optional IP allowlist (`routes/metrics.ts:1695-1709`, `services/metricsScrapeAuth.ts`). Caddy proxies `/metrics/*` to the API (`docker/Caddyfile.prod:249` pattern; the wt-stack Caddyfile is generated) [I: reachable through `baseUrl` in wt-stack with the allowlist unset — Task 11 Step 1; fallback `--scrape-url` to the stack's `apiUrl` origin].
+`/metrics/scrape` accepts `Authorization: Bearer <METRICS_SCRAPE_TOKEN>`, with an optional IP allowlist (`routes/metrics.ts:1695-1709`, `services/metricsScrapeAuth.ts`). The production Caddyfile proxies `/metrics/*` to the API (`docker/Caddyfile.prod:249`) [I: reachable through the wt-stack `baseUrl` with the allowlist unset — Task 11 Step 7.1; fallback `--scrape-url` to the stack's `apiUrl` origin].
 
 ### Not in scope, on purpose
 
@@ -150,7 +150,7 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 |---|---|---|---|
 | D1 | Where does fault scheduling live? | In Go (`scheduler.go`), driven by committed JSON scenario files; the shell only resolves container names | Testable red-first against the fake API; event times land in the same report as the curve, on the same clock. A shell scheduler would need a second clock and a merge step |
 | D2 | How does Go touch docker? | An `Executor` interface; `osExecutor` runs `exec.CommandContext` with a 90 s timeout; tests use a fake | Keeps the docker CLI out of unit tests; the allowlist and expansion are checked before any exec |
-| D3 | Timeline resolution | 1 s buckets of counts; latency in **per-phase** histograms (`pre`/`storm`/`recovery` per event) plus a per-second `heartbeatSlow` count (attempts over 1 s) | Per-second histograms would cost ~10 MB per route per 30 min. Counts give the curve's shape; per-phase histograms give exact p95/p99 |
+| D3 | Timeline resolution | 1 s buckets of counts; latency in **per-phase** histograms (`pre`/`storm`/`recovery` per event) plus a per-second `heartbeatSlow` count (attempts over 1 s — a descriptive bucket at the spec's G3 drain/failover figure, not a gate) | Per-second histograms would cost ~10 MB per route per 30 min. Counts give the curve's shape; per-phase histograms give exact p95/p99 |
 | D4 | What is "reconnected"? | Live sockets (`serve` running) sampled each timeline step, against the mean live count over the event's `pre` window (60 s before the start) | Connect events double-count flapping sockets; the gauge is what an operator sees as "agents online" |
 | D5 | Reconnect-curve numbers | `trough`; `t50S`/`t90S`/`t99S` = seconds from the event **end** until live ≥ 50/90/99 % of baseline (null if never); `peakConnectsPerSecond`; `connects`, `connectFailures`; `reconnectSpanS` = first to 99th-percentile reconnect after the end; `peakToMean` | t-from-end isolates recovery from hold time. Span and peak-to-mean are what W09 needs ("arrive spread over 120 s ±10 %") |
 | D6 | Error budget | Logical requests (after the agent's own retries) that ended in a transport error or status ≥ 400, per event window `[start, end+recovery]`, for heartbeats and for all routes; `crawl-config` 401/404 count as success (README: workspace module off) | Spec G5 is about requests that fail after retry. Attempt-level non-2xx are already in the route table |
@@ -567,31 +567,48 @@ func TestValidateRejectsAStormThatOverrunsTheWindow(t *testing.T) {
 `runner_test.go`:
 
 ```go
-func TestRunStormDropSocketsShowsTroughAndRecovery(t *testing.T) {
+// apiDownExec plays an API kill against the fake API: "docker kill" refuses
+// upgrades and drops every socket; "docker start" accepts upgrades again.
+type apiDownExec struct{ f *fakeAPI }
+
+func (e apiDownExec) Exec(_ context.Context, argv []string) (string, error) {
+	switch argv[1] {
+	case "kill":
+		e.f.setRejectWS(true)
+		e.f.dropSockets()
+	case "start":
+		e.f.setRejectWS(false)
+	}
+	return "", nil
+}
+
+func TestRunStormShowsTroughAndRecovery(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := runnerConfig(f, t.TempDir())
 	cfg.Commander.PerMinute = 0
-	cfg.Duration, cfg.Warmup = 4*time.Second, 200*ms
-	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{1500 * ms}, Recovery: Duration{1500 * ms},
-		Start: []Action{{Internal: ActionDropSockets}}}}}
+	cfg.Duration, cfg.Warmup = 6*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "kill", Events: []Event{{Name: "kill", At: Duration{1500 * ms}, Hold: Duration{500 * ms},
+		Recovery: Duration{3 * time.Second},
+		Start:    []Action{{Exec: []string{"docker", "kill", "api"}}},
+		End:      []Action{{Exec: []string{"docker", "start", "api"}}}}}}
 	cfg.StormPreWindow = 500 * ms // test-only; production is 60 s
-	cfg.TimelineStep = 100 * ms  // a 4 s run needs finer buckets than 1 s
+	cfg.TimelineStep = 100 * ms  // a 6 s run needs finer buckets than 1 s
+	cfg.executor = apiDownExec{f}
 	rep, err := Run(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Timeline == nil || rep.Storm == nil || len(rep.Storm.Events) != 1 {
+	if rep.Timeline == nil || rep.Storm == nil || len(rep.Storm.Events) != 1 || len(rep.Storm.Steps) != 2 {
 		t.Fatalf("storm sections missing: %+v", rep.Storm)
 	}
-	ev := rep.Storm.Events[0]
-	if ev.Reconnect.Baseline < 4 || ev.Reconnect.Connects < 5 {
-		t.Fatalf("reconnect block %+v (5 agents, every socket dropped once)", ev.Reconnect)
+	rc := rep.Storm.Events[0].Reconnect
+	if rc.Baseline != 5 || rc.Trough != 0 || rc.ConnectFailures == 0 {
+		t.Fatalf("5 sockets, all gone while upgrades are refused: %+v", rc)
 	}
-	if ev.Reconnect.T99S == nil || *ev.Reconnect.T99S > 1 {
-		t.Fatalf("an established drop redials at once; t99 %v", ev.Reconnect.T99S)
-	}
-	if rep.Storm.Steps[0].Internal != ActionDropSockets || rep.Storm.Steps[0].Argv != nil || !rep.Storm.Steps[0].OK {
-		t.Fatalf("internal step record %+v", rep.Storm.Steps[0])
+	// Refused connects back off 1 s ±30 % (the real agent's loop), so the
+	// fleet is back 0.2-2.8 s after the end action, never instantly.
+	if rc.T99S == nil || *rc.T99S < 0.2 || *rc.T99S > 2.8 {
+		t.Fatalf("t99 %v, want the backoff-shaped recovery", rc.T99S)
 	}
 }
 
@@ -611,14 +628,14 @@ func TestRunWithoutAStormHasNoStormSections(t *testing.T) {
 }
 ```
 
-(`t99` with 5 agents is the 5th socket back; an established drop redials at once, so 1 s is a loose bound at a 100 ms step. `ptr` in Task 8 is a one-line generic helper in `storm_report_test.go`.)
+(The fake executor turns the fake API into a killed API: refused upgrades produce a real trough and a backoff-shaped recovery, so this test fails if the curve counts connect events instead of live sockets. The `drop-sockets` internal action is covered by Task 3. `ptr` in Task 8 is a one-line generic helper in `storm_report_test.go`.)
 
 - [ ] **Step 2: Run them to verify they fail** — `go test -race -count=1 -run 'TestValidateRejectsAStorm|TestRunStorm|TestRunWithoutAStorm' ./tools/agentsim/sim/`. Expected: FAIL (`cfg.Storm` undefined).
 - [ ] **Step 3: Implement**
 
 - `Config`: `Storm *Scenario`, `StormPath string` (for the report), `StormPreWindow time.Duration` (default 60 s; unexported effect only in tests, but a field so tests can shorten it), `Timeline bool`, `TimelineStep time.Duration` (default 1 s), `ScrapeURL string`, `ScrapeToken string`, `ScrapeInterval time.Duration` (default 5 s), `Gates Gates`, `LegacyRetryFraction float64`, and a test-only `executor Executor` (nil = `osExecutor`).
 - `Validate`: with a storm, `Storm.FitsWindow(closeAt − open)` (open/close from `SteadyWindow()`), error text starts `--storm …`. `LegacyRetryFraction` in `[0,1]`. `ScrapeInterval ≥ 1 s` when scraping.
-- `Run`: when `cfg.Storm != nil || cfg.Timeline`, `rec.EnableTimeline(cfg.TimelineStep, cfg.Duration+cfg.TimelineStep)` and start a sampler goroutine that calls `rec.SampleLive(time.Now())` every step until `runCtx` ends. Build one `socketHub` and set `a.hub` on every agent. With a storm, start the `Scheduler` goroutine (`Internal: {drop-sockets: hub.CloseAll}`) at `start` with `windowOpen = start.Add(open)`, added to `wg`. Pool sampler: Task 7. `BuildReport` gets the scheduler's steps and events (Task 8).
+- `Run`: when `cfg.Storm != nil || cfg.Timeline`, `rec.EnableTimeline(cfg.TimelineStep, cfg.Duration+cfg.TimelineStep)` and start a sampler goroutine that calls `rec.SampleLive(time.Now())` every step until `runCtx` ends. Build one `socketHub` and set `a.hub` on every agent. With a storm, start the `Scheduler` goroutine (`Exec: cfg.executor`, falling back to `osExecutor{}`; `Internal: {drop-sockets: hub.CloseAll}`; `PreWindow: cfg.StormPreWindow`) at `start` with `windowOpen = start.Add(open)`, added to `wg`. Pool sampler: Task 7. `BuildReport` gets the scheduler's steps and events (Task 8).
 
 - [ ] **Step 4: Run the package.** The existing runner tests must pass untouched.
 - [ ] **Step 5: Commit** — `feat(agentsim): run storms inside the simulator run (#8145)`
@@ -853,9 +870,9 @@ func TestExitCodeForAFailedStormGate(t *testing.T) {
 
 ```go
 func TestLegacyTransportIgnoresRetryAfter(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32 // the handler runs on the server's goroutine; -race flags a plain int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		calls.Add(1)
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -865,12 +882,12 @@ func TestLegacyTransportIgnoresRetryAfter(t *testing.T) {
 	client.Transport = &stripRetryAfter{base: client.Transport}
 	cfg := httputil.RetryConfig{MaxRetries: 3, InitialDelay: 10 * ms, MaxDelay: 40 * ms, BackoffFactor: 2}
 	start := time.Now()
-	resp, err := httputil.Do(withLogicalRequest(context.Background()), client, http.MethodPost, srv.URL+"/api/v1/agents/a/process-sample", nil, nil, cfg)
+	resp, err := httputil.Do(withLogicalRequest(context.Background()), client, http.MethodPost, srv.URL+"/api/v1/agents/a/process-sample", nil, http.Header{}, cfg)
 	if err == nil {
 		_ = resp.Body.Close()
 	}
-	if calls != 4 || time.Since(start) > 2*time.Second {
-		t.Fatalf("legacy agent made %d attempts in %s; want 4 quick ones (Retry-After 30 ignored)", calls, time.Since(start))
+	if n := calls.Load(); n != 4 || time.Since(start) > 2*time.Second {
+		t.Fatalf("legacy agent made %d attempts in %s; want 4 quick ones (Retry-After 30 ignored)", n, time.Since(start))
 	}
 }
 ```
@@ -928,7 +945,7 @@ func TestCommittedScenariosLoad(t *testing.T) {
 | `socket-drop-client.json` | `socket-drop-client` at 3m: internal `drop-sockets`; recovery 3m |
 | `slow-loop.json` | `slow-loop` at 3m: `docker update --cpus ${STORM_CPUS} ${STORM_API}`; hold 5m; end `docker update --cpus 0 ${STORM_API}`; recovery 3m |
 | `stall.json` | `stall` at 3m: `docker pause ${STORM_API}`; hold 20s; end `docker unpause ${STORM_API}`; recovery 3m |
-| `storm-suite.json` | The four spec faults plus the stall in one run, each with its own pre/recovery: `slow-loop` 2m (hold 3m, rec 3m), `stall` 9m (hold 20s, rec 3m), `socket-drop` 14m30s (rec 3m), `api-kill` 18m30s (hold 5s, rec 4m), `rolling-deploy` 24m (rec 4m). Ends by 28m; run with `--duration 32m` plus ramp and warmup |
+| `storm-suite.json` | The four spec faults plus the stall in one run, each with its own pre/recovery: `slow-loop` 2m (hold 3m, rec 3m), `stall` 9m (hold 20s, rec 3m), `socket-drop` 14m30s (rec 3m), `api-kill` 18m30s (hold 5s, rec 4m), `rolling-deploy` 24m (rec 4m). Planned end 28m; `docker stop --time 30` can add up to 30 s of real exec time to `rolling-deploy`, so `--duration 32m` (window ≈ 29.5m after the 20 s ramp and 2m warmup) leaves that slack on purpose |
 
 - [ ] **Step 4: Write `storm.sh`**
 
@@ -942,7 +959,7 @@ func TestCommittedScenariosLoad(t *testing.T) {
 set -euo pipefail
 ```
 
-Behaviour: resolve `REPO`, `HERE`, `DESC=.breeze-stack.json`; source `.state/lab.env` the way `run.sh` does; resolve `PROJECT` and `svc()` exactly as the W08 README does; export `STORM_API="$(svc api)"`, `STORM_CADDY="$(svc caddy)"`, `STORM_CPUS="${STORM_CPUS:-0.5}"`, refusing to start when either container name is empty. Warn (not fail) when `METRICS_SCRAPE_TOKEN` is unset: the report's `pool` section will be empty. Start `admission-watch.sh watch` in the background **after** the token store exists (wait up to 10 min for `$AGENTSIM_STORE`), keep its PID, and `trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT` — never `pkill -f`. Run `"$HERE/run.sh" --storm "$HERE/storms/$1.json" "${@:2}"`, keep its exit code, then print `admission-watch.sh summarize <csv> <DB_POOL_MAX>` (pool max read with `docker exec "$STORM_API" printenv DB_POOL_MAX`, default 30), and exit with the simulator's code.
+Behaviour: resolve `REPO`, `HERE`, `DESC=.breeze-stack.json`; source `.state/lab.env` the way `run.sh` does; resolve `PROJECT` and `svc()` exactly as the W08 README does; export `STORM_API="$(svc api)"`, `STORM_CADDY="$(svc caddy)"`, `STORM_CPUS="${STORM_CPUS:-0.5}"`, refusing to start when either container name is empty. Warn (not fail) when `METRICS_SCRAPE_TOKEN` is unset: the report's `pool` section will be empty. Start `admission-watch.sh watch` in the background **after** the token store exists (wait up to 10 min for `$AGENTSIM_STORE`), keep its PID, and `trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT` — never `pkill -f`. Run `rc=0; "$HERE/run.sh" --storm "$HERE/storms/$1.json" "${@:2}" --report "$REPORT" || rc=$?` with `REPORT="$HERE/reports/storm-$1-$(date -u +%Y%m%dT%H%M%SZ).json"` (a repeated flag takes the last value, so this overrides `run.sh`'s own `--report`). Then print `admission-watch.sh summarize <csv> <DB_POOL_MAX>` (pool max read with `docker exec "$STORM_API" printenv DB_POOL_MAX`, default 30). Exit: `rc` when the report is missing or `rc` is not 0/1; otherwise `jq -e '.storm.pass // true' "$REPORT" >/dev/null || exit 3`, else `exit "$rc"`. **Why the shell reads the report:** `run.sh` is `exec go run …`, and `go run` prints `exit status 3` and exits **1**, so the binary's exit 3 (kept for direct use of a built binary) never reaches the shell.
 
 Check: `bash -n load-tests/agentsim/storm.sh && shellcheck load-tests/agentsim/storm.sh`.
 
@@ -967,10 +984,10 @@ Check: `bash -n load-tests/agentsim/storm.sh && shellcheck load-tests/agentsim/s
 | Spec / program requirement | Evidence |
 |---|---|
 | Kill the API | `api-kill.json`; Step 7 run, event `api-kill` |
-| Drop every socket | `socket-drop.json` (proxy) and `socket-drop-client.json` (client); Task 3, Task 6 test |
+| Drop every socket | `socket-drop.json` (proxy) and `socket-drop-client.json` (client); Task 3 `TestHubCloseAllDropsEverySocketAndTheyRedial` |
 | Inject a slow event loop | `slow-loop.json` (CPU throttle, named as a proxy) and `stall.json` (frozen process) |
 | Roll a deploy | `rolling-deploy.json` (one-instance baseline; W5c extends) |
-| Reconnect curve per scenario | `storm.events[].reconnect` (Task 8 `TestReconnectCurve`; Task 6 end-to-end) |
+| Reconnect curve per scenario | `storm.events[].reconnect` (Task 8 `TestReconnectCurve`; Task 6 `TestRunStormShowsTroughAndRecovery`) |
 | p95/p99 per scenario | `storm.events[].heartbeat.{pre,storm,recovery}` (Task 5, Task 8) |
 | Pool-size recovery | `storm.events[].pool.recoveryS`, `minEffectiveRatio` (Task 7, `TestPoolRecovery`) |
 | Error budget | `storm.events[].errors` (Task 2 outcomes, Task 8) |
@@ -997,7 +1014,7 @@ Check: `bash -n load-tests/agentsim/storm.sh && shellcheck load-tests/agentsim/s
 
 ## Self-review
 
-**Spec coverage (W0b).** Kill the API: `api-kill`. Drop every socket: `socket-drop` + `socket-drop-client`. Slow event loop: `slow-loop` (proxy, named) + `stall`. Roll a deploy: `rolling-deploy` (one-instance baseline, named). Reconnect curve: Task 8 `reconnectCurve`, Task 6 end-to-end. p95/p99: Task 5 phase histograms. Pool-size recovery: Task 7 sampler, Task 8 `poolBlock`. Error budget: Task 2 outcomes, Task 8 `errorBlock`. Consumers: W08's old-agent budget (Task 10), W1e's 30 s pool recovery and the program's "p95 ≤1 s, pool ≥80 %" (gate flags, Task 8/9), W09's spread metrics (D5). Dispatch asks: files, red-first test, commands and commit per task; no TBDs; Merge Danger; ownership table against W05/W07/W09; Todd gate named ("Gates").
+**Spec coverage (W0b).** Kill the API: `api-kill`. Drop every socket: `socket-drop` + `socket-drop-client`. Slow event loop: `slow-loop` (proxy, named) + `stall`. Roll a deploy: `rolling-deploy` (one-instance baseline, named). Reconnect curve: Task 8 `reconnectCurve`, Task 6 `TestRunStormShowsTroughAndRecovery`. p95/p99: Task 5 phase histograms. Pool-size recovery: Task 7 sampler, Task 8 `poolBlock`. Error budget: Task 2 outcomes, Task 8 `errorBlock`. Consumers: W08's old-agent budget (Task 10), W1e's 30 s pool recovery and the program's "p95 ≤1 s, pool ≥80 %" (gate flags, Task 8/9), W09's spread metrics (D5). Dispatch asks: files, red-first test, commands and commit per task; no TBDs; Merge Danger; ownership table against W05/W07/W09; Todd gate named ("Gates").
 
 **Placeholder scan.** No TBD. Three "verify, then adapt" points, all in Task 11 Step 7: the scrape path through Caddy (fallback `--scrape-url`, else stop and report), `docker kill` versus the restart policy (document, no code change), and `docker update --cpus 0` (fallback to the host CPU count). The `holdHeartbeat` fake hook in Task 2 and the `Requests` bucket field in Task 8 are introduced in the task that first needs them.
 
