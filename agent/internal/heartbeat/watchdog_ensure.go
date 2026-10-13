@@ -122,6 +122,52 @@ func (h *Heartbeat) EnableWatchdogEnsure() {
 		now:          time.Now,
 		rnd:          rand.Float64,
 	}
+	h.seedWatchdogInstallReport()
+}
+
+// seedWatchdogInstallReport sets the in-memory report from what is already on
+// disk, so the first heartbeat after a restart carries the persisted state.
+// Without it the report is nil until the server next signals
+// watchdogUpgradeTo; the API reads an absent field as healthy, clears the
+// devices.watchdog_install_* columns, and the next beat restarts `since`
+// (#8672).
+//
+// It mirrors the read-only prefix of ensureWatchdog / ensureMissingWatchdog,
+// in the same order, so the seeded state is what the first evaluation would
+// report. It never downloads, takes a lock, or writes or resets the state
+// file. A registered watchdog seeds nothing: a stale record must not raise a
+// banner that no later signal would clear. A missing, corrupt or unreadable
+// record also seeds nothing; the first evaluation handles it.
+func (h *Heartbeat) seedWatchdogInstallReport() {
+	e := h.watchdogEnsure
+	if e == nil {
+		return
+	}
+	switch e.detect() {
+	case watchdoginstall.StatusMissing:
+	case watchdoginstall.StatusUnsupported:
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallUnsupported})
+		return
+	default: // registered, or unknown
+		return
+	}
+	if isDevAgentVersion(h.agentVersion) {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallGaveUp, LastErrorClass: string(watchdoginstall.ClassDevBuild)})
+		return
+	}
+	if e.optedOut() {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallOptedOut})
+		return
+	}
+	if !h.autoUpdate() {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallDisabledByPolicy})
+		return
+	}
+	rec, corrupt, err := e.store.Load()
+	if err != nil || corrupt || rec.Attempts == 0 {
+		return
+	}
+	e.setReportFromRecord(rec)
 }
 
 // watchdogInstallReport returns a copy of the current report, or nil when there
