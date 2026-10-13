@@ -976,9 +976,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // EDR provider framework W01 (#8164). 'global': its import closure reaches no socket-local
-    // dispatch (no alerts/events until W02 — re-verify placement then with
-    // workerEntrypointClosure.contract.test.ts).
+    // EDR provider framework (#8164). 'global': its import closure reaches no socket-local
+    // dispatch. Re-verified in W02 (#8166) after the Phase 4 notifier added alertService +
+    // eventBus imports: workerEntrypointClosure.contract.test.ts stays green.
     name: 'edrProviderSyncWorker',
     placement: 'global',
     load: async () => {

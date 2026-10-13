@@ -108,6 +108,15 @@ export type EventType =
   // alert-lifecycle-only, services/eventSubscribers.ts:185-190).
   | 'backup.provider_device_unhealthy'
   | 'backup.provider_device_recovered'
+  // EDR provider framework (#8164 W02). Published by the post-commit notifier
+  // (services/edrProviders/alerts.ts) after a sync commits. Payloads carry ids,
+  // the provider key and severities only — never vendor-supplied strings.
+  // Webhooks and automations can subscribe; alert rows carry the human title.
+  | 'edr.detection_detected'
+  | 'edr.detection_escalated'
+  | 'edr.endpoint_unhealthy'
+  | 'edr.endpoint_recovered'
+  | 'edr.tenant_stale'
   // Ticket SLA events (Phase 2, ticketSlaWorker)
   | 'ticket.sla_breached'
   // Ticket lifecycle events (#3828 wave-6-3 task 2). Published by
@@ -635,6 +644,12 @@ export const EVENT_TYPES = {
   // External backup provider (feature #6008 W02)
   BACKUP_PROVIDER_DEVICE_UNHEALTHY: 'backup.provider_device_unhealthy' as const,
   BACKUP_PROVIDER_DEVICE_RECOVERED: 'backup.provider_device_recovered' as const,
+  // EDR provider framework (#8164 W02)
+  EDR_DETECTION_DETECTED: 'edr.detection_detected' as const,
+  EDR_DETECTION_ESCALATED: 'edr.detection_escalated' as const,
+  EDR_ENDPOINT_UNHEALTHY: 'edr.endpoint_unhealthy' as const,
+  EDR_ENDPOINT_RECOVERED: 'edr.endpoint_recovered' as const,
+  EDR_TENANT_STALE: 'edr.tenant_stale' as const,
   TICKET_SLA_BREACHED: 'ticket.sla_breached' as const,
   // Ticket lifecycle (#3828 wave-6-3 task 2) — id-only payloads.
   TICKET_CREATED: 'ticket.created' as const,
