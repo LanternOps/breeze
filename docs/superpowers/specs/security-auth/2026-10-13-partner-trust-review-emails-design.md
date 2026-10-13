@@ -167,7 +167,7 @@ Plain English, one idea per sentence, no exclamation marks. Every interpolated v
 - Preheader: `We'll follow up by email.`
 - Body:
   - `We received your request to review {partnerName}. We'll follow up by email once the review is complete.`
-  - `You can keep using Breeze in the meantime. Remote control and script execution stay paused until the review finishes.`
+  - `You can keep using Breeze in the meantime. Remote control and script execution stay paused while the review is open.`
   - If `PARTNER_MEETING_URL` is set: button `Book a call` → that URL. (The probation banner already offers the same link.)
   - Muted: `You're receiving this because you requested the review or administer this Breeze account.`
 - Footer: `supportFooter(undefined, 'Need help? Contact')`
