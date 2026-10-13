@@ -344,6 +344,9 @@ type HeartbeatResponse struct {
 	// IdentityAssertion (#8317) is present only when the row's org/site differ
 	// from this beat's ReportedIdentity. Verified before use; see identity_sync.go.
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
+	// RetainState (#8258) lists features the server made no decision about this
+	// beat (keep current state); see retain_state.go. Absent = today's semantics.
+	RetainState RetainState `json:"retainState"`
 }
 
 type HelperSettings struct {
