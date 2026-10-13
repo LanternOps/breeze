@@ -81,6 +81,7 @@ import { aiOperatorTasksEnabled } from '../../config/env';
 import { requesterAccessLost } from './requesterAccessGate';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
+import { planEffectStep, planProbeStep, type EffectStepDirective } from './effectDispatch';
 import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
 import { checkTaskBudget, checkTaskMutationAttempts, checkTaskReasoningRuns } from './taskLimits';
 import { loadTaskLimitContext, type TaskLimitContext } from './taskLimitsLoader';
@@ -670,6 +671,12 @@ const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdva
 const KIND_ADVANCERS: Readonly<Partial<Record<StepKind, StepAdvancer>>> = {
   human_work: (a) => advanceHumanWork(a),
   wait: (a) => advanceWait(a),
+  // Recipe Library E4 (#6169): plan approval + probe → write → probe. The
+  // planners live in effectDispatch.ts and only RETURN a directive; the one
+  // ai_operator_tasks write each directive implies happens here, under the
+  // lease CAS (invariant 1).
+  effect: (a) => advanceEffect(a),
+  probe: (a) => advanceProbe(a),
 };
 
 /**
@@ -1556,6 +1563,64 @@ export async function advanceWait(args: {
     dependency: null, wakeAfterMs, stepKey, checkpoint, now,
   });
   return `waiting: '${stepKey}' until ${until.toISOString()}`;
+}
+
+/**
+ * `effect` / `probe` (Recipe Library E4, #6169). The planner decides from rows
+ * and returns ONE directive; this applies it as exactly one leased write.
+ * Refusals are directives and settle; a planner THROW is an infrastructure
+ * fault and propagates so the wake retries (see the catch below).
+ */
+export async function advanceEffect(args: Parameters<StepAdvancer>[0]): Promise<string> {
+  return applyEffectDirective(args, 'effect', () => planEffectStep(args));
+}
+
+export async function advanceProbe(args: Parameters<StepAdvancer>[0]): Promise<string> {
+  return applyEffectDirective(args, 'probe', () => planProbeStep(args));
+}
+
+async function applyEffectDirective(
+  args: Parameters<StepAdvancer>[0],
+  kind: 'effect' | 'probe',
+  plan: () => Promise<EffectStepDirective>,
+): Promise<string> {
+  const { task, leaseEpoch, checkpoint, recipe, now } = args;
+  const stepKey = task.currentStepKey ?? '';
+  // A planner THROW is an infrastructure fault (pool timeout, serialization
+  // failure), never a refusal — every refusal is a typed directive. It is
+  // rethrown, not settled: the wake job retries and the reconciler re-wakes,
+  // and every write the planner made before failing is idempotent by its own
+  // unique key. Settling would turn a transient blip into a permanent
+  // failure of a destructive identity plan, possibly after a write went out.
+  let directive: EffectStepDirective;
+  try {
+    directive = await plan();
+  } catch (err) {
+    console.error(`[aiOperator] ${kind} step '${stepKey}' planner failed; leaving the task for retry`, {
+      taskId: task.id, orgId: task.orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+  switch (directive.action) {
+    case 'wait':
+      await yieldToWait({
+        task, leaseEpoch, reason: directive.reason, dependency: directive.dependency,
+        wakeAfterMs: Math.max(MIN_WAIT_WAKE_MS, directive.wakeAfterMs), stepKey, checkpoint, now,
+      });
+      return `waiting: ${directive.detail}`;
+    case 'move':
+      await settleStepAndMove({
+        task, leaseEpoch, recipe, checkpoint, toStepKey: directive.toStepKey,
+        settledDetail: directive.settledDetail, resolvedDetail: directive.resolvedDetail,
+      });
+      return `advanced: ${kind} '${stepKey}' done, resuming at '${directive.toStepKey}'`;
+    case 'settle':
+      await settle({
+        task, leaseEpoch, event: directive.event, outcome: directive.outcome, detail: directive.detail,
+        ...(directive.handoffSummary ? { handoffSummary: directive.handoffSummary } : {}), checkpoint,
+      });
+      return directive.event === 'hand_off' ? `handed off: ${directive.detail}` : `settled: ${directive.detail}`;
+  }
 }
 
 // ---------------------------------------------------------------------------

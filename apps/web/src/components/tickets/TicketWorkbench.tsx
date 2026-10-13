@@ -18,8 +18,12 @@ import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketApprovalRail from './TicketApprovalRail';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
+import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
+import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -161,6 +165,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
+  // Bumped when the caller-verification modal reports a change so the header
+  // badge re-reads the server's ticket freshness projection.
+  const [callerRevision, setCallerRevision] = useState(0);
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
@@ -694,6 +701,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
         }),
         errorFallback: t('ticketWorkbench.move.failed'),
+        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
+        friendly: approvalFriendly(t),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setMoveBlocked(null);
@@ -1139,6 +1148,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <>
               <span>·</span>
               <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
+            </>
+          )}
+          {ticket.requesterContactId && (
+            // Both render nothing (and fetch nothing) unless the server's
+            // caller-verification flag is on.
+            <>
+              <TicketVerificationBadge orgId={ticket.orgId} ticketId={ticket.id} revision={callerRevision} />
+              <CallerVerificationEntry
+                orgId={ticket.orgId}
+                initialContactId={ticket.requesterContactId}
+                lockContact
+                ticketId={ticket.id}
+                hash="caller-verification"
+                onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
+              />
             </>
           )}
           {slaState(ticket).kind !== 'none' && (
@@ -1680,6 +1704,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketApprovalRail ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>

@@ -68,6 +68,7 @@ import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
+import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
@@ -122,6 +123,7 @@ type CoreTab =
   | "playbooks"
   | "peripherals"
   | "workloads"
+  | "system-restore"
   | "backup"
   | "linked-profiles"
   | "tickets"
@@ -222,6 +224,7 @@ const VALID_TABS: CoreTab[] = [
   "playbooks",
   "peripherals",
   "workloads",
+  "system-restore",
   "backup",
   "linked-profiles",
   "tickets",
@@ -630,6 +633,20 @@ export default function DeviceDetails({
           },
         ]
       : []),
+    // Windows only (#4759): System Restore request ledger. A `#system-restore`
+    // deep link still mounts the panel on other devices, where the explicit
+    // empty state explains there is nothing recorded.
+    ...(device.os === "windows"
+      ? [
+          {
+            id: "system-restore" as Tab,
+            group: groups.management,
+            label: t("deviceDetails.systemRestore"),
+            icon: <History className="h-4 w-4" />,
+            title: t("deviceDetails.systemRestore"),
+          },
+        ]
+      : []),
     // --- Management ---
     {
       id: "scripts",
@@ -1010,6 +1027,10 @@ export default function DeviceDetails({
           deviceId={device.id}
           timezone={effectiveTimezone}
         />
+      )}
+
+      {activeTab === "system-restore" && (
+        <DeviceRestorePointAttempts deviceId={device.id} />
       )}
 
       {activeTab === "peripherals" && (

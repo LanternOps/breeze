@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Wird ausgelöst, wenn ein Ticket zugewiesen oder die Zuweisung aufgehoben wird.",
             "label": "Ticket zugewiesen"
+          },
+          "migrationWindowClosed": {
+            "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
+            "label": "Migrationsfenster geschlossen"
           }
         },
         "fields": {

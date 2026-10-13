@@ -50,11 +50,42 @@ import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceM
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
+import { suppressedByViewOnly } from '../lib/viewOnly';
+import {
+  INITIAL_BLOCK_LOCAL_INPUT,
+  BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS,
+  applyBlockLocalInputResult,
+  blockLocalInputMessage,
+  blockLocalInputRequested,
+  blockLocalInputTimedOut,
+  parseBlockLocalInputResult,
+  type BlockLocalInputState,
+} from '../lib/blockLocalInput';
+import { mediaClassName, scrollerClassName, type ViewScaling } from '../lib/displayScaling';
+import type { StatsSample } from '../lib/statsReporter';
+import { statsOverlayRows } from '../lib/statsOverlay';
+import { getTauriPrefsStore, loadDevicePrefs, saveDevicePrefs, type DevicePrefs } from '../lib/devicePrefs';
+import { captureFramePng, screenshotFailureMessage } from '../lib/screenshot';
+import {
+  createKeyboardLockController,
+  getKeyboardLockApi,
+  shouldLockKeyboard,
+  type KeyboardLockController,
+} from '../lib/keyboardLock';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 const INPUT_NOTICE_TTL_MS = 4000;
+
+function toggleDocumentFullscreen(): void {
+  const fs = document.fullscreenElement
+    ? document.exitFullscreen()
+    : document.documentElement.requestFullscreen();
+  // Best-effort, but leave a breadcrumb (parity with ViewerToolbar's
+  // toggleFullscreen) so a "hotkey does nothing" report is diagnosable.
+  fs.catch((err) => console.warn('Fullscreen hotkey failed:', err));
+}
 const clipboardIO = createTauriClipboardIO();
 
 interface Props {
@@ -289,6 +320,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const remapCmdCtrl = remapOverride ?? defaultRemapCmdCtrl(VIEWER_OS, remoteOs);
   // Transient toolbar notice for input that could not be delivered.
   const [inputNotice, setInputNotice] = useState<string | null>(null);
+  // Neutral confirmations (screenshot copied/saved); the notices above are errors.
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [inputFocused, setInputFocused] = useState(false);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
@@ -343,6 +376,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Tracks the current remote cursor CSS shape (e.g. "default", "pointer", "text").
   // Updated from the cursor data channel; applied to the video element style.
   const remoteCursorShapeRef = useRef<string>('default');
+  // View-only (#8241): read by the send path on every event, so a ref; the
+  // state copy drives the indicator and toolbar.
+  const viewOnlyRef = useRef(false);
+  const [viewOnly, setViewOnly] = useState(false);
+  const viewScalingRef = useRef<ViewScaling>('fit');
+  const [viewScaling, setViewScaling] = useState<ViewScaling>('fit');
+  const [blockLocalInput, setBlockLocalInput] = useState<BlockLocalInputState>(INITIAL_BLOCK_LOCAL_INPUT);
+  const blockLocalInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stats overlay (#8241): off by default; the reporter only pushes samples
+  // into state while it is on.
+  const [statsOverlay, setStatsOverlay] = useState(false);
+  const statsOverlayRef = useRef(false);
+  const [statsSample, setStatsSample] = useState<StatsSample | null>(null);
+  const keyboardLockRef = useRef<KeyboardLockController | null>(null);
+  // Remembered audio is turned back on once the session has a track (#8241).
+  // State, so a prefs read that lands after the track still triggers it.
+  const [pendingAudioRestore, setPendingAudioRestore] = useState(false);
+  if (!keyboardLockRef.current) keyboardLockRef.current = createKeyboardLockController(getKeyboardLockApi());
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
@@ -446,6 +497,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         return false;
       }
       vncSessionRef.current = session;
+      // A session opened (or reopened) while view-only or 100% is on starts
+      // in that mode; noVNC defaults to sending input and to fit.
+      session.setViewOnly(viewOnlyRef.current);
+      session.setScaling(viewScalingRef.current);
       setVncClipboardState(session.clipboard?.state ?? null);
       return true;
     } catch (err) {
@@ -1340,9 +1395,38 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const stop = createStatsReporter({
       getConnection: () => webrtcRef.current,
       log: (summary) => console.log(`[WebRTC stats] ${summary}`),
+      onSample: (sample) => {
+        if (statsOverlayRef.current) setStatsSample(sample);
+      },
     });
     return stop;
   }, [transport]);
+
+  // Keyboard Lock (K9, #8241): in fullscreen, Alt-Tab / Win / Esc go to the
+  // remote where the webview supports it (WebView2); a no-op elsewhere.
+  useEffect(() => {
+    const keyboardLock = keyboardLockRef.current;
+    if (!keyboardLock) return;
+    const sync = (focused = document.hasFocus()) => keyboardLock.sync(shouldLockKeyboard({
+      fullscreen: !!document.fullscreenElement,
+      focused,
+      connected: status === 'connected',
+      viewOnly,
+    }));
+    const onChange = () => sync();
+    const onBlur = () => sync(false);
+    sync();
+    document.addEventListener('fullscreenchange', onChange);
+    window.addEventListener('focus', onChange);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      window.removeEventListener('focus', onChange);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [status, viewOnly]);
+
+  useEffect(() => () => { keyboardLockRef.current?.release(); }, []);
 
   // Request monitor list and listen for control channel responses (WebRTC only)
 	  useEffect(() => {
@@ -1386,6 +1470,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           case 'lock_result':
             if (!msg.ok) console.warn('Lock workstation failed:', msg.error);
             break;
+          case 'block_local_input_result': {
+            const result = parseBlockLocalInputResult(msg);
+            if (!result) break;
+            if (blockLocalInputTimerRef.current !== null) {
+              clearTimeout(blockLocalInputTimerRef.current);
+              blockLocalInputTimerRef.current = null;
+            }
+            setBlockLocalInput(state => applyBlockLocalInputResult(state, result));
+            break;
+          }
           case 'input_capabilities':
             inputCapabilitiesRef.current.apply(msg);
             reliableInput.onCapabilities(inputCapabilitiesRef.current.snapshot());
@@ -1444,6 +1538,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      ch.removeEventListener('open', onOpen);
 	      ch.removeEventListener('message', onMessage);
 	      clearInterval(sessionPollInterval);
+	      // The agent releases a local-input block when its session ends; a new
+	      // control channel starts from off until the agent says otherwise.
+	      if (blockLocalInputTimerRef.current !== null) {
+	        clearTimeout(blockLocalInputTimerRef.current);
+	        blockLocalInputTimerRef.current = null;
+	      }
+	      setBlockLocalInput(INITIAL_BLOCK_LOCAL_INPUT);
 	      // This control channel is gone; the next one re-runs the handshake.
 	      // Release anything waiting on the old answer so a paste can't hang.
 	      inputCapabilitiesRef.current.release();
@@ -1634,10 +1735,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       const lossy = webrtcRef.current?.inputChannel;
       // The router picks input or input-r; against an agent without
       // reliableInput it sends exactly what was sent before, on input.
-      if (lossy && lossy.readyState === 'open') send = (event) => { reliableInput.send(event); };
+      // View-only is checked here, before the router assigns a seq, so a
+      // suppressed event never consumes one (on input or input-r).
+      if (lossy && lossy.readyState === 'open') send = (event) => {
+        if (suppressedByViewOnly(event, viewOnlyRef.current)) return;
+        reliableInput.send(event);
+      };
     } else {
       const wsSession = wsRef.current;
-      if (wsSession) send = (event) => wsSession.inputChannel.send(JSON.stringify(event));
+      if (wsSession) send = (event) => {
+        if (suppressedByViewOnly(event, viewOnlyRef.current)) return;
+        wsSession.inputChannel.send(JSON.stringify(event));
+      };
     }
     if (!send) return null;
     const stranded = strandedReleasesRef.current;
@@ -1651,6 +1760,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [reliableInput]);
 
   const sendInputFn = useCallback((event: Record<string, unknown>): boolean => {
+    // Not delivered, but not a fault either: no "connection down" notice.
+    if (suppressedByViewOnly(event, viewOnlyRef.current)) return false;
     const send = getInputSender();
     if (!send) {
       // Pointer motion is disposable; a dropped click or keystroke is not, and
@@ -1740,6 +1851,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return () => clearTimeout(timer);
   }, [inputNotice]);
 
+  useEffect(() => {
+    if (!statusNotice) return;
+    const timer = setTimeout(() => setStatusNotice(null), INPUT_NOTICE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [statusNotice]);
+
+  // A block-input failure is shown like any other input notice, and expires.
+  useEffect(() => {
+    if (blockLocalInput.error) setInputNotice(blockLocalInput.error);
+  }, [blockLocalInput.error]);
+
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
     const pending = webrtcMouseMovePendingRef.current;
@@ -1757,6 +1879,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (strandedReleasesRef.current) getInputSender();
 
     webrtcMouseMovePendingRef.current = null;
+    if (viewOnlyRef.current) return;
     reliableInput.send({ type: 'mouse_move', x: pending.x, y: pending.y });
   }, [getInputSender, reliableInput]);
 
@@ -1767,6 +1890,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!el) return;
 
     function onWheel(event: Event) {
+      // View-only: leave the wheel to the page, which scrolls the view at 100%.
+      if (viewOnlyRef.current) return;
       const e = event as WheelEvent;
       e.preventDefault();
       const r = wheelDeltaToSteps(wheelAccRef.current, e.deltaY, e.deltaMode);
@@ -1793,6 +1918,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (viewOnlyRef.current) return;
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     lastPointerRef.current = { x, y };
     if (transport === 'webrtc') {
@@ -1810,6 +1936,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // preventDefault on mousedown suppresses the browser's default focus behavior,
     // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
     (e.currentTarget as HTMLElement).focus();
+    if (viewOnlyRef.current) return;
     // Back/forward only for an agent that injects them (W2c); otherwise they
     // are dropped (they used to arrive as a left click).
     const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
@@ -1832,6 +1959,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [scaleCoordsFn, sendInputFn, reliableInput]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (viewOnlyRef.current) return;
     const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     // A release for a press that started elsewhere (toolbar, another window)
     // or was already released on focus loss is not ours to send.
@@ -1877,6 +2005,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── Input: paste as keystrokes ────────────────────────────────────
 
   const handlePasteAsKeystrokes = useCallback(async () => {
+    if (viewOnlyRef.current) return;
+    // Reset before the awaits below: view-only switched on during them sets
+    // it, and that must not be undone here.
+    pasteCancelRef.current = false;
     let text: string;
     try {
       // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
@@ -1897,9 +2029,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // fired immediately after (re)connect can still beat the reply. Wait
     // briefly for it rather than silently dropping to the lossy fallback.
     await inputCapabilitiesRef.current.settled(INPUT_CAPABILITIES_WAIT_MS);
+    if (viewOnlyRef.current) return;
 
     const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
-    pasteCancelRef.current = false;
     setPasteNotice(null);
 
     try {
@@ -1909,10 +2041,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // type_text rides the reliable control channel: the input channel is
         // created with maxRetransmits: 0, so a dropped datagram would silently
         // truncate the paste.
-        sendControl: control && control.readyState === 'open' ? (json: string) => control.send(json) : null,
+        // type_text is not on the input sender, so view-only is checked here too.
+        sendControl: control && control.readyState === 'open' ? (json: string) => {
+          if (viewOnlyRef.current) return;
+          control.send(json);
+        } : null,
         sendInput: event => sendInputFn({ ...event }),
         onProgress: setPasteProgress,
-        isCancelled: () => pasteCancelRef.current,
+        isCancelled: () => pasteCancelRef.current || viewOnlyRef.current,
         yieldToUi: () => new Promise(r => setTimeout(r, 5)),
       });
     } catch (err) {
@@ -1956,6 +2092,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // "Send clipboard to remote": for pasting from a menu on the remote, which
   // no keystroke here can detect.
   const handleSendClipboardToRemote = useCallback(async () => {
+    if (viewOnlyRef.current) {
+      setPasteNotice('View only is on — nothing is sent to the remote.');
+      return;
+    }
     const target = activeClipboard();
     if (!target) return;
     const outcome = await target.sendLocalClipboard();
@@ -1990,6 +2130,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     e.preventDefault();
 
     const ne = e.nativeEvent;
+    // View-only: nothing is forwarded. The fullscreen host key still works;
+    // paste-as-keystrokes would be input, and there is nothing held to release.
+    if (viewOnlyRef.current) {
+      if (viewerShortcut(ne, VIEWER_OS) === 'fullscreen') toggleDocumentFullscreen();
+      return;
+    }
     // Every forwarded keyboard event states the Caps Lock state it was typed
     // under, so the agent sets the remote modifier flags explicitly instead of
     // inheriting whatever the remote machine had latched (issue #3595).
@@ -2046,12 +2192,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       } else if (shortcut === 'release-keys') {
         setInputNotice('Released all keys and mouse buttons on the remote.');
       } else {
-        const fs = document.fullscreenElement
-          ? document.exitFullscreen()
-          : document.documentElement.requestFullscreen();
-        // Best-effort, but leave a breadcrumb (parity with ViewerToolbar's
-        // toggleFullscreen) so a "hotkey does nothing" report is diagnosable.
-        fs.catch((err) => console.warn('Fullscreen hotkey failed:', err));
+        toggleDocumentFullscreen();
       }
       return;
     }
@@ -2153,6 +2294,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
+    if (viewOnlyRef.current) return;
 
     const ne = e.nativeEvent;
     const capsLock = getCapsLockState(ne);
@@ -2285,9 +2427,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, [sessions, activeSessionId, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
 
+  // Per-device prefs (#8241): local only, keyed by the deep link's device id.
+  const rememberDevicePrefs = useCallback((patch: DevicePrefs) => {
+    void getTauriPrefsStore().then((store) => saveDevicePrefs(store, params.deviceId, patch));
+  }, [params.deviceId]);
+
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
     setAudioEnabled(newEnabled);
+    rememberDevicePrefs({ audio: newEnabled });
     // Mute/unmute the audio element
     const audioEl = audioElRef.current;
     if (audioEl) {
@@ -2295,6 +2443,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (newEnabled) audioEl.play().catch((err) => {
         console.warn('Failed to play remote audio:', err.message);
         setAudioEnabled(false); // reset UI to reflect actual state
+        // Don't keep restoring an audio the webview refuses to play.
+        rememberDevicePrefs({ audio: false });
       });
     }
     // Tell the agent to start/stop sending audio frames
@@ -2302,13 +2452,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ch && ch.readyState === 'open') {
       ch.send(JSON.stringify({ type: 'toggle_audio', value: newEnabled ? 1 : 0 }));
     }
-  }, [audioEnabled]);
+  }, [audioEnabled, rememberDevicePrefs]);
 
   const handleSendKeys = useCallback((key: string, modifiers: string[]) => {
+    if (viewOnlyRef.current) return;
     sendInputFn({ type: 'key_press', key, modifiers });
   }, [sendInputFn]);
 
   const handleSendSAS = useCallback(() => {
+    if (viewOnlyRef.current) return;
     const ch = webrtcRef.current?.controlChannel;
     if (ch && ch.readyState === 'open') {
       ch.send(JSON.stringify({ type: 'send_sas' }));
@@ -2318,6 +2470,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, []);
 
   const handleLockWorkstation = useCallback(() => {
+    if (viewOnlyRef.current) return;
     const ch = webrtcRef.current?.controlChannel;
     if (ch && ch.readyState === 'open') {
       ch.send(JSON.stringify({ type: 'lock_workstation' }));
@@ -2325,6 +2478,148 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       console.warn('Lock workstation requires WebRTC transport');
     }
   }, []);
+
+  // View-only (#8241). Releases go out before the gate closes: once it is
+  // closed only releases could pass anyway, but a held key must not depend on
+  // that. Viewer-local by design; the agent is not told.
+  const handleViewOnlyChange = useCallback((next: boolean) => {
+    if (next === viewOnlyRef.current) return;
+    if (next) {
+      releaseAllKeys();
+      if (webrtcMouseMoveRafRef.current !== null) {
+        cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+        webrtcMouseMoveRafRef.current = null;
+      }
+      webrtcMouseMovePendingRef.current = null;
+      // A paste in progress is input too.
+      pasteCancelRef.current = true;
+    }
+    viewOnlyRef.current = next;
+    setViewOnly(next);
+    vncSessionRef.current?.setViewOnly(next);
+  }, [releaseAllKeys]);
+
+  const handleStatsOverlayChange = useCallback((on: boolean) => {
+    statsOverlayRef.current = on;
+    setStatsOverlay(on);
+    if (!on) setStatsSample(null);
+  }, []);
+
+  // Screenshot (#8241): the frame on screen, from whichever transport is live.
+  const captureScreenshot = useCallback(async (): Promise<Blob | null> => {
+    switch (transportRef.current) {
+      case 'webrtc': {
+        const video = videoRef.current;
+        return video ? captureFramePng({ kind: 'video', video }) : null;
+      }
+      case 'websocket': {
+        const canvas = canvasRef.current;
+        return canvas ? captureFramePng({ kind: 'canvas', canvas }) : null;
+      }
+      case 'vnc': {
+        const vnc = vncSessionRef.current;
+        return vnc ? captureFramePng({ kind: 'vnc', capture: () => vnc.captureFrame() }) : null;
+      }
+      default:
+        return null;
+    }
+  }, []);
+
+  const handleCopyScreenshot = useCallback(async () => {
+    const blob = await captureScreenshot();
+    if (!blob) {
+      setPasteNotice(screenshotFailureMessage('no-frame'));
+      return;
+    }
+    try {
+      await clipboardIO.writeImage(new Uint8Array(await blob.arrayBuffer()), 'png');
+      setStatusNotice('Screenshot copied to the clipboard.');
+    } catch (err) {
+      console.warn('Screenshot copy failed:', err);
+      setPasteNotice(screenshotFailureMessage('copy', err));
+    }
+  }, [captureScreenshot]);
+
+  // Written by the viewer process to a local folder it chooses; the file
+  // name is generated there too. Nothing leaves this machine.
+  const handleSaveScreenshot = useCallback(async () => {
+    const blob = await captureScreenshot();
+    if (!blob) {
+      setPasteNotice(screenshotFailureMessage('no-frame'));
+      return;
+    }
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const path = await invoke<string>('save_screenshot', bytes);
+      setStatusNotice(`Screenshot saved to ${path}`);
+    } catch (err) {
+      console.warn('Screenshot save failed:', err);
+      setPasteNotice(screenshotFailureMessage('save', err));
+    }
+  }, [captureScreenshot]);
+
+  const applyViewScaling = useCallback((mode: ViewScaling) => {
+    viewScalingRef.current = mode;
+    setViewScaling(mode);
+    vncSessionRef.current?.setScaling(mode);
+  }, []);
+
+  const handleViewScalingChange = useCallback((mode: ViewScaling) => {
+    applyViewScaling(mode);
+    rememberDevicePrefs({ viewScaling: mode });
+  }, [applyViewScaling, rememberDevicePrefs]);
+
+  // Restore what was remembered for this device. Defaults stand when nothing
+  // was, or when the store cannot be read.
+  useEffect(() => {
+    let cancelled = false;
+    void getTauriPrefsStore().then(async (store) => {
+      const prefs = await loadDevicePrefs(store, params.deviceId);
+      if (cancelled) return;
+      if (prefs.remapCmdCtrl !== undefined) {
+        // Anything held went down under the old mapping.
+        releaseAllKeysRef.current();
+        setRemapOverride(prefs.remapCmdCtrl);
+      }
+      if (prefs.viewScaling) applyViewScaling(prefs.viewScaling);
+      if (prefs.audio) setPendingAudioRestore(true);
+    });
+    return () => { cancelled = true; };
+  }, [params.deviceId, applyViewScaling]);
+
+  // Audio goes back on through the toggle itself, so the agent is told and
+  // a refused play() resets the button, exactly as for a click.
+  useEffect(() => {
+    if (!pendingAudioRestore) return;
+    if (!hasAudioTrack || status !== 'connected' || audioEnabled) return;
+    setPendingAudioRestore(false);
+    handleToggleAudio();
+  }, [pendingAudioRestore, hasAudioTrack, status, audioEnabled, handleToggleAudio]);
+
+  // Block local input (#966): the toolbar shows what the agent replies, never
+  // what was asked for.
+  const handleToggleBlockLocalInput = useCallback(() => {
+    // One request at a time: a second click would send a stale value.
+    if (blockLocalInput.pending) return;
+    const ch = webrtcRef.current?.controlChannel;
+    if (!ch || ch.readyState !== 'open') {
+      setInputNotice('Block remote input is unavailable — the session is not connected.');
+      return;
+    }
+    try {
+      ch.send(blockLocalInputMessage(!blockLocalInput.blocked));
+    } catch (err) {
+      console.warn('Block local input request failed:', err);
+      setInputNotice('Block remote input could not be sent to the remote device.');
+      return;
+    }
+    setBlockLocalInput(blockLocalInputRequested);
+    if (blockLocalInputTimerRef.current !== null) clearTimeout(blockLocalInputTimerRef.current);
+    blockLocalInputTimerRef.current = setTimeout(() => {
+      blockLocalInputTimerRef.current = null;
+      setBlockLocalInput(blockLocalInputTimedOut);
+    }, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS);
+  }, [blockLocalInput.blocked, blockLocalInput.pending]);
 
   const handleDisconnect = useCallback(() => {
     userDisconnectRef.current = true;
@@ -2407,6 +2702,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         bitrate={bitrate}
         pasteProgress={pasteProgress}
         pasteNotice={pasteNotice ?? inputNotice}
+        statusNotice={statusNotice}
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}
@@ -2422,6 +2718,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           // would no longer match.
           releaseAllKeys();
           setRemapOverride(v);
+          rememberDevicePrefs({ remapCmdCtrl: v });
         }}
         onReleaseAllKeys={releaseAllKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
@@ -2441,19 +2738,65 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         desktopState={desktopState}
         onSwitchTransport={(target) => switchTransport(target, 'user')}
         capabilities={capabilities}
+        viewOnly={viewOnly}
+        onViewOnlyChange={handleViewOnlyChange}
+        viewScaling={viewScaling}
+        onViewScalingChange={handleViewScalingChange}
+        blockLocalInput={blockLocalInput}
+        onToggleBlockLocalInput={handleToggleBlockLocalInput}
+        statsOverlay={statsOverlay}
+        onStatsOverlayChange={handleStatsOverlayChange}
+        onCopyScreenshot={() => { void handleCopyScreenshot(); }}
+        onSaveScreenshot={() => { void handleSaveScreenshot(); }}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
-        {/* WebRTC: <video> element (hardware H264 decode) */}
-        <video
-          ref={videoRef}
-          tabIndex={0}
-          autoPlay
-          playsInline
-          muted
-          className={`max-w-full max-h-full object-contain outline-hidden ${focusRing} ${transport !== 'webrtc' ? 'hidden' : ''}`}
-          style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
-          {...interactionProps}
-        />
+        {/* Holds the video/canvas; scrolls them at 100% (view scaling, #8241).
+            Hidden for VNC so it never sits over noVNC's own container. */}
+        <div className={`absolute inset-0 ${scrollerClassName(viewScaling)} ${transport === 'vnc' ? 'hidden' : ''}`}>
+          {/* WebRTC: <video> element (hardware H264 decode) */}
+          <video
+            ref={videoRef}
+            tabIndex={0}
+            autoPlay
+            playsInline
+            muted
+            className={`${mediaClassName(viewScaling)} outline-hidden ${focusRing} ${transport !== 'webrtc' ? 'hidden' : ''}`}
+            style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
+            {...interactionProps}
+          />
+
+          {/* WebSocket: <canvas> element (JPEG software decode) */}
+          <canvas
+            ref={canvasRef}
+            tabIndex={0}
+            className={`${mediaClassName(viewScaling)} outline-hidden cursor-default ${focusRing} ${transport !== 'websocket' ? 'hidden' : ''}`}
+            {...interactionProps}
+          />
+        </div>
+
+        {statsOverlay && transport && (
+          <div
+            data-testid="stats-overlay"
+            className="absolute top-3 right-3 z-30 pointer-events-none px-2 py-1.5 rounded bg-black/75 border border-gray-700 text-[11px] font-mono text-gray-200 shadow-lg"
+          >
+            {statsOverlayRows({ transport, fps, sample: statsSample }).map(([label, value]) => (
+              <div key={label} className="flex gap-3 justify-between">
+                <span className="text-gray-500">{label}</span>
+                <span>{value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {viewOnly && (
+          <div
+            data-testid="view-only-indicator"
+            role="status"
+            className="absolute top-3 left-3 z-30 pointer-events-none px-2 py-1 rounded bg-amber-900/90 border border-amber-700 text-amber-100 text-xs shadow-lg"
+          >
+            View only — your keyboard and mouse are not sent
+          </div>
+        )}
 
         {/* Session switching overlay */}
         {switchingSession && (
@@ -2475,14 +2818,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             <path d="M0 0V19L5.5 14L9 22L12 20.5L8.5 13H15L0 0Z" fill="white" stroke="black" strokeWidth="1.5"/>
           </svg>
         </div>
-
-        {/* WebSocket: <canvas> element (JPEG software decode) */}
-        <canvas
-          ref={canvasRef}
-          tabIndex={0}
-          className={`max-w-full max-h-full object-contain outline-hidden cursor-default ${focusRing} ${transport !== 'websocket' ? 'hidden' : ''}`}
-          {...interactionProps}
-        />
 
         {/* VNC: noVNC container (shown only when transport is VNC) */}
         <div

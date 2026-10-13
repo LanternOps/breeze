@@ -1431,7 +1431,11 @@
       "days_overdue": "Days overdue",
       "pay_link": "Payment link",
       "charge_total": "Total charge",
-      "attempted_amount": "Attempted payment amount"
+      "attempted_amount": "Attempted payment amount",
+      "approval_ask": "Approval ask",
+      "approval_snapshot": "Approval figures",
+      "approval_expires": "Approval deadline",
+      "approval_status": "Approval status"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Automatic payments resumed",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Online payment receipt",
-      "payment_failed": "Payment could not be completed"
+      "payment_failed": "Payment could not be completed",
+      "ticket_approval_requested_approver": "Work approval request (approver)",
+      "ticket_approval_requested_notify": "Work approval request (for information)",
+      "ticket_approval_decided": "Work approval decision"
     }
   },
   "inboundEmail": {
@@ -1993,6 +2000,10 @@
         "enablePatchDetail": {
           "label": "Patch detail",
           "description": "Show every portal login of this organization each device's pending, installed and failed patches (title, severity, version, KB link). This reveals which machines are missing patches. Not turned on by Enable all visibility."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Vulnerability detail",
+          "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
         },
         "enableHourBlock": {
           "label": "Support hours",
@@ -5596,7 +5607,8 @@
     "loading": "Loading ticket settings…",
     "errors": {
       "load": "Ticket settings failed to load.",
-      "save": "Failed to save ticket settings"
+      "save": "Failed to save ticket settings",
+      "savedApprovalFailed": "Ticket settings saved, but the customer approval policy failed to save"
     },
     "toasts": {
       "saved": "Ticket settings saved"
@@ -5622,6 +5634,28 @@
       "inherit": "Inherit",
       "billableOption": "Billable",
       "nonBillableOption": "Non-billable"
+    },
+    "approval": {
+      "title": "Customer work approval",
+      "description": "Override the partner default for this organization. Choose Inherit to use the partner default.",
+      "enabled": "Require customer approval",
+      "budgetTrigger": "Ask when a ticket budget would be exceeded",
+      "afterHoursTrigger": "Ask for after-hours work",
+      "enforcement": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttl": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "on": "On",
+      "off": "Off",
+      "inherit": "Inherit",
+      "inheritValue": "Inherit ({{value}})",
+      "clear": "Clear override (inherit)",
+      "pendingInherit": "Will inherit the default after saving",
+      "loadFailed": "Could not load the customer approval settings.",
+      "sourceOrg": "Organization override",
+      "sourcePartner": "Partner default",
+      "sourceDefault": "Built-in default"
     }
   },
   "organizationForm": {
@@ -6323,7 +6357,27 @@
     "locationEnabledLabel": "Suggest a timer when a technician arrives at a client site",
     "locationHelp": "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze.",
     "radiusLabel": "Default arrival radius (m)",
-    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters"
+    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters",
+    "approval": {
+      "heading": "Customer work approval",
+      "description": "Ask the customer to approve work before it is logged against their budget or outside business hours. This is the partner default; organizations can override it.",
+      "enabledLabel": "Require customer approval for work",
+      "budgetTriggerLabel": "Ask when a ticket budget would be exceeded",
+      "afterHoursTriggerLabel": "Ask for after-hours work",
+      "enforcementLabel": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttlLabel": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "readOnly": "You need partner-wide settings rights to change this policy. Showing the current values.",
+      "loadFailed": "Could not load the customer approval settings.",
+      "source": {
+        "org": "Organization",
+        "partner": "Partner",
+        "default": "Default"
+      }
+    },
+    "savedApprovalFailed": "Time settings saved, but the customer approval policy failed to save"
   },
   "contactImportPreview": {
     "selectAll": "Select all new and linked rows",
@@ -6611,7 +6665,8 @@
     "nameTaken": "A work type with this name already exists.",
     "rename": "Rename",
     "loadError": "Could not load work types.",
-    "empty": "No work types yet. Add your first work type above."
+    "empty": "No work types yet. Add your first work type above.",
+    "afterHours": "After-hours (requires customer approval when enabled)"
   },
   "ticketCategories": {
     "defaultWorkType": "Default work type",

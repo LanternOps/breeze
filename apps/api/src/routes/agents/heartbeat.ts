@@ -97,6 +97,7 @@ import {
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 import {
+  agentIdentityAssertionRefused,
   agentIdentityNeedsSync,
   normalizeIdentitySyncProtocolVersion,
   signAgentIdentityAssertion,
@@ -272,6 +273,7 @@ export function resetWatchdogRestartLogCacheForTests(): void {
 const IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
 let identitySyncNoSigningKeyWarned = false;
 let identityAssertionFailureReportedAt = 0;
+let identityDeviceMismatchReportedAt = 0;
 
 function warnIdentitySyncWithoutSigningKey(): void {
   if (identitySyncNoSigningKeyWarned) return;
@@ -291,9 +293,25 @@ function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
   captureException(err);
 }
 
+// #8382 — the agent reported a device id other than the row its credential
+// belongs to. Never synced (a device id does not change through this path),
+// but not silent either: it can mean an agent.yaml copied from another device.
+// Rate-limited like the signing failures above.
+function warnIdentityDeviceMismatch(agentId: string, reportedDeviceId: string, rowDeviceId: string): void {
+  const now = Date.now();
+  if (now - identityDeviceMismatchReportedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return;
+  identityDeviceMismatchReportedAt = now;
+  console.warn(
+    '[heartbeat] Agent reported a device id that is not the device its credential belongs to; no identity '
+    + 'assertion is sent. A copied agent.yaml can cause this (#8382).',
+    { agentId, reportedDeviceId, rowDeviceId },
+  );
+}
+
 export function resetIdentitySyncLogStateForTests(): void {
   identitySyncNoSigningKeyWarned = false;
   identityAssertionFailureReportedAt = 0;
+  identityDeviceMismatchReportedAt = 0;
 }
 
 export function watchdogRestartLogCacheSizeForTests(): number {
@@ -2263,23 +2281,36 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // echoes this beat's nonce. Outside the org transaction for the same reason
   // as the keyset (#1105). Never creates the deployment key: without one, no
   // assertion is sent. Non-fatal: a missed assertion is retried next beat.
+  //
+  // #8382 — an agent that refused the assertion for this org/site says so on
+  // its next beat; the assertion is then held back for a while (Redis TTL)
+  // instead of being signed, and refused, on every beat.
   let identityAssertion: AgentIdentityAssertionV1 | undefined;
+  const reportedIdentity =
+    normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
+      ? data.reportedIdentity
+      : undefined;
+  const identityRow = { id: scoped.deviceId, orgId: scoped.deviceOrgId, siteId: scoped.deviceSiteId };
+  if (reportedIdentity && reportedIdentity.deviceId !== identityRow.id) {
+    warnIdentityDeviceMismatch(agentId, reportedIdentity.deviceId, identityRow.id);
+  }
   if (
-    data.reportedIdentity
-    && normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
-    && agentIdentityNeedsSync(data.reportedIdentity, {
-      id: scoped.deviceId,
-      orgId: scoped.deviceOrgId,
-      siteId: scoped.deviceSiteId,
-    })
+    reportedIdentity
+    && agentIdentityNeedsSync(reportedIdentity, identityRow)
+    && !(await agentIdentityAssertionRefused({
+      agentId,
+      deviceId: identityRow.id,
+      target: { orgId: identityRow.orgId, siteId: identityRow.siteId },
+      rejection: data.identityAssertionRejection,
+    }))
   ) {
     try {
       const signed = await signAgentIdentityAssertion({
         agentId,
-        deviceId: scoped.deviceId,
-        orgId: scoped.deviceOrgId,
-        siteId: scoped.deviceSiteId,
-        nonce: data.reportedIdentity.nonce,
+        deviceId: identityRow.id,
+        orgId: identityRow.orgId,
+        siteId: identityRow.siteId,
+        nonce: reportedIdentity.nonce,
       });
       if (signed) {
         identityAssertion = signed;

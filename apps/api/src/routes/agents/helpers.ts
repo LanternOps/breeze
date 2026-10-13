@@ -285,6 +285,8 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    case 'unknown':
+      return 'unknown';
     default:
       return 'other';
   }
@@ -540,9 +542,18 @@ export async function upsertSecurityStatusForDevice(
   // it is the evidence behind the derived `realTimeProtection` boolean. See
   // #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
-  const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
   const realTimeProtection = payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? null;
+  // #8538: the agent marshals provider:"other" as its default even when every
+  // applicable AV source failed — the failure is signalled only by omitting
+  // realTimeProtection (#7965). "other" with an unknown protection reading is
+  // therefore "not collected", not an unmapped product (those carry a real
+  // true/false reading). Stored as 'unknown'.
+  const normalizedProvider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+  const provider: SecurityProviderValue =
+    normalizedProvider === 'other' && typeof payload.provider === 'string' && realTimeProtection === null
+      ? 'unknown'
+      : normalizedProvider;
   const threatCount = payload.threatCount ?? 0;
 
   await db

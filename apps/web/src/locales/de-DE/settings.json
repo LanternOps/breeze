@@ -1431,7 +1431,11 @@
       "days_overdue": "Überfällige Tage",
       "pay_link": "Zahlungslink",
       "charge_total": "Abbuchungsbetrag gesamt",
-      "attempted_amount": "Versuchter Zahlungsbetrag"
+      "attempted_amount": "Versuchter Zahlungsbetrag",
+      "approval_ask": "Freigabeanfrage",
+      "approval_snapshot": "Freigabe-Kennzahlen",
+      "approval_expires": "Freigabefrist",
+      "approval_status": "Freigabestatus"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Automatische Zahlungen fortgesetzt",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Beleg für Onlinezahlung",
-      "payment_failed": "Zahlung konnte nicht abgeschlossen werden"
+      "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
+      "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
+      "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
+      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe"
     }
   },
   "inboundEmail": {
@@ -1993,6 +2000,10 @@
         "enablePatchDetail": {
           "label": "Patch-Details",
           "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die ausstehenden, installierten und fehlgeschlagenen Patches jedes Geräts (Titel, Schweregrad, Version, KB-Link). Dadurch ist sichtbar, auf welchen Rechnern Patches fehlen. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Schwachstellen-Details",
+          "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die CVE-Funde jedes Geräts und deren Schweregrad (CVE-ID, Beschreibung, Schweregrad, CVSS-Wert, Patch-Verfügbarkeit, Status). Dadurch ist sichtbar, welche Rechner angreifbar sind. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
         },
         "enableHourBlock": {
           "label": "Support-Stunden",
@@ -5548,7 +5559,8 @@
     "loading": "Ticketeinstellungen werden geladen…",
     "errors": {
       "load": "Die Ticketeinstellungen konnten nicht geladen werden.",
-      "save": "Ticketeinstellungen konnten nicht gespeichert werden"
+      "save": "Ticketeinstellungen konnten nicht gespeichert werden",
+      "savedApprovalFailed": "Ticket-Einstellungen gespeichert, aber die Richtlinie für Kundenfreigaben konnte nicht gespeichert werden"
     },
     "toasts": {
       "saved": "Ticketeinstellungen gespeichert"
@@ -5574,6 +5586,28 @@
       "inherit": "Erben",
       "billableOption": "Abrechnungsfähig",
       "nonBillableOption": "Nicht abrechenbar"
+    },
+    "approval": {
+      "title": "Kundenfreigabe für Arbeiten",
+      "description": "Überschreibt den Partner-Standard für diese Organisation. Wählen Sie „Erben“, um den Partner-Standard zu verwenden.",
+      "enabled": "Kundenfreigabe verlangen",
+      "budgetTrigger": "Nachfragen, wenn ein Ticket-Budget überschritten würde",
+      "afterHoursTrigger": "Bei Arbeiten außerhalb der Geschäftszeiten nachfragen",
+      "enforcement": "Durchsetzung",
+      "enforcementSoft": "Weich (warnen, Erfassung erlauben)",
+      "enforcementHard": "Hart (blockieren bis zur Freigabe)",
+      "ttl": "Freigabeanfrage läuft ab nach (Stunden)",
+      "ttlRange": "Die Ablaufzeit muss zwischen {{min}} und {{max}} Stunden liegen",
+      "on": "Ein",
+      "off": "Aus",
+      "inherit": "Erben",
+      "inheritValue": "Erben ({{value}})",
+      "clear": "Überschreibung entfernen (erben)",
+      "pendingInherit": "Erbt nach dem Speichern den Standard",
+      "loadFailed": "Die Einstellungen zur Kundenfreigabe konnten nicht geladen werden.",
+      "sourceOrg": "Überschreibung der Organisation",
+      "sourcePartner": "Partner-Standard",
+      "sourceDefault": "Integrierter Standard"
     }
   },
   "organizationForm": {
@@ -6328,7 +6362,27 @@
     "locationEnabledLabel": "Einen Timer vorschlagen, wenn ein Techniker am Kundenstandort ankommt",
     "locationHelp": "Jeder Techniker muss außerdem den Standortzugriff auf seinem Smartphone erlauben. Der Standort wird auf dem Smartphone geprüft und niemals an Breeze gesendet.",
     "radiusLabel": "Standard-Ankunftsradius (m)",
-    "radiusRange": "Der Ankunftsradius muss zwischen {{min}} und {{max}} Metern liegen"
+    "radiusRange": "Der Ankunftsradius muss zwischen {{min}} und {{max}} Metern liegen",
+    "approval": {
+      "heading": "Kundenfreigabe für Arbeiten",
+      "description": "Den Kunden um Freigabe bitten, bevor Arbeit auf sein Budget oder außerhalb der Geschäftszeiten gebucht wird. Dies ist der Partner-Standard; Organisationen können ihn überschreiben.",
+      "enabledLabel": "Kundenfreigabe für Arbeiten verlangen",
+      "budgetTriggerLabel": "Nachfragen, wenn ein Ticket-Budget überschritten würde",
+      "afterHoursTriggerLabel": "Bei Arbeiten außerhalb der Geschäftszeiten nachfragen",
+      "enforcementLabel": "Durchsetzung",
+      "enforcementSoft": "Weich (warnen, Erfassung erlauben)",
+      "enforcementHard": "Hart (blockieren bis zur Freigabe)",
+      "ttlLabel": "Freigabeanfrage läuft ab nach (Stunden)",
+      "ttlRange": "Die Ablaufzeit muss zwischen {{min}} und {{max}} Stunden liegen",
+      "readOnly": "Zum Ändern dieser Richtlinie benötigen Sie partnerweite Einstellungsrechte. Es werden die aktuellen Werte angezeigt.",
+      "loadFailed": "Die Einstellungen zur Kundenfreigabe konnten nicht geladen werden.",
+      "source": {
+        "org": "Organisation",
+        "partner": "Partner",
+        "default": "Standard"
+      }
+    },
+    "savedApprovalFailed": "Zeiteinstellungen gespeichert, aber die Richtlinie für Kundenfreigaben konnte nicht gespeichert werden"
   },
   "contactsCard": {
     "title": "Kontakte",
@@ -6611,7 +6665,8 @@
     "nameTaken": "Eine Arbeitsart mit diesem Namen existiert bereits.",
     "rename": "Umbenennen",
     "loadError": "Die Arbeitsarten konnten nicht geladen werden.",
-    "empty": "Noch keine Arbeitsarten. Fügen Sie oben Ihre erste Arbeitsart hinzu."
+    "empty": "Noch keine Arbeitsarten. Fügen Sie oben Ihre erste Arbeitsart hinzu.",
+    "afterHours": "Außerhalb der Geschäftszeiten (erfordert Kundenfreigabe, wenn aktiviert)"
   },
   "ticketCategories": {
     "defaultWorkType": "Standard-Arbeitsart",

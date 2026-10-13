@@ -169,6 +169,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
+  get_ticket_approval_status: 'tickets',
 
 
   // ---- patching_software ----
@@ -375,6 +376,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_webhooks: 'tenancy',
   query_psa_status: 'tenancy',
   manage_ai_agents: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS; mapped for completeness, never reachable
+  operator_plan: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS (plan approval carrier); mapped for completeness, never reachable
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

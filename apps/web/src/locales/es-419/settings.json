@@ -1431,7 +1431,11 @@
       "days_overdue": "Días de atraso",
       "pay_link": "Enlace de pago",
       "charge_total": "Cargo total",
-      "attempted_amount": "Monto del pago intentado"
+      "attempted_amount": "Monto del pago intentado",
+      "approval_ask": "Solicitud de aprobación",
+      "approval_snapshot": "Cifras de la aprobación",
+      "approval_expires": "Fecha límite de aprobación",
+      "approval_status": "Estado de la aprobación"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Pagos automáticos reanudados",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Recibo de pago en línea",
-      "payment_failed": "No se pudo completar el pago"
+      "payment_failed": "No se pudo completar el pago",
+      "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
+      "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
+      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo"
     }
   },
   "inboundEmail": {
@@ -1993,6 +2000,10 @@
         "enablePatchDetail": {
           "label": "Detalle de parches",
           "description": "Muestra a todos los inicios de sesión del portal de esta organización los parches pendientes, instalados y fallidos de cada dispositivo (título, gravedad, versión, enlace KB). Esto revela qué equipos no tienen parches. No se activa con Activar toda la visibilidad."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Detalle de vulnerabilidades",
+          "description": "Muestra a cada inicio de sesión del portal de esta organización los hallazgos CVE de cada dispositivo y su gravedad (ID de CVE, descripción, gravedad, puntaje CVSS, disponibilidad de parche, estado). Esto revela qué equipos son vulnerables. No se activa con Activar toda la visibilidad."
         },
         "enableHourBlock": {
           "label": "Horas de soporte",
@@ -5548,7 +5559,8 @@
     "loading": "Cargando configuración de tickets…",
     "errors": {
       "load": "La configuración del ticket no se pudo cargar.",
-      "save": "No se pudo guardar la configuración del ticket"
+      "save": "No se pudo guardar la configuración del ticket",
+      "savedApprovalFailed": "Se guardó la configuración de tickets, pero no se pudo guardar la política de aprobación del cliente"
     },
     "toasts": {
       "saved": "Configuración del ticket guardada"
@@ -5574,6 +5586,28 @@
       "inherit": "Heredar",
       "billableOption": "facturable",
       "nonBillableOption": "No facturable"
+    },
+    "approval": {
+      "title": "Aprobación de trabajo del cliente",
+      "description": "Reemplaza el valor predeterminado del socio para esta organización. Elige Heredar para usar el valor del socio.",
+      "enabled": "Requerir aprobación del cliente",
+      "budgetTrigger": "Preguntar cuando se superaría el presupuesto de un ticket",
+      "afterHoursTrigger": "Preguntar por trabajo fuera de horario",
+      "enforcement": "Aplicación",
+      "enforcementSoft": "Flexible (advertir, permitir el registro)",
+      "enforcementHard": "Estricta (bloquear hasta que se apruebe)",
+      "ttl": "La solicitud de aprobación vence después de (horas)",
+      "ttlRange": "El vencimiento debe estar entre {{min}} y {{max}} horas",
+      "on": "Activado",
+      "off": "Desactivado",
+      "inherit": "Heredar",
+      "inheritValue": "Heredar ({{value}})",
+      "clear": "Quitar reemplazo (heredar)",
+      "pendingInherit": "Heredará el valor predeterminado después de guardar",
+      "loadFailed": "No se pudo cargar la configuración de aprobación del cliente.",
+      "sourceOrg": "Reemplazo de la organización",
+      "sourcePartner": "Predeterminado del socio",
+      "sourceDefault": "Predeterminado integrado"
     }
   },
   "organizationForm": {
@@ -6328,7 +6362,27 @@
     "locationEnabledLabel": "Sugerir un temporizador cuando un técnico llega al sitio de un cliente",
     "locationHelp": "Cada técnico también debe permitir la ubicación en su teléfono. La ubicación se verifica en el teléfono y nunca se envía a Breeze.",
     "radiusLabel": "Radio de llegada predeterminado (m)",
-    "radiusRange": "El radio de llegada debe estar entre {{min}} y {{max}} metros"
+    "radiusRange": "El radio de llegada debe estar entre {{min}} y {{max}} metros",
+    "approval": {
+      "heading": "Aprobación de trabajo del cliente",
+      "description": "Pedir al cliente que apruebe el trabajo antes de registrarlo contra su presupuesto o fuera del horario laboral. Este es el valor predeterminado del socio; las organizaciones pueden reemplazarlo.",
+      "enabledLabel": "Requerir aprobación del cliente para el trabajo",
+      "budgetTriggerLabel": "Preguntar cuando se superaría el presupuesto de un ticket",
+      "afterHoursTriggerLabel": "Preguntar por trabajo fuera de horario",
+      "enforcementLabel": "Aplicación",
+      "enforcementSoft": "Flexible (advertir, permitir el registro)",
+      "enforcementHard": "Estricta (bloquear hasta que se apruebe)",
+      "ttlLabel": "La solicitud de aprobación vence después de (horas)",
+      "ttlRange": "El vencimiento debe estar entre {{min}} y {{max}} horas",
+      "readOnly": "Necesitas permisos de configuración a nivel de socio para cambiar esta política. Se muestran los valores actuales.",
+      "loadFailed": "No se pudo cargar la configuración de aprobación del cliente.",
+      "source": {
+        "org": "Organización",
+        "partner": "Socio",
+        "default": "Predeterminado"
+      }
+    },
+    "savedApprovalFailed": "Se guardó la configuración de tiempo, pero no se pudo guardar la política de aprobación del cliente"
   },
   "contactsCard": {
     "title": "Contactos",
@@ -6611,7 +6665,8 @@
     "nameTaken": "Ya existe un tipo de trabajo con este nombre.",
     "rename": "Cambiar nombre",
     "loadError": "No se pudieron cargar los tipos de trabajo.",
-    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba."
+    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba.",
+    "afterHours": "Fuera de horario (requiere aprobación del cliente cuando está activado)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabajo predeterminado",

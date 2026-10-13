@@ -10,10 +10,11 @@ import { createAuditLogAsync } from './auditService';
 import { HUMAN_AUTHORITATIVE_PROVENANCE_SQL_LIST, isHumanAuthoritativeProvenance } from './ticketProvenance';
 import { resolveSlaTargets, type TicketSlaPriority } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
-import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
+import { readOrgStampingDefaults, readOrgStampingDefaultsMany, OrgCurrencyServiceError } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
+import { assertNoPendingApprovalRequest } from './ticketMoveApprovalGuard';
 import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
@@ -21,6 +22,7 @@ import { ServiceManagementOffError, assertTicketCreationAllowed } from './servic
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
+import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
 
@@ -1609,14 +1611,71 @@ export interface UpdateTicketFieldsInput {
    * the ticket's org before any write; `null` clears the link.
    */
   requesterContactId?: string | null;
+  /**
+   * #4617 spec §4.2 — the ticket budget (a document value). `budgetAmount` is
+   * stamped with the org's currency (`budget_currency_code`) at write time;
+   * `null` clears the amount AND its currency. Handled outside the generic
+   * diff loop: one "budget" feed label, and the org currency read under the
+   * org SHARE lock before the ticket row is written.
+   */
+  budgetMinutes?: number | null;
+  budgetAmount?: string | null;
 }
 
-// Fields handled by the generic diff loop. The requester fields are excluded —
-// they're resolved/diffed separately (portal-user backfill, single "requester" label).
+// Fields handled by the generic diff loop. The requester and budget fields are
+// excluded — they're resolved/diffed separately (portal-user backfill, single
+// "requester" label; currency stamp, single "budget" label).
 type DiffFieldKey = Exclude<
   keyof UpdateTicketFieldsInput,
-  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId'
+  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId' | 'budgetMinutes' | 'budgetAmount'
 >;
+
+type BudgetPatch = { budgetMinutes?: number | null; budgetAmount?: string | null; budgetCurrencyCode?: string | null };
+
+/**
+ * The budget half of a ticket PATCH. When an amount is set, the org currency
+ * is read with `readOrgStampingDefaults` (organizations FOR SHARE) — the same
+ * lock the approval gate and the time-entry writers take FIRST, before the
+ * ticket row — so a concurrent org currency change cannot leave a budget
+ * stamped in the old currency, and this path cannot deadlock against them.
+ * MUST run before any ticket-row lock in the caller's transaction.
+ */
+async function resolveBudgetPatch(
+  ticket: { orgId: string; budgetMinutes?: number | null; budgetAmount?: string | null; budgetCurrencyCode?: string | null },
+  fields: Pick<UpdateTicketFieldsInput, 'budgetMinutes' | 'budgetAmount'>,
+): Promise<BudgetPatch> {
+  const patch: BudgetPatch = {};
+  if (fields.budgetMinutes !== undefined && (fields.budgetMinutes ?? null) !== (ticket.budgetMinutes ?? null)) {
+    patch.budgetMinutes = fields.budgetMinutes;
+  }
+  if (fields.budgetAmount === null) {
+    if (ticket.budgetAmount != null || ticket.budgetCurrencyCode != null) {
+      patch.budgetAmount = null;
+      patch.budgetCurrencyCode = null;
+    }
+  } else if (fields.budgetAmount !== undefined) {
+    let currencyCode: string;
+    try {
+      ({ currencyCode } = await readOrgStampingDefaults(db, ticket.orgId));
+    } catch (err) {
+      if (err instanceof OrgCurrencyServiceError) throw new TicketServiceError('Ticket not found', 404);
+      throw err;
+    }
+    const minor = toMinorUnits(fields.budgetAmount, currencyCode);
+    const normalized = fromMinorUnits(minor, currencyCode);
+    // A currency with no minor unit (e.g. JPY) cannot carry '100.50'; refuse
+    // rather than silently round the customer's ceiling.
+    if (minor <= 0 || Number(normalized) !== Number(fields.budgetAmount)) {
+      throw new TicketServiceError(`The budget amount is not a valid ${currencyCode} amount`, 400);
+    }
+    const sameAmount = ticket.budgetAmount != null && Number(ticket.budgetAmount) === Number(normalized);
+    if (!sameAmount || ticket.budgetCurrencyCode !== currencyCode) {
+      patch.budgetAmount = normalized;
+      patch.budgetCurrencyCode = currencyCode;
+    }
+  }
+  return patch;
+}
 
 /** Humanized labels for the system feed entry, in canonical field order. */
 const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
@@ -1802,7 +1861,11 @@ export async function updateTicketFields(
       changed.push(key);
     }
   }
-  if (changed.length === 0 && !requesterChanged) return ticket;
+  // #4617: org SHARE (when an amount is set) is taken here, before the ticket
+  // row is written below — the gate's lock order.
+  const budgetPatch = await resolveBudgetPatch(ticket, fields);
+  const budgetChanged = Object.keys(budgetPatch).length > 0;
+  if (changed.length === 0 && !requesterChanged && !budgetChanged) return ticket;
 
   // #6691 — amends SLA-engine plan D2 (originally "category changes after
   // create do not restamp"). When categoryId or priority ACTUALLY changes
@@ -1840,11 +1903,14 @@ export async function updateTicketFields(
 
   // Feed/event labels: typed field keys plus a single "requester" token.
   // Restamped SLA targets ride the same diff so the timeline shows them.
-  const changedForLog: string[] = [...changed, ...restamped, ...(requesterChanged ? ['requester'] : [])];
+  const changedForLog: string[] = [
+    ...changed, ...restamped, ...(requesterChanged ? ['requester'] : []), ...(budgetChanged ? ['budget'] : []),
+  ];
   const changedLabels: string[] = [
     ...changed.map((k) => UPDATE_FIELD_LABELS[k]),
     ...restamped.map((k) => UPDATE_FIELD_LABELS[k]),
     ...(requesterChanged ? ['requester'] : []),
+    ...(budgetChanged ? ['budget'] : []),
   ];
 
   const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
@@ -1853,6 +1919,7 @@ export async function updateTicketFields(
   }
   Object.assign(patch, slaRestampPatch);
   if (requesterChanged) Object.assign(patch, requesterPatch);
+  if (budgetChanged) Object.assign(patch, budgetPatch);
 
   // P2-4 (#4191): stamp field_provenance, in the SAME transaction/statement
   // as the field write itself — the human-set-field authority the release-
@@ -3516,6 +3583,10 @@ export async function moveTicketOrg(
         eq(ticketComments.ticketId, ticketId),
         or(isNotNull(ticketComments.agentRunId), isNotNull(ticketComments.proposedByRunId)),
       ));
+    // #4617: a pending customer approval request (approvers frozen from this
+    // org) blocks the move (409 APPROVAL_REQUEST_PENDING). No lock: the ticket
+    // row lock held here already excludes every request writer.
+    await assertNoPendingApprovalRequest(tx, { ticketIds: [ticketId] });
     // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME). Same
     // lock order as the currency guard, which re-locks a subset of these rows.
     await assertNoHourBlockDrawnTime(tx, { ticketIds: [ticketId] });

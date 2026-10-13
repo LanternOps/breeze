@@ -127,6 +127,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/performanceReadModel.ts': 'read model: portal performance metrics',
   'services/portal/softwareInventoryReadModel.ts': 'read model: portal software inventory',
   'services/portal/patchDetailReadModel.ts': 'read model: portal patch detail',
+  'services/portal/vulnerabilityDetailReadModel.ts': 'read model: portal vulnerability detail',
   'services/portal/securityReadModel.ts': 'read model: portal security',
   'services/reportGenerationService.ts': 'report: per-org report builders',
   'services/reportScope.ts': 'report: scope (already excludes the holding org)',
@@ -184,6 +185,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
   'services/assetPlacement.ts': 'resolves placement authority by joining the ONE device already linked to a discovered asset (by id, within the asset org); selects no targets',
   'services/autopay/enrollmentLifecycle.ts': 'org payment lifecycle rejects hidden orgs; never reads devices or dispatches device work',
   'services/timeEntryService.ts': 'request path: rejects a hidden org a caller names on a time entry (#4186); never reads devices or dispatches device work',
@@ -209,6 +211,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/userRiskJobs.ts': 'scores users, not devices; the holding org has no users',
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
   'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
+  'services/restorePointRequest.ts': 'reads the org/OS of the ONE device a claimed command already targets (by id) to re-stamp its restore-point snapshot at delivery; selects no targets',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
   'services/diagnosticAccess/delivery.ts': 'derived: looks up the device a queued diag_file_* command already names, at delivery; command delivery refuses parked devices',
   'services/diagnosticAccess/grants.ts': 'derived: device lookup by an existing grant\'s own device, to re-check approver site access',
@@ -340,7 +343,6 @@ const EXEMPT: Record<string, string> = {
   'services/offlineAlertEffects.ts': 'derived: acts on an alert-plan effect, which offlineEffectsStore never writes for a parked device',
   'services/pamActuationLifecycle.ts': 'derived: locks the one device named by an elevation request the caller already holds; selects no work',
   'services/pamActuationResult.ts': 'agent self-service: agent posts result for its own deviceId/agentId/commandId only',
-  'services/pamReconciliationBinding.ts': 'agent self-service: agent-supplied ids; joins devices only to confirm agent owns them',
   'services/pamToolActionGovernance.ts': 'agent self-service: helper on one device drives its own tool-action elevation request',
   'services/partnerTrust.repo.ts': 'derived: single id lookups (partnerId/orgId/deviceId) supplied by caller, no enumeration',
   'services/partnerTrustPromotion.ts': 'reads one partner\'s device IP classes for a trust decision; no per-device action',

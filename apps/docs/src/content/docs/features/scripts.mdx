@@ -154,6 +154,10 @@ Each script's detail page also shows a **Provenance panel**: whether it was writ
 
 ---
 
+## System Restore checkpoints
+
+Scripts can be set up to request a Windows System Restore checkpoint before they run. This is **off by default** and is controlled by the **System Protection** policy setting, not by the script. The outcome appears as a badge in the execution details; until a device runs a future agent release that supports it, the badge reads **Awaiting the device**. See [System Protection](/features/configuration-policies/#system-protection). System Restore is not a backup and does not protect personal files.
+
 ## Viewing Execution History
 
 Navigate to **Scripts** and click a script name to open the editor, then click **Execution History** in the top-right corner. The Execution History page shows all past runs for the script.

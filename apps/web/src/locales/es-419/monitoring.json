@@ -538,6 +538,7 @@
       "more": "Cargar más",
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
+      "unknownUser": "Usuario desconocido",
       "reverted": "Revertido",
       "deadline": "Deshacer no está disponible cuando el retiro de alertas heredadas elimina el evaluador de origen."
     },

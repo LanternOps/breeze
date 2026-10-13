@@ -336,6 +336,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  // #4755 — restore-checkpoint attempt ledger; restamped by its composite FK's
+  // ON UPDATE CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_restore_point_attempts',
   'agent_rollback_events', 'agent_rollback_directives',
   'device_reliability', 'device_reliability_baselines', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_time_daily',
@@ -419,6 +422,9 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'software_inventory_observations',
   'agent_rollback_events',
   'peripheral_policy_delivery_events',
+  // #4755 — composite (device_id, org_id) FK ON UPDATE CASCADE, same
+  // mechanism as agent_health_observations above.
+  'device_restore_point_attempts',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -649,6 +655,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_time_status',
   'device_network', 'device_ip_history', 'device_disks', 'device_memory_modules',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
+  // Restore-checkpoint attempt ledger (#4755) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
+  // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
+  'device_restore_point_attempts',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
   // #3834 — workload inventory: leaf tables, FK (device_id, org_id) ->

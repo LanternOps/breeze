@@ -1431,7 +1431,11 @@
       "days_overdue": "Dias em atraso",
       "pay_link": "Link de pagamento",
       "charge_total": "Cobrança total",
-      "attempted_amount": "Valor do pagamento tentado"
+      "attempted_amount": "Valor do pagamento tentado",
+      "approval_ask": "Solicitação de aprovação",
+      "approval_snapshot": "Números da aprovação",
+      "approval_expires": "Prazo da aprovação",
+      "approval_status": "Status da aprovação"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Pagamentos automáticos retomados",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Recibo de pagamento on-line",
-      "payment_failed": "Não foi possível concluir o pagamento"
+      "payment_failed": "Não foi possível concluir o pagamento",
+      "ticket_approval_requested_approver": "Solicitação de aprovação de trabalho (aprovador)",
+      "ticket_approval_requested_notify": "Solicitação de aprovação de trabalho (para conhecimento)",
+      "ticket_approval_decided": "Decisão sobre a aprovação de trabalho"
     }
   },
   "inboundEmail": {
@@ -1993,6 +2000,10 @@
         "enablePatchDetail": {
           "label": "Detalhes de patches",
           "description": "Mostra a todos os logins do portal desta organização os patches pendentes, instalados e com falha de cada dispositivo (título, gravidade, versão, link KB). Isso revela quais máquinas estão sem patches. Não é ativado por Ativar toda a visibilidade."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Detalhes de vulnerabilidades",
+          "description": "Mostra a cada login do portal desta organização os achados de CVE de cada dispositivo e sua gravidade (ID do CVE, descrição, gravidade, pontuação CVSS, disponibilidade de patch, status). Isso revela quais máquinas estão vulneráveis. Não é ativado por Ativar toda a visibilidade."
         },
         "enableHourBlock": {
           "label": "Horas de suporte",
@@ -5601,7 +5612,8 @@
     "loading": "Carregando configurações de chamados…",
     "errors": {
       "load": "Não foi possível carregar as configurações de chamados.",
-      "save": "Falha ao salvar as configurações de chamados"
+      "save": "Falha ao salvar as configurações de chamados",
+      "savedApprovalFailed": "Configurações de tickets salvas, mas a política de aprovação do cliente não pôde ser salva"
     },
     "toasts": {
       "saved": "Configurações de chamados salvas"
@@ -5627,6 +5639,28 @@
       "inherit": "Herdar",
       "billableOption": "Faturável",
       "nonBillableOption": "Não faturável"
+    },
+    "approval": {
+      "title": "Aprovação de trabalho pelo cliente",
+      "description": "Substitui o padrão do parceiro para esta organização. Escolha Herdar para usar o padrão do parceiro.",
+      "enabled": "Exigir aprovação do cliente",
+      "budgetTrigger": "Perguntar quando o orçamento de um ticket seria excedido",
+      "afterHoursTrigger": "Perguntar em trabalho fora do horário",
+      "enforcement": "Aplicação",
+      "enforcementSoft": "Flexível (avisar, permitir o lançamento)",
+      "enforcementHard": "Rígida (bloquear até aprovar)",
+      "ttl": "A solicitação de aprovação expira após (horas)",
+      "ttlRange": "A expiração deve ficar entre {{min}} e {{max}} horas",
+      "on": "Ativado",
+      "off": "Desativado",
+      "inherit": "Herdar",
+      "inheritValue": "Herdar ({{value}})",
+      "clear": "Remover substituição (herdar)",
+      "pendingInherit": "Herdará o padrão após salvar",
+      "loadFailed": "Não foi possível carregar as configurações de aprovação do cliente.",
+      "sourceOrg": "Substituição da organização",
+      "sourcePartner": "Padrão do parceiro",
+      "sourceDefault": "Padrão integrado"
     }
   },
   "organizationForm": {
@@ -6328,7 +6362,27 @@
     "locationEnabledLabel": "Sugerir um cronômetro quando um técnico chega ao local de um cliente",
     "locationHelp": "Cada técnico também precisa permitir a localização no próprio celular. A localização é verificada no celular e nunca é enviada ao Breeze.",
     "radiusLabel": "Raio de chegada padrão (m)",
-    "radiusRange": "O raio de chegada deve estar entre {{min}} e {{max}} metros"
+    "radiusRange": "O raio de chegada deve estar entre {{min}} e {{max}} metros",
+    "approval": {
+      "heading": "Aprovação de trabalho pelo cliente",
+      "description": "Pedir ao cliente que aprove o trabalho antes de ele ser lançado no orçamento ou fora do horário comercial. Este é o padrão do parceiro; as organizações podem substituí-lo.",
+      "enabledLabel": "Exigir aprovação do cliente para o trabalho",
+      "budgetTriggerLabel": "Perguntar quando o orçamento de um ticket seria excedido",
+      "afterHoursTriggerLabel": "Perguntar em trabalho fora do horário",
+      "enforcementLabel": "Aplicação",
+      "enforcementSoft": "Flexível (avisar, permitir o lançamento)",
+      "enforcementHard": "Rígida (bloquear até aprovar)",
+      "ttlLabel": "A solicitação de aprovação expira após (horas)",
+      "ttlRange": "A expiração deve ficar entre {{min}} e {{max}} horas",
+      "readOnly": "Você precisa de permissões de configuração em nível de parceiro para alterar esta política. Exibindo os valores atuais.",
+      "loadFailed": "Não foi possível carregar as configurações de aprovação do cliente.",
+      "source": {
+        "org": "Organização",
+        "partner": "Parceiro",
+        "default": "Padrão"
+      }
+    },
+    "savedApprovalFailed": "Configurações de tempo salvas, mas a política de aprovação do cliente não pôde ser salva"
   },
   "contactsCard": {
     "title": "Contatos",
@@ -6611,7 +6665,8 @@
     "nameTaken": "Já existe um tipo de trabalho com esse nome.",
     "rename": "Renomear",
     "loadError": "Não foi possível carregar os tipos de trabalho.",
-    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima."
+    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima.",
+    "afterHours": "Fora do horário (exige aprovação do cliente quando ativado)"
   },
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabalho padrão",

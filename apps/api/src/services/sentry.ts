@@ -60,6 +60,9 @@ const ALLOWED_TAG_NAMES = new Set([
   'org_id',
   'partner_id',
   'stripe_reconcile_stage',
+  // Restore-point ledger ingest (#4757): a closed set of literals written at
+  // fixed call sites ('tenant_mismatch', 'write_failed', 'call_site'); never an id.
+  'restore_point_ingest',
   // Autopay failures: local row UUIDs and bounded enum/phase labels only.
   'billing_notice_id',
   'billing_notice_kind',

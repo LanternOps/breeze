@@ -24,6 +24,19 @@ func isFirstAttempt(ctx context.Context) bool {
 	return n.Add(1) == 1
 }
 
+// stripRetryAfter models agents older than v0.64.3, whose retry wrapper
+// ignored Retry-After: it deletes the header before httputil sees it, so the
+// wrapper falls back to its own exponential delays.
+type stripRetryAfter struct{ base http.RoundTripper }
+
+func (t *stripRetryAfter) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if resp != nil {
+		resp.Header.Del("Retry-After")
+	}
+	return resp, err
+}
+
 // recordingTransport records every attempt by route template.
 type recordingTransport struct {
 	base http.RoundTripper

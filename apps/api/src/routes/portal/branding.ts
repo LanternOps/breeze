@@ -123,7 +123,8 @@ brandingRoutes.get('/branding', async (c) => {
       enableSoftwareInventory: portalBranding.enableSoftwareInventory,
       enableNetworkVisibility: portalBranding.enableNetworkVisibility,
       enableHourBlock: portalBranding.enableHourBlock,
-      enablePatchDetail: portalBranding.enablePatchDetail
+      enablePatchDetail: portalBranding.enablePatchDetail,
+      enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, auth.user.orgId))

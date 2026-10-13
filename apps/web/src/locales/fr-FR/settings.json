@@ -1431,7 +1431,11 @@
       "days_overdue": "Jours de retard",
       "pay_link": "Lien de paiement",
       "charge_total": "Montant total prélevé",
-      "attempted_amount": "Montant du paiement tenté"
+      "attempted_amount": "Montant du paiement tenté",
+      "approval_ask": "Demande d’approbation",
+      "approval_snapshot": "Chiffres de l’approbation",
+      "approval_expires": "Date limite d’approbation",
+      "approval_status": "Statut de l’approbation"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Paiements automatiques repris",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Reçu de paiement en ligne",
-      "payment_failed": "Le paiement n’a pas pu être effectué"
+      "payment_failed": "Le paiement n’a pas pu être effectué",
+      "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
+      "ticket_approval_requested_notify": "Demande d’approbation de travaux (pour information)",
+      "ticket_approval_decided": "Décision d’approbation de travaux"
     }
   },
   "inboundEmail": {
@@ -1993,6 +2000,10 @@
         "enablePatchDetail": {
           "label": "Détail des correctifs",
           "description": "Affiche à toutes les connexions au portail de cette organisation les correctifs en attente, installés et en échec de chaque appareil (titre, gravité, version, lien KB). Cela révèle quels postes n'ont pas leurs correctifs. Non activé par « Activer toute la visibilité »."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Détail des vulnérabilités",
+          "description": "Affiche à chaque connexion au portail de cette organisation les constats CVE de chaque appareil et leur gravité (ID CVE, description, gravité, score CVSS, disponibilité d’un correctif, statut). Cela révèle quelles machines sont vulnérables. N’est pas activé par Activer toute la visibilité."
         },
         "enableHourBlock": {
           "label": "Heures de support",
@@ -5548,7 +5559,8 @@
     "loading": "Chargement des paramètres du ticket...",
     "errors": {
       "load": "Les paramètres du ticket n’ont pas réussi à se charger.",
-      "save": "Impossible d’enregistrer les paramètres des tickets"
+      "save": "Impossible d’enregistrer les paramètres des tickets",
+      "savedApprovalFailed": "Les paramètres des tickets ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
     },
     "toasts": {
       "saved": "Paramètres du ticket enregistrés"
@@ -5574,6 +5586,28 @@
       "inherit": "Héritage",
       "billableOption": "Facturable",
       "nonBillableOption": "Non facturable"
+    },
+    "approval": {
+      "title": "Validation du travail par le client",
+      "description": "Remplace la valeur par défaut du partenaire pour cette organisation. Choisissez Hériter pour utiliser celle du partenaire.",
+      "enabled": "Exiger la validation du client",
+      "budgetTrigger": "Demander lorsque le budget d’un ticket serait dépassé",
+      "afterHoursTrigger": "Demander pour le travail hors heures ouvrées",
+      "enforcement": "Application",
+      "enforcementSoft": "Souple (avertir, autoriser la saisie)",
+      "enforcementHard": "Stricte (bloquer jusqu’à la validation)",
+      "ttl": "La demande de validation expire après (heures)",
+      "ttlRange": "L’expiration doit être comprise entre {{min}} et {{max}} heures",
+      "on": "Activé",
+      "off": "Désactivé",
+      "inherit": "Hériter",
+      "inheritValue": "Hériter ({{value}})",
+      "clear": "Supprimer le remplacement (hériter)",
+      "pendingInherit": "Héritera de la valeur par défaut après l’enregistrement",
+      "loadFailed": "Impossible de charger les paramètres de validation client.",
+      "sourceOrg": "Remplacement de l’organisation",
+      "sourcePartner": "Valeur par défaut du partenaire",
+      "sourceDefault": "Valeur par défaut intégrée"
     }
   },
   "organizationForm": {
@@ -6328,7 +6362,27 @@
     "locationEnabledLabel": "Suggérer un minuteur lorsqu’un technicien arrive sur le site d’un client",
     "locationHelp": "Chaque technicien doit également autoriser la localisation sur son téléphone. La position est vérifiée sur le téléphone et n’est jamais envoyée à Breeze.",
     "radiusLabel": "Rayon d’arrivée par défaut (m)",
-    "radiusRange": "Le rayon d’arrivée doit être compris entre {{min}} et {{max}} mètres"
+    "radiusRange": "Le rayon d’arrivée doit être compris entre {{min}} et {{max}} mètres",
+    "approval": {
+      "heading": "Validation du travail par le client",
+      "description": "Demander au client de valider le travail avant qu’il soit imputé à son budget ou réalisé hors des heures ouvrées. Il s’agit de la valeur par défaut du partenaire ; les organisations peuvent la remplacer.",
+      "enabledLabel": "Exiger la validation du client pour le travail",
+      "budgetTriggerLabel": "Demander lorsque le budget d’un ticket serait dépassé",
+      "afterHoursTriggerLabel": "Demander pour le travail hors heures ouvrées",
+      "enforcementLabel": "Application",
+      "enforcementSoft": "Souple (avertir, autoriser la saisie)",
+      "enforcementHard": "Stricte (bloquer jusqu’à la validation)",
+      "ttlLabel": "La demande de validation expire après (heures)",
+      "ttlRange": "L’expiration doit être comprise entre {{min}} et {{max}} heures",
+      "readOnly": "Vous avez besoin de droits de paramétrage à l’échelle du partenaire pour modifier cette politique. Les valeurs actuelles sont affichées.",
+      "loadFailed": "Impossible de charger les paramètres de validation client.",
+      "source": {
+        "org": "Organisation",
+        "partner": "Partenaire",
+        "default": "Par défaut"
+      }
+    },
+    "savedApprovalFailed": "Les paramètres de temps ont été enregistrés, mais la politique d'approbation du client n'a pas pu l'être"
   },
   "contactsCard": {
     "title": "Contacts",
@@ -6611,7 +6665,8 @@
     "nameTaken": "Un type de travail portant ce nom existe déjà.",
     "rename": "Renommer",
     "loadError": "Impossible de charger les types de travail.",
-    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus."
+    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus.",
+    "afterHours": "Hors heures ouvrées (exige la validation du client lorsque activé)"
   },
   "ticketCategories": {
     "defaultWorkType": "Type de travail par défaut",

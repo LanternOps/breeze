@@ -28,6 +28,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
@@ -276,7 +277,8 @@ moveOrgRoutes.post(
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       // #8181: block-drawn time cannot change org — same rolled-back refusal.
-      if (err instanceof TicketMoveHourBlockError) {
+      // #4617: nor can a ticket with a pending customer approval request.
+      if (err instanceof TicketMoveHourBlockError || err instanceof TicketMoveApprovalPendingError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       // #5573 W02 — same shape: the transaction rolled back untouched, so this

@@ -73,6 +73,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'ticket.customer_notification (no partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: null }, expectedFrom: DEFAULT_FROM },
   { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'security.caller_verification_link', params: { ...MESSAGE, purpose: 'security.caller_verification_link', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },

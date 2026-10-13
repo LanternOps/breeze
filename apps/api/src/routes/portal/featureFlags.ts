@@ -9,12 +9,13 @@ import type { PortalVisibilityFlag } from '../../services/portal/portalFlags';
 // as dataStatus: 'not_enabled' with null metrics.
 //
 // Widened (visibility W05, #7735) with the sensitive flags that DO use the 403
-// gate: enablePatchDetail (and, with W06, enableVulnerabilityDetail).
+// gate: enablePatchDetail and enableVulnerabilityDetail (W06, #7736).
 // enableNetworkAlerts stays out like enableNetworkVisibility: it omits fields
 // when off instead of answering 403.
 export type StrictPortalVisibilityFlag =
   | Exclude<PortalVisibilityFlag, 'enableNetworkVisibility'>
-  | 'enablePatchDetail';
+  | 'enablePatchDetail'
+  | 'enableVulnerabilityDetail';
 
 // Fail-closed gates that are NOT part of the "Enable all" visibility set
 // (PORTAL_VISIBILITY_FLAG_KEYS). Each is independent and billing-sensitive:
@@ -141,6 +142,10 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalGateFlag,{ error: string; code:
   enablePatchDetail: {
     error: 'Patch detail is not enabled for this portal',
     code: 'PORTAL_PATCH_DETAIL_DISABLED',
+  },
+  enableVulnerabilityDetail: {
+    error: 'Vulnerability detail is not enabled for this portal',
+    code: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
   },
   enableHourBlock: {
     error: 'Support hours are not enabled for this portal',

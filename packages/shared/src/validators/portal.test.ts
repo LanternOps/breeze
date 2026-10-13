@@ -276,6 +276,8 @@ describe('updatePortalSettingsSchema W04 flags', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableSoftwareInventory: true }).success).toBe(true);
     expect(updatePortalSettingsSchema.safeParse({ enablePatchDetail: true }).success).toBe(true);
     expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
+    expect(updatePortalSettingsSchema.safeParse({ enableVulnerabilityDetail: true }).success).toBe(true);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enableVulnerabilityDetail');
   });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);

@@ -8,7 +8,11 @@
  */
 export const DIAGNOSE_CONNECTIVITY_TOOL_NAME = 'diagnose_connectivity';
 
-const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([DIAGNOSE_CONNECTIVITY_TOOL_NAME]);
+const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([
+  DIAGNOSE_CONNECTIVITY_TOOL_NAME,
+  // operator_plan: the approval's whole authority is the pinned effect rows.
+  'operator_plan',
+]);
 
 export function requiresPinnedEffectDigest(toolName: string): boolean {
   return PINNED_EFFECT_DIGEST_REQUIRED.has(toolName);

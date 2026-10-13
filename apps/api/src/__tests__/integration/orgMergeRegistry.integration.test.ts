@@ -245,6 +245,9 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // 2026-10-26-160000): unconditional RAISE (55000) on UPDATE, same
   // retention-GUC-only bypass. Table is leave-for-erasure.
   'ai_operator_task_events.ai_operator_task_events_block_update': 'unconditional append-only RAISE',
+  // Recipe Library E4 (#6169): both plan-approval tables are leave-for-erasure.
+  'ai_operator_plan_approval_effects.ai_operator_plan_approval_effects_no_update': 'unconditional RAISE: approved effect rows are immutable evidence',
+  'ai_operator_plan_approvals.ai_operator_plan_approvals_immutable_trg': 'RAISEs on any org_id/content change (only lifecycle columns may move)',
 };
 
 /**

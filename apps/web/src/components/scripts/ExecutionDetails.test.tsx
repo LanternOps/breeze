@@ -249,3 +249,47 @@ describe('ExecutionDetails empty stdout (sweep E5)', () => {
     expect(screen.getByText('(empty)')).toBeInTheDocument();
   });
 });
+
+describe('ExecutionDetails restore-point badge (#4759)', () => {
+  it('renders the restore-point badge when the execution carries an outcome', () => {
+    renderExecution({
+      restorePoint: {
+        status: 'created',
+        requestId: 'r-1',
+        attemptedAt: '2026-09-02T14:03:00Z',
+        durationMs: 900,
+        message: null,
+        existingPointAgeMinutes: null,
+        frequencyMinutes: null
+      }
+    });
+
+    expect(screen.getByTestId('restore-point-badge').textContent).toMatch(
+      /restore point creation confirmed/i
+    );
+  });
+
+  it('shows a requested-but-unreported execution as pending, not as success', () => {
+    renderExecution({
+      restorePoint: {
+        status: 'requested',
+        requestId: 'r-2',
+        attemptedAt: null,
+        durationMs: null,
+        message: null,
+        existingPointAgeMinutes: null,
+        frequencyMinutes: null
+      }
+    });
+
+    expect(screen.getByTestId('restore-point-badge').textContent).toMatch(/awaiting the device/i);
+  });
+
+  it('renders nothing when there is no outcome (null from the API, or absent)', () => {
+    const { unmount } = renderExecution({ restorePoint: null });
+    expect(screen.queryByTestId('restore-point-badge')).toBeNull();
+    unmount();
+    renderExecution({});
+    expect(screen.queryByTestId('restore-point-badge')).toBeNull();
+  });
+});

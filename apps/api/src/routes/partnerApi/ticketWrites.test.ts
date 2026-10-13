@@ -351,6 +351,9 @@ describe('partner tickets write surface', () => {
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { assigneeId: USER_ID })).status).toBe(400);
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { responseSlaMinutes: 5 })).status).toBe(400);
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { submittedBy: USER_ID })).status).toBe(400);
+    // #4617: a ticket budget is a staff decision on the customer's spend ceiling — not a PSA field.
+    expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { budgetMinutes: 60 })).status).toBe(400);
+    expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { budgetAmount: '100.00' })).status).toBe(400);
 
     selectResults = [[foundRow()]];
     const ok = await send(`/tickets/${TICKET_ID}`, 'PATCH', { subject: 'Renamed', tags: ['a'] });

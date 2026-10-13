@@ -38,6 +38,9 @@ const JOB_NAME = 'publish';
 const JOB_ID = 'caller-verification-publish';
 const PUBLISH_INTERVAL_MS = 5000;
 const BATCH = 100;
+const MAX_DELIVERY_FAILURES = 3;
+// Process-local consecutive-failure counts (no attempts column; concurrency 1).
+const failures = new Map<string, number>();
 
 const scoped = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn, 'callerVerification.publisher'));
 
@@ -47,14 +50,42 @@ export async function publishCallerVerificationEffects(): Promise<void> {
     and(eq(v.status, 'pending'), or(isNull(v.deliveryPublishedAt), and(ne(v.method, 'callback_attestation'), sql`${v.expiresAt}<=now()`))),
   )).limit(BATCH));
   for (const row of rows) {
+    try {
+      await publishRow(row);
+      failures.delete(row.id);
+    } catch (err) {
+      await handleRowFailure(row, err);
+    }
+  }
+}
+
+type Row = typeof v.$inferSelect;
+
+async function handleRowFailure(row: Row, err: unknown): Promise<void> {
+  const error = err instanceof Error ? err : new Error(String(err));
+  console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.name });
+  captureException(error, undefined, { verificationId: row.id });
+  const count = (failures.get(row.id) ?? 0) + 1;
+  failures.set(row.id, count);
+  if (count < MAX_DELIVERY_FAILURES || row.status !== 'pending' || row.method === 'callback_attestation') return;
+  failures.delete(row.id);
+  try {
+    await applyDecision({ verificationId: row.id, decision: { kind: 'undeliverable', reason: row.method === 'sms' ? 'sms_failed' : 'email_failed' } });
+  } catch (inner) {
+    captureException(inner instanceof Error ? inner : new Error(String(inner)), undefined, { verificationId: row.id });
+  }
+}
+
+async function publishRow(row: Row): Promise<void> {
+  {
     if (row.status === 'pending') {
       if (row.method !== 'callback_attestation' && row.expiresAt.getTime() <= Date.now()) {
         await applyDecision({ verificationId: row.id, decision: { kind: 'timeout' } });
-        continue;
+        return;
       }
       if (row.method !== 'callback_attestation') await callerVerificationPorts.deliver(row.id);
       await scoped(() => db.update(v).set({ deliveryPublishedAt: new Date() }).where(eq(v.id, row.id)));
-      continue;
+      return;
     }
     const recipients = await scoped(() => securityRecipients(row.orgId));
     const email = getEmailService();

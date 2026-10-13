@@ -147,5 +147,18 @@
       "private_keys": "Private Schlüssel (SSH, GnuPG, TLS)",
       "session_tokens": "Gespeicherte Sitzungstoken und Cloud-Anmeldedaten"
     }
+  },
+  "operatorPlan": {
+    "title": "Plan für die Aufgabe des KI-Operators",
+    "summary_one": "{{count}} Auswirkung, Planrevision {{revision}}",
+    "summary_other": "{{count}} Auswirkungen, Planrevision {{revision}}",
+    "groupBreeze": "Breeze-Geräte",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Schritt {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Die Auswirkungen werden in dieser Reihenfolge ausgeführt. Die Anmeldung wird zuletzt deaktiviert, sodass ein vorzeitiger Abbruch nie E-Mails ohne Weiterleitung hinterlässt.",
+    "empty": "Dieser Plan enthält keine Auswirkungen.",
+    "invalid": "Dieser Plan konnte nicht vollständig angezeigt werden. Genehmigen Sie ihn nicht."
   }
 }

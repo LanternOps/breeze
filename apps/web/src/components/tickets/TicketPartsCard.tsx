@@ -19,7 +19,7 @@ interface PartRow {
   /** `billed` locks quantity/unitPrice/costBasis/isBillable/catalogItemId server-side
    *  (409 PART_BILLED if any is PRESENT in a PATCH) — only description, vendor,
    *  part number and notes may change. */
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
   /** Stamped at creation from the ticket's org; the server never lets the client set it. */
   currencyCode: string;
 }

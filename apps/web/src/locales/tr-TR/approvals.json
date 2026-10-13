@@ -147,5 +147,18 @@
       "private_keys": "Özel anahtarlar (SSH, GnuPG, TLS)",
       "session_tokens": "Kayıtlı oturum belirteçleri ve bulut kimlik bilgileri"
     }
+  },
+  "operatorPlan": {
+    "title": "Yapay zekâ operatörü görevi için plan",
+    "summary_one": "{{count}} etki, plan revizyonu {{revision}}",
+    "summary_other": "{{count}} etki, plan revizyonu {{revision}}",
+    "groupBreeze": "Breeze cihazları",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Adım {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Etkiler bu sırayla çalışır. Oturum açma en son devre dışı bırakılır; böylece erken durdurma e-postaları asla yönlendirmesiz bırakmaz.",
+    "empty": "Bu plan hiçbir etki içermiyor.",
+    "invalid": "Bu planın tamamı görüntülenemedi. Onaylamayın."
   }
 }

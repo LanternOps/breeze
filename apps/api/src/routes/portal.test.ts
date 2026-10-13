@@ -135,6 +135,8 @@ vi.mock('../db/schema', () => ({
   deviceHardwareHealth: {},
   devicePatches: {},
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
+  deviceVulnerabilities: {},
+  vulnerabilities: { severity: 'vulnerabilities.severity' },
   deviceWarranty: {},
   devices: {},
   discoveredAssets: {},

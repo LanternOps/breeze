@@ -20,12 +20,14 @@ import { portalHardwareInventoryRoutes } from './hardwareInventory';
 import { portalPerformanceRoutes } from './performance';
 import { portalSoftwareRoutes } from './software';
 import { portalPatchRoutes } from './patches';
+import { portalVulnerabilityRoutes } from './vulnerabilities';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
 import { portalNetworkRoutes } from './network';
 import { portalHourBlockRoutes } from './hourBlock';
+import { portalApprovalRoutes } from './approvals';
 
 export const portalRoutes = new Hono();
 
@@ -86,6 +88,9 @@ portalRoutes.use('/software/*', createPortalFeatureGateStrict('enableSoftwareInv
 // W05 (#7735): patch detail, sensitive (outside "Enable all"), fail-closed.
 portalRoutes.use('/patches/*', portalAuthMiddleware);
 portalRoutes.use('/patches/*', createPortalFeatureGateStrict('enablePatchDetail'));
+// W06 (#7736): vulnerability detail, sensitive (outside "Enable all"), fail-closed.
+portalRoutes.use('/vulnerabilities/*', portalAuthMiddleware);
+portalRoutes.use('/vulnerabilities/*', createPortalFeatureGateStrict('enableVulnerabilityDetail'));
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
@@ -127,6 +132,13 @@ portalRoutes.use('/tickets/*', async (c, next) => {
   return portalTicketsEnabledMiddleware(c, next);
 });
 
+// Customer work approval (#4617 W04): a ticketing surface, so it carries the
+// same fail-open enable_tickets gate as `/tickets/*` (403
+// PORTAL_TICKETS_DISABLED) — no flag of its own. `/approvals/*` also matches
+// the bare `/approvals` list path (approvals.gate.test.ts pins both).
+portalRoutes.use('/approvals/*', portalAuthMiddleware);
+portalRoutes.use('/approvals/*', portalTicketsEnabledMiddleware);
+
 portalRoutes.route('/', deviceRoutes);
 portalRoutes.route('/', ticketRoutes);
 portalRoutes.route('/', assetRoutes);
@@ -140,9 +152,11 @@ portalRoutes.route('/', portalHardwareInventoryRoutes);
 portalRoutes.route('/', portalPerformanceRoutes);
 portalRoutes.route('/', portalSoftwareRoutes);
 portalRoutes.route('/', portalPatchRoutes);
+portalRoutes.route('/', portalVulnerabilityRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
 portalRoutes.route('/', portalHourBlockRoutes);
+portalRoutes.route('/', portalApprovalRoutes);

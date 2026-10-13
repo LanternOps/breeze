@@ -241,6 +241,8 @@ export interface SupportUsageTicketDto {
   coveredByBlockMinutes?: number;
   /** Block hours W04: minutes past the block's entitlement. Flag-on only. */
   overBlockMinutes?: number;
+  /** #4617: held until the customer approves it (billed quantity). Optional until the portal renders it (W04). */
+  awaitingApprovalMinutes?: number;
 }
 
 export interface SupportUsageDto {
@@ -257,6 +259,8 @@ export interface SupportUsageDto {
     coveredByBlock?: CountHoursDto;
     /** Block hours W04: hours past the block's entitlement. Flag-on only. */
     overBlock?: CountHoursDto;
+    /** #4617: time held for the customer's approval — neither billed nor to be billed yet. */
+    awaitingApproval?: CountHoursDto;
   };
   tickets: SupportUsageTicketDto[];
 }

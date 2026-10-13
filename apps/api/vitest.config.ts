@@ -65,6 +65,8 @@ export default defineConfig({
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
       'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency W05 (#8194): real-DB pass + system-only cache proof.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): use real PostgreSQL and
       // the integration setup.
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',

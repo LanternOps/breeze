@@ -72,6 +72,7 @@ import {
 } from '@breeze/shared';
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
+import { deploymentResultRestorePointSql } from '../services/restorePointInline';
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
@@ -2757,6 +2758,9 @@ softwareRoutes.get(
         retryCount: deploymentResults.retryCount,
         deviceCommandId: deploymentResults.deviceCommandId,
         hostname: devices.hostname,
+        // #4759 — newest System Restore ledger row for this device's install
+        // (NULL when Breeze never asked). Drives the inline badge.
+        restorePoint: deploymentResultRestorePointSql(deploymentResults.deploymentId, deploymentResults.deviceId),
         queuedOffline: sql<boolean>`coalesce(${deploymentResults.status} = 'pending' and ${deploymentResults.deviceCommandId} is not null and ${deviceCommands.status} = 'pending', false)`,
         // #3578 in-flight signals, read off the same join. sentAt is when the
         // command was handed to the agent (WS push or poll claim) — the

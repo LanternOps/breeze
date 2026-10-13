@@ -28,4 +28,9 @@ describe('updateWorkTypeSchema', () => {
   it('rejects an empty patch object', () => {
     expect(updateWorkTypeSchema.safeParse({}).success).toBe(false);
   });
+  it('#4617: accepts the after-hours flag on update and create', () => {
+    expect(updateWorkTypeSchema.parse({ isAfterHours: true })).toEqual({ isAfterHours: true });
+    expect(createWorkTypeSchema.parse({ name: 'Night', isAfterHours: true })).toEqual({ name: 'Night', isAfterHours: true });
+    expect(updateWorkTypeSchema.safeParse({ isAfterHours: 'yes' }).success).toBe(false);
+  });
 });

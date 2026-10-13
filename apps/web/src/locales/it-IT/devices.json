@@ -914,6 +914,7 @@
     "diskCleanup": "Pulizia disco",
     "diskUsageAnalysisAndCleanup": "Analisi dell'utilizzo del disco e pulizia",
     "bootPerf": "Prestazioni di avvio",
+    "systemRestore": "Ripristino configurazione di sistema",
     "startupTimeAndBootProcessAnalysis": "Analisi del tempo di avvio e del processo di boot",
     "backup": "Backup",
     "backupStatusJobsSnapshotsAndVerification": "Stato backup, processi, snapshot e verifica",

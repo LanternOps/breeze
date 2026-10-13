@@ -53,3 +53,22 @@ export const WORKLOAD_INVENTORY_PROTOCOL_VERSION = 1;
 export const WORKLOAD_INVENTORY_MIN_INTERVAL_MINUTES = 15;
 export const WORKLOAD_INVENTORY_MAX_INTERVAL_MINUTES = 1440;
 export const WORKLOAD_INVENTORY_DEFAULT_INTERVAL_MINUTES = 60;
+
+/**
+ * Image currency (#3813, spec §9.1): per container row, how its local image
+ * compares with the registry's current digest for the same tag. The
+ * unknown-class statuses (pending, private, unsupported_registry, error) never
+ * count as current (spec §10).
+ */
+export const WORKLOAD_UPSTREAM_STATUSES = [
+  'pending',
+  'current',
+  'behind',
+  'pinned',
+  'local',
+  'private',
+  'unsupported_registry',
+  'not_found',
+  'error',
+] as const;
+export type WorkloadUpstreamStatus = (typeof WORKLOAD_UPSTREAM_STATUSES)[number];

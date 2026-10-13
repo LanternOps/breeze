@@ -4,6 +4,12 @@ import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  restorePointPayloadField,
+} from './restorePointRequest';
+import type { RestorePointRequestBlock } from '@breeze/shared';
 import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
 import type { ScriptProposalRow } from '../db/schema/scriptProposals';
 import type { ScriptApprovalMethod } from '@breeze/shared';
@@ -704,6 +710,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   let payload: Record<string, unknown>;
   let command: Awaited<ReturnType<typeof queueCommand>>;
   let stage: 'payload build' | 'queueCommand' = 'payload build';
+  let restorePoint: RestorePointRequestBlock | null = null;
   try {
     // Payload build lives inside this guarded region (not after it) so a seal
     // failure — #3409 PR4a made the 'script' entry real — also discards the
@@ -715,6 +722,22 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // Live since PR4c-2: `secretEnv` is set for `tenantSecret` parameters and
     // sealed here into `secretEnvEnvelope`; without one this is a passthrough.
     const reservedCommandId = randomUUID();
+    // #4609 W05: the System Restore checkpoint decision, resolved inside this
+    // guarded region so a resolution failure also discards the pending
+    // execution row. Stamped BEFORE encryption; the block carries no secret
+    // material and the encryptor passes it through untouched. Null (no
+    // policy, toggle off, non-Windows) adds no key at all.
+    restorePoint = await buildRestorePointRequest({
+      deviceId: device.id,
+      orgId: device.orgId,
+      osType: device.osType,
+      trigger: 'script',
+      label: source.kind === 'saved' ? `run script ${source.script.name}`
+        : source.kind === 'proposal' ? 'run reviewed script'
+          : 'run command',
+      deviceCommandId: reservedCommandId,
+      scriptExecutionId: executionId,
+    });
     payload = encryptSensitivePayloadFields('script', {
       scriptId: payloadScriptId,
       ...(executionId ? { executionId } : {}),
@@ -747,6 +770,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // agent already treats as fail-closed.
       ...(acknowledgedSecurityPatterns.length > 0 ? { acknowledgedSecurityPatterns } : {}),
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
+      ...restorePointPayloadField(restorePoint),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
     command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
@@ -774,10 +798,12 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
+    await discardRestorePointRequest(restorePoint);
     throw err;
   }
   if (!command) {
     await discardPendingExecution('queueCommand returned no row');
+    await discardRestorePointRequest(restorePoint);
     return { ok: false, code: 'insert_failed', error: 'Failed to create command' };
   }
 

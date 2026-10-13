@@ -89,6 +89,17 @@ describe('closeHourBlockPeriods (real DB) #8181', () => {
     expect(r.closes[0]!.consumedHours).toBe(0.5);
   });
 
+  it('never draws time held for customer approval (#4617): it is not drawn down until released', async () => {
+    const f = await seedBlockFixture();
+    await claimPeriod(f, '2026-07-01', '2026-08-01');
+    const held = await seedEntry(f, { minutes: 90, endedAt: '2026-07-10T12:00:00Z', billingStatus: 'awaiting_approval' });
+    const settled = await seedEntry(f, { minutes: 60, endedAt: '2026-07-11T12:00:00Z' });
+    const r = await close(f);
+    expect(r.closes[0]).toMatchObject({ consumedHours: 1, entryCount: 1 });
+    expect(await entryState(held)).toEqual({ billingStatus: 'awaiting_approval', contractLineId: null });
+    expect(await entryState(settled)).toMatchObject({ billingStatus: 'contract', contractLineId: f.blockLineId });
+  });
+
   it('ignores no_charge, non-billable, already-billed and card-included entries', async () => {
     const f = await seedBlockFixture();
     await claimPeriod(f, '2026-07-01', '2026-08-01');

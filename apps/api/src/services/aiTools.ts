@@ -86,6 +86,7 @@ import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 // AI-agent GOVERNANCE (P2-5, #4192) — distinct from aiToolsAgentMgmt above,
 // which manages the Go endpoint agent. See that module's header.
 import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
+import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
 import { registerCatalogTools } from './aiToolsCatalog';
@@ -361,6 +362,7 @@ registerDocsTools(aiTools);
 registerRemoteTools(aiTools);
 registerAgentMgmtTools(aiTools);
 registerAiAgentGovernanceTools(aiTools);
+registerAiOperatorTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
 registerDiagnosticAccessTools(aiTools);

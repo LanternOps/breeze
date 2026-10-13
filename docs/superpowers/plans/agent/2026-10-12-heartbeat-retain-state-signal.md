@@ -4,6 +4,7 @@ spec: none (issue-scoped; the Open Decisions section is the design record)
 status: draft
 date: 2026-10-12
 area: agent / api / heartbeat
+tracking_issue: LanternOps/breeze#8614
 ---
 
 # Heartbeat "Retain Current State" Signal — Implementation Plan

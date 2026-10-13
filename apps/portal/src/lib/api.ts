@@ -834,6 +834,8 @@ export interface BrandingConfig {
   enableHourBlock?: boolean;
   /** Visibility W05 (#7735): MSP turned sensitive per-host patch detail on for this org. */
   enablePatchDetail?: boolean;
+  /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
+  enableVulnerabilityDetail?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -901,7 +903,83 @@ export interface PortalDevicePatchItem {
   lastCheckedAt: string | null;
 }
 
+export type PortalVulnerabilityStatus = 'open' | 'patched' | 'mitigated' | 'accepted';
+export interface PortalVulnerabilitySummaryItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  affectedDevices: number;
+}
+export interface PortalVulnerabilityFindingItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  status: PortalVulnerabilityStatus;
+  detectedAt: string;
+  resolvedAt: string | null;
+  deviceId: string;
+  deviceName: string;
+}
+
+// Customer work approval (#8200): staff ask the customer to approve extra or
+// after-hours work on a ticket. Dates arrive as ISO strings.
+export type PortalApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+
+export interface PortalApproval {
+  id: string;
+  ticketId: string;
+  ticketNumber: string;
+  ticketSubject: string;
+  trigger: 'budget' | 'after_hours';
+  status: PortalApprovalStatus;
+  revision: number;
+  requestedAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  decisionOrigin: 'customer' | 'on_behalf' | null;
+  /** Staff message to the customer. */
+  message: string | null;
+  ask: {
+    minutes: number | null;
+    amount: string | null;
+    currencyCode: string | null;
+    coverageStartsAt: string | null;
+    coverageEndsAt: string | null;
+  };
+  snapshot: {
+    budgetMinutes: number | null;
+    consumedMinutes: number | null;
+    budgetAmount: string | null;
+    consumedAmount: string | null;
+  };
+  role: 'approver' | 'notify';
+  canDecide: boolean;
+}
+
+export interface PortalApprovalDecisionBody {
+  /** The revision the customer was looking at; the API refuses a stale one. */
+  revision: number;
+  signerName: string;
+  note?: string;
+}
+
+export interface PortalApprovalDecisionResult {
+  status: 'approved' | 'denied';
+  releasedEntryCount: number;
+  stillHeldEntryCount: number;
+}
+
 export const portalApi = {
+  getVulnerabilitySummary: (params: ListParams & { status?: PortalVulnerabilityStatus } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>('/portal/vulnerabilities/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open' }), config),
+  getVulnerabilityFindings: (params: ListParams & { status?: PortalVulnerabilityStatus; deviceId?: string } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilityFindingItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilityFindingItem>>('/portal/vulnerabilities/findings' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open', deviceId: params.deviceId }), config),
   getPatchSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalPatchSummaryItem>>> =>
     apiGet<PortalSoftwarePage<PortalPatchSummaryItem>>('/portal/patches/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getDevicePatches: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalDevicePatchItem>>> =>
@@ -921,6 +999,38 @@ export const portalApi = {
         data: EnrichedPortalDevice[];
         pagination: Pagination;
       }>(`/portal/devices${query}`, config)
+    );
+  },
+
+  getApprovals: async (
+    config: ApiRequestConfig = {},
+    options: { pendingOnly?: boolean } = {}
+  ): Promise<ApiResponse<{ data: PortalApproval[] }>> => {
+    const query = buildQueryString({ status: options.pendingOnly ? 'pending' : undefined });
+    return apiGet<{ data: PortalApproval[] }>(`/portal/approvals${query}`, config);
+  },
+
+  approveApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/approve`,
+      body,
+      config
+    );
+  },
+
+  denyApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/deny`,
+      body,
+      config
     );
   },
 

@@ -553,5 +553,123 @@
     "missingRate": "Abrechenbar · Stundensatz nicht konfiguriert",
     "recalculated": "Die Abrechnung wird beim Speichern für diese Tätigkeitsart neu berechnet.",
     "unavailable": "Abrechnungsergebnis nicht verfügbar"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Diese Freigabeanfrage ist nicht mehr offen.",
+      "requestChanged": "Die Anfrage hat sich geändert, während Sie sie angesehen haben. Die aktuelle Version wurde neu geladen; prüfen Sie sie und versuchen Sie es erneut.",
+      "requestExpired": "Diese Freigabeanfrage ist abgelaufen. Fragen Sie erneut an, um eine neue zu senden.",
+      "requestAlreadyPending": "Für dieses Ticket ist bereits eine Freigabeanfrage aus demselben Grund offen.",
+      "requestNotReaskable": "Nur eine abgelehnte, abgelaufene oder stornierte Anfrage mit zurückgehaltener Zeit kann erneut gestellt werden.",
+      "nothingHeld": "Für dieses Ticket gibt es keine zurückgehaltene Zeit, für die eine Freigabe angefragt werden könnte.",
+      "approvalsDisabled": "Die Kundenfreigabe ist für diesen Kunden nicht aktiviert.",
+      "entryNotResolvable": "Diese Zeit kann erst abgeschrieben werden, nachdem die Freigabeanfrage abgelehnt wurde, abgelaufen ist oder storniert wurde.",
+      "approvalRequestPending": "Für dieses Ticket wartet eine Freigabeanfrage auf den Kunden, daher kann es nicht verschoben werden. Stornieren oder klären Sie zuerst die Anfrage.",
+      "sourceAwaitingApproval": "Ein Teil der Zeit auf dieser Rechnung wartet auf die Freigabe des Kunden. Lassen Sie sie freigeben oder schreiben Sie sie ab, bevor Sie die Rechnung ausstellen.",
+      "approvalRequired": "Für abrechenbare Zeit auf diesem Ticket ist zuerst die Freigabe des Kunden nötig. Fordern Sie die Freigabe im Bereich „Freigaben“ des Tickets an."
+    },
+    "budget": {
+      "title": "Budget und Freigabe",
+      "hours": "Budget (Stunden)",
+      "amount": "Budgetbetrag",
+      "save": "Budget speichern",
+      "saved": "Budget gespeichert",
+      "saveFailed": "Das Budget konnte nicht gespeichert werden",
+      "invalidHours": "Geben Sie Stunden größer als 0 ein oder lassen Sie das Feld für kein Limit leer.",
+      "invalidAmount": "Geben Sie einen Betrag größer als 0 mit höchstens 2 Nachkommastellen ein oder lassen Sie das Feld leer.",
+      "ceiling": "Obergrenze {{ceiling}}",
+      "ceilingWithExtensions": "Obergrenze {{ceiling}} (Budget {{budget}} + {{extra}} freigegeben)",
+      "noBudget": "Kein Budget festgelegt",
+      "usedLegend": "Verbraucht {{value}}",
+      "heldLegend": "Wartet auf Freigabe {{value}}",
+      "unpriced_one": "{{count}} zurückgehaltener Eintrag hat noch keinen Preis.",
+      "unpriced_other": "{{count}} zurückgehaltene Einträge haben noch keinen Preis.",
+      "barLabel": "Budgetverbrauch",
+      "requestApproval": "Freigabe anfordern"
+    },
+    "request": {
+      "trigger": "Grund",
+      "triggerBudget": "Budget überschritten",
+      "triggerAfterHours": "Arbeit außerhalb der Geschäftszeiten",
+      "extensionMinutes": "Zusätzliche Minuten",
+      "extensionAmount": "Zusätzlicher Betrag",
+      "windowStart": "Gilt ab",
+      "windowEnd": "Gilt bis",
+      "message": "Nachricht an den Kunden (optional)",
+      "submit": "Anfrage senden",
+      "sent": "Freigabeanfrage gesendet",
+      "failed": "Die Freigabeanfrage konnte nicht gesendet werden",
+      "invalidExtension": "Geben Sie zusätzliche Minuten oder einen zusätzlichen Betrag größer als 0 ein.",
+      "invalidWindow": "Wählen Sie Beginn und Ende, wobei das Ende nach dem Beginn liegt und höchstens 14 Tage danach."
+    },
+    "panel": {
+      "title": "Kundenfreigaben",
+      "status": {
+        "pending": "Offen",
+        "approved": "Freigegeben",
+        "denied": "Abgelehnt",
+        "expired": "Abgelaufen",
+        "cancelled": "Storniert"
+      },
+      "revision": "Version {{n}}",
+      "ask": "Angefragt: {{ask}}",
+      "window": "Gilt von {{from}} bis {{to}}",
+      "expires": "Läuft ab {{when}}",
+      "heldEntries_one": "{{count}} zurückgehaltener Eintrag",
+      "heldEntries_other": "{{count}} zurückgehaltene Einträge",
+      "approvers": "Freigebende",
+      "notified": "Benachrichtigt",
+      "noneListed": "Keine",
+      "noApprover": "Kein Freigebender hinterlegt: Fügen Sie einen Rechnungskontakt hinzu oder erfassen Sie die Entscheidung stellvertretend.",
+      "decidedByCustomer": "Entschieden von {{who}}",
+      "customerFallback": "dem Kunden",
+      "decidedOnBehalf": "Erfasst von {{user}} im Namen von {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Mündlich",
+        "email": "E-Mail",
+        "signedDocument": "Unterzeichnetes Dokument",
+        "other": "Sonstiges"
+      },
+      "cancel": "Anfrage stornieren",
+      "cancelConfirmTitle": "Diese Freigabeanfrage stornieren?",
+      "cancelConfirmMessage": "Der Kunde kann nicht mehr antworten. Bereits zurückgehaltene Zeit bleibt zurückgehalten, bis Sie erneut anfragen oder sie abschreiben.",
+      "cancelled": "Freigabeanfrage storniert",
+      "cancelFailed": "Die Anfrage konnte nicht storniert werden",
+      "reask": "Erneut anfragen",
+      "reaskSubmit": "Erneut senden",
+      "reasked": "Freigabeanfrage erneut gesendet",
+      "reaskFailed": "Die erneute Anfrage ist fehlgeschlagen",
+      "record": "Entscheidung erfassen"
+    },
+    "record": {
+      "title": "Entscheidung des Kunden erfassen",
+      "intro": "Verwenden Sie dies, wenn der Kunde Ihnen seine Entscheidung außerhalb von Breeze mitgeteilt hat. Sie wird unter Ihrem Namen protokolliert.",
+      "target": "Version {{revision}} · {{ask}}",
+      "decision": "Entscheidung",
+      "approve": "Freigegeben",
+      "deny": "Abgelehnt",
+      "method": "Wie wurde sie mitgeteilt?",
+      "reference": "Referenz",
+      "referencePlaceholder": "z. B. Telefonat am 12. Okt., E-Mail-Betreff, Dokumentnummer",
+      "signerName": "Name des Kunden",
+      "signerEmail": "E-Mail des Kunden (optional)",
+      "note": "Notiz (optional)",
+      "submit": "Entscheidung erfassen",
+      "recorded": "Entscheidung erfasst",
+      "failed": "Die Entscheidung konnte nicht erfasst werden"
+    },
+    "held": {
+      "chip": "Wartet auf Kundenfreigabe",
+      "writeOff": "Abschreiben",
+      "writeOffTitle": "Zurückgehaltene Zeit abschreiben?",
+      "writeOffMessage": "Diese Zeit wird zurückgehalten, weil der Kunde sie nicht freigegeben hat. Beim Abschreiben wird sie als nicht berechenbar markiert und nicht in Rechnung gestellt.",
+      "writtenOff": "Zeit abgeschrieben",
+      "writeOffFailed": "Die Zeit konnte nicht abgeschrieben werden"
+    },
+    "timer": {
+      "startNonBillable": "Als nicht abrechenbar starten"
+    },
+    "loadError": "Kundenfreigaben konnten nicht geladen werden",
+    "retry": "Erneut versuchen"
   }
 }

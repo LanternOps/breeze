@@ -1,3 +1,4 @@
+mod app_shell;
 mod ipc;
 mod single_instance;
 mod workspace_open;
@@ -689,6 +690,13 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Show the main window and bring it to focus.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        // macOS (#8399): with no Dock icon (Accessory policy) there is no
+        // other way back for a minimized window; show() and set_focus() do
+        // not deminiaturize it.
+        #[cfg(target_os = "macos")]
+        if let Err(e) = window.unminimize() {
+            eprintln!("[helper] Failed to unminimize window: {}", e);
+        }
         if let Err(e) = window.show() {
             eprintln!("[helper] Failed to show window: {}", e);
         }
@@ -1354,13 +1362,20 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_flags())
                 .build(),
-        )
+        );
+
+    // macOS (#8399): replace Tauri's default app menu, whose Quit item
+    // (Cmd+Q) terminates Assist with no chance to cancel. See app_shell.rs.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(app_shell::build_macos_app_menu);
+
+    builder
         .invoke_handler(tauri::generate_handler![
             read_agent_config,
             helper_fetch,
@@ -1377,6 +1392,13 @@ pub fn run() {
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
+            // macOS (#8399): menu-bar only. Accessory removes the Dock icon,
+            // the Dock's Quit entry and the menu bar; Assist is reached from
+            // the tray icon. Set before the event loop starts, so there is no
+            // Dock icon at launch.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Create main window manually (not from config) so we can set
             // a custom WebView2 data directory when running as SYSTEM.
             // The agent service spawns this process with a SYSTEM token
@@ -1505,6 +1527,11 @@ pub fn run() {
                 "open_assist" | "request_support" => {
                     show_window(&menu_handle);
                 }
+                // macOS app menu Cmd+Q (#8399): hide, never quit.
+                #[cfg(target_os = "macos")]
+                app_shell::HIDE_WINDOW_MENU_ID => {
+                    hide_window(menu_handle.clone());
+                }
                 "open_portal" => {
                     let config = load_helper_config();
                     let agent_api_url = load_agent_server_url().ok();
@@ -1593,11 +1620,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
-            // macOS: re-opening the app from the Dock or Finder while it runs
-            // hidden in the tray must bring the window back (#8138).
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                show_window(_app);
+            match _event {
+                // Re-opening the app from Finder while it runs hidden in the
+                // tray must bring the window back (#8138).
+                tauri::RunEvent::Reopen { .. } => show_window(_app),
+                // #8399 safety net: keep running on a user-initiated exit
+                // request; programmatic `app.exit(code)` always goes through.
+                // This does NOT see Cmd+Q, which ends the loop via
+                // `terminate:` -> `RunEvent::Exit`; the app menu handles that.
+                tauri::RunEvent::ExitRequested { code, api, .. }
+                    if app_shell::should_prevent_exit(code) =>
+                {
+                    api.prevent_exit();
+                }
+                _ => {}
             }
         });
 }

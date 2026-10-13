@@ -191,13 +191,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     from: z.string().optional(),
     to: z.string().optional(),
     running: z.boolean().optional(),
-    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']).optional(),
     approved: z.boolean().optional(),
     limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).optional(),
   }),
   get_running_timer: z.object({}),
   get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+  get_ticket_approval_status: z.object({ ticketId: uuid }),
 
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
@@ -597,6 +598,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     kind: z.enum(AI_AGENT_ACTING_KINDS),
     opKey: z.string().min(3).max(120),
     orgId: uuid,
+  }),
+
+  // operator_plan (Recipe Library spec 6.4): never model-callable; the schema
+  // bounds what the coordinator mints. Effect bounds mirror the CHECKs on
+  // ai_operator_plan_approval_effects.
+  operator_plan: z.object({
+    taskId: uuid,
+    planRevision: z.number().int().min(0),
+    effectSetDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    effects: z.array(z.object({
+      ordinal: z.number().int().min(0),
+      provider: z.enum(['breeze', 'm365', 'google']),
+      toolName: z.string().min(1).max(100),
+      targetLabel: z.string().min(1).max(200),
+      principalLabel: z.string().max(320).nullable().optional(),
+      rendering: z.string().min(1).max(500),
+    })).max(64),
+    reason: z.string().max(500).optional(),
   }),
 
   manage_organizations: z.object({

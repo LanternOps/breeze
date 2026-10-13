@@ -23,7 +23,15 @@ import {
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
-import { resolveEffectiveTimezone, canonicalizeTimezone, parseSecurityScanSettings, type SecurityScanSettings } from '@breeze/shared';
+import {
+  resolveEffectiveTimezone,
+  canonicalizeTimezone,
+  parseSecurityScanSettings,
+  type SecurityScanSettings,
+  systemProtectionInlineSettingsSchema,
+  SYSTEM_PROTECTION_DEFAULTS,
+  type SystemProtectionInlineSettings,
+} from '@breeze/shared';
 import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
@@ -2489,4 +2497,115 @@ export async function resolveAllSecurityScanScheduledDevices(): Promise<Security
     });
   }
   return out;
+}
+
+// ============================================
+// System Restore checkpoint policy (#4609)
+// ============================================
+
+export interface ResolvedSystemProtection {
+  settings: SystemProtectionInlineSettings;
+  /**
+   * The winning effective feature link's updatedAt as an ISO string (for an
+   * inherited link, the PARENT link that actually carries the settings); null
+   * when nothing is assigned.
+   */
+  policyRevision: string | null;
+  /** True when no policy exists anywhere in the hierarchy -- the UI must say so. */
+  isPlatformDefault: boolean;
+  /**
+   * True when a policy WON but its stored settings failed the strict schema, so
+   * `settings` fell back to the platform defaults. Callers should surface this
+   * rather than present the defaults as the policy's choice.
+   */
+  invalidStoredSettings: boolean;
+}
+
+/**
+ * Resolve the `system_protection` toggles for a device via the config-policy
+ * hierarchy ("closest wins"). Inline settings only -- there is no normalized
+ * table; the toggles live in the feature link's JSONB.
+ *
+ * Same join as {@link resolveSecurityScanPolicyForDevice}: runs in the CALLER'S
+ * OWN RLS context, self-tenanted by the device's hierarchy;
+ * `policyOwnershipCondition` admits partner-owned (org_id NULL) policies for the
+ * device's partner, so a partner-wide policy reaches devices in every child org
+ * through its assignments.
+ *
+ * PARSES rather than casts. Writes are strictly validated, so a stored blob that
+ * fails the schema can only come from a bypass (direct DB edit, a downgrade).
+ * It NEVER throws into the caller: it falls back to the platform defaults --
+ * which are legacy parity (beforePatching true), never "everything off" -- logs
+ * a warning, and sets `invalidStoredSettings` so the fallback is reportable.
+ */
+export async function resolveSystemProtectionForDevice(
+  deviceId: string,
+): Promise<ResolvedSystemProtection> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return systemProtectionPlatformDefault();
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      linkUpdatedAt: configPolicyEffectiveFeatureLinks.updatedAt,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'system_protection'),
+      ),
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt,
+    );
+
+  if (rows.length === 0) return systemProtectionPlatformDefault();
+
+  const winner = sortByHierarchy(rows)[0]!;
+  const policyRevision = winner.linkUpdatedAt ? new Date(winner.linkUpdatedAt).toISOString() : null;
+  const parsed = systemProtectionInlineSettingsSchema.safeParse(winner.inlineSettings ?? {});
+  if (!parsed.success) {
+    console.warn(
+      '[featureConfigResolver] Malformed system_protection settings; using platform defaults',
+      {
+        deviceId,
+        featureLinkId: winner.featureLinkId,
+        sourcePolicyId: winner.sourcePolicyId,
+        issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+      },
+    );
+    return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
+  }
+
+  return { settings: parsed.data, policyRevision, isPlatformDefault: false, invalidStoredSettings: false };
+}
+
+function systemProtectionPlatformDefault(): ResolvedSystemProtection {
+  return {
+    settings: { ...SYSTEM_PROTECTION_DEFAULTS },
+    policyRevision: null,
+    isPlatformDefault: true,
+    invalidStoredSettings: false,
+  };
 }

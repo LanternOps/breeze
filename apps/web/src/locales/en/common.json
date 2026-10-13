@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Triggered when a ticket is assigned or unassigned.",
             "label": "Ticket Assigned"
+          },
+          "migrationWindowClosed": {
+            "description": "Triggered once per organization when a ticket migration window closes, with the counts it imported.",
+            "label": "Migration Window Closed"
           }
         },
         "fields": {

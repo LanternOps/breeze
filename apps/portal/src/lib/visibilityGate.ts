@@ -33,6 +33,8 @@ export const PORTAL_DISABLED_CODES = [
   'PORTAL_HOUR_BLOCK_DISABLED',
   // Portal advanced visibility W05 (#7735): sensitive patch detail, strict fail-closed.
   'PORTAL_PATCH_DETAIL_DISABLED',
+  // Portal advanced visibility W06 (#7736): sensitive vulnerability detail, strict fail-closed.
+  'PORTAL_VULNERABILITY_DETAIL_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);
@@ -47,6 +49,8 @@ export const PORTAL_GATED_PAGES = [
   '/devices',
   '/assets',
   '/tickets',
+  // Customer work approval (#8200) rides the tickets flag: no flag of its own.
+  '/approvals',
   '/service',
   '/documents',
   '/reports/lifecycle',

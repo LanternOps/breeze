@@ -68,7 +68,7 @@ export async function seedBlockFixture(o: {
  *  `minutes` also stamps `minimumMinutes` so time_entries_billable_minutes_chk holds. */
 export async function seedEntry(f: BlockFixture, e: {
   minutes: number; endedAt: string; billableMinutes?: number | null; isBillable?: boolean;
-  billingStatus?: 'not_billed' | 'no_charge' | 'billed' | 'contract'; isApproved?: boolean;
+  billingStatus?: 'not_billed' | 'no_charge' | 'billed' | 'contract' | 'awaiting_approval'; isApproved?: boolean;
   hourlyRate?: string | null; currencyCode?: string; ticketId?: string | null;
 }): Promise<string> {
   const ended = new Date(e.endedAt);

@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Confira uma solicitação de suporte", "loading": "Carregando solicitação…", "hello": "Olá, {{name}}",
+  "request": "{{technician}}, da {{partner}}, quer:",
+  "reset_password": "Redefinir a senha de {{target}}", "disable_user": "Desativar a conta de {{target}}",
+  "any": "Confirmar uma solicitação de suporte para {{target}}", "target": "a conta indicada", "provider": "seu provedor de suporte",
+  "reverse": "Código da solicitação", "choose": "Toque no número indicado pelo técnico. Nunca leia um código em voz alta.",
+  "notMe": "Não sou eu", "caution": "Só toque em um número se estiver ao telefone com {{technician}} agora. Se tiver dúvidas, desligue e ligue para {{partner}} usando o número que você já tem.",
+  "expires": "Expira em {{seconds}} segundos", "expired": "Esta solicitação não está disponível ou expirou.",
+  "received": "Sua resposta foi recebida.", "failed": "Não foi possível enviar sua resposta. Tente novamente.",
+  "loadFailed": "Não foi possível carregar a solicitação. Tente novamente.", "retry": "Tentar novamente", "sending": "Enviando…"
+} }

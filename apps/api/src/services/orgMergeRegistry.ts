@@ -317,6 +317,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // repointing policy would 42501 — `leave-for-erasure` is the only legal
   // kind here, and it is also the correct one.
   ai_operator_task_events: { kind: 'leave-for-erasure', note: 'append-only task timeline; breeze_app holds no UPDATE grant, and the timeline is source-org evidence — erased with the loser shell under breeze_audit_admin' },
+  // Recipe Library wave E4 (#6169). Plan content hangs off a task that stays
+  // with the source org through composite (task_id, org_id) FKs; it is task
+  // history, not a live grant, and both tables carry BEFORE UPDATE triggers
+  // that refuse an org_id change — so they are erased with the task, never
+  // repointed.
+  ai_operator_plan_approvals: { kind: 'leave-for-erasure', note: 'plan content of a task that stays with the source org (composite task FK); org_id is trigger-immutable, erased with the loser shell' },
+  ai_operator_plan_approval_effects: { kind: 'leave-for-erasure', note: 'immutable approved-effect evidence (UPDATE revoked + trigger) of a task that stays with the source org; erased with it' },
   script_proposals: { kind: 'custom', note: 'non-terminal proposals are fenced to status=expired BEFORE devices repoint (resolve phase), then left for erasure with the loser shell — proposal history is source-org incident history, same rule as ai_operator_tasks and ai_agent_runs' },
   script_proposal_reviews: { kind: 'leave-for-erasure', note: 'append-only review evidence hangs off a proposal that stays with the source org via a composite (proposal_id, org_id) FK; erased with it' },
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
@@ -539,6 +546,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // the survivor ends up WITH a row, so an exclusion (target_mode 'all') wins,
   // as the spec requires; in 'selected' mode the inclusion wins symmetrically.
   report_series_org_targets: { kind: 'repoint-dedupe', key: ['series_id'] },
+  // #8313: migration_window_orgs PK (window_id, org_id). When both merged orgs
+  // are in one window, the loser's row collides with the survivor's and is
+  // dropped; the survivor stays in the window either way.
+  migration_window_orgs: { kind: 'repoint-dedupe', key: ['window_id'] },
   // #6592: Gmail mailbox connections carry org_id; repoint them to the survivor
   // instead of letting the FK cascade delete them with the loser org. Plain
   // repoint (no dedupe): the only unique is (partner_id, mailbox_address), which
@@ -912,6 +923,7 @@ const REPOINT_TABLES: readonly string[] = [
   "device_reliability",
   "device_reliability_baselines",
   "device_reliability_history",
+  "device_restore_point_attempts",
   "device_sessions",
   "device_software_inventory_state",
   "device_time_daily",

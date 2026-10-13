@@ -1469,6 +1469,21 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'system_protection' } as any);
+
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'system_protection',
+      inlineSettings: { beforeScripts: true, onFailure: 'abort' },
+    }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/onFailure|unrecognized/i);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('refuses a negative durationHours on update', async () => {
     const tools = toolsWithPolicy();
     mockSelectRows([{ featureType: 'maintenance' }]);

@@ -94,6 +94,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     //   invoiceSettingsRoutes         → orgs, partner
     //   ticketResponseTemplateRoutes  → ticket-response-templates
     //   ticketFormRoutes              → ticket-forms
+    //   ticketApprovalRoutes          → tickets, ticket-approval-requests, time-entries
     //   ticketApprovalSettingsRoutes  → orgs, ticketing
     //   lifecycleRoutes               → me
     //   lifecycleAdminRoutes          → admin
@@ -113,6 +114,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
       'lifecycleRoutes',
       'm365CallbackRoute',
       'tenantVariableRoutes',
+      'ticketApprovalRoutes',
       'ticketApprovalSettingsRoutes',
       'ticketFormRoutes',
       'ticketResponseTemplateRoutes',
@@ -123,6 +125,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'billing',
     'support',
     'tenant-variables',
+    'ticket-approval-requests',
     'ticket-forms',
     'ticket-response-templates',
     'ticketing',

@@ -197,6 +197,10 @@ type HeartbeatPayload struct {
 	// agent.yaml. A server that sees it disagree with the row answers with a
 	// signed IdentityAssertion; see identity_sync.go.
 	ReportedIdentity *ReportedIdentity `json:"reportedIdentity,omitempty"`
+	// IdentityAssertionRejection (#8382) says why this agent refused the
+	// last identity assertion, so the server stops signing one every beat
+	// for a target this agent will not adopt. Sent on one beat per refusal.
+	IdentityAssertionRejection *IdentityAssertionRejection `json:"identityAssertionRejection,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -4778,11 +4782,26 @@ func (h *Heartbeat) currentHeadless() bool {
 	return headless
 }
 
-func (h *Heartbeat) sendHeartbeat() {
+// beatSkipReason reports why this process must not heartbeat now, or "" when
+// it should. A beat is also what delivers queued commands, so a process that
+// is about to be replaced skips it and leaves them queued for its successor.
+func (h *Heartbeat) beatSkipReason() string {
 	// After a successful self-update, the old process continues running until
 	// the service manager kills it. Don't send heartbeats with stale version info.
 	if h.upgradeInProgress.Load() {
-		log.Debug("skipping heartbeat, upgrade in progress")
+		return "upgrade in progress"
+	}
+	// #8382 — a restart for a new identity waits only for what is already
+	// running; see identityIntakePauseMax.
+	if h.identityIntakePaused() {
+		return "restarting to apply a server-assigned identity"
+	}
+	return ""
+}
+
+func (h *Heartbeat) sendHeartbeat() {
+	if reason := h.beatSkipReason(); reason != "" {
+		log.Debug("skipping heartbeat", "reason", reason)
 		return
 	}
 
@@ -4843,6 +4862,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
+		// #8382 — why the last identity assertion was refused, once.
+		IdentityAssertionRejection: h.identityRejectionForBeat(),
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache); unknown while the probe gets
@@ -5329,20 +5350,36 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
+	// A rollback delivered in this response becomes active only once its
+	// command runs, so look for it before anything is scheduled against it.
+	rollbackInResponse := false
+	for _, cmd := range response.Commands {
+		if cmd.Type == tools.CmdAgentRollbackV1 {
+			rollbackInResponse = true
+			break
+		}
+	}
+
 	// #8317 — after the pin above, so a deployment key first delivered in this
 	// same response already verifies the assertion that relies on it. While a
 	// restart for a new identity is pending, this process starts no binary
 	// swap or credential write: those would persist the old org/site again
-	// and race the restart. Commands still run; the restart waits for them.
-	// The server re-signals everything skipped here on the next beat.
-	identityRestarting := h.applyIdentityAssertion(response.IdentityAssertion)
+	// and race the restart. Commands from this response still run (the server
+	// already claimed them); the restart waits for them, and no later beat is
+	// sent until it lands. The server re-signals everything skipped here on
+	// the next beat.
+	//
+	// #8382 — the rollback this response starts owns the next restart; the
+	// assertion waits for a later beat (the server re-signs every beat).
+	identityAssertion := response.IdentityAssertion
+	if rollbackInResponse {
+		identityAssertion = nil
+	}
+	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
-	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
+	rollbackActive := rollbackInResponse || h.rollbackInProgress()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
-		if cmd.Type == tools.CmdAgentRollbackV1 {
-			rollbackActive = true
-		}
 		if !h.accepting.Load() {
 			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
 			break
@@ -6754,6 +6791,19 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 			// so leaving it zero would persist a false "exited 0".
 			ExitCode: 1,
 			Error:    "agent is shutting down",
+		}
+	}
+	// #8382 — about to restart for a new identity: refuse new work the
+	// restart would cut off, as a shutting-down agent does. Commands that
+	// stop work or feed a session already open still run.
+	if h.identityIntakePaused() && !admittedDuringIdentityRestart(wsCmd.Type) {
+		log.Debug("refusing command, restarting to apply a server-assigned identity",
+			logging.KeyCommandID, wsCmd.ID, "type", wsCmd.Type)
+		return websocket.CommandResult{
+			CommandID: wsCmd.ID,
+			Status:    "failed",
+			ExitCode:  1, // synthetic: no process ran
+			Error:     identityRestartRefusal,
 		}
 	}
 

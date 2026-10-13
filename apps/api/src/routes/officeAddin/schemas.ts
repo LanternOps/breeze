@@ -131,6 +131,12 @@ export const addinStartTimerSchema = z.object({
    * the add-in offers a work type or the default, never "explicitly none".
    */
   workTypeId: z.string().uuid().optional(),
+  /**
+   * #8196 W05: the "log as non-billable" retry after a 409 APPROVAL_REQUIRED
+   * (the customer-approval gate refuses only billable timer STARTs). Omit for
+   * the server default.
+   */
+  isBillable: z.boolean().optional(),
 });
 
 /** Body of POST /office-addin/time/stop (Task 18). Same shape as the web `stopTimerSchema`. */

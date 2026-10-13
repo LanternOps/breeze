@@ -914,6 +914,7 @@
     "diskCleanup": "Datenträgerbereinigung",
     "diskUsageAnalysisAndCleanup": "Analyse und Bereinigung der Festplattennutzung",
     "bootPerf": "Boot-Perf",
+    "systemRestore": "Systemwiederherstellung",
     "startupTimeAndBootProcessAnalysis": "Analyse der Startzeit und des Bootvorgangs",
     "backup": "Sicherung",
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",

@@ -102,6 +102,49 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = cmd.Run(runCtx) }()
 	}
+	hub := newSocketHub()
+	if cfg.Storm != nil || cfg.Timeline {
+		// One extra step so the bucket the run ends in exists.
+		rec.EnableTimeline(cfg.TimelineStep, cfg.Duration+cfg.TimelineStep)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(cfg.TimelineStep)
+			defer t.Stop()
+			rec.SampleLive(time.Now())
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case now := <-t.C:
+					rec.SampleLive(now)
+				}
+			}
+		}()
+	}
+	var samp *PoolSampler
+	if cfg.ScrapeToken != "" {
+		u := cfg.ScrapeURL
+		if u == "" {
+			u = cfg.ServerURL + "/metrics/scrape"
+		}
+		// Its own client: the scrape is never counted as agent traffic.
+		samp = &PoolSampler{URL: u, Token: cfg.ScrapeToken, Interval: cfg.ScrapeInterval, Start: start,
+			Client: &http.Client{Timeout: scrapeTimeout}}
+		wg.Add(1)
+		go func() { defer wg.Done(); samp.Run(runCtx) }()
+	}
+	var sched *Scheduler
+	if cfg.Storm != nil {
+		exe := cfg.executor
+		if exe == nil {
+			exe = osExecutor{}
+		}
+		sched = &Scheduler{Scenario: *cfg.Storm, Exec: exe, Rec: rec, PreWindow: cfg.StormPreWindow,
+			Internal: map[string]func() int{ActionDropSockets: hub.CloseAll}}
+		wg.Add(1)
+		go func() { defer wg.Done(); sched.Run(runCtx, start.Add(open)) }()
+	}
 	ramp := rate.NewLimiter(rate.Limit(cfg.RampPerSecond), 1)
 	for i := 0; i < cfg.Agents; i++ {
 		if ramp.Wait(runCtx) != nil {
@@ -131,7 +174,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			}
 			started.Add(1)
 			devices.add(id.DeviceID)
-			NewAgent(&cfg, rec, id, reenroll).Run(runCtx)
+			a := NewAgent(&cfg, rec, id, reenroll)
+			a.hub = hub
+			a.Run(runCtx)
 		}(i)
 	}
 	<-runCtx.Done()
@@ -140,7 +185,17 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	<-autosaveDone // a late periodic save must not overwrite the final one
 	saveErr := store.Save(cfg.StorePath)
-	report := BuildReport(rec, cfg, ended, int(started.Load()))
+	var stormIn *StormInputs
+	if sched != nil || samp != nil {
+		stormIn = &StormInputs{}
+		if sched != nil {
+			stormIn.Steps, stormIn.Events = sched.Steps(), sched.Events()
+		}
+		if samp != nil {
+			stormIn.Samples, stormIn.URL, stormIn.Sampled = samp.Samples(), samp.URL, true
+		}
+	}
+	report := BuildReport(rec, cfg, ended, int(started.Load()), stormIn)
 	if err := WriteReport(cfg.ReportPath, report); err != nil {
 		return report, fmt.Errorf("write report: %w", err)
 	}

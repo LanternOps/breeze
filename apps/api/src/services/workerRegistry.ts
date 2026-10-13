@@ -646,6 +646,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'migrationWindowSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/migrationWindowSweep');
+      return { init: m.initializeMigrationWindowSweepWorker, shutdown: m.shutdownMigrationWindowSweepWorker };
+    },
+  },
+  {
     name: 'partnerApiIdempotencyRetention',
     placement: 'global',
     load: async () => {
@@ -1743,6 +1751,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiModelDiscoveryWorker');
       return { init: m.initializeAiModelDiscoveryWorker, shutdown: m.shutdownAiModelDiscoveryWorker };
+    },
+  },
+  // Workload image currency W05 (#8194): 30-minute registry pass. `global`:
+  // its closure is db + services/imageCurrency (urlSafety), never routes or
+  // socket-local dispatch (workerEntrypointClosure.contract.test.ts).
+  {
+    name: 'imageCurrencyWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/imageCurrencyWorker');
+      return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
 ];

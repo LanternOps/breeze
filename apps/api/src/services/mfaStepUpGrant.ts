@@ -132,7 +132,13 @@ export type StepUpOperation =
   // partner's (cap, schedule, fees, payment methods, reminders). Asked for only
   // when a saved value differs from the stored one; bound to the organization
   // AND to the exact values saved, like partner_payment_settings_update.
-  | 'org_payment_settings_update';
+  | 'org_payment_settings_update'
+  // Ticket migration windows (#8313): opening a window widens a keyless
+  // partner service principal into import mode across the chosen orgs. Bound
+  // to the exact { partnerId, principalId, sorted orgIds, endsAt,
+  // writesPerHour } the admin confirmed, so a grant can never open a wider,
+  // longer or faster window than the one shown.
+  | 'migration_window_open';
 
 export interface StepUpGrant {
   id: string;
@@ -460,6 +466,29 @@ export function orgPaymentSettingsResourceDigest(input: {
     kind: 'org_payment_settings_update',
     orgId: input.orgId.toLowerCase(),
     settings: canonicalValue(input.settings),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Migration window open binding (#8313): the partner, the principal, the
+ * deduplicated sorted org set, the end (normalised to ISO) and the throughput
+ * as requested (null when the admin left the default), independent of order.
+ */
+export function migrationWindowOpenResourceDigest(input: {
+  partnerId: string;
+  principalId: string;
+  orgIds: readonly string[];
+  endsAt: string;
+  writesPerHour?: number | null;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'migration_window_open',
+    partnerId: input.partnerId.toLowerCase(),
+    principalId: input.principalId.toLowerCase(),
+    orgIds: [...new Set(input.orgIds.map((id) => id.toLowerCase()))].sort(),
+    endsAt: new Date(input.endsAt).toISOString(),
+    writesPerHour: input.writesPerHour ?? null,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

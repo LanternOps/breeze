@@ -92,6 +92,19 @@ describe('startTimer', () => {
     });
   });
 
+  it('sends isBillable:false for the non-billable retry and types a 409 APPROVAL_REQUIRED (#8196)', async () => {
+    coreRequest.mockResolvedValueOnce({ data: { ...ENTRY, isBillable: false } });
+    await startTimer({ ticketId: 'k1', isBillable: false });
+    expect(JSON.parse(coreRequest.mock.calls[0][1].body)).toEqual({ ticketId: 'k1', isBillable: false });
+
+    coreRequest.mockRejectedValue({ message: 'Approval needed', code: 'APPROVAL_REQUIRED', statusCode: 409 });
+    await expect(startTimer({ ticketId: 'k1' })).rejects.toMatchObject({
+      name: 'TimeEntryError',
+      code: 'APPROVAL_REQUIRED',
+      status: 409,
+    });
+  });
+
   it('omits absent optional fields instead of sending nulls', async () => {
     coreRequest.mockResolvedValue({ data: ENTRY });
     await startTimer({ ticketId: 'k1' });

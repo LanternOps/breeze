@@ -40,6 +40,7 @@ const GATED_API_METHODS: Record<string, string> = {
   getTickets: 'PORTAL_TICKETS_DISABLED',
   getTicket: 'PORTAL_TICKETS_DISABLED',
   getTicketForms: 'PORTAL_TICKETS_DISABLED',
+  getApprovals: 'PORTAL_TICKETS_DISABLED',
   getService: 'PORTAL_SERVICE_DISABLED',
   getServiceOccurrences: 'PORTAL_SERVICE_DISABLED',
   getDocuments: 'PORTAL_DOCUMENTS_DISABLED',
@@ -47,6 +48,8 @@ const GATED_API_METHODS: Record<string, string> = {
   getDeviceSoftware: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
   getPatchSummary: 'PORTAL_PATCH_DETAIL_DISABLED',
   getDevicePatches: 'PORTAL_PATCH_DETAIL_DISABLED',
+  getVulnerabilitySummary: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  getVulnerabilityFindings: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
   getHardwareLifecycleLatest: 'PORTAL_LIFECYCLE_DISABLED',
 };
 

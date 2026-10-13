@@ -55,6 +55,7 @@ import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { ticketApprovalSettingsRoutes } from './routes/tickets/approvalSettings';
+import { ticketApprovalRoutes } from './routes/tickets/approvals';
 import { autopayRoutes } from './routes/autopay';
 import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
@@ -95,10 +96,12 @@ import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
+import { migrationWindowRoutes } from './routes/migrationWindows';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
+import { callerVerifyPublicRoutes } from './routes/callerVerifyPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { preAssignmentRoutes } from './routes/preAssignment';
@@ -293,6 +296,7 @@ import { registerTopologyPhysicalAuthorities } from './services/topology/physica
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { getClusterCacheBus } from './services/clusterCacheBus';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
@@ -333,6 +337,7 @@ import { webhookDeliveries } from './db/schema';
 import { resolveFallbackOrgId } from './services/auditFallbackOrg';
 import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import { registerAllEffectProbes } from './services/aiOperator/effectProbes/bootstrap';
 import {
   createReadinessEvaluator,
   type WorkerInitPhase
@@ -783,6 +788,12 @@ api.route('/alert-templates', alertTemplateRoutes);
 // authMiddleware) gate (the Microsoft admin-consent redirect carries no Bearer
 // token). The callback authenticates via signed state + binding cookie instead.
 api.route('/tickets/mailbox', mailboxRoutes);
+// Customer work approval staff routes (#4617 W03): absolute paths spanning
+// /tickets/:id/approval-*, /ticket-approval-requests/:id/* and
+// /time-entries/:id/write-off-held, each with its own authMiddleware. Mounted
+// BEFORE the /tickets and /time-entries hubs so these paths are matched here
+// first and never fall through those hubs' .use('*') chains.
+api.route('/', ticketApprovalRoutes);
 api.route('/tickets', ticketsRoutes);
 // Caller verification (#6354 W01): mounted at the root because its paths
 // span /orgs/:orgId/…, /partner/… and /orgs/:orgId/tickets/:ticketId/…; the
@@ -859,6 +870,8 @@ api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
+// Ticket migration windows (#8313): partner-wide admin grants of import mode.
+api.route('/migration-windows', migrationWindowRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -867,6 +880,11 @@ api.route('/installer', installerRoutes);
 // Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
 // and a single atomic pending->claimed transition.
 api.route('/support', supportPublicRoutes);
+// Public caller-verification card (#6354 W03) — the 32-byte SMS/email link
+// token is the only credential (no bearer). 404 while CALLER_VERIFICATION_ENABLED
+// is off, before any Redis/DB work; per-IP, per-token and miss budgets; one
+// hash lookup in a short system context. See routes/callerVerifyPublic.ts.
+api.route('/verify', callerVerifyPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
@@ -1462,6 +1480,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownAgentCommandRelayWorker,
       ],
     },
+    // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
+    { name: 'cluster-cache-bus', tasks: [() => getClusterCacheBus().stop()] },
     // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
     { name: 'eventbus', tasks: [async () => getEventBus().close()] },
     // 5. The ONLY owner of the Redis quits.
@@ -1728,6 +1748,8 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
   }
 
+  registerAllEffectProbes(); // Recipe Library E4: provider effect probes, registered once
+
   await runStartupChecks();
 
   // #6452 — Redis memory watchdog. Started after runStartupChecks so the
@@ -1894,6 +1916,13 @@ async function bootstrap(): Promise<void> {
   // was disconnected or re-keyed/re-pointed (on any replica) since it was
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
+
+  // W05 (#8144): subscribe to cluster cache invalidations before serving, so a
+  // write on another instance reaches this one's hot-path caches. Bounded at
+  // 1 s and never throws; without Redis the caches stay TTL-only.
+  const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
+  if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
+  else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.

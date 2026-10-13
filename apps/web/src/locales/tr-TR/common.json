@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Bir bilet atandığında veya ataması kaldırıldığında tetiklenir.",
             "label": "Bilet Atandı"
+          },
+          "migrationWindowClosed": {
+            "description": "Bir bilet taşıma penceresi kapandığında, içe aktarılan sayılarla birlikte kuruluş başına bir kez tetiklenir.",
+            "label": "Taşıma penceresi kapandı"
           }
         },
         "fields": {

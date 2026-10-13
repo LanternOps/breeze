@@ -1117,6 +1117,22 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Bu politika yalnızca cihazların taranıp taranmadığını kontrol eder. Tespit edilen CVE'ler, risk puanları ve iyileştirme eylemleri şu şekilde yönetilir:",
         "vulnerabilitiesConsole": "Güvenlik açıkları konsolu"
       },
+      "systemProtectionTab": {
+        "title": "Sistem Koruması",
+        "description": "Yama, betik ve yazılım yüklemelerinden önce bir Windows Sistem Geri Yükleme noktası oluşturmayı dene",
+        "beforePatching": "Yama yüklemelerinden önce",
+        "beforePatchingHelp": "İşletim sistemi güncellemelerini yüklemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeScripts": "Betiklerden önce",
+        "beforeScriptsHelp": "Cihazda bir betik çalıştırmadan önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeSoftwareInstall": "Yazılım yüklemelerinden önce",
+        "beforeSoftwareInstallHelp": "Yazılım yüklemeden veya güncellemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "labelPrefix": "Etiket öneki",
+        "labelPrefixHelp": "Windows’ta her geri yükleme noktası açıklamasının başında gösterilir. En fazla 64 karakter.",
+        "platformDefaultNote": "Atanmış ilke yok. Platform varsayılanı: yalnızca yama yüklemelerinden önce bir geri yükleme noktası denenir.",
+        "legacyAgentWarning": "Bunu kapatmak yalnızca Sistem Geri Yükleme desteği bildiren aracılarda etkili olur. Eski aracılar yama yüklemelerinden önce geri yükleme noktası denemeye devam eder.",
+        "aboutTitle": "Sistem Geri Yükleme hakkında",
+        "aboutBody": "Yalnızca Windows cihazlar için geçerlidir. Sistem Geri Yükleme sistem dosyalarını, kayıt defterini, yüklü programları ve ayarları kapsar. Bir yedekleme değildir ve kişisel dosyaları kapsamaz. Windows varsayılan olarak 24 saatte en fazla bir geri yükleme noktası oluşturulmasına izin verir; oluşturulan bir nokta daha sonra Windows tarafından kaldırılabilir veya kullanılamaz hale gelebilir."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",
         "enableWarrantyExpiryAlerts": "Garanti sona erme uyarılarını etkinleştir",

@@ -14,6 +14,7 @@
     "./reportPdf": "./src/reportPdf/index.ts",
     "./canonicalize": "./src/canonicalize/index.ts",
     "./canonicalize/vectors": "./src/canonicalize/vectors.ts",
+    "./canonicalize/effectSet": "./src/canonicalize/effectSet.ts",
     "./m365/commsDigests": "./src/m365/commsDigests.ts",
     "./m365/commsPlanVectors": "./src/m365/commsPlanVectors.ts",
     "./pgErrors": "./src/pgErrors/index.ts",

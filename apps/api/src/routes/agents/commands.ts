@@ -23,6 +23,7 @@ import {
   handleCisCommandResult,
 } from './helpers';
 import { captureException } from '../../services/sentry';
+import { ingestRestorePointOutcome } from '../../services/restorePointIngest';
 import { markCommandResultProcessingFailed } from '../../services/commandResultProcessingFailure';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
@@ -51,13 +52,14 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandType
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
   pamAgentResultV2Schema,
-  type PamActuationResultClassification,
+  toV1PamResultClassification,
+  type PamActuationResultClassificationV1,
 } from '../../services/pamActuationResult';
 import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
 
 export type PamResultAcknowledgement = {
   protocolVersion: 1;
-  classification: PamActuationResultClassification;
+  classification: PamActuationResultClassificationV1;
 };
 
 export const commandsRoutes = new Hono();
@@ -346,7 +348,7 @@ commandsRoutes.post(
       }
       return c.json<PamResultAcknowledgement>({
         protocolVersion: 1,
-        classification: outcome.classification,
+        classification: toV1PamResultClassification(outcome.classification),
       });
     }
     if (isTerminalPamCommand) {
@@ -649,7 +651,7 @@ commandsRoutes.post(
               }
               pamAcknowledgement = {
                 protocolVersion: 1,
-                classification: outcome.classification,
+                classification: toV1PamResultClassification(outcome.classification),
               };
             }
           }
@@ -695,6 +697,25 @@ commandsRoutes.post(
       return c.json({ success: true });
     }
     if (finalized === 'queue_ack') return c.json({ success: true });
+
+    // #4757 W06: terminalise the restore-point ledger only after the CAS won
+    // (a losing duplicate returned 'stale' above), outside the savepoint so a
+    // ledger failure can never roll the result back, and before the
+    // 'rejected' return (the command still went terminal). The ingest escapes
+    // this request's org-scoped transaction into its own system context, so
+    // the ledger write commits independently of the request's final commit.
+    // Skipped entirely when the agent sent no restorePoint. Never fails the
+    // result.
+    if (data.restorePoint !== undefined) {
+      try {
+        await ingestRestorePointOutcome(data.restorePoint, {
+          orgId: agent.orgId, deviceId, deviceCommandId: commandId,
+        });
+      } catch (err) {
+        console.error(`[agents] restore-point ledger ingest failed for ${commandId}; result unaffected:`, err);
+        captureException(err, undefined, { restore_point_ingest: 'call_site' });
+      }
+    }
 
     // The guarded command transition is the authority, so the automation
     // ledger follows it only once it (and its persistence) succeeded. Before

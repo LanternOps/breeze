@@ -14,7 +14,7 @@
  * hourly cap cannot be raced.
  */
 import { randomInt, randomBytes, createHash } from 'node:crypto';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, assertInTransaction, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { tickets } from '../../db/schema/portal';
@@ -104,6 +104,7 @@ export type Decision =
   | { kind: 'undeliverable'; reason: string };
 
 const STARTABLE: Array<Exclude<CallerVerificationMethod, 'administrative_stepup'>> = ['workstation', 'sms', 'email', 'callback_attestation'];
+const PUBLIC_REJECTION_WINDOW_MS = 24 * 3600 * 1000;
 const UNDELIVERABLE_REASONS = ['no_session_for_user', 'session_not_console', 'helper_outdated', 'sms_failed', 'email_failed'] as const;
 
 // ---------------------------------------------------------------------------
@@ -435,7 +436,18 @@ export async function applyDecision(input: {
     if (!row) throw new Invalid('not_found', 'Verification not found');
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${row.orgId}`}))`);
     if (input.decision.kind === 'not_me') {
+      // W03: a link-tier (sms/email) row accepts "This is not me" from any
+      // non-rejected state, but only within 24h of creation — the public link
+      // is a bearer token and must not stay a fence trigger forever.
+      if ((row.method === 'sms' || row.method === 'email') && row.createdAt.getTime() <= Date.now() - PUBLIC_REJECTION_WINDOW_MS) {
+        return view(row, null, await targetContact(row));
+      }
       await handleRejection(row.id);
+      // Record the first public decision's source; a replay never overwrites it.
+      if (input.fromIp && row.status !== 'rejected_by_user') {
+        await db.update(v).set({ decidedFromIp: input.fromIp })
+          .where(and(eq(v.id, row.id), eq(v.status, 'rejected_by_user'), isNull(v.decidedFromIp)));
+      }
       return view(await loadVerification(row.orgId, row.id), null, await targetContact(row));
     }
     const decision = input.decision;

@@ -342,3 +342,23 @@ export const orgMergeEvents = pgTable('org_merge_events', {
   summary: jsonb('summary').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// PAM ownership epochs W5 (#8207): a merged-away org whose shell must outlive
+// the merge because it still owns PAM-chain evidence (or is the survivor of a
+// held shell). Shape 3, partner-axis; no org_id column by design. Written in
+// merge Phase B, released only by the erasure path (services/orgEvidenceHold.ts).
+// survivor_org_id and merge_event_id are ON DELETE RESTRICT; loser_org_id has
+// no FK. Writes are system-only (RESTRICTIVE policies, migration
+// 2026-12-24-220000-org-evidence-holds.sql).
+export const orgEvidenceHolds = pgTable('org_evidence_holds', {
+  loserOrgId: uuid('loser_org_id').primaryKey(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  survivorOrgId: uuid('survivor_org_id').notNull().references(() => organizations.id, { onDelete: 'restrict' }),
+  mergeEventId: uuid('merge_event_id').notNull().references(() => orgMergeEvents.id, { onDelete: 'restrict' }),
+  reason: varchar('reason', { length: 32 }).$type<'pam_evidence' | 'transitive'>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  survivorIdx: index('org_evidence_holds_survivor_idx').on(table.survivorOrgId),
+  partnerIdx: index('org_evidence_holds_partner_idx').on(table.partnerId),
+  mergeEventIdx: index('org_evidence_holds_merge_event_idx').on(table.mergeEventId),
+}));

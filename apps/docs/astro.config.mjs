@@ -103,7 +103,7 @@ export default defineConfig({
             },
             {
               label: 'Service Desk',
-              items: [{ slug: 'features/ticketing' }],
+              items: [{ slug: 'features/ticketing' }, { slug: 'features/ticket-customer-approval' }],
             },
             {
               label: 'Billing & Invoicing',

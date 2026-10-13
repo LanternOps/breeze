@@ -31,7 +31,26 @@ describe('email template catalog', () => {
       'payment_overdue',
       'payment_receipt',
       'payment_failed',
+      'ticket_approval_requested_approver',
+      'ticket_approval_requested_notify',
+      'ticket_approval_decided',
     ]);
+  });
+
+  it('customer work approval templates carry only the approval summary vars — never comment content', () => {
+    const summary = ['ticket_number', 'ticket_subject', 'org_name', 'partner_name', 'approval_ask', 'approval_snapshot'];
+    expect(varsForEmailTemplate('ticket_approval_requested_approver')).toEqual([...summary, 'approval_expires', 'portal_url', 'cta_button']);
+    expect(varsForEmailTemplate('ticket_approval_requested_notify')).toEqual([...summary, 'portal_url', 'cta_button']);
+    expect(varsForEmailTemplate('ticket_approval_decided')).toEqual([...summary, 'approval_status']);
+    expect(emailTemplateHasCta('ticket_approval_requested_approver')).toBe(true);
+    expect(emailTemplateHasCta('ticket_approval_requested_notify')).toBe(true);
+    expect(emailTemplateHasCta('ticket_approval_decided')).toBe(false);
+    const approver = emailTemplateFieldDefaults('ticket_approval_requested_approver');
+    expect(approver.html).toContain('{{cta_button}}');
+    expect(approver.html).toContain('{{approval_ask}}');
+    const notify = emailTemplateFieldDefaults('ticket_approval_requested_notify');
+    expect(notify.html).not.toBe(approver.html);
+    expect(notify.subject).not.toBe(approver.subject);
   });
 
   it('comment notification vars are the closed list', () => {

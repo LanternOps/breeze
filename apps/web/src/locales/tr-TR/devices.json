@@ -914,6 +914,7 @@
     "diskCleanup": "Disk Temizleme",
     "diskUsageAnalysisAndCleanup": "Disk kullanım analizi ve temizleme",
     "bootPerf": "Önyükleme Performansı",
+    "systemRestore": "Sistem Geri Yükleme",
     "startupTimeAndBootProcessAnalysis": "Başlatma süresi ve önyükleme süreci analizi",
     "backup": "Yedekleme",
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",

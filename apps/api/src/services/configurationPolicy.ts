@@ -63,6 +63,7 @@ import {
   monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  systemProtectionInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -1148,6 +1149,7 @@ async function decomposeInlineSettings(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -1266,6 +1268,7 @@ async function deleteNormalizedRows(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -1573,6 +1576,7 @@ async function assembleInlineSettings(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -1809,6 +1813,14 @@ export async function addFeatureLink(
     inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
   }
 
+  // Strict parse, and store the PARSED result: unknown keys are rejected rather
+  // than persisted-and-echoed as if they took effect, and defaults are filled so
+  // the stored blob is a complete decision. Service-level backstop for callers
+  // that bypass the HTTP route (the AI manage_policy_feature_link tool).
+  if (featureType === 'system_protection' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -1943,6 +1955,10 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     // #5511 W02: same consent rule as addFeatureLink, but with the row's
@@ -3194,7 +3210,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
-    featureType === 'warranty'
+    featureType === 'warranty' ||
+    featureType === 'system_protection'
   ) {
     // These have no policy table — they require inlineSettings.
     //

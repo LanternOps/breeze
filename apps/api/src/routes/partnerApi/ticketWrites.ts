@@ -111,9 +111,13 @@ export const partnerCreateTicketSchema = createTicketBaseSchema
   })
   .strict();
 
-/** Update: never the portal login nor the SLA targets (a human, MFA-gated decision). */
+/**
+ * Update: never the portal login nor the SLA targets (a human, MFA-gated
+ * decision), nor the ticket budget (#4617 — the customer's spend ceiling is a
+ * staff decision, set in the staff UI).
+ */
 export const partnerUpdateTicketSchema = updateTicketSchema
-  .omit({ submittedBy: true, responseSlaMinutes: true, resolutionSlaMinutes: true })
+  .omit({ submittedBy: true, responseSlaMinutes: true, resolutionSlaMinutes: true, budgetMinutes: true, budgetAmount: true })
   .extend({
     subject: text(255).trim().min(1).optional(),
     description: text(50_000).optional(),

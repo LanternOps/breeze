@@ -106,6 +106,92 @@ the control. The observe run is expected to FAIL at least one gate. If it
 does not, the storm was too gentle to prove anything; raise `--agents` or
 lower `--cpus` and repeat both.
 
+W06 replaces the manual schedule above with `storm.sh storm-suite` (next
+section). Note that the schedule's `docker restart "$(svc api)"` is a graceful
+restart (SIGTERM plus a grace period), which W06 calls `rolling-deploy`, not
+`api-kill`.
+
+## Storm scenarios (W06)
+
+`storm.sh` runs the simulator with a committed fault schedule
+(`storms/<name>.json`) and writes one report that answers, per fault: how fast
+agent sockets came back (reconnect curve), heartbeat p95/p99 before, during and
+after, how fast the DB pool got its usable size back, and how many agent
+requests were lost for good (error budget). The simulator runs each fault at a
+fixed offset from the steady-window open, on the same clock as its
+measurements.
+
+```bash
+export AGENT_ENROLL_RATE_LIMIT=5000 BREEZE_ADMISSION_MODE=enforce
+export METRICS_SCRAPE_TOKEN="$(openssl rand -hex 24)"     # lab-only; the simulator reads it from env
+pnpm wt-stack up
+mkdir -p load-tests/agentsim/.state
+( umask 077; load-tests/agentsim/lab-setup.sh > load-tests/agentsim/.state/lab.env )
+ulimit -n 16384
+
+load-tests/agentsim/storm.sh --dry-run storm-suite      # resolved docker commands and offsets
+load-tests/agentsim/storm.sh api-kill --agents 50 --ramp 10 --warmup 1m --duration 10m --start cold
+load-tests/agentsim/storm.sh storm-suite --agents 400 --ramp 20 --warmup 2m --duration 32m --start cold \
+  --gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s --gate-max-gap 180s
+```
+
+`storm.sh` resolves this worktree's `api` and `caddy` containers from compose
+labels into `STORM_API` / `STORM_CADDY` (`STORM_CPUS` defaults to 0.5), runs
+`admission-watch.sh watch` alongside for the psql-only columns (set
+`STORM_WATCH=0` to skip it), and prints its W08 summary at the end. It exits 3
+when a gate failed. A scenario's `exec` actions may only run `docker`, expand
+only `${STORM_*}` variables (an unset or empty one is refused at load time), and
+never go through a shell.
+
+| Scenario | Lever | Honest about |
+|---|---|---|
+| `api-kill` | `docker kill --signal KILL`, hold 5 s, `docker start` | Unannounced: no shutdown phases, in-flight requests reset. If the restart policy restarts the container first, the end action is a no-op |
+| `rolling-deploy` | `docker stop --time 30`, `docker start` | One API instance: planned downtime, the baseline curve. W5c extends it per `api-N` |
+| `socket-drop` | `docker restart` of the proxy | Server side: every socket and keep-alive cut at once, in-flight HTTP too |
+| `socket-drop-client` | internal `drop-sockets` | Client side: only the socket path |
+| `slow-loop` | `docker update --cpus $STORM_CPUS` for 5 min | CPU starvation, not a blocked loop (no lag-injection hook exists) |
+| `stall` | `docker pause` 20 s, `docker unpause` | A frozen process: the W1e acceptance lever |
+| `storm-suite` | All of the above except `socket-drop-client`, one run | Planned end 28 min after the window opens; use `--duration 32m` |
+
+`slow-loop` (3 m + 5 m hold + 3 m recovery) does not fit a 10-minute run;
+use `--duration 14m`. The simulator refuses a scenario that does not fit.
+
+### Report sections
+
+All additive on `breeze.agentsim.report/v1`, omitted in plain runs. Every time
+point is seconds from run start; latency is milliseconds.
+
+| Section | What it holds |
+|---|---|
+| `timeline.buckets[]` | One per second: live sockets (`wsLive`, sockets whose read loop is running), connects, connect failures, logical heartbeats and losses, 503/429/transport attempts, longest heartbeat gap |
+| `pool.samples[]` | `/metrics/scrape` every 5 s: permits, effective permits, in use, waiting, abandoned, wedged, loop lag, admission level. A failed scrape is `{"ok": false, "error": …}`, never zeros |
+| `storm.steps[]` | Every action run, planned vs actual time, `ok` and output. `storm.stepsFailed` counts the failed ones |
+| `storm.events[].reconnect` | `baseline` (mean live sockets over the 60 s before the start), `trough`, `t50S`/`t90S`/`t99S` (seconds from the event end until live ≥ 50/90/99 % of baseline; null if never), `peakConnectsPerSecond`, `reconnectSpanS` and `peakToMean` (how the reconnects spread) |
+| `storm.events[].heartbeat` | p50/p95/p99/max per phase (`pre`, `storm`, `recovery`) with each phase's transport-error count next to it (latency cannot see a request that got no response), and `maxGapS` |
+| `storm.events[].errors` | Logical requests (after the agent's own retries) that still failed, over start → end + recovery; `lostPct`. `crawl-config` 401/404 count as success |
+| `storm.events[].pool` | `minEffectiveRatio`, `maxWaiting`, `maxWedged`, `longestScrapeGapS`, and `recoveryS`: seconds from the end until the first sample with `effective == permits` and nothing wedged (null if never) |
+| `storm.gates[]`, `storm.pass` | One result per set gate per event (`value: null` when its data was never observed, which fails). `pass` is also false when a step failed, an event never ran, or an event is `truncated` (the run ended inside its recovery window): a fault that never fired is not a pass |
+
+### Gates
+
+Thresholds belong to the waves that own the behaviour (W04/W08/W09); the
+simulator has no defaults, and a gate with no flag is not evaluated. The
+values below are the program's current figures, given as examples:
+
+| Flag | Fails when |
+|---|---|
+| `--gate-heartbeat-p95 1s` | the larger of the storm and recovery phase p95 is above it, or neither phase saw a heartbeat |
+| `--gate-pool-min-ratio 0.8` | effective/permits dropped below it, or no pool sample was ok |
+| `--gate-pool-recovery 30s` | the pool was not back to max this long after the end (or never) |
+| `--gate-max-gap 180s` | an agent went this long without a successful heartbeat |
+| `--gate-lost-pct 1` | more than this percent of requests were lost after retries |
+
+`--legacy-retry-fraction 0.25` makes the first quarter of the agents ignore
+`Retry-After` (agents older than v0.64.3), for the W08 old-agent rollout gate.
+
+If `/metrics/scrape` is not reachable through the stack's base URL, pass
+`--scrape-url` with the API origin.
+
 ## What is modelled
 
 | Stream | Cadence | Source in the agent |

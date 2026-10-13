@@ -7,6 +7,7 @@ import {
   HardDrive,
   Clock,
   Container,
+  History,
   Layers,
   LifeBuoy,
   PackageCheck,
@@ -145,6 +146,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
       return i18n.t("devices:workloads.policy.title");
     },
     Icon: Container,
+  },
+  system_protection: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.systemProtectionTab.title");
+    },
+    Icon: History,
   },
 };
 
