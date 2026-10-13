@@ -21,7 +21,8 @@ import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
-import type { AddinTicketSummary } from '@breeze/shared';
+import type { AddinTicketSummary, TicketType } from '@breeze/shared';
+import { defaultTicketTypeForSource } from './ticketType';
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
@@ -834,6 +835,12 @@ interface BaseCreateTicketInput {
    * resolveSlaTargetsForWorkKind.
    */
   workKind?: TicketWorkKind;
+  /**
+   * #7900: the ITIL type. Omitted -> defaultTicketTypeForSource (incident;
+   * service_request for planned work), with NO field provenance. An explicit
+   * value is the caller's decision and is stamped with its provenance.
+   */
+  ticketType?: TicketType;
 }
 
 export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
@@ -1111,6 +1118,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
   const workKind: TicketWorkKind = input.workKind ?? 'support';
+  const ticketType: TicketType =
+    input.ticketType ?? defaultTicketTypeForSource(input.source, { plannedWork: workKind !== 'support' });
   const [effectiveSla, statusId] = await Promise.all([
     resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
     getSystemStatusId(org.partnerId, initialCoreStatus),
@@ -1141,6 +1150,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     responseSlaMinutes: effectiveSla.responseMinutes,
     resolutionSlaMinutes: effectiveSla.resolutionMinutes,
     workKind,
+    ticketType,
+    // Provenance keys follow the update path's field names (camelCase).
+    fieldProvenance: input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
     tags: intake?.defaultTags.length ? intake.defaultTags : undefined,
     customFields: intake ? intake.intakeSnapshot : undefined
   } satisfies typeof tickets.$inferInsert;
@@ -1598,6 +1610,11 @@ export interface UpdateTicketFieldsInput {
   resolutionSlaMinutes?: number | null;
   deviceId?: string | null;
   tags?: string[];
+  /**
+   * #7900: reclassify. A classification edit only: it does NOT restamp SLA
+   * targets or re-run category rules (those key off category/priority).
+   */
+  ticketType?: TicketType;
   // Requester edit. Handled outside UPDATE_FIELD_LABELS' generic diff loop:
   // picking a portal user (submittedBy) backfills name/email, and the three
   // columns surface as one "requester" change in the feed. submittedBy=null
@@ -1687,7 +1704,8 @@ const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
   responseSlaMinutes: 'response SLA',
   resolutionSlaMinutes: 'resolution SLA',
   deviceId: 'device',
-  tags: 'tags'
+  tags: 'tags',
+  ticketType: 'type'
 };
 
 function ticketFieldChanged(key: DiffFieldKey, oldValue: unknown, newValue: unknown): boolean {
@@ -1955,7 +1973,12 @@ export async function updateTicketFields(
     ...actorAuthorFields(actor),
     commentType: 'system',
     content: `Updated ${changedLabels.join(', ')}`,
-    isPublic: false
+    isPublic: false,
+    // #7900: the one field whose old/new the feed records on this entry — a
+    // reclassification is reportable history (incident -> problem).
+    ...(changed.includes('ticketType')
+      ? { oldValue: ticket.ticketType ?? null, newValue: fields.ticketType ?? null }
+      : {})
   });
 
   await emitTicketEvent({
