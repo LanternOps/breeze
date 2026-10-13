@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRequestsTab from './PamRequestsTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -104,6 +104,20 @@ describe('PamRequestsTab', () => {
     });
     expect(screen.getByText('WS-ALPHA')).toBeInTheDocument();
     expect(screen.getByTestId('pam-respond-btn-req-1')).toBeInTheDocument();
+  });
+
+  it('keeps request rows visible during a background refresh and displays the new status', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([pendingRequest]));
+    const { rerender } = render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-1'));
+    let resolveRefresh!: (response: Response) => void;
+    fetchWithAuthMock.mockReturnValueOnce(new Promise<Response>((resolve) => { resolveRefresh = resolve; }));
+    rerender(<PamRequestsTab liveTick={1} />);
+    expect(screen.getByTestId('pam-request-row-req-1')).toBeInTheDocument();
+    expect(screen.getByTestId('pam-respond-btn-req-1')).toBeInTheDocument();
+    await act(async () => resolveRefresh(listResponse([{ ...pendingRequest, status: 'denied' }])));
+    expect(screen.getByTestId('pam-request-row-req-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('pam-respond-btn-req-1')).not.toBeInTheDocument();
   });
 
   it('approves a pending request through the modal and refetches', async () => {

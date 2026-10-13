@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Approved PAM v2 commands attempt immediate delivery through the agent command relay after the queue transaction commits, retaining canonical claims and heartbeat fallback instead of waiting for the next heartbeat.
+- Dashboard event subscriptions wait for authenticated connection acknowledgement, preventing silent subscription loss. Privileged Access catches up after reconnect/focus and refreshes visible data periodically without hiding existing rows.
+
 ### Added
 - PAM enabled through organization policy provisions the dormant elevation account after reconciliation and before admitting requests, even when `pam_enabled` is false locally. A later verified missing-account recovery clears the provisioning latch so policy can provision the account again. Recovery requires independent account, job, process, and token absence proof while retaining replay protection; unreadable ledgers and unknown tokens remain fail-closed.
 - Supported Windows PAM reconciliation retry endpoint requiring current tenant/site access, `pam:approve`, `devices:execute`, applicable MFA assurance, and partner trust. Unsupported and holding-organization devices return 409; trust denials return 403. Deploy the additive reset-capability migration and updated agent; a queued retry never deletes ledger or outbox evidence.

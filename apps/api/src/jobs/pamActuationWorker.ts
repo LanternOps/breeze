@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Job, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '../services/commandDispatch';
+import type { AgentCommand } from '../routes/agentWs';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { buildPamActuationCommand } from './pamActuationCommandPayload';
@@ -25,6 +28,7 @@ type PamDispatchRow = Record<string, unknown> & {
   request_org_id: string;
   device_org_id: string;
   device_id: string;
+  agent_id: string | null;
   elevation_request_id: string;
   generation: number;
   desired_state: 'active' | 'cleanup';
@@ -54,137 +58,167 @@ export function agentIdentityEpochAcknowledged(device: {
 }
 
 export async function processPamActuationEvent(input: PamActuationJobData): Promise<PamActuationDispatchResult> {
-  return withSystemDbAccessContext(async () => {
-    // withSystemDbAccessContext owns the short transaction and the exported DB
-    // proxy resolves to that transaction for the entire callback.
-    const tx = db;
-    const actuation = rows<PamDispatchRow>(await tx.execute<PamDispatchRow>(sql`
-      SELECT a.id, a.org_id, a.device_id, a.elevation_request_id,
-             a.generation, a.desired_state,
-             a.current_command_id, a.target_executable_path,
-             a.target_executable_hash, a.subject_username, a.expires_at,
-             r.org_id AS request_org_id, d.org_id AS device_org_id,
-             d.pam_lifetime_protocol_version, d.ownership_epoch,
-             d.agent_identity_epoch_ack, o.type AS device_org_type
-      FROM pam_actuations a
-      JOIN elevation_requests r ON r.id = a.elevation_request_id
-      JOIN devices d ON d.id = a.device_id
-      JOIN organizations o ON o.id = d.org_id
-      WHERE a.id = ${input.actuationId}
-      FOR UPDATE OF a
-    `))[0];
-    if (!actuation) return 'blocked';
-    if (actuation.generation !== input.generation) return 'stale';
-    if (actuation.current_command_id) return 'duplicate';
+  return runOutsideDbContext(async () => {
+    const result = await withSystemDbAccessContext(async (): Promise<PamActuationDispatchResult | { agentId: string | null; command: AgentCommand }> => {
+      // withSystemDbAccessContext owns the short transaction and the exported DB
+      // proxy resolves to that transaction for the entire callback.
+      const tx = db;
+      const actuation = rows<PamDispatchRow>(await tx.execute<PamDispatchRow>(sql`
+        SELECT a.id, a.org_id, a.device_id, d.agent_id, a.elevation_request_id,
+               a.generation, a.desired_state,
+               a.current_command_id, a.target_executable_path,
+               a.target_executable_hash, a.subject_username, a.expires_at,
+               r.org_id AS request_org_id, d.org_id AS device_org_id,
+               d.pam_lifetime_protocol_version, d.ownership_epoch,
+               d.agent_identity_epoch_ack, o.type AS device_org_type
+        FROM pam_actuations a
+        JOIN elevation_requests r ON r.id = a.elevation_request_id
+        JOIN devices d ON d.id = a.device_id
+        JOIN organizations o ON o.id = d.org_id
+        WHERE a.id = ${input.actuationId}
+        FOR UPDATE OF a
+      `))[0];
+      if (!actuation) return 'blocked';
+      if (actuation.generation !== input.generation) return 'stale';
+      if (actuation.current_command_id) return 'duplicate';
 
-    const identityMatches = actuation.org_id === actuation.request_org_id
-      && actuation.org_id === actuation.device_org_id;
-    if (!identityMatches) {
+      const identityMatches = actuation.org_id === actuation.request_org_id
+        && actuation.org_id === actuation.device_org_id;
+      if (!identityMatches) {
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = 'identity_mismatch', updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'blocked';
+      }
+
+      if ((actuation.pam_lifetime_protocol_version ?? 0) < 2) {
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = 'pam_protocol_v2_unsupported', updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'unsupported';
+      }
+
+      // PAM ownership epochs W4 (#8206): an apply goes out only once the agent
+      // has reported holding the identity of the device's current ownership
+      // epoch (devices.agent_identity_epoch_ack, written by the heartbeat after
+      // the signed identity assertion v2 and restart). NULL counts as
+      // acknowledged only at epoch 1, so never-moved devices keep working with
+      // agents that report no epoch. Nothing re-drives a skipped actuation, so
+      // this fails closed and visibly, like the protocol gate above. Cleanup is
+      // never held back: it only removes access, and an agent that does not
+      // hold the identity refuses it anyway.
+      if (actuation.desired_state === 'active' && !agentIdentityEpochAcknowledged(actuation)) {
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = 'agent_identity_epoch_unacknowledged', updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'blocked';
+      }
+
+      const expiresAt = actuation.expires_at instanceof Date
+        ? actuation.expires_at
+        : actuation.expires_at === null
+          ? null
+          : new Date(actuation.expires_at);
+      const built = buildPamActuationCommand({
+        actuationId: actuation.id,
+        generation: actuation.generation,
+        requestId: actuation.elevation_request_id,
+        deviceId: actuation.device_id,
+        orgId: actuation.org_id,
+        desiredState: actuation.desired_state,
+        targetPath: actuation.target_executable_path,
+        targetHash: actuation.target_executable_hash,
+        subjectUsername: actuation.subject_username,
+        expiresAt,
+      }, new Date());
+      if (built.kind === 'blocked') {
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = ${built.failureCode}, updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'blocked';
+      }
+
+      // A device parked in a holding org receives lifecycle removal only; the
+      // actuation fails terminally (no retry) and no command row is written.
+      if (
+        isUnassignedPoolOrgType(actuation.device_org_type)
+        && !isParkedDeliverableCommandType(built.commandType)
+      ) {
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = ${PARKED_DEVICE_CANCEL_REASON}, updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'blocked';
+      }
+
+      try {
+        await assertDeviceExecuteAllowed(actuation.device_id, built.commandType, null);
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
+        await tx.execute(sql`
+          UPDATE pam_actuations SET observed_state = 'failed',
+            failure_code = ${error.code}, updated_at = now()
+          WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        `);
+        return 'blocked';
+      }
+
+      const commandId = randomUUID();
       await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = 'identity_mismatch', updated_at = now()
-        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+        INSERT INTO device_commands (
+          id, device_id, type, target_role, payload, status, created_by, submitted_org_id
+        ) VALUES (
+          ${commandId}, ${actuation.device_id}, ${built.commandType}, 'agent',
+          ${JSON.stringify(built.payload)}::jsonb, 'pending', NULL, ${actuation.org_id}
+        )
       `);
-      return 'blocked';
-    }
-
-    if ((actuation.pam_lifetime_protocol_version ?? 0) < 2) {
       await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = 'pam_protocol_v2_unsupported', updated_at = now()
+        UPDATE pam_actuations
+        SET current_command_id = ${commandId}, observed_state = 'dispatched',
+            failure_code = NULL, updated_at = now()
         WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+          AND current_command_id IS NULL
       `);
-      return 'unsupported';
-    }
+      return {
+        agentId: actuation.agent_id,
+        command: { id: commandId, type: built.commandType, payload: built.payload },
+      };
+    }, 'pamActuationWorker.queue');
+    if (typeof result === 'string') return result;
 
-    // PAM ownership epochs W4 (#8206): an apply goes out only once the agent
-    // has reported holding the identity of the device's current ownership
-    // epoch (devices.agent_identity_epoch_ack, written by the heartbeat after
-    // the signed identity assertion v2 and restart). NULL counts as
-    // acknowledged only at epoch 1, so never-moved devices keep working with
-    // agents that report no epoch. Nothing re-drives a skipped actuation, so
-    // this fails closed and visibly, like the protocol gate above. Cleanup is
-    // never held back: it only removes access, and an agent that does not
-    // hold the identity refuses it anyway.
-    if (actuation.desired_state === 'active' && !agentIdentityEpochAcknowledged(actuation)) {
-      await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = 'agent_identity_epoch_unacknowledged', updated_at = now()
-        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
-      `);
-      return 'blocked';
-    }
-
-    const expiresAt = actuation.expires_at instanceof Date
-      ? actuation.expires_at
-      : actuation.expires_at === null
-        ? null
-        : new Date(actuation.expires_at);
-    const built = buildPamActuationCommand({
-      actuationId: actuation.id,
-      generation: actuation.generation,
-      requestId: actuation.elevation_request_id,
-      deviceId: actuation.device_id,
-      orgId: actuation.org_id,
-      desiredState: actuation.desired_state,
-      targetPath: actuation.target_executable_path,
-      targetHash: actuation.target_executable_hash,
-      subjectUsername: actuation.subject_username,
-      expiresAt,
-    }, new Date());
-    if (built.kind === 'blocked') {
-      await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = ${built.failureCode}, updated_at = now()
-        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
-      `);
-      return 'blocked';
-    }
-
-    // A device parked in a holding org receives lifecycle removal only; the
-    // actuation fails terminally (no retry) and no command row is written.
-    if (
-      isUnassignedPoolOrgType(actuation.device_org_type)
-      && !isParkedDeliverableCommandType(built.commandType)
-    ) {
-      await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = ${PARKED_DEVICE_CANCEL_REASON}, updated_at = now()
-        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
-      `);
-      return 'blocked';
-    }
-
-    try {
-      await assertDeviceExecuteAllowed(actuation.device_id, built.commandType, null);
-    } catch (error) {
-      if (!(error instanceof TrustDeniedError)) throw error;
-      await tx.execute(sql`
-        UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = ${error.code}, updated_at = now()
-        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
-      `);
-      return 'blocked';
-    }
-
-    const commandId = randomUUID();
-    await tx.execute(sql`
-      INSERT INTO device_commands (
-        id, device_id, type, target_role, payload, status, created_by
-      ) VALUES (
-        ${commandId}, ${actuation.device_id}, ${built.commandType}, 'agent',
-        ${JSON.stringify(built.payload)}::jsonb, 'pending', NULL
-      )
-    `);
-    await tx.execute(sql`
-      UPDATE pam_actuations
-      SET current_command_id = ${commandId}, observed_state = 'dispatched',
-          failure_code = NULL, updated_at = now()
-      WHERE id = ${actuation.id} AND generation = ${actuation.generation}
-        AND current_command_id IS NULL
-    `);
+    // Queue and bind the stable identity before the agent can report a result.
+    // The claim commits separately and applies the same late eligibility checks
+    // and concurrent-heartbeat exclusion as ordinary command delivery.
+    await pushCommittedPamCommand(result.agentId, result.command);
     return 'dispatched';
   });
+}
+
+async function pushCommittedPamCommand(agentId: string | null, command: AgentCommand): Promise<void> {
+  try {
+    if (!agentId || !await isAgentConnectedAnywhere(agentId)) return;
+    const claim = await claimPendingCommandForDelivery(command.id);
+    if (claim.status !== 'claimed') return;
+
+    // The facade also reaches agents owned by another API process. No database
+    // transaction is held during its Redis/socket I/O or acknowledgement wait.
+    const outcome = await dispatchCommandToAgent(agentId, command);
+    if (outcome.status === 'sent' || outcome.status === 'indeterminate') return;
+    await releaseClaimedCommandDelivery(command.id, claim.executedAt);
+  } catch (error) {
+    // Persisted work remains recoverable by heartbeat/reaper. A thrown send may
+    // already have reached the agent, so never release an uncertain claim.
+    captureException(error);
+  }
 }
 
 let pamWorker: Worker<PamActuationJobData> | null = null;
