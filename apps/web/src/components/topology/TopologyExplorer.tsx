@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Activity, RefreshCw, Settings2 } from 'lucide-react';
-import type { GraphNode, TopologyView } from '@breeze/shared';
+import type { GraphNode, PresenceVisitor, TopologyView } from '@breeze/shared';
 import { useHashState } from '../../lib/useHashState';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { TopologyLayoutController } from './layoutController';
@@ -58,7 +58,9 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   const view = navigation.view === 'physical' && !settings.capabilities.physical.available ? 'overview' : navigation.view;
   const { graph, loading, error, refreshGraph, expand, collapse, expanded, expansion } = useTopologyGraph({ siteId }, { view, focusNodeId: searchFocus ?? (fullSite ? undefined : focusNodeId) }, settings.capabilities.ui.available);
   // Cross-site presence is optional enrichment (site location W2): the map renders without it, and only ever with the site it describes.
-  const presenceRead = useTopologyPresence(siteId, settings.capabilities.ui.available);
+  const [presenceReload, setPresenceReload] = useState(0);
+  const reloadPresence = useCallback(() => setPresenceReload((n) => n + 1), []);
+  const presenceRead = useTopologyPresence(siteId, settings.capabilities.ui.available, presenceReload);
   const presence = presenceRead && presenceRead.siteId === siteId ? presenceRead : null;
   const controller = useMemo(() => new TopologyLayoutController(), [siteId, view]);
   const draft = useMemo(() => new TopologyLayoutDraft(), [siteId, view]);
@@ -245,7 +247,8 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
     {graph && <>
       {/* One status row: the site and its networks, collection coverage (reasons behind a disclosure), health, counts. */}
       <div data-testid="topology-status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-        {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} siteLabel={siteLabel} observedElsewhere={presence?.counts.observedElsewhere ?? 0} />}
+        {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} siteLabel={siteLabel} observedElsewhere={presence?.counts.observedElsewhere ?? 0}
+          suggestedVisitors={presence?.visitors.filter((visitor) => visitor.suggestion) ?? []} onReview={(id) => select({ kind: 'node', id })} />}
         <PhysicalCoveragePanel coverage={graph.coverage} />
         <span data-testid="topology-health-internet">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</span>
         <span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span>
@@ -255,7 +258,8 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
         {t('grouped.declareHint', { site: siteLabel })} <a className="text-primary underline underline-offset-4" href="/discovery#profiles">{t('grouped.declareHintLink')}</a></p>}
       {view === 'overview' && presence && presence.ignoredDeclarations > 0 && <p data-testid="topology-ignored-declarations" className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
         {t('grouped.crossSite.ignoredDeclarations', { count: presence.ignoredDeclarations })}</p>}
-      {view === 'overview' && render && <TopologySiteRoster siteName={siteLabel} roster={render.roster} nodesById={rosterNodes} onSelect={select} presence={presence} deviceNodeIds={deviceNodeIds} />}
+      {view === 'overview' && render && <TopologySiteRoster siteName={siteLabel} roster={render.roster} nodesById={rosterNodes} onSelect={select} presence={presence} deviceNodeIds={deviceNodeIds}
+        canMoveDevices={!!graph?.permissions.canMoveDevices} onPresenceChanged={() => { reloadPresence(); refreshGraph(); }} />}
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
       {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
       {!nodes.length ? (view === 'physical'
@@ -280,7 +284,7 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
         {list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
           visitors={navigation.search ? undefined : presence?.visitors}
           hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitInsetTop={fitInsetTop} fitKey={`${view}:${showAllNetworks}:${showOtherNetworks}:${render?.grouped}:${expansion ?? ''}`} />}</div>
-        {selection && (selected || hiddenSelected || visitorSelected) && <TopologyInspector graph={graph} visitor={visitorSelected} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
+        {selection && (selected || hiddenSelected || visitorSelected) && <TopologyInspector graph={graph} visitor={visitorSelected} canMoveDevices={!!graph.permissions.canMoveDevices} onPresenceChanged={() => { reloadPresence(); refreshGraph(); }} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
           historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} siteName={siteName} sharedAddressCount={render?.nodes.find((node) => node.id === selection.id)?.sharedWith} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit && !visitorSelected ? () => { const point = draft.positions.get(selection.id); if (point) changePositions([{ ...point, pinned: !point.pinned }]); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
@@ -297,7 +301,11 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
  * site. Names the site, counts networks and devices, and says plainly when a secondary network has
  * no observed link to the primary one, rather than drawing a connection nobody saw (spec C:14).
  */
-function SiteHeader({ render, siteName, siteLabel, observedElsewhere }: { render: NonNullable<ReturnType<typeof compileTopologyRender>>; siteName?: string; siteLabel: string; observedElsewhere: number }) {
+function SiteHeader({ render, siteName, siteLabel, observedElsewhere, suggestedVisitors = [], onReview }: {
+  render: NonNullable<ReturnType<typeof compileTopologyRender>>; siteName?: string; siteLabel: string; observedElsewhere: number;
+  /** W3: visitors carrying a suggestion for this site; the API only sends ones the viewer may see. */
+  suggestedVisitors?: PresenceVisitor[]; onReview?: (visitorId: string) => void;
+}) {
   const { t } = useTranslation('topology');
   const label = (id: string | null) => render.nodes.find((node) => node.id === id)?.label ?? '';
   const primary = label(render.site.primary);
@@ -305,6 +313,10 @@ function SiteHeader({ render, siteName, siteLabel, observedElsewhere }: { render
     {siteName && <h3 className="text-base font-semibold tracking-[-0.01em]">{siteName}</h3>}
     <span className="text-sm text-muted-foreground">{[t('grouped.siteNetworks', { count: render.site.networks }), t('grouped.devices', { count: render.site.devices })].join(' · ')}</span>
     {observedElsewhere > 0 && <span data-testid="topology-observed-elsewhere" className="text-sm text-muted-foreground">· {t('grouped.crossSite.observedChip', { count: observedElsewhere })}</span>}
+    {suggestedVisitors.length > 0 && <span data-testid="topology-suggested-visitors" className="text-sm text-muted-foreground">
+      · {t('grouped.crossSite.headerSuggested', { count: suggestedVisitors.length })} · <button type="button" data-testid="topology-suggested-review"
+        className="rounded text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={() => onReview?.(suggestedVisitors[0]!.id)}>{t('grouped.crossSite.review')}</button></span>}
     {render.site.unlinked.map((id) => <span key={id} data-testid="topology-unlinked-note" className="text-sm text-muted-foreground">
       · {t('grouped.noObservedLink', { network: label(id), primary })}</span>)}
     <span data-testid="topology-site-intro" className="basis-full text-sm text-muted-foreground">{t('grouped.siteIntro', { site: siteLabel })}</span>

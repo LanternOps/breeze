@@ -61,6 +61,13 @@ describe('visited map: visitors from other sites', () => {
     expect(render.site.devices).toBe(2);
   });
 
+  it('flags only a visitor carrying a wrong-site suggestion (W3 "Move suggested" marker)', () => {
+    const suggestion = { siteId: SITE, siteName: 'Lakeside', days: 9, firstObservedAt: '2026-09-14T08:00:00.000Z', lastObservedAt: '2026-10-02T18:00:00.000Z' };
+    const render = compileTopologyRender(lakeside(), OPTS, presenceWith(presenceVisitor(1, { suggestion }), presenceVisitor(2, { label: 'WIN-HD4M8T2C9' })));
+    expect(render.nodes.find((n) => n.label === 'LAPTOP-LOV-01')).toMatchObject({ visiting: true, suggested: true });
+    expect(render.nodes.find((n) => n.label === 'WIN-HD4M8T2C9')!.suggested).toBeUndefined();
+  });
+
   it('puts a visitor with no matching card in a presentation-only "Visiting devices" card labelled with the prefix', () => {
     const render = compileTopologyRender(lakeside(), OPTS, presenceWith(presenceVisitor(1, { network: { prefix: '10.1.9.0/24', gatewayAddress: '10.1.9.1' } })));
     const card = render.nodes.find((n) => n.id.startsWith('presentation:overview:visiting:'))!;

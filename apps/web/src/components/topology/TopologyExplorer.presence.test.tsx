@@ -79,3 +79,57 @@ it('uses the singular for one ignored entry', async () => {
   render(<TopologyExplorer siteId={SITE} siteName="Lakeside" settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-ignored-declarations')).toHaveTextContent('1 declared subnet entry was ignored');
 });
+
+// Site location W3 (#7887): wrong-site suggestions (spec S§10.3).
+const SUGGESTED = { siteId: '55555555-5555-4555-8555-555555555555', siteName: 'Lakeside', days: 9, firstObservedAt: '2026-09-14T08:00:00.000Z', lastObservedAt: '2026-10-02T18:00:00.000Z' };
+const writable = (): GraphResponse => ({ ...graph(), permissions: { ...graph().permissions, canMoveDevices: true } });
+const serveWith = (presence: PresenceResponse, g: () => GraphResponse) => vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
+  if (init?.method) return new Response(JSON.stringify({ confirmedAt: '2026-10-02T09:30:00.000Z' }));
+  if (String(url).includes('/presence')) return new Response(JSON.stringify(presence));
+  return new Response(JSON.stringify(g()));
+});
+
+it('roster entry on the assigned site shows the suggestion; "Keep at" confirms and refetches presence', async () => {
+  serveWith(presenceFixture({ siteId: SITE, assigned: [presenceAssigned(1, { suggestion: SUGGESTED })], counts: { observedElsewhere: 1, unidentified: 0, unknown: 0, visiting: 0 } }), writable);
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  await userEvent.click(await screen.findByRole('button', { name: /Devices not on this site's networks \(1\)/ }));
+  expect(screen.getByText('Probably assigned to the wrong site.')).toBeInTheDocument();
+  expect(screen.getByTestId('topology-suggestion-move')).toHaveTextContent('Move to Lakeside');
+  const presenceReads = () => vi.mocked(fetchWithAuth).mock.calls.filter(([url, init]) => String(url).endsWith('/presence') && !init?.method).length;
+  const before = presenceReads();
+  await userEvent.click(screen.getByTestId('topology-suggestion-keep'));
+  await waitFor(() => expect(presenceReads()).toBeGreaterThan(before));
+  const put = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'PUT')!;
+  expect(String(put[0])).toBe(`/devices/${presenceDeviceId(1)}/site-assignment-confirmation`);
+});
+
+it('without devices:write the suggestion is shown but offers no move or dismissal', async () => {
+  serveWith(presenceFixture({ siteId: SITE, assigned: [presenceAssigned(1, { suggestion: SUGGESTED })], counts: { observedElsewhere: 1, unidentified: 0, unknown: 0, visiting: 0 } }), graph);
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  await userEvent.click(await screen.findByRole('button', { name: /Devices not on this site's networks \(1\)/ }));
+  expect(screen.getByText('Probably assigned to the wrong site.')).toBeInTheDocument();
+  expect(screen.queryByTestId('topology-suggestion-move')).toBeNull();
+  expect(screen.queryByTestId('topology-suggestion-keep')).toBeNull();
+});
+
+it('the suggested site header counts suggested visitors and Review opens one in the inspector with its actions', async () => {
+  const visitor = presenceVisitor(9, { label: 'DESKTOP-HD7K2QF', suggestion: { ...SUGGESTED, siteId: SITE } });
+  serveWith(presenceFixture({ siteId: SITE, visitors: [visitor, presenceVisitor(8)], counts: { observedElsewhere: 0, unidentified: 0, unknown: 0, visiting: 2 } }), writable);
+  render(<TopologyExplorer siteId={SITE} siteName="Lakeside" settings={topologySettingsFixture()} />);
+  expect(await screen.findByTestId('topology-suggested-visitors')).toHaveTextContent('1 device assigned to another site has reported this network for 7+ days');
+  await userEvent.click(screen.getByTestId('topology-suggested-review'));
+  const inspector = await screen.findByTestId('topology-inspector');
+  expect(within(inspector).getByRole('heading', { name: 'DESKTOP-HD7K2QF' })).toBeInTheDocument();
+  expect(within(inspector).getByText('Probably assigned to the wrong site.')).toBeInTheDocument();
+  expect(within(inspector).getByTestId('topology-suggestion-move')).toHaveTextContent('Move to Lakeside');
+  expect(within(inspector).getByTestId('topology-suggestion-keep')).toHaveTextContent('Keep at Main Office');
+  expect(inspector.textContent!.toLowerCase()).not.toMatch(/\balways\b|\baway\b/);
+});
+
+it('a confirmed device in the roster shows "Suggestions off"', async () => {
+  serveWith(presenceFixture({ siteId: SITE, assigned: [presenceAssigned(1, { siteAssignmentConfirmedAt: '2026-10-02T09:30:00.000Z' })], counts: { observedElsewhere: 1, unidentified: 0, unknown: 0, visiting: 0 } }), writable);
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  await userEvent.click(await screen.findByRole('button', { name: /Devices not on this site's networks \(1\)/ }));
+  expect(screen.getByTestId('topology-suggestion-off')).toHaveTextContent('Suggestions off');
+  expect(screen.getByTestId('topology-suggestion-turn-on')).toBeInTheDocument();
+});

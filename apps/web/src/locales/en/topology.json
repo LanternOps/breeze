@@ -773,7 +773,29 @@
       "visitorExplanation": "Assigned to {{assigned}}. Reports {{site}}'s network {{prefix}} via {{gateway}}. The gateway matches {{site}}'s devices.",
       "visitorExplanationMac": "Assigned to {{assigned}}. Reports {{site}}'s network {{prefix}} via {{gateway}}. The gateway matches {{site}}'s devices, including its router MAC.",
       "ignoredDeclarations_one": "{{count}} declared subnet entry was ignored (a range, single address, IPv6 or unparsable text). Only exact IPv4 prefixes identify a site's networks.",
-      "ignoredDeclarations_other": "{{count}} declared subnet entries were ignored (ranges, single addresses, IPv6 or unparsable text). Only exact IPv4 prefixes identify a site's networks."
+      "ignoredDeclarations_other": "{{count}} declared subnet entries were ignored (ranges, single addresses, IPv6 or unparsable text). Only exact IPv4 prefixes identify a site's networks.",
+      "suggestedBadge": "Move suggested",
+      "headerSuggested_one": "{{count}} device assigned to another site has reported this network for 7+ days",
+      "headerSuggested_other": "{{count}} devices assigned to other sites have reported this network for 7+ days",
+      "review": "Review",
+      "suggestion": {
+        "title": "Probably assigned to the wrong site.",
+        "evidence": "Reported {{site}}'s network ({{prefix}}) on {{days}} days between {{from}} and {{to}}. No {{assigned}}-network observations during that time.",
+        "evidenceNoPrefix": "Reported {{site}}'s network on {{days}} days between {{from}} and {{to}}. No {{assigned}}-network observations during that time.",
+        "move": "Move to {{site}}",
+        "keep": "Keep at {{site}}",
+        "confirmMove": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically.",
+        "cancel": "Cancel",
+        "moved": "Moved {{device}} to {{site}}.",
+        "kept": "{{device}} stays at {{site}}. Suggestions are off for it.",
+        "confirmed": "Site assignment confirmed on {{date}} \u00b7 Suggestions off",
+        "turnOn": "Turn on",
+        "turnedOn": "Suggestions are on again for {{device}}.",
+        "moveFailed": "Could not move the device",
+        "keepFailed": "Could not confirm the site assignment",
+        "turnOnFailed": "Could not turn suggestions back on",
+        "siteChanged": "This device was moved by someone else \u2014 reload to see its current site"
+      }
     }
   }
 }

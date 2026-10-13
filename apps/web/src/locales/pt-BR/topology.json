@@ -773,7 +773,29 @@
       "visitorExplanation": "Atribuído a {{assigned}}. Informa a rede {{prefix}} de {{site}} via {{gateway}}. O gateway corresponde aos dispositivos de {{site}}.",
       "visitorExplanationMac": "Atribuído a {{assigned}}. Informa a rede {{prefix}} de {{site}} via {{gateway}}. O gateway corresponde aos dispositivos de {{site}}, incluindo o MAC do roteador.",
       "ignoredDeclarations_one": "{{count}} entrada de sub-rede declarada foi ignorada (intervalo, endereço único, IPv6 ou texto ilegível). Somente prefixos IPv4 exatos identificam as redes de um site.",
-      "ignoredDeclarations_other": "{{count}} entradas de sub-rede declaradas foram ignoradas (intervalos, endereços únicos, IPv6 ou texto ilegível). Somente prefixos IPv4 exatos identificam as redes de um site."
+      "ignoredDeclarations_other": "{{count}} entradas de sub-rede declaradas foram ignoradas (intervalos, endereços únicos, IPv6 ou texto ilegível). Somente prefixos IPv4 exatos identificam as redes de um site.",
+      "suggestedBadge": "Mudança sugerida",
+      "headerSuggested_one": "{{count}} dispositivo atribuído a outro site relata esta rede há 7 dias ou mais",
+      "headerSuggested_other": "{{count}} dispositivos atribuídos a outros sites relatam esta rede há 7 dias ou mais",
+      "review": "Revisar",
+      "suggestion": {
+        "title": "Provavelmente atribuído ao site errado.",
+        "evidence": "Relatou a rede de {{site}} ({{prefix}}) em {{days}} dias entre {{from}} e {{to}}. Nenhuma observação da rede de {{assigned}} nesse período.",
+        "evidenceNoPrefix": "Relatou a rede de {{site}} em {{days}} dias entre {{from}} e {{to}}. Nenhuma observação da rede de {{assigned}} nesse período.",
+        "move": "Mover para {{site}}",
+        "keep": "Manter em {{site}}",
+        "confirmMove": "Mover altera quais políticas de configuração, janelas de manutenção, roteamento de alertas e relatórios do site se aplicam a {{device}}. O Breeze não o moverá de volta automaticamente.",
+        "cancel": "Cancelar",
+        "moved": "{{device}} foi movido para {{site}}.",
+        "kept": "{{device}} permanece em {{site}}. As sugestões estão desativadas para ele.",
+        "confirmed": "Atribuição de site confirmada em {{date}} \u00b7 Sugestões desativadas",
+        "turnOn": "Ativar",
+        "turnedOn": "As sugestões foram reativadas para {{device}}.",
+        "moveFailed": "Não foi possível mover o dispositivo",
+        "keepFailed": "Não foi possível confirmar a atribuição de site",
+        "turnOnFailed": "Não foi possível reativar as sugestões",
+        "siteChanged": "Este dispositivo foi movido por outra pessoa \u2014 recarregue para ver o site atual"
+      }
     }
   }
 }

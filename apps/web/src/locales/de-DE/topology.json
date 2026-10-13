@@ -773,7 +773,29 @@
       "visitorExplanation": "Zugewiesen zu {{assigned}}. Meldet das Netzwerk {{prefix}} von {{site}} über {{gateway}}. Das Gateway stimmt mit den Geräten von {{site}} überein.",
       "visitorExplanationMac": "Zugewiesen zu {{assigned}}. Meldet das Netzwerk {{prefix}} von {{site}} über {{gateway}}. Das Gateway stimmt mit den Geräten von {{site}} überein, einschließlich der MAC-Adresse des Routers.",
       "ignoredDeclarations_one": "{{count}} deklarierter Subnetz-Eintrag wurde ignoriert (Bereich, Einzeladresse, IPv6 oder nicht lesbarer Text). Nur exakte IPv4-Präfixe identifizieren die Netzwerke eines Standorts.",
-      "ignoredDeclarations_other": "{{count}} deklarierte Subnetz-Einträge wurden ignoriert (Bereiche, Einzeladressen, IPv6 oder nicht lesbarer Text). Nur exakte IPv4-Präfixe identifizieren die Netzwerke eines Standorts."
+      "ignoredDeclarations_other": "{{count}} deklarierte Subnetz-Einträge wurden ignoriert (Bereiche, Einzeladressen, IPv6 oder nicht lesbarer Text). Nur exakte IPv4-Präfixe identifizieren die Netzwerke eines Standorts.",
+      "suggestedBadge": "Verschiebung empfohlen",
+      "headerSuggested_one": "{{count}} Gerät, das einem anderen Standort zugewiesen ist, meldet dieses Netzwerk seit mindestens 7 Tagen",
+      "headerSuggested_other": "{{count}} Geräte, die anderen Standorten zugewiesen sind, melden dieses Netzwerk seit mindestens 7 Tagen",
+      "review": "Prüfen",
+      "suggestion": {
+        "title": "Wahrscheinlich dem falschen Standort zugewiesen.",
+        "evidence": "Hat das Netzwerk von {{site}} ({{prefix}}) an {{days}} Tagen zwischen {{from}} und {{to}} gemeldet. In dieser Zeit keine Beobachtungen im Netzwerk von {{assigned}}.",
+        "evidenceNoPrefix": "Hat das Netzwerk von {{site}} an {{days}} Tagen zwischen {{from}} und {{to}} gemeldet. In dieser Zeit keine Beobachtungen im Netzwerk von {{assigned}}.",
+        "move": "Zu {{site}} verschieben",
+        "keep": "Bei {{site}} belassen",
+        "confirmMove": "Durch das Verschieben ändert sich, welche Konfigurationsrichtlinien, Wartungsfenster, Alarm-Weiterleitungen und Berichte des Standorts für {{device}} gelten. Breeze verschiebt das Gerät nicht automatisch zurück.",
+        "cancel": "Abbrechen",
+        "moved": "{{device}} wurde zu {{site}} verschoben.",
+        "kept": "{{device}} bleibt bei {{site}}. Vorschläge sind dafür deaktiviert.",
+        "confirmed": "Standortzuweisung am {{date}} bestätigt \u00b7 Vorschläge deaktiviert",
+        "turnOn": "Aktivieren",
+        "turnedOn": "Vorschläge sind für {{device}} wieder aktiviert.",
+        "moveFailed": "Das Gerät konnte nicht verschoben werden",
+        "keepFailed": "Die Standortzuweisung konnte nicht bestätigt werden",
+        "turnOnFailed": "Vorschläge konnten nicht wieder aktiviert werden",
+        "siteChanged": "Dieses Gerät wurde von jemand anderem verschoben \u2014 neu laden, um den aktuellen Standort zu sehen"
+      }
     }
   }
 }

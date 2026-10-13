@@ -26,6 +26,8 @@ export type RenderNode = {
   sharedWith: number;
   /** A device assigned to another site, drawn here because it reports one of this site's networks (site location W2). Presentation only. */
   visiting?: true;
+  /** W3: that visitor carries a wrong-site suggestion for this site (a suggestion, never an assignment). */
+  suggested?: true;
 };
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
@@ -134,7 +136,8 @@ export const renderLayoutKey = (nodes: readonly RenderNode[]) => JSON.stringify(
 /** A tile for a device assigned to another site that reports one of this site's networks. Never pinnable, diagnosable or counted as a member. */
 function visitorNode(visitor: PresenceVisitor, parent: string, text: RenderText): RenderNode {
   return { id: visitor.id, label: visitor.label, detail: text.assignedTo(visitor.assignedSite.name), kind: 'visitor', glyph: 'device', parent, presence: null, agentPresence: null,
-    health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: text.visitorAlt(visitor.assignedSite.name), sharedWith: 0, visiting: true };
+    health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: text.visitorAlt(visitor.assignedSite.name), sharedWith: 0, visiting: true,
+    ...(visitor.suggestion ? { suggested: true as const } : {}) };
 }
 
 export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, showOtherNetworks = false, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions, presence?: PresenceResponse | null): TopologyRender {
