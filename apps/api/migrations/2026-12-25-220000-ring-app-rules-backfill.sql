@@ -156,6 +156,8 @@ DECLARE
   new_ring uuid;
   bad_ring uuid;
   bad_link uuid;
+  lock_orgs uuid[];
+  lock_partners uuid[];
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
@@ -228,6 +230,29 @@ BEGIN
   IF bad_ring IS NOT NULL THEN
     RAISE EXCEPTION 'ring_app_rules_backfill: update ring % already carries application rules that differ from a linked policy''s; refusing to continue (a skip would drop that policy''s rules)', bad_ring;
   END IF;
+
+  -- Configuration-family partner-export pre-locks (#5912): partners
+  -- exclusive, then their orgs, before the first config_policy_feature_links
+  -- write. The set covers every link steps 1 and 3 can relink (every link
+  -- still in the work set, plus every valid linker of a ring it references):
+  -- the policy's own org, or every org of its partner for a partner-wide
+  -- policy, and those orgs' partners. Empty (a no-op) when nothing moves.
+  SELECT
+    COALESCE(array_agg(DISTINCT o.id ORDER BY o.id), ARRAY[]::uuid[]),
+    COALESCE(array_agg(DISTINCT o.partner_id ORDER BY o.partner_id), ARRAY[]::uuid[])
+    INTO lock_orgs, lock_partners
+    FROM config_policy_feature_links l
+    JOIN configuration_policies cp ON cp.id = l.config_policy_id
+    JOIN organizations o
+      ON o.id = cp.org_id OR (cp.org_id IS NULL AND o.partner_id = cp.partner_id)
+   WHERE l.id IN (SELECT link_id FROM pg_temp.breeze_ring_app_rules_work)
+      OR l.id IN (
+        SELECT a.link_id FROM pg_temp.breeze_ring_app_rules_all_links a
+         WHERE a.ring_valid
+           AND a.ring_ref IN (SELECT ring_ref FROM pg_temp.breeze_ring_app_rules_work WHERE ring_ref IS NOT NULL)
+      );
+  PERFORM public.breeze_partner_export_lock_partners_exclusive(lock_partners);
+  PERFORM public.breeze_partner_export_lock_orgs_under_exclusive_partners(lock_orgs, lock_partners);
 
   -- ---- Step 1: case A — ring-less links get their own ring ----------------------
   total := 0;

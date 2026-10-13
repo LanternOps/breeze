@@ -21,9 +21,12 @@
  *  - policy-level auto-approve is never converted into a ring.
  *  - a second run writes nothing and every write count reports 0.
  *
- * The file is replayed as `breeze_app` (NOSUPERUSER NOBYPASSRLS) so FORCE RLS
- * is in effect, as on a managed-Postgres install; fixtures are seeded and read
- * back through the superuser test connection.
+ * The file is replayed as a dedicated NOSUPERUSER NOBYPASSRLS migrator role
+ * (deliberately not `breeze_app`, which may not call the partner-export lock
+ * functions) holding only the privileges a table-owning migrator has on what
+ * the file touches, so FORCE RLS is in effect as on a managed-Postgres or
+ * self-hosted non-bypass install. Fixtures are seeded and read back through
+ * the superuser test connection.
  *
  * Run:
  *   cd apps/api && npx vitest run -c vitest.integration.config.ts \
@@ -35,7 +38,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { canonicalAppRuleKey } from '@breeze/shared/validators';
 import {
   configPolicyFeatureLinks,
@@ -65,20 +68,66 @@ const WRITE_METRICS = [
   'clone_links_relinked',
 ] as const;
 
-/** Apply the migration as breeze_app and return the parsed `metric=n` warnings. */
+const MIGRATOR = 'breeze_test_ring_rules_migrator';
+
+beforeAll(async () => {
+  if (!process.env.DATABASE_URL) return;
+  const admin = postgres(process.env.DATABASE_URL, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${MIGRATOR}') THEN
+          CREATE ROLE ${MIGRATOR} NOLOGIN NOSUPERUSER NOBYPASSRLS;
+        END IF;
+        EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO ${MIGRATOR}', current_database());
+      END $$;
+    `);
+    // The privileges a table-owning migrator has on everything the file touches.
+    await admin.unsafe(`
+      GRANT USAGE ON SCHEMA public TO ${MIGRATOR};
+      GRANT SELECT, INSERT, UPDATE ON public.patch_policies, public.patch_approvals TO ${MIGRATOR};
+      GRANT SELECT, UPDATE ON public.config_policy_feature_links, public.partners, public.organizations TO ${MIGRATOR};
+      GRANT SELECT ON public.configuration_policies, public.config_policy_patch_settings TO ${MIGRATOR};
+      GRANT EXECUTE ON FUNCTION public.breeze_partner_export_lock_partners_exclusive(uuid[]) TO ${MIGRATOR};
+      GRANT EXECUTE ON FUNCTION public.breeze_partner_export_lock_orgs_under_exclusive_partners(uuid[], uuid[]) TO ${MIGRATOR};
+    `);
+  } finally {
+    await admin.end();
+  }
+});
+
+afterAll(async () => {
+  if (!process.env.DATABASE_URL) return;
+  const admin = postgres(process.env.DATABASE_URL, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${MIGRATOR}') THEN
+          EXECUTE 'DROP OWNED BY ${MIGRATOR}';
+          EXECUTE 'DROP ROLE ${MIGRATOR}';
+        END IF;
+      END $$;
+    `);
+  } finally {
+    await admin.end();
+  }
+});
+
+/** Apply the migration as the non-bypass migrator and return the parsed `metric=n` warnings. */
 async function applyMigration(): Promise<{ metrics: Map<string, number>; notices: string[] }> {
   const notices: string[] = [];
-  const client = postgres(process.env.DATABASE_URL_APP!, {
+  const client = postgres(process.env.DATABASE_URL!, {
     max: 1,
     onnotice: (notice) => notices.push(String(notice.message ?? '')),
   });
   try {
-    const [role] = await client.unsafe<{ rolsuper: boolean; rolbypassrls: boolean }[]>(
-      'SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user',
+    await client.unsafe(`SET ROLE ${MIGRATOR}`);
+    const [role] = await client.unsafe<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }[]>(
+      'SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user',
     );
     // Precondition: the replay must not bypass RLS, or a missing system-scope
     // election would read green here and match zero rows in production.
-    expect(role).toEqual({ rolsuper: false, rolbypassrls: false });
+    expect(role).toEqual({ rolname: MIGRATOR, rolsuper: false, rolbypassrls: false });
     await client.unsafe(readFileSync(MIGRATION_FILE, 'utf8'));
   } finally {
     await client.end();

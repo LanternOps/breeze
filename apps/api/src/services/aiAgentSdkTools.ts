@@ -2807,7 +2807,7 @@ export function buildBreezeSdkTools(
           pinnedVersion: z.string().min(1).max(64).optional(),
           displayName: z.string().max(255).optional(),
         })).max(200).optional().describe(
-          'Per-app block/pin rules on the ring. pin requires pinnedVersion. Rules override manual approvals in scheduled patch jobs. On update this replaces the whole list.'
+          'Per-app block/pin rules on the ring; pin requires pinnedVersion. Overrides manual approvals in patch jobs. Update replaces the list.'
         ),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),

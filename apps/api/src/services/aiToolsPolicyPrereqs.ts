@@ -240,7 +240,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app block/pin rules on the ring: [{ source: "third_party"|"custom", packageId, action: "block"|"pin", pinnedVersion (required for pin), displayName? }]. Max 200, no duplicates. Rules override manual approvals in scheduled patch jobs. On update, replaces the whole list.' },
+          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
