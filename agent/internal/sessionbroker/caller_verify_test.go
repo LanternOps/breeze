@@ -230,11 +230,17 @@ func TestCallerVerifyUsersReportsOnlyReadyConsoleLogins(t *testing.T) {
 		{UID: 501, Username: "alex", Session: "console", Type: "console", State: "active"},
 		{UID: 502, Username: "sam", Session: "s", Type: "ssh", State: "active", IsRemote: true},
 	}}
+	if !b.HasCallerVerifyHelper() {
+		t.Fatal("capable assist helper not detected")
+	}
 	got := b.CallerVerifyUsers(det)
 	if len(got) != 1 || got[0] != "alex" {
 		t.Fatalf("users = %v", got)
 	}
 	ready.SetCapabilities(&ipc.Capabilities{})
+	if b.HasCallerVerifyHelper() {
+		t.Fatal("old helper counted as capable")
+	}
 	if got := b.CallerVerifyUsers(det); len(got) != 0 {
 		t.Fatalf("old helper reported ready: %v", got)
 	}

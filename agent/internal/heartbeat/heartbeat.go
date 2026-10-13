@@ -117,6 +117,11 @@ type HeartbeatPayload struct {
 	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
 	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
 	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	// HelperCapabilities is caller-verification readiness (#6354 W02): the
+	// console logins whose Assist helper can render a card right now. Always
+	// sent so a false report replaces an earlier true one; servers that do
+	// not know the key strip it.
+	HelperCapabilities callerHelperCapabilities `json:"helperCapabilities"`
 	// HelperInstallIssue is a Breeze Assist install problem the agent is stuck
 	// on (helper.InstallIssue* codes, #6925), e.g. enabled but not installed
 	// with no helper version offered. Omitted when there is none, so older
@@ -4941,6 +4946,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
+	payload.HelperCapabilities = h.callerHelperCapabilities()
 
 	// Compute uptime from boot time
 	if bootTime, err := host.BootTime(); err != nil {

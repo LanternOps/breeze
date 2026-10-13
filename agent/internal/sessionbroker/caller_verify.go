@@ -54,6 +54,22 @@ func (b *Broker) CallerVerifySession(username string, detector SessionDetector) 
 	return b.callerVerifySessionFrom(username, logins)
 }
 
+// HasCallerVerifyHelper is a cheap snapshot check that lets the heartbeat skip
+// the OS session query entirely when no helper could render a card (old
+// helpers, no Assist running).
+func (b *Broker) HasCallerVerifyHelper() bool {
+	sessions, _ := b.snapshotSessions()
+	for _, s := range sessions {
+		if s.HelperRole != ipc.HelperRoleAssist || !s.HasScope(ipc.ScopeConsentUI) || s.IsClosed() {
+			continue
+		}
+		if caps := s.GetCapabilities(); caps != nil && caps.CallerVerify {
+			return true
+		}
+	}
+	return false
+}
+
 // CallerVerifyUsers lists the detector usernames that could receive a card
 // right now. It is heartbeat readiness telemetry, not authorization: every
 // dispatch re-runs CallerVerifySession.
