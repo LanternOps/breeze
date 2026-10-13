@@ -13,18 +13,20 @@ never this index.
 | Wave | Plan | Depends on |
 |---|---|---|
 | W01 (#6264) | [Live security policy: scheduler, settings delivery, Security tab cleanup, Scans page, neutralized quarantine](2026-09-18-yara-ioc-scanning-w01-live-policy.md) | — |
-| W02 (#6265) | YARA-X engine in the agent (`internal/yarascan`, matcher swap, worker-pool walk, bytecode cache + fetch route, lab benchmark, sidecar go/no-go) — plan not written | — (parallel with W01) |
-| W03 (#6266) | Rule sets, compile service and built-in pack (tables + RLS + every registration list, `breeze-yarac`, CRUD routes, YARA Forge pack pipeline, `provider = 'breeze'`) — plan not written | W02 |
+| W02 (#6265) | [YARA-X engine in the agent: on-device compile (`breeze-yarac`), source-bundle contract §C1–C5, fetch client + compiled cache, worker-pool walk, `provider = 'breeze'`, lab benchmark](2026-10-13-yara-ioc-scanning-w02-agent-engine.md) | W01 (merged) |
+| W03 (#6266) | [Rule sets, pre-check, CRUD, agent fetch route, payload `ruleSets` (Part A) + built-in YARA Forge pack pipeline (Part B)](2026-10-13-yara-ioc-scanning-w03-rule-sets.md) | W02 (bundle format) |
 | W04 (#6267) | Detection rules UI and IOC import (rule-set editor, compile errors, test upload, IOC paste importer, Security tab rule-set picker, ThreatDetail rule panel) — plan not written | W03 |
 | W05 (#6268) | Fleet sweep, AI tool and audit (`sweep` route + batch tracking, AI `security_scan` actions + parity files, audit events, docs + release-notes copy per spec §11) — plan not written | W03 |
 
-W01 and W02 are independent and run in parallel (spec §12). W03 depends on W02 (bytecode format);
-W04 and W05 depend on W03.
+W01 shipped (PR #6573); W02 builds on its scanner code. W03 depends on W02's source-bundle format
+(W02 plan §C1–C5); W04 and W05 depend on W03.
 
 ## Gates
 
 - **Gate B — Todd's approval of this W01 plan before W01 is dispatched.** Nothing in W01 starts until
   that approval is recorded on #6264.
+- **Quorum: done 2026-10-13** (spec §14.2), together with the owner decision on compile location
+  (spec §14.1). The paragraph below is the original gate text, kept for history.
 - **The Codex `gpt-6-astra` xhigh read-only quorum is still owed, and it is a W02 gate, not a W01 gate**
   (spec §14: the subscription was rate-limited when the spec was written). Expected challenge areas:
   D1 (wasm vs a native sidecar now), D3 (riding the `security` feature type vs a new one), §5 step 1
@@ -39,6 +41,50 @@ every field it needs already exists (`config_policy_feature_links.inline_setting
 `security_scans.status` is a bare `varchar(20)` with no CHECK constraint). The first migration in this
 feature is W03's, which creates `yara_rule_sets` and `yara_rules` and carries their RLS, both
 allowlists and every cascade/export registration in the same PR.
+
+**Amended 2026-10-13:** W02 carries one migration (`ALTER TYPE security_provider ADD VALUE IF NOT EXISTS
+'breeze'`), so the first migration is W02's. W03 Part A carries one migration (both tables, RLS, the
+owner-inheritance triggers, and `security_scans.engine` / `rule_set_errors`). Names are chosen at
+implementation time to sort after the newest committed migration.
+
+## Open Decisions for W02/W03 (2026-10-13)
+
+Each has a recommendation; the plans are written to the recommendation and change in one place if
+Todd picks otherwise.
+
+1. **What "server-side validator = fallback/pre-check" means.** Recommend: pre-check only; the server
+   never compiles to or ships bytecode, and "fallback" is the agent falling back to the legacy
+   signatures per scan with an explicit degraded outcome recorded. Alternative (server-compiled
+   bytecode as a fallback when an agent's compile fails) rejected: serialized-rule portability across
+   arch/engine versions is unproven and it resurrects `compiled bytea`.
+2. **Pre-check runtime in the API.** Recommend: build `breeze-yarac` in a Go stage of the API
+   Dockerfile (same code as the agent ⇒ errors match). Alternative: TS-only lint (bans/caps/name), API
+   image stays Node-only, real compile errors surface only when agents report them — choose this if
+   the API image must not gain a Go binary. No official YARA-X Node binding exists.
+3. **W02 lands dark (no fetch route until W03).** Recommend yes: the route needs W03's tables; W02 is
+   proven by Go tests against an httptest server.
+4. **Split W03 into W03a (tables, pre-check, CRUD, fetch, payload) and W03b (built-in pack pipeline,
+   clean-corpus CI, boot upsert).** Recommend yes — add a sub-issue for W03b; the W03 plan is already
+   in Part A / Part B form.
+5. **Built-in pack lives in `yara_rule_sets` as an `is_builtin` row** (alert_templates precedent,
+   with the quorum's corrected CHECK `built-in ⇔ both owners NULL`). Recommend yes over a separate
+   platform table: one id space for `ruleSetIds`, one fetch route.
+6. **`yara_rules` owner columns.** Recommend denormalized `org_id`/`partner_id`/`is_builtin` kept equal
+   to the parent by triggers, so rule source rides the org export/erasure path. Alternative: no owner
+   columns + parent-join RLS (access_review_items precedent) — simpler RLS, but rule text drops out of
+   tenant export.
+7. **If W02's spike finds `pe`/`elf`/`hash`/`math` missing from yaraxwasm** (spec Q1). Recommend the
+   W03b pack filter drops rules importing a missing module and the sidecar decision moves up to
+   right after W02; decided on W02 Task 1's recorded outcome.
+8. **Every `security_scan` threat is attributed `provider = 'breeze'`**, legacy-signature hits
+   included (today they inherit the device's AV product name). Recommend yes.
+9. **Pre-check unavailable in production** (binary missing / timeout). Recommend: refuse to publish,
+   mark the set stale; lint-only publishing only in dev behind `BREEZE_YARA_LINT_ONLY=1`.
+10. **Do new policies default to the built-in pack?** Recommend: no implicit attachment (empty
+    `ruleSetIds` = legacy scan); W04's picker preselects the built-in pack for newly created policies
+    only.
+11. **macOS background-priority scanning.** Recommend: logged no-op in W02 (per-thread I/O policy
+    needs cgo `setiopolicy_np`); file a follow-up.
 
 ## Cross-wave names that must not drift
 
