@@ -35,6 +35,11 @@ export const createTicketBaseSchema = z
     // a schema default would make explicit-vs-absent indistinguishable, which
     // breaks intake-form defaultPriority precedence.
     priority: ticketPrioritySchema.optional(),
+    // #7900: omitted -> the service's per-source default (incident; planned
+    // work -> service_request). No .default() here, for the same
+    // explicit-vs-absent reason as priority: only an explicit value carries
+    // field provenance.
+    ticketType: ticketTypeSchema.optional(),
     dueDate: z.coerce.date().optional(),
     assigneeId: z.string().guid().optional(),
     // Intake form (spec 2026-07-10): responses are validated server-side
@@ -92,6 +97,9 @@ export const updateTicketSchema = z.object({
   description: z.string().max(50_000).optional(),
   categoryId: z.string().guid().nullable().optional(),
   priority: ticketPrioritySchema.optional(),
+  // #7900: reclassify. Not nullable (the column is NOT NULL). Does not restamp
+  // SLA targets or re-run category rules.
+  ticketType: ticketTypeSchema.optional(),
   dueDate: z.coerce.date().nullable().optional(),
   responseSlaMinutes: z.number().int().positive().nullable().optional(),
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
@@ -208,6 +216,15 @@ export const moveTicketOrgSchema = z.object({
   acceptCurrencyMismatch: z.boolean().optional()
 });
 
+const ticketTypeListQuerySchema = z.preprocess(
+  (raw) => {
+    if (raw === undefined) return undefined;
+    const parts = (Array.isArray(raw) ? raw : [raw]).flatMap((v) => (typeof v === 'string' ? v.split(',') : [v]));
+    return [...new Set(parts.map((v) => (typeof v === 'string' ? v.trim() : v)))];
+  },
+  z.array(ticketTypeSchema).min(1).max(TICKET_TYPES.length)
+);
+
 export const listTicketsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -217,6 +234,9 @@ export const listTicketsQuerySchema = z.object({
   deviceId: z.string().guid().optional(),
   assignee: z.union([z.literal('me'), z.literal('unassigned'), z.string().guid()]).optional(),
   categoryId: z.string().guid().optional(),
+  // #7900: `?ticketType=incident,change` (comma list; a repeated key works
+  // too). Deduplicated; any unknown or empty item is a 400.
+  ticketType: ticketTypeListQuerySchema.optional(),
   priority: ticketPrioritySchema.optional(),
   slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
