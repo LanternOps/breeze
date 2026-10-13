@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../migrations');
-const COLUMN_MIGRATION = '2026-12-25-150000-tickets-ticket-type.sql';
-const INDEX_MIGRATION = '2026-12-25-150100-tickets-ticket-type-index.sql';
+const COLUMN_MIGRATION = '2026-12-26-170000-tickets-ticket-type.sql';
+const INDEX_MIGRATION = '2026-12-26-170100-tickets-ticket-type-index.sql';
 const ANCHOR = '2026-12-25-110000-caller-verification-link-tier.sql';
 
 function listMigrationFilenames(): string[] {

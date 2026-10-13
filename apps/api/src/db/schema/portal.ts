@@ -205,7 +205,7 @@ export const tickets = pgTable('tickets', {
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
-  // #7900 (2026-12-25-150000): constant default, so existing rows read as
+  // #7900 (2026-12-26-170000): constant default, so existing rows read as
   // 'incident' without a backfill. Per-source defaults: services/ticketType.ts.
   ticketType: ticketTypeEnum('ticket_type').notNull().default('incident'),
   internalNumber: varchar('internal_number', { length: 20 }),

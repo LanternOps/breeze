@@ -6,7 +6,7 @@
 -- PG >= 11 (no table rewrite, no row writes); existing tickets read as
 -- 'incident' immediately. The (org_id, ticket_type, status) index is built
 -- CONCURRENTLY in its own @no-transaction migration
--- (2026-12-25-150100-tickets-ticket-type-index.sql) so this ACCESS EXCLUSIVE
+-- (2026-12-26-170100-tickets-ticket-type-index.sql) so this ACCESS EXCLUSIVE
 -- lock is held only for the catalog update, never across a scan of tickets.
 --
 -- Idempotent. Writes no rows, so no breeze.scope election.
