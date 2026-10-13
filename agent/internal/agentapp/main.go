@@ -1464,6 +1464,11 @@ func applyEnrollResponseIdentity(cfg *config.Config, enrollResp *api.EnrollRespo
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
 	cfg.DeviceID = enrollResp.DeviceID
+	// #8206 — a new enrollment is a new device row, which starts at ownership
+	// epoch 1; the previous device's epoch must not carry over (a stale higher
+	// epoch would never be acknowledged and PAM would stay closed). 0 = none
+	// received yet; SaveEnrollment writes it from this config.
+	cfg.OwnershipEpoch = 0
 }
 
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must

@@ -123,6 +123,11 @@ func TestPamBindingResolverFallbackIsBounded(t *testing.T) {
 	if got := records(); len(got) != 2 {
 		t.Fatalf("requests = %+v, want exactly one v2 and one v1 attempt", got)
 	}
+	// A 400 to v1 as well means the request, not the version, was refused:
+	// the process must not give up on v2 (and on retirement) for it.
+	if h.pamBindingProtocolVersion() != 2 {
+		t.Fatal("fell back to v1 although v1 was refused too")
+	}
 }
 
 func TestPamBindingResolverDoesNotFallBackOnOtherFailures(t *testing.T) {
@@ -283,4 +288,73 @@ func TestPamReconciliationV1StaleLeavesLedgerAndOpensAdmission(t *testing.T) {
 	if !h.pamReconciled.Load() {
 		t.Fatal("stale must open admission")
 	}
+}
+
+// A quarantined outbox entry the server now calls `retired` is dropped like
+// `stale`; the ledger is retired only from the startup reconcile path.
+func TestPamReconciliationRetiredQuarantinedEntryIsDroppedWithoutRetire(t *testing.T) {
+	fake := &fakePamLifetimeManager{available: true}
+	h := newPamControllerTestHeartbeat(t, fake)
+	manager := &retiringPamManager{fakePamLifetimeManager: fake}
+	h.pamLifetimeManager = manager
+	observation := deterministicTestPamObservation(t)
+	if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Quarantine(testPamCommandID, observation.ObservationID, "same_command_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	h.pamResolveBindingsFn = retiredResolver
+
+	h.ReconcilePAMLifetime(context.Background())
+
+	if snapshot := pendingPamEntries(t, h); len(snapshot.Quarantined) != 0 || len(snapshot.Pending) != 0 {
+		t.Fatalf("retired quarantined entry kept: %+v", snapshot)
+	}
+	if len(manager.retired) != 0 {
+		t.Fatalf("outbox path retired ledger entries: %v", manager.retired)
+	}
+	if !h.pamReconciled.Load() {
+		t.Fatal("admission stayed closed after the quarantined entry was dropped")
+	}
+}
+
+// The fallback holds across chunks: after chunk 1's v2 is refused and v1
+// accepted, chunk 2 goes straight to v1.
+func TestPamBindingResolverFallbackHoldsAcrossChunks(t *testing.T) {
+	server, records := pamBindingServer(t, func(version int, candidates []pamBindingCandidate) (int, any) {
+		if version != 1 {
+			return http.StatusBadRequest, map[string]any{"error": "invalid protocolVersion"}
+		}
+		return http.StatusOK, dispositionsFor(1, pamBindingStatusStale, candidates)
+	})
+	candidates := make([]pamBindingCandidate, 150)
+	for i := range candidates {
+		candidates[i] = pamBindingCandidate{
+			ObservationID: "20000000-0000-4000-8000-" + leftPad12(i+1),
+			ActuationID:   testPamV2ActuationID,
+			Generation:    uint64(i + 1),
+		}
+	}
+	if _, err := newPamTransportHeartbeat(server.URL, server.Client()).resolvePamBindings(context.Background(), candidates); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := records()
+	v2 := 0
+	for _, record := range got {
+		if record.ProtocolVersion == 2 {
+			v2++
+		}
+	}
+	if len(got) != 3 || v2 != 1 {
+		t.Fatalf("requests = %+v, want one v2 then two v1", got)
+	}
+}
+
+func leftPad12(n int) string {
+	s := itoaPam(uint64(n))
+	for len(s) < 12 {
+		s = "0" + s
+	}
+	return s
 }

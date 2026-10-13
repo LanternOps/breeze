@@ -288,13 +288,15 @@ func (h *Heartbeat) postPamBindingChunk(ctx context.Context, requestURL string, 
 	if err == nil || version == pamBindingProtocolVersionV1 || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusBadRequest {
 		return version, response, err
 	}
-	if h.pamBindingV1Fallback.CompareAndSwap(false, true) {
-		log.Warn("server refused PAM reconciliation binding protocol v2; using v1 for this process",
-			"hint", "retired ledger entries are not cleared until the server supports v2")
-	}
 	version = pamBindingProtocolVersionV1
 	response = pamBindingResponse{}
 	err = h.postPamJSON(ctx, requestURL, pamBindingRequest{ProtocolVersion: version, Candidates: chunk}, &response)
+	// Latch only when v1 was accepted: a 400 to both versions refused the
+	// request itself, not v2, so the next pass asks for v2 again.
+	if err == nil && h.pamBindingV1Fallback.CompareAndSwap(false, true) {
+		log.Warn("server refused PAM reconciliation binding protocol v2; using v1 for this process",
+			"hint", "retired ledger entries are not cleared until the server supports v2")
+	}
 	return version, response, err
 }
 
