@@ -26,7 +26,9 @@ function Entry({ hash, className, ...modal }: Props) {
   const close = () => {
     setOpen(false);
     if (window.location.hash.replace(/^#/, '') === hash) {
-      window.location.hash = previous.current ?? '';
+      if (previous.current) window.location.hash = previous.current;
+      // No prior hash: drop the fragment entirely instead of leaving a bare '#'.
+      else history.replaceState(history.state, '', window.location.pathname + window.location.search);
     }
   };
   return (

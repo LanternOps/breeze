@@ -51,7 +51,8 @@ export function VerificationStatus({ row, now = Date.now(), userId }: { row: Ver
       )}
       {pending && row.destinationRedacted && <p>{t('challenge.sentTo', { destination: row.destinationRedacted })}</p>}
       {linkChallenge && !owns && <p className="text-muted-foreground">{t('challenge.notInitiator', { technician: row.technicianLabel })}</p>}
-      {pending && (
+      {/* Callback attestations carry no challenge window (the server stores expiresAt = createdAt). */}
+      {pending && row.method !== 'callback_attestation' && (
         <p className="text-xs text-muted-foreground">
           {t('challenge.expiresIn', { time: new Date(row.expiresAt).toLocaleTimeString() })}
         </p>

@@ -53,7 +53,7 @@ export function ContactVerificationDrawer({ orgId, contactId, contactName, onClo
   return (
     <Drawer open onClose={onClose} title={contactName ? `${t('drawer.title')} · ${contactName}` : t('drawer.title')} width="max-w-lg"
       dataTestId="cv-drawer" closeDisabled={busy}>
-      <div className="space-y-6 text-sm">
+      <div className="flex-1 space-y-6 overflow-y-auto px-5 py-4 text-sm">
         <div className="flex justify-end">
           <button type="button" data-testid="cv-drawer-verify" onClick={() => setVerifying(true)}
             className="h-9 rounded-md bg-primary px-3 text-primary-foreground">{t('open')}</button>
