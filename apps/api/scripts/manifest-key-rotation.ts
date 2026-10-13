@@ -492,7 +492,9 @@ export async function notifyRunningApiInstances(
   let outcomes: string[];
   try {
     outcomes = await notify();
-  } catch {
+  } catch (err) {
+    // notifyTrustCachesChanged never throws; a throw here is a bug, so say what it was.
+    log(`[manifest-key-rotation] notify step threw: ${err instanceof Error ? err.message : String(err)}`);
     outcomes = ['failed'];
   }
   const missed = outcomes.find((outcome) => outcome !== 'published');
@@ -553,5 +555,9 @@ if (invokedDirectly) {
     .finally(async () => {
       await closeRedis();
       await closeDb();
+      // A Redis client that never connected keeps retrying (its retryStrategy
+      // never gives up) and would hold the event loop open after `quit()` fails.
+      // This is a one-shot CLI: exit once the pools are released.
+      process.exit(process.exitCode ?? 0);
     });
 }

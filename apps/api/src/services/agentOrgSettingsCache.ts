@@ -49,6 +49,8 @@ export const orgTopologyFlagsCache = new HotPathTtlCache<string, TopologyFlags>(
 /**
  * Drop the cached per-org agent settings on this process, now and again once
  * the caller's transaction settles (writers call this before their COMMIT).
+ * All three caches are `cluster: true`, so the drop is also announced to every
+ * other API instance once the outermost transaction commits (W05, #8144).
  * Without an org id every org is dropped — the right call after a PARTNER
  * settings change, which feeds every org under that partner.
  */

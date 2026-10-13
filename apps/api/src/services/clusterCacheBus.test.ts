@@ -85,6 +85,44 @@ describe('decodeInvalidation (#8144)', () => {
   });
 });
 
+describe('process default bus (#8144)', () => {
+  it('publishes on the shared getRedis() client with INSTANCE_ID as origin', async () => {
+    const { getClusterCacheBus } = await import('./clusterCacheBus');
+    const { INSTANCE_ID } = await import('./instanceIdentity');
+    const { getRedis } = await import('./redis');
+    const shared = getRedis() as unknown as { publish: ReturnType<typeof vi.fn> };
+    shared.publish.mockClear();
+    await expect(getClusterCacheBus().publish('factory-test', 'org-1')).resolves.toBe('published');
+    const [channel, raw] = shared.publish.mock.calls[0]!;
+    expect(channel).toBe(CLUSTER_CACHE_CHANNEL);
+    expect(decodeInvalidation(raw as string)).toMatchObject({ cache: 'factory-test', key: 'org-1', origin: INSTANCE_ID });
+  });
+
+  it('subscribes on its own duplicate() named breeze:cluster-cache', async () => {
+    const { getRedis } = await import('./redis');
+    const sub = new FakeSubscriber();
+    const duplicate = vi.fn(() => sub);
+    const shared = getRedis() as unknown as Record<string, unknown>;
+    shared.duplicate = duplicate;
+    try {
+      const { getClusterCacheBus } = await import('./clusterCacheBus');
+      const bus = getClusterCacheBus();
+      await expect(bus.start()).resolves.toBe('subscribed');
+      expect(duplicate).toHaveBeenCalledWith({ connectionName: 'breeze:cluster-cache' });
+      expect(sub.subscribe).toHaveBeenCalledWith(CLUSTER_CACHE_CHANNEL);
+      await bus.stop();
+    } finally {
+      delete shared.duplicate;
+    }
+  });
+});
+
+describe('ClusterCacheBus construction (#8144)', () => {
+  it('rejects an empty origin (every receiver would drop its messages as malformed)', () => {
+    expect(() => makeBus({ origin: '' })).toThrow(/origin/);
+  });
+});
+
 describe('ClusterCacheBus.publish (#8144)', () => {
   afterEach(() => vi.useRealTimers());
 
@@ -175,11 +213,15 @@ describe('ClusterCacheBus receive (#8144)', () => {
     expect(second.invalidate).toHaveBeenCalledWith('org-1');
   });
 
-  it('a throwing target does not escape the message handler', async () => {
+  it('a throwing target does not escape the message handler, and is counted as error', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { bus, sub } = makeBus();
-    bus.attach({ name: 'c1', invalidate: () => { throw new Error('bad cache'); } });
+    bus.attach({ name: 'throws-on-receive', invalidate: () => { throw new Error('bad cache'); } });
     await bus.start();
-    expect(() => sub.deliver(encodeInvalidation(msg()))).not.toThrow();
+    expect(() => sub.deliver(encodeInvalidation(msg({ cache: 'throws-on-receive' })))).not.toThrow();
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_cluster_cache_invalidations_received_total');
+    expect(text).toContain('cache="throws-on-receive",result="error"} 1');
+    err.mockRestore();
   });
 
   it('finds targets through clusterCacheRegistry when nothing is attached', async () => {

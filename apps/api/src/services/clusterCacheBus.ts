@@ -133,6 +133,10 @@ export class ClusterCacheBus {
   private initialSubscribeRejected = false;
 
   constructor(options: ClusterCacheBusOptions) {
+    if (typeof options.origin !== 'string' || options.origin.length === 0) {
+      // Receivers drop a message without an origin as malformed: the bus would be silently dead.
+      throw new Error('ClusterCacheBus: origin must be a non-empty string');
+    }
     this.origin = options.origin;
     this.getPublisher = options.getPublisher;
     this.createSubscriber = options.createSubscriber;
@@ -230,7 +234,11 @@ export class ClusterCacheBus {
     this.seenReady = (sub as { status?: unknown }).status === 'ready';
     this.initialSubscribeRejected = false;
     this.listen(sub, 'message', (channel: string, message: string) => this.onMessage(sub, channel, message));
-    this.listen(sub, 'ready', () => { void this.onReady(sub); });
+    this.listen(sub, 'ready', () => {
+      this.onReady(sub).catch((err: unknown) => {
+        console.error('[clusterCache] reconnect handling failed:', err);
+      });
+    });
     this.listen(sub, 'close', () => { if (this.subscriber === sub) this.markUnsubscribed(); });
     this.listen(sub, 'end', () => { if (this.subscriber === sub) this.markUnsubscribed(); });
     this.listen(sub, 'error', (err: Error) => {
@@ -360,10 +368,21 @@ export class ClusterCacheBus {
         this.warnRateLimited('lag', `[clusterCache] invalidation for "${target.name}" applied ${lagSeconds.toFixed(2)}s after publish (target ≤ ${LAG_WARN_SECONDS}s)`);
       }
     } catch (err) {
-      console.error('[clusterCache] invalidation handler failed:', err);
+      // A cache whose invalidate() throws keeps its entry for the TTL: count it, log it (rate-limited).
+      let cache = 'unknown';
+      try {
+        const name = (decodeInvalidation(raw) ?? { cache: '' }).cache;
+        if (this.lookup(name)) cache = name;
+      } catch {
+        // keep 'unknown'
+      }
+      recordInvalidationReceived(cache, 'error');
+      this.warnRateLimited('receive-error', `[clusterCache] invalidation handler failed for "${cache}": ${errorMessage(err)}`);
     }
   }
 
+  // Attached targets (integration tests) REPLACE the registry for this bus, so two
+  // test buses in one process never deliver into the process's real caches.
   private lookup(name: string): ClusterCacheTarget | undefined {
     if (this.attached.size > 0) return this.attached.get(name);
     if (this.registryTargets === clusterCacheTargets) return getClusterCacheTarget(name);

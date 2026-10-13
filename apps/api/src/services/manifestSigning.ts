@@ -253,7 +253,11 @@ export async function getActiveTrustKeysetCached(): Promise<ManifestTrustKey[]> 
   return trustKeysetCache.getOrLoad('active', getActiveTrustKeyset);
 }
 
-/** Drop the cached trust keyset and delegations on this process. */
+/**
+ * Drop both trust caches on this process now, and on every API instance once
+ * the surrounding transaction commits (at once when no context is held).
+ * Caller: `ensureActiveSigningKey`, after its insert has committed.
+ */
 export function invalidateManifestTrustCaches(): void {
   // Whole cache (key null on the wire): the only key is a fixed literal.
   trustKeysetCache.invalidateAroundCommit();

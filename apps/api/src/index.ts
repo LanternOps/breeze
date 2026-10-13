@@ -1915,7 +1915,8 @@ async function bootstrap(): Promise<void> {
   // write on another instance reaches this one's hot-path caches. Bounded at
   // 1 s and never throws; without Redis the caches stay TTL-only.
   const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
-  console.log(`[clusterCache] subscriber ${clusterCacheOutcome}`);
+  if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
+  else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.

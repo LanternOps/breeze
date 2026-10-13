@@ -507,6 +507,7 @@ describe('notifyRunningApiInstances (W05 #8144)', () => {
   it('treats a throwing notifier as failed rather than failing the rotation', async () => {
     const log = vi.fn();
     await expect(notifyRunningApiInstances(async () => { throw new Error('boom'); }, log)).resolves.toBe(false);
-    expect(log.mock.calls[0]![0]).toContain('(Redis failed)');
+    expect(log.mock.calls[0]![0]).toContain('notify step threw: boom');
+    expect(log.mock.calls[1]![0]).toContain('(Redis failed)');
   });
 });

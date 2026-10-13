@@ -15,7 +15,7 @@ import { metricsRegistry } from './metricsRegistry';
 
 export type LookupResult = 'hit' | 'miss' | 'bypass';
 export type PublishOutcome = 'published' | 'unavailable' | 'failed';
-export type ReceiveResult = 'applied' | 'self' | 'unknown_cache' | 'malformed';
+export type ReceiveResult = 'applied' | 'self' | 'unknown_cache' | 'malformed' | 'error';
 
 // `getSingleMetric ?? new` keeps a vi.resetModules() re-import from throwing
 // "metric already registered" (same guard as middleware/agentAuthNegativeCache.ts).

@@ -35,10 +35,13 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   `invalidateAroundCommit`; a non-cluster cache, or a cluster cache while
  *   Redis is down, leaves other instances on their entry until the TTL
  *   expires. Pick the TTL with that in mind.
- * - **A cluster cache publishes only from `invalidateAroundCommit`, and only
- *   after the outermost transaction commits** (`runAfterDbContextCommit`). A
- *   receiver that dropped its entry before COMMIT would reload the pre-commit
- *   rows and keep them for a full TTL. Messages carry ids only, never values.
+ * - **Inside the API, a cluster cache publishes only from
+ *   `invalidateAroundCommit`, and only after the outermost transaction
+ *   commits** (`runAfterDbContextCommit`). A receiver that dropped its entry
+ *   before COMMIT would reload the pre-commit rows and keep them for a full
+ *   TTL. An out-of-process writer (the manifest key rotation CLI) calls the
+ *   bus itself, after its own commit (`notifyTrustCachesChanged`). Messages
+ *   carry ids only, never values.
  * - **A load that races an invalidation is not stored.** Every `invalidate()`
  *   bumps a generation; a load that started before the bump returns its value
  *   to its own caller but does not populate the cache, so a writer that
@@ -178,7 +181,8 @@ export class HotPathTtlCache<K, V> {
       const wireKey = (key as string | undefined) ?? null;
       runAfterDbContextCommit(`hotPathCache.${name}.publish`, () => {
         const bus = cluster === true ? getClusterCacheBus() : cluster.bus;
-        void bus.publish(name, wireKey);
+        // Returned so the after-commit runner reports a (never expected) rejection.
+        return bus.publish(name, wireKey);
       });
     }
   }
