@@ -106,22 +106,46 @@ const deviceRows: Record<string, unknown> = {
 };
 
 let currentIntent: Record<string, unknown> | null = intentRow();
-let deviceLookupOrder: string[] = [];
+
+let lastWhere: unknown;
+
+/** Every string leaf in a drizzle condition tree that matches a known device id. */
+function deviceIdFromWhere(where: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  const visit = (node: unknown): string | undefined => {
+    if (typeof node === 'string') return node in deviceRows ? node : undefined;
+    if (!node || typeof node !== 'object' || seen.has(node)) return undefined;
+    seen.add(node);
+    if ('value' in (node as Record<string, unknown>)) {
+      const found = visit((node as { value: unknown }).value);
+      if (found) return found;
+    }
+    for (const child of Object.values(node as Record<string, unknown>)) {
+      const found = visit(child);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return visit(where);
+}
 
 function mockDb() {
   vi.mocked(db.select).mockImplementation((() => ({
     from: vi.fn((table: unknown) => ({
-      where: vi.fn().mockReturnValue({
+      where: vi.fn((cond: unknown) => { lastWhere = cond; return {
         limit: vi.fn().mockImplementation(async () => {
           if (table === scripts) return [scriptRow];
           if (table === actionIntents) return currentIntent ? [currentIntent] : [];
           if (table === devices) {
-            const id = deviceLookupOrder.shift();
+            // Keyed by the id the handler actually queried (the eq() in the
+            // where clause), so a handler that substituted or mangled the
+            // frozen ids would dispatch nothing rather than the mock's queue.
+            const id = deviceIdFromWhere(lastWhere);
             return id && deviceRows[id] ? [deviceRows[id]] : [];
           }
           return [];
         }),
-      }),
+      }; }),
     })),
   })) as any);
 }
@@ -129,7 +153,6 @@ function mockDb() {
 beforeEach(() => {
   vi.clearAllMocks();
   currentIntent = intentRow();
-  deviceLookupOrder = [DEVICE_1, DEVICE_2, DEVICE_3];
   dispatchScriptToDevice.mockImplementation(async (input: { device: { id: string } }) => ({
     ok: true,
     commandId: `cmd-${input.device.id}`,

@@ -774,6 +774,13 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
       + 'Call get_script_proposal: its executions list each run\'s executionId, and get_script_execution reads '
       + 'that run\'s output. To run the script again, submit it as a new proposal with propose_script.';
   }
+  // #8600: a device-group refusal (too large, not found, empty, out of scope,
+  // malformed) says what to do instead. The messages are existence-neutral by
+  // construction (actionIntents/runScriptGroupTarget.ts), so they are safe to
+  // hand back to the model verbatim.
+  if (toolName === 'run_script' && typeof code === 'string' && code.startsWith('group_target_') && err instanceof Error) {
+    return `${code}: ${err.message}`;
+  }
   return 'Failed to create approval record';
 }
 
@@ -1559,7 +1566,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           const pinnedCard = toolName === 'diagnose_connectivity'
             ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run one approved topology connectivity check')
             : toolName === 'run_script' && (input as Record<string, unknown>).groupId != null
-              ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run a script on the devices resolved from a device group')
+              ? await loadPinnedApprovalCard(
+                session.orgId,
+                intent.id,
+                'Device-group script run: the resolved device list could not be loaded here. Review it in the Approvals queue before approving.',
+              )
               : null;
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
@@ -2408,7 +2419,10 @@ async function loadPinnedApprovalCard(
       () => db.select({ arguments: actionIntents.arguments, reason: actionIntents.reason })
         .from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1),
     );
-    if (!row || !row.arguments || typeof row.arguments !== 'object') return fallback;
+    if (!row || !row.arguments || typeof row.arguments !== 'object') {
+      console.error('[AI-SDK] Pinned approval effect missing for intent', intentId);
+      return fallback;
+    }
     return { input: row.arguments as Record<string, unknown>, description: typeof row.reason === 'string' && row.reason ? row.reason : fallback.description };
   } catch (err) {
     console.error('[AI-SDK] Failed to read the pinned approval effect:', err instanceof Error ? err.message : err);

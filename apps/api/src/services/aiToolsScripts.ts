@@ -267,7 +267,15 @@ async function loadFrozenGroupTargetArguments(
   auth: AuthContext,
   actionIntentId: string | undefined,
 ): Promise<{ ok: true; args: Record<string, unknown> } | { ok: false; reason: string }> {
-  const refused = (reason: string) => ({ ok: false as const, reason });
+  // One message back to the model for every mismatch (it can act on none of
+  // them differently); the specific cause is logged for the operator, since a
+  // refusal here on a genuine release would mean a release-path bug.
+  const refused = (reason: string, cause?: string) => {
+    if (cause) {
+      console.warn('[aiToolsScripts] run_script group release refused', { actionIntentId: actionIntentId ?? null, cause });
+    }
+    return { ok: false as const, reason };
+  };
   if (!actionIntentId) {
     return refused('a device-group run must be approved first; it executes only as the release of its approved action');
   }
@@ -283,17 +291,18 @@ async function loadFrozenGroupTargetArguments(
     .where(eq(actionIntents.id, actionIntentId))
     .limit(1)));
   const mismatch = 'the approved action does not match this call';
-  if (!row || row.actionName !== 'run_script' || row.status !== 'executing' || !auth.canAccessOrg(row.orgId)) {
-    return refused(mismatch);
-  }
+  if (!row) return refused(mismatch, 'intent_missing');
+  if (row.actionName !== 'run_script') return refused(mismatch, 'intent_other_tool');
+  if (row.status !== 'executing') return refused(mismatch, `intent_status_${row.status}`);
+  if (!auth.canAccessOrg(row.orgId)) return refused(mismatch, 'intent_org_inaccessible');
   const args = row.arguments && typeof row.arguments === 'object' ? row.arguments as Record<string, unknown> : null;
-  if (!args || args.groupId !== undefined) return refused(mismatch);
+  if (!args || args.groupId !== undefined) return refused(mismatch, 'intent_args_not_frozen');
   const deviceIds = args.deviceIds;
   if (!Array.isArray(deviceIds) || deviceIds.length === 0 || !deviceIds.every((id) => typeof id === 'string')) {
-    return refused(mismatch);
+    return refused(mismatch, 'intent_args_no_device_ids');
   }
   if ((args.scriptId ?? null) !== (input.scriptId ?? null) || (args.proposalId ?? null) !== (input.proposalId ?? null)) {
-    return refused(mismatch);
+    return refused(mismatch, 'intent_script_mismatch');
   }
   return { ok: true, args };
 }

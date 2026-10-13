@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // this record, so the terminal return of a won release is asserted against it.
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
-import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
@@ -4826,5 +4826,28 @@ describe('safeParseJson', () => {
 
   it('returns { raw: ... } for invalid JSON', () => {
     expect(safeParseJson('not json')).toEqual({ raw: 'not json' });
+  });
+});
+
+// #8600 — a device-group run_script refused at intent creation must tell the
+// model WHY (too large, not found, empty, out of scope), not a generic
+// failure: the messages are existence-neutral and say what to do instead.
+describe('intentCreationRefusal — device-group run_script refusals', () => {
+  const refusal = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+  it.each([
+    'group_target_too_large',
+    'group_target_not_found',
+    'group_target_no_targets',
+    'group_target_out_of_scope',
+    'group_target_invalid',
+  ])('passes the %s message through for run_script', (code) => {
+    const message = `the reason for ${code}`;
+    expect(intentCreationRefusal('run_script', { groupId: 'g' }, refusal(code, message))).toBe(`${code}: ${message}`);
+  });
+
+  it('keeps the generic message for any other code or tool', () => {
+    expect(intentCreationRefusal('run_script', {}, refusal('org_resolution_failed', 'x'))).toBe('Failed to create approval record');
+    expect(intentCreationRefusal('execute_command', {}, refusal('group_target_too_large', 'x'))).toBe('Failed to create approval record');
   });
 });
