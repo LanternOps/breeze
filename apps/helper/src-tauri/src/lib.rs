@@ -708,7 +708,15 @@ fn show_window(app: &tauri::AppHandle) {
 
 /// Hide the main window (back to tray-only mode).
 #[tauri::command]
-fn hide_window(app: tauri::AppHandle) {
+fn hide_window(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return;
+    }
+    hide_main_window(&app);
+}
+
+/// The tray/menu path to hide the main window (not a Tauri command).
+fn hide_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(e) = window.hide() {
             eprintln!("[helper] Failed to hide window: {}", e);
@@ -718,7 +726,10 @@ fn hide_window(app: tauri::AppHandle) {
 
 /// Minimize the main window.
 #[tauri::command]
-fn minimize_window(app: tauri::AppHandle) {
+fn minimize_window(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         if let Err(e) = window.minimize() {
             eprintln!("[helper] Failed to minimize window: {}", e);
@@ -740,10 +751,15 @@ fn minimize_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn submit_consent(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     session_id: String,
     decision: String,
     nonce: Option<String>,
 ) {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        eprintln!("[helper] submit_consent refused: caller is a message window");
+        return;
+    }
     // Normalize to the values the tracker understands; anything unexpected
     // is treated as a deny (fail-closed).
     let decision = match decision.as_str() {
@@ -772,7 +788,10 @@ fn submit_consent(
 /// The consent window has rendered the prompt for `nonce` and it is visible;
 /// the agent starts the countdown from here (v2 presentation acknowledgement).
 #[tauri::command]
-fn consent_presented(app: tauri::AppHandle, nonce: String) {
+fn consent_presented(app: tauri::AppHandle, window: tauri::WebviewWindow, nonce: String) {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return;
+    }
     if nonce.is_empty() {
         return;
     }
@@ -790,7 +809,13 @@ fn consent_presented(app: tauri::AppHandle, nonce: String) {
 /// mount, so a `consent-request` event emitted before its listener was ready
 /// is never lost.
 #[tauri::command]
-fn get_consent_request(app: tauri::AppHandle) -> Option<serde_json::Value> {
+fn get_consent_request(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Option<serde_json::Value> {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return None;
+    }
     app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>()
         .and_then(|bridge| bridge.current())
 }
@@ -882,7 +907,10 @@ fn submit_caller_verify(
 /// Update the helper status file when chat activity changes.
 /// Called from the frontend when a chat session starts/ends or on message activity.
 #[tauri::command]
-fn update_chat_active(active: bool) {
+fn update_chat_active(window: tauri::WebviewWindow, active: bool) {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return;
+    }
     CHAT_ACTIVE.store(active, Ordering::Relaxed);
     write_status_file(active);
 }
@@ -892,7 +920,8 @@ fn update_chat_active(active: bool) {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-async fn read_agent_config() -> Result<AgentConfig, String> {
+async fn read_agent_config(window: tauri::WebviewWindow) -> Result<AgentConfig, String> {
+    crate::ipc::message::deny_message_window(window.label())?;
     // Also initializes the HTTP client as a side effect.
     ensure_http_state().await?;
 
@@ -941,7 +970,10 @@ fn get_helper_config() -> HelperConfig {
 /// rejected (e.g. on Windows, outside the console session) can recover once
 /// it is eligible.
 #[tauri::command]
-fn restart_ipc_if_stopped() -> bool {
+fn restart_ipc_if_stopped(window: tauri::WebviewWindow) -> bool {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return false;
+    }
     start_ipc_driver()
 }
 
@@ -950,7 +982,10 @@ fn restart_ipc_if_stopped() -> bool {
 /// polls this on startup to show a transient "connecting to agent" state until
 /// the token arrives, and an error with Retry if it never does.
 #[tauri::command]
-async fn helper_token_ready() -> bool {
+async fn helper_token_ready(window: tauri::WebviewWindow) -> bool {
+    if crate::ipc::message::deny_message_window(window.label()).is_err() {
+        return false;
+    }
     if helper_token().get().await.is_some_and(|t| !t.is_empty()) {
         return true;
     }
@@ -1111,8 +1146,10 @@ fn validate_portal_open_url(portal_url: &str, api_url: Option<&str>) -> Result<S
 #[tauri::command]
 async fn helper_fetch(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     request: HelperFetchRequest,
 ) -> Result<HelperFetchResponse, String> {
+    crate::ipc::message::deny_message_window(window.label())?;
     ensure_http_state().await?;
 
     // Prefer the IPC-delivered token; fall back to the token the agent left
@@ -1619,7 +1656,7 @@ pub fn run() {
                 // macOS app menu Cmd+Q (#8399): hide, never quit.
                 #[cfg(target_os = "macos")]
                 app_shell::HIDE_WINDOW_MENU_ID => {
-                    hide_window(menu_handle.clone());
+                    hide_main_window(&menu_handle);
                 }
                 "open_portal" => {
                     let config = load_helper_config();
@@ -1994,6 +2031,65 @@ mod tests {
         let desktop = prod_of(include_str!("ipc/desktop.rs"));
         let card = &desktop[desktop.find("pub fn show_message_window").unwrap()..];
         assert!(!card.contains("\"main\""));
+    }
+
+    // #8741: build.rs declares no app-command ACL, so Tauri does not gate app
+    // commands per window -- a `message-*` card window (technician-authored
+    // content) could otherwise invoke every command below. Each one refuses a
+    // card caller through the shared `deny_message_window` guard.
+    #[test]
+    fn privileged_commands_refuse_message_card_windows() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let workspace = prod_of(include_str!("workspace_open.rs"));
+        let guarded: &[(&str, &str)] = &[
+            (lib, "fn helper_fetch("),
+            (lib, "fn read_agent_config("),
+            (lib, "fn submit_consent("),
+            (lib, "fn consent_presented("),
+            (lib, "fn get_consent_request("),
+            (lib, "fn hide_window("),
+            (lib, "fn minimize_window("),
+            (lib, "fn update_chat_active("),
+            (lib, "fn restart_ipc_if_stopped("),
+            (lib, "fn helper_token_ready("),
+            (workspace, "fn open_workspace_path("),
+        ];
+        for (src, cmd) in guarded {
+            let start = src.find(cmd).unwrap_or_else(|| panic!("{cmd} not found"));
+            let end = src[start..].find("\n}\n").map(|i| i + start).unwrap();
+            let body = &src[start..end];
+            assert!(
+                body.contains("deny_message_window(window.label())"),
+                "{cmd} does not refuse message-* windows"
+            );
+        }
+    }
+
+    // #8741: the card capability carries no tray/menu/window/event permission
+    // -- the card only calls its own label-checked app commands.
+    #[test]
+    fn message_card_capability_is_minimal() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/message-card.json")).unwrap();
+        let perms: Vec<&str> = cap["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap())
+            .collect();
+        for p in &perms {
+            assert!(
+                !(p.starts_with("core:default")
+                    || p.starts_with("core:tray")
+                    || p.starts_with("core:menu")
+                    || p.starts_with("core:window")
+                    || p.starts_with("core:webview")
+                    || p.starts_with("core:event")),
+                "message-card capability grants {p}"
+            );
+        }
+        assert_eq!(cap["windows"], serde_json::json!(["message-*"]));
     }
 
     // #8138: a plain agent-driven start (`--config`, nothing pending) builds

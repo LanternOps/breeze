@@ -77,6 +77,19 @@ pub fn label_matches(label: &str, message_id: &str) -> bool {
     label == window_label(message_id)
 }
 
+/// Guard for every privileged Tauri command (#8741). `build.rs` declares no
+/// app-command ACL, so Tauri does not gate app commands per window: without
+/// this check a `message-*` card -- a webview rendering technician-authored
+/// text -- could call `helper_fetch`, read the agent config, answer a consent
+/// prompt or open a workspace path. Card windows may call only their own
+/// label-checked commands (`get_message_view`, `message_ack`, `message_close`).
+pub fn deny_message_window(label: &str) -> Result<(), String> {
+    if label.starts_with(WINDOW_LABEL_PREFIX) {
+        return Err("command not available to message windows".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branding {
@@ -748,6 +761,18 @@ mod tests {
         assert_eq!(v["requiresAck"], true);
         assert_eq!(v["branding"]["companyName"], "Acme IT");
         assert_eq!(v["plain"], false);
+    }
+
+    #[test]
+    fn message_windows_are_refused_privileged_commands() {
+        assert!(deny_message_window("message-abc").is_err());
+        assert!(deny_message_window("message-").is_err());
+        assert!(deny_message_window("main").is_ok());
+        assert!(deny_message_window("consent").is_ok());
+        assert!(deny_message_window("session-banner").is_ok());
+        assert!(deny_message_window("caller-verify-1").is_ok());
+        // A prefix lookalike that is not a card label is not refused.
+        assert!(deny_message_window("messages").is_ok());
     }
 
     #[test]

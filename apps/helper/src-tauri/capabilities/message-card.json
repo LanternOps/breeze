@@ -1,8 +1,8 @@
 {
   "identifier": "message-card",
-  "description": "Endpoint message card windows (#8293). They render technician-authored text, so they get only the core defaults: no window show/hide/focus/drag (a card must never be able to surface the main window) and nothing beyond what the card's own commands need.",
+  "description": "Endpoint message card windows (#8293). They render technician-authored text, so they get no window, webview, event, tray or menu permission: the card only calls its own label-checked app commands, and every privileged app command refuses a message-* caller (deny_message_window). core:app:allow-version is a harmless read that keeps the capability non-empty.",
   "windows": ["message-*"],
   "permissions": [
-    "core:default"
+    "core:app:allow-version"
   ]
 }
