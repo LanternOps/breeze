@@ -189,6 +189,23 @@ describe('schedule-triggered automation runs recheck the creator\'s current site
     }));
   });
 
+  it('skips a run whose target is unbounded for the creator (e.g. a dynamic group, #8598)', async () => {
+    mockAutomationRow(BASE_AUTOMATION);
+    getUserPermissionsMock.mockResolvedValue({ allowedSiteIds: ['site-visible'] });
+    checkAutomationTargetsWithinSiteScopeMock.mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: [],
+      unbounded: true,
+      restricted: true,
+      targetDeviceIds: [],
+    });
+
+    const result = await __testOnly.processTriggerSchedule(BASE_JOB);
+
+    expect(result).toEqual({ skipped: 'schedule_target_unbounded_outside_site_ceiling' });
+    expect(createAutomationRunRecordMock).not.toHaveBeenCalled();
+  });
+
   it('skips the run entirely when every resolved target sits outside the ceiling', async () => {
     mockAutomationRow(BASE_AUTOMATION);
     getUserPermissionsMock.mockResolvedValue({ allowedSiteIds: ['site-visible'] });

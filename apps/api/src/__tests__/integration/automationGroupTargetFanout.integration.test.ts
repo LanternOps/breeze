@@ -28,6 +28,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { automationRuns, automations } from '../../db/schema';
 import {
+  checkAutomationTargetsWithinSiteScope,
   createAutomationRunRecord,
   executeAutomationRun,
   resolveAutomationTargetDeviceIds,
@@ -68,10 +69,15 @@ type Fixture = {
   groupB: string;
 };
 
-async function seedGroup(orgId: string, siteId: string, deviceIds: string[]): Promise<string> {
+async function seedGroup(
+  orgId: string,
+  siteId: string | null,
+  deviceIds: string[],
+  type: 'static' | 'dynamic' = 'static',
+): Promise<string> {
   const [group] = await getTestDb().execute<{ id: string }>(sql`
     INSERT INTO device_groups (org_id, site_id, name, type)
-    VALUES (${orgId}, ${siteId}, ${`group-${orgId.slice(0, 8)}-${Math.random().toString(36).slice(2, 8)}`}, 'static')
+    VALUES (${orgId}, ${siteId}, ${`group-${orgId.slice(0, 8)}-${Math.random().toString(36).slice(2, 8)}`}, ${type})
     RETURNING id
   `);
   for (const deviceId of deviceIds) {
@@ -241,5 +247,56 @@ describe('caller-context resolution cannot see another org\'s group', () => {
     }));
 
     expect(r).toMatchObject({ ok: false, code: 'INVALID_TARGET', groupIds: [f.groupB] });
+  });
+});
+
+describe('site-restricted callers and group targets', () => {
+  async function siteFixture() {
+    const siteIn = await createSite({ orgId: f.orgA });
+    const siteOut = await createSite({ orgId: f.orgA });
+    const inDevice = await createDevice({ orgId: f.orgA, siteId: siteIn!.id });
+    const outDevice = await createDevice({ orgId: f.orgA, siteId: siteOut!.id });
+    return { siteIn: siteIn!.id, siteOut: siteOut!.id, inDevice: inDevice.id, outDevice: outDevice.id };
+  }
+
+  it('classifies groups against the real enum and site column: only static in-allowlist groups are bounded', async () => {
+    const s = await siteFixture();
+    const staticIn = await seedGroup(f.orgA, s.siteIn, [s.inDevice]);
+    const dynamicIn = await seedGroup(f.orgA, s.siteIn, [s.inDevice], 'dynamic');
+    const staticNoSite = await seedGroup(f.orgA, null, [s.inDevice]);
+    const staticOtherSite = await seedGroup(f.orgA, s.siteOut, [s.outDevice]);
+    const perms = { allowedSiteIds: [s.siteIn] } as never;
+
+    const check = async (groupId: string) => {
+      const automation = await insertAutomation({
+        orgId: f.orgA,
+        partnerId: null,
+        conditions: { type: 'groups', groupIds: [groupId] },
+      });
+      return withDbAccessContext(orgContext(f.orgA), () => checkAutomationTargetsWithinSiteScope(automation, perms));
+    };
+
+    expect(await check(staticIn)).toMatchObject({ ok: true, unbounded: false, targetDeviceIds: [s.inDevice] });
+    expect(await check(dynamicIn)).toMatchObject({ ok: false, unbounded: true });
+    expect(await check(staticNoSite)).toMatchObject({ ok: false, unbounded: true });
+    expect(await check(staticOtherSite)).toMatchObject({ ok: false, unbounded: true });
+  });
+
+  it('script-run resolution keeps only devices at allowed sites and says how many it dropped', async () => {
+    const s = await siteFixture();
+    // A group pinned to an allowed site, whose members sit at two sites.
+    const group = await seedGroup(f.orgA, s.siteIn, [s.inDevice, s.outDevice]);
+
+    const r = await withDbAccessContext(orgContext(f.orgA), () => resolveScriptRunTargets({
+      auth: { canAccessOrg: (orgId: string) => orgId === f.orgA },
+      permissions: { allowedSiteIds: [s.siteIn] } as never,
+      target: { type: 'groups', groupIds: [group] },
+    }));
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.deviceIds).toEqual([s.inDevice]);
+    expect(r.resolvedGroups[0]?.memberCount).toBe(1);
+    expect(r.warnings.some((w) => w.startsWith('1 device(s)'))).toBe(true);
   });
 });

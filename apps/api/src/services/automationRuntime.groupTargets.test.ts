@@ -11,10 +11,12 @@ const {
   insertValuesMock,
   publishEventMock,
   selectMock,
+  selectDistinctMock,
   transactionMock,
   updateMock,
   resolveWithWarningsMock,
 } = vi.hoisted(() => ({
+  selectDistinctMock: vi.fn(),
   insertMock: vi.fn(),
   insertValuesMock: vi.fn(),
   publishEventMock: vi.fn(),
@@ -25,7 +27,7 @@ const {
 }));
 
 vi.mock('../db', () => {
-  const tx = { insert: insertMock, update: updateMock, select: selectMock };
+  const tx = { insert: insertMock, update: updateMock, select: selectMock, selectDistinct: selectDistinctMock };
   transactionMock.mockImplementation((fn: (value: typeof tx) => unknown) => fn(tx));
   return {
     db: { ...tx, transaction: transactionMock },
@@ -38,6 +40,8 @@ vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
 
 vi.mock('./deploymentTargetResolver', () => ({
   resolveDeploymentTargetsWithWarnings: resolveWithWarningsMock,
+  // deploymentEngine re-exports this; non-group targets resolve through it.
+  resolveDeploymentTargets: vi.fn(async (options: unknown) => (await resolveWithWarningsMock(options)).deviceIds),
 }));
 
 
@@ -101,6 +105,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectMock.mockReset();
   resolveWithWarningsMock.mockReset();
+  selectDistinctMock.mockReset();
+  selectDistinctMock.mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) });
   insertValuesMock.mockImplementation((values: Record<string, unknown>) => ({
     returning: vi.fn().mockResolvedValue([{ id: 'run-1', automationId: 'auto-1', ...values }]),
   }));
@@ -330,5 +336,47 @@ describe('executeAutomationRun — re-resolution of a broken group target', () =
     expect(JSON.stringify(setCalls.find((values) => 'logs' in values)?.logs)).toContain(GONE);
     expect(setCalls.some((values) => values.status === 'failed')).toBe(true);
     expect(resolveWithWarningsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not tear down a resumed run: an already-seeded run continues from its ledger', async () => {
+    const setCalls: Record<string, unknown>[] = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        setCalls.push(values);
+        // The first write past the target guard is the devicesTargeted update:
+        // stop there — reaching it is the proof the run was not failed.
+        if ('devicesTargeted' in values) throw new Error('REACHED_DISPATCH_PHASE');
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    selectDistinctMock.mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ deviceId: 'd-seeded' }]) }),
+    });
+    queueLimitSelect([{ id: 'run-1', automationId: 'auto-1', status: 'running', logs: [] }]);
+    queueLimitSelect([automation({ conditions: { type: 'groups', groupIds: [GONE] } })]);
+    queueAdmissionSelects();
+    queueSelects([]);
+
+    await expect(executeAutomationRun('run-1', [])).rejects.toThrow('REACHED_DISPATCH_PHASE');
+
+    expect(setCalls[0]).toEqual({ devicesTargeted: 1 });
+  });
+});
+
+describe('resolveAutomationTargetsDetailed — stored partner-wide devices target', () => {
+  it('keeps resolving (rejected only on its next edit), with no problems', async () => {
+    // Owner-org lookup for the partner, then the per-org deployment resolver.
+    queueSelects([{ id: 'org-a' }, { id: 'org-b' }]);
+    resolveWithWarningsMock
+      .mockResolvedValueOnce({ deviceIds: ['d1'], warnings: [] })
+      .mockResolvedValueOnce({ deviceIds: [], warnings: [] });
+
+    const r = await resolveAutomationTargetsDetailed(automation({
+      orgId: null,
+      partnerId: 'partner-1',
+      conditions: { type: 'devices', deviceIds: ['d1'] },
+    }));
+
+    expect(r).toEqual({ deviceIds: ['d1'], warnings: [], problems: [] });
   });
 });

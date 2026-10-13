@@ -4235,7 +4235,12 @@ async function executeAutomationRunInner(
     // turn a target that broke since run creation into a quiet zero-device
     // completion: fail the run with the reasons instead.
     const resolution = await withAutomationRuntimeDb(() => resolveAutomationTargetsDetailed(automation));
-    if (resolution.problems.length > 0) {
+    // A resume (an earlier attempt already seeded devices) is not failed here:
+    // it continues from its ledger below, so a half-dispatched run is never
+    // torn down by a target that broke mid-flight.
+    const isResume = resolution.problems.length > 0
+      && (await withAutomationRuntimeDb(() => ledgerDeviceIdsForRun(run.id))).length > 0;
+    if (resolution.problems.length > 0 && !isResume) {
       await withAutomationRuntimeDb(async () => {
         const logs = [
           ...getExistingLogs(run.logs),
