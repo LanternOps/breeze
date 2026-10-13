@@ -1854,6 +1854,9 @@
       "title": "Zeiteintragszeilen"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_one": "{{count}} Zeile blockiert die Ausstellung: Ihr Zeiteintrag wurde auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_other": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
       "button": "Aus Zeiteinträgen aktualisieren",
       "drifted": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
       "drifted_one": "{{count}} Zeile unverändert: Die abgerechnete Zeit des Zeiteintrags passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",

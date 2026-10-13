@@ -152,6 +152,37 @@ describe.runIf(RUN)('refreshDraftTimeLines (#8606)', () => {
     expect(await lineRows(invoiceId)).toEqual(linesBefore);
   });
 
+  runDb('matches each line to its own entry; manual lines are not part of the refresh', async () => {
+    const f = await seed();
+    const [b] = await sys(() => db.insert(timeEntries).values({
+      partnerId: f.partnerId, orgId: f.orgId, userId: f.userId,
+      startedAt: new Date('2026-09-15T15:00:00Z'), endedAt: new Date('2026-09-15T16:00:00Z'),
+      durationMinutes: 60, description: 'Checked backups', isBillable: true, hourlyRate: '100.00',
+      billingStatus: 'not_billed', isApproved: true, currencyCode: 'USD',
+    }).returning({ id: timeEntries.id }));
+    const invoiceId = await assemble(f);
+    await sys(() => db.insert(invoiceLines).values({
+      invoiceId, orgId: f.orgId, sourceType: 'manual', description: 'Site visit fee',
+      quantity: '1.00', unitPrice: '50.00', lineTotal: '50.00', sortOrder: 99,
+    }));
+    const before = await lineRows(invoiceId);
+    const lineA = before.find((l) => l.sourceId === f.entryId)!;
+    const lineB = before.find((l) => l.sourceId === b!.id)!;
+    const manual = before.find((l) => l.sourceType === 'manual')!;
+
+    await editEntry(f.entryId, { description: 'Replaced toner and drum' });
+    await editEntry(b!.id, { billingStatus: 'billed', description: 'Should not appear' });
+    const result = await asTenant(f, () => refreshDraftTimeLines(invoiceId, f.actor));
+
+    expect(result.summary).toEqual({ refreshed: 1, unchanged: 0, skipped: 1, quantityDrifted: 0 });
+    expect(result.lines.map((o) => o.lineId).sort()).toEqual([lineA.id, lineB.id].sort());
+    expect(result.lines).toContainEqual({ lineId: lineB.id, status: 'skipped', reason: 'billed_elsewhere' });
+    const after = await lineRows(invoiceId);
+    expect(after.find((l) => l.id === lineA.id)!.description).toBe('Replaced toner and drum');
+    expect(after.find((l) => l.id === lineB.id)).toEqual(lineB);
+    expect(after.find((l) => l.id === manual.id)).toEqual(manual);
+  });
+
   runDb('an issued invoice is refused with 409 NOT_A_DRAFT and its lines do not change', async () => {
     const f = await seed();
     const invoiceId = await assemble(f);

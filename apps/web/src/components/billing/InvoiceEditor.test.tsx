@@ -138,6 +138,32 @@ describe('InvoiceEditor', () => {
       expect(screen.getByTestId('invoice-refresh-time-lines-skipped')).toBeInTheDocument();
     });
 
+    it('names the lines that will block Issue (billed elsewhere) and the drifted lines', async () => {
+      const second = { ...timeLine, id: 'line-u', description: 'Swapped fuser' };
+      const third = { ...timeLine, id: 'line-v', description: 'Network check' };
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') {
+          return json({ data: {
+            invoiceId: 'inv-1', summary: { refreshed: 0, unchanged: 0, skipped: 1, quantityDrifted: 1 },
+            lines: [
+              { lineId: 'line-u', status: 'skipped', reason: 'billed_elsewhere' },
+              { lineId: 'line-v', status: 'quantityDrifted', lineQuantity: '1.00', entryQuantity: '2.00' },
+              { lineId: 'line-t', status: 'unchanged' },
+            ],
+          } });
+        }
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine, second, third])} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      const blocked = await screen.findByTestId('invoice-refresh-time-lines-billed-elsewhere');
+      expect(blocked.textContent).toContain('Swapped fuser');
+      expect(screen.getByTestId('invoice-refresh-time-lines-drifted').textContent).toContain('Network check');
+      // The only skip is the billed-elsewhere one, so no generic skipped note.
+      expect(screen.queryByTestId('invoice-refresh-time-lines-skipped')).not.toBeInTheDocument();
+    });
+
     it('toasts the server error when the refresh fails and shows no summary', async () => {
       fetchMock.mockImplementation(async (input: string) => {
         if (input === '/invoices/inv-1/refresh-time-lines') return json({ error: 'Invoice is not a draft', code: 'NOT_A_DRAFT' }, false, 409);

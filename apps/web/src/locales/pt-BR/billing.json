@@ -1854,6 +1854,9 @@
       "title": "Linhas de apontamento de horas"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "billedElsewhere_one": "{{count}} linha vai bloquear a emissão: o apontamento foi faturado em outra fatura. Remova-a antes de emitir:",
+      "billedElsewhere_other": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
       "button": "Atualizar a partir dos apontamentos",
       "drifted": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
       "drifted_one": "{{count}} linha mantida: o tempo faturado do apontamento não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",

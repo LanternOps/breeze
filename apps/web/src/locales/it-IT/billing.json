@@ -1854,6 +1854,9 @@
       "title": "Righe dei tempi registrati"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} righe bloccheranno l'emissione: le registrazioni ore sono state fatturate su un'altra fattura. Rimuovile prima di emettere:",
+      "billedElsewhere_one": "{{count}} riga bloccherà l'emissione: la registrazione ore è stata fatturata su un'altra fattura. Rimuovila prima di emettere:",
+      "billedElsewhere_other": "{{count}} righe bloccheranno l'emissione: le registrazioni ore sono state fatturate su un'altra fattura. Rimuovile prima di emettere:",
       "button": "Aggiorna dalle registrazioni ore",
       "drifted": "{{count}} righe invariate: il tempo fatturato delle registrazioni non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
       "drifted_one": "{{count}} riga invariata: il tempo fatturato della registrazione non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",

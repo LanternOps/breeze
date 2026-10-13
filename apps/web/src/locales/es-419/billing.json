@@ -1854,6 +1854,9 @@
       "title": "Líneas de registro de tiempo"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
+      "billedElsewhere_one": "{{count}} línea bloqueará la emisión: su registro de tiempo se facturó en otra factura. Elimínala antes de emitir:",
+      "billedElsewhere_other": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
       "button": "Actualizar desde registros de tiempo",
       "drifted": "{{count}} líneas sin cambios: el tiempo facturado de sus registros ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
       "drifted_one": "{{count}} línea sin cambios: el tiempo facturado de su registro ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",

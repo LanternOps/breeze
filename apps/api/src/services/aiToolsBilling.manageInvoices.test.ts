@@ -658,6 +658,17 @@ describe('manage_invoices', () => {
     expect(invoiceService.refreshDraftTimeLines).toHaveBeenCalledWith('inv-1', expect.objectContaining({ partnerId: expect.anything() }));
   });
 
+  it('refresh_time_lines warns the model when a billed-elsewhere line will block issue', async () => {
+    vi.mocked(invoiceService.refreshDraftTimeLines).mockResolvedValueOnce({
+      invoiceId: 'inv-1', orgId: 'org-1',
+      summary: { refreshed: 0, unchanged: 0, skipped: 1, quantityDrifted: 0 },
+      lines: [{ lineId: 'line-9', status: 'skipped', reason: 'billed_elsewhere' }],
+    });
+    const parsed = JSON.parse(await getTool().handler({ action: 'refresh_time_lines', invoiceId: 'inv-1' }, auth));
+    expect(parsed.issueBlockedByLineIds).toEqual(['line-9']);
+    expect(parsed.warning).toMatch(/SOURCE_ALREADY_BILLED/);
+  });
+
   it('refresh_time_lines without invoiceId is refused before the service', async () => {
     const out = await getTool().handler({ action: 'refresh_time_lines' }, auth);
     expect(JSON.parse(out).code).toBe('VALIDATION_ERROR');

@@ -420,7 +420,19 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'refresh_time_lines':
             // #8606: draft-only (NOT_A_DRAFT 409 otherwise). Never changes
             // quantity, price, totals or a hand-edited description.
-            return JSON.stringify(await refreshDraftTimeLines(String(input.invoiceId), actor));
+          {
+            const result = await refreshDraftTimeLines(String(input.invoiceId), actor);
+            // A line whose entry another invoice already billed will fail
+            // issue (SOURCE_ALREADY_BILLED); say so instead of a bare count.
+            const blocked = result.lines
+              .filter((o) => o.status === 'skipped' && o.reason === 'billed_elsewhere')
+              .map((o) => o.lineId);
+            return JSON.stringify(blocked.length === 0 ? result : {
+              ...result,
+              issueBlockedByLineIds: blocked,
+              warning: `${blocked.length} line(s) bill time already billed on another invoice; issuing this draft will fail with SOURCE_ALREADY_BILLED until they are removed. Tell the user.`,
+            });
+          }
           case 'update_header':
             return JSON.stringify(await updateInvoice(
               String(input.invoiceId),

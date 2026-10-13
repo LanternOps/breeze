@@ -92,6 +92,18 @@ export interface TimeLineRefreshSummary {
   quantityDrifted: number;
 }
 
+/** #8606: one line's refresh outcome (reason only on `skipped`). */
+export interface TimeLineRefreshOutcome {
+  lineId: string;
+  status: 'refreshed' | 'unchanged' | 'skipped' | 'quantityDrifted';
+  reason?: string;
+}
+
+export interface TimeLineRefreshResult {
+  summary: TimeLineRefreshSummary;
+  lines: TimeLineRefreshOutcome[];
+}
+
 export interface InvoiceLine {
   id: string;
   invoiceId: string;

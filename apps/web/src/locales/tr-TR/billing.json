@@ -1854,6 +1854,9 @@
       "title": "Zaman kaydı satırları"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} satır düzenlemeyi engelleyecek: zaman kayıtları başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
+      "billedElsewhere_one": "{{count}} satır düzenlemeyi engelleyecek: zaman kaydı başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
+      "billedElsewhere_other": "{{count}} satır düzenlemeyi engelleyecek: zaman kayıtları başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
       "button": "Zaman kayıtlarından yenile",
       "drifted": "{{count}} satır değiştirilmedi: zaman kayıtlarının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
       "drifted_one": "{{count}} satır değiştirilmedi: zaman kaydının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",

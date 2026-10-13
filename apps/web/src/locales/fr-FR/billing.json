@@ -1854,6 +1854,9 @@
       "title": "Lignes de saisie de temps"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lignes bloqueront l'émission : leurs saisies de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
+      "billedElsewhere_one": "{{count}} ligne bloquera l'émission : sa saisie de temps a été facturée sur une autre facture. Supprimez-la avant d'émettre :",
+      "billedElsewhere_other": "{{count}} lignes bloqueront l'émission : leurs saisies de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
       "button": "Actualiser depuis les saisies de temps",
       "drifted": "{{count}} lignes inchangées : le temps facturé de leurs saisies ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
       "drifted_one": "{{count}} ligne inchangée : le temps facturé de sa saisie ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",

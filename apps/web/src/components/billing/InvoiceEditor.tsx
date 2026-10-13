@@ -13,7 +13,7 @@ import { useServerSyncedDraft } from './shared/useServerSyncedDraft';
 import {
   type InvoiceDetail,
   type InvoiceLine,
-  type TimeLineRefreshSummary,
+  type TimeLineRefreshResult,
   formatMoney,
   lineTitle,
   lineWorkedVsBilledNote,
@@ -611,17 +611,31 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // worked minutes, approval). The server never changes amounts or a
   // hand-edited description; the summary says what it did and did not touch.
   const hasTimeLines = lines.some((l) => l.sourceType === 'time_entry');
-  const [refreshSummary, setRefreshSummary] = useState<TimeLineRefreshSummary | null>(null);
+  const [refreshResult, setRefreshResult] = useState<TimeLineRefreshResult | null>(null);
+  const refreshSummary = refreshResult?.summary ?? null;
+  // Lines the operator must act on, named (not just counted): a line whose
+  // entry was billed on another invoice will fail Issue (SOURCE_ALREADY_BILLED),
+  // and a drifted line kept its old quantity.
+  const refreshNamed = useMemo(() => {
+    const titleOf = (id: string) => {
+      const l = lines.find((x) => x.id === id);
+      return l ? lineTitle(l) : id;
+    };
+    const outcomes = refreshResult?.lines ?? [];
+    const billedElsewhere = outcomes.filter((o) => o.status === 'skipped' && o.reason === 'billed_elsewhere').map((o) => titleOf(o.lineId));
+    const drifted = outcomes.filter((o) => o.status === 'quantityDrifted').map((o) => titleOf(o.lineId));
+    return { billedElsewhere, drifted, otherSkipped: (refreshSummary?.skipped ?? 0) - billedElsewhere.length };
+  }, [refreshResult, refreshSummary, lines]);
   const refreshTimeLines = useCallback(async () => {
-    setRefreshSummary(null);
+    setRefreshResult(null);
     await runScoped('refreshTimeLines', async () => {
-      const result = await runAction<{ summary: TimeLineRefreshSummary }>({
+      const result = await runAction<TimeLineRefreshResult>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/refresh-time-lines`, { method: 'POST' }),
         errorFallback: t('invoiceEditor.refreshTimeLines.error'),
-        parseSuccess: (body) => (body as { data: { summary: TimeLineRefreshSummary } }).data,
+        parseSuccess: (body) => (body as { data: TimeLineRefreshResult }).data,
         onUnauthorized: UNAUTHORIZED,
       });
-      setRefreshSummary(result.summary);
+      setRefreshResult(result);
       refresh();
     }, t('invoiceEditor.refreshTimeLines.error'));
   }, [invoice.id, refresh, runScoped, t]);
@@ -1018,14 +1032,21 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                   {refreshSummary && (
                     <div role="status" className="mt-2 space-y-1 text-xs" data-testid="invoice-refresh-time-lines-summary">
                       <p>{t('invoiceEditor.refreshTimeLines.summary', { refreshed: refreshSummary.refreshed, unchanged: refreshSummary.unchanged })}</p>
-                      {refreshSummary.quantityDrifted > 0 && (
-                        <p className="text-[hsl(36_92%_28%)] dark:text-warning" data-testid="invoice-refresh-time-lines-drifted">
-                          {t('invoiceEditor.refreshTimeLines.drifted', { count: refreshSummary.quantityDrifted })}
-                        </p>
+                      {refreshNamed.billedElsewhere.length > 0 && (
+                        <div className="text-destructive" data-testid="invoice-refresh-time-lines-billed-elsewhere">
+                          <p>{t('invoiceEditor.refreshTimeLines.billedElsewhere', { count: refreshNamed.billedElsewhere.length })}</p>
+                          <ul className="ml-4 list-disc">{refreshNamed.billedElsewhere.map((title, i) => <li key={i}>{title}</li>)}</ul>
+                        </div>
                       )}
-                      {refreshSummary.skipped > 0 && (
+                      {refreshSummary.quantityDrifted > 0 && (
+                        <div className="text-[hsl(36_92%_28%)] dark:text-warning" data-testid="invoice-refresh-time-lines-drifted">
+                          <p>{t('invoiceEditor.refreshTimeLines.drifted', { count: refreshSummary.quantityDrifted })}</p>
+                          <ul className="ml-4 list-disc">{refreshNamed.drifted.map((title, i) => <li key={i}>{title}</li>)}</ul>
+                        </div>
+                      )}
+                      {refreshNamed.otherSkipped > 0 && (
                         <p className="text-muted-foreground" data-testid="invoice-refresh-time-lines-skipped">
-                          {t('invoiceEditor.refreshTimeLines.skipped', { count: refreshSummary.skipped })}
+                          {t('invoiceEditor.refreshTimeLines.skipped', { count: refreshNamed.otherSkipped })}
                         </p>
                       )}
                     </div>

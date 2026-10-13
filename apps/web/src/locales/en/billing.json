@@ -1854,6 +1854,9 @@
       "title": "Time entry lines"
     },
     "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
+      "billedElsewhere_one": "{{count}} line will block Issue: its time entry was billed on another invoice. Remove it before issuing:",
+      "billedElsewhere_other": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
       "button": "Refresh from time entries",
       "drifted": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
       "drifted_one": "{{count}} line left unchanged: its time entry's billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
