@@ -130,6 +130,7 @@ import {
   signManifestKeyDelegation,
   verifyManifestKeyDelegation,
   invalidateManifestTrustCaches,
+  notifyTrustCachesChanged,
 } from './manifestSigning';
 import { __resetHotPathCachesForTests } from './hotPathCache';
 import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
@@ -561,6 +562,11 @@ describe('trust caches are cluster-invalidated (W05 #8144)', () => {
   it('C7: invalidateManifestTrustCaches publishes the whole delegation cache (key null)', () => {
     invalidateManifestTrustCaches();
     expect(publishedFor('manifest-key-delegations')).toEqual([null]);
+  });
+
+  it('rotation CLI: notifyTrustCachesChanged publishes both caches and returns the outcomes', async () => {
+    await expect(notifyTrustCachesChanged()).resolves.toEqual(['published', 'published']);
+    expect(published).toEqual([['manifest-trust-keyset', null], ['manifest-key-delegations', null]]);
   });
 });
 

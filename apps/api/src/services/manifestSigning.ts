@@ -27,6 +27,7 @@ import {
 } from '../db/schema/manifestSigningKeys';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { HotPathTtlCache } from './hotPathCache';
+import { getClusterCacheBus, type PublishOutcome } from './clusterCacheBus';
 
 export interface ActiveSigningKey {
   keyId: string;
@@ -257,6 +258,19 @@ export function invalidateManifestTrustCaches(): void {
   // Whole cache (key null on the wire): the only key is a fixed literal.
   trustKeysetCache.invalidateAroundCommit();
   delegationRowsCache.invalidateAroundCommit();
+}
+
+/**
+ * For a writer in ANOTHER process (the rotation CLI): announce both trust
+ * caches to every API instance. Call only after the write has committed. Never
+ * throws; returns each publish's outcome so the caller can say what happened.
+ */
+export async function notifyTrustCachesChanged(): Promise<PublishOutcome[]> {
+  const bus = getClusterCacheBus();
+  return Promise.all([
+    bus.publish(trustKeysetCache.name, null),
+    bus.publish(delegationRowsCache.name, null),
+  ]);
 }
 
 // =====================================================================
