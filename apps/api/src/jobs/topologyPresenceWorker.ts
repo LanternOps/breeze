@@ -14,11 +14,17 @@ import { captureException } from '../services/sentry';
  *     read-model migration never fired an invalidation trigger), marking them dirty.
  *  2. Evaluates due orgs: dirty for at least the debounce, or a configured org past its hourly re-evaluation.
  *     `not_configured` orgs are re-checked only when dirty.
+ *  3. W3 (S§10.1): prunes daily presence rows older than PRESENCE_DAY_RETENTION_DAYS, at most PRESENCE_DAY_PRUNE_LIMIT
+ *     per tick. The day rows themselves are written by the per-org evaluation above (S§7.2 step 6), so the daily
+ *     summaries ride this worker's existing per-org fan-out rather than a second scheduler.
  * A failed org is deferred for PRESENCE_FAILURE_BACKOFF_MS (dirty_at in the future) so a persistently failing org can
  * neither retry hot nor crowd healthy orgs' re-evaluations out of the per-tick limit; the error is reported with its org.
- * It never writes devices.site_id.
+ * It never writes devices.site_id: wrong-site suggestions are only stored for a technician to accept or dismiss.
  */
-export type TopologyPresenceTick = { enrolled: number; evaluated: number; busy: number; notConfigured: number; failed: number };
+export type TopologyPresenceTick = { enrolled: number; evaluated: number; busy: number; notConfigured: number; failed: number; pruned: number };
+
+export const PRESENCE_DAY_RETENTION_DAYS = 35;
+export const PRESENCE_DAY_PRUNE_LIMIT = 10_000;
 
 /** How long a failed org waits before its next attempt. */
 export const PRESENCE_FAILURE_BACKOFF_MS = 15 * 60_000;
@@ -29,8 +35,18 @@ let active: Promise<unknown> | null = null;
 
 const system = <T>(fn: () => Promise<T>, label: string) => runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
+/** Deletes at most PRESENCE_DAY_PRUNE_LIMIT day rows older than the retention window (system scope, all orgs). */
+export async function prunePresenceDays(now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - PRESENCE_DAY_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const deleted = await system(() => db.execute<{ id: string }>(sql`
+    DELETE FROM topology_device_presence_days WHERE id IN (
+      SELECT id FROM topology_device_presence_days WHERE day < ${cutoff}::date ORDER BY day LIMIT ${PRESENCE_DAY_PRUNE_LIMIT})
+    RETURNING id`), 'topology presence day retention');
+  return deleted.length;
+}
+
 export async function runTopologyPresenceTick(now = new Date()): Promise<TopologyPresenceTick> {
-  const result: TopologyPresenceTick = { enrolled: 0, evaluated: 0, busy: 0, notConfigured: 0, failed: 0 };
+  const result: TopologyPresenceTick = { enrolled: 0, evaluated: 0, busy: 0, notConfigured: 0, failed: 0, pruned: 0 };
   try {
     const enrolled = await system(() => db.execute<{ org_id: string }>(sql`
       INSERT INTO topology_org_presence_state (org_id, dirty_at)
@@ -73,6 +89,12 @@ export async function runTopologyPresenceTick(now = new Date()): Promise<Topolog
         captureException(backoffError);
       }
     }
+  }
+  try {
+    result.pruned = await prunePresenceDays(now);
+  } catch (error) {
+    captureException(error, undefined, { worker: 'topologyPresence', step: 'retention' });
+    console.warn('[topology-presence] day retention failed', error instanceof Error ? error.message : String(error));
   }
   if (result.failed > 0) console.warn('[topology-presence] evaluation failures', result);
   return result;
