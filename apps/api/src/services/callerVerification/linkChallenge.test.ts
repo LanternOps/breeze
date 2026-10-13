@@ -10,6 +10,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe('link challenge material', () => {
   it('builds only an HTTPS application link from trusted deployment config', () => {
+    vi.stubEnv('PUBLIC_APP_URL', '');
     const token = 'A'.repeat(43);
     vi.stubEnv('PUBLIC_WEB_URL', 'https://app.example.com');
     expect(linkUrl(token)).toBe(`https://app.example.com/verify/${token}`);
@@ -21,6 +22,15 @@ describe('link challenge material', () => {
     }
     vi.stubEnv('PUBLIC_WEB_URL', 'https://app.example.com');
     expect(() => linkUrl('../../x')).toThrow('link_token_invalid');
+  });
+
+  it('falls back to PUBLIC_APP_URL (what stock compose passes) when PUBLIC_WEB_URL is unset', () => {
+    const token = 'A'.repeat(43);
+    vi.stubEnv('PUBLIC_WEB_URL', '');
+    vi.stubEnv('PUBLIC_APP_URL', 'https://breeze.example.com');
+    expect(linkUrl(token)).toBe(`https://breeze.example.com/verify/${token}`);
+    vi.stubEnv('PUBLIC_WEB_URL', 'https://app.example.com');
+    expect(linkUrl(token)).toBe(`https://app.example.com/verify/${token}`);
   });
 
   it('stores only a digest and an encrypted, row-bound recoverable delivery token', () => {

@@ -23,11 +23,24 @@ import { hashLinkToken, linkUrl, sealLinkToken, storedChoices } from './linkChal
 
 const PROBE_TOKEN = 'A'.repeat(43);
 
+let originWarned = false;
+
+/** Test-only: re-arm the once-per-process misconfiguration log. */
+export function __resetLinkOriginWarningForTests(): void {
+  originWarned = false;
+}
+
 function appOriginUsable(): boolean {
   try {
     linkUrl(PROBE_TOKEN);
     return true;
   } catch {
+    // Without this line an operator only sees SMS/email "method disabled".
+    if (!originWarned) {
+      originWarned = true;
+      console.error('[callerVerification] PUBLIC_WEB_URL / PUBLIC_APP_URL is unset or not a bare https:// origin; '
+        + 'the SMS/email link tier is disabled until it is fixed.');
+    }
     return false;
   }
 }

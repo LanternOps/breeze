@@ -175,6 +175,19 @@ it('does not honour not_me beyond the 24-hour public window', async () => {
   const f = await seed({ createdAt: new Date(Date.now() - 86_401_000) });
   await post(f.token, 'not_me');
   expect((await reload(f.row.id)).status).toBe('pending');
+  expect(await getTestDb().select().from(incidents).where(eq(incidents.sourceRef, f.row.id))).toEqual([]);
+});
+
+it('a not_me after the link was already used revokes the grant and the contact\'s other live grants', async () => {
+  const f = await seed();
+  expect(await (await post(f.token, '42')).json()).toEqual({ status: 'received' });
+  expect((await reload(f.row.id)).status).toBe('verified');
+  const other = await seed({ status: 'verified', decidedAt: new Date() });
+  expect(await (await post(f.token, 'not_me')).json()).toEqual({ status: 'received' });
+  expect((await reload(f.row.id)).status).toBe('rejected_by_user');
+  expect((await reload(other.row.id)).status).toBe('revoked');
+  const opened = await getTestDb().select().from(incidents).where(eq(incidents.sourceRef, f.row.id));
+  expect(opened).toHaveLength(1);
 });
 
 it('an expired number choice is refused by the database predicate', async () => {

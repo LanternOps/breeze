@@ -25,9 +25,13 @@ const mailboxResource = z.object({
 export async function fetchTargetMailboxes(orgId: string, subject: EntraSubject): Promise<Set<string>> {
   const row = mailboxResource.parse(await fetchMailboxResourceByOrg(orgId, subject));
   if (row.id.toLowerCase() !== subject.entraOid.toLowerCase()) throw new Error('subject_mailboxes_unknown');
-  return new Set([
+  const set = new Set([
     row.userPrincipalName,
     ...(row.mail === null ? [] : [row.mail]),
     ...row.proxyAddresses.filter((value) => /^smtp:/i.test(value)).map((value) => value.slice(5)),
   ].map((value) => value.trim().toLowerCase()).filter(Boolean));
+  // A real Entra user always has a UPN; an empty set would read as "no
+  // mailbox in common" and let a same-mailbox email grant through.
+  if (set.size === 0 || !row.userPrincipalName.trim()) throw new Error('subject_mailboxes_unknown');
+  return set;
 }

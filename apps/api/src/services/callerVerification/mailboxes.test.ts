@@ -26,6 +26,7 @@ it.each([
   ['a rebound object', { id: '33333333-3333-4333-8333-333333333333', userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [] }],
   ['a null alias', { id: subject.entraOid, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [null] }],
   ['no UPN', { id: subject.entraOid, mail: null, proxyAddresses: [] }],
+  ['a blank UPN and nothing else', { id: subject.entraOid, userPrincipalName: '   ', mail: null, proxyAddresses: [] }],
   ['a non-object', ['alex@example.com']],
 ])('fails closed for %s', async (_label, resource) => {
   read.mockResolvedValue(resource);

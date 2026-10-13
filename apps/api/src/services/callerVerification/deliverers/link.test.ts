@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
-  load: vi.fn(), sms: vi.fn(), mail: vi.fn(), decide: vi.fn(), effect: vi.fn(),
+  load: vi.fn(), sms: vi.fn(), mail: vi.fn(), decide: vi.fn(), effect: vi.fn(), capture: vi.fn(),
   twilio: true as boolean, email: true as boolean, contexts: [] as string[], db: null as any,
 }));
 vi.mock('../publicLookup', () => ({ loadLinkDelivery: m.load }));
 vi.mock('../service', () => ({ applyDecision: m.decide }));
 vi.mock('../effects', () => ({ recordEffect: m.effect }));
+vi.mock('../../sentry', () => ({ captureException: m.capture }));
 vi.mock('../../twilio', () => ({
   getTwilioService: (mode: string) => {
     if (mode !== 'messaging') throw new Error(`wrong Twilio mode ${mode}`);
@@ -120,6 +121,23 @@ it('propagates a failed decision write so the publisher retries', async () => {
   m.sms.mockResolvedValue({ success: false });
   m.decide.mockRejectedValue(new Error('db down'));
   await expect(deliverLink(id)).rejects.toThrow('db down');
+});
+
+it.each([
+  ['unusable sealed material', () => { m.load.mockResolvedValue({ ...smsRow, sealedLinkToken: newLinkChallenge(id).sealedToken }); }],
+  ['an unconfigured SMS transport', () => { m.twilio = false; }],
+  ['an unconfigured email transport', () => { m.load.mockResolvedValue(emailRow); m.email = false; }],
+])('reports %s to Sentry (a systemic fault, not a per-recipient one)', async (_label, arrange) => {
+  arrange();
+  await deliverLink(id);
+  expect(m.capture).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(m.capture.mock.calls)).not.toContain(token);
+});
+
+it('does not page Sentry for a per-recipient provider refusal', async () => {
+  m.sms.mockResolvedValue({ success: false, isUserError: true });
+  await deliverLink(id);
+  expect(m.capture).not.toHaveBeenCalled();
 });
 
 it('never logs the token or the link', async () => {

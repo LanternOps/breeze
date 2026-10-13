@@ -25,10 +25,20 @@ import { getTwilioService } from '../../twilio';
 import { buildCallerVerificationTemplate, getEmailService } from '../../email';
 import { applyDecision } from '../service';
 import { recordEffect } from '../effects';
+import { captureException } from '../../sentry';
 import { loadLinkDelivery, type LinkDelivery } from '../publicLookup';
 import { hashLinkToken, linkUrl, openLinkToken } from '../linkChallenge';
 
 type FailureReason = 'sms_failed' | 'email_failed';
+
+/**
+ * A fault that will fail EVERY link (bad key material, no transport) — not a
+ * per-recipient refusal — goes to Sentry with a fixed message, never the
+ * token, URL or provider text.
+ */
+function reportSystemic(code: string, verificationId: string): void {
+  captureException(new Error(`caller verification link delivery: ${code}`), undefined, { verificationId, code });
+}
 
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
@@ -49,9 +59,9 @@ async function send(row: LinkDelivery): Promise<FailureReason | null> {
     url = linkUrl(token);
   } catch (err) {
     // Message is one of our own fixed codes (never token material).
-    console.error('[callerVerification] link material unusable; marking undeliverable', {
-      verificationId: row.id, error: err instanceof Error ? err.message : 'unknown',
-    });
+    const code = err instanceof Error ? err.message : 'unknown';
+    console.error('[callerVerification] link material unusable; marking undeliverable', { verificationId: row.id, error: code });
+    reportSystemic(code === 'app_url_invalid' ? code : 'link_material_unusable', row.id);
     return failed;
   }
   try {
@@ -59,6 +69,7 @@ async function send(row: LinkDelivery): Promise<FailureReason | null> {
       const twilio = getTwilioService('messaging');
       if (!twilio) {
         console.error('[callerVerification] SMS link: Twilio messaging not configured', { verificationId: row.id });
+        reportSystemic('sms_transport_unconfigured', row.id);
         return failed;
       }
       const result = await twilio.sendSmsMessage(row.destination,
@@ -73,6 +84,7 @@ async function send(row: LinkDelivery): Promise<FailureReason | null> {
     const email = getEmailService();
     if (!email) {
       console.error('[callerVerification] email link: no email transport configured', { verificationId: row.id });
+      reportSystemic('email_transport_unconfigured', row.id);
       return failed;
     }
     await email.sendEmail({

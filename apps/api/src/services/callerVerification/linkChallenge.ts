@@ -75,7 +75,7 @@ export function linkUrl(token: string): string {
   if (!LINK_TOKEN_RE.test(token)) throw new Error('link_token_invalid');
   let base: URL;
   try {
-    base = new URL(process.env.PUBLIC_WEB_URL ?? '');
+    base = new URL(process.env.PUBLIC_WEB_URL || process.env.PUBLIC_APP_URL || '');
   } catch {
     throw new Error('app_url_invalid');
   }

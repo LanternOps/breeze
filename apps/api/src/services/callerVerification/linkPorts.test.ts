@@ -68,6 +68,20 @@ describe('linkAvailable', () => {
   });
 });
 
+describe('linkAvailable diagnostics', () => {
+  it('says once per process why the link tier is off, never per call', async () => {
+    const { __resetLinkOriginWarningForTests } = await import('./linkPorts');
+    __resetLinkOriginWarningForTests();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('PUBLIC_WEB_URL', 'http://insecure.example.com');
+    expect(linkAvailable('email')).toBe(false);
+    expect(linkAvailable('sms')).toBe(false);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(String(error.mock.calls[0]![0])).toMatch(/PUBLIC_WEB_URL|PUBLIC_APP_URL/);
+    error.mockRestore();
+  });
+});
+
 describe('default ports', () => {
   it('route sms/email to the link adapter and leave workstation unavailable', async () => {
     expect(await callerVerificationPorts.available('sms', 'org')).toBe(true);
