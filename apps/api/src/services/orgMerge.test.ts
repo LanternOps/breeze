@@ -22,6 +22,28 @@ const mockState = vi.hoisted(() => ({
   insertedId: 'merge-event-1',
   ticketCandidates: [] as Array<{ id: string }>,
   revalidateTicketAssignee: vi.fn(),
+  /** >0 while a mocked withSystemDbAccessContext callback runs. */
+  txDepth: 0,
+  /** W05 (#8144): hot-path cache invalidations, with whether they ran inside the transaction. */
+  cacheInvalidations: [] as Array<{ fn: string; arg: string | undefined; inTx: boolean }>,
+}));
+
+vi.mock('./agentOrgSettingsCache', () => {
+  const record = (fn: string) => (arg?: string) => {
+    mockState.cacheInvalidations.push({ fn, arg, inTx: mockState.txDepth > 0 });
+  };
+  return {
+    invalidateAgentOrgSettingsCaches: vi.fn(record('invalidateAgentOrgSettingsCaches')),
+    invalidateOrgPolicyProbeCache: vi.fn(record('invalidateOrgPolicyProbeCache')),
+    invalidateOrgPamFallbackCache: vi.fn(record('invalidateOrgPamFallbackCache')),
+  };
+});
+vi.mock('./unifi/unifiCollectorService', () => ({
+  agentCollectorAbsenceCache: {
+    invalidateAroundCommit: vi.fn((arg?: string) => {
+      mockState.cacheInvalidations.push({ fn: 'agentCollectorAbsenceCache.invalidateAroundCommit', arg, inTx: mockState.txDepth > 0 });
+    }),
+  },
 }));
 
 function sqlToText(q: unknown): string {
@@ -71,7 +93,12 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     mockState.escalations.push('withSystemDbAccessContext');
-    return fn();
+    mockState.txDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      mockState.txDepth -= 1;
+    }
   }),
   getCurrentDbAccessContext: vi.fn(() => mockState.ambientContext),
   db: {
@@ -766,6 +793,44 @@ describe('stampTerminalShell', () => {
       partnerId: input.partnerId,
       mergeEventId: 'merge-event-1',
     });
+  });
+
+  it('invalidates the hot-path caches of both orgs inside the merge transaction (W05 #8144)', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockResolvedValue(null);
+    mockState.cacheInvalidations = [];
+
+    await orgMergeModule.executeOrgMerge(input);
+
+    const calls = mockState.cacheInvalidations;
+    for (const fn of ['invalidateAgentOrgSettingsCaches', 'invalidateOrgPolicyProbeCache', 'invalidateOrgPamFallbackCache']) {
+      expect(calls.filter((c) => c.fn === fn).map((c) => c.arg).sort(), fn).toEqual([loser.id, survivor.id].sort());
+    }
+    // A merge turns loser-org keys into survivor-org keys: the collector absence cache drops whole.
+    expect(calls.filter((c) => c.fn === 'agentCollectorAbsenceCache.invalidateAroundCommit')).toEqual([
+      { fn: 'agentCollectorAbsenceCache.invalidateAroundCommit', arg: undefined, inTx: true },
+    ]);
+    // Inside the repoint transaction, so invalidateAroundCommit publishes only if the merge commits.
+    expect(calls.every((c) => c.inTx)).toBe(true);
+  });
+
+  it('a merge that rolls back invalidates nothing cluster-wide: the calls are inside the failing transaction', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'unfenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockRejectedValue(new Error('walk failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockState.cacheInvalidations = [];
+
+    await expect(orgMergeModule.executeOrgMerge(input)).rejects.toThrow();
+    expect(mockState.cacheInvalidations).toEqual([]);
   });
 
   it('a failing stamp still resolves executeOrgMerge and never unfences', async () => {

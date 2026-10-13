@@ -86,6 +86,7 @@ export const orgPolicyProbeCache = new HotPathTtlCache<string, PolicyProbeConfig
   name: 'org-policy-probe',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgHelperSettingsCache = new HotPathTtlCache<string, { enabled: boolean }>({

@@ -23,6 +23,7 @@ import {
   invalidateAgentOrgSettingsCaches,
   invalidateOrgHelperSettingsCache,
   invalidateOrgPamFallbackCache,
+  invalidateOrgPolicyProbeCache,
 } from './agentOrgSettingsCache';
 
 let published: Array<[string, string | null]>;
@@ -97,5 +98,17 @@ describe('org-pam-fallback is cluster-invalidated (W05 #8144, C5)', () => {
   it('invalidateOrgPamFallbackCache publishes that org id', () => {
     invalidateOrgPamFallbackCache('org-1');
     expect(publishedFor('org-pam-fallback')).toEqual(['org-1']);
+  });
+});
+
+describe('org-policy-probe is cluster-invalidated (W05 #8144, C4)', () => {
+  it('deactivating an org policy publishes that org id', () => {
+    invalidateOrgPolicyProbeCache('org-1');
+    expect(publishedFor('org-policy-probe')).toEqual(['org-1']);
+  });
+
+  it('deactivating a partner-wide policy publishes the whole cache (key null)', () => {
+    invalidateOrgPolicyProbeCache();
+    expect(publishedFor('org-policy-probe')).toEqual([null]);
   });
 });

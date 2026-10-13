@@ -62,6 +62,12 @@ import { EVIDENCE_HOLD_LINEAGE_DEPTH_CAP, heldLineageDepth, writeEvidenceHold } 
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
 import { invalidateAgentTenantCache, isUsableOrgStatus } from './tenantStatus';
+import {
+  invalidateAgentOrgSettingsCaches,
+  invalidateOrgPamFallbackCache,
+  invalidateOrgPolicyProbeCache,
+} from './agentOrgSettingsCache';
+import { agentCollectorAbsenceCache } from './unifi/unifiCollectorService';
 import { prepareTopologyOrgMerge, finalizeTopologyOrgMerge } from './topology/tenantLifecycle';
 // Self-import so `executeOrgMerge` calls the exported bindings through the
 // module namespace, letting tests spy on `runPolicy` / `fenceLoser` — the same
@@ -1113,6 +1119,24 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 // Execute
 // ---------------------------------------------------------------------------
 
+/**
+ * W05 (#8144): drop both orgs' agent hot-path cache entries on every API
+ * instance. A merge re-points automation_policies (policy probe), devices and
+ * unifi_collectors from the loser to the survivor, and keeps the survivor's
+ * pam_org_config, so per-org values cached for either org can be wrong after
+ * it. Call INSIDE the merge transaction: `invalidateAroundCommit` drops locally
+ * now and publishes cluster-wide only once that transaction commits.
+ */
+export function invalidateMergedOrgHotPathCaches(loserId: string, survivorId: string): void {
+  for (const orgId of [loserId, survivorId]) {
+    invalidateAgentOrgSettingsCaches(orgId);
+    invalidateOrgPolicyProbeCache(orgId);
+    invalidateOrgPamFallbackCache(orgId);
+  }
+  // Keys are `${orgId}:${deviceId}`; the merge turns loser keys into survivor keys.
+  agentCollectorAbsenceCache.invalidateAroundCommit();
+}
+
 export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgMergeResult> {
   const { loser, survivor } = await self.loadAndValidate(input);
 
@@ -1292,6 +1316,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
           partnerId: input.partnerId,
           mergeEventId: event.id,
         });
+
+        // W05 (#8144): last, after every repoint. Inside this transaction, so
+        // each cache's cluster publish runs only if the merge commits.
+        self.invalidateMergedOrgHotPathCaches(loser.id, survivor.id);
 
         return { ...eventSummary, summary, mergeEventId: event.id, evidenceHold };
       }),
