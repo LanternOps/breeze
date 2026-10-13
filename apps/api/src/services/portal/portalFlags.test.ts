@@ -87,6 +87,7 @@ describe('onPortalFlagsChanged', () => {
     enablePerformanceMetrics: false,
     enableSoftwareInventory: false,
     enableNetworkVisibility: false,
+    enableEdrVisibility: false,
   };
 
   beforeEach(() => {

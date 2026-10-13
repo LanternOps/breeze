@@ -128,7 +128,7 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     expect(JSON.parse(JSON.stringify(res.summary))).toEqual(PRE_CHANGE_CONNECTED);
     // Absent, not merely undefined: the persisted JSON must not gain keys.
     expect(Object.keys((res.summary as { agentCoverage: object }).agentCoverage)).not.toContain('edrEndpoints');
-    expect(Object.keys(res.summary)).not.toContain('edrDetections');
+    expect(Object.keys(res.summary ?? {})).not.toContain('edrDetections');
   });
 
   it('a no-EDR org with no Huntress is deep-equal to the pre-change data-gap output', async () => {

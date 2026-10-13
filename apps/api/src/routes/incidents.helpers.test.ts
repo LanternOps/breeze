@@ -225,7 +225,7 @@ describe('buildIncidentFeed detectedAt parsing', () => {
   it.each(['America/Denver', 'Asia/Tokyo'] as const)(
     'reads offsetless detectedAt text as UTC on a %s host',
     async (zone) => {
-      const feedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null } as const;
+      const feedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null } as const;
       const built = buildIncidentFeedQueries(orgAuth, feedParams)!;
       // Stand in for the driver: the union feed hands back detectedAt as raw
       // offsetless text (the leg columns are timestamp WITHOUT time zone).

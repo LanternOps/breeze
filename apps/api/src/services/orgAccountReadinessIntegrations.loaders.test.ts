@@ -335,7 +335,7 @@ describe('loadEdr', () => {
     let out = await loadEdr(PARTNER, [ORG_A, ORG_B]);
     expect(out.connectors).toEqual([{ system: 'edr', state: 'reauth_required' }]);
     expect(out.rows.map((r) => r.integration.state)).toEqual(['error', 'error']);
-    expect(out.rows[0].integration.reason).toBe('connector_error');
+    expect(out.rows[0]!.integration.reason).toBe('connector_error');
 
     setupDb(new Map<unknown, unknown[]>([
       [edrConnections, [conn('c1', 'connected')]],
@@ -364,8 +364,8 @@ describe('loadEdr', () => {
     ]));
     const out = await loadEdr(PARTNER, [ORG_A]);
     expect(out.rows).toHaveLength(1);
-    expect(out.rows[0].integration.state).toBe('error');
-    expect(out.rows[0].integration.provider).toBeUndefined();
+    expect(out.rows[0]!.integration.state).toBe('error');
+    expect(out.rows[0]!.integration.provider).toBeUndefined();
     expect(JSON.stringify(out)).not.toMatch(/vendor|secret/i);
   });
 

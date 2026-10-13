@@ -547,7 +547,8 @@ export async function loadEdr(partnerId: string, orgIds: readonly string[]): Pro
   for (const [orgId, { states, providers }] of perOrg) {
     const worst = worstState(states);
     if (!worst) continue;
-    const provider = providers.size === 1 ? { provider: edrProviderLabel([...providers][0]) } : {};
+    const [only] = [...providers];
+    const provider = providers.size === 1 && only ? { provider: edrProviderLabel(only) } : {};
     rows.push({ orgId, integration: { ...worst, ...provider } });
   }
   return { connectors, rows };
