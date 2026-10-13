@@ -372,6 +372,11 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const recordWorkstationCapabilitiesMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+vi.mock('../../services/callerVerification/workstationCapabilities', () => ({
+  recordWorkstationCapabilities: (...args: unknown[]) => recordWorkstationCapabilitiesMock(...args),
+}));
+
 vi.mock('../../services/agentHealthObservations', () => ({
   recordAgentHealthObservation: (...args: unknown[]) =>
     recordAgentHealthObservationMock(...(args as [any])),
@@ -781,6 +786,59 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
 
     expect(response.status).toBe(200);
     expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+  });
+
+  describe('caller verification readiness (#6354 W02)', () => {
+    function arrange() {
+      selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+      selectMock.mockReturnValue(selectChainResolving([]));
+      updateMock.mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+      });
+      insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+      recordWorkstationCapabilitiesMock.mockClear();
+    }
+
+    it('replaces readiness from the authenticated device after the DB context is released', async () => {
+      arrange();
+      callOrder.length = 0;
+      recordWorkstationCapabilitiesMock.mockImplementationOnce(async () => {
+        callOrder.push('readiness:recorded');
+      });
+      const helperCapabilities = { callerVerify: true, usernames: ['alex'] };
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...minimalHeartbeatBody, helperCapabilities }),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).toHaveBeenCalledWith('org-1', 'device-1', helperCapabilities);
+      expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('readiness:recorded'));
+    });
+
+    it('clears readiness when an old main agent omits the field', async () => {
+      arrange();
+      const response = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(minimalHeartbeatBody),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).toHaveBeenCalledWith('org-1', 'device-1', undefined);
+    });
+
+    // The malformed-report drop is zod-level: schemas.heartbeatTolerance.test.ts.
+
+    it('never lets a watchdog heartbeat touch readiness', async () => {
+      arrange();
+      const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentVersion: '0.65.10', role: 'watchdog', watchdogState: 'MONITORING' }),
+      });
+      expect(response.status).toBe(200);
+      expect(recordWorkstationCapabilitiesMock).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps reachability successful and captures a health persistence failure', async () => {

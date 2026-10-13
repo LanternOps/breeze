@@ -36,6 +36,24 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
+  it('keeps caller-verification readiness and drops a malformed report to absent (#6354 W02)', () => {
+    const ok = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: { callerVerify: true, usernames: ['alex'] } });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.helperCapabilities).toEqual({ callerVerify: true, usernames: ['alex'] });
+
+    for (const bad of [
+      { callerVerify: 'yes', usernames: ['alex'] },
+      { callerVerify: true, usernames: 'alex' },
+      { callerVerify: true, usernames: [''] },
+      { callerVerify: true, usernames: Array.from({ length: 33 }, (_, i) => `u${i}`) },
+      'ready',
+    ]) {
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.helperCapabilities).toBeUndefined();
+    }
+  });
+
   it('drops malformed PAM reconciliation telemetry independently', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,

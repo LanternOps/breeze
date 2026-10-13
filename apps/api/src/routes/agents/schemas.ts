@@ -213,6 +213,13 @@ export const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
+  // Caller verification readiness (#6354 W02): console logins whose Assist
+  // helper can render the card right now. Telemetry, not authorization; a
+  // malformed report degrades to "absent" (readiness cleared), never a 400.
+  helperCapabilities: z.object({
+    callerVerify: z.boolean(),
+    usernames: z.array(z.string().min(1).max(255)).max(32),
+  }).optional().catch(undefined),
   // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
   // 'awaiting_server_offer'). Omitted when there is none, and the route reads
   // absence as "healthy, clear it". A present but malformed value therefore

@@ -34,6 +34,7 @@ import {
   normalizeBackupWriteProtocolVersion,
 } from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
+import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
   maybeQueueThresholdFilesystemAnalysis,
@@ -2221,6 +2222,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // 404 / 401 / watchdog branches returned a Response directly from the scoped
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
+
+  // Caller verification readiness (#6354 W02), keyed by the authenticated
+  // device's org — never a body-supplied identity. Replaced on every main
+  // agent beat (absent = cleared, so an old agent reads as unavailable);
+  // watchdog beats do not describe the user session and never touch it.
+  // Redis only, after the org transaction released; it never throws.
+  if (agent.role !== 'watchdog') {
+    await recordWorkstationCapabilities(scoped.deviceOrgId, scoped.deviceId, data.helperCapabilities);
+  }
 
   // Self-health is independent from reachability and is persisted only after
   // the request's org-scoped transaction has released. A failed observation
