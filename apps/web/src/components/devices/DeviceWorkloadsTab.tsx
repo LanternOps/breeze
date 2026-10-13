@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { Container, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -91,9 +92,8 @@ function imageStatusKey(workload: WorkloadView): ImageStatusKey | null {
 
 /** `#workloads/<filter>` — the tab router only reads the first hash segment. */
 const HASH_TAB = 'workloads';
-function imageFilterFromHash(): ImageStatusKey | 'all' {
-  if (typeof window === 'undefined') return 'all';
-  const [tab, filter] = window.location.hash.replace(/^#/, '').split('/');
+function parseImageFilter(hash: string): ImageStatusKey | 'all' {
+  const [tab, filter] = hash.split('/');
   return tab === HASH_TAB && IMAGE_FILTERS.includes(filter as ImageStatusKey) ? (filter as ImageStatusKey) : 'all';
 }
 
@@ -132,13 +132,7 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
   const [view, setView] = useState<WorkloadsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [imageFilter, setImageFilter] = useState<ImageStatusKey | 'all'>(imageFilterFromHash);
-
-  useEffect(() => {
-    const onHashChange = () => setImageFilter(imageFilterFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  const [imageFilter, setImageFilter] = useHashState<ImageStatusKey | 'all'>('all', parseImageFilter);
 
   const changeImageFilter = (next: ImageStatusKey | 'all') => {
     setImageFilter(next);
