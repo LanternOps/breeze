@@ -295,7 +295,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -939,6 +939,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
+    // #8596 — same grant as GET /tickets/:id/links.
+    list_links: { resource: 'tickets', action: 'read' },
   },
   // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
   // and the templates route (reads are TICKETS_READ).

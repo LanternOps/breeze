@@ -7,13 +7,13 @@
  */
 
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
-import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceHardware, devices, organizations, ticketDrafts, tickets } from '../db/schema';
 import { getTicketApprovalSummary } from './ticketApproval/summary';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
-import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceInSiteScope, ticketCounterpartScopeCondition, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
 // One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
 // does not import this module, so the edge is acyclic.
@@ -52,7 +52,7 @@ import {
   readTimeEntryById,
   TimeEntryServiceError
 } from './timeEntryService';
-import { updateTimeEntrySchema } from '@breeze/shared';
+import { TICKET_TYPES, ticketTypeSchema, updateTimeEntrySchema, type TicketType } from '@breeze/shared';
 import { z } from 'zod';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
@@ -77,6 +77,7 @@ import {
 } from './ticketChecklistTemplateService';
 import { PartnerWideWriteDeniedError, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { listWorkTypes } from './workTypeService';
+import { listTicketLinks } from './ticketLinkService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -277,6 +278,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** The list filter: one type or a non-empty array of types. */
+function ticketTypeFilter(value: unknown): ParseResult<TicketType[] | undefined> {
+  if (value === undefined) return { value: undefined };
+  const list = Array.isArray(value) ? value : [value];
+  const parsed = ticketTypeSchema.array().min(1).safeParse(list);
+  return parsed.success
+    ? { value: parsed.data }
+    : { error: `ticketType must be one of ${TICKET_TYPES.join(', ')}, or a non-empty array of them` };
 }
 
 function stringField(record: Record<string, unknown>, key: string, label: string): ParseResult<string | undefined> {
@@ -623,11 +634,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
     domain: 'tickets',
-    searchHint: 'tickets: list, get, create, update, assign, comment, link alerts or devices, log time, start/stop timer',
+    searchHint: 'tickets: list, get, create, update, assign, comment, link tickets, alerts or devices, log time, start/stop timer',
     definition: {
       name: 'manage_tickets',
       description:
-        "Manage tickets; move_org needs approval. Actions: list, get, create, comment, assign, update_status, list_work_types, log_time_entry, start_timer, stop_timer, update_time_entry, update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org, link_device, draft.",
+        // Budget: 300 chars and every action named (aiTools.descriptionBudget.contract.test.ts).
+        "move_org needs approval. Actions: list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,move_org,link_device,draft,list_links.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -653,13 +665,21 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'delete_comment',
               'move_org',
               'link_device',
-              'draft'
+              'draft',
+              'list_links'
             ],
             description: 'The action to perform'
           },
           ticketId: {
             type: 'string',
-            description: 'Ticket UUID (required for get/comment/assign/update_status/update_fields/link_alert/unlink_alert/move_org/link_device/draft)'
+            description: 'Ticket UUID (required for every action on one ticket: get, comment, assign, update_*, link_*/unlink_*, move_org, link_device, draft, list_links)'
+          },
+          ticketType: {
+            anyOf: [
+              { type: 'string', enum: [...TICKET_TYPES] },
+              { type: 'array', items: { type: 'string', enum: [...TICKET_TYPES] } },
+            ],
+            description: 'list: filter by one ticket type or an array of types.'
           },
           alertId: {
             type: 'string',
@@ -739,7 +759,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'User UUID to assign; omit to unassign'
           },
-          ...pageParamSchema(20, 100),
+          ...pageParamSchema(18, 100),
           pendingReason: {
             type: 'string',
             description: 'Optional reason when setting status to pending (update_status)'
@@ -795,8 +815,15 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
+        const typeFilter = ticketTypeFilter(input.ticketType);
+        if ('error' in typeFilter) return JSON.stringify({ error: typeFilter.error });
+        if (typeFilter.value) {
+          conditions.push(typeFilter.value.length === 1
+            ? eq(tickets.ticketType, typeFilter.value[0]!)
+            : inArray(tickets.ticketType, typeFilter.value));
+        }
 
-        const page = readPageArgs('manage_tickets', input, { defaultLimit: 20, maxLimit: 100 });
+        const page = readPageArgs('manage_tickets', input, { defaultLimit: 18, maxLimit: 100 });
         if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
         const { limit, offset, fingerprint } = page;
 
@@ -807,6 +834,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             subject: tickets.subject,
             status: tickets.status,
             priority: tickets.priority,
+            ticketType: tickets.ticketType,
             assignedTo: tickets.assignedTo,
             orgId: tickets.orgId,
             deviceId: tickets.deviceId,
@@ -1038,6 +1066,18 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           if (json) return json;
           throw err;
         }
+      }
+
+      // ── list_links (#8596) ────────────────────────────────────────────────
+      // Read-only. Same view and the same counterpart scope as
+      // GET /tickets/:id/links: a link whose other ticket the caller cannot
+      // see is omitted; a soft-deleted counterpart is listed, flagged.
+      if (action === 'list_links') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for list_links action' });
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const links = await listTicketLinks(found.id, { counterpartFilter: ticketCounterpartScopeCondition(auth) });
+        return JSON.stringify({ links });
       }
 
       // ── link_alert ────────────────────────────────────────────────────────
