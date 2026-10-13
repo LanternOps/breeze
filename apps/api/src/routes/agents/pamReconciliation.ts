@@ -108,6 +108,15 @@ pamReconciliationRoutes.post(
     if (!agent?.deviceId || !agent.orgId || !agent.agentId) {
       return c.json({ error: 'Agent context not found' }, 401);
     }
+    // #8206 — same guards as pamObservations.ts: the path names the
+    // authenticated agent, and a drain-restricted credential (claim-type
+    // allowlist) cannot reconcile PAM evidence.
+    if (agent.agentId !== c.req.param('id')) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    if (agent.claimTypeAllowlist) {
+      return c.json({ error: 'drain_restricted' }, 403);
+    }
 
     const rate = await consumePamReconciliationRateLimit(agent.deviceId);
     if (!rate.allowed) {

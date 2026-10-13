@@ -35,10 +35,11 @@ const candidate = {
   generation: 3,
 };
 
-function buildApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
+function buildApp(role: 'agent' | 'watchdog' = 'agent', claimTypeAllowlist?: string[]): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      claimTypeAllowlist,
       deviceId: '30000000-0000-4000-8000-000000000001',
       orgId: '40000000-0000-4000-8000-000000000001',
       partnerId: '70000000-0000-4000-8000-000000000001',
@@ -52,8 +53,8 @@ function buildApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
   return app;
 }
 
-function request(app: Hono, body: unknown, headers: Record<string, string> = {}) {
-  return app.request('/agents/path-agent/pam/reconciliation-bindings', {
+function request(app: Hono, body: unknown, headers: Record<string, string> = {}, pathAgentId = 'agent-primary') {
+  return app.request(`/agents/${pathAgentId}/pam/reconciliation-bindings`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -167,6 +168,24 @@ describe('PAM reconciliation binding route', () => {
 
     expect(response.status).toBe(429);
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  // #8206 — aligned with pamObservations.ts: the path agent must be the
+  // authenticated agent, and a drain-restricted credential is refused.
+  it('refuses a path agent id other than the authenticated agent', async () => {
+    const response = await request(buildApp(), { protocolVersion: 2, candidates: [candidate] }, {}, 'agent-other');
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: 'Forbidden' });
+    expect(mocks.consumeRateLimit).not.toHaveBeenCalled();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it('refuses a drain-restricted credential (claim-type allowlist)', async () => {
+    const response = await request(buildApp('agent', ['pam_apply_v2']), { protocolVersion: 2, candidates: [candidate] });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: 'drain_restricted' });
+    expect(mocks.consumeRateLimit).not.toHaveBeenCalled();
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
 
