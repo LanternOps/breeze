@@ -21,6 +21,8 @@ import { cn } from '@/lib/utils';
  */
 export type RestorePointBadgeOutcome = {
   status: RestorePointStatus | (string & {});
+  requestId?: string;
+  durationMs?: number | null;
   message?: string | null;
   attemptedAt?: string | null;
   existingPointAgeMinutes?: number | null;
