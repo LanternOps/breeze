@@ -252,6 +252,12 @@ export const devices = pgTable('devices', {
   // advanced by exactly +1 on every org_id change; a caller-written change is
   // refused with 42501. Never set it from app code.
   ownershipEpoch: integer('ownership_epoch').notNull().default(1),
+  // PAM ownership epochs W4 (#8206): the ownership epoch whose identity the
+  // agent has loaded, as last reported on a heartbeat (signed identity
+  // assertion v2). Written only by the heartbeat route, monotonically and never
+  // above ownershipEpoch. PAM dispatch requires it to equal ownershipEpoch;
+  // NULL counts as acknowledged only at ownershipEpoch = 1.
+  agentIdentityEpochAck: integer('agent_identity_epoch_ack'),
   // Revocation-lease capability. 1 = this agent build renews a per-session
   // revocation lease over the command WebSocket and stops the desktop stream
   // when the lease is revoked or expires past its grace window. 0 (default,
