@@ -7,7 +7,7 @@ const m = vi.hoisted(() => ({
   enabled: true,
   ready: vi.fn(),
   trust: vi.fn(),
-  queue: vi.fn(),
+  parked: vi.fn(),
   claim: vi.fn(),
   release: vi.fn(),
   dispatch: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock('../../partnerTrust.commands', async () => {
   }
   return { TrustDeniedError, assertDeviceExecuteAllowed: m.trust };
 });
-vi.mock('../../commandQueue', () => ({ queueCommand: m.queue }));
+vi.mock('../../unassignedPool/deliveryEligibility', () => ({ isParkedDevice: m.parked }));
 vi.mock('../../commandDispatch', () => ({ claimPendingCommandForDelivery: m.claim, releaseClaimedCommandDelivery: m.release }));
 vi.mock('../../agentCommandRelay', () => ({ dispatchCommandToAgent: m.dispatch }));
 
@@ -46,28 +46,32 @@ const row = {
 } as any;
 
 let state: ReturnType<typeof makeDbMock>;
+const inserted = () => state.calls.filter((c) => c.name === 'values').map((c) => c.args[0] as Record<string, any>);
 beforeEach(() => {
   vi.clearAllMocks();
   m.contexts = []; m.inTx = true; m.enabled = true;
   state = makeDbMock(); m.db = state.db;
   m.ready.mockResolvedValue(true);
   m.trust.mockResolvedValue(undefined);
-  m.queue.mockResolvedValue({ id: CMD });
+  m.parked.mockResolvedValue(false);
 });
 
 describe('prepareWorkstationVerification', () => {
   function arrangeHappy() {
-    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: ID }]);
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: CMD }], [{ id: ID }]);
   }
 
   it('persists the command and links it on the caller transaction only', async () => {
     arrangeHappy();
     await prepareWorkstationVerification(row);
     expect(m.contexts).toEqual([]); // no detached context inside start
-    expect(m.queue).toHaveBeenCalledTimes(1);
-    const [deviceId, type, payload, userId, opts] = m.queue.mock.calls[0]!;
-    expect([deviceId, type, userId]).toEqual(['device-1', 'caller_verify', 'user-1']);
-    expect(opts).toEqual({ deliverBy: row.expiresAt, submittedOrgId: 'org-1' });
+    expect(inserted()).toHaveLength(1);
+    const values = inserted()[0]!;
+    expect(values).toMatchObject({
+      deviceId: 'device-1', type: 'caller_verify', targetRole: 'agent', status: 'pending', createdBy: 'user-1',
+      submittedOrgId: 'org-1', deliverBy: row.expiresAt,
+    });
+    const payload = values.payload;
     expect(payload).toMatchObject({
       verificationId: ID, username: 'alex', technicianName: 'Sam', orgName: 'Acme',
       actionLabel: 'reset the password', targetLabel: 'alex@example.com', reverseCode: '7319', timeoutMs: 120_000,
@@ -83,19 +87,19 @@ describe('prepareWorkstationVerification', () => {
   ])('labels %s', async (actionScope, label) => {
     arrangeHappy();
     await prepareWorkstationVerification({ ...row, actionScope });
-    expect(m.queue.mock.calls[0]![2].actionLabel).toBe(label);
+    expect(inserted()[0]!.payload.actionLabel).toBe(label);
   });
 
   it('clamps the helper deadline into the shared bounds', async () => {
     arrangeHappy();
     await prepareWorkstationVerification({ ...row, expiresAt: new Date(created.getTime() + 900_000) });
-    expect(m.queue.mock.calls[0]![2].timeoutMs).toBe(300_000);
+    expect(inserted()[0]!.payload.timeoutMs).toBe(300_000);
   });
 
   it('refuses outside a transaction', async () => {
     m.inTx = false;
     await expect(prepareWorkstationVerification(row)).rejects.toThrow('transaction');
-    expect(m.queue).not.toHaveBeenCalled();
+    expect(inserted()).toHaveLength(0);
   });
 
   it.each([
@@ -103,13 +107,13 @@ describe('prepareWorkstationVerification', () => {
     ['no username', { osUsername: null }, 'device_required'],
   ])('refuses %s', async (_label, patch, code) => {
     await expect(prepareWorkstationVerification({ ...row, ...patch })).rejects.toMatchObject({ code });
-    expect(m.queue).not.toHaveBeenCalled();
+    expect(inserted()).toHaveLength(0);
   });
 
   it('refuses an offline or foreign device as not found', async () => {
     state.results.push([]);
     await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'not_found' });
-    expect(m.queue).not.toHaveBeenCalled();
+    expect(inserted()).toHaveLength(0);
   });
 
   it('refuses a selected device whose helper cannot render the card', async () => {
@@ -117,7 +121,7 @@ describe('prepareWorkstationVerification', () => {
     m.ready.mockResolvedValue(false);
     await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'helper_outdated' });
     expect(m.ready).toHaveBeenCalledWith('org-1', 'device-1', 'alex');
-    expect(m.queue).not.toHaveBeenCalled();
+    expect(inserted()).toHaveLength(0);
   });
 
   it('maps a partner-trust refusal to a request error', async () => {
@@ -126,12 +130,19 @@ describe('prepareWorkstationVerification', () => {
     const err = await prepareWorkstationVerification(row).catch((e) => e);
     expect(err).toBeInstanceOf(CallerVerificationValidationError);
     expect(err.code).toBe('trust_denied');
-    expect(m.queue).not.toHaveBeenCalled();
+    expect(inserted()).toHaveLength(0);
   });
 
   it('fails the start when the verification could not be linked', async () => {
-    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], []);
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }], [{ id: CMD }], []);
     await expect(prepareWorkstationVerification(row)).rejects.toThrow('link');
+  });
+
+  it('refuses a device parked in a holding org', async () => {
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }]);
+    m.parked.mockResolvedValue(true);
+    await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'not_found' });
+    expect(inserted()).toHaveLength(0);
   });
 });
 
@@ -196,7 +207,7 @@ describe('deliverWorkstation', () => {
     m.dispatch.mockResolvedValue({ status: 'infrastructure_error', message: 'redis down' });
     await expect(deliverWorkstation(ID)).rejects.toThrow('redis down');
     expect(m.release).toHaveBeenCalledWith(CMD, executedAt);
-    expect(m.queue).not.toHaveBeenCalled(); // a retry never mints a second command
+    expect(inserted()).toHaveLength(0); // a retry never mints a second command
   });
 
   it('refuses a stored payload that no longer matches the frozen shape', async () => {

@@ -24,7 +24,7 @@ import { deviceCommands, devices, organizations } from '../../../db/schema';
 import { callerVerifications as v } from '../../../db/schema/callerVerification';
 import { callerVerificationEnabled } from '../../../config/env';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../partnerTrust.commands';
-import { queueCommand } from '../../commandQueue';
+import { isParkedDevice } from '../../unassignedPool/deliveryEligibility';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '../../commandDispatch';
 import { dispatchCommandToAgent } from '../../agentCommandRelay';
 import { CallerVerificationValidationError as Invalid } from '../errors';
@@ -93,12 +93,24 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
     timeoutMs: Math.max(WORKSTATION_TIMEOUT_MIN_MS, Math.min(WORKSTATION_TIMEOUT_MAX_MS, lifetimeMs)),
   });
 
-  // queueCommand joins the ambient transaction (its system wrapper is a no-op
-  // inside an open context) and re-applies trust + parked-device checks.
-  const command = await queueCommand(device.id, CALLER_VERIFY_COMMAND, payload, row.initiatedByUserId, {
-    deliverBy: row.expiresAt,
+  // Inserted directly on the caller's transaction. Not through queueCommand:
+  // that module statically reaches the socket registry, which would drag
+  // socket-local dispatch into the global publisher worker's closure. The
+  // checks it would add are made explicitly here: partner trust (above), the
+  // parked-device refusal (below), and created_by is the initiating
+  // technician, a real users row by construction.
+  if (await isParkedDevice(db, device.id)) throw new Invalid('not_found', 'Device not found');
+  const [command] = await db.insert(deviceCommands).values({
+    deviceId: device.id,
+    type: CALLER_VERIFY_COMMAND,
+    targetRole: 'agent',
+    status: 'pending',
+    payload,
+    createdBy: row.initiatedByUserId,
     submittedOrgId: row.orgId,
-  });
+    deliverBy: row.expiresAt,
+  }).returning({ id: deviceCommands.id });
+  if (!command) throw new Error('caller verification command insert returned no row');
   const linked = await db.update(v).set({ agentCommandId: command.id, challengeChoices: choices })
     .where(and(eq(v.id, row.id), eq(v.orgId, row.orgId), eq(v.status, 'pending')))
     .returning({ id: v.id });

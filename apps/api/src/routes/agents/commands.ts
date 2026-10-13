@@ -116,6 +116,9 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // #8385: a vault configuration the helper could not apply is recorded on
   // the vault. Registry-only, like system_cleanup_run.
   'vault_configure',
+  // #6354 W02: caller verification. Registry-only so both transports apply
+  // the human's answer through the same leaf handler.
+  'caller_verify',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
