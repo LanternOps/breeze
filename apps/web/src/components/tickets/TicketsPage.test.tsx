@@ -380,6 +380,112 @@ describe('TicketsPage', () => {
     });
   });
 
+  describe('ticket type filter (hash state, #7900)', () => {
+    it('#type=problem preselects the filter, sends ticketType=problem, and is not read as a selection', async () => {
+      window.location.hash = '#type=problem';
+      mockListApi([healthy, atRisk]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      await waitFor(() => {
+        expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
+      });
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('problem');
+      // Auto-select picks the first row; the `type=` segment must never be the selection.
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      });
+      expect(window.location.hash).toContain('type=problem');
+      expect(window.location.hash).toContain('T-2026-0001');
+    });
+
+    it('keeps selection, sort and type from a combined hash', async () => {
+      window.location.hash = '#T-2026-0002&sort=oldest&type=change';
+      mockListApi([healthy, atRisk]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-risk');
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true');
+      });
+      expect(ticketFetchUrls().at(-1)).toContain('ticketType=change');
+      expect(ticketFetchUrls().at(-1)).toContain('sort=oldest');
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('change');
+    });
+
+    it('ignores an invalid type value (no param, no filter)', async () => {
+      window.location.hash = '#T-2026-0001&type=banana';
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('');
+      expect(ticketFetchUrls().every((u) => !u.includes('ticketType='))).toBe(true);
+    });
+
+    it('the select rewrites the hash (keeping selection and sort), refetches, and notifies the sidebar', async () => {
+      window.location.hash = '#T-2026-0001&sort=newest';
+      mockListApi([healthy, atRisk]);
+      const urlChange = vi.fn();
+      window.addEventListener('breeze:urlchange', urlChange);
+      try {
+        render(<TicketsPage />);
+        await screen.findByTestId('ticket-row-tk-healthy');
+        urlChange.mockClear();
+
+        fireEvent.change(screen.getByTestId('tickets-filter-type'), { target: { value: 'service_request' } });
+
+        await waitFor(() => {
+          expect(ticketFetchUrls().at(-1)).toContain('ticketType=service_request');
+        });
+        expect(window.location.hash).toBe('#T-2026-0001&sort=newest&type=service_request');
+        expect(urlChange).toHaveBeenCalled();
+
+        // "All" must OMIT the param (a blank ticketType= is a 400).
+        fireEvent.change(screen.getByTestId('tickets-filter-type'), { target: { value: '' } });
+        await waitFor(() => {
+          expect(ticketFetchUrls().at(-1)).not.toContain('ticketType');
+        });
+        expect(window.location.hash).toBe('#T-2026-0001&sort=newest');
+      } finally {
+        window.removeEventListener('breeze:urlchange', urlChange);
+      }
+    });
+
+    it('a hashchange (sidebar nav click while on the page) updates the filter without remount', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('');
+
+      window.location.hash = '#type=incident';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tickets-filter-type')).toHaveValue('incident');
+      });
+      await waitFor(() => {
+        expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
+      });
+    });
+
+    it('counts as an active filter and clear-filters removes it from the hash', async () => {
+      window.location.hash = '#type=problem';
+      mockListApi((url) => (url.includes('ticketType=') ? [] : [healthy]));
+      render(<TicketsPage />);
+
+      await screen.findByTestId('tickets-queue-empty');
+      // Filtered-empty (not onboarding) proves filtersActive counts the type filter.
+      expect(screen.queryByTestId('tickets-empty')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('tickets-filters-clear'));
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(ticketFetchUrls().at(-1)).not.toContain('ticketType');
+      expect(window.location.hash).not.toContain('type=');
+    });
+  });
+
   describe('bulk selection', () => {
     it('selecting two rows shows the bulk bar with "2 selected" without changing the workbench selection', async () => {
       mockListApi([healthy, atRisk, breached]);

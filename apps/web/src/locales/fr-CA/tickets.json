@@ -304,7 +304,8 @@
       "normal": "Normal",
       "high": "Élevée",
       "urgent": "Urgent"
-    }
+    },
+    "type": "Type"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Sélectionner..."
@@ -399,7 +400,9 @@
       "title_other": "Supprimer {{count}} billets ?",
       "message": "Cela les cache de toutes les files d’attente ; un administrateur peut les restaurer depuis Archivé.",
       "confirm": "Supprimer les billets"
-    }
+    },
+    "filterByType": "Filtrer par type",
+    "allTypes": "Tous les types"
   },
   "ticketWorkbench": {
     "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
@@ -534,7 +537,8 @@
       "assigned": "Assigné",
       "unassigned": "Non attribué",
       "assignFailed": "Assignation échouée. Réessayez.",
-      "attachmentFailed": "Impossible de téléverser la pièce jointe."
+      "attachmentFailed": "Impossible de téléverser la pièce jointe.",
+      "typeUpdateFailed": "Impossible de mettre à jour le type de ticket."
     },
     "delete": {
       "failed": "Échec de la suppression. Réessayez.",
@@ -544,7 +548,8 @@
       "title": "Supprimer ce billet ?",
       "message": "Cela masque le billet de toutes les files d’attente. Un administrateur peut le restaurer depuis la file d’attente Archivée.",
       "confirm": "Supprimer le billet"
-    }
+    },
+    "typeLabel": "Type de ticket"
   },
   "billingOutcome": {
     "included": "Inclus",
@@ -672,5 +677,65 @@
     },
     "loadError": "Impossible de charger les approbations du client",
     "retry": "Réessayer"
+  },
+  "ticketType": {
+    "incident": "Incident",
+    "service_request": "Demande de service",
+    "problem": "Problème",
+    "change": "Changement"
+  },
+  "ticketLinks": {
+    "title": "Tickets liés",
+    "loading": "Chargement des tickets liés…",
+    "loadFailed": "Impossible de charger les tickets liés.",
+    "empty": "Aucun ticket lié.",
+    "add": "Lier un ticket",
+    "addTitle": "Lier un ticket",
+    "linkType": "Ce ticket…",
+    "addType": {
+      "related": "est lié à",
+      "caused_by": "a été causé par",
+      "resolves": "résout",
+      "duplicate_of": "est un doublon de"
+    },
+    "searchLabel": "Rechercher un ticket dans cette organisation",
+    "searchPlaceholder": "Rechercher par numéro ou sujet",
+    "searching": "Recherche en cours…",
+    "searchFailed": "La recherche a échoué. Réessayez.",
+    "noResults": "Aucun ticket correspondant.",
+    "changePick": "Choisir un autre ticket",
+    "addSubmit": "Ajouter le lien",
+    "adding": "Ajout en cours…",
+    "added": "Ticket lié.",
+    "addFailed": "Impossible d'ajouter le lien.",
+    "removed": "Lien supprimé.",
+    "removeFailed": "Impossible de supprimer le lien.",
+    "remove": "Supprimer le lien vers {{ticket}}",
+    "removeTitle": "Supprimer le lien ?",
+    "removeMessage": "Supprimer le lien vers {{ticket}} ? Les tickets eux-mêmes ne sont pas modifiés.",
+    "removeConfirm": "Supprimer le lien",
+    "linkedIncidents": "{{count}} incidents liés",
+    "linkedIncidents_one": "{{count}} incident lié",
+    "linkedIncidents_other": "{{count}} incidents liés",
+    "group": {
+      "caused_by": "Causé par",
+      "causes": "Cause",
+      "resolves": "Résout",
+      "resolved_by": "Résolu par",
+      "duplicate_of": "Doublon de",
+      "duplicates": "Doublons",
+      "related": "Liés"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Ces tickets sont déjà liés.",
+      "LINK_CYCLE": "Ce lien créerait une chaîne de causes circulaire.",
+      "LINK_LIMIT": "Un ticket peut avoir au plus 50 liens, y compris les liens vers des tickets que vous ne pouvez pas voir. Supprimez un lien avant d'en ajouter un autre.",
+      "SOURCE_ALREADY_DUPLICATE": "Ce ticket est déjà marqué comme doublon d’un autre ticket (que vous ne pouvez peut-être pas voir).",
+      "SOURCE_HAS_DUPLICATES": "D’autres tickets (peut-être des tickets que vous ne pouvez pas voir) sont marqués comme doublons de ce ticket ; il ne peut donc pas être lui-même marqué comme doublon.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Ce ticket est lui-même un doublon. Liez plutôt le ticket d’origine.",
+      "CROSS_ORG": "Les tickets ne peuvent être liés qu’au sein de la même organisation.",
+      "SELF_LINK": "Un ticket ne peut pas être lié à lui-même.",
+      "NOT_FOUND": "Ce ticket est introuvable ou n’est plus disponible."
+    }
   }
 }

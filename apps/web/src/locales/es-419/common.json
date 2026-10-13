@@ -110,7 +110,11 @@
     "timeSync": "Sincronización de hora",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidentes",
+    "ticketsServiceRequests": "Solicitudes de servicio",
+    "ticketsProblems": "Problemas",
+    "ticketsChanges": "Cambios"
   },
   "documentTitles": {
     "dashboard": "Panel",

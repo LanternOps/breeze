@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { replaceUrl, seedRouterHistoryState } from './replaceUrl';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { replaceUrl, seedRouterHistoryState, URL_CHANGE_EVENT } from './replaceUrl';
 
 describe('replaceUrl', () => {
   beforeEach(() => {
@@ -16,6 +16,39 @@ describe('replaceUrl', () => {
     const before = window.history.length;
     replaceUrl('/devices?x=1');
     expect(window.history.length).toBe(before);
+  });
+});
+
+describe('replaceUrl url-change notification', () => {
+  beforeEach(() => {
+    window.history.replaceState({ index: 1, scrollX: 0, scrollY: 0 }, '', '/tickets');
+  });
+
+  it('dispatches breeze:urlchange after the URL is rewritten', () => {
+    expect(URL_CHANGE_EVENT).toBe('breeze:urlchange');
+    let hashSeen: string | null = null;
+    const listener = () => { hashSeen = window.location.hash; };
+    window.addEventListener('breeze:urlchange', listener);
+    try {
+      replaceUrl('/tickets#type=problem');
+    } finally {
+      window.removeEventListener('breeze:urlchange', listener);
+    }
+    // The listener ran after the rewrite, so it saw the new hash.
+    expect(hashSeen).toBe('#type=problem');
+  });
+
+  it('does not fire hashchange or popstate (event is the only signal)', () => {
+    const noisy = vi.fn();
+    window.addEventListener('hashchange', noisy);
+    window.addEventListener('popstate', noisy);
+    try {
+      replaceUrl('/tickets#type=change');
+    } finally {
+      window.removeEventListener('hashchange', noisy);
+      window.removeEventListener('popstate', noisy);
+    }
+    expect(noisy).not.toHaveBeenCalled();
   });
 });
 

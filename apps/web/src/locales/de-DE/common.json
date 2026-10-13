@@ -110,7 +110,11 @@
     "timeSync": "Zeitsynchronisierung",
     "aiModels": "KI-Modelle",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Störungen",
+    "ticketsServiceRequests": "Serviceanfragen",
+    "ticketsProblems": "Probleme",
+    "ticketsChanges": "Änderungen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

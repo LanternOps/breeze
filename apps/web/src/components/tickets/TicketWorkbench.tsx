@@ -22,6 +22,9 @@ import TicketApprovalRail from './TicketApprovalRail';
 import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
+import TicketLinksCard from './TicketLinksCard';
+import TicketTypeChip from './TicketTypeChip';
+import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
 import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
 import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
@@ -212,6 +215,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
+  // #7900: type edits and link add/remove need tickets:write (UX only; the API re-checks).
+  const canWrite = can('tickets', 'write');
   // GET /orgs/organizations returns the full org row for partner/system scope,
   // which carries currency_code (wave 1); the parts card needs it for catalog
   // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
@@ -1206,6 +1211,29 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
           )}
+          {canWrite ? (
+            <select
+              value={ticket.ticketType ?? 'incident'}
+              onChange={(e) => {
+                const ticketType = e.target.value;
+                if (!isTicketType(ticketType) || ticketType === (ticket.ticketType ?? 'incident')) return;
+                void runAction({
+                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ ticketType }) }),
+                  errorFallback: t('ticketWorkbench.toast.typeUpdateFailed'),
+                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+                }).then(() => afterMutation({ ticketType })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+              }}
+              className="rounded-md border bg-background px-2 py-1 text-xs font-medium text-foreground"
+              data-testid="ticket-workbench-type"
+              aria-label={t('ticketWorkbench.typeLabel')}
+            >
+              {TICKET_TYPE_ORDER.map((type) => (
+                <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
+              ))}
+            </select>
+          ) : (
+            <TicketTypeChip type={ticket.ticketType} testId="ticket-workbench-type-chip" />
+          )}
           <select
             value={ticket.priority}
             onChange={(e) => {
@@ -1682,6 +1710,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketLinksCard ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}

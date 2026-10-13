@@ -3,6 +3,7 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import SlaChip from './SlaChip';
+import TicketTypeChip from './TicketTypeChip';
 import { statusConfig, priorityConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { type TicketConfig } from '../../lib/ticketConfigApi';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -138,6 +139,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 )}
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
+              <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
               {!hideOrg && <span className="truncate">{ticket.orgName ?? ''}</span>}
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={ticket} />

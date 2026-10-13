@@ -304,7 +304,8 @@
       "normal": "Normal",
       "high": "Yüksek",
       "urgent": "Acil"
-    }
+    },
+    "type": "Tür"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Seçin…"
@@ -399,7 +400,9 @@
       "title_other": "{{count}} bilet silinsin mi?",
       "message": "Bu, onları tüm kuyruklardan gizler; bir yönetici bunları Arşivlenmiş'ten geri yükleyebilir.",
       "confirm": "Biletleri sil"
-    }
+    },
+    "filterByType": "Türe göre filtrele",
+    "allTypes": "Tüm türler"
   },
   "ticketWorkbench": {
     "notFound": "Bilet bulunamadı. Silinmiş olabilir veya erişiminiz olmayabilir.",
@@ -534,7 +537,8 @@
       "assigned": "Atandı",
       "unassigned": "Atanmamış",
       "assignFailed": "Atama başarısız oldu. Tekrar dene.",
-      "attachmentFailed": "Ek yüklenemedi."
+      "attachmentFailed": "Ek yüklenemedi.",
+      "typeUpdateFailed": "Bilet türü güncellenemedi."
     },
     "delete": {
       "failed": "Silinemedi. Tekrar dene.",
@@ -544,7 +548,8 @@
       "title": "Bu bilet silinsin mi?",
       "message": "Bu, bileti tüm kuyruklardan gizler. Bir yönetici bunu Arşivlendi kuyruğundan geri yükleyebilir.",
       "confirm": "Bileti sil"
-    }
+    },
+    "typeLabel": "Bilet türü"
   },
   "billingOutcome": {
     "included": "Dahil",
@@ -672,5 +677,65 @@
     },
     "loadError": "Müşteri onayları yüklenemedi",
     "retry": "Yeniden dene"
+  },
+  "ticketType": {
+    "incident": "Olay",
+    "service_request": "Hizmet talebi",
+    "problem": "Sorun",
+    "change": "Değişiklik"
+  },
+  "ticketLinks": {
+    "title": "İlişkili biletler",
+    "loading": "İlişkili biletler yükleniyor…",
+    "loadFailed": "İlişkili biletler yüklenemedi.",
+    "empty": "İlişkili bilet yok.",
+    "add": "Bilet bağla",
+    "addTitle": "Bilet bağla",
+    "linkType": "Bu bilet…",
+    "addType": {
+      "related": "şunla ilişkilidir:",
+      "caused_by": "şunun neden olduğu bir sorundur:",
+      "resolves": "şunu çözer:",
+      "duplicate_of": "şunun kopyasıdır:"
+    },
+    "searchLabel": "Bu kuruluştaki bir bileti bul",
+    "searchPlaceholder": "Numara veya konuya göre ara",
+    "searching": "Aranıyor…",
+    "searchFailed": "Arama başarısız oldu. Tekrar deneyin.",
+    "noResults": "Eşleşen bilet yok.",
+    "changePick": "Başka bir bilet seç",
+    "addSubmit": "Bağlantı ekle",
+    "adding": "Ekleniyor…",
+    "added": "Bilet bağlandı.",
+    "addFailed": "Bağlantı eklenemedi.",
+    "removed": "Bağlantı kaldırıldı.",
+    "removeFailed": "Bağlantı kaldırılamadı.",
+    "remove": "{{ticket}} bağlantısını kaldır",
+    "removeTitle": "Bağlantı kaldırılsın mı?",
+    "removeMessage": "{{ticket}} bağlantısı kaldırılsın mı? Biletlerin kendisi değişmez.",
+    "removeConfirm": "Bağlantıyı kaldır",
+    "linkedIncidents": "{{count}} bağlı olay",
+    "linkedIncidents_one": "{{count}} bağlı olay",
+    "linkedIncidents_other": "{{count}} bağlı olay",
+    "group": {
+      "caused_by": "Nedeni",
+      "causes": "Neden olduğu",
+      "resolves": "Çözdüğü",
+      "resolved_by": "Çözen",
+      "duplicate_of": "Şunun kopyası",
+      "duplicates": "Kopyaları",
+      "related": "İlişkili"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Bu biletler zaten bağlı.",
+      "LINK_CYCLE": "Bu bağlantı döngüsel bir neden zinciri oluşturur.",
+      "LINK_LIMIT": "Bir biletin en fazla 50 bağlantısı olabilir; göremediğiniz biletlere olan bağlantılar da buna dahildir. Yenisini eklemeden önce bir bağlantıyı kaldırın.",
+      "SOURCE_ALREADY_DUPLICATE": "Bu bilet zaten başka bir biletin kopyası olarak işaretlenmiş (bu bilet size görünmeyebilir).",
+      "SOURCE_HAS_DUPLICATES": "Diğer biletler (muhtemelen göremedikleriniz) bu biletin kopyası olarak işaretlenmiş; bu nedenle bu bilet kopya olarak işaretlenemez.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Bu bilet zaten bir kopya. Bunun yerine asıl bileti bağlayın.",
+      "CROSS_ORG": "Biletler yalnızca aynı kuruluş içinde bağlanabilir.",
+      "SELF_LINK": "Bir bilet kendisine bağlanamaz.",
+      "NOT_FOUND": "Bu bilet bulunamadı veya artık mevcut değil."
+    }
   }
 }

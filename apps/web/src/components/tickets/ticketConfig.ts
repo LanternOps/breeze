@@ -1,6 +1,6 @@
 // Sourced from the shared Zod enums so the UI can't drift from the validators.
-import type { TicketStatus, TicketPriority, TicketAttachmentMeta } from '@breeze/shared';
-export type { TicketStatus, TicketPriority, TicketAttachmentMeta };
+import type { TicketStatus, TicketPriority, TicketAttachmentMeta, TicketType } from '@breeze/shared';
+export type { TicketStatus, TicketPriority, TicketAttachmentMeta, TicketType };
 
 export interface TicketSummary {
   id: string;
@@ -12,6 +12,8 @@ export interface TicketSummary {
   statusName?: string | null;
   statusColor?: string | null;
   priority: TicketPriority;
+  // #7900. Optional so older payloads/fixtures read as incident (the DB default).
+  ticketType?: TicketType;
   source: string;
   orgId: string;
   orgName: string | null;

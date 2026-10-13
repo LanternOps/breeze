@@ -110,7 +110,11 @@
     "timeSync": "Saat eşitleme",
     "aiModels": "Yapay zeka modelleri",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Olaylar",
+    "ticketsServiceRequests": "Hizmet talepleri",
+    "ticketsProblems": "Sorunlar",
+    "ticketsChanges": "Değişiklikler"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

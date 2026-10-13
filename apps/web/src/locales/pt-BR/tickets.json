@@ -304,7 +304,8 @@
       "normal": "Normal",
       "high": "Alta",
       "urgent": "Urgente"
-    }
+    },
+    "type": "Tipo"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Selecionar…"
@@ -399,7 +400,9 @@
       "title_other": "Excluir {{count}} chamados?",
       "message": "Isso os oculta de todas as filas; um administrador pode restaurá-los em Arquivados.",
       "confirm": "Excluir chamados"
-    }
+    },
+    "filterByType": "Filtrar por tipo",
+    "allTypes": "Todos os tipos"
   },
   "ticketWorkbench": {
     "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",
@@ -534,7 +537,8 @@
       "assigned": "Atribuído",
       "unassigned": "Não atribuído",
       "assignFailed": "Falha ao atribuir. Tente novamente.",
-      "attachmentFailed": "Não foi possível enviar o anexo."
+      "attachmentFailed": "Não foi possível enviar o anexo.",
+      "typeUpdateFailed": "Não foi possível atualizar o tipo do chamado."
     },
     "delete": {
       "failed": "Falha ao excluir. Tente novamente.",
@@ -544,7 +548,8 @@
       "title": "Excluir este chamado?",
       "message": "Isso oculta o chamado de todas as filas. Um administrador pode restaurá-lo na fila Arquivados.",
       "confirm": "Excluir chamado"
-    }
+    },
+    "typeLabel": "Tipo de chamado"
   },
   "billingOutcome": {
     "included": "Incluído",
@@ -672,5 +677,65 @@
     },
     "loadError": "Não foi possível carregar as aprovações do cliente",
     "retry": "Tentar novamente"
+  },
+  "ticketType": {
+    "incident": "Incidente",
+    "service_request": "Solicitação de serviço",
+    "problem": "Problema",
+    "change": "Mudança"
+  },
+  "ticketLinks": {
+    "title": "Chamados relacionados",
+    "loading": "Carregando chamados relacionados…",
+    "loadFailed": "Não foi possível carregar os chamados relacionados.",
+    "empty": "Nenhum chamado relacionado.",
+    "add": "Vincular um chamado",
+    "addTitle": "Vincular um chamado",
+    "linkType": "Este chamado…",
+    "addType": {
+      "related": "está relacionado a",
+      "caused_by": "foi causado por",
+      "resolves": "resolve",
+      "duplicate_of": "é uma duplicata de"
+    },
+    "searchLabel": "Buscar um chamado nesta organização",
+    "searchPlaceholder": "Buscar por número ou assunto",
+    "searching": "Buscando…",
+    "searchFailed": "A busca falhou. Tente novamente.",
+    "noResults": "Nenhum chamado correspondente.",
+    "changePick": "Escolher outro chamado",
+    "addSubmit": "Adicionar vínculo",
+    "adding": "Adicionando…",
+    "added": "Chamado vinculado.",
+    "addFailed": "Não foi possível adicionar o vínculo.",
+    "removed": "Vínculo removido.",
+    "removeFailed": "Não foi possível remover o vínculo.",
+    "remove": "Remover o vínculo com {{ticket}}",
+    "removeTitle": "Remover o vínculo?",
+    "removeMessage": "Remover o vínculo com {{ticket}}? Os chamados em si não são alterados.",
+    "removeConfirm": "Remover vínculo",
+    "linkedIncidents": "{{count}} incidentes vinculados",
+    "linkedIncidents_one": "{{count}} incidente vinculado",
+    "linkedIncidents_other": "{{count}} incidentes vinculados",
+    "group": {
+      "caused_by": "Causado por",
+      "causes": "Causa",
+      "resolves": "Resolve",
+      "resolved_by": "Resolvido por",
+      "duplicate_of": "Duplicata de",
+      "duplicates": "Duplicatas",
+      "related": "Relacionados"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Estes chamados já estão vinculados.",
+      "LINK_CYCLE": "Esse vínculo criaria uma cadeia circular de causas.",
+      "LINK_LIMIT": "Um chamado pode ter no máximo 50 vínculos, incluindo vínculos com chamados que você não pode ver. Remova um vínculo antes de adicionar outro.",
+      "SOURCE_ALREADY_DUPLICATE": "Este chamado já está marcado como duplicata de outro chamado (que pode não estar visível para você).",
+      "SOURCE_HAS_DUPLICATES": "Outros chamados (possivelmente alguns que você não pode ver) estão marcados como duplicatas deste chamado, portanto ele não pode ser marcado como duplicata.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Esse chamado já é uma duplicata. Vincule o chamado original.",
+      "CROSS_ORG": "Os chamados só podem ser vinculados dentro da mesma organização.",
+      "SELF_LINK": "Um chamado não pode ser vinculado a ele mesmo.",
+      "NOT_FOUND": "Esse chamado não foi encontrado ou não está mais disponível."
+    }
   }
 }

@@ -304,7 +304,8 @@
       "normal": "Normale",
       "high": "Alta",
       "urgent": "Urgente"
-    }
+    },
+    "type": "Tipo"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Seleziona..."
@@ -399,7 +400,9 @@
       "title_other": "Eliminare {{count}} ticket?",
       "message": "Li nasconde da tutte le code; un amministratore può ripristinarli da Archiviati.",
       "confirm": "Elimina ticket"
-    }
+    },
+    "filterByType": "Filtra per tipo",
+    "allTypes": "Tutti i tipi"
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trovato. Potrebbe essere stato eliminato oppure potresti non avere accesso.",
@@ -534,7 +537,8 @@
       "assigned": "Assegnato",
       "unassigned": "Non assegnato",
       "assignFailed": "Assegnazione non riuscita. Riprova.",
-      "attachmentFailed": "Impossibile caricare l'allegato."
+      "attachmentFailed": "Impossibile caricare l'allegato.",
+      "typeUpdateFailed": "Impossibile aggiornare il tipo di ticket."
     },
     "delete": {
       "failed": "Eliminazione non riuscita. Riprova.",
@@ -544,7 +548,8 @@
       "title": "Eliminare questo ticket?",
       "message": "Nasconde il ticket da tutte le code. Un amministratore può ripristinarlo dalla coda Archiviati.",
       "confirm": "Elimina ticket"
-    }
+    },
+    "typeLabel": "Tipo di ticket"
   },
   "billingOutcome": {
     "included": "Incluso",
@@ -672,5 +677,65 @@
     },
     "loadError": "Impossibile caricare le approvazioni del cliente",
     "retry": "Riprova"
+  },
+  "ticketType": {
+    "incident": "Incidente",
+    "service_request": "Richiesta di servizio",
+    "problem": "Problema",
+    "change": "Modifica"
+  },
+  "ticketLinks": {
+    "title": "Ticket correlati",
+    "loading": "Caricamento dei ticket correlati…",
+    "loadFailed": "Impossibile caricare i ticket correlati.",
+    "empty": "Nessun ticket correlato.",
+    "add": "Collega un ticket",
+    "addTitle": "Collega un ticket",
+    "linkType": "Questo ticket…",
+    "addType": {
+      "related": "è correlato a",
+      "caused_by": "è stato causato da",
+      "resolves": "risolve",
+      "duplicate_of": "è un duplicato di"
+    },
+    "searchLabel": "Cerca un ticket in questa organizzazione",
+    "searchPlaceholder": "Cerca per numero o oggetto",
+    "searching": "Ricerca in corso…",
+    "searchFailed": "Ricerca non riuscita. Riprova.",
+    "noResults": "Nessun ticket corrispondente.",
+    "changePick": "Scegli un altro ticket",
+    "addSubmit": "Aggiungi collegamento",
+    "adding": "Aggiunta in corso…",
+    "added": "Ticket collegato.",
+    "addFailed": "Impossibile aggiungere il collegamento.",
+    "removed": "Collegamento rimosso.",
+    "removeFailed": "Impossibile rimuovere il collegamento.",
+    "remove": "Rimuovi il collegamento a {{ticket}}",
+    "removeTitle": "Rimuovere il collegamento?",
+    "removeMessage": "Rimuovere il collegamento a {{ticket}}? I ticket in sé non vengono modificati.",
+    "removeConfirm": "Rimuovi collegamento",
+    "linkedIncidents": "{{count}} incidenti collegati",
+    "linkedIncidents_one": "{{count}} incidente collegato",
+    "linkedIncidents_other": "{{count}} incidenti collegati",
+    "group": {
+      "caused_by": "Causato da",
+      "causes": "Causa",
+      "resolves": "Risolve",
+      "resolved_by": "Risolto da",
+      "duplicate_of": "Duplicato di",
+      "duplicates": "Duplicati",
+      "related": "Correlati"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Questi ticket sono già collegati.",
+      "LINK_CYCLE": "Questo collegamento creerebbe una catena di cause circolare.",
+      "LINK_LIMIT": "Un ticket può avere al massimo 50 collegamenti, inclusi quelli verso ticket che non puoi vedere. Rimuovi un collegamento prima di aggiungerne un altro.",
+      "SOURCE_ALREADY_DUPLICATE": "Questo ticket è già contrassegnato come duplicato di un altro ticket (che potrebbe non essere visibile a te).",
+      "SOURCE_HAS_DUPLICATES": "Altri ticket (forse alcuni che non puoi vedere) sono contrassegnati come duplicati di questo ticket, quindi non può essere a sua volta contrassegnato come duplicato.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Quel ticket è a sua volta un duplicato. Collega invece il ticket originale.",
+      "CROSS_ORG": "I ticket possono essere collegati solo all’interno della stessa organizzazione.",
+      "SELF_LINK": "Un ticket non può essere collegato a se stesso.",
+      "NOT_FOUND": "Quel ticket non è stato trovato o non è più disponibile."
+    }
   }
 }
