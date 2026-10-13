@@ -276,14 +276,14 @@ In this version a checkpoint outcome never blocks the action it was requested fo
 
 This table records what was observed when the native System Restore call was tested on real Windows builds. It is **documentation only: Breeze never gates by Windows edition.** At run time the agent checks whether the system library, the entry point, the WMI provider and the enabled state are actually present and reports what it found. A row here does not turn a device on or off.
 
-| OS and build | Provider present | Creation succeeded | Breeze status | Caveat |
+| OS and build | Provider present | Creation succeeded | Status Breeze is designed to report | Caveat |
 |---|---|---|---|---|
-| Windows Server 2022 Standard 21H2, build 20348.5256 | No — `srclient.dll` is absent and the `SystemRestore` WMI class is invalid | No. A restore point has never been creatable on this build | `unsupported` | Tested with a diagnostic tool, not the Breeze agent. Earlier agents also never created a restore point there. |
+| Windows Server 2022 Standard 21H2, build 20348.5256 | No — `srclient.dll` is absent and the `SystemRestore` WMI class is invalid | Not applicable — the provider is absent, so there is nothing to call | `unsupported` | Tested with a diagnostic tool, not the Breeze agent. |
 | Windows 11 Pro 25H2, build 26200.8653 | Yes | Yes, with System Restore enabled on the system drive | `created` when enabled; `skipped_disabled` when System Restore is off (the call returns error 1058, service disabled) | Tested with a diagnostic tool on one physical machine, with the 24-hour limit lifted for the test only. The Breeze agent itself has not yet been run there. |
 | Windows 10 22H2 | Not yet verified | Not yet verified | — | Tracked in [#8265](https://github.com/LanternOps/breeze/issues/8265). |
 | Windows Server 2025 | Not yet verified | Not yet verified | — | Tracked in [#8265](https://github.com/LanternOps/breeze/issues/8265). Do not infer from Server 2022. |
 
-The Breeze status column shows the status Breeze is designed to report for that observation. No agent reports these statuses yet; they will appear with the future agent release.
+The status column is a design mapping, not an observation. No agent reports these statuses yet; they will appear with the future agent release.
 
 ## Assigning a policy
 
