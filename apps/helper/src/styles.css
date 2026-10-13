@@ -2284,3 +2284,23 @@ body {
   font-size: var(--ws-text-12);
   color: var(--ws-text-tertiary);
 }
+
+/* ----------------------------------------------------------
+   Endpoint message card (#8293) - own window, #message/<id>
+   ---------------------------------------------------------- */
+.helper-message-card { --message-accent: var(--accent); height: 100vh; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 16px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--message-accent); border-top-width: 3px; border-radius: var(--radius-md); }
+.helper-message-card.is-critical { border-color: var(--error-text); }
+.helper-message-sender { font-size: 11px; font-weight: 600; color: var(--message-accent);
+  letter-spacing: .02em; }
+.helper-message-title { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.helper-message-body { flex: 1; min-height: 0; overflow-y: auto; font-size: 13px; line-height: 1.45;
+  color: var(--text-secondary); overflow-wrap: anywhere; }
+.helper-message-body p { margin: 0 0 8px; }
+.helper-message-plain { white-space: pre-wrap; }
+.helper-message-host { color: var(--text-muted); font-size: 11px; }
+.helper-message-body a { color: var(--accent); text-decoration: underline; }
+.helper-message-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.helper-message-source { font-size: 11px; color: var(--text-muted); }

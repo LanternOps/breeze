@@ -8,5 +8,6 @@ pub mod client;
 pub mod consent;
 pub mod desktop;
 pub mod envelope;
+pub mod message;
 pub mod token;
 pub mod transport;

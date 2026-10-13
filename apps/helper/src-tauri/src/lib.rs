@@ -811,6 +811,53 @@ fn get_caller_verify_request(
         .ok_or_else(|| "request unavailable".into())
 }
 
+/// What the message card in this window should render. Only the window
+/// labelled `message-<message_id>` may read it.
+#[tauri::command]
+fn get_message_view(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::message::MessageBridge>>,
+    message_id: String,
+) -> Result<crate::ipc::message::MessageView, String> {
+    if !crate::ipc::message::label_matches(window.label(), &message_id) {
+        return Err("wrong window".into());
+    }
+    bridge.view(&message_id).ok_or_else(|| "message unavailable".into())
+}
+
+/// The user clicked Acknowledge. The tracker turns it into at most one
+/// `message_ack`; the card then closes.
+#[tauri::command]
+fn message_ack(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::message::MessageBridge>>,
+    message_id: String,
+) -> Result<(), String> {
+    if !crate::ipc::message::label_matches(window.label(), &message_id) {
+        return Err("wrong window".into());
+    }
+    if !bridge.submit(crate::ipc::message::MsgEvent::Ack(message_id)) {
+        eprintln!("[helper] message_ack: no live IPC session to deliver the acknowledgement");
+    }
+    let _ = window.close();
+    Ok(())
+}
+
+/// The user closed the card without acknowledging (`message_dismissed`, user).
+#[tauri::command]
+fn message_close(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::message::MessageBridge>>,
+    message_id: String,
+) -> Result<(), String> {
+    if !crate::ipc::message::label_matches(window.label(), &message_id) {
+        return Err("wrong window".into());
+    }
+    bridge.submit(crate::ipc::message::MsgEvent::Closed(message_id));
+    let _ = window.close();
+    Ok(())
+}
+
 /// Submit the local user's choice (`<one of the 3 numbers>` | `not_me` |
 /// `timeout`). Single-use; the Rust side enforces the deadline. Closes the
 /// window on success.
@@ -1426,6 +1473,9 @@ pub fn run() {
             get_consent_request,
             get_caller_verify_request,
             submit_caller_verify,
+            get_message_view,
+            message_ack,
+            message_close,
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
@@ -1647,10 +1697,16 @@ pub fn run() {
             let caller_verify =
                 std::sync::Arc::new(crate::ipc::caller_verify::CallerVerifyBridge::default());
             app.manage(caller_verify.clone());
+            // Endpoint messages (#8293): cards live in their own windows;
+            // the tracker is process memory only.
+            let messages =
+                std::sync::Arc::new(crate::ipc::message::MessageBridge::default());
+            app.manage(messages.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
                 bridge,
                 caller_verify,
+                messages,
             };
             let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
                 stop: stop_rx,
@@ -1902,6 +1958,63 @@ mod tests {
         assert!(!include_str!("app_shell.rs").contains("caller_verify"));
         // Main window still built hidden.
         assert!(prod.contains(".visible(false);"));
+    }
+
+    // #8138 + endpoint messaging (#8293): a `message_show` renders in its own
+    // `message-<id>` card window and never shows the main Assist window. The
+    // card windows are built only by the IPC loop's `message_show` arm; the
+    // Tauri commands the card calls never touch `main`.
+    #[test]
+    fn message_show_never_shows_main_window() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let client = prod_of(include_str!("ipc/client.rs"));
+        let shell = include_str!("app_shell.rs");
+
+        // The card is built from exactly one call site: the message_show arm.
+        assert_eq!(client.matches("desktop::show_message_window").count(), 1);
+        assert!(!lib.contains("show_message_window"));
+        assert!(!shell.contains("show_message_window"));
+
+        // The only callers of the main-window show path are the user-driven
+        // ones (manual launch signal, tray, menu, macOS reopen); none of the
+        // message commands or the IPC loop is among them.
+        assert!(!client.contains("show_window("));
+        for cmd in ["fn get_message_view", "fn message_ack", "fn message_close"] {
+            let start = lib.find(cmd).expect(cmd);
+            let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+            let body = &lib[start..end];
+            assert!(!body.contains("show_window"), "{cmd} shows a window");
+            assert!(!body.contains("\"main\""), "{cmd} touches main");
+        }
+        // The message module and the card builder never name the main window.
+        assert!(!prod_of(include_str!("ipc/message.rs")).contains("\"main\""));
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let card = &desktop[desktop.find("pub fn show_message_window").unwrap()..];
+        assert!(!card.contains("\"main\""));
+    }
+
+    // #8138: a plain agent-driven start (`--config`, nothing pending) builds
+    // and shows no window other than the hidden main one -- in particular no
+    // message card, and nothing replayed from disk because the helper stores
+    // nothing about messages.
+    #[test]
+    fn plain_start_with_nothing_pending_shows_no_window() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!launch_requests_window(args(&["--config", "/tmp/helper_config.yaml"])));
+
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        // Setup builds exactly one window (main), hidden.
+        assert_eq!(lib.matches("WebviewWindowBuilder::new").count(), 1);
+        assert!(lib.contains(".visible(false);"));
+        // Setup never builds a card; no message state is read from disk.
+        let message_src = include_str!("ipc/message.rs").split("\nmod tests {").next().unwrap();
+        assert!(!message_src.contains("std::fs"));
+        assert!(!message_src.contains("File::"));
+
+        // A fresh bridge has nothing on screen, so nothing could be built.
+        let bridge = crate::ipc::message::MessageBridge::default();
+        assert!(bridge.tracker().clear().is_empty());
     }
 
     // #8138: window-state must not restore VISIBLE, or a window that was open
