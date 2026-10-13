@@ -1672,6 +1672,40 @@ describe('applyRetestResult manifest promotion (retestPromotesManifestOnlyWhenSa
     dbMocks.updateSets.length = 0;
   });
 
+  it('keeps a current row on the current version when the executor reports an older manifest', async () => {
+    const set = await apply(true, input(N), complete([GRANT_A, GRANT_B], N - 1));
+    expect(set).toMatchObject({ permissionManifestVersion: N, status: 'active', lastErrorCode: null });
+  });
+
+  it('keeps a current row on the current version when reconciliation is unavailable', async () => {
+    const set = await apply(true, input(N), {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion: N,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
+      missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
+    } as unknown as RetestResult);
+    expect(set).toMatchObject({
+      permissionManifestVersion: N,
+      status: 'degraded',
+      lastErrorCode: 'grant_reconciliation_unavailable',
+    });
+  });
+
+  it('by design reports a stale row that lost a previously held role as manifest_stale, not grant_missing', async () => {
+    // The control plane has no record of the previous manifest's role set, so
+    // it cannot tell a revoked old role from a not-yet-granted new one. The
+    // observation is still stored; Graph refuses the affected write with
+    // graph_permission_missing, and the upgrade or next Retest resolves it.
+    const set = await apply(true, input(N - 1), complete([]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1,
+      status: 'active',
+      lastErrorCode: 'manifest_stale',
+      observedGrants: [],
+    });
+  });
+
   it('keeps a stale row stale with manifest_stale (status unchanged) when a required grant is missing', async () => {
     const set = await apply(true, input(N - 1), complete([GRANT_A]));
     expect(set).toMatchObject({

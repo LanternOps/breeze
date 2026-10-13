@@ -474,6 +474,7 @@ describe('POST /m365/customer-graph-actions/connections/:id/upgrade-consent', ()
     mocks.upgrade.mockRejectedValueOnce(Object.assign(new Error('manifest_current'), { code: 'manifest_current' }));
     const response = await post();
     expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Connection operation could not be completed' });
     expect(response.headers.get('set-cookie')).toBeNull();
     expect(mocks.audit).not.toHaveBeenCalled();
   });
