@@ -414,6 +414,12 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
+	// not yet closed, for replay after a helper restart; and the upstream event
+	// sink (nil = post to the API; tests override it).
+	endpointMessages     *messageStore
+	endpointMessagesOnce sync.Once
+	messageEventSink     func(messageEvent)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
 	unifiCollectorWake        atomic.Pointer[func()]
@@ -1670,6 +1676,8 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		log.Info("tray action from user helper", "uid", session.UID, "sessionId", session.SessionID)
 	case ipc.TypeNotifyResult:
 		log.Debug("notify result from user helper", "uid", session.UID)
+	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
+		h.handleMessageEventFromHelper(session, env)
 	case ipc.TypeSASRequest:
 		go func() {
 			defer func() {
@@ -6645,6 +6653,9 @@ func (h *Heartbeat) pushHelperToken(session *sessionbroker.Session, token string
 // SessionAuthenticatedHandler. It pushes the current helper token to a freshly
 // authenticated assist session.
 func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Session) {
+	// Endpoint messaging (#8293): resend still-open cards to a (re)started
+	// Assist helper. Independent of the token push below.
+	h.replayEndpointMessages(session)
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}

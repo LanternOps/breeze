@@ -33,6 +33,12 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// Endpoint messages (#8293) carry source=endpoint_message and take the
+	// persistent-card path; every other payload keeps the legacy toast below.
+	if tools.GetPayloadString(cmd.Payload, "source", "") == endpointMessageSource {
+		return handleEndpointMessage(h, cmd, start)
+	}
+
 	title := tools.GetPayloadString(cmd.Payload, "title", "Breeze Agent")
 	body := tools.GetPayloadString(cmd.Payload, "body", "")
 	icon := tools.GetPayloadString(cmd.Payload, "icon", "")
