@@ -273,6 +273,10 @@ scheduled → running → completed / failed / cancelled
 
 ---
 
+## System Restore checkpoints
+
+Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the new **System Protection** policy setting makes it configurable, and each patch install records the outcome (or **Awaiting the device**) as a badge in the patch history. Agent-side checkpoint creation and reporting roll out with a future agent release. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the status reference and the support matrix. System Restore is not a backup.
+
 ## Rollback
 
 To roll back an installed patch, post to the rollback endpoint:
