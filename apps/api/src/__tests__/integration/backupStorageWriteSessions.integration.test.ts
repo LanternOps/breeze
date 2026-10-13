@@ -931,4 +931,42 @@ describe('write sessions resolve physical keys from the reservation key root', (
     expect((await sessionRow(second.session.id)).revoked_reason).toBe('key_root_invalid');
     expect(calls).toEqual([]);
   });
+
+  runDb('publishing a prefixed id copies the reservation root onto the row; a helper-reported root cannot override it', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const { minted } = await mintWith(t, recordingDeps(calls, P_ROOT));
+    const outcome = await withDbAccessContext(orgContext(t.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+        result: {
+          snapshotId: minted.snapshotId, filesBackedUp: 1, bytesBackedUp: 1,
+          metadata: { storagePrefix: `evil/snapshots/${minted.snapshotId}` },
+          // Not part of the result contract; sent anyway to prove it is ignored.
+          ...({ keyLayout: 'legacy_flat' } as Record<string, unknown>),
+        },
+      }),
+    );
+    expect(outcome.snapshotDbId).not.toBeNull();
+    const rows = (await getTestDb().execute(sql`
+      SELECT key_layout, key_prefix, location FROM backup_snapshots WHERE snapshot_id = ${minted.snapshotId}
+    `)) as unknown as Array<Record<string, unknown>>;
+    expect(rows).toEqual([{ key_layout: 'prefixed_flat', key_prefix: PREFIX, location: `${PREFIX}/snapshots/${minted.snapshotId}` }]);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
+
+    // A second publish of the same id (a redelivered result) updates the row
+    // without touching its root (the immutability trigger would refuse).
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'running' WHERE id = ${t.jobId}`);
+    const again = await withDbAccessContext(orgContext(t.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+        result: { snapshotId: minted.snapshotId, filesBackedUp: 2, bytesBackedUp: 2 },
+      }),
+    );
+    expect(again).toMatchObject({ applied: true, snapshotDbId: outcome.snapshotDbId });
+    const after = (await getTestDb().execute(sql`
+      SELECT key_layout, key_prefix, file_count FROM backup_snapshots WHERE snapshot_id = ${minted.snapshotId}
+    `)) as unknown as Array<Record<string, unknown>>;
+    expect(after).toEqual([{ key_layout: 'prefixed_flat', key_prefix: PREFIX, file_count: 2 }]);
+  });
 });

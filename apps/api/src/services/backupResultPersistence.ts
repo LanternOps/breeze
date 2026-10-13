@@ -34,7 +34,9 @@ import {
   SNAPSHOT_ID_RESERVATION_CONSTRAINT,
   allowedSnapshotIdsForJob,
   isReservedToAnotherJob,
+  loadReservationKeyRoot,
 } from './backupSnapshotIdReservations';
+import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { createAuditLog } from './auditService';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
@@ -1614,8 +1616,27 @@ export async function applyBackupCommandResultToJob(params: {
   // later result can attest it (attestLateAgentResult). An agent-created row
   // keeps the `unattested_legacy` default until the attestation step below
   // decides.
+  //
+  // The key root (#7081) is copied, verbatim, from the id's reservation — the
+  // root its objects were written under — and never from the helper's result
+  // (its keyLayout / metadata.storagePrefix are not consulted). An id with no
+  // reservation (an older helper's) is legacy_flat. Only a NEW row gets it:
+  // the root is immutable, so the update below never sets it. The
+  // backup_snapshots insert trigger refuses a row whose root differs from its
+  // reservation's (as a foreign claim, handled below).
+  const reservationRoot = existingSnapshot ? null : (await loadReservationKeyRoot(providerSnapshotId)) ?? null;
+  const keyRoot = {
+    keyLayout: reservationRoot?.keyLayout ?? 'legacy_flat',
+    keyPrefix: reservationRoot ? reservationRoot.keyPrefix : null,
+  };
+  const recordedRoot = snapshotKeyRootOf(keyRoot);
   const insertValues = {
     ...snapshotValues,
+    ...keyRoot,
+    // `location` of a non-legacy row is derived from its recorded root only.
+    ...(keyRoot.keyLayout !== 'legacy_flat'
+      ? { location: recordedRoot ? physicalKeyFor(recordedRoot, `snapshots/${providerSnapshotId}`) : null }
+      : {}),
     resultProvenance: source === 'reconcile' ? ('reconcile' as const) : ('agent_result' as const),
     ...(source === 'reconcile' ? { integrityStatus: 'unattested' as const } : {}),
   };
@@ -1835,6 +1856,9 @@ export async function applyBackupCommandResultToJob(params: {
             provider: storage.provider,
             providerConfig: storage.providerConfig,
             snapshotId: providerSnapshotId,
+            // The persisted row's recorded root (#7081), never the result's.
+            keyLayout: snapshot.keyLayout,
+            keyPrefix: snapshot.keyPrefix,
             metadata: snapshotMetadata,
             retainUntil: protection.immutableUntil,
           });

@@ -218,6 +218,24 @@ export async function loadReservation(
 }
 
 /**
+ * The (key_layout, key_prefix) pair recorded on an id's reservation (#7081),
+ * verbatim — validate it with snapshotKeyRootOf. Null when no reservation is
+ * visible in the caller's context. Publication copies it onto the snapshot
+ * row; the backup_snapshots insert trigger refuses a row that does not carry
+ * it.
+ */
+export async function loadReservationKeyRoot(
+  snapshotId: string,
+): Promise<{ keyLayout: string; keyPrefix: string | null } | null> {
+  const [row] = await db
+    .select({ keyLayout: backupSnapshotIdReservations.keyLayout, keyPrefix: backupSnapshotIdReservations.keyPrefix })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
  * For storage reconcile (system scope): which of these ids are reserved to
  * another organization, which server-issued ids are still being written or
  * sealed by a live backup job (never adoptable — the job's own result
