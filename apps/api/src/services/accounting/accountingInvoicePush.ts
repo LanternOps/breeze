@@ -83,6 +83,10 @@ import {
 import { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 import { assertPushedLinesMatchSubtotal, computeRemoteVariance, pushedLineAmounts } from './accountingInvoiceTotals';
 import { invoicePushMessages } from './accountingInvoicePushMessages';
+import {
+  invoiceLineText, lineWorkedVsBilled, resolveInvoiceLineDetail, type InvoiceLineDetail,
+} from '@breeze/shared';
+import { tApi } from '../../i18n';
 
 export { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 
@@ -595,24 +599,41 @@ async function persistInvoiceRemoteRef(params: {
 // byte-for-byte (no locale concept for this export) and every other
 // renderer's condition: empty for a non-time-entry line or when the two
 // quantities agree.
-function accountingLineNote(line: { quantity: string; workedMinutes: number | null }): string {
-  if (line.workedMinutes == null) return '';
-  const worked = (line.workedMinutes / 60).toFixed(2);
-  const billed = Number(line.quantity).toFixed(2);
-  if (worked === billed) return '';
-  return ` — ${worked} h worked, ${billed} h billed`;
+//
+// #8604 W03: gated by the invoice's frozen `showWorkedTime`, like every other
+// surface — a withheld disclosure must not reach the accounting copy either.
+function accountingLineNote(
+  line: { quantity: string; workedMinutes: number | null },
+  detail: InvoiceLineDetail,
+): string {
+  if (!detail.showWorkedTime) return '';
+  const wb = lineWorkedVsBilled(line);
+  return wb ? ` — ${wb.worked} h worked, ${wb.billed} h billed` : '';
 }
 
-function buildLinePayload(line: InvoiceLineRow): AccountingInvoiceLinePayload {
+/**
+ * #8604 W03: the line title under the invoice's frozen `showNote`. The shared
+ * `invoiceLineText` decides whether the technician's note is withheld (title
+ * `null`: an unnamed time-entry line with the note off); the generic label is
+ * the English one, matching this export's plain-English convention. When the
+ * note is shown the legacy `name ?? description` resolution is kept verbatim
+ * (no trimming, no '—' placeholder) so default pushes are byte-identical.
+ */
+function accountingLineTitle(line: InvoiceLineRow, detail: InvoiceLineDetail): string {
+  if (invoiceLineText(line, detail).title === null) return tApi('en', 'pdf:invoice.laborLine');
+  return line.name ?? line.description ?? '';
+}
+
+function buildLinePayload(line: InvoiceLineRow, detail: InvoiceLineDetail): AccountingInvoiceLinePayload {
   // Legacy-line fallback mirrors invoiceService/invoicePdf's own
   // name-then-description title resolution.
-  const title = line.name ?? line.description ?? '';
+  const title = accountingLineTitle(line, detail);
   // #7161: a hidden line is KEPT with its description and quantity but pushed
   // at zero — see pushedLineAmounts (accountingInvoiceTotals.ts).
   const { unitPrice, lineTotal } = pushedLineAmounts(line);
   return {
     invoiceLineId: line.id,
-    description: `${title}${accountingLineNote(line)}`,
+    description: `${title}${accountingLineNote(line, detail)}`,
     quantity: line.quantity,
     unitPrice,
     lineTotal,
@@ -761,7 +782,10 @@ export async function pushInvoiceToAccounting(
       // #7161 totals guard, same placement rationale as the currency guard:
       // before any org/item sync, token refresh or provider call. Asserted on
       // the exact line payloads that get pushed below, not a re-derivation.
-      const linePayloads = lines.map(buildLinePayload);
+      // #8604 W03: a pushable invoice is issued, so this reads ONLY the line
+      // detail frozen at issue (partner `null`); pre-W03 rows get the defaults.
+      const lineDetail = resolveInvoiceLineDetail(inv, null);
+      const linePayloads = lines.map((line) => buildLinePayload(line, lineDetail));
       assertPushedLinesMatchSubtotal(inv, linePayloads, label);
 
       // Xero W04: provider-specific refusals that need no I/O (a missing Xero
