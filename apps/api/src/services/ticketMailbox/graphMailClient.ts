@@ -90,10 +90,26 @@ export const GRAPH_DELTA_PAGE_SIZE = 200;
 
 /**
  * Most delta pages one sweep reads before handing back a resumeLink (#8400).
- * Bounds what one sweep holds in memory (bodies and headers are selected) to
- * at most 50 x GRAPH_DELTA_PAGE_SIZE = 10,000 messages.
+ * The sweep budget bounds Graph time only; enqueue and the generation rechecks
+ * run per message afterwards. This cap bounds that local work, and what one
+ * sweep holds in memory (bodies and headers are selected), to at most
+ * 10 x GRAPH_DELTA_PAGE_SIZE = 2,000 messages per mailbox per sweep.
  */
-export const GRAPH_DELTA_MAX_PAGES_PER_SWEEP = 50;
+export const GRAPH_DELTA_MAX_PAGES_PER_SWEEP = 10;
+
+const GRAPH_ORIGIN = new URL(GRAPH).origin;
+
+/**
+ * A stored delta cursor or any nextLink (delta or attachments) is only followed
+ * on the Graph origin: the bearer token goes with every request, so a poisoned
+ * or malformed continuation URL must never be fetched. Fatal, so the mailbox shows the error instead of
+ * retrying (as microsoftIdentity does for its own pagination).
+ */
+function assertGraphContinuationUrl(url: string): void {
+  if (!url.startsWith(`${GRAPH_ORIGIN}/`)) {
+    throw new Error('Graph continuation URL is not on the Graph origin');
+  }
+}
 const DELTA_PREFER = { Prefer: `odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}` };
 
 /** One delta page. Throws GraphSweepBudgetError when the budget ends the request or its body read. */
@@ -205,6 +221,7 @@ export async function listInboxDelta(
   // A continuation URL seen twice in one sweep (including the stored cursor it
   // started from) means Graph is not advancing; resuming would replay the same
   // pages every sweep while looking healthy, so it fails instead.
+  assertGraphContinuationUrl(url);
   const seen = new Set<string>([url]);
 
   for (let pageNo = 0; pageNo < GRAPH_DELTA_MAX_PAGES_PER_SWEEP; pageNo++) {
@@ -222,6 +239,7 @@ export async function listInboxDelta(
     if (Array.isArray(data.value)) messages.push(...data.value);
     const next = data['@odata.nextLink'];
     if (next) {
+      assertGraphContinuationUrl(next);
       if (seen.has(next)) throw new Error('Graph delta nextLink repeated; the round is not advancing');
       seen.add(next);
       url = next;
@@ -282,8 +300,10 @@ export async function listMessageAttachments(
       'attachments',
     );
     if (Array.isArray(data.value)) out.push(...data.value);
-    if (!data['@odata.nextLink']) break;
-    url = data['@odata.nextLink'];
+    const next = data['@odata.nextLink'];
+    if (!next) break;
+    assertGraphContinuationUrl(next);
+    url = next;
   }
   return out;
 }

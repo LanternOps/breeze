@@ -125,6 +125,17 @@ describe('listMessageAttachments (#6688)', () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404, headers: new Map(), text: async () => 'gone' });
     await expect(listMessageAttachments('tok', 'support@a.com', 'm1')).rejects.toMatchObject({ status: 404 });
   });
+
+  it('refuses an attachments nextLink off the Graph origin instead of sending the token there', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Map(),
+      json: async () => ({ value: [{ id: 'a1' }], '@odata.nextLink': 'https://attacker.example/att-page-2' }),
+    });
+    await expect(listMessageAttachments('tok', 'support@a.com', 'm1')).rejects.toThrow(/not on the Graph origin/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('getFileAttachmentBytes (#6688)', () => {

@@ -166,24 +166,30 @@ describe('real fetch failures reach the classifier correctly (#8308)', () => {
       }
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const realFetch = globalThis.fetch;
     try {
       const { port } = server.address() as { port: number };
-      const redirectErr = await listInboxDelta('tok', 'support@example.com', `http://127.0.0.1:${port}/redirect`)
+      // Graph-origin URLs are routed to the local server, so Node's real fetch
+      // produces the errors while the client's origin check still passes.
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) =>
+        realFetch(url.replace('https://graph.microsoft.com', `http://127.0.0.1:${port}`), init));
+
+      const redirectErr = await listInboxDelta('tok', 'support@example.com', 'https://graph.microsoft.com/redirect')
         .catch((e: unknown) => e);
       expect(redirectErr).toBeInstanceOf(TypeError);
       expect(classifyGraphPollError(redirectErr)).toBe('fatal');
 
-      // A malformed stored deltaLink never fixes itself (Node: ERR_INVALID_URL).
-      const invalidUrlErr = await listInboxDelta('tok', 'support@example.com', 'not a url')
-        .catch((e: unknown) => e);
+      // Node's own ERR_INVALID_URL shape is still fatal.
+      const invalidUrlErr = await realFetch('not a url').catch((e: unknown) => e);
       expect(invalidUrlErr).toBeInstanceOf(TypeError);
       expect(classifyGraphPollError(invalidUrlErr)).toBe('fatal');
 
-      const droppedErr = await listInboxDelta('tok', 'support@example.com', `http://127.0.0.1:${port}/drop`)
+      const droppedErr = await listInboxDelta('tok', 'support@example.com', 'https://graph.microsoft.com/drop')
         .catch((e: unknown) => e);
       expect(droppedErr).toBeInstanceOf(TypeError);
       expect(classifyGraphPollError(droppedErr)).toBe('transient');
     } finally {
+      vi.unstubAllGlobals();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -279,7 +285,7 @@ describe('sweep budget for one mailbox (#8308)', () => {
     expect(classifyGraphPollError(err)).toBe('transient');
   });
 
-  it('a many-page first sync completes across sweeps, each sweep within the budget (#8400)', async () => {
+  it('a many-page first sync completes across sweeps, each sweep\'s Graph time within the budget (#8400)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const PAGES = 40;
@@ -333,6 +339,26 @@ describe('sweep budget for one mailbox (#8308)', () => {
       expect(headers.Prefer).toBe(`odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}`);
       expect(headers.Authorization).toBe('Bearer tok');
     }
+  });
+
+  it('never sends the token to a stored cursor off the Graph origin', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    for (const stored of ['http://127.0.0.1:8080/delta', 'https://graph.microsoft.com.evil.example/x', 'not a url']) {
+      const err = await listInboxDelta('tok', 'support@example.com', stored).catch((e: unknown) => e);
+      expect((err as Error).message).toMatch(/not on the Graph origin/);
+      expect(classifyGraphPollError(err)).toBe('fatal');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a nextLink off the Graph origin instead of following it', async () => {
+    const fetchMock = vi.fn(async () => page({ value: [{ id: 'm1' }], '@odata.nextLink': 'https://attacker.example/next' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/not on the Graph origin/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('markRead honours the sweep deadline it is given', async () => {
