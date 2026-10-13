@@ -73,11 +73,13 @@ A line pulled in from a time entry bills the entry's **billed** quantity, not ne
 You choose how time-entry lines print on customer invoices under **Settings → Billing → Documents**, in the **Time entry lines on invoices** group:
 
 - **Show the date worked** (off by default) prints the day each entry was worked under its line. The date is the day the entry started, in your partner time zone.
-- **Show the technician's note** (on by default) prints the time entry's description as the line title. Turn it off and time-entry lines read **Labor** instead; parts, manual lines and other lines keep their text. The note is withheld from the customer portal and the public invoice link too, not just hidden on screen.
-- **Show worked vs billed time** (on by default) prints the "0.50 h worked, 1.00 h billed" note described above.
+- **Show the technician's note** (on by default) prints the time entry's description as the line title. Turn it off and time-entry lines read **Labor** instead; parts, manual lines and other lines keep their text. The note is withheld from the customer portal, the public invoice link and the copy pushed to QuickBooks or Xero too, not just hidden on screen.
+- **Show worked vs billed time** (on by default) prints the "0.50 h worked, 1.00 h billed" note described above, on the invoice and in the line description pushed to QuickBooks or Xero.
 - **Group by day** lists time-entry lines under a heading for each day, with that day's hours and amount, while dates are shown. Each entry still keeps its own line, rate and amount. Lines with no date, such as parts and the block-hours overage line, follow the dated ones.
 
-The defaults print invoices exactly as before. To change these for one invoice, use **Time entry lines** in the draft editor. **Billing default** follows your partner setting. The choice is frozen when the invoice is issued. A later change to your setting never changes an invoice the customer already has, and invoices issued before this setting existed keep their original layout. A reissued invoice starts with the voided invoice's choice.
+With the defaults, the content of an invoice is the same as before: same lines, text and amounts. Two PDF layout fixes apply to every invoice PDF generated from now on. A line title that wraps onto a second line is now measured in its bold font, so the text under it no longer prints over the title's second line. A tall line that doesn't fit at the bottom of a page now moves whole to the next page instead of splitting. An issued invoice's stored PDF never changes. Drafts, and invoices whose PDF hasn't been generated yet, may print slightly differently if they have a wrapping title or a tall line near the bottom of a page.
+
+To change these for one invoice, use **Time entry lines** in the draft editor. **Billing default** follows your partner setting. The choice is frozen when the invoice is issued. A later change to your setting never changes an invoice the customer already has, and invoices issued before this setting existed keep their original layout. A reissued invoice starts with the voided invoice's choice.
 
 ### Line grouping by ticket and category
 
