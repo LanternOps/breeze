@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { and, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { tickets } from '../../db/schema';
 import { createTicketLinkSchema, ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
-import { requireScope, requirePermission } from '../../middleware/auth';
+import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   addTicketLink,
@@ -43,13 +45,29 @@ function handleLinkError(c: { json: (b: unknown, s: number) => Response }, err: 
   throw err;
 }
 
+/**
+ * The same visibility getScopedTicketOr404 applies to one ticket, as a list
+ * condition on the counterpart: the site axis, plus the exact-device axis of a
+ * device-bound AI run (allowedDeviceIds), which ticketSiteScopeCondition does
+ * not cover. Deviceless tickets stay visible on both axes, as there.
+ */
+function counterpartScope(auth: AuthContext): SQL | undefined {
+  const site = ticketSiteScopeCondition(auth);
+  const allowed = auth.allowedDeviceIds;
+  if (!allowed) return site;
+  const device = allowed.length === 0
+    ? isNull(tickets.deviceId)
+    : or(isNull(tickets.deviceId), inArray(tickets.deviceId, allowed))!;
+  return site ? and(site, device) : device;
+}
+
 ticketLinkRoutes.get('/:id/links', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return notFound(c);
   // The counterpart passes the same site axis as the ticket itself; links to a
   // ticket the caller cannot see are omitted, not redacted.
-  return c.json({ data: await listTicketLinks(ticket.id, { counterpartFilter: ticketSiteScopeCondition(auth) }) });
+  return c.json({ data: await listTicketLinks(ticket.id, { counterpartFilter: counterpartScope(auth) }) });
 });
 
 ticketLinkRoutes.post(

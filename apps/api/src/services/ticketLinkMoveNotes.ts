@@ -1,5 +1,5 @@
 import { inArray } from 'drizzle-orm';
-import { ticketLinkLabel, type TicketLinkType } from '@breeze/shared';
+import { ticketLinkLabel, ticketLinkTypeSchema, type TicketLinkType } from '@breeze/shared';
 import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { ticketComments, tickets } from '../db/schema';
 import { emitTicketEvent } from './ticketEvents';
@@ -20,15 +20,37 @@ export interface RemovedTicketLink {
 
 /** Maps raw `DELETE FROM ticket_links … RETURNING` rows (snake_case) to {@link RemovedTicketLink}. */
 export function removedTicketLinksFromRows(rows: unknown): RemovedTicketLink[] {
-  const list = (Array.isArray(rows) ? rows : []) as Array<Record<string, unknown>>;
-  return list.map((r) => ({
-    orgId: String(r.org_id),
-    sourceTicketId: String(r.source_ticket_id),
-    targetTicketId: String(r.target_ticket_id),
-    linkType: r.link_type as TicketLinkType,
-    sourceMoved: r.source_moved === true,
-    targetMoved: r.target_moved === true,
-  }));
+  // Runs inside the move transaction, so a bad shape must not throw (it would
+  // roll the move back over a missing note). It is reported loudly instead:
+  // the links are already deleted, and a dropped note is otherwise invisible.
+  if (rows === undefined || rows === null) return [];
+  if (!Array.isArray(rows)) {
+    reportMalformed('DELETE … RETURNING did not return an array', { kind: typeof rows });
+    return [];
+  }
+  const out: RemovedTicketLink[] = [];
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const linkType = ticketLinkTypeSchema.safeParse(r.link_type);
+    if (typeof r.org_id !== 'string' || typeof r.source_ticket_id !== 'string'
+      || typeof r.target_ticket_id !== 'string' || !linkType.success) {
+      reportMalformed('unexpected DELETE … RETURNING row', { columns: Object.keys(r) });
+      continue;
+    }
+    out.push({
+      orgId: r.org_id,
+      sourceTicketId: r.source_ticket_id,
+      targetTicketId: r.target_ticket_id,
+      linkType: linkType.data,
+      sourceMoved: r.source_moved === true,
+      targetMoved: r.target_moved === true,
+    });
+  }
+  return out;
+}
+
+function reportMalformed(message: string, extra: Record<string, unknown>): void {
+  console.error(`[ticketLinks] org-move link removal: ${message}; notes will be skipped`, extra);
+  captureException(new Error(`[ticketLinks] ${message}`));
 }
 
 interface Note {
@@ -97,7 +119,11 @@ export async function noteTicketLinksRemovedByOrgMove(removed: readonly RemovedT
     const byId = new Map(rows.map((r) => [r.id, r]));
     for (const note of notes) {
       const ticket = byId.get(note.ticketId);
-      if (!ticket || ticket.deletedAt) continue;
+      if (ticket?.deletedAt) continue; // soft-deleted survivor: nothing to tell
+      if (!ticket) {
+        console.warn('[ticketLinks] org-move link-removal note skipped: ticket not found', `ticketId=${note.ticketId}`);
+        continue;
+      }
       const other = byId.get(note.otherTicketId);
       const otherNumber = other ? (other.internalNumber ?? other.ticketNumber) : note.otherTicketId;
       const label = ticketLinkLabel(note.linkType, note.direction).replace(/_/g, ' ');
@@ -124,12 +150,13 @@ export async function noteTicketLinksRemovedByOrgMove(removed: readonly RemovedT
           payload: { linkType: note.linkType, otherTicketId: note.otherTicketId, reason: 'org_move' },
         });
       } catch (err) {
-        console.error('[ticketLinks] failed to write org-move link-removal note', `ticketId=${note.ticketId}`, err);
+        console.error('[ticketLinks] failed to write org-move link-removal note or its event',
+          `ticketId=${note.ticketId}`, `otherTicketId=${note.otherTicketId}`, `linkType=${note.linkType}`, `orgId=${ticket.orgId}`, err);
         captureException(err instanceof Error ? err : new Error(String(err)));
       }
     }
   } catch (err) {
-    console.error('[ticketLinks] failed to load tickets for org-move link-removal notes', err);
+    console.error('[ticketLinks] failed to load tickets for org-move link-removal notes; notes skipped', `noteCount=${notes.length}`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

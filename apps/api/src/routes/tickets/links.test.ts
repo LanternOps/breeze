@@ -90,6 +90,16 @@ describe('GET /tickets/:id/links', () => {
     expect((await app().request(`/tickets/${T1}/links`)).status).toBe(403);
   });
 
+  it('a device-bound caller (allowedDeviceIds) also gets the exact-device axis on counterparts', async () => {
+    svc.listTicketLinks.mockResolvedValue([]);
+    authRef.current = { ...authRef.current!, allowedDeviceIds: ['dev-1'] };
+    expect((await app().request(`/tickets/${T1}/links`)).status).toBe(200);
+    const filter = svc.listTicketLinks.mock.calls[0]![1].counterpartFilter;
+    // Not the bare site condition: the device clause is ANDed onto it.
+    expect(filter).not.toBe('SITE_SCOPE_SQL');
+    expect(filter).toBeTruthy();
+  });
+
   it('401 without auth; 404 (not 403) for a ticket outside the caller scope', async () => {
     authRef.current = null;
     expect((await app().request(`/tickets/${T1}/links`)).status).toBe(401);
