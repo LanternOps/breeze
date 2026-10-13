@@ -512,6 +512,7 @@ const actionLabels: Record<string, string> = {
   'device.recovery_key.rotate': 'Recovery key rotation requested',
   'agent.recovery_keys.submit': 'Recovery keys escrowed',
   'script.execute': 'Script executed',
+  'script.execute_group_target': 'Script run on device groups requested',
   'script.execution.cancel': 'Script execution cancelled',
   // #5022 / W05: written by scriptDispatch.ts at DISPATCH time (result:
   // 'dispatched'), same tense discipline as the agent.command.* rows below —
