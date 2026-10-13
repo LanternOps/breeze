@@ -430,3 +430,29 @@ Monitoring data can accumulate over time, especially on busy systems.
 5. Restart the affected containers after configuration changes.
 
 </Steps>
+
+## Hot-path cache
+
+The agent heartbeat serves a few per-org and global values from small
+in-process caches (agent update config, topology flags, the helper flag, the
+policy probe, the PAM fallback, the manifest trust keyset and delegations, and
+UniFi collector absence). When one API instance writes a change, it announces
+the change over Redis and every other instance drops its entry within about a
+second. The message carries the cache name and an id, never a value.
+
+| Metric | Type | Description |
+|---|---|---|
+| `breeze_hot_path_cache_lookups_total{cache,result}` | Counter | Lookups by `result`: `hit`, `miss`, or `bypass` (a read inside a database transaction, which never uses the cache) |
+| `breeze_hot_path_cache_entries{cache}` | Gauge | Entries currently held, read at scrape time |
+| `breeze_cluster_cache_invalidations_published_total{cache,outcome}` | Counter | Invalidations this instance announced. `outcome` is `published`, `unavailable` (no Redis) or `failed` (error, or no reply within 1 s) |
+| `breeze_cluster_cache_invalidations_received_total{cache,result}` | Counter | Messages handled: `applied`, `self` (this instance's own echo), `unknown_cache` or `malformed` |
+| `breeze_cluster_cache_invalidation_lag_seconds{cache}` | Histogram | Time from publish to apply for `applied` messages |
+| `breeze_cluster_cache_subscriber_up` | Gauge | `1` while this instance is subscribed |
+| `breeze_cluster_cache_resyncs_total` | Counter | Full local cache clears after the subscriber reconnected (messages sent during the gap are lost, so every cache is dropped once) |
+
+A healthy instance shows `breeze_cluster_cache_subscriber_up 1`, a lag p99 well
+under one second, and a flat `published_total{outcome="failed"}`. Without
+Redis the caches still work: each entry simply lives until its TTL (60 seconds,
+or 5 minutes for collector absence), which was the behaviour before
+cross-instance invalidation existed. The subscriber waits at most one second at
+boot and keeps retrying in the background.
