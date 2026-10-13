@@ -1963,7 +1963,21 @@ export async function updateFeatureLink(
     // policy auto-approve belongs on the Update Ring; an unchanged round-trip
     // from a client that loaded this link passes.
     if (existing.featureType === 'patch' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
-      assertNoPolicyApprovalEdits(existing.inlineSettings, updates.inlineSettings);
+      // The read path serves autoApprove from the relational settings row
+      // (assembleInlineSettings), so a stale tab may echo a `true` that the
+      // link JSONB lacks. Treat either source as "already stored".
+      const [relational] = await tx
+        .select({ autoApprove: configPolicyPatchSettings.autoApprove })
+        .from(configPolicyPatchSettings)
+        .where(eq(configPolicyPatchSettings.featureLinkId, existing.id))
+        .limit(1);
+      const storedInline = existing.inlineSettings && typeof existing.inlineSettings === 'object' && !Array.isArray(existing.inlineSettings)
+        ? existing.inlineSettings as Record<string, unknown>
+        : null;
+      const stored = relational?.autoApprove === true
+        ? { ...(storedInline ?? {}), autoApprove: true }
+        : existing.inlineSettings;
+      assertNoPolicyApprovalEdits(stored, updates.inlineSettings);
     }
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {

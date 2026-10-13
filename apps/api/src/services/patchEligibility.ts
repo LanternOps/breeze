@@ -128,10 +128,12 @@ export async function evaluatePatchInstallEligibility(args: {
 
   // Cross-partner ring guard: a config policy could reference a ring owned by
   // a different partner (featurePolicyId is an unconstrained uuid). If the
-  // ring's partner != this device-org's partner, treat it as no ring.
+  // ring's partner != this device-org's partner, it is an invalid reference
+  // and fails closed like any other (#8186): the ring owns the app rules, so
+  // treating it as "no ring" could let a manual approval install a blocked app.
   let ringConfig = args.config;
   if (ringConfig.ringId && ringConfig.ringPartnerId && ringConfig.ringPartnerId !== partnerId) {
-    ringConfig = { ...ringConfig, ringId: null };
+    ringConfig = { ...ringConfig, ringId: null, ringAppRules: [], ringReferenceInvalid: true };
   }
 
   // 1. The device's device_patches rows joined with patch details, pinned to

@@ -262,6 +262,20 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
     }, 'policy-1')).resolves.not.toBeNull();
   });
 
+  it('accepts autoApprove: true round-tripped from the relational settings row the read path serves', async () => {
+    // The read path assembles autoApprove from config_policy_patch_settings,
+    // not the link JSONB; a stale tab re-sending it unchanged must still save.
+    const tx = txWithStoredPatchLink(PATCH_INPUT_NO_APPROVAL);
+    tx.select
+      .mockImplementationOnce(() => selectLimitRows([
+        { id: 'link-1', configPolicyId: 'policy-1', featureType: 'patch', featurePolicyId: null, inlineSettings: PATCH_INPUT_NO_APPROVAL },
+      ]))
+      .mockImplementationOnce(() => selectLimitRows([{ autoApprove: true }]));
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] },
+    }, 'policy-1')).resolves.not.toBeNull();
+  });
+
   it('addFeatureLink rejects any app rule or autoApprove: true before opening a transaction', async () => {
     await expect(addFeatureLink('policy-1', 'patch', null, { ...PATCH_INPUT_NO_APPROVAL, apps: PATCH_INPUT.apps }))
       .rejects.toMatchObject(moved);

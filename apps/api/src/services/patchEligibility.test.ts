@@ -313,6 +313,17 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 
+  it("a ring owned by ANOTHER partner fails closed like any invalid reference — even a partner-wide manual approval is denied (#8186)", async () => {
+    mockEvaluatorReads([row({ patchId: P1 })], [{ patchId: P1, status: 'approved', ringId: null }]);
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, patchIds: [P1],
+      config: ringConfig({ ringPartnerId: 'someone-else', ringAppRules: [] }),
+    });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'ring_reference_invalid' }]);
+    expect(res.ringId).toBeNull();
+  });
+
   it('reports no_ring_resolved when the device matches no ring and nothing is manually approved', async () => {
     mockEvaluatorReads([row({ patchId: P1 })], []);
     const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig({ ringId: null, ringPartnerId: null }) });
