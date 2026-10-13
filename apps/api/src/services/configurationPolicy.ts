@@ -212,6 +212,13 @@ interface ResolvedFeature {
   // AUTHORED the link, and are non-null only when the link came from a parent.
   inheritedFromPolicyId: string | null;
   inheritedFromPolicyName: string | null;
+  /**
+   * `security_agents` only (#6960): the winning link (the PARENT's id when
+   * inherited) and the software policy generated from it, null until one exists.
+   * Absent on every other feature type and on the Breeze Defaults entry.
+   */
+  featureLinkId?: string;
+  managedSoftwarePolicyId?: string | null;
 }
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -2977,6 +2984,7 @@ async function resolveEffectiveConfigWithExecutor(
         inheritedFromPolicyName: row.inherited
           ? inheritedPolicyNames.get(row.linkSourcePolicyId) ?? null
           : null,
+        ...(ft === 'security_agents' ? { featureLinkId: row.featureLinkId, managedSoftwarePolicyId: null } : {}),
       };
     }
 
@@ -2994,6 +3002,22 @@ async function resolveEffectiveConfigWithExecutor(
         featureTypes: new Set([ft]),
       });
     }
+  }
+
+  // #6960: name the software policy generated from the winning security_agents
+  // link. Same partner-wide visibility as the link query above: the generated
+  // policy is owned on the config policy's axis, which may be the partner.
+  const securityAgents = features.security_agents;
+  if (securityAgents?.featureLinkId) {
+    const linkId = securityAgents.featureLinkId;
+    const [managed] = await withDevicePartnerPolicyVisibility(executor, org?.partnerId ?? null, (ex) =>
+      ex
+        .select({ id: softwarePolicies.id })
+        .from(softwarePolicies)
+        .where(eq(softwarePolicies.managedByLinkId, linkId))
+        .limit(1),
+    );
+    securityAgents.managedSoftwarePolicyId = managed?.id ?? null;
   }
 
   const inheritanceChain: EffectiveConfiguration['inheritanceChain'] = Array.from(chainMap.values()).map((entry) => ({
