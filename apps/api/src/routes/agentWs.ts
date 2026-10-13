@@ -71,6 +71,7 @@ import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import { ingestRestorePointOutcome } from '../services/restorePointIngest';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import {
@@ -2548,6 +2549,24 @@ async function processCommandResult(
       return 'handled';
     }
     if (finalized === 'queue_ack') return 'handled';
+
+    // #4757 W06: terminalise the restore-point ledger only now -- the CAS won
+    // and its transaction committed, so a losing duplicate frame never reaches
+    // here. Before the validationError return: the command still went
+    // terminal, so the observation is real. Skipped entirely when the agent
+    // sent no restorePoint (every agent shipped to date). The ingest opens its
+    // own system context and is non-throwing; the catch is the last line
+    // keeping a ledger problem out of an already-recorded command result.
+    if (result.restorePoint !== undefined) {
+      try {
+        await ingestRestorePointOutcome(result.restorePoint, {
+          orgId, deviceId: resolvedDeviceId!, deviceCommandId: result.commandId,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] restore-point ledger ingest failed for ${result.commandId}; result unaffected:`, err);
+        captureException(err);
+      }
+    }
 
     // Derived from the authoritative command state, so it runs only AFTER that
     // state committed. It opens its own system context (automation ledger).

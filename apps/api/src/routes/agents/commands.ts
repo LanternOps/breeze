@@ -23,6 +23,7 @@ import {
   handleCisCommandResult,
 } from './helpers';
 import { captureException } from '../../services/sentry';
+import { ingestRestorePointOutcome } from '../../services/restorePointIngest';
 import { markCommandResultProcessingFailed } from '../../services/commandResultProcessingFailure';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
@@ -696,6 +697,25 @@ commandsRoutes.post(
       return c.json({ success: true });
     }
     if (finalized === 'queue_ack') return c.json({ success: true });
+
+    // #4757 W06: terminalise the restore-point ledger only after the CAS won
+    // (a losing duplicate returned 'stale' above), outside the savepoint so a
+    // ledger failure can never roll the result back, and before the
+    // 'rejected' return (the command still went terminal). The ingest escapes
+    // this request's org-scoped transaction into its own system context, so
+    // the ledger write commits independently of the request's final commit.
+    // Skipped entirely when the agent sent no restorePoint. Never fails the
+    // result.
+    if (data.restorePoint !== undefined) {
+      try {
+        await ingestRestorePointOutcome(data.restorePoint, {
+          orgId: agent.orgId, deviceId, deviceCommandId: commandId,
+        });
+      } catch (err) {
+        console.error(`[agents] restore-point ledger ingest failed for ${commandId}; result unaffected:`, err);
+        captureException(err);
+      }
+    }
 
     // The guarded command transition is the authority, so the automation
     // ledger follows it only once it (and its persistence) succeeded. Before
