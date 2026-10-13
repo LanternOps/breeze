@@ -410,7 +410,9 @@ func Main(v string) {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		// 1 unless the command asked for a specific code (ExitCodeError,
+		// e.g. `service install --strict-watchdog` → 78).
+		os.Exit(exitCodeFor(err))
 	}
 }
 
