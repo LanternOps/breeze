@@ -67,6 +67,25 @@ describe('foldAndPruneLlmEgressEvents (#4120)', () => {
     expect(state.statements[0]).toContain(new Date(now.getTime() - 14 * 86_400_000).toISOString());
   });
 
+  it('throws (rather than silently reporting 0) when the count row is missing', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.execute).mockResolvedValueOnce([] as never);
+    await expect(foldAndPruneLlmEgressEvents({ retentionDays: 30, batchSize: 3, maxBatches: 5 }))
+      .rejects.toThrow(/\[LlmEgressRetention\].*folded/);
+  });
+
+  it('reads batch size and cap from the env knobs', async () => {
+    process.env.LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE = '2';
+    process.env.LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES = '2';
+    try {
+      state.batches.push(2, 2, 2);
+      expect(await foldAndPruneLlmEgressEvents({ retentionDays: 30 })).toMatchObject({ folded: 4, batches: 2, hasMore: true });
+    } finally {
+      delete process.env.LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE;
+      delete process.env.LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES;
+    }
+  });
+
   it('defaults to 90 days and falls back to it on a nonsense env value', async () => {
     expect(LLM_EGRESS_RETENTION_DEFAULT_DAYS).toBe(90);
     process.env.LLM_EGRESS_EVENTS_RETENTION_DAYS = 'forever';

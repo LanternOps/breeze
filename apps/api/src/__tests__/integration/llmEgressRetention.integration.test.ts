@@ -125,7 +125,39 @@ describe('llm_egress_events fold-and-prune (#4120)', () => {
     expect(rollups[0]!.lastEventAt.toISOString()).toBe(new Date(old.getTime() + 10_000).toISOString());
   });
 
-  runDb('rollup rows are org-isolated and die with the org (composite FK cascade)', async () => {
+  runDb('orgs under different partners sharing a day/surface/host keep separate rollups with their own partner', async () => {
+    const a = await seedOrg();
+    const b = await seedOrg();
+    expect(a.partnerId).not.toBe(b.partnerId);
+    const now = new Date('2026-12-26T12:00:00Z');
+    const old = new Date('2026-08-20T08:00:00Z');
+    await insertEvent(a, old);
+    await insertEvent(a, old, { blocked: true });
+    await insertEvent(b, old);
+    // One batch holds both orgs' rows for the same (day, surface, host).
+    await foldAndPruneLlmEgressEvents({ retentionDays: 90, now, batchSize: 1000, maxBatches: 5 });
+
+    const [ra] = await rollupsFor(a.orgId);
+    const [rb] = await rollupsFor(b.orgId);
+    expect(ra).toMatchObject({ partnerId: a.partnerId, requestCount: 2, blockedCount: 1 });
+    expect(rb).toMatchObject({ partnerId: b.partnerId, requestCount: 1, blockedCount: 0 });
+  });
+
+  runDb('the cutoff is exact: a row 1s past the window is folded, 1s inside it stays raw', async () => {
+    const t = await seedOrg();
+    const now = new Date('2026-12-26T12:00:00Z');
+    const cutoff = new Date(now.getTime() - 90 * DAY);
+    await insertEvent(t, new Date(cutoff.getTime() - 1000));
+    await insertEvent(t, new Date(cutoff.getTime() + 1000));
+    await foldAndPruneLlmEgressEvents({ retentionDays: 90, now, batchSize: 1000, maxBatches: 5 });
+
+    expect(await rawCount(t.orgId)).toBe(1);
+    const rollups = await rollupsFor(t.orgId);
+    expect(rollups).toHaveLength(1);
+    expect(rollups[0]!.requestCount).toBe(1);
+  });
+
+  runDb('rollup rows die with the org (composite FK cascade)', async () => {
     const t = await seedOrg();
     const now = new Date('2026-12-26T12:00:00Z');
     await insertEvent(t, new Date('2026-07-01T00:00:00Z'));

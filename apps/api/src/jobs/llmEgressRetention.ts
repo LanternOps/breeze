@@ -32,7 +32,7 @@ import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
-import { resolveRetentionDays, warnOnRetentionBacklog } from './retentionBatch';
+import { parsePositiveIntEnv, resolveRetentionDays, warnOnRetentionBacklog } from './retentionBatch';
 
 const LOG = '[LlmEgressRetention]';
 const QUEUE_NAME = 'llm-egress-retention';
@@ -53,11 +53,21 @@ export interface LlmEgressFoldResult {
   retentionDays: number;
 }
 
-function firstRowCount(result: unknown): number {
-  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] } | null)?.rows;
-  const value = (rows?.[0] as { folded?: unknown } | undefined)?.folded;
-  const n = typeof value === 'string' ? Number.parseInt(value, 10) : Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
+/**
+ * The statement ends in a SELECT of COUNT(*)s, so it always returns exactly one
+ * row (postgres-js `Result` is an Array). `extractRowCount` reads the command
+ * tag, which here would be the SELECT's, so it cannot be used. Anything other
+ * than a finite `folded` is a contract break: throw, so BullMQ marks the run
+ * failed and Sentry sees it, instead of logging "folded 0" after the rows were
+ * already deleted and stopping the loop early.
+ */
+function readFoldedCount(result: unknown): number {
+  const value = (Array.isArray(result) ? (result[0] as { folded?: unknown } | undefined) : undefined)?.folded;
+  const n = typeof value === 'string' ? Number.parseInt(value, 10) : value;
+  if (typeof n !== 'number' || !Number.isFinite(n)) {
+    throw new Error(`${LOG} fold statement returned no usable 'folded' count (got ${JSON.stringify(value)})`);
+  }
+  return n;
 }
 
 export async function foldAndPruneLlmEgressEvents(
@@ -68,8 +78,8 @@ export async function foldAndPruneLlmEgressEvents(
     opts.retentionDays ?? process.env.LLM_EGRESS_EVENTS_RETENTION_DAYS,
     LLM_EGRESS_RETENTION_DEFAULT_DAYS, MAX_RETENTION_DAYS, LOG,
   );
-  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
-  const maxBatches = opts.maxBatches ?? DEFAULT_MAX_BATCHES;
+  const batchSize = opts.batchSize ?? parsePositiveIntEnv(LOG, 'LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE', DEFAULT_BATCH_SIZE);
+  const maxBatches = opts.maxBatches ?? parsePositiveIntEnv(LOG, 'LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES', DEFAULT_MAX_BATCHES);
   // postgres-js does not coerce a JS Date in template params; pass ISO.
   const cutoff = new Date(nowMs - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
@@ -122,7 +132,7 @@ export async function foldAndPruneLlmEgressEvents(
         SELECT (SELECT count(*) FROM moved)::int AS folded,
                (SELECT count(*) FROM upserted)::int AS rollups
       `);
-      return firstRowCount(result);
+      return readFoldedCount(result);
     }, 'llmEgressRetention.batch'));
     folded += last;
     batches += 1;

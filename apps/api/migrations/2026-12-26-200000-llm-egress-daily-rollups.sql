@@ -18,8 +18,10 @@
 -- Dual-axis composite FK to organizations(id, partner_id), DEFERRABLE
 -- INITIALLY IMMEDIATE per the org-merge contract (docs/agents/tenancy-rls.md).
 --
--- breeze_app keeps UPDATE (unlike llm_egress_events): the fold rewrites the
--- counters of an existing day by design.
+-- breeze_app keeps UPDATE (unlike llm_egress_events): the fold runs as
+-- breeze_app and rewrites the counters of an existing day by design. Accepted
+-- trade-off: the summary is less tamper-resistant than the raw audit rows it
+-- replaces; only the system-scoped retention job writes it.
 --
 -- DDL only: no row writes, so no breeze.scope=system election is needed.
 -- Idempotent: IF NOT EXISTS everywhere; the policy is dropped and re-created.
@@ -45,6 +47,16 @@ CREATE TABLE IF NOT EXISTS public.llm_egress_daily_rollups (
 
 CREATE INDEX IF NOT EXISTS llm_egress_daily_rollups_partner_idx
   ON public.llm_egress_daily_rollups (partner_id, day);
+
+-- The fold selects `WHERE created_at < cutoff LIMIT n` across all orgs; the
+-- raw table's only time indexes lead with org_id / partner_id, so without this
+-- every batch (and every night's final short batch) is a full heap scan. BRIN
+-- because the table is insert-ordered by created_at and never UPDATEd; same
+-- choice as 2026-07-29-timeseries-retention-brin.sql (migration-only, not in
+-- the Drizzle schema, matching that precedent). Prod row count is 0 today, so
+-- a plain (non-CONCURRENTLY) build is instant.
+CREATE INDEX IF NOT EXISTS llm_egress_events_created_at_brin_idx
+  ON public.llm_egress_events USING brin (created_at);
 
 ALTER TABLE public.llm_egress_daily_rollups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.llm_egress_daily_rollups FORCE ROW LEVEL SECURITY;

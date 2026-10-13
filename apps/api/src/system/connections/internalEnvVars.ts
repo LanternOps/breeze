@@ -255,7 +255,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // IS_*
   IS_HOSTED: 'shown as report.deployMode',
   // LLM_*
+  LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   LLM_EGRESS_EVENTS_RETENTION_DAYS: 'data retention window',
+  LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   LLM_FIDELITY_API_KEY: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_AUTH_MODE: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_BASE_URL: 'dev script (services/llm/__scripts__)',
