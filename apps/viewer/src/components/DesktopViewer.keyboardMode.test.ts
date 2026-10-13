@@ -48,7 +48,22 @@ describe('DesktopViewer keyboard mode + IME (W06, #8242)', () => {
   it('releases everything held and resets the capture when the mode or capture changes', () => {
     const effect = source.slice(source.indexOf('// Keyboard mode or capture changed'));
     expect(effect.slice(0, 600)).toContain('releaseAllKeysRef.current();');
-    expect(effect.slice(0, 600)).toContain('composition.reset();');
+    expect(effect.slice(0, 600)).toContain('composition.interrupt();');
+  });
+
+  it('tells the operator when composed text was dropped (review fix)', () => {
+    expect(source).toMatch(/onDropped: \(\) => setInputNotice\(/);
+  });
+
+  it('does not let a late prefs load overwrite a mode the operator just picked (review fix)', () => {
+    expect(source).toContain('if (!cancelled && !keyboardModeChosenRef.current) setKeyboardMode(mode);');
+    const handler = source.slice(source.indexOf('const handleKeyboardModeChange = useCallback('));
+    expect(handler.slice(0, 300)).toContain('keyboardModeChosenRef.current = true;');
+  });
+
+  it('resets the capture when view-only switches on (review fix)', () => {
+    const fn = source.slice(source.indexOf('const handleViewOnlyChange = useCallback('));
+    expect(fn.slice(0, 500)).toContain('composition.reset();');
   });
 
   it('resets the capture on focus loss alongside the release', () => {

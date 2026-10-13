@@ -411,7 +411,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [composition] = useState(() => new CompositionCapture({
     sendText: (text) => sendComposedTextRef.current(text),
     enabled: () => captureEnabledRef.current && !viewOnlyRef.current,
+    onDropped: () => setInputNotice('Typed text was not sent — the keyboard mode changed while you were composing.'),
   }));
+  // Set once the operator picks a mode, so the async prefs restore cannot undo it.
+  const keyboardModeChosenRef = useRef(false);
   const viewScalingRef = useRef<ViewScaling>('fit');
   const [viewScaling, setViewScaling] = useState<ViewScaling>('fit');
   const [blockLocalInput, setBlockLocalInput] = useState<BlockLocalInputState>(INITIAL_BLOCK_LOCAL_INPUT);
@@ -2079,7 +2082,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (prev.mode === effectiveMode && prev.capture === captureEnabled) return;
     prevKeyboardRef.current = { mode: effectiveMode, capture: captureEnabled };
     releaseAllKeysRef.current();
-    composition.reset();
+    composition.interrupt();
     // The composition input may just have unmounted with focus (focus falls
     // to <body>): hand it to the media element rather than lose the keyboard.
     const active = document.activeElement;
@@ -2580,6 +2583,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (next === viewOnlyRef.current) return;
     if (next) {
       releaseAllKeys();
+      composition.reset();
       if (webrtcMouseMoveRafRef.current !== null) {
         cancelAnimationFrame(webrtcMouseMoveRafRef.current);
         webrtcMouseMoveRafRef.current = null;
@@ -2659,6 +2663,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, []);
 
   const handleKeyboardModeChange = useCallback((mode: KeyboardMode) => {
+    keyboardModeChosenRef.current = true;
     // The release and capture reset run in the mode-change effect.
     setKeyboardMode(mode);
     void getTauriPrefsStore().then((store) => saveKeyboardMode(store, params.deviceId, mode));
@@ -2684,7 +2689,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (prefs.viewScaling) applyViewScaling(prefs.viewScaling);
       if (prefs.audio) setPendingAudioRestore(true);
       const mode = await loadKeyboardMode(store, params.deviceId);
-      if (!cancelled) setKeyboardMode(mode);
+      if (!cancelled && !keyboardModeChosenRef.current) setKeyboardMode(mode);
     });
     return () => { cancelled = true; };
   }, [params.deviceId, applyViewScaling]);

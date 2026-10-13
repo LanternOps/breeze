@@ -51,6 +51,12 @@ export interface CompositionCaptureDeps {
   sendText: (text: string) => void;
   /** Capture is on: "Type what I see", WebRTC, agent with typeText. */
   enabled: () => boolean;
+  /**
+   * Text the operator composed could not be sent: committed after capture
+   * was switched off ('disabled'), or a composition was cut off by a mode /
+   * capability change ('interrupted'). Never given the text itself.
+   */
+  onDropped?: (reason: 'disabled' | 'interrupted') => void;
 }
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock']);
@@ -64,6 +70,8 @@ export class CompositionCapture {
   private isComposingNow = false;
   private deadPending = false;
   private readonly suppressed = new Set<string>();
+  /** Codes forwarded to the remote and not yet released: their key-up must go out. */
+  private readonly forwarded = new Set<string>();
   /** The last committed text, to drop an insertion that repeats it. */
   private lastCommit: string | null = null;
 
@@ -84,15 +92,16 @@ export class CompositionCapture {
     }
     // A modifier between the dead key and the letter (´ then Shift+E for É)
     // keeps the dead state: it is forwarded, so its release is too.
-    if (this.deadPending && MODIFIER_KEYS.has(e.key)) return 'forward';
+    if (this.deadPending && MODIFIER_KEYS.has(e.key)) return this.forward(e);
     if (this.deadPending) {
       this.deadPending = false;
       if (isPrintable(e.key) && !e.ctrlKey && !e.metaKey) return this.suppress(e);
     }
-    return 'forward';
+    return this.forward(e);
   }
 
   keyUp(e: CaptureKeyEvent): 'forward' | 'suppress' {
+    if (e.code && this.forwarded.delete(e.code)) return 'forward';
     if (e.code && this.suppressed.delete(e.code)) return 'suppress';
     return 'forward';
   }
@@ -130,21 +139,46 @@ export class CompositionCapture {
     return { preventDefault: true };
   }
 
-  /** Forget composing / dead-key state and suppressed keys (blur, mode change). */
+  /**
+   * Forget composing / dead-key state and key bookkeeping (blur, view-only).
+   * Held keys are released by the caller. A composition still open here may
+   * yet be committed by the browser (blur commits it), and is then delivered.
+   */
   reset(): void {
     this.isComposingNow = false;
     this.deadPending = false;
     this.suppressed.clear();
+    this.forwarded.clear();
     this.lastCommit = null;
   }
 
+  /**
+   * reset() for a mode or capability change: an open composition will not be
+   * committed to us any more (the input goes away), so the loss is reported.
+   */
+  interrupt(): void {
+    const wasComposing = this.isComposingNow;
+    this.reset();
+    if (wasComposing) this.deps.onDropped?.('interrupted');
+  }
+
+  private forward(e: CaptureKeyEvent): 'forward' {
+    if (e.code) this.forwarded.add(e.code);
+    return 'forward';
+  }
+
   private suppress(e: CaptureKeyEvent): 'capture' {
-    if (e.code) this.suppressed.add(e.code);
+    // A key already forwarded (held, now auto-repeating inside a composition)
+    // keeps its release: only keys that never reached the remote are suppressed.
+    if (e.code && !this.forwarded.has(e.code)) this.suppressed.add(e.code);
     return 'capture';
   }
 
   private emit(text: string): void {
-    if (!this.deps.enabled()) return;
+    if (!this.deps.enabled()) {
+      this.deps.onDropped?.('disabled');
+      return;
+    }
     this.lastCommit = text;
     this.deps.sendText(text);
   }
@@ -168,7 +202,9 @@ export function deliverComposedText(
       sendControl(JSON.stringify({ type: 'type_text', text: chunk }));
     }
     return true;
-  } catch {
+  } catch (err) {
+    // Error name only: the text is never logged.
+    console.warn('[compositionCapture] type_text send failed:', err instanceof Error ? err.name : typeof err);
     return false;
   }
 }

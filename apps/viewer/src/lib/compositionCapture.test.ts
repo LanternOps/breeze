@@ -7,9 +7,14 @@ function key(partial: Partial<CaptureKeyEvent> & { key: string; code: string }):
 
 function setup(enabled = true) {
   const sent: string[] = [];
+  const dropped: string[] = [];
   let on = enabled;
-  const capture = new CompositionCapture({ sendText: (t) => sent.push(t), enabled: () => on });
-  return { capture, sent, setEnabled: (v: boolean) => { on = v; } };
+  const capture = new CompositionCapture({
+    sendText: (t) => sent.push(t),
+    enabled: () => on,
+    onDropped: (reason) => dropped.push(reason),
+  });
+  return { capture, sent, dropped, setEnabled: (v: boolean) => { on = v; } };
 }
 
 describe('CompositionCapture: disabled', () => {
@@ -101,6 +106,60 @@ describe('CompositionCapture: IME', () => {
     capture.compositionStart();
     expect(capture.keyUp(key({ key: 'Shift', code: 'ShiftLeft', isComposing: true }))).toBe('forward');
     capture.compositionEnd('');
+  });
+});
+
+describe('CompositionCapture: held keys and repeats (review fixes)', () => {
+  it('a forwarded key that auto-repeats inside a composition keeps its release', () => {
+    const { capture } = setup();
+    expect(capture.keyDown(key({ key: 'Shift', code: 'ShiftLeft' }))).toBe('forward');
+    capture.compositionStart();
+    // The repeat is not sent again, but it must not mark the key as captured.
+    expect(capture.keyDown(key({ key: 'Shift', code: 'ShiftLeft', isComposing: true }))).toBe('capture');
+    capture.compositionEnd('あ');
+    expect(capture.keyUp(key({ key: 'Shift', code: 'ShiftLeft' }))).toBe('forward');
+  });
+
+  it('the same dead-key character typed twice is sent twice', () => {
+    const { capture, sent } = setup();
+    for (let i = 0; i < 2; i++) {
+      capture.keyDown(key({ key: 'Dead', code: 'Quote' }));
+      capture.keyDown(key({ key: 'é', code: 'KeyE' }));
+      capture.beforeInput('insertText', 'é', false);
+      capture.keyUp(key({ key: 'e', code: 'KeyE' }));
+      capture.keyUp(key({ key: 'Dead', code: 'Quote' }));
+    }
+    expect(sent).toEqual(['é', 'é']);
+  });
+
+  it('two IME commits of the same text are both sent', () => {
+    const { capture, sent } = setup();
+    capture.compositionStart();
+    capture.compositionEnd('はい');
+    capture.compositionStart();
+    capture.compositionEnd('はい');
+    expect(sent).toEqual(['はい', 'はい']);
+  });
+});
+
+describe('CompositionCapture: dropped text is reported, never silent (review fix)', () => {
+  it('a commit that arrives after capture was switched off is reported', () => {
+    const { capture, sent, dropped, setEnabled } = setup();
+    capture.compositionStart();
+    setEnabled(false);
+    capture.compositionEnd('中');
+    expect(sent).toEqual([]);
+    expect(dropped).toEqual(['disabled']);
+  });
+
+  it('interrupting an open composition is reported; resetting an idle capture is not', () => {
+    const { capture, dropped } = setup();
+    capture.reset();
+    expect(dropped).toEqual([]);
+    capture.compositionStart();
+    capture.interrupt();
+    expect(dropped).toEqual(['interrupted']);
+    expect(capture.composing()).toBe(false);
   });
 });
 
