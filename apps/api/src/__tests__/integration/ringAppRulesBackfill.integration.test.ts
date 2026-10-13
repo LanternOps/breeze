@@ -1,5 +1,5 @@
 /**
- * Replays 2026-12-25-220000-ring-app-rules-backfill.sql (#8184 W02, #8186)
+ * Replays 2026-12-26-230000-ring-app-rules-backfill.sql (#8184 W02, #8186)
  * against seeded pre-backfill rows.
  *
  * The migration moves per-app block/pin rules from configuration-policy patch
@@ -53,7 +53,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-12-25-220000-ring-app-rules-backfill.sql',
+  '../../../migrations/2026-12-26-230000-ring-app-rules-backfill.sql',
 );
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -243,7 +243,7 @@ async function stateFingerprint() {
 /** Columns a clone must carry over unchanged from its source ring. */
 const CLONE_EXCLUDED_COLUMNS = new Set(['id', 'name', 'app_rules', 'created_at', 'updated_at']);
 
-describe('2026-12-25-220000 ring app-rules backfill migration (#8186)', () => {
+describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
   runDb('moves rules A/A′/B/C onto rings, leaves D, never converts policy auto-approve, matches salvage, and is idempotent', async () => {
     const tdb = getTestDb();
     const partner = await createPartner();
