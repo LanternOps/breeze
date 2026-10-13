@@ -90,7 +90,8 @@ func (p Plan) Failed(rec Record, now time.Time, class ErrorClass, rnd func() flo
 // Normalize repairs a record against clock anomalies. A clock behind
 // LastAttemptAt (moved backwards) rebases the pending wait onto now — never a
 // negative wait, never an immediate storm, never a stall as long as the skew.
-// A NextAttemptAt further out than the longest probe is clamped to it.
+// A NextAttemptAt further out than the longest (jittered) probe is clamped to
+// it.
 func (p Plan) Normalize(rec Record, now time.Time) (Record, bool) {
 	changed := false
 	if !rec.LastAttemptAt.IsZero() && now.Before(rec.LastAttemptAt) {
@@ -102,11 +103,17 @@ func (p Plan) Normalize(rec Record, now time.Time) (Record, bool) {
 		rec.NextAttemptAt = now.Add(wait)
 		changed = true
 	}
-	if max := now.Add(p.SecurityProbe); rec.NextAttemptAt.After(max) {
+	if max := now.Add(p.maxWait()); rec.NextAttemptAt.After(max) {
 		rec.NextAttemptAt = max
 		changed = true
 	}
 	return rec, changed
+}
+
+// maxWait is the longest wait the plan itself can produce: the security probe
+// at maximum positive jitter.
+func (p Plan) maxWait() time.Duration {
+	return time.Duration(float64(p.SecurityProbe) * (1 + p.Jitter))
 }
 
 // delay is the un-jittered active-phase delay after attempt n (1-based).

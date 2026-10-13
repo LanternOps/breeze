@@ -182,8 +182,13 @@ func TestPlan_ClockSkewBackwards(t *testing.T) {
 	far := rec
 	far.NextAttemptAt = fixedTime.Add(10 * 365 * 24 * time.Hour)
 	norm, changed = p.Normalize(far, fixedTime)
-	if !changed || norm.NextAttemptAt.Sub(fixedTime) != p.SecurityProbe {
-		t.Fatalf("far-future clamp: changed=%v next=%v", changed, norm.NextAttemptAt.Sub(fixedTime))
+	if want := time.Duration(float64(p.SecurityProbe) * (1 + p.Jitter)); !changed || norm.NextAttemptAt.Sub(fixedTime) != want {
+		t.Fatalf("far-future clamp: changed=%v next=%v want %v", changed, norm.NextAttemptAt.Sub(fixedTime), want)
+	}
+	// A legitimately jittered security probe (up to +20%) is NOT clamped.
+	jittered := fail(p, Record{}, "1.0.0", fixedTime, ClassSignature, func() float64 { return 1 })
+	if _, changed := p.Normalize(jittered, fixedTime); changed {
+		t.Fatal("a max-jitter security probe must not be rewritten on load")
 	}
 	if _, changed := p.Normalize(rec, fixedTime.Add(time.Minute)); changed {
 		t.Fatal("a sane record must not change")
