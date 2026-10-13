@@ -377,7 +377,7 @@ describe('orgMerge worker', () => {
       ).resolves.toBeDefined();
     });
 
-    it('defers erasure behind an evidence hold: deferred audit, no enqueue, no erasure_enqueued audit, ordering cleanup still runs', async () => {
+    it('hands a held shell to (scoped) erasure: deferred-evidence audit, enqueue, erasure_enqueued audit marked scoped, ordering cleanup still runs', async () => {
       findEvidenceHoldMock.mockResolvedValueOnce({
         loserOrgId: 'org-loser',
         partnerId: 'partner-1',
@@ -398,9 +398,14 @@ describe('orgMerge worker', () => {
           details: expect.objectContaining({ stage: 'merge_phase_c', survivorOrgId: 'org-survivor' }),
         }),
       );
-      expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
-      expect(createAuditLogMock).not.toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'org.merge.erasure_enqueued' }),
+      // #8746: the hold scopes the erasure (cascadeDeleteOrg keeps the
+      // evidence); it no longer keeps the shell out of erasure.
+      expect(enqueueTenantErasureMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-loser' }));
+      expect(createAuditLogMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'org.merge.erasure_enqueued',
+          details: expect.objectContaining({ evidenceHoldScoped: true }),
+        }),
       );
       expect(removeOrgFromPartnerOrderMock).toHaveBeenCalledWith('partner-1', 'org-loser');
     });
