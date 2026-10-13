@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { db } from '../db';
 import {
   devices,
+  edrDetections,
   incidentActions,
   incidentEvidence,
   incidents,
@@ -32,6 +33,9 @@ import {
   getIncidentWithOrgCheck,
 } from './incidents.helpers';
 import { incidentActionRoutes } from './incidentActions';
+import { canSeeEdrDetection } from '../services/edrProviders/readScope';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const incidentRoutes = new Hono();
 const requireIncidentRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -84,6 +88,41 @@ incidentRoutes.post(
       }
     } else if (auth.scope === 'system' && !orgId) {
       return c.json({ error: 'orgId is required for system scope' }, 400);
+    }
+
+    // EDR-framework promotion (#8166): unlike the legacy Huntress/S1 legs, the
+    // sourceRef is verified server-side. It must name a live detection visible
+    // in the incident's org through the caller's RLS context, and a
+    // site-restricted caller must be allowed to see it (same D14 rule as the
+    // feed). Otherwise no incident row is written.
+    if (data.sourceType === 'edr_detection') {
+      if (!data.sourceRef || !UUID_RE.test(data.sourceRef)) {
+        return c.json({ error: 'sourceRef must be an EDR detection id' }, 400);
+      }
+      const [detection] = await db
+        .select({
+          id: edrDetections.id,
+          breezeDeviceId: edrDetections.breezeDeviceId,
+          deviceDetachedAt: edrDetections.deviceDetachedAt,
+          lastSiteId: edrDetections.lastSiteId,
+        })
+        .from(edrDetections)
+        .where(and(
+          eq(edrDetections.id, data.sourceRef),
+          eq(edrDetections.orgId, orgId!),
+          isNull(edrDetections.detachedAt),
+        ))
+        .limit(1);
+      if (!detection) {
+        return c.json({ error: 'EDR detection not found' }, 404);
+      }
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      if (perms?.allowedSiteIds) {
+        const allowedDeviceIds = (await resolveSiteAllowedDeviceIds(orgId!, perms)) ?? [];
+        if (!canSeeEdrDetection(detection, { allowedDeviceIds, allowedSiteIds: perms.allowedSiteIds })) {
+          return c.json({ error: 'Access to this detection is denied' }, 403);
+        }
+      }
     }
 
     const detectedAt = data.detectedAt ? new Date(data.detectedAt) : new Date();

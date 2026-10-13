@@ -14,8 +14,11 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+const testPerms = vi.hoisted(() => ({ current: undefined as unknown }));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    if (testPerms.current) c.set('permissions', testPerms.current);
     c.set('auth', {
       user: {
         id: '11111111-1111-4111-8111-111111111111',
@@ -170,6 +173,7 @@ describe('incidentRoutes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    testPerms.current = undefined;
     app = new Hono();
     app.route('/incidents', incidentRoutes);
   });
@@ -297,6 +301,103 @@ describe('incidentRoutes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toMatch(/already been promoted/i);
+  });
+
+  // #8166 A4: EDR-framework promotion verifies sourceRef server-side.
+  describe('promoting an EDR-framework detection (edr_detection)', () => {
+    const DET_ID = '44444444-4444-4444-8444-444444444444';
+    const DEV_A = '55555555-5555-4555-8555-555555555555';
+    const DEV_B = '66666666-6666-4666-8666-666666666666';
+    const SITE_A = '77777777-7777-4777-8777-777777777777';
+    const SITE_B = '88888888-8888-4888-8888-888888888888';
+    const restrictedToSiteA = { permissions: [], partnerId: null, orgId: null, roleId: 'r', scope: 'organization', allowedSiteIds: [SITE_A] };
+    const promote = (sourceRef: unknown) => app.request('/incidents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        title: 'EDR: Trojan detected', classification: 'malware', severity: 'p2',
+        sourceType: 'edr_detection', ...(sourceRef === undefined ? {} : { sourceRef }),
+      }),
+    });
+    const insertReturning = (rows: unknown[]) => {
+      const values = vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+      return values;
+    };
+    const devicesSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+    }) as any;
+    const detection = (over: Record<string, unknown> = {}) => ({
+      id: DET_ID, breezeDeviceId: DEV_A, deviceDetachedAt: null, lastSiteId: null, ...over,
+    });
+    const created = {
+      id: '33333333-3333-4333-8333-333333333333', orgId: '22222222-2222-4222-8222-222222222222',
+      title: 'EDR: Trojan detected', classification: 'malware', severity: 'p2', status: 'detected',
+      relatedAlerts: [], affectedDevices: [], sourceType: 'edr_detection', sourceRef: DET_ID,
+    };
+
+    it('promotes a visible detection (201) with source_type edr_detection', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle(detection()));
+      const values = insertReturning([created]);
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ sourceType: 'edr_detection', sourceRef: DET_ID }));
+    });
+
+    it('a second promotion of the same detection is a 409', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle(detection()));
+      insertReturning([]);
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(409);
+    });
+
+    it('a detection id not visible in the incident org (foreign org / tombstone) is a 404 and inserts nothing', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle(null));
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('a non-uuid or missing sourceRef is a 400 and touches nothing', async () => {
+      for (const ref of ['not-a-uuid', undefined]) {
+        const res = await promote(ref);
+        expect(res.status).toBe(400);
+      }
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller cannot promote another site detection (403, no insert)', async () => {
+      testPerms.current = restrictedToSiteA;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectSingle(detection({ breezeDeviceId: DEV_B })))
+        .mockReturnValueOnce(devicesSelect([{ id: DEV_A, siteId: SITE_A }, { id: DEV_B, siteId: SITE_B }]));
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller cannot promote a detection detached from another site', async () => {
+      testPerms.current = restrictedToSiteA;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectSingle(detection({ breezeDeviceId: null, deviceDetachedAt: new Date(), lastSiteId: SITE_B })))
+        .mockReturnValueOnce(devicesSelect([{ id: DEV_A, siteId: SITE_A }]));
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller may promote a detection on an allowed-site device', async () => {
+      testPerms.current = restrictedToSiteA;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectSingle(detection()))
+        .mockReturnValueOnce(devicesSelect([{ id: DEV_A, siteId: SITE_A }]));
+      insertReturning([created]);
+      const res = await promote(DET_ID);
+      expect(res.status).toBe(201);
+    });
   });
 
   it('rejects high-risk containment without approvalRef', async () => {
