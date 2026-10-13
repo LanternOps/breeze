@@ -79,6 +79,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PUT /api/v1/agents/:id/connections': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/elevationRequests.ts
   'POST /api/v1/agents/:id/elevation-requests': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/messageEvents.ts
+  'POST /api/v1/agents/:id/message-events': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/enrollment.ts
   'POST /api/v1/agents/enroll': 'device credential: Agent enrollment; one-time enrollment secret checked in handler, IP rate limited',
   // routes/agents/eventlogs.ts

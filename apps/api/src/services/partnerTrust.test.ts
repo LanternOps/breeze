@@ -250,6 +250,15 @@ describe('evaluateCapability', () => {
     },
   );
 
+  it('gates notify_user under device_execute for a probation partner but lets lifecycle script_cancel through (#8741)', async () => {
+    // Call site: commandQueue -> assertDeviceExecuteAllowed -> evaluateCapability('device_execute', { commandType }).
+    state.trustState = 'probation';
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'notify_user' }))
+      .toMatchObject({ allow: false, code: 'TRUST_PROBATION', capability: 'device_execute', reason: 'probation_default_deny' });
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'script_cancel' }))
+      .toEqual({ allow: true });
+  });
+
   it('denies custom_sending_domain for a restricted partner with reason "restricted"', async () => {
     state.trustState = 'restricted';
     const d = await evaluateCapability('custom_sending_domain', { partnerId: 'p1' });

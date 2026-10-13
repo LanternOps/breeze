@@ -60,6 +60,11 @@ export interface HelperSettings {
    * the helper settings (120s) — mode changes land within TTL + heartbeat.
    */
   lifecycleMode?: 'auto' | 'always-on' | 'on-demand';
+  /**
+   * Endpoint messaging rollout flag (#8741), resolved per device. Absent on
+   * entries cached before this field existed; consumers treat absent as off.
+   */
+  endpointMessaging?: { enabled: boolean };
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
@@ -67,6 +72,7 @@ const HELPER_DEFAULTS: HelperSettings = {
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
+  endpointMessaging: { enabled: false },
 };
 
 /** #8142: helper's own rules, as the policy set must apply them (raw partner, no role/OS filter). */
@@ -99,6 +105,9 @@ export function helperSettingsFromRows(rows: readonly HelperRankRow[]): HelperSe
     lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
       ? s.lifecycleMode
       : undefined,
+    endpointMessaging: {
+      enabled: (s.endpointMessaging as { enabled?: unknown } | null | undefined)?.enabled === true,
+    },
   };
 }
 

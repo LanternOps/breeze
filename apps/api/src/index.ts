@@ -39,6 +39,7 @@ import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
 import { callerVerificationRoutes } from './routes/callerVerification';
+import { endpointMessageRoutes } from './routes/endpointMessages';
 import { mailboxRoutes } from './routes/tickets/mailboxConnect';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
@@ -799,6 +800,8 @@ api.route('/tickets', ticketsRoutes);
 // span /orgs/:orgId/…, /partner/… and /orgs/:orgId/tickets/:ticketId/…; the
 // router gates itself (404 while CALLER_VERIFICATION_ENABLED !== 'true').
 api.route('/', callerVerificationRoutes);
+// Endpoint messaging (#8741 W1): technician -> end-user message fan-out.
+api.route('/endpoint-messages', endpointMessageRoutes);
 api.route('/catalog', catalogRoutes);
 // Public, token-gated invoice view-and-pay (no auth) — MUST precede the
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
