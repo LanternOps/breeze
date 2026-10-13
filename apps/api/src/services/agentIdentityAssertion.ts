@@ -32,6 +32,8 @@
  * dispatch gate compares with devices.ownership_epoch. v1 bytes and the v1
  * signing decision are unchanged.
  */
+import { sql, type SQL } from 'drizzle-orm';
+import { devices } from '../db/schema';
 import type { IdentityAssertionRejection } from '../routes/agents/schemas';
 import { getActiveSigningKeyId, signBytesWithActiveKey } from './manifestSigning';
 import { getRedis } from './redis';
@@ -144,6 +146,21 @@ export function agentIdentityEpochAckToRecord(
   if (epoch > device.ownershipEpoch) return null;
   if (epoch <= (device.agentIdentityEpochAck ?? 0)) return null;
   return epoch;
+}
+
+/**
+ * The SET expression for devices.agent_identity_epoch_ack given an epoch from
+ * agentIdentityEpochAckToRecord. Evaluated against the row at write time:
+ * monotonic (GREATEST with the stored ack) and never above the row's current
+ * ownership_epoch, so a concurrent move or a stale read cannot lower the ack
+ * or push it past the row.
+ */
+export function agentIdentityEpochAckUpdateSql(epoch: number): SQL {
+  return sql`CASE
+    WHEN ${epoch}::integer <= ${devices.ownershipEpoch}
+      THEN GREATEST(COALESCE(${devices.agentIdentityEpochAck}, 0), ${epoch}::integer)
+    ELSE ${devices.agentIdentityEpochAck}
+  END`;
 }
 
 function secondPrecision(d: Date): string {
