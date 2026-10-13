@@ -225,6 +225,9 @@ export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMer
   const hold = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => findEvidenceHold(loserOrgId)),
   );
+  // Enqueue first: both audits below claim the erasure is under way.
+  const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
+
   if (hold) {
     await writeAudit({
       orgId: null,
@@ -244,8 +247,6 @@ export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMer
       result: 'success',
     });
   }
-
-  const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
 
   await writeAudit({
     orgId: null,

@@ -1109,6 +1109,10 @@ Tests: `orgEvidenceHold.integration.test.ts`,
 
 ### Task 5.1: Hold written in Phase B; Phase C and the sweeper skip held shells
 
+> **Amended by W6-pre (#8746):** the hold scopes erasure; it does not skip it. Phase C, the
+> sweeper and an operator erasure erase the held shell except for its `organizations` row and
+> the retained PAM evidence (chain + ownership-epoch tables). See the plan's "W6-pre shipped" note.
+
 - [ ] **RED:** a merge whose loser holds a *closed* PAM chain. Phase B and C
   are invoked through the engine test hook, which bypasses the still-live
   `blocks-merge` by building the post-Phase-B state with

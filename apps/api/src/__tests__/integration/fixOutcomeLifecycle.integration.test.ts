@@ -706,6 +706,36 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     }
   }, 240_000);
 
+  it('#8746: the scoped-erasure stamp satisfies a request only on a held shell, and a held shell without it stays pending', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 10, 25);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    expect(await sys(() => markFixMemoryStaleForOrgErasure(w.o2))).toBe(w.partnerId);
+    const stamp = `{"evidenceHoldScopedErasureAt":"2026-01-01T00:00:00Z"}`;
+
+    // A stray stamp on a live, un-held org satisfies nothing.
+    await getTestDb().execute(sql`
+      UPDATE organizations SET settings = COALESCE(settings, '{}'::jsonb) || ${stamp}::jsonb WHERE id = ${w.o2}::uuid`);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ rebuildPendingOrgIds: [w.o2] });
+
+    // A held shell whose scoped erasure has not completed (no stamp) stays pending.
+    await getTestDb().execute(sql`
+      UPDATE organizations SET settings = settings - 'evidenceHoldScopedErasureAt' WHERE id = ${w.o2}::uuid`);
+    const [event] = (await getTestDb().execute(sql`
+      INSERT INTO org_merge_events (partner_id, loser_org_id, loser_org_name, survivor_org_id, summary)
+      VALUES (${w.partnerId}::uuid, ${w.o2}::uuid, 'held fixture', ${w.o1}::uuid, '{"tables":{},"warnings":[]}'::jsonb)
+      RETURNING id`)) as unknown as Array<{ id: string }>;
+    await getTestDb().execute(sql`
+      INSERT INTO org_evidence_holds (loser_org_id, partner_id, survivor_org_id, merge_event_id, reason)
+      VALUES (${w.o2}::uuid, ${w.partnerId}::uuid, ${w.o1}::uuid, ${event!.id}::uuid, 'pam_evidence')`);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    const pending = (await partnerMemory(w.partnerId))[0]!;
+    expect(pending).toMatchObject({ rebuildPendingOrgIds: [w.o2] });
+    expect(pending.staleSince).not.toBeNull();
+  });
+
   it('the inline script hook fails the attempt once and the recount pass aggregates it (decision D-a)', async () => {
     const w = await world();
     const a = await attempt(w, w.o1, w.d1, w.partnerScript, new Date(Date.UTC(2026, 10, 24)));

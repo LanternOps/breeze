@@ -273,8 +273,10 @@ function noPendingErasureRequest(): SQL {
  * so such an org counts as gone too; without it the request could not be
  * satisfied until the hold is released. The stamp counts only while the hold
  * row stands (it is an engine-owned key a client cannot write, but a stray
- * copy on a live org must not satisfy anything). Requests live on partner rows only (org rows
- * are deleted by the org cascade), so this needs no partnerScope subquery.
+ * copy on a live org must not satisfy anything).
+ *
+ * Requests live on partner rows only (org rows are deleted by the org
+ * cascade), so this needs no partnerScope subquery.
  * Table-qualified, unaliased: the Drizzle column references render as "fix_memory"."…".
  */
 async function erasedPendingOrgIds(identity: IdentityKey): Promise<string[]> {

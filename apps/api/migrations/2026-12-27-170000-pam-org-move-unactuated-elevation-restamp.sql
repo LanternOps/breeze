@@ -36,11 +36,9 @@
 
 -- ---------------------------------------------------------------------------
 -- 1. Generic device-move restamp: exclude elevation_requests.
--- Body copied VERBATIM from the newest definition,
--- 2026-12-17-130000-device-ownership-epochs.sql (verified with
--- `grep -l 'FUNCTION public.breeze_device_child_orgid_tables' apps/api/migrations/*.sql | sort`
--- — re-run it before committing and re-copy from the newest hit if that
--- changed), with only elevation_requests added to the NOT IN list.
+-- Body copied VERBATIM from the newest prior definition,
+-- 2026-12-17-130000-device-ownership-epochs.sql, with only
+-- elevation_requests added to the NOT IN list.
 -- deviceOwnershipEpochs.integration.test.ts pins the full exclusion set.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()

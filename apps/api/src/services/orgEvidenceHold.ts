@@ -33,7 +33,8 @@ export const EVIDENCE_HOLD_LINEAGE_DEPTH_CAP = 5;
 /**
  * The PAM evidence chain: a merged-away shell that still owns a row in any of
  * these is held, and a hold is released (retention expiry) only once all four
- * are empty for the shell. This is the ONE definition of "the shell still has
+ * are empty for the shell and no other hold names it as survivor (see
+ * releaseEmptyEvidenceHolds). This is the ONE definition of "the shell still has
  * evidence" — writeEvidenceHold and releaseEmptyEvidenceHolds both use it.
  */
 export const EVIDENCE_HOLD_CHAIN_TABLES = [
@@ -130,7 +131,18 @@ export async function writeEvidenceHold(input: {
     ON CONFLICT (loser_org_id) DO NOTHING
     RETURNING reason`));
   if (written[0]) return written[0].reason;
-  return (await findEvidenceHold(input.loserOrgId))?.reason ?? null;
+  const existing = await findEvidenceHold(input.loserOrgId);
+  if (!existing) return null;
+  // A loser is merged away once. A standing hold naming a different survivor
+  // or merge event is not a retry of this Phase B; refuse rather than report
+  // a hold this merge never wrote.
+  if (existing.survivorOrgId !== input.survivorOrgId || existing.mergeEventId !== input.mergeEventId) {
+    throw new Error(
+      `[orgEvidenceHold] org ${input.loserOrgId} is already held for survivor ${existing.survivorOrgId} `
+      + `(merge event ${existing.mergeEventId}); refusing to record a hold for merge event ${input.mergeEventId}`,
+    );
+  }
+  return existing.reason;
 }
 
 /**

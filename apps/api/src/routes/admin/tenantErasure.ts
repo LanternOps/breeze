@@ -113,6 +113,15 @@ tenantErasureRoutes.post(
     // Recorded here so the admin's request shows what was deferred, and
     // returned so the caller is not told the org is gone.
     const evidenceHold = await withSystemDbAccessContext(() => findEvidenceHold(orgId));
+
+    const enqueued = await enqueueTenantErasure({
+      orgId,
+      performedBy: auth.user.id,
+      performedByEmail: auth.user.email,
+      source: 'platform_admin',
+    });
+
+    // Written after the enqueue so it never claims an erasure that failed to queue.
     if (evidenceHold) {
       await createAuditLog({
         orgId: null,
@@ -135,13 +144,6 @@ tenantErasureRoutes.post(
         result: 'success',
       });
     }
-
-    const enqueued = await enqueueTenantErasure({
-      orgId,
-      performedBy: auth.user.id,
-      performedByEmail: auth.user.email,
-      source: 'platform_admin',
-    });
 
     // Audit the enqueue event explicitly. The cascade worker will write
     // its own `tenant.erasure.started` + `tenant.erasure.completed`

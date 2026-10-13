@@ -1510,7 +1510,13 @@ export interface CascadeStats {
   /**
    * Set only when the org is a merged-away shell under an evidence hold
    * (PAM ownership epochs, #8746): everything was erased except its
-   * `organizations` row and EVIDENCE_HOLD_RETAINED_TABLES.
+   * `organizations` row and EVIDENCE_HOLD_RETAINED_TABLES, and the held shells
+   * it is itself the survivor of were left alone.
+   *
+   * Retained rows can still be touched by ON DELETE SET NULL FKs when the walk
+   * deletes a parent the shell owns (users, approval requests, ...). A real
+   * Phase B repoints those parents to the survivor, so a held shell normally
+   * owns none; if one does, the pointer is nulled like any erased reference.
    */
   evidenceHoldScoped?: true;
 }
@@ -1790,9 +1796,10 @@ export async function cascadeDeleteOrg(
 
 /**
  * Module-private so no caller outside the erasure path can pass
- * `releasingEvidenceHold`: the only way to erase a held shell is to erase the
- * survivor that holds it (or to let retention empty its chain, after which
- * the sweeper deletes the hold and the shell erases like any other).
+ * `releasingEvidenceHold`, i.e. request a FULL erasure of a held shell. That
+ * happens only by erasing the survivor that holds it, or once retention has
+ * emptied its chain and the sweeper has deleted the hold (after which the
+ * shell erases like any other). Any direct call erases a held shell scoped.
  */
 async function cascadeDeleteOrgInternal(
   orgId: string,
@@ -2532,9 +2539,10 @@ export async function cascadeDeletePartner(
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.
-  // Held shells (org_evidence_holds) are skipped: each is erased by its
-  // survivor's cascadeDeleteOrg, which releases the hold first. Erasing one
-  // directly would be refused. Holds are partner-pinned, so the lineage's
+  // Held shells (org_evidence_holds) are skipped: each is erased in full by
+  // its survivor's cascadeDeleteOrg, which releases the hold first. Erasing
+  // one directly would only be scoped (it keeps the PAM evidence and the
+  // organizations row) and release nothing. Holds are partner-pinned, so the lineage's
   // root survivor (a live org) is always in this same list, and its cascade
   // reaches every shell behind it, transitively held ones included.
   const orgRows = (await dbModule.withSystemDbAccessContext(() =>

@@ -593,3 +593,73 @@ describe('W6-pre (#8746): an evidence hold scopes erasure to the retained eviden
       SELECT 1 FROM org_evidence_holds WHERE loser_org_id = ${m.loser}::uuid`))).toHaveLength(1);
   });
 });
+
+describe('W6-pre (#8746) review follow-ups', () => {
+  it('a backup legal hold on a held shell refuses its scoped erasure before anything is erased or stamped', async () => {
+    const m = await seedHeldMerge();
+    const actor = await createUser({ partnerId: m.partnerId, orgId: null, email: `slh-${m.loser}@hold.test` });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    await seedLegalHold(m.loser, m.orgs.L!.siteId);
+    const leftoversBefore = await nonRetainedLeftovers(m.loser);
+    expect(Object.keys(leftoversBefore).length).toBeGreaterThan(0);
+    const md5 = await chainMd5(m.loser);
+
+    const refused = await cascadeDeleteOrg(m.loser, actor.id).catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(TenantCascadeRefusalError);
+    expect((refused as TenantCascadeRefusalError).code).toBe('LEGAL_HOLD_ACTIVE');
+    expect(await nonRetainedLeftovers(m.loser)).toEqual(leftoversBefore);
+    expect(await chainMd5(m.loser)).toBe(md5);
+    expect(await scopedMarker(m.loser)).toBeNull();
+    expect(await auditsFor('tenant.erasure.completed', m.loser)).toHaveLength(0);
+  }, 120_000);
+
+  it('a scoped-erased shell is still erased in full (evidence, epochs, row, hold) by its survivor erasure', async () => {
+    const m = await seedHeldMerge();
+    await repointLoserSite(m);
+    const actor = await createUser({ partnerId: m.partnerId, orgId: null, email: `sf-${m.loser}@hold.test` });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    await cascadeDeleteOrg(m.loser, actor.id);
+    expect(await scopedMarker(m.loser)).toBeTruthy();
+
+    await cascadeDeleteOrg(m.survivor, actor.id);
+
+    expect(await orgState(m.loser)).toBeUndefined();
+    expect(await holdRow(m.loser)).toBeUndefined();
+    expect(Object.values(await retainedCounts(m.loser)).every((n) => n === 0)).toBe(true);
+  }, 180_000);
+
+  it('a retention-released, already scoped-erased shell is picked up for full erasure despite its stamp', async () => {
+    const m = await seedHeldMerge();
+    await repointLoserSite(m);
+    const actor = await createUser({ partnerId: m.partnerId, orgId: null, email: `rr-${m.loser}@hold.test` });
+    await writeHold({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId });
+    await cascadeDeleteOrg(m.loser, actor.id);
+    await expireChainByRetention(m.loser);
+    await getTestDb().execute(sql`
+      UPDATE organizations SET updated_at = now() - interval '3 hours' WHERE id = ${m.loser}::uuid`);
+    await (await erasureJobFor(m.loser))?.remove();
+
+    const sweep = await sweepOffboardingTenants();
+    expect(sweep.evidenceHoldsReleased).toBe(1);
+    expect(await holdRow(m.loser)).toBeUndefined();
+    expect(await erasureJobFor(m.loser), 'released shell not handed to full erasure').toBeTruthy();
+
+    // The handed-off erasure is now a full one.
+    const stats = await cascadeDeleteOrg(m.loser, actor.id);
+    expect(stats.evidenceHoldScoped).toBeUndefined();
+    expect(await orgState(m.loser)).toBeUndefined();
+  }, 180_000);
+
+  it('a Phase B retry after the chain has gone still reports the standing hold; a different merge event is refused', async () => {
+    const m = await seedHeldMerge();
+    const input = { partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId };
+    expect(await writeHold(input)).toBe('pam_evidence');
+    await expireChainByRetention(m.loser);
+    // The INSERT's WHERE is now false; the stored reason must come back, not null.
+    expect(await writeHold(input)).toBe('pam_evidence');
+
+    const otherEvent = await markMergedShell({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor });
+    await expect(writeHold({ ...input, mergeEventId: otherEvent })).rejects.toThrow(/already held/);
+    expect(await holdRow(m.loser)).toMatchObject({ merge_event_id: m.mergeEventId });
+  });
+});
