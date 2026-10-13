@@ -4849,7 +4849,7 @@ describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
 
     const body = await beat(V1);
 
-    expect(body.retainState).toEqual(expect.arrayContaining(['pam', 'helper']));
+    expect(body.retainState).toEqual(['pam', 'helper']);
     expect('uacInterceptionEnabled' in body).toBe(false);
     expect('helperEnabled' in body).toBe(false);
     expect('helperSettings' in body).toBe(false);
@@ -4928,7 +4928,7 @@ describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
 
     const body = await beat(V1);
 
-    expect(body.retainState).toEqual(expect.arrayContaining(['pam', 'helper']));
+    expect(body.retainState).toEqual(['pam', 'helper']);
     expect('uacInterceptionEnabled' in body).toBe(false);
     expect('helperEnabled' in body).toBe(false);
     // Decision 13 (approved override of the plan's OD13): no per-device Redis
@@ -4977,7 +4977,7 @@ describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
 
     const body = await beat(V1);
 
-    expect(body.retainState).toEqual(expect.arrayContaining(['pam', 'helper']));
+    expect(body.retainState).toEqual(['pam', 'helper']);
     expect('uacInterceptionEnabled' in body).toBe(false);
     expect('helperEnabled' in body).toBe(false);
   });

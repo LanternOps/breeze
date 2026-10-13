@@ -2451,9 +2451,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   //      org/partner is not the authenticated one (moved, deleted or
   //      re-parented after the org transaction committed). Skip EVERY policy
   //      builder: generating answers here would send defaults/reverts and cache
-  //      them. Helper and PAM read false for this one beat, as they do whenever
-  //      this context fails (the agent reads an absent value as off).
-  //    - hierarchy ERROR: every resolver reads its own (W01's fallback).
+  //      them. For a legacy beat helper and PAM read false for this one beat,
+  //      as they do whenever this context fails (the agent reads an absent
+  //      value as off); a retain-state beat is told to keep both (#8616).
+  //    - hierarchy ERROR: every resolver reads its own (W01's fallback). Their
+  //      values reach legacy beats as before; a retain-state beat retains PAM
+  //      and helper instead, and neither builder writes its device cache.
   //    - set ERROR: the hierarchy is kept (it was read before the failure);
   //      resolvers read their own assignments with it.
   // 2. Every result is written to an outer variable as soon as it is produced.
@@ -2555,7 +2558,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // resolves in memory and only the legacy org flag can read (its own
       // savepoint, on a per-org cache miss). Without it, the whole helper read
       // keeps its own savepoint, as before: a null helper delivers
-      // helperEnabled:false, so its SQL error must not abort the context.
+      // helperEnabled:false to a legacy beat (a retain-state beat retains it),
+      // so its SQL error must not abort the context.
       try {
         const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
         if (cachedHelper) {
