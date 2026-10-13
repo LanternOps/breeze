@@ -58,7 +58,13 @@ describe('index.ts mounts the partner router', () => {
   });
 });
 
-describe('the routers are reachable through the real composition roots', () => {
+// Both tests below `await import(...)` a real composition root inside the test
+// body, so the whole admin-hub / partner-router module graph loads under the
+// test clock. That import grows with the repo and with runner load: the admin
+// hub one hit vitest's 5 s default on a loaded CI shard (#8724) and measures
+// ~11 s on a loaded dev host, so 60 s (the ceiling other heavyweight tests in
+// this package use; cf. #8629 for the same class of flake).
+describe('the routers are reachable through the real composition roots', { timeout: 60_000 }, () => {
   it('the admin hub serves /admin/sending-domains under platformAdminMiddleware', async () => {
     const { adminRoutes } = await import('./admin');
     const app = new Hono();
