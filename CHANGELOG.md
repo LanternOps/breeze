@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Approving a UAC interception request now requires `devices:execute` in addition to `pam:approve` and the current MFA policy. Dashboard and mobile approvals verify the device's current organization and site; denial permissions are unchanged.
+- Approving a UAC interception request now requires `devices:execute` in addition to `pam:approve`. The approvals inbox/mobile path newly enforces the dashboard's MFA session gate: when two-factor authentication is enabled, a session without the qualifying MFA claim receives 403. Both paths verify the device's current organization and site; denial permissions are unchanged.
 
 - Network checks are authored under **Alerts → Monitors**, with asset binding; **Network** keeps Assets, SNMP Templates and Results. Interactive conversion adopts supported legacy probes, preserves results and open alerts, and supports ledger retirement/Undo while the network runtime remains. Startup sweeps exclude network sources.
 - Legacy network check create/update and alert-rule writes return `410 Gone`; unmanaged deletion uses ledger retirement. Device **Disable SNMP monitoring** is SNMP-only; the old monitoring asset DELETE refuses active checks with 409. Retained bound checks block asset deletion.
