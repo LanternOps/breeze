@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   sendEmail: vi.fn(async (_p: Record<string, unknown>) => undefined),
   createNotification: vi.fn(async (_i: Record<string, unknown>) => 'n-1' as string | null),
   redisSet: vi.fn(async (..._a: unknown[]) => 'OK' as string | null),
+  redisEval: vi.fn(async (..._a: unknown[]) => 1),
+  emailServiceAvailable: true,
   redisAvailable: true,
   loadUserCandidate: vi.fn(async (id: string) => ({ userId: id, partnerId: 'p-1', status: 'active', email: `${id}@msp.example` })),
 }));
@@ -23,9 +25,9 @@ const h = vi.hoisted(() => ({
 vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn() }));
 vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
-  getRedis: vi.fn(() => (h.redisAvailable ? { set: h.redisSet } : null)),
+  getRedis: vi.fn(() => (h.redisAvailable ? { set: h.redisSet, eval: h.redisEval } : null)),
 }));
-vi.mock('../services/email', () => ({ getEmailService: () => ({ sendEmail: h.sendEmail }) }));
+vi.mock('../services/email', () => ({ getEmailService: () => (h.emailServiceAvailable ? { sendEmail: h.sendEmail } : null) }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({ resolveOutboundMailbox: vi.fn(async () => null) }));
@@ -122,6 +124,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.tablesRead.length = 0;
   h.redisAvailable = true;
+  h.emailServiceAvailable = true;
   h.redisSet.mockResolvedValue('OK');
   h.createNotification.mockResolvedValue('n-1');
 });
@@ -264,6 +267,29 @@ describe('ticket.approval_requested', () => {
     h.sendEmail.mockRejectedValueOnce(new Error('bounce'));
     await expect(handleTicketEvent(requested())).resolves.toBeUndefined();
     expect(h.sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('when EVERY send fails, the throttle claim is released and the job throws so BullMQ retries', async () => {
+    seed();
+    h.sendEmail.mockRejectedValue(new Error('smtp down'));
+    await expect(handleTicketEvent(requested())).rejects.toThrow(/approval email/);
+    // Compare-and-delete: only this event's own claim is released.
+    expect(h.redisEval).toHaveBeenCalledWith(expect.stringContaining('del'), 1, `ticket-approval-notify:${REQ}`, 'evt-r1');
+    h.sendEmail.mockReset();
+    h.sendEmail.mockResolvedValue(undefined);
+  });
+
+  it('with no email transport configured the claim is released and the job throws', async () => {
+    seed();
+    h.emailServiceAvailable = false;
+    await expect(handleTicketEvent(requested())).rejects.toThrow(/approval email/);
+    expect(h.redisEval).toHaveBeenCalled();
+  });
+
+  it('the notify copy never claims a billing contact exists', async () => {
+    seed({ request: { approverEmails: [] } });
+    await handleTicketEvent(requested());
+    expect(sent()[0]!.html).not.toMatch(/billing contact/i);
   });
 
   it('an after-hours request states the work in words, with no budget figures', async () => {

@@ -45,6 +45,7 @@ import { attachWorkerObservability } from './workerObservability';
 import { createNotification } from '../services/userNotifications';
 import {
   admitApprovalMail,
+  releaseApprovalMail,
   collectApprovalDecided,
   collectApprovalRequested,
   type ApprovalCollected,
@@ -949,7 +950,23 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   }
 
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
-  await sendEmailPayloads(emailPayloads);
+  const delivery = await sendEmailPayloads(emailPayloads);
+
+  // Approval mail is best-effort per recipient, so a failure would otherwise
+  // be swallowed while the throttle claim stays held — and the approver would
+  // never hear of the request (or, for a decision, the 7-day dedupe key would
+  // suppress it for good). When NOTHING was delivered, release this event's
+  // claim and throw so BullMQ retries; no recipient got a copy, so a retry
+  // duplicates nothing. A partial failure keeps the claim and is reported.
+  if (approvalThrottle && delivery.attempted > 0) {
+    if (delivery.delivered === 0) {
+      await releaseApprovalMail(approvalThrottle, eventId);
+      throw new Error(`[TicketNotify] every approval email failed (${event.type}, requestId=${event.type === 'ticket.approval_requested' || event.type === 'ticket.approval_decided' ? event.payload.requestId : ''})`);
+    }
+    if (delivery.delivered < delivery.attempted) {
+      captureException(new Error(`[TicketNotify] ${delivery.attempted - delivery.delivered} of ${delivery.attempted} approval emails failed (${event.type})`));
+    }
+  }
 
   // Pushover after email, best-effort: a slow or failing Pushover call never
   // delays or suppresses the email, and never fails the job.
@@ -983,15 +1000,17 @@ function approvalMailPayload(m: ApprovalMail): EmailPayload {
   };
 }
 
-async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
-  if (emailPayloads.length === 0) return;
+/** `delivered` counts payloads handed to a transport; a missing transport or a swallowed best-effort error is not delivered. */
+async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attempted: number; delivered: number }> {
+  if (emailPayloads.length === 0) return { attempted: 0, delivered: 0 };
+  let delivered = 0;
   // getEmailService() may be null (no platform transport configured). Graph payloads
   // must still send in that case, so the null-guard moved inside the loop's EmailService
   // branch rather than short-circuiting the whole send phase.
   const email = getEmailService();
 
   for (const payload of emailPayloads) {
-    const send = async () => {
+    const send = async (): Promise<boolean> => {
       // Customer-facing reply via the partner's connected M365 mailbox (Graph).
       if (payload.graphMailbox) {
         const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
@@ -1000,11 +1019,11 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
         } else {
           await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
         }
-        return;
+        return true;
       }
       // Platform EmailService path (tech/assignee notifications + customers on partners
       // with no connected mailbox). Skip silently if no transport is configured.
-      if (!email) return;
+      if (!email) return false;
       // Branch rather than spread: `purpose` is the discriminant of
       // SendEmailParams, so a union-typed value would not narrow.
       if (payload.purpose === 'ticket.customer_notification') {
@@ -1018,7 +1037,7 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
           partnerId: payload.partnerId,
           partnerName: payload.partnerName,
         });
-        return;
+        return true;
       }
       await email.sendEmail({
         to: payload.to,
@@ -1028,19 +1047,21 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
         headers: payload.headers,
         purpose: 'ticket.staff_notification'
       });
+      return true;
     };
 
     if (payload.bestEffort) {
       try {
-        await send();
+        if (await send()) delivered += 1;
       } catch (err) {
         console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
       }
     } else {
       // Non-best-effort: let throw bubble up so BullMQ can retry.
-      await send();
+      if (await send()) delivered += 1;
     }
   }
+  return { attempted: emailPayloads.length, delivered };
 }
 
 let worker: Worker<TicketEvent> | null = null;

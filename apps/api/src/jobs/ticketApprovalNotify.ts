@@ -43,6 +43,7 @@ import { partnerEmailCustomFromSettings, renderPartnerEmail } from '../services/
 import { portalBase } from '../services/portalUrl';
 import { resolveOrgTimezone } from '../services/portal/timezone';
 import { getRedis } from '../services/redis';
+import { captureException } from '../services/sentry';
 import { assertSamePartner, isEligibleTicketRecipient, loadUserCandidate } from '../services/ticketPush';
 import { createNotification } from '../services/userNotifications';
 import type { TicketEvent } from '../services/ticketEvents';
@@ -149,7 +150,10 @@ async function loadTicketContext(req: TicketApprovalRequest): Promise<LoadedCont
   const [org] = await db.select({ name: organizations.name, partnerId: organizations.partnerId })
     .from(organizations).where(eq(organizations.id, req.orgId)).limit(1);
   const partnerId = t.partnerId ?? org?.partnerId ?? null;
-  if (!partnerId) return null;
+  if (!partnerId) {
+    console.warn('[TicketApprovalNotify] no resolvable partner; nothing sent', `requestId=${req.id}`);
+    return null;
+  }
   return {
     req,
     ticket: { ...t, partnerId },
@@ -201,6 +205,7 @@ function approvalsLink(requestId: string): string | undefined {
   } catch (err) {
     // portalBase throws rather than emit a dead link; send without the button.
     console.error('[TicketApprovalNotify] portal URL unavailable; sending without a link', err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return undefined;
   }
 }
@@ -309,6 +314,19 @@ export async function collectApprovalDecided(event: DecidedEvent): Promise<Appro
     emails: mailTo(recipients, mail),
     throttle: { key: `ticket-approval-notify:${req.id}:decided:${status}`, ttlSeconds: APPROVAL_DECIDED_DEDUPE_SECONDS },
   };
+}
+
+const RELEASE_IF_OWNER = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+
+/** Release THIS event's claim (compare-and-delete), so a retry can send. Best effort. */
+export async function releaseApprovalMail(throttle: { key: string }, eventId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.eval(RELEASE_IF_OWNER, 1, throttle.key, eventId);
+  } catch (err) {
+    console.warn('[TicketApprovalNotify] throttle release failed', err instanceof Error ? err.message : err);
+  }
 }
 
 /** Claim the throttle key. Run OUTSIDE any DB context. Fails open when Redis is unavailable. */

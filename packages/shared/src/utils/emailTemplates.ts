@@ -386,7 +386,7 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     heading: 'An approval was requested',
     buttonLabel: 'View request',
     html:
-      `<p>{{partner_name}} has asked your organization's billing contact to approve more work on ticket <strong>{{ticket_number}}</strong> ({{ticket_subject}}).</p>
+      `<p>{{partner_name}} has asked your organization to approve more work on ticket <strong>{{ticket_number}}</strong> ({{ticket_subject}}).</p>
 <p>{{approval_ask}}</p>
 <p>{{approval_snapshot}}</p>
 <p>{{cta_button}}</p>

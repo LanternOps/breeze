@@ -10,7 +10,7 @@ export const REQUEST_CHANGED_TEXT = 'This request was updated, please review aga
 
 const ERROR_TEXT_BY_CODE: Record<string, string> = {
   REQUEST_CHANGED: REQUEST_CHANGED_TEXT,
-  REQUEST_NOT_PENDING: 'This request has already been decided.',
+  REQUEST_NOT_PENDING: 'This request has already been decided, possibly by your earlier attempt. Check its status below.',
   REQUEST_EXPIRED: 'This request has expired. Contact your service provider.',
 };
 

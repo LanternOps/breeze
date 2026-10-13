@@ -120,7 +120,7 @@ describe('ApprovalDecisionPanel — errors', () => {
     render(<ApprovalDecisionPanel approval={make()} onChanged={vi.fn()} />);
     typeName();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    expect(await screen.findByText('This request has already been decided.')).toBeTruthy();
+    expect(await screen.findByText('This request has already been decided, possibly by your earlier attempt. Check its status below.')).toBeTruthy();
 
     approveApproval.mockResolvedValueOnce(fail(409, 'REQUEST_EXPIRED'));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
