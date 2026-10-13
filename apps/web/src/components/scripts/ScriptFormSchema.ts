@@ -244,13 +244,17 @@ export function stripSecretParameterValueFields<T>(values: T): T {
 export type ExitCodeSeverityMapping = Record<string, Severity | null>;
 
 export type ScriptSubmitValues = Omit<ScriptFormValues, 'exitCodeSeverityMapping'> & {
-  exitCodeSeverityMapping?: ExitCodeSeverityMapping;
+  exitCodeSeverityMapping?: ExitCodeSeverityMapping | null;
   availability?: 'org' | 'partner';
   orgId?: string | null;
 };
 
-export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCodeSeverityMapping | undefined {
-  if (!rows || rows.length === 0) return undefined;
+// `undefined` = field never loaded (leave untouched); `null` = the user emptied
+// the rows, so the API must clear the stored mapping (#8590). An omitted field
+// is dropped by the PUT handler and the old mapping would silently survive.
+export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCodeSeverityMapping | null | undefined {
+  if (!rows) return undefined;
+  if (rows.length === 0) return null;
   return rows.reduce<ExitCodeSeverityMapping>((acc, { exitCode, severity }) => {
     acc[exitCode] = severity === SUPPRESS_SEVERITY ? null : severity;
     return acc;
