@@ -45,6 +45,29 @@ func TestLiveGaugeFollowsTheSocket(t *testing.T) {
 	eventually(t, time.Second, func() bool { return rec.timeline.live.Load() == 0 }, "gauge did not fall after the drop")
 }
 
+func TestHubCloseAllDropsEverySocketAndTheyRedial(t *testing.T) {
+	f := newFakeAPI(t)
+	hub := newSocketHub()
+	cfg := testConfig(f, t.TempDir())
+	rec := newTestRecorder()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var ids []Identity
+	for i := 0; i < 3; i++ {
+		id := f.preEnroll(i)
+		ids = append(ids, id)
+		a := NewAgent(&cfg, rec, id, nil)
+		a.hub = hub
+		go a.Run(ctx)
+	}
+	eventually(t, 2*time.Second, func() bool { return hub.Len() == 3 }, "hub never saw 3 sockets")
+	if n := hub.CloseAll(); n != 3 {
+		t.Fatalf("CloseAll closed %d, want 3", n)
+	}
+	eventually(t, time.Second, func() bool { return rec.wsReconnects.Load() >= 3 && hub.Len() == 3 },
+		"sockets were not redialled after the drop")
+}
+
 func TestWSCommandIsAnsweredOverTheSocket(t *testing.T) {
 	f := newFakeAPI(t)
 	_, id, _, _ := runAgent(t, f, nil)

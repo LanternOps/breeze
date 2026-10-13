@@ -38,6 +38,7 @@ type Agent struct {
 	reenroll func(context.Context, Identity) (Identity, error)
 	started  time.Time
 	ws       socket
+	hub      *socketHub // nil = not registered (no drop-sockets action)
 
 	mu sync.Mutex
 	id Identity
