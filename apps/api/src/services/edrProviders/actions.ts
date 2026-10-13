@@ -30,7 +30,12 @@ import { edrActionsEnabled } from '../../config/env';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { checkEdrActionRateLimit, edrActorKey } from './actionGates';
 import { classifyVendorActionError, EdrActionError } from './actionErrors';
-import { EDR_ACTION_COOLDOWN_MS, resolveEdrActionTarget, type ResolvedEdrActionTarget } from './actionTargets';
+import {
+  EDR_ACTION_COOLDOWN_MS,
+  lockAndRecheckEdrActionTarget,
+  resolveEdrActionTarget,
+  type ResolvedEdrActionTarget,
+} from './actionTargets';
 import { buildEdrAdapterContext } from './context';
 import { decryptEdrSecret } from './credentials';
 import { isSiteRestricted, type EdrSiteRestriction } from './readScope';
@@ -239,6 +244,8 @@ async function loadConnectionAndTenant(t: ResolvedEdrActionTarget): Promise<{
   }, 'edrActions.loadConnection');
 }
 
+const RECENTLY_REQUESTED_MESSAGE = 'The same action was requested for this target less than a minute ago';
+
 function outcomeAudit(status: EdrActionStatus, outcomeUnknown: boolean): string {
   if (outcomeUnknown) return 'edr.action.outcome_unknown';
   return `edr.action.${status}`;
@@ -303,7 +310,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
 
   // 6. Cooldown, then the Breeze-side rate limit (Redis only; no DB held).
   if (resolved.recentlyRequested) {
-    throw new EdrActionError('action_recently_requested', 409, 'The same action was requested for this target less than a minute ago');
+    throw new EdrActionError('action_recently_requested', 409, RECENTLY_REQUESTED_MESSAGE);
   }
   const limit = await checkEdrActionRateLimit({
     redis: getRedis(),
@@ -329,13 +336,24 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
   let actionId: string;
   try {
     actionId = await withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+      // The step-6 cooldown read may be stale; re-check under a (target, action) lock in this tx.
+      const endpointId = input.kind === 'detection' ? null : resolved.endpoint?.id ?? null;
+      const recheck = await lockAndRecheckEdrActionTarget(
+        { endpointId, detectionId: resolved.detection?.id ?? null }, action, new Date(),
+      );
+      if (recheck === 'in_progress') {
+        throw new EdrActionError('action_in_progress', 409, 'This action is already in progress for this target');
+      }
+      if (recheck === 'recently_requested') {
+        throw new EdrActionError('action_recently_requested', 409, RECENTLY_REQUESTED_MESSAGE);
+      }
       const [row] = await db.insert(edrActions).values({
         connectionId: connection.id,
         partnerId: resolved.partnerId,
         orgId: resolved.orgId,
         tenantId: tenant.id,
         // Detection actions never carry endpoint_id (see actionTargets.ts).
-        endpointId: input.kind === 'detection' ? null : resolved.endpoint?.id ?? null,
+        endpointId,
         detectionId: resolved.detection?.id ?? null,
         breezeDeviceId: resolved.breezeDeviceId,
         provider: connection.provider,

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import type { EdrActionKey, EdrActionStatus } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { edrActions, edrConnections, edrTenants } from '../../db/schema';
@@ -17,7 +17,8 @@ import type { EdrActionRequest, EdrAdapterContext, EdrProviderAdapter, EdrReconc
  * NEVER RE-SENDS. This file has no path to the adapter send method (pinned by
  * edrActions.chokepoint.contract.test.ts): a `queued` row is settled only from
  * READ-ONLY vendor state (`reconcileAction`), and if that cannot tell, the row
- * is failed for a human to re-issue after a give-up window.
+ * is failed for a human to re-issue after a give-up window. A row a remap
+ * detached gets only that give-up (`detached_unsettled`), never a vendor read.
  *
  * Three phases, as the sync job: short system tx to load; vendor reads with no
  * DB context; short system tx with compare-and-set writes (a concurrent
@@ -44,6 +45,7 @@ interface OpenRow {
   requestedAt: Date;
   submittedAt: Date | null;
   requestedBy: string | null;
+  detachedAt: Date | null;
 }
 
 interface Settlement {
@@ -81,6 +83,13 @@ async function settleOne(
   now: Date,
 ): Promise<Omit<Settlement, 'id' | 'orgId' | 'observed' | 'requestedBy'> | null> {
   const age = now.getTime() - (ms(row.requestedAt) ?? now.getTime());
+
+  // A remap detached this row (mapping.ts): its tenant link is gone, so the
+  // vendor is not read. It only gets the time-based give-up, for a human to
+  // re-issue against the new mapping.
+  if (row.detachedAt) {
+    return age > EDR_ACTION_UNKNOWN_GIVEUP_MS ? { status: 'failed', error: 'detached_unsettled' } : null;
+  }
 
   if (row.status === 'submitted') {
     const submittedAge = now.getTime() - (ms(row.submittedAt) ?? ms(row.requestedAt) ?? now.getTime());
@@ -140,12 +149,15 @@ export async function pollEdrActionStatus(connectionId: string, now: Date): Prom
         requestedAt: edrActions.requestedAt,
         submittedAt: edrActions.submittedAt,
         requestedBy: edrActions.requestedBy,
+        detachedAt: edrActions.detachedAt,
       })
       .from(edrActions)
       .where(and(
         eq(edrActions.connectionId, connectionId),
         inArray(edrActions.status, ['queued', 'submitted']),
-        isNull(edrActions.detachedAt),
+        // Detached rows are loaded only once past the give-up window (they get
+        // nothing else), matching the sweep in edrProviderSync.ts.
+        or(isNull(edrActions.detachedAt), lt(edrActions.requestedAt, new Date(now.getTime() - EDR_ACTION_UNKNOWN_GIVEUP_MS))),
       ))
       .orderBy(asc(edrActions.requestedAt))
       .limit(BATCH)) as OpenRow[];

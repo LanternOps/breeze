@@ -35,7 +35,7 @@ import {
   evaluateEdrEndpointHealth,
   evaluateEdrStaleTenants,
 } from '../services/edrProviders/alerts';
-import { pollEdrActionStatus } from '../services/edrProviders/actionStatus';
+import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { attachWorkerObservability } from './workerObservability';
 import { isFinalSyncAttempt } from './syncAttempt';
 
@@ -189,6 +189,25 @@ async function runPhase4(label: string, connectionId: string, fn: () => Promise<
   }
 }
 
+/**
+ * Connections (of `ids`) that have open (queued/submitted) actions for the
+ * status pass. Runs under system context; one scan on edr_actions_open_status_idx.
+ * A row a remap detached is skipped until it is past the give-up window — the
+ * reconciler can only fail it then (`detached_unsettled`), so an earlier job
+ * would be a no-op every tick.
+ */
+export async function connectionsWithOpenEdrActions(ids: string[], now: Date): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const giveUpBefore = new Date(now.getTime() - EDR_ACTION_UNKNOWN_GIVEUP_MS);
+  const open = (await runWithSystemDbAccess(() => db.execute(sql`
+    SELECT DISTINCT connection_id FROM edr_actions
+    WHERE status IN ('queued', 'submitted')
+      AND (detached_at IS NULL OR requested_at < ${giveUpBefore.toISOString()}::timestamptz)
+      AND connection_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+  `), 'edrProviderSync.openActions')) as unknown as Array<{ connection_id: string }>;
+  return open.map((r) => r.connection_id);
+}
+
 async function processSyncAll(): Promise<{ queued: number }> {
   // partner-axis table: a contextless read silently returns 0 rows (#1375).
   // `reauth_required` connections are skipped; only "Sync now" after a credentials PATCH retries them.
@@ -235,16 +254,11 @@ async function processSyncAll(): Promise<{ queued: number }> {
   await runPhase4('enqueueEdrActionStatus', 'all', async () => {
     const ids = candidates.map((c) => c.id);
     if (ids.length === 0) return;
-    const open = (await runWithSystemDbAccess(() => db.execute(sql`
-      SELECT DISTINCT connection_id FROM edr_actions
-      WHERE status IN ('queued', 'submitted')
-        AND connection_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
-    `), 'edrProviderSync.openActions')) as unknown as Array<{ connection_id: string }>;
-    for (const row of open) {
+    for (const connectionId of await connectionsWithOpenEdrActions(ids, new Date())) {
       try {
-        await enqueueEdrActionStatus(row.connection_id);
+        await enqueueEdrActionStatus(connectionId);
       } catch (error) {
-        console.error(`[EdrProviderSync] Failed to queue action status for ${row.connection_id}:`, error);
+        console.error(`[EdrProviderSync] Failed to queue action status for ${connectionId}:`, error);
       }
     }
   });

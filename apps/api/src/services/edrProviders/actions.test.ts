@@ -77,6 +77,7 @@ const h = vi.hoisted(() => {
     }),
     hasDbAccessContext: vi.fn(() => state.held !== null),
     resolveEdrActionTarget: vi.fn(),
+    lockAndRecheckEdrActionTarget: vi.fn(),
     createAuditLog: vi.fn(async () => undefined),
     createAuditLogAsync: vi.fn(async () => undefined),
     checkEdrActionRateLimit: vi.fn(async () => ({ ok: true })),
@@ -110,7 +111,11 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ eq: [col, val] }),
   sql: Object.assign((s: TemplateStringsArray, ...v: unknown[]) => ({ sql: s.join('?'), v }), { raw: (s: string) => s }),
 }));
-vi.mock('./actionTargets', () => ({ resolveEdrActionTarget: h.resolveEdrActionTarget, EDR_ACTION_COOLDOWN_MS: 60_000 }));
+vi.mock('./actionTargets', () => ({
+  resolveEdrActionTarget: h.resolveEdrActionTarget,
+  lockAndRecheckEdrActionTarget: h.lockAndRecheckEdrActionTarget,
+  EDR_ACTION_COOLDOWN_MS: 60_000,
+}));
 vi.mock('../auditService', () => ({ createAuditLog: h.createAuditLog, createAuditLogAsync: h.createAuditLogAsync }));
 vi.mock('../redis', () => ({ getRedis: () => ({ redis: true }) }));
 vi.mock('../../config/env', () => ({ edrActionsEnabled: h.edrActionsEnabled }));
@@ -201,6 +206,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(h.state, { held: null, log: [], selects: [], inserted: [], insertError: null, updateError: null, updates: [], callerCtxs: [] });
   h.edrActionsEnabled.mockReturnValue(true);
+  h.lockAndRecheckEdrActionTarget.mockResolvedValue(null);
   h.supportsAction.mockReturnValue({ ok: true });
   h.checkEdrActionRateLimit.mockResolvedValue({ ok: true });
   h.createAuditLog.mockResolvedValue(undefined);
@@ -383,6 +389,22 @@ describe('dispatchEdrAction — the single action door', () => {
     const e = await refusal(dispatchEdrAction(actor(), ISOLATE));
     expect(e).toMatchObject({ code: 'rate_limited', httpStatus: 429, retryAfterSeconds: 42 });
     expect(h.state.inserted).toHaveLength(0);
+  });
+
+  it.each([
+    ['recently_requested', 'action_recently_requested'],
+    ['in_progress', 'action_in_progress'],
+  ])('7. the in-tx cooldown re-check (%s) refuses with %s: no insert, no vendor call', async (recheck, code) => {
+    arrange();
+    h.lockAndRecheckEdrActionTarget.mockResolvedValue(recheck);
+    const e = await refusal(dispatchEdrAction(actor(), ISOLATE));
+    expect(e).toMatchObject({ code, httpStatus: 409 });
+    expect(h.state.inserted).toHaveLength(0);
+    expect(h.performAction).not.toHaveBeenCalled();
+    // Re-checked in the caller's insert context, keyed by the resolved endpoint.
+    expect(h.lockAndRecheckEdrActionTarget).toHaveBeenCalledWith(
+      { endpointId: expect.any(String), detectionId: null }, 'isolate', expect.any(Date),
+    );
   });
 
   it('7. 23505 on the in-flight index → action_in_progress 409 and no vendor call', async () => {

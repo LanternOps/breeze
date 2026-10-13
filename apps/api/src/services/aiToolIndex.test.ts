@@ -128,7 +128,7 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   // (diagnose_connectivity, get_diagnostic_run, get_link_evidence,
   // get_topology) took it to 5.5 KB (5188 bytes) after the DOMAIN_NOTES prose
   // had already been tightened once.
-  it('stays small: the whole index is under 6.6 KB and every note under 400 chars', () => {
+  it('stays small: the whole index is under 6.5 KB and every note under 400 chars', () => {
     // Ceiling raised to 6.5 KB (#6755): W01 wired 32 more chat-callable tools
     // (measured 119280 -> 140468 registry bytes, see
     // docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
@@ -138,10 +138,11 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // intended addition. Topology M4 + W01 together measure 6310 bytes (the two
     // growths are additive: each tool adds its name to its domain line).
     // Any further raise needs a prompt-size review, not a bump.
-    // #8167 W03 (flagged for that review in the PR): `edr_endpoint_action
-    // (isolate/unisolate/scan)` on the Integrations line adds 46 bytes;
-    // measured 6677 with it (limit was 6656). Ceiling moved to 6.6 KB for it.
-    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.6 * 1024);
+    // #8167 W03: `edr_endpoint_action (isolate/unisolate/scan)` on the
+    // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
+    // dropping the patching note's "Approve patches before install." (names no
+    // tool), not by raising the ceiling.
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
 });

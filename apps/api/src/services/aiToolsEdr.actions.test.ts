@@ -238,6 +238,24 @@ describe('edr_endpoint_action — handler', () => {
     expect(String(out.note)).toMatch(/do not retry/i);
   });
 
+  it('a 429 refusal passes retryAfterSeconds through to the model', async () => {
+    h.dispatch.mockRejectedValue(new EdrActionError('rate_limited', 429, 'Too many EDR actions; try again shortly', 42));
+    expect(await run({ deviceId: DEVICE, action: 'scan' })).toEqual({
+      error: 'rate_limited', message: 'Too many EDR actions; try again shortly', retryAfterSeconds: 42,
+    });
+    h.dispatch.mockResolvedValue({
+      actionId: 'a', status: 'failed', outcomeUnknown: false, error: 'rate_limited', message: 'x', httpStatus: 429, retryAfterSeconds: 7,
+    });
+    expect(await run({ deviceId: DEVICE, action: 'scan' })).toMatchObject({ error: 'rate_limited', retryAfterSeconds: 7 });
+  });
+
+  it('a device on two connections without connectionId is ambiguous_connection, telling the model to pass connectionId', async () => {
+    h.dispatch.mockRejectedValue(new EdrActionError('ambiguous_connection', 409, 'Device is linked to more than one EDR connection; pass connectionId'));
+    const out = await run({ deviceId: DEVICE, action: 'scan' });
+    expect(out).toMatchObject({ error: 'ambiguous_connection' });
+    expect(String(out.message)).toMatch(/connectionId/);
+  });
+
   it('EdrActionError maps to { error: code, message }; vendor raw text never appears', async () => {
     h.dispatch.mockRejectedValue(new EdrActionError('unsupported', 422, 'Already isolated'));
     expect(await run({ deviceId: DEVICE, action: 'scan' })).toEqual({ error: 'unsupported', message: 'Already isolated' });

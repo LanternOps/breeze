@@ -308,17 +308,6 @@ export function aiWorkspaceEnabled(): boolean {
 }
 
 /**
- * Large-tool-result capture + `read_artifact` (A-W05, #6732). Independent of
- * the AI-workspace lane: nothing about paging back an oversized tool result
- * needs the sandbox, so a self-hoster can opt in with their own S3/MinIO.
- *
- * Default OFF (opt-in). Capture writes org-downloadable blobs into object
- * storage, so it must never start on a deployment that has not consented and
- * provisioned a bucket (the IS_HOSTED failure shape, #570). Hosted behaviour is
- * unchanged: wherever the workspace lane is on, capture is on too. Read at CALL
- * time. config/validate.ts refuses `true` without a configured blob store.
- */
-/**
  * EDR response actions (#8167 W03) — the SERVER-WIDE kill switch. Default ON:
  * the per-connection `edr_connections.actions_enabled` opt-in (default OFF,
  * partner admin + MFA) is the real gate, and an env default of OFF would make
@@ -333,6 +322,17 @@ export function edrActionsEnabled(): boolean {
   return RECOGNIZED_TRUE_FLAG_VALUES.has(raw);
 }
 
+/**
+ * Large-tool-result capture + `read_artifact` (A-W05, #6732). Independent of
+ * the AI-workspace lane: nothing about paging back an oversized tool result
+ * needs the sandbox, so a self-hoster can opt in with their own S3/MinIO.
+ *
+ * Default OFF (opt-in). Capture writes org-downloadable blobs into object
+ * storage, so it must never start on a deployment that has not consented and
+ * provisioned a bucket (the IS_HOSTED failure shape, #570). Hosted behaviour is
+ * unchanged: wherever the workspace lane is on, capture is on too. Read at CALL
+ * time. config/validate.ts refuses `true` without a configured blob store.
+ */
 export function aiArtifactCaptureEnabled(): boolean {
   return envFlag('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED', false) || aiWorkspaceEnabled();
 }

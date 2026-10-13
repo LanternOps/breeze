@@ -97,7 +97,7 @@ interface CallOptions {
    * without a sleep (nothing was accepted). Every other classification is unchanged.
    */
   retry?: boolean;
-  /** Replaces the random JSON-RPC envelope id (vendor-side traceability for writes). */
+  /** Replaces the random JSON-RPC envelope id. Traceability only: GravityZone does not dedupe on it. */
   requestId?: string;
 }
 

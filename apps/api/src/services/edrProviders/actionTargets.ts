@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { EdrIsolationState, EdrOsPlatform, EdrVendorKind } from '@breeze/shared';
 import { db } from '../../db';
 import { edrActions, edrDetections, edrEndpoints } from '../../db/schema';
@@ -60,6 +60,40 @@ async function recentlyRequested(where: SQL, action: string, now: Date): Promise
   return rows.length > 0;
 }
 
+/**
+ * Cooldown re-check INSIDE the insert transaction (#8167 review). The step-2
+ * read can go stale: a sibling request for the same (target, action) may land
+ * its `succeeded` write between that read and this caller's insert, and the
+ * settled sibling no longer holds the in-flight index slot. Under a
+ * transaction-scoped advisory lock on (target, action), this re-reads with a
+ * fresh snapshot and also counts in-flight rows, so a sibling that is still
+ * `queued` here and settles before our INSERT cannot slip through either.
+ * Must run in the same transaction as the INSERT.
+ */
+export async function lockAndRecheckEdrActionTarget(
+  target: { endpointId: string | null; detectionId: string | null },
+  action: string,
+  now: Date,
+): Promise<'in_progress' | 'recently_requested' | null> {
+  const key = target.detectionId ?? target.endpointId;
+  if (!key) return null;
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`edr_action:${key}:${action}`}))`);
+  const rows = await db
+    .select({ status: edrActions.status })
+    .from(edrActions)
+    .where(and(
+      target.detectionId ? eq(edrActions.detectionId, target.detectionId) : eq(edrActions.endpointId, key),
+      eq(edrActions.action, action as typeof edrActions.$inferSelect.action),
+      or(
+        inArray(edrActions.status, ['queued', 'submitted']),
+        and(eq(edrActions.status, 'succeeded'), gt(edrActions.requestedAt, new Date(now.getTime() - EDR_ACTION_COOLDOWN_MS))),
+      ),
+    ))
+    .limit(2);
+  if (rows.some((r) => r.status !== 'succeeded')) return 'in_progress';
+  return rows.length > 0 ? 'recently_requested' : null;
+}
+
 function fromEndpoint(row: EndpointRow) {
   return {
     orgId: row.orgId,
@@ -99,7 +133,7 @@ export async function resolveEdrActionTarget(
     const rows = await db.select(ENDPOINT_COLUMNS).from(edrEndpoints).where(where).limit(2) as EndpointRow[];
     if (rows.length === 0) return null;
     if (rows.length > 1) {
-      throw new EdrActionError('target_not_found', 404,
+      throw new EdrActionError('ambiguous_connection', 409,
         'Device is linked to more than one EDR connection; pass connectionId');
     }
     const row = rows[0]!;

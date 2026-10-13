@@ -1,6 +1,6 @@
 /**
  * EDR W03 (#8167 / epic #8164) — response actions against real Postgres.
- * Migration: 2026-12-28-110000-edr-actions.sql.
+ * Migration: 2026-12-28-120000-edr-actions.sql.
  *
  * Covers the in-flight uniqueness index (one queued/submitted row per target +
  * action), migration replay, and (from A13) cross-tenant insert refusal,
@@ -20,6 +20,10 @@ const fake = vi.hoisted(() => ({
   calls: 0,
   /** Extra actions the fake adapter claims (detection-action resolution tests). */
   extraActions: [] as string[],
+  /** Vendor READS (reconcile / status poll) — a detached row must never reach them. */
+  reads: 0,
+  /** Runs after the caller-context target read, before the insert (cooldown-race seam). */
+  afterResolve: null as null | (() => Promise<void>),
 }));
 vi.mock('../../services/edrProviders/credentials', async () => {
   const actual = await vi.importActual<typeof import('../../services/edrProviders/credentials')>('../../services/edrProviders/credentials');
@@ -42,8 +46,22 @@ vi.mock('../../services/edrProviders/registry', async () => {
     supportsAction: (facts: never, action: never) =>
       (fake.extraActions as string[]).includes(action) ? { ok: true } : real.supportsAction!(facts, action),
     performAction: (...a: unknown[]) => { fake.calls += 1; return fake.performAction(...a); },
+    reconcileAction: async () => { fake.reads += 1; return 'unknown'; },
+    getActionStatus: async () => { fake.reads += 1; return { status: 'pending' }; },
   };
   return { ...actual, getEdrProvider: () => adapter };
+});
+
+vi.mock('../../services/edrProviders/actionTargets', async () => {
+  const actual = await vi.importActual<typeof import('../../services/edrProviders/actionTargets')>('../../services/edrProviders/actionTargets');
+  return {
+    ...actual,
+    resolveEdrActionTarget: async (...a: Parameters<typeof actual.resolveEdrActionTarget>) => {
+      const resolved = await actual.resolveEdrActionTarget(...a);
+      if (fake.afterResolve) await fake.afterResolve();
+      return resolved;
+    },
+  };
 });
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
@@ -57,6 +75,9 @@ import {
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { dispatchEdrAction } from '../../services/edrProviders/actions';
+import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../../services/edrProviders/actionStatus';
+import { remapEdrTenant } from '../../services/edrProviders/mapping';
+import { connectionsWithOpenEdrActions } from '../../jobs/edrProviderSync';
 import { EdrActionError } from '../../services/edrProviders/actionErrors';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { buildOrgExportZip } from '../../services/tenantExport';
@@ -65,7 +86,7 @@ import { createOrganization, createPartner, createSite, createUser } from './db-
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION = new URL('../../../migrations/2026-12-28-110000-edr-actions.sql', import.meta.url);
+const MIGRATION = new URL('../../../migrations/2026-12-28-120000-edr-actions.sql', import.meta.url);
 
 type Row = Record<string, unknown>;
 const admin = () => getTestDb() as typeof db;
@@ -256,6 +277,8 @@ const countActions = (orgId: string) => admin().execute(sql`SELECT count(*)::int
 describe('edr actions — tenancy and dispatch (real PostgreSQL)', () => {
   beforeEach(() => {
     fake.calls = 0;
+    fake.reads = 0;
+    fake.afterResolve = null;
     fake.extraActions = [];
     fake.performAction.mockReset();
     fake.performAction.mockResolvedValue({ status: 'succeeded' });
@@ -370,6 +393,8 @@ describe('edr actions — tenancy and dispatch (real PostgreSQL)', () => {
 describe('edr actions — target resolution, cooldown and site rule (real PostgreSQL)', () => {
   beforeEach(() => {
     fake.calls = 0;
+    fake.reads = 0;
+    fake.afterResolve = null;
     fake.extraActions = [];
     fake.performAction.mockReset();
     fake.performAction.mockResolvedValue({ status: 'succeeded' });
@@ -400,7 +425,8 @@ describe('edr actions — target resolution, cooldown and site rule (real Postgr
     const second = await secondConnectionFor(a);
     const actor = uiActor(partnerAuth(a));
     const err = await dispatchEdrAction(actor, { kind: 'device', deviceId: a.device.id, action: 'scan' }).catch((e: unknown) => e);
-    expect((err as EdrActionError).code).toBe('target_not_found');
+    expect((err as EdrActionError).code).toBe('ambiguous_connection');
+    expect((err as EdrActionError).httpStatus).toBe(409);
     expect((err as EdrActionError).message).toMatch(/more than one EDR connection/);
     expect(await countActions(a.org.id)).toBe(0);
 
@@ -474,6 +500,36 @@ describe('edr actions — target resolution, cooldown and site rule (real Postgr
     expect(out.status).toBe('succeeded');
   });
 
+  runDb('cooldown race: a sibling that succeeds between the cooldown read and the insert -> refused, exactly one row', async () => {
+    const a = await seedEdrTenant('cooldown-race');
+    const target = { kind: 'endpoint' as const, endpointId: a.endpoint.id, action: 'scan' as const };
+    // The caller's read saw no cooldown; a sibling request then lands its
+    // success (its own insert tx long committed) before this caller inserts.
+    fake.afterResolve = async () => {
+      fake.afterResolve = null;
+      await insertActionAsSystem(a, { action: 'scan', status: 'succeeded', requestedAt: new Date(Date.now() - 5_000) });
+    };
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), target).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EdrActionError);
+    expect((err as EdrActionError).code).toBe('action_recently_requested');
+    expect(await countActions(a.org.id)).toBe(1);
+    expect(fake.calls).toBe(0);
+  });
+
+  runDb('cooldown race: a sibling still queued at the re-check -> action_in_progress, exactly one row', async () => {
+    const a = await seedEdrTenant('cooldown-race-q');
+    const target = { kind: 'endpoint' as const, endpointId: a.endpoint.id, action: 'scan' as const };
+    let sibling: { id: string } | null = null;
+    fake.afterResolve = async () => {
+      fake.afterResolve = null;
+      sibling = await insertActionAsSystem(a, { action: 'scan', status: 'queued' });
+    };
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), target).catch((e: unknown) => e);
+    expect((err as EdrActionError).code).toBe('action_in_progress');
+    expect(sibling).not.toBeNull();
+    expect(await countActions(a.org.id)).toBe(1);
+  });
+
   runDb('site rule on real rows: a restricted caller is refused for an endpoint outside their devices and for an unlinked one', async () => {
     const a = await seedEdrTenant('site');
     const restricted = { ...uiActor(partnerAuth(a)), restriction: { allowedDeviceIds: [randomUUID()], allowedSiteIds: [a.site.id] } };
@@ -497,5 +553,57 @@ describe('edr actions — target resolution, cooldown and site rule (real Postgr
       .catch((e: unknown) => e);
     expect((err as EdrActionError).code).toBe('target_not_found');
     expect(await countActions(b.org.id)).toBe(0);
+  });
+});
+
+describe('edr actions — rows detached by a remap settle (real PostgreSQL)', () => {
+  beforeEach(() => {
+    fake.calls = 0;
+    fake.reads = 0;
+    fake.afterResolve = null;
+    fake.extraActions = [];
+  });
+
+  runDb('a remap detaches open rows: no sweep job inside the give-up window; after it the reconciler fails them detached_unsettled with no vendor call', async () => {
+    const a = await seedEdrTenant('detached');
+    const orgB = await createOrganization({ partnerId: a.partner.id });
+    const now = new Date();
+    const old = new Date(now.getTime() - EDR_ACTION_UNKNOWN_GIVEUP_MS - 60_000);
+    const young = new Date(now.getTime() - 5 * 60_000);
+    const oldQueued = await insertActionAsSystem(a, { action: 'isolate', status: 'queued', requestedAt: old });
+    const oldSubmitted = await insertActionAsSystem(a, {
+      action: 'scan', status: 'submitted', vendorActionId: 'task-1', requestedAt: old, submittedAt: old,
+    });
+
+    await withSystemDbAccessContext(() => remapEdrTenant(db as never, { partnerId: a.partner.id, userId: a.user.id }, a.tenant.id, orgB.id));
+    const statusOf = async (id: string) => (Array.from(await admin().execute(sql`
+      SELECT status, error, detached_at, completed_at FROM edr_actions WHERE id = ${id}`)) as Row[])[0]!;
+    expect((await statusOf(oldQueued.id)).detached_at).not.toBeNull();
+
+    // A detached row that is still inside the window: the sweep queues nothing for it.
+    await admin().execute(sql`UPDATE edr_actions SET requested_at = ${young.toISOString()}::timestamptz WHERE id IN (${oldQueued.id}, ${oldSubmitted.id})`);
+    expect(await connectionsWithOpenEdrActions([a.connection.id], now)).toEqual([]);
+    expect(await pollEdrActionStatus(a.connection.id, now)).toMatchObject({ settled: 0 });
+    expect((await statusOf(oldQueued.id)).status).toBe('queued');
+
+    // Past the window: one job, and the reconciler gives both rows up without a vendor read.
+    await admin().execute(sql`UPDATE edr_actions SET requested_at = ${old.toISOString()}::timestamptz WHERE id IN (${oldQueued.id}, ${oldSubmitted.id})`);
+    expect(await connectionsWithOpenEdrActions([a.connection.id], now)).toEqual([a.connection.id]);
+    expect(await pollEdrActionStatus(a.connection.id, now)).toMatchObject({ settled: 2 });
+    for (const id of [oldQueued.id, oldSubmitted.id]) {
+      const row = await statusOf(id);
+      expect(row).toMatchObject({ status: 'failed', error: 'detached_unsettled' });
+      expect(row.completed_at).not.toBeNull();
+    }
+    expect(fake.reads).toBe(0);
+    expect(fake.calls).toBe(0);
+    // Settled: the sweep stops queuing jobs for the connection.
+    expect(await connectionsWithOpenEdrActions([a.connection.id], now)).toEqual([]);
+  });
+
+  runDb('a live open row is still swept regardless of age', async () => {
+    const a = await seedEdrTenant('live-sweep');
+    await insertActionAsSystem(a, { action: 'isolate', status: 'queued' });
+    expect(await connectionsWithOpenEdrActions([a.connection.id], new Date())).toEqual([a.connection.id]);
   });
 });

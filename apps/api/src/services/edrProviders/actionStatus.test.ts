@@ -48,6 +48,8 @@ vi.mock('drizzle-orm', () => ({
   eq: (c: unknown, v: unknown) => ({ eq: [c, v] }),
   inArray: (c: unknown, v: unknown) => ({ in: [c, v] }),
   isNull: (c: unknown) => ({ isNull: c }),
+  lt: (c: unknown, v: unknown) => ({ lt: [c, v] }),
+  or: (...a: unknown[]) => ({ or: a }),
   asc: (c: unknown) => c,
 }));
 vi.mock('../../db/schema', () => ({
@@ -83,7 +85,7 @@ const tenant = { id: 't1', vendorTenantId: 'company-1', apiHost: null };
 const row = (over: Record<string, unknown> = {}) => ({
   id: 'act-1', orgId: 'org-1', tenantId: 't1', action: 'isolate', status: 'queued', vendorActionId: null,
   payload: { target: { kind: 'endpoint', vendorEndpointId: 'ep-v' } }, requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS + 1000),
-  submittedAt: null, requestedBy: 'u1', ...over,
+  submittedAt: null, requestedBy: 'u1', detachedAt: null, ...over,
 });
 function arrange(rows: unknown[]) {
   h.state.selects = [[connection], rows, rows.length ? [tenant] : []];
@@ -99,6 +101,17 @@ afterEach(() => {
 });
 
 describe('pollEdrActionStatus — settle open actions, never re-send', () => {
+  it.each(['queued', 'submitted'])('a %s row a remap detached gets only the give-up: no vendor read, failed/detached_unsettled', async (status) => {
+    const detached = { status, tenantId: null, vendorActionId: status === 'submitted' ? 'task-1' : null, detachedAt: ago(60_000) };
+    arrange([row({ ...detached, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS - 1000) })]);
+    expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 0 });
+    arrange([row({ ...detached, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) })]);
+    expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 1 });
+    expect(h.state.updates.at(-1)).toMatchObject({ set: { status: 'failed', error: 'detached_unsettled' } });
+    expect(h.reconcileAction).not.toHaveBeenCalled();
+    expect(h.getActionStatus).not.toHaveBeenCalled();
+  });
+
   it('a queued row inside the grace window is left alone (dispatch may still be in flight)', async () => {
     arrange([row({ requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS - 1000) })]);
     expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 0 });

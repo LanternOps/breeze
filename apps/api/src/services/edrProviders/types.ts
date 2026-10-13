@@ -158,14 +158,16 @@ export interface EdrProviderAdapter {
   /**
    * W03. Sends ONE action to the vendor. Must not retry a write that may have
    * reached the vendor: an ambiguous outcome throws `code: 'outcome_unknown'`.
-   * `idempotencyKey` is the `edr_actions` row id (vendor-side traceability).
+   * `traceId` is the `edr_actions` row id, sent as the vendor request id for
+   * TRACEABILITY ONLY: GravityZone does not dedupe on it, so it is not an
+   * idempotency key and no caller may rely on it to make a re-send safe.
    * Called ONLY by `dispatchEdrAction` (edrActions.chokepoint.contract.test.ts).
    */
   performAction?(
     ctx: EdrAdapterContext,
     tenant: VendorEdrTenantRef,
     req: EdrActionRequest,
-    idempotencyKey: string,
+    traceId: string,
   ): Promise<Exclude<EdrActionResult, { status: 'failed' }>>;
   /** W03. Pure: can this action be attempted on this target? Rules are adapter-specific. */
   supportsAction?(facts: EdrActionTargetFacts, action: EdrActionKey): EdrActionSupport;

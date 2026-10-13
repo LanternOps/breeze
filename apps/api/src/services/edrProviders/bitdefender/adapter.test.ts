@@ -425,7 +425,7 @@ describe('response actions', () => {
       ['isolate', 'incidents.createIsolateEndpointTask', rpc(['6a0000000000000000000c01']), { status: 'succeeded' }],
       ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', rpc(['6a0000000000000000000c02']), { status: 'succeeded' }],
     ];
-    it.each(routes)('%s -> %s maps the result and passes the idempotency key as request id', async (action, key, reply, expected) => {
+    it.each(routes)('%s -> %s maps the result and passes the trace id (action id) as the JSON-RPC id', async (action, key, reply, expected) => {
       const { ctx, calls } = makeCtx({ [key]: reply });
       const spy = vi.mocked(ctx.fetch);
       expect(await adapter.performAction!(ctx, T, endpointReq(action), ACT)).toEqual(expected);

@@ -19,6 +19,7 @@ export type EdrActionErrorCode =
   | 'connection_unavailable'
   | 'unsupported'
   | 'target_not_found'
+  | 'ambiguous_connection'
   | 'target_detached'
   | 'site_denied'
   | 'action_in_progress'

@@ -247,12 +247,19 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
           status: outcome.status,
           outcomeUnknown: outcome.outcomeUnknown,
           ...(outcome.error ? { error: outcome.error } : {}),
+          ...(outcome.retryAfterSeconds !== undefined ? { retryAfterSeconds: outcome.retryAfterSeconds } : {}),
           ...(outcome.outcomeUnknown
             ? { note: 'The vendor did not confirm the request; Breeze is checking whether it took effect. Do not retry.' }
             : {}),
         });
       } catch (err) {
-        if (err instanceof EdrActionError) return JSON.stringify({ error: err.code, message: err.message });
+        if (err instanceof EdrActionError) {
+          return JSON.stringify({
+            error: err.code,
+            message: err.message,
+            ...(err.retryAfterSeconds !== undefined ? { retryAfterSeconds: err.retryAfterSeconds } : {}),
+          });
+        }
         throw err;
       }
     },
