@@ -436,6 +436,17 @@ describe('pushInvoice', () => {
       expect(sent.Description).toBe('Labor — 0.50 h worked, 1.00 h billed');
     });
 
+    it('a re-push (sparse update) carries the ServiceDate too', async () => {
+      const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '4' } });
+      await quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+        mapping: { remoteEntityId: '310', remoteSyncToken: '3' },
+        lines: [line({ serviceDate: '2026-09-16' } as never)],
+      }), []);
+      const body = JSON.parse(String(lastFetchInit(fetchMock).body));
+      expect(body).toMatchObject({ sparse: true, Id: '310', SyncToken: '3' });
+      expect(body.Line[0].SalesItemLineDetail.ServiceDate).toBe('2026-09-16');
+    });
+
     it('sends no ServiceDate key for a null serviceDate', async () => {
       const sent = await send({ description: 'Patch cable', serviceDate: null });
       expect(sent.SalesItemLineDetail).not.toHaveProperty('ServiceDate');

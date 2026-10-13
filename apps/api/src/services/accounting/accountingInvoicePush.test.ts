@@ -1034,6 +1034,26 @@ describe('pushInvoiceToAccounting', () => {
         expect(pushedLines()[0]!.descriptionSuffix ?? '').toBe('');
       });
 
+      // A hidden line is kept with its text and quantity but pushed at zero
+      // (#7161); the date follows the same frozen gate as a visible line.
+      it('a hidden dated line keeps its date and its zeroed amounts', async () => {
+        setup({
+          invoice: { lineShowDate: true },
+          lines: [
+            { id: 'line-1', name: null, description: 'Visible work', sourceType: 'time_entry', quantity: '1.00', unitPrice: '100.00', lineTotal: '100.00', workDate: '2026-09-16' },
+            { id: 'line-2', name: null, description: 'Hidden work', sourceType: 'time_entry', quantity: '1.00', unitPrice: '100.00', lineTotal: '100.00', workDate: '2026-09-17', customerVisible: false },
+          ],
+        });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedLines()[1]).toMatchObject({ description: 'Hidden work', serviceDate: '2026-09-17', unitPrice: '0.00', lineTotal: '0.00' });
+      });
+
+      it('per-day grouping: descriptions are the per-entry ones', async () => {
+        setup({ invoice: { lineShowDate: true, lineGrouping: 'day' }, lines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedDescriptions()).toEqual([...BASELINE, 'Remote check']);
+      });
+
       it('per-day grouping does not drop the per-line date from the accounting copy', async () => {
         setup({ invoice: { lineShowDate: true, lineGrouping: 'day' }, lines });
         await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
