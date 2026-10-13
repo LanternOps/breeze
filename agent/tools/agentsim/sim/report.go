@@ -26,6 +26,11 @@ type Report struct {
 	Routes    []RouteReport `json:"routes"`
 	WS        WSReport      `json:"ws"`
 	Commands  CommandReport `json:"commands"`
+
+	// Storm sections (W06): additive, omitted in plain runs.
+	Timeline *TimelineReport `json:"timeline,omitempty"`
+	Pool     *PoolReport     `json:"pool,omitempty"`
+	Storm    *StormReport    `json:"storm,omitempty"`
 }
 
 type RetryReport struct {
@@ -46,6 +51,10 @@ type ReportConfig struct {
 	CadenceSeconds    map[string]float64 `json:"cadenceSeconds"`
 	CommandsPerMinute float64            `json:"commandsPerMinute"`
 	Retry             RetryReport        `json:"retry"`
+
+	StormFile           string             `json:"stormFile,omitempty"`
+	LegacyRetryFraction float64            `json:"legacyRetryFraction,omitempty"`
+	Gates               map[string]float64 `json:"gates,omitempty"`
 }
 
 type AgentReport struct {
@@ -169,7 +178,8 @@ func (r *Recorder) snapshotRoutes() map[string]routeSnapshot {
 
 // BuildReport freezes the recorder into a report. started is how many agents
 // actually began running.
-func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int) Report {
+// storm is nil for a plain run.
+func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int, storm *StormInputs) Report {
 	routes := rec.snapshotRoutes()
 	model := ExpectedPerAgentMinute(cfg.Cadence, onlyNotFound(routes[RouteCrawlConfig].statusTotal))
 	minutes, onlineAtOpen := rec.agentMinutes(ended)
@@ -191,6 +201,7 @@ func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int) Report
 			AgentVersion: cfg.AgentVersion, OSType: cfg.OSType, CadenceSeconds: cfg.Cadence.Seconds(),
 			CommandsPerMinute: cfg.Commander.PerMinute,
 			Retry:             RetryReport{MaxRetries: cfg.Retry.MaxRetries, InitialDelaySeconds: cfg.Retry.InitialDelay.Seconds(), MaxDelaySeconds: cfg.Retry.MaxDelay.Seconds()},
+			StormFile:         cfg.StormPath, LegacyRetryFraction: cfg.LegacyRetryFraction, Gates: cfg.Gates.asMap(),
 		},
 		Agents: AgentReport{
 			Configured: cfg.Agents, Started: started, OnlineAtWindowOpen: onlineAtOpen,
@@ -256,6 +267,27 @@ func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int) Report
 		ResultsSent: copyCounts(rec.resVia),
 	}
 	rec.mu.Unlock()
+
+	if t := rec.Timeline(); t != nil {
+		runEndS := ended.Sub(rec.Start).Seconds()
+		var buckets []Bucket
+		for _, b := range t.Buckets() {
+			if b.T <= runEndS { // the run's own length, not the allocated tail
+				buckets = append(buckets, b)
+			}
+		}
+		rep.Timeline = &TimelineReport{StepSeconds: t.Step().Seconds(), Buckets: buckets}
+	}
+	if storm != nil && storm.Sampled {
+		samples := storm.Samples
+		if samples == nil {
+			samples = []PoolSample{}
+		}
+		rep.Pool = &PoolReport{IntervalSeconds: cfg.ScrapeInterval.Seconds(), URL: storm.URL, Samples: samples}
+	}
+	if storm != nil && cfg.Storm != nil {
+		rep.Storm = buildStorm(rec, cfg, ended, storm)
+	}
 	return rep
 }
 

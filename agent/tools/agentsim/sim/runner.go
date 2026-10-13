@@ -185,7 +185,17 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	<-autosaveDone // a late periodic save must not overwrite the final one
 	saveErr := store.Save(cfg.StorePath)
-	report := BuildReport(rec, cfg, ended, int(started.Load()))
+	var stormIn *StormInputs
+	if sched != nil || samp != nil {
+		stormIn = &StormInputs{}
+		if sched != nil {
+			stormIn.Steps, stormIn.Events = sched.Steps(), sched.Events()
+		}
+		if samp != nil {
+			stormIn.Samples, stormIn.URL, stormIn.Sampled = samp.Samples(), samp.URL, true
+		}
+	}
+	report := BuildReport(rec, cfg, ended, int(started.Load()), stormIn)
 	if err := WriteReport(cfg.ReportPath, report); err != nil {
 		return report, fmt.Errorf("write report: %w", err)
 	}

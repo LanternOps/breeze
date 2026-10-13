@@ -19,6 +19,7 @@ type Bucket struct {
 	HeartbeatSlow     uint64  `json:"heartbeatSlow"`  // heartbeat attempts over 1 s
 	HeartbeatsLost    uint64  `json:"heartbeatsLost"` // logical heartbeats that failed after retries
 	RequestsLost      uint64  `json:"requestsLost"`   // logical requests (any route) that failed after retries
+	Requests          uint64  `json:"requests"`       // logical requests (any route) completed, ok or not
 	Attempts503       uint64  `json:"attempts503"`
 	Attempts429       uint64  `json:"attempts429"`
 	TransportErrors   uint64  `json:"transportErrors"`
@@ -148,6 +149,7 @@ func (t *Timeline) Attempt(ts time.Time, status int, err error) {
 // Outcome records one logical request's final result, after the agent's retries.
 func (t *Timeline) Outcome(route string, ts time.Time, ok bool) {
 	t.update(ts, func(b *Bucket) {
+		b.Requests++
 		if route == RouteHeartbeat {
 			b.Heartbeats++
 			if !ok {
