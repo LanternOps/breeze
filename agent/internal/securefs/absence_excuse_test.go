@@ -122,7 +122,8 @@ func TestRenamesSpanning(t *testing.T) {
 		{name: "a rename entered at or after the first miss does not", first: at(9), last: at(110), want: []int{1}},
 		{name: "a rename that returned before the last miss does not", first: at(10), last: at(151), want: []int{2}},
 		{name: "no rename in flight at the first miss excuses nothing", first: at(0), last: at(110), want: nil},
-		{name: "boundaries are exclusive", first: at(9), last: at(150), want: nil},
+		{name: "a rename entered exactly at the first miss does not", first: at(9), last: at(70), want: []int{1}},
+		{name: "a rename returning exactly at the last miss does not", first: at(9), last: at(150), want: nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

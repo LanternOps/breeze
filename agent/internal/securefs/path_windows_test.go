@@ -343,7 +343,10 @@ type publishLog struct {
 type ntSetInformationFunc = func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error
 
 // wrapRename records each rename syscall from the moment it is entered, so an
-// absence can be checked against renames that have not returned yet.
+// absence can be checked against renames that have not returned yet. The
+// stamps bracket the syscall from user mode, so a goroutine descheduled just
+// before entering or just after returning widens the interval slightly; that
+// errs toward excusing, and is bounded by lookupLagBudget and absenceCeiling.
 func (l *publishLog) wrapRename(call ntSetInformationFunc) ntSetInformationFunc {
 	return func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error {
 		l.mu.Lock()
@@ -856,6 +859,56 @@ func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
 	if strings.Contains(got.String(), "(A;OICI;FA;;;WD)") {
 		t.Fatalf("permissive Everyone ACE survived EnsurePrivateDir: %s", got.String())
 	}
+}
+
+// The in-flight excuse (#8491) is only as good as the rename-syscall record
+// under it: a call must be visible from the moment it is entered, its outcome
+// recorded when it returns, and the seam must really be on installFile's
+// publish path — otherwise the excuse silently never fires and the flake
+// returns looking exactly like before.
+func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
+	var log publishLog
+	entered := make(chan struct{})
+	release := make(chan error)
+	fake := log.wrapRename(func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error {
+		close(entered)
+		return <-release
+	})
+	returned := make(chan error)
+	go func() { returned <- fake(0, nil, nil, 0, fileRenameInformationEx) }()
+	<-entered
+	mid := log.renameSnapshot()
+	if len(mid) != 1 || mid[0].done || mid[0].start.IsZero() || mid[0].class != fileRenameInformationEx {
+		t.Fatalf("a rename still executing must be recorded as entered and not done, got %+v", mid)
+	}
+	failure := errors.New("injected")
+	release <- failure
+	if err := <-returned; !errors.Is(err, failure) {
+		t.Fatalf("wrapRename must return the syscall's error, got %v", err)
+	}
+	after := log.renameSnapshot()
+	if len(after) != 1 || !after[0].done || !after[0].failed || after[0].end.Before(after[0].start) {
+		t.Fatalf("a returned rename must be recorded as done and failed, got %+v", after)
+	}
+
+	// The seam is on the real publish path.
+	var real publishLog
+	orig := ntSetRenameInformation
+	t.Cleanup(func() { ntSetRenameInformation = orig })
+	ntSetRenameInformation = real.wrapRename(orig)
+	base := t.TempDir()
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := real.renameSnapshot()
+	if len(calls) == 0 {
+		t.Fatal("InstallFile published without passing through ntSetRenameInformation")
+	}
+	last := calls[len(calls)-1]
+	if !last.done || last.failed {
+		t.Fatalf("the publishing rename must be recorded as done and successful, got %+v", calls)
+	}
+	t.Logf("InstallFile published through %s", renameClasses(calls))
 }
 
 // The publish primitive on its own. installFile's other steps all worked on the
