@@ -745,3 +745,57 @@ describe('filterEngine workload inventory fields (W04)', () => {
     expect(nonEmpty.sql).toMatch(/cardinality\("devices"\."workload_runtimes"\) > 0/i);
   });
 });
+
+// Log-shipping health W04 (#8611, feature #8607): a fleet filter for devices
+// whose log shipping has been failing for a sustained episode. The predicate
+// must agree with deriveLogShipping (services/logShippingHealth.ts); the
+// row-level agreement table runs against real Postgres in
+// __tests__/integration/logShippingFailingFilter.integration.test.ts.
+describe('filterEngine logShippingFailing (#8611)', () => {
+  const norm = (s: string) => s.replace(/"/g, '');
+
+  it('registers logShippingFailing as a yes/no boolean field with equals/notEquals', () => {
+    const def = getFieldDefinition('logShippingFailing');
+    expect(def).toBeDefined();
+    expect(def?.type).toBe('boolean');
+    expect(def?.operators).toEqual(['equals', 'notEquals']);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'equals', value: 'yes' } as FilterCondition).valid).toBe(true);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'contains', value: 'x' } as FilterCondition).valid).toBe(false);
+  });
+
+  it('equals yes emits the full predicate, with IS NOT NULL literally so the partial index is usable', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'logShippingFailing', operator: 'equals', value: 'yes' }));
+    const s = norm(q.sql);
+    expect(s).toContain("devices.status = 'online'");
+    expect(s).toContain("devices.log_shipping_state = 'failing'");
+    expect(s).toContain('devices.log_shipping_failure_started_at IS NOT NULL');
+    // The window comes from LOG_SHIPPING_SUSTAINED_MS (30 min), not a re-typed literal.
+    expect(s).toContain("devices.log_shipping_failure_started_at <= NOW() - (1800000 * interval '1 millisecond')");
+    expect(s).not.toMatch(/^not /i);
+    // No user value is bound: the predicate is entirely server-defined.
+    expect(q.params).toEqual([]);
+  });
+
+  it.each([
+    ['equals', 'no'],
+    ['equals', false],
+    ['equals', 'false'],
+    ['notEquals', 'yes'],
+  ] as const)('%s %s → negated, NULL-safe (COALESCE) so unknown devices read "not failing"', (operator, value) => {
+    const s = norm(render({ field: 'logShippingFailing', operator, value } as FilterCondition));
+    expect(s).toMatch(/^NOT COALESCE\(/);
+    expect(s).toContain('log_shipping_failure_started_at IS NOT NULL');
+  });
+
+  it('notEquals no → double negative resolves positive', () => {
+    const s = render({ field: 'logShippingFailing', operator: 'notEquals', value: 'no' });
+    expect(s).not.toMatch(/^not /i);
+    expect(norm(s)).toContain("devices.log_shipping_state = 'failing'");
+  });
+
+  it('is refused as an execution-target field (derived from agent-reported data)', () => {
+    expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
+    expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
+    expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
+  });
+});

@@ -2,6 +2,7 @@ import { and, sql, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { logShippingFailingPredicate } from './logShippingFailingPredicate';
 
 export interface DeviceStats {
   total: number;
@@ -10,6 +11,11 @@ export interface DeviceStats {
   offline: number;
   byStatus: Record<string, number>;
   migrationRequiredCount: number;
+  /**
+   * Online devices whose log shipping has been failing for a sustained episode
+   * (>= 30 min). Same predicate as the `logShippingFailing` filter (#8611).
+   */
+  logShippingFailingCount: number;
 }
 
 export const EMPTY_DEVICE_STATS: DeviceStats = {
@@ -18,6 +24,7 @@ export const EMPTY_DEVICE_STATS: DeviceStats = {
   offline: 0,
   byStatus: {},
   migrationRequiredCount: 0,
+  logShippingFailingCount: 0,
 };
 
 /**
@@ -43,6 +50,8 @@ export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceSt
       // Filtered within the same per-status group; summed across groups
       // below this yields the tenant-wide migration-required total.
       migrationRequiredCount: sql<number>`count(*) filter (where ${devices.migrationRequired})`,
+      // Non-zero only in the 'online' group (the predicate requires it).
+      logShippingFailingCount: sql<number>`count(*) filter (where ${logShippingFailingPredicate()})`,
     })
     .from(devices)
     .where(and(...conditions))
@@ -51,12 +60,14 @@ export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceSt
   const byStatus: Record<string, number> = {};
   let total = 0;
   let migrationRequiredCount = 0;
+  let logShippingFailingCount = 0;
   for (const row of rows) {
     const n = Number(row.count);
     byStatus[row.status] = n;
     total += n;
     migrationRequiredCount += Number(row.migrationRequiredCount ?? 0);
+    logShippingFailingCount += Number(row.logShippingFailingCount ?? 0);
   }
   const online = byStatus.online ?? 0;
-  return { total, online, offline: total - online, byStatus, migrationRequiredCount };
+  return { total, online, offline: total - online, byStatus, migrationRequiredCount, logShippingFailingCount };
 }

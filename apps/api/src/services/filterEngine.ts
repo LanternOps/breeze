@@ -16,6 +16,7 @@ import type {
   FilterPreviewDevice
 } from '@breeze/shared/types/filters';
 import { DEVICE_FUNCTION_KEYS } from '@breeze/shared/validators';
+import { logShippingFailingPredicate } from './logShippingFailingPredicate';
 export type {
   FilterOperator,
   FilterFieldCategory,
@@ -132,6 +133,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
   { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device OS reports a reboot is pending' },
+  // #8611: online device whose log shipping has been failing for >= 30 min
+  // (same verdict as deriveLogShipping; see logShippingFailingPredicate).
+  { key: 'logShippingFailing', label: 'Log Shipping Failing', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Online device whose log shipping has been failing for at least 30 minutes' },
 
   // Hierarchy fields
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
@@ -218,6 +222,7 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 // | hostsWorkloads/workloadRuntimes | agent-reported workload runtime detection (`devices.hosts_workloads` / `workload_runtimes`, denormalised from the agent's workload inventory report); the device supplies every value, so a fabricated "docker host" claim must not decide execution targeting | refused |
 // | status/watchdogStatus/isHeadless/uptimeSeconds/lastSeenIp | agent-reported device state         | allowed           |
 // | patches.pending/alerts.critical/system.rebootRequired | derived server-side signals, not a raw agent string | allowed |
+// | logShippingFailing             | derived from the agent's own heartbeat `logShipping` report (`devices.log_shipping_*`, #8607); the device chooses what it reports, so it can opt itself in or out of the set at will | refused |
 //
 // A per-group acknowledged override (letting an admin explicitly accept a
 // self-reported field for one specific group) is intentionally NOT built
@@ -256,6 +261,9 @@ const EXECUTION_REFUSED_AGENT_FIELDS: ReadonlySet<string> = new Set([
   // agent-reported workload runtime detection (#8193) — fabricable by the device.
   'hostsWorkloads',
   'workloadRuntimes',
+  // agent-reported log-shipping health (#8611): an observational signal the
+  // device's own heartbeat drives — never an execution-targeting key.
+  'logShippingFailing',
 ]);
 
 export function isAgentReportedFilterField(fieldKey: string): boolean {
@@ -450,6 +458,19 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     const negative = value === false || value === 'no' || value === 'false';
     const negate = (operator === 'notEquals') !== negative;
     return negate ? sql`NOT (${inner})` : inner;
+  }
+
+  // #8611: same yes/no polarity as the virtual booleans above, over a
+  // devices-only predicate shared with /devices/stats. The positive form is
+  // emitted bare so the partial index devices_log_shipping_failing_idx stays
+  // usable; the negative is COALESCEd because the predicate is NULL (not
+  // false) on rows that break the stored-state invariants, and "not failing"
+  // must still include them.
+  if (field === 'logShippingFailing') {
+    const inner = logShippingFailingPredicate();
+    const negative = value === false || value === 'no' || value === 'false';
+    const negate = (operator === 'notEquals') !== negative;
+    return negate ? sql`NOT COALESCE(${inner}, false)` : inner;
   }
 
   const fieldInfo = getColumnForField(field);
