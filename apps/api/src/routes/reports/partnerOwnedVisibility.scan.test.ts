@@ -831,7 +831,11 @@ describe('scan analyzer (#3198 W02 B1)', () => {
 // The tree
 // ---------------------------------------------------------------------------
 
-describe('partner-owned report visibility is mechanical (#3198 W01, per-site since W02)', () => {
+// Every test below walks the whole API source tree (five of them scan every
+// file end to end). Their runtime grows with the repo and with runner load:
+// the guarded-scope scan hit vitest's 5 s default on a loaded CI shard (#8629).
+// 30 s matches the other repo-scan contract tests.
+describe('partner-owned report visibility is mechanical (#3198 W01, per-site since W02)', { timeout: 30_000 }, () => {
   const files = ROOTS.flatMap((r) => walk(r));
 
   it('finds query sites on every guarded table (guards against a vacuous scan)', () => {
