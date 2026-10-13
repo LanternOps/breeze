@@ -14,8 +14,8 @@
 --   1. adds key_layout / key_prefix to backup_snapshot_id_reservations and
 --      backup_snapshot_retirements, and key_prefix to backup_snapshots
 --      (which already has key_layout);
---   2. widens backup_snapshots_key_layout_chk to accept 'prefixed_flat', and
---      adds layout CHECKs on the two other tables plus a pair CHECK on all
+--   2. widens backup_snapshots_key_layout_chk to accept 'prefixed_flat', adds
+--      the same layout CHECK to the two other tables, and a pair CHECK on all
 --      three (prefix present exactly for 'prefixed_flat'; no empty value, no
 --      leading/trailing or doubled slash; at most 256 characters);
 --   3. makes (key_layout, key_prefix) immutable on all three tables
@@ -56,19 +56,20 @@ ALTER TABLE backup_snapshot_retirements ADD COLUMN IF NOT EXISTS key_prefix text
 
 -- 2. CHECKs ------------------------------------------------------------------
 
--- 'device_scoped' stays accepted on snapshots only: it is the test-only value
--- readers must refuse (backupKeyLayout.ts), and existing rows may carry it.
-ALTER TABLE backup_snapshots DROP CONSTRAINT IF EXISTS backup_snapshots_key_layout_chk;
-ALTER TABLE backup_snapshots ADD CONSTRAINT backup_snapshots_key_layout_chk
-  CHECK (key_layout IN ('legacy_flat', 'prefixed_flat', 'device_scoped'));
-
-ALTER TABLE backup_snapshot_id_reservations DROP CONSTRAINT IF EXISTS backup_snapshot_id_reservations_key_layout_chk;
-ALTER TABLE backup_snapshot_id_reservations ADD CONSTRAINT backup_snapshot_id_reservations_key_layout_chk
-  CHECK (key_layout IN ('legacy_flat', 'prefixed_flat'));
-
-ALTER TABLE backup_snapshot_retirements DROP CONSTRAINT IF EXISTS backup_snapshot_retirements_key_layout_chk;
-ALTER TABLE backup_snapshot_retirements ADD CONSTRAINT backup_snapshot_retirements_key_layout_chk
-  CHECK (key_layout IN ('legacy_flat', 'prefixed_flat'));
+-- 'device_scoped' stays accepted: it is the value readers must refuse
+-- (backupKeyLayout.ts), existing snapshot rows may carry it, and a snapshot
+-- row's layout is copied to the reservation the reserve-id trigger
+-- synthesizes for it, so all three tables accept the same set.
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['backup_snapshots', 'backup_snapshot_id_reservations', 'backup_snapshot_retirements'] LOOP
+    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', t, t || '_key_layout_chk');
+    EXECUTE format(
+      'ALTER TABLE %I ADD CONSTRAINT %I CHECK (key_layout IN (''legacy_flat'', ''prefixed_flat'', ''device_scoped''))',
+      t, t || '_key_layout_chk');
+  END LOOP;
+END $$;
 
 -- The prefix is present exactly for 'prefixed_flat'. The full prefix grammar
 -- (S3 safe characters, no '.'/'..' segment, no 'snapshots' segment) is

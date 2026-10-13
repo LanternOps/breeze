@@ -108,8 +108,7 @@ describe('backup snapshot key root schema', () => {
 
     runDb('(e) refuses an unknown layout', async () => {
       const t = await seedWriteTenant();
-      const layout = table === 'backup_snapshots' ? 'nested_v2' : 'device_scoped';
-      expect(await expectSqlState(() => insert(t, sid('e'), { layout, prefix: null }))).toBe('23514');
+      expect(await expectSqlState(() => insert(t, sid('e'), { layout: 'nested_v2', prefix: null }))).toBe('23514');
     });
 
     runDb('(g) the root is immutable', async () => {
@@ -178,8 +177,12 @@ describe('backup snapshot key root schema', () => {
     const t = await seedWriteTenant();
     const prefixedId = sid('i-prefixed');
     const legacyId = sid('i-legacy');
+    const otherId = sid('i-other');
     await insertSnapshot(t, prefixedId, PREFIXED);
     await insertSnapshot(t, legacyId, LEGACY);
+    // A layout readers refuse is still recorded (and refused) consistently.
+    await insertSnapshot(t, otherId, { layout: 'device_scoped', prefix: null });
+    expect(await reservationRow(otherId)).toMatchObject({ key_layout: 'device_scoped', key_prefix: null });
 
     expect(await reservationRow(prefixedId)).toMatchObject({
       source: 'legacy_published', key_layout: 'prefixed_flat', key_prefix: P,
