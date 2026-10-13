@@ -320,6 +320,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/portal/profile.ts
   'PATCH /api/v1/portal/profile': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/profile/password': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/approvals.ts
+  'POST /api/v1/portal/approvals/:id/approve': 'portal session: portal session auth (portalAuthMiddleware); approver check against the session email + decision service re-check',
+  'POST /api/v1/portal/approvals/:id/deny': 'portal session: portal session auth (portalAuthMiddleware); approver check against the session email + decision service re-check',
   // routes/portal/quotes.ts
   'POST /api/v1/portal/quotes/:id/accept': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/decline': 'portal session: portal session auth (portalAuthMiddleware)',
