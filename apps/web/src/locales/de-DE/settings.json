@@ -1431,7 +1431,11 @@
       "days_overdue": "Überfällige Tage",
       "pay_link": "Zahlungslink",
       "charge_total": "Abbuchungsbetrag gesamt",
-      "attempted_amount": "Versuchter Zahlungsbetrag"
+      "attempted_amount": "Versuchter Zahlungsbetrag",
+      "approval_ask": "Freigabeanfrage",
+      "approval_snapshot": "Freigabe-Kennzahlen",
+      "approval_expires": "Freigabefrist",
+      "approval_status": "Freigabestatus"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Automatische Zahlungen fortgesetzt",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Beleg für Onlinezahlung",
-      "payment_failed": "Zahlung konnte nicht abgeschlossen werden"
+      "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
+      "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
+      "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
+      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe"
     }
   },
   "inboundEmail": {

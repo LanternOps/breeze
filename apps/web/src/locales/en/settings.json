@@ -1431,7 +1431,11 @@
       "days_overdue": "Days overdue",
       "pay_link": "Payment link",
       "charge_total": "Total charge",
-      "attempted_amount": "Attempted payment amount"
+      "attempted_amount": "Attempted payment amount",
+      "approval_ask": "Approval ask",
+      "approval_snapshot": "Approval figures",
+      "approval_expires": "Approval deadline",
+      "approval_status": "Approval status"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Automatic payments resumed",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Online payment receipt",
-      "payment_failed": "Payment could not be completed"
+      "payment_failed": "Payment could not be completed",
+      "ticket_approval_requested_approver": "Work approval request (approver)",
+      "ticket_approval_requested_notify": "Work approval request (for information)",
+      "ticket_approval_decided": "Work approval decision"
     }
   },
   "inboundEmail": {

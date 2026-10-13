@@ -1431,7 +1431,11 @@
       "days_overdue": "Días de atraso",
       "pay_link": "Enlace de pago",
       "charge_total": "Cargo total",
-      "attempted_amount": "Monto del pago intentado"
+      "attempted_amount": "Monto del pago intentado",
+      "approval_ask": "Solicitud de aprobación",
+      "approval_snapshot": "Cifras de la aprobación",
+      "approval_expires": "Fecha límite de aprobación",
+      "approval_status": "Estado de la aprobación"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Pagos automáticos reanudados",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Recibo de pago en línea",
-      "payment_failed": "No se pudo completar el pago"
+      "payment_failed": "No se pudo completar el pago",
+      "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
+      "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
+      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo"
     }
   },
   "inboundEmail": {

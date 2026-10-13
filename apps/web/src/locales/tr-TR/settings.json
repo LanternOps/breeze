@@ -1431,7 +1431,11 @@
       "days_overdue": "Gecikme günü",
       "pay_link": "Ödeme bağlantısı",
       "charge_total": "Toplam tahsilat",
-      "attempted_amount": "Denenen ödeme tutarı"
+      "attempted_amount": "Denenen ödeme tutarı",
+      "approval_ask": "Onay talebi",
+      "approval_snapshot": "Onay rakamları",
+      "approval_expires": "Onay son tarihi",
+      "approval_status": "Onay durumu"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Otomatik ödemeler devam ediyor",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Çevrimiçi ödeme makbuzu",
-      "payment_failed": "Ödeme tamamlanamadı"
+      "payment_failed": "Ödeme tamamlanamadı",
+      "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
+      "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
+      "ticket_approval_decided": "İş onayı kararı"
     }
   },
   "inboundEmail": {

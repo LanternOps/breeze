@@ -1431,7 +1431,11 @@
       "days_overdue": "Jours de retard",
       "pay_link": "Lien de paiement",
       "charge_total": "Montant total prélevé",
-      "attempted_amount": "Montant du paiement tenté"
+      "attempted_amount": "Montant du paiement tenté",
+      "approval_ask": "Demande d’approbation",
+      "approval_snapshot": "Chiffres de l’approbation",
+      "approval_expires": "Date limite d’approbation",
+      "approval_status": "Statut de l’approbation"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1443,7 +1447,10 @@
       "autopay_resumed": "Paiements automatiques repris",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Reçu de paiement en ligne",
-      "payment_failed": "Le paiement n’a pas pu être effectué"
+      "payment_failed": "Le paiement n’a pas pu être effectué",
+      "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
+      "ticket_approval_requested_notify": "Demande d’approbation de travaux (à titre informatif)",
+      "ticket_approval_decided": "Décision d’approbation de travaux"
     }
   },
   "inboundEmail": {
