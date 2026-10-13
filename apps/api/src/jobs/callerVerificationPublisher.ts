@@ -70,7 +70,11 @@ async function handleRowFailure(row: Row, err: unknown): Promise<void> {
   if (count < MAX_DELIVERY_FAILURES || row.status !== 'pending' || row.method === 'callback_attestation') return;
   failures.delete(row.id);
   try {
-    await applyDecision({ verificationId: row.id, decision: { kind: 'undeliverable', reason: row.method === 'sms' ? 'sms_failed' : 'email_failed' } });
+    // Workstation give-ups use helper_outdated: it is the only workstation
+    // reason in the frozen undeliverable set, and the actionable advice
+    // (check the agent and Assist helper on that device) is the same.
+    const reason = row.method === 'sms' ? 'sms_failed' : row.method === 'workstation' ? 'helper_outdated' : 'email_failed';
+    await applyDecision({ verificationId: row.id, decision: { kind: 'undeliverable', reason } });
   } catch (inner) {
     captureException(inner instanceof Error ? inner : new Error(String(inner)), undefined, { verificationId: row.id });
   }

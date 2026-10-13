@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   db: null as any, deliver: vi.fn(), inTx: vi.fn(), twilio: null as any, email: null as any,
+  deliverWorkstation: vi.fn(), prepareWorkstation: vi.fn(), readyUsers: vi.fn(async () => [] as string[]),
 }));
 vi.mock('../../db', () => ({
   db: new Proxy({}, { get: (_, key) => m.db[key] }),
@@ -10,6 +11,8 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: (f: () => unknown) => f(),
 }));
 vi.mock('./deliverers/link', () => ({ deliverLink: m.deliver }));
+vi.mock('./deliverers/workstation', () => ({ deliverWorkstation: m.deliverWorkstation, prepareWorkstationVerification: m.prepareWorkstation }));
+vi.mock('./workstationCapabilities', () => ({ workstationReadyUsers: m.readyUsers }));
 vi.mock('../twilio', () => ({ getTwilioService: (mode: string) => (mode === 'messaging' ? m.twilio : null) }));
 vi.mock('../email', () => ({ getEmailService: () => m.email }));
 
@@ -83,21 +86,33 @@ describe('linkAvailable diagnostics', () => {
 });
 
 describe('default ports', () => {
-  it('route sms/email to the link adapter and leave workstation unavailable', async () => {
+  it('route sms/email to the link adapter and workstation to the workstation adapter', async () => {
     expect(await callerVerificationPorts.available('sms', 'org')).toBe(true);
     expect(await callerVerificationPorts.available('email', 'org')).toBe(true);
+    // Workstation readiness is per device: none without a device, else the
+    // device's live helper report.
+    expect(await callerVerificationPorts.available('workstation', 'org')).toBe(false);
     expect(await callerVerificationPorts.available('workstation', 'org', 'device')).toBe(false);
+    m.readyUsers.mockResolvedValueOnce(['alex']);
+    expect(await callerVerificationPorts.available('workstation', 'org', 'device')).toBe(true);
+    expect(m.readyUsers).toHaveBeenLastCalledWith('org', 'device');
 
     await callerVerificationPorts.prepare(row({ method: 'email' }), token);
     expect(state.calls.some((c) => c.name === 'update')).toBe(true);
-    await expect(callerVerificationPorts.prepare(row({ method: 'workstation' }), null)).rejects.toMatchObject({ code: 'method_disabled' });
+    await callerVerificationPorts.prepare(row({ method: 'workstation' }), null);
+    expect(m.prepareWorkstation).toHaveBeenCalledWith(expect.objectContaining({ method: 'workstation' }));
+    await expect(callerVerificationPorts.prepare(row({ method: 'callback_attestation' }), null)).rejects.toMatchObject({ code: 'method_disabled' });
 
     state.results.push([{ method: 'sms' }]);
     await callerVerificationPorts.deliver(id);
     expect(m.deliver).toHaveBeenCalledWith(id);
 
-    state.results.push([{ method: 'workstation' }]);
-    await expect(callerVerificationPorts.deliver(id)).rejects.toMatchObject({ code: 'method_disabled' });
+    state.results.push([{ method: 'workstation' }], [{ method: 'workstation' }]);
+    await callerVerificationPorts.deliver(id);
+    expect(m.deliverWorkstation).toHaveBeenCalledWith(id);
     expect(m.deliver).toHaveBeenCalledTimes(1);
+
+    state.results.push([{ method: 'callback_attestation' }], [{ method: 'callback_attestation' }]);
+    await expect(callerVerificationPorts.deliver(id)).rejects.toMatchObject({ code: 'method_disabled' });
   });
 });

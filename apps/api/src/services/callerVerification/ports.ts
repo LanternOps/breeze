@@ -34,18 +34,25 @@ export const callerVerificationPorts: CallerVerificationPorts = {
   mailboxes: async ({ orgId, target }) => [...await (await import('./mailboxes')).fetchTargetMailboxes(orgId, target)],
   administrativeEligible: async () => false,
   consumeStepUp: async () => { throw new Invalid('stepup_invalidated', 'Interactive step-up adapter is unavailable'); },
-  // W03: sms/email go to the link adapter; workstation stays unavailable until
-  // W02 installs its adapter. linkPorts is imported lazily (it reaches the
-  // deliverer, which imports the service that imports these ports).
-  available: async (method) => (method === 'sms' || method === 'email'
-    ? (await import('./linkPorts')).linkAvailable(method)
-    : false),
+  // W03: sms/email go to the link adapter. W02: workstation goes to the
+  // workstation adapter. Both are imported lazily (they reach deliverers that
+  // import the service, which imports these ports).
+  available: async (method, orgId, deviceId) => {
+    if (method === 'sms' || method === 'email') return (await import('./linkPorts')).linkAvailable(method);
+    // Workstation readiness is per device + OS user. Without a device there is
+    // nothing to check here; methodsForContact aggregates over the contact's
+    // device suggestions instead.
+    if (!deviceId) return false;
+    return (await (await import('./workstationCapabilities')).workstationReadyUsers(orgId, deviceId)).length > 0;
+  },
   prepare: async (row, token) => {
     if (row.method === 'sms' || row.method === 'email') return (await import('./linkPorts')).prepareLink(row, token);
+    if (row.method === 'workstation') return (await import('./deliverers/workstation')).prepareWorkstationVerification(row);
     throw new Invalid('method_disabled', 'Delivery adapter is unavailable');
   },
   deliver: async (id) => {
     if (await (await import('./linkPorts')).deliverIfLink(id)) return;
+    if (await (await import('./workstationPorts')).deliverIfWorkstation(id)) return;
     throw new Invalid('method_disabled', 'Delivery adapter is unavailable');
   },
 };

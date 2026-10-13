@@ -77,6 +77,16 @@ it('marks a row undeliverable after 3 consecutive delivery failures', async () =
   expect(m.applyDecision).toHaveBeenCalledWith({ verificationId: 'flaky', decision: { kind: 'undeliverable', reason: 'sms_failed' } });
 });
 
+it.each([
+  ['email', 'email_failed'],
+  ['workstation', 'helper_outdated'],
+])('records a %s delivery give-up with that method\'s reason', async (method, reason) => {
+  m.rows = [row({ id: `flaky-${method}`, method })];
+  m.deliver.mockRejectedValue(new Error('boom'));
+  for (let i = 0; i < 3; i++) await publishCallerVerificationEffects();
+  expect(m.applyDecision).toHaveBeenCalledWith({ verificationId: `flaky-${method}`, decision: { kind: 'undeliverable', reason } });
+});
+
 it('notifies every security recipient with a per-verification dedupe key, emails them, then marks the rejection', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   await publishCallerVerificationEffects();
