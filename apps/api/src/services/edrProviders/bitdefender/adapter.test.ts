@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { EdrProviderRequestError, type EdrAdapterContext, type GuardedFetch } from '../types';
+import type { EdrActionKey } from '@breeze/shared';
+import {
+  EdrProviderRequestError, type EdrActionRequest, type EdrActionSupport, type EdrActionTargetFacts,
+  type EdrAdapterContext, type GuardedFetch,
+} from '../types';
 import { bitdefenderAdapter as adapter } from './adapter';
 
 const fx = (n: string) => readFileSync(join(__dirname, '__fixtures__', n), 'utf8');
@@ -358,5 +362,122 @@ describe('listDetections', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('response actions', () => {
+  const T = { vendorTenantId: C1, apiHost: null };
+  const ACT = '7f0c0000-0000-4000-8000-00000000a001';
+  const INCIDENTS_OFF = 'note:incidents: API not enabled on key';
+  const facts = (over: Partial<EdrActionTargetFacts> = {}): EdrActionTargetFacts => ({
+    vendorEndpointId: 'ep1', osPlatform: 'windows', isolationState: 'not_isolated', online: true,
+    tenantUnsupportedActions: [], connectionCapabilityNotes: [], ...over,
+  });
+  const endpointReq = (action: 'isolate' | 'unisolate' | 'scan' | 'update_agent'): EdrActionRequest =>
+    ({ action, target: { kind: 'endpoint', vendorEndpointId: 'ep1' } });
+
+  it('declares isolate/unisolate/scan with a 30/min actions budget; delivery stays poll', () => {
+    expect(adapter.capabilities.actions).toEqual(['isolate', 'unisolate', 'scan']);
+    expect(adapter.capabilities.operationBudgets?.actions).toEqual({ perMinute: 30 });
+    expect(adapter.capabilities.detectionDelivery).toBe('poll');
+  });
+
+  describe('supportsAction', () => {
+    const cases: Array<[string, Partial<EdrActionTargetFacts>, EdrActionKey, EdrActionSupport]> = [
+      ['rule 1: action outside capabilities', {}, 'kill_process', { ok: false, reason: 'Not supported by Bitdefender GravityZone' }],
+      ['rule 2: endpoint not linked', { vendorEndpointId: null }, 'scan', { ok: false, reason: 'Endpoint not linked to this vendor' }],
+      ['rule 3: isolate without incidents API', { connectionCapabilityNotes: [INCIDENTS_OFF] }, 'isolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['rule 3: unisolate without incidents API', { connectionCapabilityNotes: [INCIDENTS_OFF], isolationState: 'isolated' }, 'unisolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['rule 3 does not apply to scan', { connectionCapabilityNotes: [INCIDENTS_OFF] }, 'scan', { ok: true }],
+      ['rule 4: licence denial', { tenantUnsupportedActions: ['scan'] }, 'scan',
+        { ok: false, reason: "This company's GravityZone licence does not include this action" }],
+      ['rule 5: already isolated', { isolationState: 'isolated' }, 'isolate', { ok: false, reason: 'Already isolated' }],
+      ['rule 5: not isolated', { isolationState: 'not_isolated' }, 'unisolate', { ok: false, reason: 'Not isolated' }],
+      ['rule 5: pending allows isolate', { isolationState: 'pending' }, 'isolate', { ok: true }],
+      ['rule 5: pending allows unisolate', { isolationState: 'pending' }, 'unisolate', { ok: true }],
+      ['rule 5: unknown allows isolate', { isolationState: 'unknown' }, 'isolate', { ok: true }],
+      ['rule 5: null allows unisolate', { isolationState: null }, 'unisolate', { ok: true }],
+      ['rule 5 does not apply to scan', { isolationState: 'isolated' }, 'scan', { ok: true }],
+      ['rule 6: ok', {}, 'isolate', { ok: true }],
+      ['order: not-supported beats unlinked', { vendorEndpointId: null }, 'rollback', { ok: false, reason: 'Not supported by Bitdefender GravityZone' }],
+      ['order: unlinked beats incidents note', { vendorEndpointId: null, connectionCapabilityNotes: [INCIDENTS_OFF] }, 'isolate',
+        { ok: false, reason: 'Endpoint not linked to this vendor' }],
+      ['order: incidents note beats licence denial', { connectionCapabilityNotes: [INCIDENTS_OFF], tenantUnsupportedActions: ['isolate'] }, 'isolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['order: licence denial beats already-isolated', { isolationState: 'isolated', tenantUnsupportedActions: ['isolate'] }, 'isolate',
+        { ok: false, reason: "This company's GravityZone licence does not include this action" }],
+    ];
+    it.each(cases)('%s', (_name, over, action, expected) => {
+      expect(adapter.supportsAction!(facts(over), action)).toEqual(expected);
+    });
+  });
+
+  describe('performAction', () => {
+    const routes: Array<['isolate' | 'unisolate' | 'scan', string, Reply, unknown]> = [
+      ['isolate', 'incidents.createIsolateEndpointTask', ok('action-isolate-ok.json'), { status: 'succeeded' }],
+      ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', ok('action-restore-ok.json'), { status: 'succeeded' }],
+      ['scan', 'network.createScanTask', ok('action-scan-ok.json'), { status: 'submitted', vendorActionId: '6a0000000000000000000b01' }],
+      ['scan', 'network.createScanTask', rpc(true), { status: 'succeeded' }],
+    ];
+    it.each(routes)('%s -> %s maps the result and passes the idempotency key as request id', async (action, key, reply, expected) => {
+      const { ctx, calls } = makeCtx({ [key]: reply });
+      const spy = vi.mocked(ctx.fetch);
+      expect(await adapter.performAction!(ctx, T, endpointReq(action), ACT)).toEqual(expected);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.key).toBe(key);
+      const sent = JSON.parse(spy.mock.calls[0]![1].body!);
+      expect(sent).toMatchObject({ id: ACT });
+      expect(JSON.stringify(sent.params)).toContain('ep1');
+    });
+
+    it.each<EdrActionRequest>([
+      endpointReq('update_agent'),
+      { action: 'kill_process', target: { kind: 'process', vendorEndpointId: 'ep1', pid: 4 } },
+      { action: 'rollback', target: { kind: 'detection', vendorDetectionId: 'd1', vendorKind: 'incident' } },
+      { action: 'quarantine_delete', target: { kind: 'quarantine_item', vendorItemId: 'q1' } },
+      { action: 'isolate', target: { kind: 'process', vendorEndpointId: 'ep1', pid: 4 } } as unknown as EdrActionRequest,
+    ])('refuses $action / $target.kind with unsupported_action and no vendor call', async (req) => {
+      const { ctx, calls } = makeCtx({});
+      await expect(adapter.performAction!(ctx, T, req, ACT)).rejects.toMatchObject({
+        code: 'unsupported_action', reauth: false, scope: 'operation',
+      });
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe('getActionStatus', () => {
+    it.each([[1, { status: 'submitted' }], [2, { status: 'submitted' }], [99, { status: 'submitted' }],
+      [3, { status: 'succeeded' }], [4, { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' }]])(
+      'vendor status %s -> %j', async (code, expected) => {
+        const { ctx } = makeCtx({ 'network.getScanTasksList': rpc({ items: [{ id: 't1', status: code }] }) });
+        expect(await adapter.getActionStatus!(ctx, T, 't1')).toEqual(expected);
+      },
+    );
+  });
+
+  describe('reconcileAction (read-only)', () => {
+    const detail = (isIsolated?: boolean) => rpc({ id: 'ep1', ...(isIsolated === undefined ? {} : { isIsolated }) });
+    it.each([
+      ['isolate', true, 'applied'], ['isolate', false, 'not_applied'], ['isolate', undefined, 'unknown'],
+      ['unisolate', true, 'not_applied'], ['unisolate', false, 'applied'], ['unisolate', undefined, 'unknown'],
+    ] as const)('%s with isIsolated=%s -> %s', async (action, flag, verdict) => {
+      const { ctx, calls } = makeCtx({ 'network.getManagedEndpointDetails': detail(flag) });
+      expect(await adapter.reconcileAction!(ctx, T, endpointReq(action))).toBe(verdict);
+      expect(calls.map((c) => c.key)).toEqual(['network.getManagedEndpointDetails']);
+    });
+
+    it('scan is always unknown and makes no vendor call', async () => {
+      const { ctx, calls } = makeCtx({});
+      expect(await adapter.reconcileAction!(ctx, T, endpointReq('scan'))).toBe('unknown');
+      expect(calls).toHaveLength(0);
+    });
+
+    it('never calls a write method', async () => {
+      const { ctx, calls } = makeCtx({ 'network.getManagedEndpointDetails': detail(true) });
+      await adapter.reconcileAction!(ctx, T, endpointReq('isolate'));
+      expect(calls.every((c) => !/\.create/.test(c.key))).toBe(true);
+    });
   });
 });

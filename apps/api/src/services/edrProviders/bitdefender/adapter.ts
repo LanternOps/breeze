@@ -1,9 +1,15 @@
 import { z } from 'zod';
+import type { EdrActionKey } from '@breeze/shared';
 import {
   EdrProviderRequestError,
+  type EdrActionRequest,
+  type EdrActionResult,
+  type EdrActionSupport,
+  type EdrActionTargetFacts,
   type EdrAdapterContext,
   type EdrDetectionPage,
   type EdrProviderAdapter,
+  type EdrReconcileVerdict,
   type EdrTestResult,
   type VendorEdrDetection,
   type VendorEdrEndpointDetail,
@@ -28,6 +34,15 @@ function clientFor(ctx: EdrAdapterContext): GravityZoneClient {
 const isReq = (e: unknown): e is EdrProviderRequestError => e instanceof EdrProviderRequestError;
 const isDegradation = (e: unknown): e is EdrProviderRequestError =>
   isReq(e) && (e.code === 'api_not_enabled' || e.code === 'licence');
+
+/** The `capabilities_snapshot` entry for `testConnection`'s capability note (`note:` prefix added by capabilitySnapshot). */
+const INCIDENTS_API_OFF_NOTE = 'note:incidents: API not enabled on key';
+
+function unsupportedAction(req: EdrActionRequest): EdrProviderRequestError {
+  return new EdrProviderRequestError(`GravityZone does not support ${req.action} on a ${req.target.kind} target`, {
+    code: 'unsupported_action', reauth: false, scope: 'operation',
+  });
+}
 
 // ---- cursor ---------------------------------------------------------------
 
@@ -75,12 +90,15 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     perTenantHost: false,
     detectionDelivery: 'poll', // push arrives in W03
     detectionStatusModel: 'delta_with_updates',
-    actions: [], // W03
+    actions: ['isolate', 'unisolate', 'scan'],
     endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
     installer: 'none', // W06
     requestBudget: { perSecond: 10 },
     // incidents: the vendor allows 3 requests / 60 s per key; 2/min leaves headroom.
-    operationBudgets: { inventory: { perSecond: 5 }, companies: { perSecond: 5 }, incidents: { perMinute: 2 } },
+    operationBudgets: { inventory: { perSecond: 5 }, companies: { perSecond: 5 }, incidents: { perMinute: 2 },
+      // Vendor scan/quarantine task cap: 30 / min.
+      actions: { perMinute: 30 },
+    },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
     maxActionTargets: 1000,
     firstSyncLookbackDays: 30,
@@ -234,6 +252,52 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
     }
     return out;
+  },
+
+  supportsAction(facts: EdrActionTargetFacts, action: EdrActionKey): EdrActionSupport {
+    // Rules are evaluated in order; the first failing rule supplies the reason.
+    if (!bitdefenderAdapter.capabilities.actions.includes(action)) {
+      return { ok: false, reason: 'Not supported by Bitdefender GravityZone' };
+    }
+    if (facts.vendorEndpointId === null) return { ok: false, reason: 'Endpoint not linked to this vendor' };
+    const isolation = action === 'isolate' || action === 'unisolate';
+    if (isolation && facts.connectionCapabilityNotes.includes(INCIDENTS_API_OFF_NOTE)) {
+      return { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' };
+    }
+    if (facts.tenantUnsupportedActions.includes(action)) {
+      return { ok: false, reason: "This company's GravityZone licence does not include this action" };
+    }
+    if (action === 'isolate' && facts.isolationState === 'isolated') return { ok: false, reason: 'Already isolated' };
+    if (action === 'unisolate' && facts.isolationState === 'not_isolated') return { ok: false, reason: 'Not isolated' };
+    return { ok: true };
+  },
+
+  async performAction(ctx, _tenant, req, idempotencyKey): Promise<Exclude<EdrActionResult, { status: 'failed' }>> {
+    if (req.target.kind !== 'endpoint' || (req.action !== 'isolate' && req.action !== 'unisolate' && req.action !== 'scan')) {
+      throw unsupportedAction(req);
+    }
+    const client = clientFor(ctx);
+    const id = req.target.vendorEndpointId;
+    const r = req.action === 'isolate' ? await client.createIsolateEndpointTask(id, idempotencyKey)
+      : req.action === 'unisolate' ? await client.createRestoreEndpointFromIsolationTask(id, idempotencyKey)
+        : await client.createScanTask(id, idempotencyKey);
+    return r.kind === 'accepted' ? { status: 'succeeded' } : { status: 'submitted', vendorActionId: r.taskId };
+  },
+
+  async getActionStatus(ctx, _tenant, vendorActionId) {
+    switch (await clientFor(ctx).getScanTaskStatus(vendorActionId)) {
+      case 'finished': return { status: 'succeeded' };
+      case 'failed': return { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' };
+      default: return { status: 'submitted' };
+    }
+  },
+
+  async reconcileAction(ctx, _tenant, req): Promise<EdrReconcileVerdict> {
+    // Read-only: never a write method. A scan's effect is not observable.
+    if (req.target.kind !== 'endpoint' || (req.action !== 'isolate' && req.action !== 'unisolate')) return 'unknown';
+    const isolated = (await clientFor(ctx).getEndpointDetails(req.target.vendorEndpointId)).isIsolated;
+    if (typeof isolated !== 'boolean') return 'unknown';
+    return isolated === (req.action === 'isolate') ? 'applied' : 'not_applied';
   },
 
   async listDetections(ctx, tenant, cursorRaw, now): Promise<EdrDetectionPage> {
