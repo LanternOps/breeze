@@ -2431,6 +2431,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// roles retain the legacy fallback when no kernel session is available.
 	if verifiedWinSession != "" {
 		session.WinSessionID = verifiedWinSession
+		session.WinSessionVerified = true
 		if verifiedWinSession != claimedWinSession {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
@@ -3172,6 +3173,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"canCapture", sanitized.CanCapture,
 				"canClipboard", sanitized.CanClipboard,
 				"displayServer", sanitized.DisplayServer,
+				"callerVerify", sanitized.CallerVerify,
 			)
 		}
 	case ipc.TypeTCCStatus:
@@ -3472,6 +3474,11 @@ func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *i
 	}
 	if !session.HasScope("clipboard") {
 		sanitized.CanClipboard = false
+	}
+	// Caller verification (#6354 W02) is rendered only by the Assist helper
+	// that also owns the consent prompt; a native helper never qualifies.
+	if session.HelperRole != ipc.HelperRoleAssist || !session.HasScope(ipc.ScopeConsentUI) {
+		sanitized.CallerVerify = false
 	}
 	return &sanitized
 }

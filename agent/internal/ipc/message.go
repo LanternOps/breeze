@@ -270,6 +270,10 @@ type Capabilities struct {
 	CanCapture    bool   `json:"canCapture"`
 	CanClipboard  bool   `json:"canClipboard"`
 	DisplayServer string `json:"displayServer"`
+	// CallerVerify is advertised by an Assist helper that can render the
+	// caller-verification card (#6354 W02). Old helpers omit it (false). The
+	// broker keeps it only for an assist-role session holding consent_ui.
+	CallerVerify bool `json:"callerVerify"`
 }
 
 // IPCCommand is a command forwarded from root daemon to user helper.
