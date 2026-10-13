@@ -198,11 +198,15 @@ export function terminalPayloadErasureSet(): { payload: SQL } {
     keys.reduce<SQL>((expr, key) => sql`${expr} - ${key}::text`, base);
   const stripped = subtract(sql`${deviceCommands.payload}`, TERMINAL_PAYLOAD_STRIP_KEYS);
   // Type-scoped branches: only rows of that command type lose the extra keys.
-  const typeBranches = Object.entries(TYPE_SCOPED_TERMINAL_STRIP_KEYS).map(
-    ([type, keys]) => sql`WHEN ${deviceCommands.type} = ${type} THEN ${subtract(stripped, keys)}`,
+  // Built with nested template fragments (not sql.join) so every caller's
+  // `sql`-template-only drizzle mock keeps working.
+  const caseExpr = Object.entries(TYPE_SCOPED_TERMINAL_STRIP_KEYS).reduce<SQL>(
+    (expr, [type, keys]) =>
+      sql`${expr} WHEN ${deviceCommands.type} = ${type} THEN ${subtract(stripped, keys)}`,
+    sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL`,
   );
   return {
-    payload: sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL ${sql.join(typeBranches, sql` `)} ELSE ${stripped} END`,
+    payload: sql`${caseExpr} ELSE ${stripped} END`,
   };
 }
 

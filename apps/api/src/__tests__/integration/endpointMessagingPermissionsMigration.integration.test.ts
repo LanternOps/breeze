@@ -1,5 +1,5 @@
 /**
- * Live-DB replay test for 2026-12-27-160000-endpoint-messaging-permissions.sql
+ * Live-DB replay test for 2026-12-27-190000-endpoint-messaging-permissions.sql
  * (#8741). Pattern: sitesSetLocationPermissionMigration.integration.test.ts.
  * Partner Technician + Org Technician + Org Admin (the devices:execute holders);
  * never Org Viewer or a custom role merely named "Org Admin".
@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 
 const RUN = !!process.env.DATABASE_URL;
-const MIGRATION = '2026-12-27-160000-endpoint-messaging-permissions.sql';
+const MIGRATION = '2026-12-27-190000-endpoint-messaging-permissions.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 
 const notices: string[] = [];
@@ -50,7 +50,7 @@ async function grantedIds(roleId: string): Promise<string[]> {
   return rows.map((r) => r.permission_id as string);
 }
 
-describe.skipIf(!RUN)('migration: 2026-12-27-160000-endpoint-messaging-permissions', () => {
+describe.skipIf(!RUN)('migration: 2026-12-27-190000-endpoint-messaging-permissions', () => {
   it('each endpoint_messages permission row exists exactly once', async () => {
     await replay();
     for (const action of ['send', 'read']) {

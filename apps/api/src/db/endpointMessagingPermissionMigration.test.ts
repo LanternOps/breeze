@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2026-12-27-160000-endpoint-messaging-permissions.sql',
+  __dirname, '../../migrations/2026-12-27-190000-endpoint-messaging-permissions.sql',
 );
 
 /**
@@ -13,7 +13,7 @@ const FILE = path.resolve(
  * upgrade back-fills from here). If they disagree, two databases disagree about
  * who may push a message onto a customer's desktop.
  */
-describe('2026-12-27-160000-endpoint-messaging-permissions.sql', () => {
+describe('2026-12-27-190000-endpoint-messaging-permissions.sql', () => {
   // Comments are prose; assert on the executable statements only.
   const sql = readFileSync(FILE, 'utf8').replace(/^\s*--.*$/gm, '');
 
