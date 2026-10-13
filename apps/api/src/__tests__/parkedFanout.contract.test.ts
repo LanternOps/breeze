@@ -187,6 +187,8 @@ function exemptByPattern(file: string): boolean {
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
   'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
+  'services/automationTargetValidation.ts': 'write-time validation of an automation target config: reads device_groups/devices ids only to check they sit in the owner org; selects no targets and dispatches nothing',
+  'services/scriptRunTargets.ts': 'resolves saved device groups (org-owned; the holding org has none) via the shared resolver, which keeps eq(devices.orgId, groupOrgId) on every query; the resulting run goes through executeScriptOnDevices admission, and command delivery refuses parked devices',
   'services/assetPlacement.ts': 'resolves placement authority by joining the ONE device already linked to a discovered asset (by id, within the asset org); selects no targets',
   'services/autopay/enrollmentLifecycle.ts': 'org payment lifecycle rejects hidden orgs; never reads devices or dispatches device work',
   'services/timeEntryService.ts': 'request path: rejects a hidden org a caller names on a time entry (#4186); never reads devices or dispatches device work',
