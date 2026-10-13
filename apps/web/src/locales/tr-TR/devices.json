@@ -1406,6 +1406,10 @@
         "unspecified": "Belirtilmemiş"
       }
     },
+    "logsNotArriving": {
+      "label": "Seviye yükseltme sonrası günlükler",
+      "text": "Günlük seviyesi yükseltildiğinden beri günlük alınmadı ({{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Cihaz ayrıntıları getirilemedi",

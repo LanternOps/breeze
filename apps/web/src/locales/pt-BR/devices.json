@@ -1406,6 +1406,10 @@
         "unspecified": "Não especificado"
       }
     },
+    "logsNotArriving": {
+      "label": "Logs após elevar o nível",
+      "text": "Nenhum log recebido desde que o nível de log foi elevado ({{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",

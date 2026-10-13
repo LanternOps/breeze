@@ -99,6 +99,11 @@ type DeviceInfo = {
     failingSince: string | null;
     lastError: string | null;
   } | null;
+  /**
+   * #8612 — set only when a debug/info log-level raise completed 5+ min ago
+   * and no log has arrived since. Observational, never a fault verdict.
+   */
+  logsNotArriving?: { since: string } | null;
   status?: string | null;
   lastSeenAt?: string | null;
   lastLogAt?: string | null;
@@ -1330,6 +1335,18 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         ) : null}
         <WatchdogInstallNotice watchdogInstall={info?.watchdogInstall} />
         <LogShippingRow logShipping={info?.logShipping} />
+        {info?.logsNotArriving ? (
+          <div className="flex justify-between py-2">
+            <dt className="text-sm text-muted-foreground">
+              {t("deviceInfoTab.logsNotArriving.label")}
+            </dt>
+            <dd data-testid="logs-not-arriving" className="text-sm text-right">
+              {t("deviceInfoTab.logsNotArriving.text", {
+                since: formatDate(info.logsNotArriving.since),
+              })}
+            </dd>
+          </div>
+        ) : null}
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">
             {t("deviceInfoTab.status")}

@@ -926,3 +926,44 @@ describe('DeviceInfoTab — log shipping health line (#8609)', () => {
     expect(chip.getAttribute('title')).toMatch(/unspecified/i);
   });
 });
+
+describe('DeviceInfoTab — logs not arriving after a level raise (#8612)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it.each([
+    ['absent', {}],
+    ['null', { logsNotArriving: null }],
+  ])('renders nothing when logsNotArriving is %s', async (_n, extra) => {
+    load({ logShipping: { state: 'healthy', failingSince: null, lastError: null }, ...extra });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('logs-not-arriving')).toBeNull();
+  });
+
+  it('shows a neutral observational line with the raise time', async () => {
+    const since = '2026-10-13T11:50:00.000Z';
+    load({
+      logShipping: { state: 'healthy', failingSince: null, lastError: null },
+      logsNotArriving: { since },
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const line = await screen.findByTestId('logs-not-arriving');
+    expect(line.textContent).toMatch(/No logs received since the log level was raised/);
+    expect(line.textContent).not.toMatch(/fail|error|broken/i);
+    expect(line.textContent).toContain('2026');
+  });
+});

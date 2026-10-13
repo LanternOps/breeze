@@ -1406,6 +1406,10 @@
         "unspecified": "Sin especificar"
       }
     },
+    "logsNotArriving": {
+      "label": "Registros tras subir el nivel",
+      "text": "No se han recibido registros desde que se subió el nivel de registro ({{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "No se pudieron recuperar los detalles del dispositivo",

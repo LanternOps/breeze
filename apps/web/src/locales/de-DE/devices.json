@@ -1406,6 +1406,10 @@
         "unspecified": "Nicht angegeben"
       }
     },
+    "logsNotArriving": {
+      "label": "Protokolle nach Stufenanhebung",
+      "text": "Seit der Anhebung der Protokollstufe wurden keine Protokolle empfangen ({{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Gerätedetails konnten nicht abgerufen werden",

@@ -1406,6 +1406,10 @@
         "unspecified": "Non précisé"
       }
     },
+    "logsNotArriving": {
+      "label": "Journaux après hausse du niveau",
+      "text": "Aucun journal reçu depuis la hausse du niveau de journalisation ({{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossible de récupérer les détails de l’appareil",

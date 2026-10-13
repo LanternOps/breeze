@@ -99,6 +99,7 @@ import {
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 import { deriveLogShipping } from '../../services/logShippingHealth';
+import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotArriving';
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
@@ -1717,6 +1718,25 @@ coreRoutes.get(
       ? await getDeviceUninstallStatus(deviceId)
       : null;
 
+    // #8612 — "no logs received since the log level was raised". Same
+    // ordering constraint as `uninstall` above (device_commands has no RLS,
+    // so this sits downstream of the chokepoint). Cheap pre-check first: only
+    // an online agent that reports `logShipping` (has the W03 canary) can
+    // produce a non-null answer, so every other detail load pays nothing.
+    // Observational and non-critical: a failure never fails the response.
+    let logsNotArriving: { since: string } | null = null;
+    if (device.status === 'online' && device.logShippingState != null) {
+      try {
+        const raised = await checkLogsNotArriving(deviceId, new Date(), {
+          logShippingState: device.logShippingState,
+        });
+        logsNotArriving = raised ? { since: raised.raisedAt } : null;
+      } catch (err) {
+        captureException(err, c);
+        console.error(`[DeviceDetail] Failed to evaluate logsNotArriving for ${deviceId}:`, err);
+      }
+    }
+
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
@@ -1740,6 +1760,7 @@ coreRoutes.get(
       ...projectPublicDevice(device),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
       logShipping: deriveLogShipping(device, new Date()),
+      logsNotArriving,
       // #8620 — banner view only (terminal states, closed vocab); the raw
       // watchdog_install_* columns are not in PUBLIC_DEVICE_FIELDS.
       watchdogInstall: deriveWatchdogInstallBanner(device),
