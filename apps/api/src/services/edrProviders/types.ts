@@ -96,6 +96,48 @@ export interface EdrAdapterContext {
   runCache: Map<string, Promise<unknown>>;
 }
 
+/**
+ * One normalized response action addressed to the vendor (W03). The target
+ * carries VENDOR ids only, resolved by `dispatchEdrAction` from rows the caller
+ * was authorized to read.
+ */
+export type EdrActionRequest =
+  | { action: 'isolate' | 'unisolate' | 'scan' | 'update_agent'; target: { kind: 'endpoint'; vendorEndpointId: string } }
+  | { action: 'kill_process'; target: { kind: 'process'; vendorEndpointId: string; pid: number } }
+  | {
+      action: 'rollback' | 'resolve_detection' | 'mark_false_positive';
+      target: { kind: 'detection'; vendorDetectionId: string; vendorKind: EdrVendorKind };
+    }
+  | { action: 'quarantine_restore' | 'quarantine_delete'; target: { kind: 'quarantine_item'; vendorItemId: string } };
+
+/**
+ * `succeeded` = the vendor accepted (and, for a synchronous call, applied) it;
+ * `submitted` = the vendor queued a task to poll; `failed` = a TERMINAL vendor
+ * verdict, only ever returned by `getActionStatus` (a refused `performAction`
+ * throws `EdrProviderRequestError` instead).
+ */
+export type EdrActionResult =
+  | { status: 'succeeded' }
+  | { status: 'submitted'; vendorActionId: string }
+  | { status: 'failed'; code: string; message: string };
+
+export type EdrActionSupport = { ok: true } | { ok: false; reason: string };
+
+/** Everything `supportsAction` may look at — already-loaded row facts, no I/O. */
+export interface EdrActionTargetFacts {
+  vendorEndpointId: string | null;
+  osPlatform: EdrOsPlatform | null;
+  isolationState: EdrIsolationState | null;
+  online: boolean | null;
+  /** Unexpired licence denials recorded on the tenant. */
+  tenantUnsupportedActions: readonly EdrActionKey[];
+  /** `edr_connections.capabilities_snapshot` (incl. `note:` entries from the last test). */
+  connectionCapabilityNotes: readonly string[];
+}
+
+/** Did a sent-but-unconfirmed request take effect? */
+export type EdrReconcileVerdict = 'applied' | 'not_applied' | 'unknown';
+
 export interface EdrCredentialField { name: string; label: string; secret: boolean; required: boolean }
 
 export interface EdrProviderAdapter {
@@ -113,10 +155,29 @@ export interface EdrProviderAdapter {
   countEndpoints?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef): Promise<number>;
   enrichEndpoints?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, vendorEndpointIds: string[]): Promise<VendorEdrEndpointDetail[]>;
   listDetections(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, cursor: string | null, now: Date): Promise<EdrDetectionPage>;
-  // Declared now, implemented from W03 (types only in W01 — no framework code calls them):
-  performAction?(...a: unknown[]): Promise<unknown>;
-  supportsAction?(...a: unknown[]): boolean;
-  getActionStatus?(...a: unknown[]): Promise<unknown>;
+  /**
+   * W03. Sends ONE action to the vendor. Must not retry a write that may have
+   * reached the vendor: an ambiguous outcome throws `code: 'outcome_unknown'`.
+   * `idempotencyKey` is the `edr_actions` row id (vendor-side traceability).
+   * Called ONLY by `dispatchEdrAction` (edrActions.chokepoint.contract.test.ts).
+   */
+  performAction?(
+    ctx: EdrAdapterContext,
+    tenant: VendorEdrTenantRef,
+    req: EdrActionRequest,
+    idempotencyKey: string,
+  ): Promise<Exclude<EdrActionResult, { status: 'failed' }>>;
+  /** W03. Pure: can this action be attempted on this target? Rules are adapter-specific. */
+  supportsAction?(facts: EdrActionTargetFacts, action: EdrActionKey): EdrActionSupport;
+  /** W03. Poll a `submitted` vendor task; `submitted` = still pending. */
+  getActionStatus?(
+    ctx: EdrAdapterContext,
+    tenant: VendorEdrTenantRef,
+    vendorActionId: string,
+  ): Promise<EdrActionResult | { status: 'submitted' }>;
+  /** W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends. */
+  reconcileAction?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, req: EdrActionRequest): Promise<EdrReconcileVerdict>;
+  // Declared now, implemented later (types only — no framework code calls them):
   getDetections?(...a: unknown[]): Promise<VendorEdrDetection[]>;
   verifyWebhook?(...a: unknown[]): unknown;
   getInstaller?(...a: unknown[]): Promise<unknown>;
