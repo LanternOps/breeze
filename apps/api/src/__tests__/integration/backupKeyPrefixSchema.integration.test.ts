@@ -34,7 +34,7 @@ import {
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION = resolve(__dirname, '../../../migrations/2026-12-27-140000-backup-key-root.sql');
+const MIGRATION = resolve(__dirname, '../../../migrations/2026-12-28-110000-backup-key-root.sql');
 const P = 'msp/acme';
 
 function sid(label: string): string {

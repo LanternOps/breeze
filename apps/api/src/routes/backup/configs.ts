@@ -97,13 +97,14 @@ async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void>
   const accessKeyId = typeof details.accessKey === 'string' ? details.accessKey : '';
   const secretAccessKey = typeof details.secretKey === 'string' ? details.secretKey : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
-  // #7081: probe under the same normalized prefix new snapshots use. A stored
-  // prefix that fails validation fails the test before any storage call.
+  // #7081: probe under the normalized prefix. A stored prefix that predates
+  // validation and no longer normalizes is probed as before (trailing slashes
+  // trimmed) so the connection test is not a new failure; only new or changed
+  // prefixes are refused, on save.
   const normalizedPrefix = normalizeBackupDestinationPrefix(details.prefix);
-  if (!normalizedPrefix.ok) {
-    throw new Error(`Invalid key prefix: ${backupDestinationPrefixReasonMessage(normalizedPrefix.reason)}`);
-  }
-  const prefix = normalizedPrefix.prefix ?? '';
+  const prefix = normalizedPrefix.ok
+    ? (normalizedPrefix.prefix ?? '')
+    : (typeof details.prefix === 'string' ? details.prefix.replace(/\/+$/, '') : '');
 
   if (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim()) {
     throw new Error('S3 bucket and credentials are required');

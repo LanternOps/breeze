@@ -40,8 +40,8 @@ const queryBoolean = z.preprocess((value) => {
  * update leaves unchanged is not re-validated (`keepStoredPrefix: true`, the
  * caller leaves it as is), so an edit to another field of a destination saved
  * before validation existed is not refused. A new or changed prefix always
- * is. Backups to a destination whose prefix is invalid are refused when they
- * start, with an actionable message.
+ * is. Backups to a destination whose stored prefix is invalid are refused at
+ * mint from W03; until then (W01) they continue under the legacy layout.
  */
 export function validateS3Details(
   details: Record<string, unknown>,
