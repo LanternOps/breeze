@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKUP_KEY_LAYOUTS,
+  attestedKeyLayoutFor,
   GC_SUPPORTED_KEY_LAYOUTS,
   LEGACY_FLAT_ROOT,
   isGcSupportedKeyLayout,
@@ -9,9 +10,11 @@ import {
   keyRootId,
   logicalKeyFrom,
   logicalKeyLayout,
+  originKeyRootAllows,
   physicalKeyFits,
   physicalKeyFor,
   physicalSnapshotRootPrefix,
+  resolveSnapshotPhysicalKey,
   snapshotKeyRootOf,
 } from './backupKeyLayout';
 
@@ -79,11 +82,65 @@ describe('backup snapshot key layout', () => {
   it('attestations always describe the logical layout', () => {
     expect(logicalKeyLayout('legacy_flat')).toBe('legacy_flat');
     expect(logicalKeyLayout('prefixed_flat')).toBe('legacy_flat');
+    expect(attestedKeyLayoutFor('legacy_flat')).toBe('legacy_flat');
+    expect(attestedKeyLayoutFor('prefixed_flat')).toBe('legacy_flat');
+    expect(attestedKeyLayoutFor('device_scoped')).toBe('device_scoped');
   });
 
   it('readable vs GC-supported sets diverge until W02', () => {
     expect(GC_SUPPORTED_KEY_LAYOUTS).toEqual(['legacy_flat']);
     expect(isGcSupportedKeyLayout('prefixed_flat')).toBe(false); // W02 flips this assertion
     expect(isGcSupportedKeyLayout('legacy_flat')).toBe(true);
+  });
+});
+
+describe('resolveSnapshotPhysicalKey', () => {
+  const own = 'snap-own';
+  const origin = 'snap-origin';
+  const none = new Map();
+
+  it('maps the snapshot\'s own keys under its own root', () => {
+    expect(resolveSnapshotPhysicalKey({ ownRoot: LEGACY_FLAT_ROOT, ownSnapshotId: own, logicalKey: `snapshots/${own}/files/a`, originRoots: none }))
+      .toBe(`snapshots/${own}/files/a`);
+    expect(resolveSnapshotPhysicalKey({ ownRoot: P, ownSnapshotId: own, logicalKey: `snapshots/${own}/files/a`, originRoots: none }))
+      .toBe(`msp/acme/snapshots/${own}/files/a`);
+  });
+
+  it('maps an external ref under the origin\'s root when it equals the own root', () => {
+    expect(resolveSnapshotPhysicalKey({
+      ownRoot: P, ownSnapshotId: own, logicalKey: `snapshots/${origin}/files/a`, originRoots: new Map([[origin, P]]),
+    })).toBe(`msp/acme/snapshots/${origin}/files/a`);
+  });
+
+  it('refuses an external ref whose origin root is unknown or differs (I4)', () => {
+    expect(resolveSnapshotPhysicalKey({ ownRoot: P, ownSnapshotId: own, logicalKey: `snapshots/${origin}/files/a`, originRoots: none }))
+      .toBeNull();
+    expect(resolveSnapshotPhysicalKey({
+      ownRoot: P, ownSnapshotId: own, logicalKey: `snapshots/${origin}/files/a`, originRoots: new Map([[origin, LEGACY_FLAT_ROOT]]),
+    })).toBeNull();
+    expect(resolveSnapshotPhysicalKey({
+      ownRoot: P, ownSnapshotId: own, logicalKey: `snapshots/${origin}/files/a`,
+      originRoots: new Map([[origin, { layout: 'prefixed_flat', prefix: 'msp/other' } as const]]),
+    })).toBeNull();
+  });
+
+  it('refuses a key that is not a snapshot object key', () => {
+    expect(resolveSnapshotPhysicalKey({ ownRoot: P, ownSnapshotId: own, logicalKey: 'other/x', originRoots: none })).toBeNull();
+    expect(resolveSnapshotPhysicalKey({ ownRoot: P, ownSnapshotId: own, logicalKey: `msp/acme/snapshots/${own}/a`, originRoots: none })).toBeNull();
+  });
+});
+
+describe('originKeyRootAllows', () => {
+  it('requires a recorded origin root to be readable and equal to the own root', () => {
+    expect(originKeyRootAllows(P, { keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' })).toBe(true);
+    expect(originKeyRootAllows(P, { keyLayout: 'legacy_flat', keyPrefix: null })).toBe(false);
+    expect(originKeyRootAllows(LEGACY_FLAT_ROOT, { keyLayout: 'legacy_flat', keyPrefix: null })).toBe(true);
+    expect(originKeyRootAllows(LEGACY_FLAT_ROOT, { keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' })).toBe(false);
+    expect(originKeyRootAllows(LEGACY_FLAT_ROOT, { keyLayout: 'device_scoped', keyPrefix: null })).toBe(false);
+  });
+
+  it('with no origin row left: a legacy chain resolves as before, a prefixed one is refused', () => {
+    expect(originKeyRootAllows(LEGACY_FLAT_ROOT, undefined)).toBe(true);
+    expect(originKeyRootAllows(P, undefined)).toBe(false);
   });
 });

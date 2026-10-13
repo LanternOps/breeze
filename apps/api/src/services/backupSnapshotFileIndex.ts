@@ -22,6 +22,7 @@ import { backupSnapshotManifestKey, fetchBackupObjectBytes, isBackupObjectNotFou
 import { parseBackupObjectKey } from './backupObjectKey';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
+import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 
 export type FileIndexStatus = 'none' | 'agent' | 'hydrating' | 'complete' | 'failed';
 
@@ -39,12 +40,17 @@ export type HydrationFailure =
   // attestation names.
   | 'manifest_differs_from_attestation'
   // The snapshot's attestation did not match its stored objects.
-  | 'attestation_failed';
+  | 'attestation_failed'
+  // The snapshot records a key root this server cannot read (#7081).
+  | 'key_root_invalid'
+  // An origin the manifest references lives under another key root than the
+  // snapshot (#7081 I4): a dedupe chain never spans roots.
+  | 'origin_key_root_mismatch';
 
 const HYDRATION_FAILURES: readonly HydrationFailure[] = [
   'storage_identity_unknown', 'storage_identity_drift', 'manifest_missing', 'manifest_invalid',
   'manifest_too_large', 'manifest_key_invalid', 'origin_unverifiable', 'origin_identity_pending', 'provider_error',
-  'manifest_differs_from_attestation', 'attestation_failed',
+  'manifest_differs_from_attestation', 'attestation_failed', 'key_root_invalid', 'origin_key_root_mismatch',
 ];
 
 // Retryability is a pure function of the failure code so that the route glue
@@ -206,6 +212,8 @@ async function loadSnapshotForHydration(snapshotDbId: string) {
       deviceId: backupSnapshots.deviceId,
       snapshotId: backupSnapshots.snapshotId,
       storageIdentity: backupSnapshots.storageIdentity,
+      keyLayout: backupSnapshots.keyLayout,
+      keyPrefix: backupSnapshots.keyPrefix,
       // consumed by loadReferencedFiles below — without it hydration is a
       // permanent no-op.
       jobId: backupSnapshots.jobId,
@@ -265,7 +273,7 @@ type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydra
 // null check and its use live in different functions, so a plain narrowed
 // re-read of `snapshot.storageIdentity` at the return site doesn't survive the
 // function boundary; this type carries the guarantee across it instead.
-type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & { storageIdentity: string };
+type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & { storageIdentity: string; keyRoot: SnapshotKeyRoot };
 
 /**
  * Phase 1 (short transaction): load the snapshot, apply the skip checks,
@@ -371,6 +379,13 @@ async function claimSnapshotForHydration(
       if (failedIntegrity) {
         return { outcome: await fail(snapshotDbId, failedIntegrity.failure, failedIntegrity.reason) };
       }
+      // The manifest is read under the snapshot's recorded key root (#7081),
+      // never a guessed one; storage is not read for a root this server
+      // cannot read. (The root is immutable, so the pre-claim read is exact.)
+      const keyRoot = snapshotKeyRootOf(snapshot);
+      if (!keyRoot) {
+        return { outcome: await fail(snapshotDbId, 'key_root_invalid', `unreadable key root (${String(snapshot.keyLayout)})`) };
+      }
 
       const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
       const providerType = resolved?.providerType ?? null;
@@ -390,7 +405,7 @@ async function claimSnapshotForHydration(
         // Rebuilt (not the bare narrowed variable) so the object literal's own
         // storageIdentity field carries the non-null type this scope just
         // proved, across the function boundary into ClaimedSnapshot.
-        snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity },
+        snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot },
         providerType,
         providerConfig,
       };
@@ -422,7 +437,7 @@ async function fetchAndParseManifest(
     bytes = await deps.fetchManifestBytes({
       provider: providerType,
       providerConfig,
-      key: backupSnapshotManifestKey(snapshot.snapshotId),
+      key: physicalKeyFor(snapshot.keyRoot, backupSnapshotManifestKey(snapshot.snapshotId)),
     });
   } catch (err) {
     if (isBackupObjectNotFound(err)) {
@@ -504,13 +519,30 @@ async function verifyOriginsAndWrite(
         originStorageIdentity: string; originStoragePrefix: string | null; provenance: 'live' | 'retired'; objectCount: number;
       };
       const originRows: OriginRow[] = [];
+      // An origin is verified only under the snapshot's own key root (#7081
+      // I4): its external refs are later served under that root.
+      const originRootMatches = (row: { keyLayout: unknown; keyPrefix: unknown }) => {
+        const originRoot = snapshotKeyRootOf(row);
+        return originRoot !== null && sameKeyRoot(originRoot, snapshot.keyRoot);
+      };
+      const rootMismatch = (originId: string) =>
+        fail(snapshotDbId, 'origin_key_root_mismatch', `origin ${originId}: recorded under another key root than this snapshot`);
       for (const [originId, objectCount] of originCounts) {
         const [live] = await db
-          .select({ id: backupSnapshots.id, orgId: backupSnapshots.orgId, deviceId: backupSnapshots.deviceId, storageIdentity: backupSnapshots.storageIdentity, metadata: backupSnapshots.metadata })
+          .select({
+            id: backupSnapshots.id,
+            orgId: backupSnapshots.orgId,
+            deviceId: backupSnapshots.deviceId,
+            storageIdentity: backupSnapshots.storageIdentity,
+            keyLayout: backupSnapshots.keyLayout,
+            keyPrefix: backupSnapshots.keyPrefix,
+            metadata: backupSnapshots.metadata,
+          })
           .from(backupSnapshots)
           .where(and(eq(backupSnapshots.snapshotId, originId), eq(backupSnapshots.orgId, snapshot.orgId), eq(backupSnapshots.deviceId, snapshot.deviceId)))
           .limit(1);
         if (live && live.storageIdentity === snapshot.storageIdentity) {
+          if (!originRootMatches(live)) return rootMismatch(originId);
           originRows.push({
             originSnapshotId: originId, originOrgId: snapshot.orgId, originDeviceId: snapshot.deviceId,
             originStorageIdentity: snapshot.storageIdentity, originStoragePrefix: getStringValue(asRecord(live.metadata), 'storagePrefix'),
@@ -519,11 +551,18 @@ async function verifyOriginsAndWrite(
           continue;
         }
         const [retired] = await db
-          .select({ orgId: backupSnapshotRetirements.orgId, deviceId: backupSnapshotRetirements.deviceId, storageIdentity: backupSnapshotRetirements.storageIdentity })
+          .select({
+            orgId: backupSnapshotRetirements.orgId,
+            deviceId: backupSnapshotRetirements.deviceId,
+            storageIdentity: backupSnapshotRetirements.storageIdentity,
+            keyLayout: backupSnapshotRetirements.keyLayout,
+            keyPrefix: backupSnapshotRetirements.keyPrefix,
+          })
           .from(backupSnapshotRetirements)
           .where(and(eq(backupSnapshotRetirements.snapshotId, originId), eq(backupSnapshotRetirements.storageIdentity, snapshot.storageIdentity), eq(backupSnapshotRetirements.orgId, snapshot.orgId), eq(backupSnapshotRetirements.deviceId, snapshot.deviceId)))
           .limit(1);
         if (retired) {
+          if (!originRootMatches(retired)) return rootMismatch(originId);
           originRows.push({
             originSnapshotId: originId, originOrgId: snapshot.orgId, originDeviceId: snapshot.deviceId,
             originStorageIdentity: snapshot.storageIdentity, originStoragePrefix: null, provenance: 'retired', objectCount,

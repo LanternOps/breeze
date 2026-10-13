@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { setBackupErasureContext } from '../../services/backupErasureFence';
+import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
 import {
   WRITE_IDENTITY,
   expectSqlState,
@@ -261,5 +262,32 @@ describe('backup snapshot key root schema', () => {
       'backup_snapshot_retirements_key_root_immutable',
       'backup_snapshots_key_root_immutable',
     ]);
+  });
+
+  runDb('read sessions see each verified origin\'s recorded root (live row, else retirement), as the app role', async () => {
+    const t = await seedWriteTenant();
+    const own = sid('origins-own');
+    const live = sid('origins-live');
+    const retired = sid('origins-retired');
+    const gone = sid('origins-gone');
+    const ownDbId = await insertSnapshot(t, own, PREFIXED);
+    await insertSnapshot(t, live, PREFIXED);
+    await insertRetirement(t, retired, LEGACY);
+    for (const origin of [live, retired, gone]) {
+      await getTestDb().execute(sql`
+        INSERT INTO backup_snapshot_origins (snapshot_db_id, origin_snapshot_id, origin_org_id, origin_device_id,
+          origin_storage_identity, provenance, object_count)
+        VALUES (${ownDbId}, ${origin}, ${t.orgId}, ${t.deviceId}, ${WRITE_IDENTITY}, 'live', 1)
+      `);
+    }
+
+    const rows = await withDbAccessContext(orgContext(t.orgId), () =>
+      drizzleBrokeredReadStore.loadVerifiedOrigins(ownDbId, [live, retired, gone]),
+    );
+    const byId = new Map(rows.map((r) => [r.originSnapshotId, r.originKeyRoot]));
+    expect(byId.get(live)).toEqual({ keyLayout: 'prefixed_flat', keyPrefix: P });
+    expect(byId.get(retired)).toEqual({ keyLayout: 'legacy_flat', keyPrefix: null });
+    expect(byId.has(gone)).toBe(true);
+    expect(byId.get(gone)).toBeUndefined();
   });
 });

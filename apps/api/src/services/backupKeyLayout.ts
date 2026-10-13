@@ -125,6 +125,16 @@ export function logicalKeyLayout(_layout: BackupKeyLayout): 'legacy_flat' {
 }
 
 /**
+ * The `keyLayout` an attestation statement for a snapshot with this layout
+ * carries: the logical layout for a readable one (I6), and the value itself
+ * otherwise, compared verbatim as before (readers refuse such snapshots on
+ * their layout separately).
+ */
+export function attestedKeyLayoutFor(layout: string): string {
+  return isSupportedKeyLayout(layout) ? logicalKeyLayout(layout) : layout;
+}
+
+/**
  * Physical key for a logical key referenced by a snapshot (its own objects or
  * an external ref into an origin snapshot). External refs resolve through the
  * ORIGIN's recorded root, which must equal the referencing snapshot's own root
@@ -143,4 +153,22 @@ export function resolveSnapshotPhysicalKey(input: {
   const originRoot = input.originRoots.get(scope.originSnapshotId);
   if (!originRoot || !sameKeyRoot(originRoot, input.ownRoot)) return null;
   return physicalKeyFor(originRoot, input.logicalKey);
+}
+
+/**
+ * Whether an external reference into an origin snapshot may be served under
+ * the referencing snapshot's own root (I4). `originRow` is the origin's live
+ * snapshot row or, once retired, its retirement row; `undefined` when neither
+ * is left. A recorded origin root must be readable and equal the own root.
+ * With no row left, a legacy chain resolves exactly as it always has (the
+ * origin was verified when the file index was built, and no other root
+ * existed before roots were recorded); a prefixed chain is refused (I5).
+ */
+export function originKeyRootAllows(
+  ownRoot: SnapshotKeyRoot,
+  originRow: { keyLayout: unknown; keyPrefix: unknown } | undefined,
+): boolean {
+  if (originRow === undefined) return ownRoot.layout === 'legacy_flat';
+  const originRoot = snapshotKeyRootOf(originRow);
+  return originRoot !== null && sameKeyRoot(originRoot, ownRoot);
 }
