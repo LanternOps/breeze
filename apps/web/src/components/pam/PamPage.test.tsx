@@ -106,8 +106,8 @@ describe('PamPage', () => {
   });
 
   it.each([
-    { connected: false, interval: 5_000 },
-    { connected: true, interval: 10_000 },
+    { connected: false, interval: 10_000 },
+    { connected: true, interval: 30_000 },
   ])('refreshes visible data with connected=$connected even when no event arrives', async ({ connected, interval }) => {
     vi.useFakeTimers();
     streamState.connected = connected;

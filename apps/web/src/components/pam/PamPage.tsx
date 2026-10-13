@@ -23,8 +23,8 @@ const ELEVATION_EVENTS = [
   'elevation.revoked',
 ];
 
-const DISCONNECTED_REFRESH_MS = 5_000;
-const CONNECTED_REFRESH_MS = 10_000;
+const DISCONNECTED_REFRESH_MS = 10_000;
+const CONNECTED_REFRESH_MS = 30_000;
 
 export default function PamPage() {
   const { t } = useTranslation('security');
