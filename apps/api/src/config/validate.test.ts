@@ -1651,6 +1651,28 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- #8616 heartbeat retain-state kill switch. Default on; 'false' makes
+  // the heartbeat answer every agent with the legacy payload.
+  describe('HEARTBEAT_RETAIN_STATE_ENABLED', () => {
+    it('defaults to true when unset', () => {
+      withEnv(validEnv, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('true');
+      });
+    });
+
+    it('accepts an explicit false', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'false' }, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('false');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently staying on', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'off' }, () => {
+        expect(() => validateConfig()).toThrow('HEARTBEAT_RETAIN_STATE_ENABLED');
+      });
+    });
+  });
+
   // ---- Security remediation Wave 6, Task 9 (approved deviation D1) —
   // managed-software destination policy mode. compat is the default and the
   // safe state (Task 5 always fails closed on a private destination for a

@@ -23,6 +23,12 @@ import type { HelperSettings } from '../../services/helperSettings';
 
 export type RetainFeature = 'pam' | 'helper' | 'remoteManagement';
 
+/** `resolved` false = no decision (the resolver threw or found no effective config). */
+export interface RemoteManagementDecision {
+  resolved: boolean;
+  value: boolean;
+}
+
 export interface SettingsDecisionInput {
   /** Normalised from THIS beat (normalizeRetainStateProtocolVersion). */
   retainProtocol: 0 | 1;
@@ -34,7 +40,7 @@ export interface SettingsDecisionInput {
   pamSettings: { uacInterceptionEnabled: boolean } | null;
   /** null = the resolver produced nothing this beat. */
   helperSettings: HelperSettings | null;
-  remoteManagement: { resolved: boolean; value: boolean };
+  remoteManagement: RemoteManagementDecision;
 }
 
 /**

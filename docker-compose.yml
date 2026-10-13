@@ -146,6 +146,9 @@ x-api-env: &api-env
   # rolls capable agents back on their next heartbeat.
   AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
   MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
+  # #8616 heartbeat retain-state kill switch (default on). 'false' answers
+  # every agent with the legacy heartbeat payload, as an older API would.
+  HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
   # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
   # boot refuses to start without it (see that var's comment). Must be set
