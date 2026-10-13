@@ -5,6 +5,7 @@ package heartbeat
 import (
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -35,3 +36,8 @@ func waitWatchdogRunning(timeout time.Duration) bool {
 		return err == nil && st.State == svc.Running
 	})
 }
+
+// verifyStagedWatchdog refuses a staged watchdog whose folder chain is
+// writable by anyone but SYSTEM/Administrators (or not under the agent data
+// dir at all). Same gate as the OpenH264 codec load.
+func verifyStagedWatchdog(path string) error { return config.VerifyProgramDataPath(path) }

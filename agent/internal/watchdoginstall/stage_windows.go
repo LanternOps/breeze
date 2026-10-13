@@ -4,7 +4,9 @@ package watchdoginstall
 
 import "os"
 
-// checkStageRootOwner: on Windows the stage root lives under the agent's
-// ProgramData data dir, whose ACL the config trust audit already enforces
-// (SYSTEM/Administrators only); files created there inherit it.
+// checkStageRootOwner is a no-op on Windows: ownership is not the risk here.
+// The trust audit only checks the data dir's owner, not who can write it, so
+// the writer check is made separately by the caller (heartbeat's
+// verifyStagedWatchdog, config.VerifyProgramDataPath) right before the staged
+// binary is executed.
 func checkStageRootOwner(os.FileInfo) error { return nil }

@@ -66,13 +66,16 @@ type watchdogEnsureState struct {
 	plan      watchdoginstall.Plan
 	stageRoot string
 
-	detect      func() watchdoginstall.Status
-	download    func(version, dir string) (string, error)
-	verifySig   func(path string) error
-	register    func(path string) error
-	waitRunning func(timeout time.Duration) bool
-	now         func() time.Time
-	rnd         func() float64
+	detect    func() watchdoginstall.Status
+	download  func(version, dir string) (string, error)
+	verifySig func(path string) error
+	register  func(path string) error
+	// verifyStaged vets the staged file's folder ACL on Windows (nil = not
+	// required on this OS). It must pass before register execs the file.
+	verifyStaged func(path string) error
+	waitRunning  func(timeout time.Duration) bool
+	now          func() time.Time
+	rnd          func() float64
 
 	mu              sync.Mutex
 	report          *WatchdogInstallReport
@@ -107,16 +110,17 @@ func (h *Heartbeat) EnableWatchdogEnsure() {
 		return
 	}
 	h.watchdogEnsure = &watchdogEnsureState{
-		store:       watchdoginstall.Store{Dir: config.MachineConfigDir()},
-		plan:        watchdoginstall.DefaultPlan,
-		stageRoot:   filepath.Join(config.GetDataDir(), watchdoginstall.StageRootName),
-		detect:      func() watchdoginstall.Status { return watchdoginstall.Detect(os.Stat) },
-		download:    h.downloadWatchdogBinaryTo,
-		verifySig:   updater.VerifyStagedBinarySignature,
-		register:    registerVerifiedWatchdog,
-		waitRunning: waitWatchdogRunning,
-		now:         time.Now,
-		rnd:         rand.Float64,
+		store:        watchdoginstall.Store{Dir: config.MachineConfigDir()},
+		plan:         watchdoginstall.DefaultPlan,
+		stageRoot:    filepath.Join(config.GetDataDir(), watchdoginstall.StageRootName),
+		detect:       func() watchdoginstall.Status { return watchdoginstall.Detect(os.Stat) },
+		download:     h.downloadWatchdogBinaryTo,
+		verifySig:    updater.VerifyStagedBinarySignature,
+		register:     registerVerifiedWatchdog,
+		verifyStaged: verifyStagedWatchdog,
+		waitRunning:  waitWatchdogRunning,
+		now:          time.Now,
+		rnd:          rand.Float64,
 	}
 }
 
@@ -419,6 +423,15 @@ func (e *watchdogEnsureState) attempt(version string) error {
 	// installing a binary — DownloadBinary alone does not run it.
 	if err := e.verifySig(staged); err != nil {
 		return err
+	}
+	// Windows: the verified file now sits under the agent's data dir and is
+	// about to run as LocalSystem. Refuse unless every folder up to it is
+	// writable only by SYSTEM/Administrators, or a local user could swap the
+	// file between the checksum and the exec.
+	if e.verifyStaged != nil {
+		if err := e.verifyStaged(staged); err != nil {
+			return fmt.Errorf("%w: staging folder is not trusted: %v", watchdoginstall.ErrInstallCommand, err)
+		}
 	}
 	if err := e.register(staged); err != nil {
 		if errors.Is(err, watchdoginstall.ErrUnsupportedOS) {
