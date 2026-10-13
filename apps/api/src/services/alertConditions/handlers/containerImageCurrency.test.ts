@@ -99,11 +99,31 @@ describe('containerImageCurrencyHandler', () => {
     expect(result.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1', status: 'recovered' })]);
   });
 
-  it('emits no subject for pinned, locally built or vanished-tag images (nothing to compare)', async () => {
+  it('resolves (recovered) an image whose rows are all not_applicable, e.g. behind -> not_found / pinned', async () => {
     rows([row('app', 'dev', 'local'), row('base', 'v1', 'pinned'), row('gone', '0', 'not_found')]);
     const result = await containerImageCurrencyHandler.evaluate(condition, deviceId);
-    expect(result.subjects).toEqual([]);
-    expect(result.dataAvailable).toBe(false);
+    expect(result.subjects).toEqual([
+      expect.objectContaining({ subjectKey: 'app:dev', status: 'recovered', context: expect.objectContaining({ upstreamStatus: 'local', daysBehind: null, behindSince: null }) }),
+      expect.objectContaining({ subjectKey: 'base:v1', status: 'recovered', context: expect.objectContaining({ upstreamStatus: 'pinned' }) }),
+      expect.objectContaining({ subjectKey: 'gone:0', status: 'recovered', context: expect.objectContaining({ upstreamStatus: 'not_found' }) }),
+    ]);
+    expect(result.passed).toBe(false);
+    expect(result.dataAvailable).toBe(true);
+  });
+
+  it('a previously-behind image that becomes not_found still yields its subject key as recovered', async () => {
+    rows([row('nginx', '1.25', 'behind', daysAgo(9))]);
+    const before = await containerImageCurrencyHandler.evaluate(condition, deviceId);
+    expect(before.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1.25', status: 'breaching' })]);
+    rows([row('nginx', '1.25', 'not_found')]);
+    const after = await containerImageCurrencyHandler.evaluate(condition, deviceId);
+    expect(after.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1.25', status: 'recovered' })]);
+  });
+
+  it('a previously-behind image that becomes pinned still yields its subject key as recovered', async () => {
+    rows([row('nginx', '1.25', 'pinned')]);
+    const after = await containerImageCurrencyHandler.evaluate(condition, deviceId);
+    expect(after.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1.25', status: 'recovered' })]);
   });
 
   it('collapses replicas of one image into one subject, worst status first', async () => {

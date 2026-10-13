@@ -14,8 +14,9 @@
  *   - else (every remaining replica `current`) → `recovered`.
  *
  * `pinned`, `local` and `not_found` rows have nothing to compare (the
- * compliance helper's `not_applicable` class), so they are ignored; an image
- * with only such rows produces no subject. A digest-pinned reference has no
+ * compliance helper's `not_applicable` class), so they never block recovery;
+ * an image with ONLY such rows is reported `recovered` (carrying its
+ * upstreamStatus) so an alert opened while it was `behind` resolves. A digest-pinned reference has no
  * tag, so moving an image from a tag to a digest drops its repo:tag subject
  * and ingest retirement resolves the alert.
  */
@@ -37,6 +38,8 @@ interface ImageAggregate {
   repository: string;
   tag: string;
   statuses: Set<WorkloadUpstreamStatus>;
+  /** not_applicable rows (pinned/local/not_found); only used when `statuses` stays empty. */
+  inertStatuses: Set<WorkloadUpstreamStatus>;
   oldestBehindSince: Date | null;
   behindUnstamped: boolean;
 }
@@ -64,19 +67,22 @@ export const containerImageCurrencyHandler: ConditionHandler = {
     const images = new Map<string, ImageAggregate>();
     for (const row of rows) {
       if (!row.imageRepository || !row.imageTag) continue;
-      // pinned / local / not_found: nothing to compare — the same rule as the
-      // compliance helper, so a replica in one of these never blocks recovery.
-      if (workloadUpstreamStatusClass(row.upstreamStatus) === 'not_applicable') continue;
       const key = containerImageSubjectKey(row.imageRepository, row.imageTag);
       const agg = images.get(key) ?? {
-        repository: row.imageRepository, tag: row.imageTag, statuses: new Set(), oldestBehindSince: null, behindUnstamped: false,
+        repository: row.imageRepository, tag: row.imageTag, statuses: new Set(), inertStatuses: new Set(), oldestBehindSince: null, behindUnstamped: false,
       };
+      images.set(key, agg);
+      // pinned / local / not_found: nothing to compare — the same rule as the
+      // compliance helper, so a replica in one of these never blocks recovery.
+      if (workloadUpstreamStatusClass(row.upstreamStatus) === 'not_applicable') {
+        agg.inertStatuses.add(row.upstreamStatus);
+        continue;
+      }
       agg.statuses.add(row.upstreamStatus);
       if (row.upstreamStatus === 'behind') {
         if (!row.behindSince) agg.behindUnstamped = true;
         else if (!agg.oldestBehindSince || row.behindSince < agg.oldestBehindSince) agg.oldestBehindSince = row.behindSince;
       }
-      images.set(key, agg);
     }
 
     const now = Date.now();
@@ -86,7 +92,13 @@ export const containerImageCurrencyHandler: ConditionHandler = {
         let status: SubjectStatus = 'unknown';
         let upstreamStatus: WorkloadUpstreamStatus;
         let daysBehind: number | null = null;
-        if (agg.statuses.has('behind')) {
+        if (agg.statuses.size === 0) {
+          // Every row is not_applicable (e.g. behind -> tag deleted upstream, or
+          // re-pinned to a digest): resolve the open alert; a missing subject
+          // would leave it breaching until the container is removed.
+          upstreamStatus = [...agg.inertStatuses][0]!;
+          status = 'recovered';
+        } else if (agg.statuses.has('behind')) {
           upstreamStatus = 'behind';
           if (agg.oldestBehindSince) {
             const ageMs = now - agg.oldestBehindSince.getTime();
