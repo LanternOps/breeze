@@ -106,6 +106,20 @@ describe('xeroLineAmounts (refinement 3)', () => {
       .toMatchObject({ kind: 'validation', provider: 'xero' });
   });
 
+  // #8605 W04 oracle (captured on the pre-W04 code): descriptions that fit
+  // the cap are sent exactly as before, multi-byte text included, with and
+  // without the case-(c) amount fallback suffix.
+  it.each<[string, string, Partial<AccountingInvoiceLinePayload>, string]>([
+    ['emoji, exact amounts', 'Fixed the 🖨️ queue 😀 — 0.50 h worked, 1.00 h billed', {}, 'Fixed the 🖨️ queue 😀 — 0.50 h worked, 1.00 h billed'],
+    ['CJK, fallback suffix', 'サーバーの再起動 — 2.50 h worked, 2.00 h billed', { quantity: '1.50', unitPrice: '10.95', lineTotal: '16.43' }, 'サーバーの再起動 — 2.50 h worked, 2.00 h billed (1.50 × 10.95)'],
+    ['trimmed', '  Labor  ', {}, 'Labor'],
+    ['exactly 4000 with the fallback suffix', 'a'.repeat(3985), { quantity: '1.50', unitPrice: '10.95', lineTotal: '16.43' }, `${'a'.repeat(3985)} (1.50 × 10.95)`],
+  ])('baseline description: %s (#8605 oracle)', (_name, description, over, expected) => {
+    const out = xeroLineAmounts(line({ description, ...over })).Description;
+    expect(out).toBe(expected);
+    expect(out.length).toBeLessThanOrEqual(4000);
+  });
+
   it("never exceeds Xero's 4000-character description", () => {
     expect(xeroLineAmounts(line({ description: 'x'.repeat(5000), quantity: '1.50', unitPrice: '10.95', lineTotal: '16.43' })).Description).toHaveLength(4000);
   });

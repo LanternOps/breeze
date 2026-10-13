@@ -397,6 +397,28 @@ describe('upsertItem', () => {
 describe('pushInvoice', () => {
   const taxConn = conn({ defaultTaxCodeRef: 'TXC1' });
 
+  // #8605 W04 oracle (captured on the pre-W04 code): a line with no service
+  // date sends its description verbatim (no trim, no rewrite, multi-byte text
+  // untouched, up to and including QuickBooks' 4000-character limit) and no
+  // ServiceDate key at all.
+  describe('description and service date baseline (#8605 oracle)', () => {
+    const AT_CAP = `${'a'.repeat(3969)} — 0.50 h worked, 1.00 h billed`; // exactly 4000
+    it.each<[string, string]>([
+      ['plain', 'Onsite support — 0.50 h worked, 1.00 h billed'],
+      ['emoji', 'Fixed the 🖨️ queue 😀 — 0.50 h worked, 1.00 h billed'],
+      ['CJK', 'サーバーの再起動と確認 — 2.50 h worked, 2.00 h billed'],
+      ['leading/trailing spaces kept', '  Labor  '],
+      ['exactly at the 4000 cap', AT_CAP],
+    ])('%s', async (_name, description) => {
+      expect(AT_CAP).toHaveLength(4000);
+      const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '0', TotalAmt: 107.0, TxnTaxDetail: { TotalTax: 7.0 } } });
+      await quickbooksProvider.pushInvoice(taxConn, invoicePayload({ lines: [line({ description })] }), []);
+      const body = JSON.parse(String(lastFetchInit(fetchMock).body));
+      expect(body.Line[0].Description).toBe(description);
+      expect(body.Line[0].SalesItemLineDetail).not.toHaveProperty('ServiceDate');
+    });
+  });
+
   it('POSTs a create body with DocNumber, CustomerRef, per-line SalesItemLineDetail and TxnTaxDetail override', async () => {
     const fetchMock = mockFetchJsonOnce({
       Invoice: { Id: '310', SyncToken: '0', DocNumber: 'INV-2026-0042', TotalAmt: 107.0, TxnTaxDetail: { TotalTax: 7.0 } },

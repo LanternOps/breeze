@@ -165,6 +165,8 @@ interface LineRow {
   workedMinutes?: number | null;
   /** #8604: 'time_entry' marks the lines the note toggle applies to. */
   sourceType?: string | null;
+  /** #8603: partner-local work day of a time-entry line (YYYY-MM-DD). */
+  workDate?: string | null;
 }
 interface MappingRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
@@ -969,6 +971,29 @@ describe('pushInvoiceToAccounting', () => {
       setup({ invoice: { lineShowNote: false, lineShowWorkedTime: false }, lines: detailLines });
       await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       expect(pushedDescriptions()).toEqual(['Labor', 'On-site visit', 'Patch cable']);
+    });
+
+    // #8605 W04 oracle (captured on the pre-W04 code): lines that CARRY a
+    // work date push exactly the pre-W04 payload whenever the frozen showDate
+    // is off — same descriptions, and no service date on the neutral line.
+    describe('dated lines with the date off (#8605 oracle)', () => {
+      const datedLines: Partial<LineRow>[] = detailLines.map((l) =>
+        l.sourceType === 'time_entry' ? { ...l, workDate: '2026-09-16' } : l);
+      const pushedLines = () => pushInvoiceMock.mock.calls[0]![1].lines as Array<Record<string, unknown>>;
+
+      it.each<[string, Partial<InvRow>, string[]]>([
+        ['pre-W03 row (all line_* NULL)', {}, BASELINE],
+        ['frozen defaults (showDate false)', { lineGrouping: 'entry', lineShowDate: false, lineShowNote: true, lineShowWorkedTime: true }, BASELINE],
+        ['note off, date off', { lineShowDate: false, lineShowNote: false }, [
+          'Labor — 0.50 h worked, 1.00 h billed', 'On-site visit — 2.50 h worked, 2.00 h billed', 'Patch cable',
+        ]],
+      ])('%s: descriptions unchanged, no service date', async (_name, invoice, expected) => {
+        setup({ invoice, lines: datedLines });
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+        expect(pushedDescriptions()).toEqual(expected);
+        for (const l of pushedLines()) expect(l.serviceDate ?? null).toBeNull();
+        expect(JSON.stringify(pushedLines())).not.toContain('2026-09-16');
+      });
     });
   });
 
