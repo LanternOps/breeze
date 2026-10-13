@@ -61,6 +61,18 @@ vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal)
   }
   return { ...actual, GravityZoneClient: FakeGravityZoneClient };
 });
+// #8166 Phase 4: record published events instead of hitting the bus.
+const published = vi.hoisted(() => [] as Array<{ type: string; payload: Record<string, unknown> }>);
+vi.mock('../../services/eventBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/eventBus')>();
+  return {
+    ...actual,
+    publishEvent: vi.fn(async (type: string, _orgId: string, payload: Record<string, unknown>) => {
+      published.push({ type, payload });
+      return 'event-id';
+    }),
+  };
+});
 // No Redis: a no-op limiter, and a live fetch is a test failure.
 vi.mock('../../services/edrProviders/context', () => ({
   buildEdrAdapterContext: (_adapter: unknown, o: { creds: unknown; baseUrl: string | null; region: string | null }) => ({
@@ -486,6 +498,45 @@ describe('edr sync — real job functions against Postgres', () => {
     expect(w2.from.getTime()).toBe(Date.parse(parsed1.incidentsChangedAfter) - 5 * 60_000);
     expect((await tenantRow(fx.connectionId, other)).detection_cursor).toBeNull();
     expect(await connRow(fx.connectionId)).toMatchObject({ status: 'connected', last_detection_sync_status: 'success' });
+  });
+
+  // #8166 A6 / Review Focus 1: the first detection sync back-fills history
+  // without paging; a detection first seen on a LATER sync publishes once; a
+  // re-run publishes nothing.
+  runDb('Phase 4: first-sync back-fill is stamped silently; a later new detection publishes exactly once', async () => {
+    const fx = await seedJob();
+    const mapped = `co-p4-${sfx()}`;
+    await fx.addTenant(mapped, fx.orgA.id);
+    const detectionEvents = () => published.filter((e) => e.type.startsWith('edr.detection_'));
+    published.length = 0;
+
+    gz.incidents = [{ ...gzIncident(`inc-old-${sfx()}`, mapped, 1), severityScore: 95 }];
+    await syncEdrDetections(fx.connectionId);
+    const backfill = await adminRows<Row>(sql`
+      SELECT severity, notified_severity FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid`);
+    expect(backfill).toHaveLength(1);
+    expect(backfill[0]).toMatchObject({ severity: 'critical', notified_severity: 'critical' });
+    expect(detectionEvents()).toHaveLength(0);
+
+    const freshId = `inc-new-${sfx()}`;
+    // Seen now (inside the 24 h notify horizon) and critical.
+    gz.incidents = [{ ...gzIncident(freshId, mapped, 1), severityScore: 95, created: new Date().toISOString() }];
+    await new Promise((r) => setTimeout(r, 20));
+    await syncEdrDetections(fx.connectionId);
+    const [fresh] = await adminRows<Row>(sql`
+      SELECT id, severity, notified_severity FROM edr_detections
+      WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id LIKE ${'%' + freshId + '%'}`);
+    expect(fresh).toBeDefined();
+    expect(fresh!.notified_severity).toBe(fresh!.severity);
+    expect(fresh!.severity).toBe('critical');
+    expect(detectionEvents()).toHaveLength(1);
+    expect(detectionEvents()[0]).toMatchObject({
+      type: 'edr.detection_detected', payload: { detectionId: fresh!.id, provider: 'bitdefender', severity: 'critical' },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    await syncEdrDetections(fx.connectionId);
+    expect(detectionEvents()).toHaveLength(1);
   });
 
   runDb('a company missing from listTenants is tombstoned, not deleted; its endpoints go after 7 days', async () => {
