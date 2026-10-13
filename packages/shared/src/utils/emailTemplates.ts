@@ -17,6 +17,12 @@ export const EMAIL_TEMPLATE_IDS = [
   'payment_reminder',
   'payment_overdue',
   'payment_receipt', 'payment_failed',
+  // Customer work approval (#4617): the approver's Approve/Deny ask, the
+  // requester's informational copy, and the decision confirmation. Only the
+  // approval summary is mergeable — never ticket comments or time detail.
+  'ticket_approval_requested_approver',
+  'ticket_approval_requested_notify',
+  'ticket_approval_decided',
 ] as const;
 
 export type EmailTemplateId = (typeof EMAIL_TEMPLATE_IDS)[number];
@@ -50,7 +56,8 @@ export type EmailTemplateVarKey =
   | 'charge_date' | 'fee_amount' | 'invoice_link'
   | 'amount_paid' | 'total_charged' | 'paid_on' | 'balance_remaining'
   | 'failure_text' | 'action_link' | 'action_label'
-  | 'charge_total' | 'attempted_amount';
+  | 'charge_total' | 'attempted_amount'
+  | 'approval_ask' | 'approval_snapshot' | 'approval_expires' | 'approval_status';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -111,6 +118,15 @@ const STAFF_INVITE_VARS = [
   'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
+const APPROVAL_SUMMARY_VARS = [
+  'ticket_number',
+  'ticket_subject',
+  'org_name',
+  'partner_name',
+  'approval_ask',
+  'approval_snapshot',
+] as const satisfies readonly EmailTemplateVarKey[];
+
 const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_comment_notification: COMMENT_NOTIFICATION_VARS,
   ticket_autoresponse: AUTORESPONSE_VARS,
@@ -133,6 +149,9 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
     'total_charged','payment_method','paid_on','balance_remaining','client_name'],
   payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label',
     'payment_method','attempted_amount','client_name'],
+  ticket_approval_requested_approver: [...APPROVAL_SUMMARY_VARS, 'approval_expires', 'portal_url', 'cta_button'],
+  ticket_approval_requested_notify: [...APPROVAL_SUMMARY_VARS, 'portal_url', 'cta_button'],
+  ticket_approval_decided: [...APPROVAL_SUMMARY_VARS, 'approval_status'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -154,6 +173,9 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   payment_overdue: 'Overdue payment reminder',
   payment_receipt: 'Online payment receipt',
   payment_failed: 'Payment could not be completed',
+  ticket_approval_requested_approver: 'Work approval request (approver)',
+  ticket_approval_requested_notify: 'Work approval request (for information)',
+  ticket_approval_decided: 'Work approval decision',
 };
 
 const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
@@ -175,6 +197,9 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   payment_overdue: true,
   payment_receipt: false,
   payment_failed: true,
+  ticket_approval_requested_approver: true,
+  ticket_approval_requested_notify: true,
+  ticket_approval_decided: false,
 };
 
 export function varsForEmailTemplate(id: EmailTemplateId): readonly EmailTemplateVarKey[] {
@@ -345,6 +370,36 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
   payment_failed: { subject: "Payment for invoice {{invoice_number}} didn't go through", heading: "We couldn't complete your payment",
     buttonLabel: 'Pay invoice', html: `<p>Hi {{client_name}},</p>
 <p>{{failure_text}}</p>` },
+  ticket_approval_requested_approver: {
+    subject: '[{{ticket_number}}] Your approval is needed: {{ticket_subject}}',
+    heading: 'Your approval is needed',
+    buttonLabel: 'Review and decide',
+    html:
+      `<p>{{partner_name}} is asking for your approval before billing more work on ticket <strong>{{ticket_number}}</strong> ({{ticket_subject}}).</p>
+<p><strong>{{approval_ask}}</strong></p>
+<p>{{approval_snapshot}}</p>
+<p>{{cta_button}}</p>
+<p>Sign in to the portal to approve or deny. Please decide by {{approval_expires}}.</p>`,
+  },
+  ticket_approval_requested_notify: {
+    subject: '[{{ticket_number}}] Approval requested: {{ticket_subject}}',
+    heading: 'An approval was requested',
+    buttonLabel: 'View request',
+    html:
+      `<p>{{partner_name}} has asked your organization's billing contact to approve more work on ticket <strong>{{ticket_number}}</strong> ({{ticket_subject}}).</p>
+<p>{{approval_ask}}</p>
+<p>{{approval_snapshot}}</p>
+<p>{{cta_button}}</p>
+<p>This is for your information. You don't need to do anything.</p>`,
+  },
+  ticket_approval_decided: {
+    subject: '[{{ticket_number}}] Work approval {{approval_status}}: {{ticket_subject}}',
+    heading: 'Work approval {{approval_status}}',
+    buttonLabel: '',
+    html:
+      `<p>The request for more work on ticket <strong>{{ticket_number}}</strong> ({{ticket_subject}}) was {{approval_status}}.</p>
+<p>{{approval_ask}}</p>`,
+  },
 };
 
 /** Variants of one notice kind: a different default subject, heading and body for
