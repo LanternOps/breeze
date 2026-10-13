@@ -1852,6 +1852,19 @@
       "showNote": "Notiz des Technikers",
       "showWorkedTime": "Geleistete vs. abgerechnete Zeit",
       "title": "Zeiteintragszeilen"
+    },
+    "refreshTimeLines": {
+      "button": "Aus Zeiteinträgen aktualisieren",
+      "drifted": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_one": "{{count}} Zeile unverändert: Die abgerechnete Zeit des Zeiteintrags passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_other": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "error": "Aktualisierung aus Zeiteinträgen fehlgeschlagen",
+      "help": "Übernimmt Notizen, Arbeitsdatum und Freigabe aus den Zeiteinträgen. Mengen, Preise und von Hand bearbeitete Beschreibungen ändern sich nie.",
+      "running": "Wird aktualisiert…",
+      "skipped": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_one": "{{count}} Zeile übersprungen: Der Zeiteintrag wurde anderweitig abgerechnet, entfernt oder ist für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_other": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "summary": "Aktualisiert: {{refreshed}} · Bereits aktuell: {{unchanged}}"
     }
   },
   "invoiceActions": {

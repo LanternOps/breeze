@@ -1852,6 +1852,19 @@
       "showNote": "Nota del tecnico",
       "showWorkedTime": "Tempo lavorato e fatturato",
       "title": "Righe dei tempi registrati"
+    },
+    "refreshTimeLines": {
+      "button": "Aggiorna dalle registrazioni ore",
+      "drifted": "{{count}} righe invariate: il tempo fatturato delle registrazioni non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "drifted_one": "{{count}} riga invariata: il tempo fatturato della registrazione non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "drifted_other": "{{count}} righe invariate: il tempo fatturato delle registrazioni non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "error": "Impossibile aggiornare dalle registrazioni ore",
+      "help": "Aggiorna note, date di lavoro e approvazione dalle registrazioni ore. Quantità, prezzi e descrizioni modificate a mano non cambiano mai.",
+      "running": "Aggiornamento…",
+      "skipped": "{{count}} righe saltate: le registrazioni ore sono state fatturate altrove, rimosse o non sono più fatturabili in questa bozza.",
+      "skipped_one": "{{count}} riga saltata: la registrazione ore è stata fatturata altrove, rimossa o non è più fatturabile in questa bozza.",
+      "skipped_other": "{{count}} righe saltate: le registrazioni ore sono state fatturate altrove, rimosse o non sono più fatturabili in questa bozza.",
+      "summary": "Aggiornate: {{refreshed}} · Già aggiornate: {{unchanged}}"
     }
   },
   "invoiceActions": {

@@ -1852,6 +1852,19 @@
       "showNote": "Teknisyen notu",
       "showWorkedTime": "Çalışılan ve faturalanan süre",
       "title": "Zaman kaydı satırları"
+    },
+    "refreshTimeLines": {
+      "button": "Zaman kayıtlarından yenile",
+      "drifted": "{{count}} satır değiştirilmedi: zaman kayıtlarının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "drifted_one": "{{count}} satır değiştirilmedi: zaman kaydının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "drifted_other": "{{count}} satır değiştirilmedi: zaman kayıtlarının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "error": "Zaman kayıtlarından yenilenemedi",
+      "help": "Notları, çalışılan tarihleri ve onayı zaman kayıtlarından günceller. Miktarlar, fiyatlar ve elle düzenlenen açıklamalar asla değişmez.",
+      "running": "Yenileniyor…",
+      "skipped": "{{count}} satır atlandı: zaman kayıtları başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "skipped_one": "{{count}} satır atlandı: zaman kaydı başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "skipped_other": "{{count}} satır atlandı: zaman kayıtları başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "summary": "Yenilenen: {{refreshed}} · Zaten güncel: {{unchanged}}"
     }
   },
   "invoiceActions": {

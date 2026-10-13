@@ -1852,6 +1852,19 @@
       "showNote": "Technician's note",
       "showWorkedTime": "Worked vs billed time",
       "title": "Time entry lines"
+    },
+    "refreshTimeLines": {
+      "button": "Refresh from time entries",
+      "drifted": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_one": "{{count}} line left unchanged: its time entry's billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_other": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "error": "Couldn't refresh from time entries",
+      "help": "Updates notes, dates worked and approval from the source time entries. Quantities, prices and descriptions you edited by hand never change.",
+      "running": "Refreshing…",
+      "skipped": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "skipped_one": "{{count}} line skipped: its time entry was billed elsewhere, removed, or is no longer billable on this draft.",
+      "skipped_other": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "summary": "Refreshed: {{refreshed}} · Already current: {{unchanged}}"
     }
   },
   "invoiceActions": {

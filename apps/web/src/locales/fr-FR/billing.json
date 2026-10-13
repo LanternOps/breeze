@@ -1852,6 +1852,19 @@
       "showNote": "Note du technicien",
       "showWorkedTime": "Temps travaillé et facturé",
       "title": "Lignes de saisie de temps"
+    },
+    "refreshTimeLines": {
+      "button": "Actualiser depuis les saisies de temps",
+      "drifted": "{{count}} lignes inchangées : le temps facturé de leurs saisies ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_one": "{{count}} ligne inchangée : le temps facturé de sa saisie ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_other": "{{count}} lignes inchangées : le temps facturé de leurs saisies ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "error": "Impossible d'actualiser depuis les saisies de temps",
+      "help": "Met à jour les notes, les dates travaillées et l'approbation depuis les saisies de temps. Les quantités, les prix et les descriptions modifiées à la main ne changent jamais.",
+      "running": "Actualisation…",
+      "skipped": "{{count}} lignes ignorées : leurs saisies de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "skipped_one": "{{count}} ligne ignorée : sa saisie de temps a été facturée ailleurs, supprimée ou n'est plus facturable sur ce brouillon.",
+      "skipped_other": "{{count}} lignes ignorées : leurs saisies de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "summary": "Actualisées : {{refreshed}} · Déjà à jour : {{unchanged}}"
     }
   },
   "invoiceActions": {

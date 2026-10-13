@@ -84,6 +84,14 @@ export interface InvoiceSummary {
   lineShowWorkedTime?: boolean | null;
 }
 
+/** #8606: counts from POST /invoices/:id/refresh-time-lines. */
+export interface TimeLineRefreshSummary {
+  refreshed: number;
+  unchanged: number;
+  skipped: number;
+  quantityDrifted: number;
+}
+
 export interface InvoiceLine {
   id: string;
   invoiceId: string;

@@ -13,6 +13,7 @@ import { useServerSyncedDraft } from './shared/useServerSyncedDraft';
 import {
   type InvoiceDetail,
   type InvoiceLine,
+  type TimeLineRefreshSummary,
   formatMoney,
   lineTitle,
   lineWorkedVsBilledNote,
@@ -606,6 +607,25 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     }, t('invoiceEditor.errors.saveLineDetail'));
   }, [invoice.id, refresh, runScoped, t]);
 
+  // #8606: re-read each time-entry line's source entry (note, date worked,
+  // worked minutes, approval). The server never changes amounts or a
+  // hand-edited description; the summary says what it did and did not touch.
+  const hasTimeLines = lines.some((l) => l.sourceType === 'time_entry');
+  const [refreshSummary, setRefreshSummary] = useState<TimeLineRefreshSummary | null>(null);
+  const refreshTimeLines = useCallback(async () => {
+    setRefreshSummary(null);
+    await runScoped('refreshTimeLines', async () => {
+      const result = await runAction<{ summary: TimeLineRefreshSummary }>({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/refresh-time-lines`, { method: 'POST' }),
+        errorFallback: t('invoiceEditor.refreshTimeLines.error'),
+        parseSuccess: (body) => (body as { data: { summary: TimeLineRefreshSummary } }).data,
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setRefreshSummary(result.summary);
+      refresh();
+    }, t('invoiceEditor.refreshTimeLines.error'));
+  }, [invoice.id, refresh, runScoped, t]);
+
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
     const ok = await runScoped('terms', async () => {
@@ -983,6 +1003,35 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                   </select>
                 </div>
               </div>
+              {canWrite && hasTimeLines && (
+                <div className="mt-4 border-t pt-3">
+                  <button
+                    type="button"
+                    onClick={() => void refreshTimeLines()}
+                    disabled={isPending('refreshTimeLines')}
+                    data-testid="invoice-refresh-time-lines"
+                    className="inline-flex h-8 items-center justify-center rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {isPending('refreshTimeLines') ? t('invoiceEditor.refreshTimeLines.running') : t('invoiceEditor.refreshTimeLines.button')}
+                  </button>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('invoiceEditor.refreshTimeLines.help')}</p>
+                  {refreshSummary && (
+                    <div role="status" className="mt-2 space-y-1 text-xs" data-testid="invoice-refresh-time-lines-summary">
+                      <p>{t('invoiceEditor.refreshTimeLines.summary', { refreshed: refreshSummary.refreshed, unchanged: refreshSummary.unchanged })}</p>
+                      {refreshSummary.quantityDrifted > 0 && (
+                        <p className="text-[hsl(36_92%_28%)] dark:text-warning" data-testid="invoice-refresh-time-lines-drifted">
+                          {t('invoiceEditor.refreshTimeLines.drifted', { count: refreshSummary.quantityDrifted })}
+                        </p>
+                      )}
+                      {refreshSummary.skipped > 0 && (
+                        <p className="text-muted-foreground" data-testid="invoice-refresh-time-lines-skipped">
+                          {t('invoiceEditor.refreshTimeLines.skipped', { count: refreshSummary.skipped })}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

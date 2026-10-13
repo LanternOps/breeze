@@ -111,6 +111,58 @@ describe('InvoiceEditor', () => {
     });
   });
 
+  describe('refresh from time entries (#8606)', () => {
+    const timeLine: InvoiceDetail['lines'][number] = {
+      ...manualLine, id: 'line-t', sourceType: 'time_entry', description: 'Replaced toner', quantity: '1.50', unitPrice: '100.00', lineTotal: '150.00',
+    };
+    const refreshCalls = () => fetchMock.mock.calls.filter((c) => c[0] === '/invoices/inv-1/refresh-time-lines');
+
+    it('POSTs the refresh, reloads the draft and shows a result summary', async () => {
+      const onChanged = vi.fn();
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') {
+          return json({ data: { invoiceId: 'inv-1', summary: { refreshed: 2, unchanged: 1, skipped: 1, quantityDrifted: 1 }, lines: [] } });
+        }
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine])} onChanged={onChanged} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      await waitFor(() => expect(screen.getByTestId('invoice-refresh-time-lines-summary')).toBeInTheDocument());
+      expect(refreshCalls()).toHaveLength(1);
+      expect((refreshCalls()[0]![1] as RequestInit).method).toBe('POST');
+      expect(onChanged).toHaveBeenCalled();
+      const summary = screen.getByTestId('invoice-refresh-time-lines-summary').textContent ?? '';
+      expect(summary).toContain('2');
+      expect(screen.getByTestId('invoice-refresh-time-lines-drifted')).toBeInTheDocument();
+      expect(screen.getByTestId('invoice-refresh-time-lines-skipped')).toBeInTheDocument();
+    });
+
+    it('toasts the server error when the refresh fails and shows no summary', async () => {
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') return json({ error: 'Invoice is not a draft', code: 'NOT_A_DRAFT' }, false, 409);
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine])} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.queryByTestId('invoice-refresh-time-lines-summary')).not.toBeInTheDocument();
+    });
+
+    it('is not offered on an issued invoice', async () => {
+      render(<InvoiceEditor detail={draft([timeLine], { status: 'sent' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-refresh-time-lines')).not.toBeInTheDocument();
+    });
+
+    it('is not offered on a draft with no time-entry lines', async () => {
+      render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-refresh-time-lines')).not.toBeInTheDocument();
+    });
+  });
+
   it('links the Bill To name to its organization record (#5075 W03)', async () => {
     render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
