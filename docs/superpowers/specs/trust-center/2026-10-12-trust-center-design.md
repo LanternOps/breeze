@@ -117,6 +117,8 @@ The report keeps `assertReportExecutionPreflight` and its `OrgReportExecutionAut
 
 `PostureEvidence` carries counts, not percentages, so the evaluator owns the denominator rule below. The report switches to the same loader in the same PR so the two cannot drift.
 
+Three controls have **no loader in the report today** and are net-new evidence readers added alongside the extraction (size the W1 plan accordingly): `mfa_registered_m365` (reads `m365_posture_rollups`), `backups_verified` (joins `backup_verifications` to backup-protected devices and the org's RPO), and `continuous_monitoring` (device last-check-in). The report may surface them later; W1 does not require it.
+
 ### 5.4 Denominators, coverage floor and freshness (review)
 
 The report today divides by *assessed* devices, so one assessed device among 100 can read 100%. Public rules:
@@ -170,11 +172,12 @@ Builder-enforced rules:
 
 ## 7. Publishing model: snapshots and a live pointer
 
-- `trust_pages` holds the **draft configuration** and an authoritative **publication pointer**: `published_at`, `current_snapshot_id`, `publication_revision` (monotonic). `trust_page_snapshots` rows are immutable full payloads.
-- **Publish**: build a snapshot synchronously, then one atomic UPDATE sets `published_at`, `current_snapshot_id` and increments `publication_revision` only if the revision still matches what the editor loaded (optimistic concurrency). The page is live when the toast says so.
-- **Unpublish**: atomic UPDATE clears `published_at` and `current_snapshot_id`. No cache dance is needed for correctness because the pointer is read live; the payload cache is keyed by snapshot id (review).
-- **Refresh**: repeat job `trust-page-snapshot` (hourly, scheduled after `security-posture-scan`) walks published pages; for each, rebuilds under `withSystemDbAccessContext` for that org, inserts a snapshot only when `payload_sha256` differs, advances `current_snapshot_id` with the same revision check (a publish that raced wins), and always updates `last_evaluated_at`. Prune snapshots older than 90 days except the current one.
-- **Serve** (per public request): one indexed query resolves `partners.slug` → `organizations (partner_id, lower(slug))` → `trust_pages` with `buildPublicLinkLiveOrgPredicate` folded in and `published_at IS NOT NULL`; then the payload for `current_snapshot_id` from Redis (`trust:snapshot:<id>`, TTL 1 h; immutable, so a hit is always correct) or the table. Unknown, unpublished, soft-deleted, non-live org or partner, or non-`trusted` partner all return the same generic 404 (review: one indistinguishable response; the 410 that `routes/quotesPublic.ts` uses would reveal state). Negative cache 60 s, only for syntactically valid slugs.
+- `trust_pages` holds the **draft configuration** and the **publication state**: `published_at`, `publication_revision` (monotonic). `trust_page_snapshots` rows are immutable full payloads; exactly one per page carries `is_current = true` (partial unique index). There is deliberately **no back-pointer from page to snapshot**: a `current_snapshot_id` FK would make the two tables a cycle, and the org-erasure cascade (children before parents) would fire its `ON DELETE` on a published page mid-erasure and abort the whole delete — the latent GDPR bug `docs/agents/tenancy-rls.md` warns about (review).
+- **Publish**: build a snapshot, then in one transaction: insert it with `is_current = true`, clear `is_current` on the previous one, set `published_at`, increment `publication_revision` — only if the revision still matches what the editor loaded (optimistic concurrency, 409 otherwise). Add the page's `partnerSlug/orgSlug` to the Redis serving-set (below). Live when the toast says so.
+- **Unpublish**: one transaction clears `published_at`, bumps the revision, and removes the key from the serving-set. Correctness does not depend on the cache: the public resolve reads `published_at` live.
+- **Refresh**: repeat job `trust-page-snapshot` (hourly, after `security-posture-scan`) walks published pages; for each, rebuilds under `withSystemDbAccessContext` for that org, inserts a new `is_current` snapshot only when `payload_sha256` differs (same revision check, so a publish that raced wins), and always updates `last_evaluated_at`. It also rebuilds the serving-set from the table so the set self-heals. Prune `WHERE NOT is_current AND generated_at < now() − 90 days`.
+- **Serving-set**: a Redis set `trust:serving` of `partnerSlug/orgSlug` (and `partnerSlug` for partner-home) keys currently publishable, maintained by publish/unpublish/refresh and by partner trust-state and org/partner status changes (those handlers call `trustServingSet.refreshForPartner(partnerId)`). It is an admission filter, not an authority: a hit still goes through the live resolve; a miss answers 404 without touching Postgres (review: an unthrottled miss path must not reach the database).
+- **Serve** (per public request): check the serving-set; on a hit, one indexed query resolves `partners.slug` → `organizations (partner_id, lower(slug))` → `trust_pages` with `buildPublicLinkLiveOrgPredicate`, `trust_state = 'trusted'` and `published_at IS NOT NULL` folded in; then the current snapshot's payload from Redis (`trust:snapshot:<id>`, TTL 1 h; immutable, so a hit is always correct) or the table. Unknown, unpublished, soft-deleted, non-live org or partner, or non-`trusted` partner all return the same generic 404 (review: one indistinguishable response; the 410 that `routes/quotesPublic.ts` uses would reveal state).
 - **Preview**: the editor mints a 15-minute HS256 JWT (jose, `jwt.ts` sign-key helpers, as `quoteAcceptToken.ts`) bound to the page id; the portal renders `/portal/trust/preview/<token>` from a freshly built draft payload; never cached, always `noindex`.
 
 ## 8. URLs, hosting and serving
@@ -191,7 +194,7 @@ Builder-enforced rules:
 
 **SSR vs client rendering (review — release blocker otherwise).** Portal SSR calls to the API carry no client IP (`buildServerForwardHeaders` forwards cookie and host only), so every SSR fetch would share one `unknown` slot of the public rate bucket; `pages/invoice/[token].astro` documents exactly this and renders client-side for that reason. Trust pages split the work:
 
-- SSR fetches only `GET /api/v1/trust/public/:partnerSlug/:orgSlug/card`: org name, logo, summary line, publication state — a Redis read, bounded slug, negative-cached. It is registered with `registerGlobalRateLimitSkipPrefix` (first use of that helper; it exists for exactly this) and is cheap enough to live without a per-IP bucket. It renders `<title>`, description, Open Graph tags and the header, so link previews and crawlers see real content.
+- SSR fetches only `GET /api/v1/trust/public/:partnerSlug/:orgSlug/card`: org name, logo, summary line, publication state. It is registered with `registerGlobalRateLimitSkipPrefix` (first use of that helper) and must therefore be DB-free on a miss: slug-length check, then the serving-set membership check (§7), and only a hit proceeds to the resolve query and the cached card. Its worst case per request is two Redis reads plus one indexed query for a currently-published page. It renders `<title>`, description, Open Graph tags and the header, so link previews and crawlers see real content.
 - The browser fetches the full payload from `GET /api/v1/trust/public/:partnerSlug/:orgSlug`, keyed by the visitor's own IP in an isolated bucket (120/min/IP). Controls, documents and method render client-side, as the invoice page does.
 
 **Response headers.** The portal middleware applies `no-store`/`noindex` by path prefix for token pages; add a `/trust/` branch: `Cache-Control: public, max-age=300, stale-while-revalidate=600` for pages and `no-store` for `/trust/preview/`; `X-Robots-Tag: noindex` unless the card says `searchIndexable`; `<link rel="canonical">`. `X-Frame-Options: DENY` and `frame-ancestors 'none'` stay (no embedding in W1).
@@ -214,7 +217,6 @@ All new tables are shape 1 (`org_id NOT NULL`, policy `breeze_has_org_access(org
 | partner_id | uuid not null | composite FK with org_id, deferrable |
 | is_partner_home | boolean not null default false | partial unique index `(partner_id) WHERE is_partner_home` |
 | published_at | timestamptz null | |
-| current_snapshot_id | uuid null | FK → trust_page_snapshots(id) ON DELETE SET NULL; set iff published_at set (CHECK) |
 | publication_revision | integer not null default 0 | optimistic concurrency |
 | search_indexable | boolean default false | |
 | show_percentages | boolean default false | |
@@ -237,9 +239,10 @@ Export policy: every column `included` (no jsonb).
 | payload jsonb | `excludedOpen` |
 | payload_sha256 char(64) | dedupe |
 | catalog_version text, publication_revision int | |
+| is_current boolean not null default false | partial unique index `(trust_page_id) WHERE is_current` |
 | generated_at timestamptz | index `(trust_page_id, generated_at desc)` |
 
-UPDATE blocked by trigger; DELETE allowed (retention, cascade).
+Only `is_current` may be updated (trigger rejects any other column change); DELETE allowed (retention, cascade). No FK from `trust_pages` back to this table (§7).
 
 ### `trust_page_documents`
 | column | notes |
@@ -271,8 +274,8 @@ Authenticated (`/api/v1/orgs/:orgId/trust-page`, existing org-management permiss
 | GET | `/` | draft + publication state + `publicationRevision` + public URL + slug validity |
 | PUT | `/` | update draft (Zod `trustPageUpdateSchema`), returns new revision |
 | PUT | `/documents` | replace document list (id, visibility, order, disclosure confirmation) |
-| POST | `/publish` | body `{ expectedRevision }`; trust-gate, slug validation, build, atomic pointer update |
-| POST | `/unpublish` | atomic pointer clear |
+| POST | `/publish` | body `{ expectedRevision }`; trust-gate, slug validation, build, one transaction flips `is_current` + `published_at` + revision; serving-set add |
+| POST | `/unpublish` | one transaction clears `published_at` + bumps revision; serving-set remove |
 | POST | `/partner-home` | set/clear (partner scope required) |
 | POST | `/preview-token` | 15-minute preview JWT |
 | GET | `/controls` | catalog with current evaluated status, exactly as the public would see it |
@@ -281,7 +284,7 @@ Public (no auth; system context; resolve query includes the liveness predicate a
 
 | Method | Path | Bucket | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/trust/public/:partnerSlug/:orgSlug/card` | skip-prefix (Redis read) | SSR header + OG metadata |
+| GET | `/api/v1/trust/public/:partnerSlug/:orgSlug/card` | skip-prefix; serving-set gate, DB-free on miss | SSR header + OG metadata |
 | GET | `/api/v1/trust/public/:partnerSlug/card` | skip-prefix | partner-home card |
 | GET | `/api/v1/trust/public/:partnerSlug/:orgSlug` | isolated 120/min/IP | payload + `lastEvaluatedAt` + `stale` |
 | GET | `/api/v1/trust/public/:partnerSlug` | isolated | partner-home payload |
@@ -311,7 +314,7 @@ W2: `gated` visibility → "Request access" → email verification (magic link, 
 
 ## 13. Security
 
-- **Enumeration.** Slugs are public identifiers; the page is public by design. Every non-serving case is the same 404; negative results are cached 60 s; slugs are length-bounded before any query; the payload is size-bounded (§6).
+- **Enumeration.** Slugs are public identifiers; the page is public by design. Every non-serving case is the same 404; a miss on the serving-set never reaches Postgres; slugs are length-bounded before any lookup; the payload is size-bounded (§6).
 - **Suspended or untrusted tenants.** The liveness predicate (`buildPublicLinkLiveOrgPredicate`: org `active`/`trial`, partner `active`, neither soft-deleted) plus `trust_state = 'trusted'` is evaluated live on every request, before any cache read.
 - **Content injection.** Publisher-controlled text is the intro, contact and URLs. Intro is sanitized at build time with the existing rich-text subset; URLs must be `http(s)`; the portal renders `introHtml` with `set:html` under the portal CSP. No publisher CSS or scripts (`portal_branding.custom_css` stays portal-only).
 - **Preview tokens** are bound to one page id, 15 minutes, never serve a published payload.
@@ -332,7 +335,8 @@ W2: `gated` visibility → "Request access" → email verification (magic link, 
 - **Unit**: `evaluateTrustControls` fixtures for every metric type, N/A, zero devices, coverage floor (79% vs 80% assessed), exposure inversion, MFA admin rule, evidence-age cutoff. Snapshot builder: hidden controls omitted and `catalogTotal` kept, opt-in nulls, sanitization (script, `javascript:` link, table stripped, oversized intro), document filtering (deleted, superseded, unlinked, unconfirmed).
 - **Contract**: payload `.strict()` + denylist (§6). Slug resolution: soft-deleted org, wrong partner, case-insensitive, invalid slug rejected pre-query, probation partner → 404.
 - **Tenancy**: shape-1 auto-discovery in `rls-coverage.integration.test.ts`; `tenantCascade`, `orgMergeRegistry` (custom executor retires loser; survivor marked for rebuild), `tenant-export-policy` suites (Integration Tests job); forged cross-tenant insert as `breeze_app` fails.
-- **Routes**: unpublished/unknown/archived/untrusted → identical 404; publish with stale `expectedRevision` → 409; publish then GET serves the new snapshot id; unpublish then GET 404s in the same second (pointer, not cache); refresh does not advance the pointer when a publish raced; document download refuses unlinked/unconfirmed/superseded; preview token expiry and page mismatch; 429 on the payload bucket; card endpoint is exempt.
+- **Routes**: unpublished/unknown/archived/untrusted → identical 404; a card request for an unknown slug pair performs zero SQL (query-count assertion); publish with stale `expectedRevision` → 409; publish then GET serves the new `snapshotId`; unpublish then GET 404s in the same second (live `published_at`, not cache); refresh does not flip `is_current` when a publish raced; exactly one `is_current` per page under concurrent publish + refresh; trust-state change to `restricted` empties the partner's serving-set entries; document download refuses unlinked/unconfirmed/superseded; preview token expiry and page mismatch; 429 on the payload bucket; card endpoint exempt from the per-IP bucket.
+- **Erasure**: `tenantCascade.integration.test.ts` children-before-parents passes with no FK cycle; deleting an org with a published page succeeds.
 - **Web**: `no-silent-mutations`; registry tests if the tab touches nav registries; locale parity for new keys across 8 locales.
 - **E2E (Playwright)**: publish from the editor → public portal page SSR shows title/OG, client render shows controls, method and a document → unpublish → 404.
 
@@ -356,7 +360,7 @@ Certification language; the posture score or any overall grade; device, vulnerab
 4. **Default exposure.** Default: status pills only; percentages and device count off.
 5. **Thresholds and floors.** Default: coverage ≥ 95% met, ≥ 80% attention; coverage floor 80% assessed; evidence age 30 days (report default); MFA `met` requires zero admins without MFA.
 6. **URL shape.** `/portal/trust/<partner-slug>/<org-slug>` and `/portal/trust/<partner-slug>` until #3282. Alternative: `/trust/*` with an ingress change for every self-hoster.
-7. **Locale.** Default: the page renders in the org's portal locale (fallback `en`), stored control ids and statuses, translated presentation; no visitor negotiation in W1.
+7. **Locale.** Default: the page renders in the org's portal locale (fallback `en`), stored control ids and statuses, translated presentation; no visitor negotiation in W1. The plan must verify `apps/portal` has an i18n mechanism for public pages before committing to 8-locale rendering there; if it does not, W1 renders control copy in `en` and adds portal i18n as its own task.
 8. **Partner-wide template / aggregate page.** Default: template W2, aggregate page never.
 9. **Who edits in W1.** Default: MSP users with org-management permission; partner-home needs partner scope. Portal admins W3.
 10. **"Managed by" default.** Default: on. The partner slug is in the URL regardless.
