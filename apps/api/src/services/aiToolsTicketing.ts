@@ -48,8 +48,11 @@ import {
   createTimeEntry,
   startTimer,
   stopTimer,
+  updateTimeEntry,
+  readTimeEntryById,
   TimeEntryServiceError
 } from './timeEntryService';
+import { updateTimeEntrySchema } from '@breeze/shared';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from './ticketMoveHourBlockGuard';
@@ -623,7 +626,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_tickets',
       description:
-        "Manage tickets; move_org needs approval. Actions: list, get, create, comment, assign, update_status, list_work_types, log_time_entry, start_timer, stop_timer, update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org, link_device, draft.",
+        "Manage tickets; move_org needs approval. Actions: list, get, create, comment, assign, update_status, list_work_types, log_time_entry, start_timer, stop_timer, update_time_entry, update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org, link_device, draft.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -640,6 +643,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'log_time_entry',
               'start_timer',
               'stop_timer',
+              'update_time_entry',
               'update_fields',
               'link_alert',
               'unlink_alert',
@@ -673,7 +677,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             description: 'Device UUID (optional create field; filter for list)'
           },
           subject: { type: 'string', description: 'Ticket subject (create)' },
-          description: { type: 'string', description: 'Ticket description (create)' },
+          description: {
+            type: 'string',
+            description:
+              'Text by action. create: the ticket description. log_time_entry/start_timer/stop_timer/update_time_entry: the work note (what was done), which is printed on the customer invoice line when the time is billed, so write it for the customer with no internal commentary.',
+          },
+          timeEntryId: { type: 'string', description: 'Time entry UUID (required for update_time_entry)' },
           priority: {
             type: 'string',
             enum: ['low', 'normal', 'high', 'urgent']
@@ -736,11 +745,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           startedAt: {
             type: 'string',
-            description: 'ISO 8601 start (required: log_time_entry; optional: start_timer). start_timer auto-stops any existing timer.'
+            description: 'ISO 8601 start (required: log_time_entry; optional: start_timer, update_time_entry). start_timer auto-stops any existing timer.'
           },
           endedAt: {
             type: 'string',
-            description: 'ISO 8601 datetime — end of the time block (required for log_time_entry)'
+            description: 'ISO 8601 datetime — end of the time block (required for log_time_entry; optional: update_time_entry)'
           },
           isBillable: {
             type: 'boolean',
@@ -1296,7 +1305,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'list_work_types' ||
-          ((action === 'log_time_entry' || action === 'start_timer') && input.workType !== undefined)) {
+          ((action === 'log_time_entry' || action === 'start_timer' || action === 'update_time_entry') && input.workType !== undefined)) {
         if (auth.scope !== 'partner' || !auth.partnerId) {
           return JSON.stringify({ error: 'Work types require partner scope' });
         }
@@ -1408,6 +1417,72 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
             await timeEntryActorFrom(auth)
+          );
+          return timeWriteResult(entry);
+        } catch (err) {
+          if (err instanceof TimeEntryServiceError) {
+            return timeServiceErrorResult(err);
+          }
+          throw err;
+        }
+      }
+
+      // ── update_time_entry ─────────────────────────────────────────────────
+      if (action === 'update_time_entry') {
+        // Same posture as log_time_entry: an unattended agent never rewrites a
+        // human's timesheet; the correct route (intent release) is named.
+        if (agentRunIdFrom(auth)) {
+          return JSON.stringify({ error: 'agent_principal_requires_intent_release', action });
+        }
+        if (typeof input.timeEntryId !== 'string' || !input.timeEntryId) {
+          return JSON.stringify({ error: 'timeEntryId is required for update_time_entry action' });
+        }
+        // Rate edits stay behind time_entries:manage_billing in REST/UI.
+        if (input.hourlyRate !== undefined) {
+          return JSON.stringify({ error: 'hourlyRate cannot be changed through update_time_entry; edit the rate in the Breeze UI' });
+        }
+        // Sparse patch: only fields the caller actually sent.
+        const patch: Record<string, unknown> = {};
+        if (input.description !== undefined) patch.description = input.description;
+        if (input.startedAt !== undefined) patch.startedAt = input.startedAt;
+        if (input.endedAt !== undefined) patch.endedAt = input.endedAt;
+        if (input.isBillable !== undefined) patch.isBillable = input.isBillable;
+        if (Object.keys(patch).length === 0 && input.workType === undefined) {
+          return JSON.stringify({ error: 'update_time_entry needs at least one field to change (description, startedAt, endedAt, isBillable, workType)' });
+        }
+        // Same validator as PATCH /time-entries/:id (future-start, description length).
+        const data: Record<string, unknown> = {};
+        if (Object.keys(patch).length > 0) {
+          const parsed = updateTimeEntrySchema.safeParse(patch);
+          if (!parsed.success) {
+            return JSON.stringify({ error: parsed.error.issues.map((i) => i.message).join('; ') });
+          }
+          for (const [k, v] of Object.entries(parsed.data)) if (v !== undefined) data[k] = v;
+        }
+        for (const k of ['startedAt', 'endedAt']) {
+          const v = data[k];
+          if (v instanceof Date && Number.isNaN(v.getTime())) {
+            return JSON.stringify({ error: `${k} is not a valid date` });
+          }
+        }
+        // Scope: pre-check the entry's ticket like log_time_entry. The service
+        // still enforces ownership and the billed lock.
+        const existing = await readTimeEntryById(input.timeEntryId);
+        if (!existing) return JSON.stringify({ error: 'Time entry not found' });
+        if (existing.ticketId) {
+          const found = await findTicketWithAccess(String(existing.ticketId), auth);
+          if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        }
+        try {
+          const workTypeId = await resolveWorkTypeId(
+            typeof input.workType === 'string' ? input.workType : undefined,
+            auth.partnerId!,
+          );
+          if (workTypeId !== undefined) data.workTypeId = workTypeId;
+          const entry = await updateTimeEntry(
+            input.timeEntryId,
+            data as Parameters<typeof updateTimeEntry>[1],
+            await timeEntryActorFrom(auth),
           );
           return timeWriteResult(entry);
         } catch (err) {

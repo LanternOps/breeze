@@ -82,6 +82,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'log_time_entry',
     'start_timer',
     'stop_timer',
+    'update_time_entry',
     // P2-4 (#4191) ticket triage: same family as update_fields — low-risk,
     // ticket-scoped mutations an autonomous triage run makes. link_device
     // only sets a currently-null device_id (never overwrites); draft only
@@ -920,6 +921,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
+    update_time_entry: { resource: 'time_entries', action: 'write' },
     // P2-4 (#4191): deliberately 'update', not 'write' — no seeded role
     // grants `tickets:update` (seed.ts only ever grants tickets:read/write/
     // manage), so this fails CLOSED for `checkToolPermission`'s interactive
