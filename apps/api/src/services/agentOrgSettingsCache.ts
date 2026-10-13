@@ -66,8 +66,9 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  * the full scope of each value (the probe also depends on the org's partner,
  * which is a property of the org). Nothing here is secret.
  *
- * Staleness on OTHER API instances is up to one TTL (60 s) — process-local
- * invalidation only until W1b. On the writing instance:
+ * Writers below invalidate every API instance within about 1 s through the
+ * cluster bus (W05, #8144), once their transaction commits. Writers not listed
+ * rely on the TTL (60 s). An org merge invalidates all three for both orgs.
  *   - policy probe (automation_policies rules, org-owned + the partner's
  *     partner-wide): POST /policies/:id/deactivate invalidates — the only
  *     invalidating write today, because no route creates automation_policies
@@ -79,7 +80,7 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  *     120 s per-device Redis helper cache.
  *   - PAM org fallback (pam_org_config.uac_interception_enabled): NO route
  *     writes it today. TTL only. A future writer must call
- *     `orgPamFallbackCache.invalidateAroundCommit(orgId)`.
+ *     `invalidateOrgPamFallbackCache(orgId)`.
  */
 export const orgPolicyProbeCache = new HotPathTtlCache<string, PolicyProbeConfigUpdate | null>({
   name: 'org-policy-probe',
@@ -98,6 +99,7 @@ export const orgPamFallbackCache = new HotPathTtlCache<string, PamSettings>({
   name: 'org-pam-fallback',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 /** Without an org id (a partner-wide policy changed) every org is dropped. */
@@ -107,4 +109,9 @@ export function invalidateOrgPolicyProbeCache(orgId?: string): void {
 
 export function invalidateOrgHelperSettingsCache(orgId: string): void {
   orgHelperSettingsCache.invalidateAroundCommit(orgId);
+}
+
+/** The PAM org fallback has no writer today; a future one calls this (and an org merge does). */
+export function invalidateOrgPamFallbackCache(orgId: string): void {
+  orgPamFallbackCache.invalidateAroundCommit(orgId);
 }

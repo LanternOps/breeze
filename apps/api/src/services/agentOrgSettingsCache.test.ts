@@ -22,6 +22,7 @@ import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus
 import {
   invalidateAgentOrgSettingsCaches,
   invalidateOrgHelperSettingsCache,
+  invalidateOrgPamFallbackCache,
 } from './agentOrgSettingsCache';
 
 let published: Array<[string, string | null]>;
@@ -89,5 +90,12 @@ describe('org-helper-legacy-settings is cluster-invalidated (W05 #8144, C3)', ()
   it('a partner settings write publishes the whole cache (key null)', () => {
     invalidateAgentOrgSettingsCaches();
     expect(publishedFor('org-helper-legacy-settings')).toEqual([null]);
+  });
+});
+
+describe('org-pam-fallback is cluster-invalidated (W05 #8144, C5)', () => {
+  it('invalidateOrgPamFallbackCache publishes that org id', () => {
+    invalidateOrgPamFallbackCache('org-1');
+    expect(publishedFor('org-pam-fallback')).toEqual(['org-1']);
   });
 });
