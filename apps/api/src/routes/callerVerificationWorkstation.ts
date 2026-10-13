@@ -25,7 +25,13 @@ const querySchema = z.object({ contactId: z.string().uuid() });
 
 export function registerCallerDeviceSuggestionsRoutes(
   router: Hono,
-  deps: { base: readonly MiddlewareHandler[]; read: MiddlewareHandler; actor: (c: Context) => CallerVerificationActor },
+  // `base` is callerVerification.ts's fixed 4-step chain (auth, scope,
+  // readiness gate, id check); a fixed-arity tuple keeps Hono's typed overloads.
+  deps: {
+    base: readonly [MiddlewareHandler, MiddlewareHandler, MiddlewareHandler, MiddlewareHandler];
+    read: MiddlewareHandler;
+    actor: (c: Context) => CallerVerificationActor;
+  },
 ): void {
   router.get('/orgs/:orgId/caller-verifications/device-suggestions', ...deps.base, deps.read, async (c) => {
     const parsed = querySchema.safeParse({ contactId: c.req.query('contactId') });
