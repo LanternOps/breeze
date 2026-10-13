@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist est activé mais non installé (depuis le {{since}}) : l’installation de la version proposée a échoué à plusieurs reprises, l’agent a donc suspendu les tentatives. Il réessaiera dans quelques heures ou dès qu’une version plus récente sera proposée ; le journal de l’agent contient l’erreur d’installation.",
       "unknown": "Breeze Assist est activé mais non installé (depuis le {{since}})."
     },
+    "logShipping": {
+      "label": "Envoi des journaux",
+      "state": {
+        "healthy": "Sain",
+        "quiet": "Inactif",
+        "failing": "En échec"
+      },
+      "tooltip": {
+        "healthy": "L'agent envoie normalement ses journaux.",
+        "quiet": "L'agent n'a effectué aucune tentative d'envoi récente, il n'y a donc rien à signaler.",
+        "failing": "L'envoi des journaux échoue depuis le {{since}}. Motif : {{reason}}"
+      },
+      "reason": {
+        "http": "Le serveur a renvoyé HTTP {{status}}",
+        "timeout": "La requête a expiré",
+        "dns": "Le nom du serveur n'a pas pu être résolu",
+        "connectionRefused": "La connexion a été refusée",
+        "tls": "La connexion sécurisée a échoué",
+        "authRejected": "Le serveur a rejeté les identifiants de l'agent",
+        "urlUnresolved": "L'adresse du serveur n'a pas pu être déterminée",
+        "other": "Autre erreur d'envoi",
+        "unspecified": "Non précisé"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossible de récupérer les détails de l’appareil",

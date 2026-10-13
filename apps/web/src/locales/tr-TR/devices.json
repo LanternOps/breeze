@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
     },
+    "logShipping": {
+      "label": "Günlük gönderimi",
+      "state": {
+        "healthy": "Sağlıklı",
+        "quiet": "Sessiz",
+        "failing": "Başarısız"
+      },
+      "tooltip": {
+        "healthy": "Aracı günlüklerini normal şekilde gönderiyor.",
+        "quiet": "Aracı yakın zamanda gönderim denemesi yapmadı, bildirilecek bir şey yok.",
+        "failing": "Günlük gönderimi {{since}} tarihinden beri başarısız. Neden: {{reason}}"
+      },
+      "reason": {
+        "http": "Sunucu HTTP {{status}} döndürdü",
+        "timeout": "İstek zaman aşımına uğradı",
+        "dns": "Sunucu adı çözümlenemedi",
+        "connectionRefused": "Bağlantı reddedildi",
+        "tls": "Güvenli bağlantı başarısız oldu",
+        "authRejected": "Sunucu aracı kimlik bilgilerini reddetti",
+        "urlUnresolved": "Sunucu adresi belirlenemedi",
+        "other": "Başka bir gönderim hatası",
+        "unspecified": "Belirtilmemiş"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Cihaz ayrıntıları getirilemedi",

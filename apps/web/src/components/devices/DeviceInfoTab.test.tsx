@@ -699,3 +699,96 @@ describe('DeviceInfoTab — Breeze Assist install issue (#6925)', () => {
     expect(screen.queryByTestId('helper-install-issue')).toBeNull();
   });
 });
+
+describe('DeviceInfoTab — log shipping health line (#8609)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  async function renderLoaded() {
+    const result = render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    return result;
+  }
+
+  it.each([
+    ['absent', {}],
+    ['null', { logShipping: null }],
+    ['unknown', { logShipping: { state: 'unknown', failingSince: null, lastError: null } }],
+  ])('renders nothing when logShipping is %s (dormant until agents report)', async (_n, extra) => {
+    load(extra);
+    await renderLoaded();
+    expect(screen.queryByTestId('log-shipping-health')).toBeNull();
+    expect(screen.queryByText('Log shipping')).toBeNull();
+  });
+
+  it('shows a healthy chip', async () => {
+    load({ logShipping: { state: 'healthy', failingSince: null, lastError: null } });
+    await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.textContent).toBe('Healthy');
+    expect(chip.getAttribute('data-state')).toBe('healthy');
+  });
+
+  it('shows a quiet chip', async () => {
+    load({ logShipping: { state: 'quiet', failingSince: null, lastError: null } });
+    await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.textContent).toBe('Quiet');
+    expect(chip.getAttribute('title')).toMatch(/no recent upload attempts/i);
+  });
+
+  it('shows failing with since-date and the localized reason in the tooltip', async () => {
+    load({
+      logShipping: { state: 'failing', failingSince: '2026-10-01T00:00:00.000Z', lastError: 'connection refused' },
+    });
+    await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.textContent).toBe('Failing');
+    const title = chip.getAttribute('title') ?? '';
+    expect(title).toContain(new Date('2026-10-01T00:00:00.000Z').toLocaleDateString());
+    expect(title).toMatch(/connection was refused/i);
+    expect(title).not.toContain('connection refused');
+  });
+
+  it('renders the status code for an http reason', async () => {
+    load({ logShipping: { state: 'failing', failingSince: '2026-10-01T00:00:00.000Z', lastError: 'http 503' } });
+    await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.getAttribute('title')).toMatch(/503/);
+  });
+
+  it('never renders raw text for an unrecognized lastError', async () => {
+    load({
+      logShipping: {
+        state: 'failing',
+        failingSince: '2026-10-01T00:00:00.000Z',
+        lastError: 'dial tcp 10.1.2.3:443: <script>boom</script>',
+      },
+    });
+    const { container } = await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.getAttribute('title')).toMatch(/unspecified/i);
+    expect(container.innerHTML).not.toContain('10.1.2.3');
+    expect(container.innerHTML).not.toContain('boom');
+  });
+
+  it('falls back to unspecified when failing with no lastError', async () => {
+    load({ logShipping: { state: 'failing', failingSince: null, lastError: null } });
+    await renderLoaded();
+    const chip = await screen.findByTestId('log-shipping-health');
+    expect(chip.getAttribute('title')).toMatch(/unspecified/i);
+  });
+});
