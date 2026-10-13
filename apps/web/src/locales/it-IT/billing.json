@@ -1771,7 +1771,8 @@
       "saveNotes": "Impossibile salvare le note.",
       "saveTerms": "Impossibile salvare i termini.",
       "updateLine": "Impossibile aggiornare la riga.",
-      "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale."
+      "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
+      "saveLineDetail": "Impossibile aggiornare la stampa dei tempi registrati"
     },
     "fields": {
       "descriptionOptional": "Descrizione (facoltativa)",
@@ -1838,6 +1839,19 @@
     "linesScrollAria": "Righe della fattura — scorri lateralmente per altre colonne",
     "unsavedField": {
       "lines": "Righe"
+    },
+    "lineDetail": {
+      "default": "Predefinito di fatturazione",
+      "grouping": "Disposizione",
+      "groupingDay": "Raggruppa per giorno",
+      "groupingEntry": "Una riga per registrazione",
+      "help": "Sostituisce l’impostazione predefinita di fatturazione solo per questa bozza.",
+      "hide": "Nascondi",
+      "show": "Mostra",
+      "showDate": "Data del lavoro",
+      "showNote": "Nota del tecnico",
+      "showWorkedTime": "Tempo lavorato e fatturato",
+      "title": "Righe dei tempi registrati"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2099,7 @@
     "empty": "Questa fattura non contiene ancora righe.",
     "fallbackTitle": "Fattura",
     "issued": "Emessa",
+    "laborLine": "Manodopera",
     "preview": {
       "description": "Questo è ciò che il cliente vede sulla fattura.",
       "downloadError": "Impossibile scaricare il PDF della fattura.",
@@ -2354,7 +2369,15 @@
       "prefixInvalid": "Inserisci un prefisso da 1 a 12 caratteri.",
       "taxRateInvalid": "Inserisci un'aliquota fiscale da 0 a 100.",
       "termsDaysInvalid": "Inserisci un numero intero di giorni da 0 a 365.",
-      "title": "Valori predefiniti di fatturazione"
+      "title": "Valori predefiniti di fatturazione",
+      "lineDetailTitle": "Righe dei tempi registrati nelle fatture",
+      "lineDetailHelp": "Scegli cosa vedono i clienti per i tempi registrati. Una bozza di fattura può sostituire questa scelta; viene bloccata all’emissione della fattura.",
+      "lineShowDate": "Mostra la data del lavoro",
+      "lineShowNote": "Mostra la nota del tecnico",
+      "lineShowWorkedTime": "Mostra tempo lavorato e fatturato",
+      "lineGrouping": "Disposizione",
+      "lineGroupingEntry": "Una riga per registrazione",
+      "lineGroupingDay": "Raggruppa per giorno"
     },
     "loadError": "Impossibile caricare le impostazioni di fatturazione.",
     "loading": "Caricamento impostazioni di fatturazione…",

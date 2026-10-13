@@ -35,7 +35,7 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
 // (packages/shared/src/types/billing-enums.ts). Imported for the Record maps
 // below and re-exported so existing './invoiceTypes' consumers are unaffected.
 import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType, StripeCurrencyWarning } from '@breeze/shared';
-import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
+import { computeQuoteProfit, lineWorkedVsBilled, type QuoteProfit, type InvoiceLineDetail } from '@breeze/shared';
 import type { AccountingProviderId } from '../../lib/accountingProviders';
 export type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType };
 
@@ -76,6 +76,12 @@ export interface InvoiceSummary {
   updatedAt?: string | null;
   /** null identifies an invoice created before device evidence was recorded. */
   evidenceVersion?: number | null;
+  /** #8604 per-invoice labor-line overrides (draft only). null = inherit the
+   *  partner default; the resolved values ride on `InvoiceDetail.lineDetail`. */
+  lineGrouping?: 'entry' | 'day' | null;
+  lineShowDate?: boolean | null;
+  lineShowNote?: boolean | null;
+  lineShowWorkedTime?: boolean | null;
 }
 
 export interface InvoiceLine {
@@ -107,6 +113,8 @@ export interface InvoiceLine {
    *  non-time-entry lines and legacy rows predating the column; optional
    *  because older test fixtures and API responses predate the field. */
   workedMinutes?: number | null;
+  /** #8604: partner-local day (YYYY-MM-DD) a time_entry line was worked; null otherwise. */
+  workDate?: string | null;
 }
 
 export interface InvoiceLineDevice {
@@ -144,10 +152,9 @@ export function lineWorkedVsBilledNote(
   t: (key: string, options?: Record<string, unknown>) => string
 ): string | null {
   if (l.workedMinutes == null) return null;
-  const worked = (l.workedMinutes / 60).toFixed(2);
-  const billed = Number(l.quantity).toFixed(2);
-  if (worked === billed) return null;
-  return t('tickets:ticketTimeBilling.billedVsWorked', { worked, billed });
+  const figures = lineWorkedVsBilled(l);
+  if (!figures) return null;
+  return t('tickets:ticketTimeBilling.billedVsWorked', figures);
 }
 
 /** Document branding resolved server-side (same partner/portal source the invoice
@@ -230,6 +237,10 @@ export interface InvoiceDetail {
    *  bill-to name — never a substitute for the persisted billing-contact
    *  field on Organization Settings. */
   billToEmail?: string | null;
+  /** #8604: the RESOLVED labor-line itemization the document renders with
+   *  (draft: override ?? partner default; issued: frozen at issue). Absent on
+   *  older API responses → defaults. */
+  lineDetail?: InvoiceLineDetail;
 }
 
 export interface InvoicePayment {

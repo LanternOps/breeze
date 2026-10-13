@@ -1711,7 +1711,8 @@
         "deleteEntry": "Girişi sil {{id}}",
         "deleteConfirmTitle": "Zaman girişi silinsin mi?",
         "deleteConfirmMessage": "Bu işlem {{ticket}} biletindeki {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
-        "deleteConfirmMessageNoTicket": "Bu işlem {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz."
+        "deleteConfirmMessageNoTicket": "Bu işlem {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
+        "noteInvoiceCue": "Faturalama ayarlarınız notları gizlemedikçe müşteriler bu notu faturalarında görür."
       },
       "sourceBadge": {
         "timer": "Zamanlayıcı",

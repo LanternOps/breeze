@@ -1711,7 +1711,8 @@
         "deleteEntry": "Delete entry {{id}}",
         "deleteConfirmTitle": "Delete time entry?",
         "deleteConfirmMessage": "This permanently removes the {{duration}} entry on ticket {{ticket}}. It can't be undone.",
-        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone."
+        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone.",
+        "noteInvoiceCue": "Customers see this note on their invoice unless your billing settings hide notes."
       },
       "sourceBadge": {
         "timer": "Timer",

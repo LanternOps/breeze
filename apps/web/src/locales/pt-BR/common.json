@@ -1711,7 +1711,8 @@
         "deleteEntry": "Excluir entrada {{id}}",
         "deleteConfirmTitle": "Excluir entrada de tempo?",
         "deleteConfirmMessage": "Isso remove permanentemente a entrada de {{duration}} do ticket {{ticket}}. Não é possível desfazer.",
-        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer."
+        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer.",
+        "noteInvoiceCue": "Os clientes veem esta observação na fatura, a menos que suas configurações de faturamento ocultem observações."
       },
       "sourceBadge": {
         "timer": "Cronômetro",

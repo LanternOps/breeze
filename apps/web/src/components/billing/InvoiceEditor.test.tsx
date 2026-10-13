@@ -73,6 +73,44 @@ describe('InvoiceEditor', () => {
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
   });
 
+  describe('time entry line detail override (#8604)', () => {
+    const patches = () => fetchMock.mock.calls
+      .filter((c) => c[0] === '/invoices/inv-1' && (c[1] as RequestInit)?.method === 'PATCH')
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string));
+
+    it('PATCHes just the changed field; "Billing default" sends null', async () => {
+      const onChanged = vi.fn();
+      render(<InvoiceEditor detail={draft([manualLine], { lineShowDate: null })} onChanged={onChanged} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      const date = screen.getByTestId('invoice-line-detail-show-date') as HTMLSelectElement;
+      expect(date.value).toBe('');
+      fireEvent.change(date, { target: { value: 'show' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowDate: true }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      fireEvent.change(screen.getByTestId('invoice-line-detail-show-note'), { target: { value: 'hide' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowNote: false }));
+      fireEvent.change(screen.getByTestId('invoice-line-detail-grouping'), { target: { value: 'day' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineGrouping: 'day' }));
+    });
+
+    it('reflects stored overrides and sends null when choosing the billing default', async () => {
+      render(<InvoiceEditor detail={draft([manualLine], { lineShowDate: true, lineShowWorkedTime: false, lineGrouping: 'day' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect((screen.getByTestId('invoice-line-detail-show-date') as HTMLSelectElement).value).toBe('show');
+      expect((screen.getByTestId('invoice-line-detail-show-worked-time') as HTMLSelectElement).value).toBe('hide');
+      expect((screen.getByTestId('invoice-line-detail-grouping') as HTMLSelectElement).value).toBe('day');
+      fireEvent.change(screen.getByTestId('invoice-line-detail-show-date'), { target: { value: '' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowDate: null }));
+    });
+
+    it('is not offered on an issued invoice (frozen at issue)', async () => {
+      render(<InvoiceEditor detail={draft([manualLine], { status: 'sent' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-line-detail-show-date')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('invoice-line-detail-grouping')).not.toBeInTheDocument();
+    });
+  });
+
   it('links the Bill To name to its organization record (#5075 W03)', async () => {
     render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());

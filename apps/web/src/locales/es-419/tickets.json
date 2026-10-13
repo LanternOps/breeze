@@ -245,7 +245,8 @@
       "deleteLost": "La entrada cambió mientras se eliminaba. Recarga e inténtalo de nuevo.",
       "notFound": "Esta entrada ya no existe."
     },
-    "deleteEntryWithDescription": "Eliminar la entrada de tiempo de {{duration}} de {{tech}}: {{description}}"
+    "deleteEntryWithDescription": "Eliminar la entrada de tiempo de {{duration}} de {{tech}}: {{description}}",
+    "noteInvoiceCue": "Los clientes ven esta nota en su factura, a menos que tu configuración de facturación oculte las notas."
   },
   "inboundReviewQueue": {
     "title": "Cola de revisión",

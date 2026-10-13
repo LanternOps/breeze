@@ -68,6 +68,17 @@ When you assemble from work, every unbilled AI usage charge for a month that has
 
 A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.
 
+### Time-entry line detail
+
+You choose how time-entry lines print on customer invoices under **Settings → Billing → Documents**, in the **Time entry lines on invoices** group:
+
+- **Show the date worked** (off by default) prints the day each entry was worked under its line. The date is the day the entry started, in your partner time zone.
+- **Show the technician's note** (on by default) prints the time entry's description as the line title. Turn it off and time-entry lines read **Labor** instead; parts, manual lines and other lines keep their text. The note is withheld from the customer portal and the public invoice link too, not just hidden on screen.
+- **Show worked vs billed time** (on by default) prints the "0.50 h worked, 1.00 h billed" note described above.
+- **Group by day** lists time-entry lines under a heading for each day, with that day's hours and amount, while dates are shown. Each entry still keeps its own line, rate and amount. Lines with no date, such as parts and the block-hours overage line, follow the dated ones.
+
+The defaults print invoices exactly as before. To change these for one invoice, use **Time entry lines** in the draft editor. **Billing default** follows your partner setting. The choice is frozen when the invoice is issued. A later change to your setting never changes an invoice the customer already has, and invoices issued before this setting existed keep their original layout. A reissued invoice starts with the voided invoice's choice.
+
 ### Line grouping by ticket and category
 
 Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.

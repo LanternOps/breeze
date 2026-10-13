@@ -245,7 +245,8 @@
       "deleteLost": "La voce è cambiata durante l’eliminazione. Ricarica e riprova.",
       "notFound": "Questa voce non esiste più."
     },
-    "deleteEntryWithDescription": "Elimina la voce di tempo di {{duration}} di {{tech}}: {{description}}"
+    "deleteEntryWithDescription": "Elimina la voce di tempo di {{duration}} di {{tech}}: {{description}}",
+    "noteInvoiceCue": "I clienti vedono questa nota nella fattura, a meno che le impostazioni di fatturazione non nascondano le note."
   },
   "inboundReviewQueue": {
     "title": "Coda di revisione",

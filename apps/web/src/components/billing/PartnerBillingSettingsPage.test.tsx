@@ -340,6 +340,41 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
     });
   });
 
+  it('#8604: time entry line settings load from the partner payload and ride the save body', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceFooter: null,
+        invoiceLineGrouping: 'day', invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: true,
+      });
+    });
+    renderPage();
+    await gotoDocumentsTab();
+    expect(((await screen.findByTestId('partner-billing-line-show-date')) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('partner-billing-line-show-note') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('partner-billing-line-grouping') as HTMLSelectElement).value).toBe('day');
+    fireEvent.click(screen.getByTestId('partner-billing-line-show-worked-time'));
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
+        invoiceLineGrouping: 'day', invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: false,
+      });
+    });
+  });
+
+  it('#8604: an older payload without the fields reads as the defaults', async () => {
+    fetchMock.mockImplementation(async () => json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceFooter: null,
+    }));
+    renderPage();
+    await gotoDocumentsTab();
+    expect(((await screen.findByTestId('partner-billing-line-show-date')) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('partner-billing-line-show-note') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('partner-billing-line-show-worked-time') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('partner-billing-line-grouping') as HTMLSelectElement).value).toBe('entry');
+  });
+
   it('#6635: the on-behalf acceptance notice toggle loads off by default and round-trips', async () => {
     fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });

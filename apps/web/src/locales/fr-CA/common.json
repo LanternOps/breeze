@@ -1711,7 +1711,8 @@
         "deleteEntry": "Supprimer l’entrée {{id}}",
         "deleteConfirmTitle": "Supprimer l’entrée de temps?",
         "deleteConfirmMessage": "Cette action supprime définitivement l’entrée de {{duration}} du billet {{ticket}}. Elle est irréversible.",
-        "deleteConfirmMessageNoTicket": "Cette action supprime définitivement l’entrée de {{duration}}. Elle est irréversible."
+        "deleteConfirmMessageNoTicket": "Cette action supprime définitivement l’entrée de {{duration}}. Elle est irréversible.",
+        "noteInvoiceCue": "Les clients voient cette note sur leur facture, sauf si vos paramètres de facturation masquent les notes."
       },
       "sourceBadge": {
         "timer": "Minuteur",

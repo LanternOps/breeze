@@ -245,7 +245,8 @@
       "deleteLost": "The entry changed while it was being deleted. Reload and try again.",
       "notFound": "This entry no longer exists."
     },
-    "deleteEntryWithDescription": "Delete {{duration}} time entry by {{tech}}: {{description}}"
+    "deleteEntryWithDescription": "Delete {{duration}} time entry by {{tech}}: {{description}}",
+    "noteInvoiceCue": "Customers see this note on their invoice unless your billing settings hide notes."
   },
   "inboundReviewQueue": {
     "title": "Review queue",

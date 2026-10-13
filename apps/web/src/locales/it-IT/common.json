@@ -1711,7 +1711,8 @@
         "deleteEntry": "Elimina voce {{id}}",
         "deleteConfirmTitle": "Eliminare la voce di tempo?",
         "deleteConfirmMessage": "Questa azione rimuove definitivamente la voce di {{duration}} dal ticket {{ticket}}. Non può essere annullata.",
-        "deleteConfirmMessageNoTicket": "Questa azione rimuove definitivamente la voce di {{duration}}. Non può essere annullata."
+        "deleteConfirmMessageNoTicket": "Questa azione rimuove definitivamente la voce di {{duration}}. Non può essere annullata.",
+        "noteInvoiceCue": "I clienti vedono questa nota nella fattura, a meno che le impostazioni di fatturazione non nascondano le note."
       },
       "sourceBadge": {
         "timer": "Timer",

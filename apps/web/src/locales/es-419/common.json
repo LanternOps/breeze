@@ -1711,7 +1711,8 @@
         "deleteEntry": "Eliminar entrada {{id}}",
         "deleteConfirmTitle": "¿Eliminar entrada de tiempo?",
         "deleteConfirmMessage": "Esto elimina de forma permanente la entrada de {{duration}} del ticket {{ticket}}. No se puede deshacer.",
-        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer."
+        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer.",
+        "noteInvoiceCue": "Los clientes ven esta nota en su factura, a menos que tu configuración de facturación oculte las notas."
       },
       "sourceBadge": {
         "timer": "Temporizador",

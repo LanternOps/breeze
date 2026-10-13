@@ -588,6 +588,24 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     if (ok) flashNotesSaved();
   }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved, markNotesSaved, t]);
 
+  // #8604: per-invoice time-entry itemization override (drafts only). Each
+  // change PATCHes just its own field; null = inherit the billing default.
+  const saveLineDetail = useCallback(async (
+    field: 'lineGrouping' | 'lineShowDate' | 'lineShowNote' | 'lineShowWorkedTime',
+    value: 'entry' | 'day' | boolean | null,
+  ) => {
+    await runScoped(`lineDetail-${field}`, async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
+          method: 'PATCH', body: JSON.stringify({ [field]: value }),
+        }),
+        errorFallback: t('invoiceEditor.errors.saveLineDetail'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    }, t('invoiceEditor.errors.saveLineDetail'));
+  }, [invoice.id, refresh, runScoped, t]);
+
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
     const ok = await runScoped('terms', async () => {
@@ -918,6 +936,55 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
               placeholder={t('invoiceEditor.notes.placeholder')}
             />
           </div>
+
+          {invoice.status === 'draft' && (
+            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-line-detail">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.lineDetail.title')}</h3>
+              <p className="mt-1 text-xs text-muted-foreground">{t('invoiceEditor.lineDetail.help')}</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {([
+                  ['lineShowDate', 'invoice-line-detail-show-date', 'showDate'],
+                  ['lineShowNote', 'invoice-line-detail-show-note', 'showNote'],
+                  ['lineShowWorkedTime', 'invoice-line-detail-show-worked-time', 'showWorkedTime'],
+                ] as const).map(([field, testId, labelKey]) => {
+                  const stored = invoice[field];
+                  const id = `${testId}-select`;
+                  return (
+                    <div key={field}>
+                      <label className="text-xs font-medium" htmlFor={id}>{t(/* i18n-dynamic */ `invoiceEditor.lineDetail.${labelKey}`)}</label>
+                      <select
+                        id={id}
+                        value={stored == null ? '' : stored ? 'show' : 'hide'}
+                        disabled={!canWrite || isPending(`lineDetail-${field}`)}
+                        onChange={(e) => void saveLineDetail(field, e.target.value === '' ? null : e.target.value === 'show')}
+                        data-testid={testId}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
+                      >
+                        <option value="">{t('invoiceEditor.lineDetail.default')}</option>
+                        <option value="show">{t('invoiceEditor.lineDetail.show')}</option>
+                        <option value="hide">{t('invoiceEditor.lineDetail.hide')}</option>
+                      </select>
+                    </div>
+                  );
+                })}
+                <div>
+                  <label className="text-xs font-medium" htmlFor="invoice-line-detail-grouping-select">{t('invoiceEditor.lineDetail.grouping')}</label>
+                  <select
+                    id="invoice-line-detail-grouping-select"
+                    value={invoice.lineGrouping ?? ''}
+                    disabled={!canWrite || isPending('lineDetail-lineGrouping')}
+                    onChange={(e) => void saveLineDetail('lineGrouping', e.target.value === 'day' ? 'day' : e.target.value === 'entry' ? 'entry' : null)}
+                    data-testid="invoice-line-detail-grouping"
+                    className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
+                  >
+                    <option value="">{t('invoiceEditor.lineDetail.default')}</option>
+                    <option value="entry">{t('invoiceEditor.lineDetail.groupingEntry')}</option>
+                    <option value="day">{t('invoiceEditor.lineDetail.groupingDay')}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
