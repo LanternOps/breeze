@@ -63,7 +63,7 @@ Failure modes the spec implies but no obvious task covers; each is pinned by a t
 |---|---|---|---|
 | **P (prerequisite, not a wave of this plan)** | #6958 PRs | `service_running` rule type, pre/post-install scripts, macOS/Linux args, Control D / NextDNS catalog entries, and the periodic agent-to-compliance bridge (Decision 9) | n/a. Gates W5 and Huntress/S1 stopped-service violations only |
 | **W1** | `feature/6960-security-agents/wave-1` | Enum value, `managed_by_link_id` column, vendor registry (no vendor enableable yet), link validation + auth gate, resolver dimension, 409 read-only guards, shared constants, config-policy parity | Inert: type exists and validates, but the API refuses to enable any vendor (`vendor_not_enableable`). Nothing is installed. Safe to leave. |
-| **W2** | `.../wave-2` | Lab gate, readiness preflight, generator, compliance/remediation changes, Huntress enableable, authoring tab | Huntress policy works end to end with `not_applicable` handled in-flight but not persisted/visible (reasons only logged on the compliance row); no coverage UI, no alerts |
+| **W2** | `.../wave-2` | Lab gate, readiness preflight, generator, compliance/remediation changes, Huntress enableable, authoring tab | Huntress policy works end to end; unmapped orgs correctly get no deployment, but the not-applicable reason is only in logs; no coverage UI, no alerts |
 | **W3** | `.../wave-3` | `security_agent_device_status`, reconciliation job, alerts, EDR summary + device panel | Complete Huntress product, S1/DNS missing |
 | **W4** | `.../wave-4` | SentinelOne (binary-upload gate, exhaustive resolver) | Huntress only |
 | **W5** | `.../wave-5` | Control D / NextDNS registry entries (needs **P**), presence wiring for all vendors | Huntress + S1 without stopped-service violations |
@@ -122,15 +122,15 @@ Goal: land everything structural while nothing can be enabled. Branch from fresh
 
 ### Task 1.0: Slot check and baseline
 - [ ] `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -5`; rename the two W1 files upward if anything beats `2026-12-25-110000`.
-- [ ] `pnpm install`; `cd apps/api && npx vitest run src/services/configFeatureTypes.test.ts` passes on a clean tree (record the baseline).
+- [ ] `pnpm install`; `cd packages/shared && npx vitest run src/constants/configFeatureTypes.test.ts` passes on a clean tree (record the baseline).
 
 ### Task 1.1: Feature type registration (shared + enum)
 
-**Files:** Create `apps/api/migrations/2026-12-25-200000-security-agents-feature-type.sql`; modify `apps/api/src/db/schema/configurationPolicies.ts` (enum list near line 63), `packages/shared/src/constants/configFeatureTypes.ts` (list ~33, trust tiers ~140), `apps/api/src/services/policyBaselineDefaults.ts`, parity test `featureTypeParity.test.ts`, web `featureTabs/types.ts`.
+**Files:** Create `apps/api/migrations/2026-12-25-200000-security-agents-feature-type.sql`; modify `apps/api/src/db/schema/configurationPolicies.ts` (enum list near line 63), `packages/shared/src/constants/configFeatureTypes.ts` (list ~33, trust tiers ~140), `apps/api/src/services/policyBaselineDefaults.ts` (`NOT_ENFORCED`), and the exhaustive web records that break typecheck once the union grows: `apps/web/src/components/configurationPolicies/ConfigPolicyDetailPage.tsx` (icon map ~114; placeholder icon only, the tab is W2), `apps/web/src/components/devices/DeviceEffectiveConfigTab.tsx` (~120 metadata record), `featureTabs/types.ts`. Tests: shared `configFeatureTypes.test.ts` (trust tier symbol is `CONFIG_POLICY_FEATURE_TRUST_TIER`, ~115), API `policyBaselineDefaults.test.ts` (enum parity ~109), web `featureTypeParity.test.ts`.
 
 **Interfaces:** Produces `'security_agents'` in `ConfigFeatureType`; trust tier `execution_gated`.
 
-- [ ] **Step 1 (red):** add `'security_agents'` to the expected list in `featureTypeParity.test.ts` and a tier assertion `expect(FEATURE_TRUST_TIER.security_agents).toBe('execution_gated')`. Run `cd apps/api && npx vitest run src/services/featureTypeParity.test.ts` (locate the real path with `git ls-files | grep featureTypeParity`); expect FAIL (unknown member).
+- [ ] **Step 1 (red):** add `'security_agents'` to the expected lists and `expect(CONFIG_POLICY_FEATURE_TRUST_TIER.security_agents).toBe('execution_gated')` in shared `configFeatureTypes.test.ts`. Run `cd packages/shared && npx vitest run src/constants/configFeatureTypes.test.ts` and `cd apps/api && npx vitest run src/services/policyBaselineDefaults.test.ts`; expect FAIL (unknown member / enum parity).
 - [ ] **Step 2:** write the migration (its own file; `ADD VALUE` cannot share a transaction with use of the value):
 ```sql
 -- security_agents feature type (#6960). Own migration: the new value cannot be
@@ -163,7 +163,7 @@ No data write, so no row-count statement is needed; the scope election stays as 
 
 ### Task 1.3: Vendor registry and inline-settings validator
 
-**Files:** Create `services/securityAgents/securityAgentVendors.ts`, `packages/shared/src/validators/securityAgents.ts`; tests alongside.
+**Files:** Create `services/securityAgents/securityAgentVendors.ts`, `packages/shared/src/validators/securityAgents.ts` (export from `packages/shared/src/validators/index.ts`); tests alongside.
 
 **Interfaces (produced):**
 ```ts
@@ -248,7 +248,7 @@ Never decrypts. Evaluated against the device's org and that org's partner's inte
 
 - [ ] **Step 1 (red):** (a) the `missing` violation for a not-ready managed rule is filtered out of `software_compliance_status.violations` (device not reported non-compliant); (b) two vendors, one not ready: the ready vendor still gets all three attempts and the cooldown is unaffected by the not-ready one; (c) `createPolicyOwnedInstallDeployment` re-checks readiness **before** the attempt increment and creates no deployment when not ready; (d) recovery: org gets mapped → next pass installs.
 - [ ] **Step 2:** `npx vitest run src/jobs/softwareComplianceWorker.test.ts src/services/softwarePolicyInstallRemediation.test.ts` FAIL → implement → PASS.
-- [ ] **Step 3:** In W2 the reason is recorded in the compliance row's detail (not yet a table); W3 persists it. Commit.
+- [ ] **Step 3:** `software_compliance_status` has no free-text detail column (only `violations`/`remediationErrors` jsonb). W2 therefore carries not-applicable reasons **only in the worker's return value and structured logs**, with nothing durable; W3 persists them. Commit.
 
 ### Task 2.3: Managed policy generator
 
@@ -256,14 +256,14 @@ Never decrypts. Evaluated against the device's org and that org's partner's inte
 
 **Interfaces:** `syncManagedSoftwarePolicy(tx, link): Promise<{ policyId: string | null }>`; owner axis copied from the config policy (partner-wide → `partner_id`; org → `org_id`); one rule per enabled vendor, `catalogId` resolved to the **owner's** catalog row (partner catalog via `ensureBuiltinPackage` on integration connect). Missing catalog row → 400 with deep link (Decision 7). The vendor is **not** stored in rule JSON (normalizer drops unknown keys); downstream derives the vendor from `catalogId` through the registry.
 - [ ] **Step 1 (red):** generated shape equals the Global Constraints; disabling a vendor removes only its rule and never uninstalls; zero enabled vendors deactivates (not deletes) the policy; ownership axis matches; `software_policy_audit` rows reference the managed policy.
-- [ ] **Step 2:** FAIL → implement → PASS. Flip `enableable` to true for Huntress only. Reading managed policies from agent paths (org-scoped RLS) cannot see partner-owned rows: the workers use `withSystemDbAccessContext` (call `runOutsideDbContext` first if inside a request). Test: org-scoped context reading a partner-owned managed policy returns nothing; the worker path sees it.
+- [ ] **Step 2:** FAIL → implement → PASS. Flip `enableable` to true for Huntress only. Workers run under `withSystemDbAccessContext` (call `runOutsideDbContext` first if inside a request) so fan-out never depends on caller scope. The existing SELECT-only partner branch (`software_policies_partner_wide_select`, migration `2026-10-11-000200`) lets an org-scoped session read its **own partner's** partner-owned rows but never write them or see another partner's. Test: org-scoped context can SELECT its partner's managed policy, cannot UPDATE/DELETE it, cannot see another partner's.
 - [ ] **Step 3:** Commit.
 
 ### Task 2.4: Re-resolve at dispatch
 
 **Files:** `jobs/softwareRemediationWorker.ts` (~767), test.
 
-- [ ] **Step 1 (red):** queue an install, then (a) remove the device's assignment, (b) add a closer `security_agents` opt-out link; the worker cancels dispatch in both cases. Add a fan-out case in the integration test of Task 2.5.
+- [ ] **Step 1 (red):** queue an install, then (a) remove the device's assignment, (b) add a closer `security_agents` opt-out link, (c) remove one vendor while another stays enabled in the same link; the worker cancels dispatch in all three. Case (c) is invisible to re-resolving the winning link (same link wins), so the generator **bumps `software_policies.approval_generation`** on any rule change (the worker already skips on generation mismatch, `softwareRemediationWorker.ts` ~800) and drops cached violations for removed rules. Add a fan-out case in the integration test of Task 2.5.
 - [ ] **Step 2:** FAIL → call `resolveSecurityAgentsLinkForDevice` immediately before dispatch for managed policies → PASS. Commit.
 
 ### Task 2.5: Partner-wide RLS + fan-out integration test
@@ -293,14 +293,14 @@ Never decrypts. Evaluated against the device's org and that org's partner's inte
 
 ### Task 3.1: `security_agent_device_status` table
 
-**Files:** Create `migrations/2026-12-25-200200-security-agent-device-status.sql`, `db/schema/securityAgents.ts`.
+**Files:** Create `migrations/2026-12-25-200200-security-agent-device-status.sql`, `db/schema/securityAgents.ts` (add `export * from './securityAgents';` to `db/schema/index.ts`, the Drizzle entry point).
 
 Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL, vendor, state, reason_code, detail (text), policy_id → software_policies(id) ON DELETE SET NULL, last_evaluated_at`; unique `(device_id, vendor) WHERE device_id IS NOT NULL`, unique `(org_id, vendor, vendor_endpoint_id) WHERE device_id IS NULL`. **Justification for `org_id NOT NULL`:** derived per-device observed state like `edr_endpoints`, not a config/policy table; the dual-axis part lives on the software policy. RLS shape 1 (direct `org_id`), enabled + FORCE + policies in this same migration. Any composite FK referencing `org_id` is `DEFERRABLE INITIALLY IMMEDIATE`. Partner overview: add `partner_id NOT NULL` only if the EDR summary needs it (default: no; org-scoped aggregation).
 
 - [ ] **Step 1 (red):** extend the contract tests first (they fail only under **Integration Tests**): rls-coverage (table has RLS enabled/forced/policy), org-cascade order, export policy, merge registry, device-cascade lists.
 - [ ] **Step 2:** write migration + schema; mechanical registration, **grep don't judge**:
   - `git grep -n "'edr_endpoints'" -- apps/api/src | grep -v test` to see every list `edr_endpoints` sits in; mirror each for the new table.
-  - `CORE_ORG_CASCADE_DELETE_ORDER` in `tenantCascade.ts` (alphabetical, FK children first; this table is a child of `devices`/`software_policies`, so place it before `devices`; verify direction against the neighbors).
+  - `CORE_ORG_CASCADE_DELETE_ORDER` in `tenantCascade.ts` : the list must be **alphabetical** (`tenantCascade.integration.test.ts` asserts it, `organizations` last); do NOT hand-place it before `devices`. FK ordering is resolved at runtime from topology; the alphabetical slot is under `security_*`. Verify with that contract test.
   - `CORE_DEVICE_CASCADE_DELETE_TABLES` and `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (device_id + denormalized org_id, shape 5) in `routes/devices/core.ts` (device delete and org move).
   - `orgMergeRegistry.ts`; `CORE_TENANT_EXPORT_POLICY` (every column classified; no json/bytea so no `excludedOpen`; `detail` is text; if it ever becomes jsonb it is `excludedOpen`; review credential-ish names).
   - rls-coverage allowlists in `rls-coverage.integration.test.ts` (shape-1 list, not `DUAL_AXIS_TENANT_TABLES`).
@@ -338,7 +338,7 @@ Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL,
 
 Precondition: #6958's PRs merged (catalog entries, `controld_provisioning_code` / `nextdns_profile_id` variables, install args, `service_running` and the periodic bridge). If not merged, do only the presence descriptors that do not need them and stop.
 - [ ] Task 5.1 (red): `tenant_var` readiness: missing variable for the device's org yields `not_applicable: var_missing`; macOS depends on #6958's args; registry entries flip `enableable` once catalog rows exist.
-- [ ] Task 5.2: `presence` descriptors consumed to attach `service_running` rules to each vendor's rule in the generator (the rule type and evaluation come from #6958). Agent-shipped parts (`service_running`) need an agent release plus Windows/macOS lab checks (not done in this plan's PRs).
+- [ ] Task 5.2: `service_running` is a **detection rule on the vendor's catalog version** (spec 2.6), not a field of the generated policy rule (the policy normalizer drops unknown keys). #6958 delivers it on the built-in catalog versions; this task adds a test that each registry `presence` descriptor matches the shipped detection rule and surfaces the resulting violations. If a built-in version lacks the rule, add it via `builtinDeploymentPackages.ts`. Agent-shipped parts (`service_running`) need an agent release plus Windows/macOS lab checks (not done in this plan's PRs).
 - [ ] Task 5.3: coverage for DNS vendors is `mgmtdetect`/policy-state only (no vendor endpoint source until #3408); document in the tab.
 - [ ] Tests, typecheck, Integration Tests; PR `Refs #6960`, `Refs #6958`.
 
@@ -362,4 +362,4 @@ New questions this plan surfaces (spec items are decided above):
 
 ## Quorum
 
-Pending: independent `codex exec` (read-only, medium) review of this draft; confirmed findings are folded in above and any unresolved disagreement is listed here after the run.
+`codex exec` (gpt-6-astra, medium, read-only) returned 8 findings; cited files were re-read before acting. Folded in: approval-generation bump for same-link vendor removal (T2.4); exhaustive web records in W1 (T1.1); no durable reason storage until W3 (T2.2); corrected partner-SELECT RLS expectation (T2.3); presence rule lives on catalog versions (T5.2); barrel exports (T1.3, T3.1); alphabetical cascade placement (T3.1); corrected test paths and trust-tier symbol (T1.0, T1.1). No unresolved disagreements.
