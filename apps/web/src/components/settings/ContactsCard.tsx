@@ -712,6 +712,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       )}
       {callerVerificationEnabled && verifyingContactId && (
         <ContactVerificationDrawer
+          key={verifyingContactId}
           orgId={orgId}
           contactId={verifyingContactId}
           contactName={contacts.find((c) => c.id === verifyingContactId)?.name ?? null}

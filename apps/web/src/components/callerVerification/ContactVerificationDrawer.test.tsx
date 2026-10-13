@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as api from '@/lib/api/callerVerification';
 import { useAuthStore } from '@/stores/auth';
+import { ActionError } from '@/lib/runAction';
 import { ContactVerificationDrawer } from './ContactVerificationDrawer';
 import { ORG, CONTACT, TARGET, USER, row, history } from './testFixtures';
 
@@ -97,6 +98,28 @@ it('explains an unavailable directory instead of offering stale candidates', asy
   fireEvent.change(screen.getByTestId('cv-directory-search'), { target: { value: 'gra' } });
   await act(async () => { fireEvent.click(screen.getByTestId('cv-directory-submit')); });
   expect(screen.getByText('The directory is not available for this organization.')).toBeVisible();
+});
+
+it('distinguishes a failed directory search from an unavailable directory', async () => {
+  vi.mocked(api.directoryUsers).mockRejectedValueOnce(new ActionError('boom', 502)).mockRejectedValueOnce(new ActionError('nope', 404));
+  open();
+  fireEvent.click(await screen.findByTestId('cv-link-open'));
+  fireEvent.change(screen.getByTestId('cv-directory-search'), { target: { value: 'gra' } });
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-directory-submit')); });
+  expect(screen.getByText('Directory search failed. Try again.')).toBeVisible();
+  expect(screen.queryByText('The directory is not available for this organization.')).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-directory-submit')); });
+  expect(screen.getByText('The directory is not available for this organization.')).toBeVisible();
+});
+
+it('hides stale details when a reload fails after a mutation', async () => {
+  open();
+  const unbind = await screen.findByTestId(`cv-unbind-${TARGET}`);
+  vi.mocked(api.contactHistory).mockRejectedValueOnce(new Error('offline'));
+  await act(async () => { fireEvent.click(unbind); });
+  expect(await screen.findByText('Could not load verification details.')).toBeVisible();
+  expect(screen.queryByTestId(`cv-unbind-${TARGET}`)).toBeNull();
+  expect(screen.queryByTestId('cv-history')).toBeNull();
 });
 
 it('syncs this contact\'s active directory links', async () => {

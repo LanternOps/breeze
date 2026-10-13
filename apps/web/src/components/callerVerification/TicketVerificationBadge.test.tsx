@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { freshForTicket } from '@/lib/api/callerVerification';
 import { TicketVerificationBadge } from './TicketVerificationBadge';
@@ -51,6 +51,17 @@ it('does not claim fresh when the server says not fresh even if usableUntil is i
   vi.mocked(freshForTicket).mockResolvedValue({ row: verified, isFresh: false, isConsumed: false });
   render(<TicketVerificationBadge orgId={ORG} ticketId={TICKET} />);
   expect(await screen.findByTestId('cv-badge')).not.toHaveAttribute('data-state', 'fresh');
+});
+
+it('stops claiming fresh once usableUntil passes, without a reload', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    vi.mocked(freshForTicket).mockResolvedValue({ row: { ...verified, usableUntil: new Date(Date.now() + 45000).toISOString() }, isFresh: true, isConsumed: false });
+    render(<TicketVerificationBadge orgId={ORG} ticketId={TICKET} />);
+    expect(await screen.findByTestId('cv-badge')).toHaveAttribute('data-state', 'fresh');
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(screen.getByTestId('cv-badge')).toHaveAttribute('data-state', 'stale');
+  } finally { vi.useRealTimers(); }
 });
 
 it('shows an unavailable state on a failed read rather than a stale verified claim', async () => {

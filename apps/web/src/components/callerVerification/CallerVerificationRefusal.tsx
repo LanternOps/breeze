@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { VerificationDetails } from '@/lib/api/callerVerification';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
 import { VerifyCallerModal } from './VerifyCallerModal';
+import { useNow } from './useNow';
 
 /** Refusal reasons with dedicated copy (CallerVerificationRefusal in the API's errors.ts). */
 const KNOWN_REASONS = new Set([
@@ -53,10 +54,10 @@ export function CallerVerificationRefusal({ output, isError }: { output: unknown
 function RefusalCard({ refusal }: { refusal: CallerVerificationRefusalPayload }) {
   const { t } = useTranslation('callerVerificationTech');
   const [open, setOpen] = useState(false);
-  const [verified, setVerified] = useState(false);
+  const [latest, setLatest] = useState<VerificationDetails | null>(null);
+  const now = useNow();
   const reason = KNOWN_REASONS.has(refusal.reason) ? refusal.reason : 'unknown';
-  const onChanged = (row: VerificationDetails) =>
-    setVerified(row.status === 'verified' && !row.consumedAt && !!row.usableUntil && Date.parse(row.usableUntil) > Date.now());
+  const verified = !!latest && latest.status === 'verified' && !latest.consumedAt && !!latest.usableUntil && Date.parse(latest.usableUntil) > now;
   return (
     <aside data-testid="cv-refusal" className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
       <p className="flex items-center gap-2 font-medium">
@@ -70,7 +71,7 @@ function RefusalCard({ refusal }: { refusal: CallerVerificationRefusalPayload })
         className="h-8 rounded-md bg-primary px-3 text-xs text-primary-foreground">{t('refusal.verify')}</button>
       {open && (
         <VerifyCallerModal orgId={refusal.orgId} initialContactId={refusal.contactId ?? undefined} initialAction={refusal.action}
-          onClose={() => setOpen(false)} onChanged={onChanged} />
+          onClose={() => setOpen(false)} onChanged={setLatest} />
       )}
     </aside>
   );

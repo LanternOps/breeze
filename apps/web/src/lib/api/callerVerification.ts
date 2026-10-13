@@ -166,8 +166,14 @@ function mutate<T>(
 
 // --- Verifications ----------------------------------------------------------
 
+/**
+ * Start is validated leniently (id + status only): the server has already
+ * created the challenge and may have delivered it, so a missing projection
+ * field must not read as a failed start and invite a duplicate attempt. The
+ * modal's first poll then reads the full projection.
+ */
 export function startVerification({ orgId, ...body }: StartInput): Promise<VerificationDetails> {
-  return mutate(orgPath(orgId, 'caller-verifications'), orgId, 'POST', body, verification);
+  return mutate(orgPath(orgId, 'caller-verifications'), orgId, 'POST', body, (v: VerificationDetails) => requireFields(v, ['id', 'status']));
 }
 export function getVerification(orgId: string, id: string, signal?: AbortSignal): Promise<VerificationDetails> {
   return read<VerificationDetails>(orgPath(orgId, `caller-verifications/${seg(id)}`), orgId, signal).then(verification);

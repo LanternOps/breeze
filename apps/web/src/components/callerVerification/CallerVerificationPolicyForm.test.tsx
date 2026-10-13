@@ -51,7 +51,9 @@ it('saves only the policy fields, with untouched fields left as inherit', async 
   vi.mocked(getPolicy).mockResolvedValue(response({ row }));
   vi.mocked(putPolicy).mockResolvedValue(response({ row }));
   render(<CallerVerificationPolicyForm owner={orgOwner} />);
-  fireEvent.change(await screen.findByTestId('cv-policy-coolingOffHours'), { target: { value: '48' } });
+  const cooling = await screen.findByTestId('cv-policy-coolingOffHours');
+  fireEvent.change(cooling, { target: { value: '48' } });
+  fireEvent.blur(cooling);
   await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
   expect(putPolicy).toHaveBeenCalledWith(orgOwner, { ...inheritedDraft(), maxAttemptsPerHour: 2, coolingOffHours: 48 });
 });
@@ -95,4 +97,35 @@ it.each([[false, true], [true, false], [undefined, false]])('partner mount with 
   await screen.findByTestId('cv-policy-form');
   expect(screen.queryByTestId('cv-policy-save') === null).toBe(readOnly);
   expect(getPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, expect.any(AbortSignal));
+});
+
+it('accepts a typed multi-digit value and commits it on blur', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  vi.mocked(putPolicy).mockResolvedValue(response());
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const ttl = await screen.findByTestId('cv-policy-verificationTtlMinutes');
+  fireEvent.change(ttl, { target: { value: '3' } });
+  expect(ttl).toHaveValue(3);
+  fireEvent.change(ttl, { target: { value: '45' } });
+  fireEvent.blur(ttl);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(vi.mocked(putPolicy).mock.calls[0][1].verificationTtlMinutes).toBe(45);
+});
+
+it('clamps an out-of-range typed value to its bound on blur', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const ttl = await screen.findByTestId('cv-policy-verificationTtlMinutes');
+  fireEvent.change(ttl, { target: { value: '2' } });
+  fireEvent.blur(ttl);
+  expect(ttl).toHaveValue(5);
+  fireEvent.change(ttl, { target: { value: '' } });
+  fireEvent.blur(ttl);
+  expect(ttl).toHaveValue(5);
+});
+
+it('partner mount makes no request while the feature is off', () => {
+  enabled.value = false;
+  render(<PartnerCallerVerificationPolicy />);
+  expect(getPolicy).not.toHaveBeenCalled();
 });

@@ -55,6 +55,36 @@ describe('caller verification client', () => {
     await expect(api.getVerification(ORG, row.id)).rejects.toThrow('Incomplete caller verification projection');
   });
 
+  it('accepts a start response with only id and status so a created challenge is never reported as failed', async () => {
+    const { usableUntil: _u, remainingAttempts: _r, ...partial } = row;
+    mocks.fetch.mockResolvedValue(json({ data: partial }, 202));
+    expect(await api.startVerification({ orgId: ORG, contactId: CONTACT, actionScope: 'any', method: 'sms' })).toMatchObject({ id: row.id, status: 'pending' });
+    expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it.each([
+    ['getVerification', () => api.getVerification(ORG, row.id)],
+    ['cancelVerification', () => api.cancelVerification(ORG, row.id)],
+    ['attestVerification', () => api.attestVerification(ORG, row.id, 'Called back on the number of record')],
+    ['contactHistory', () => api.contactHistory(ORG, CONTACT)],
+    ['methodsForContact', () => api.methodsForContact(ORG, CONTACT, 'any')],
+    ['freshForTicket', () => api.freshForTicket(ORG, TICKET)],
+    ['fenceOverride', () => api.fenceOverride(ORG, CONTACT, 'Confirmed in person at the office today')],
+    ['attestDestination', () => api.attestDestination(ORG, CONTACT, TARGET)],
+    ['bindContact', () => api.bindContact(ORG, CONTACT, { entraTenantId: ORG, entraOid: TARGET, upn: 'a@b.test', displayName: 'A' })],
+    ['unbindContact', () => api.unbindContact(ORG, CONTACT, TARGET)],
+    ['directoryUsers', () => api.directoryUsers(ORG, 'ada')],
+    ['syncDirectory', () => api.syncDirectory(ORG, [])],
+    ['putPolicy(org)', () => api.putPolicy({ ownerScope: 'organization', orgId: ORG }, {} as api.PolicyDraft)],
+    ['contactsPage', () => api.contactsPage(ORG, 1)],
+  ])('%s pins the request to the path org', async (_name, call) => {
+    mocks.fetch.mockImplementation(() => Promise.resolve(json({
+      data: { ...row, ...history, rows: [], isFresh: false, isConsumed: false, available: false, users: [], truncated: false, ...policyResponse },
+    })));
+    await call().catch(() => undefined);
+    expect(mocks.fetch.mock.calls[0][1]).toMatchObject({ orgIdOverride: ORG });
+  });
+
   it('rejects a missing data envelope', async () => {
     mocks.fetch.mockResolvedValue(json(row));
     await expect(api.getVerification(ORG, row.id)).rejects.toThrow('Missing API data envelope');

@@ -138,6 +138,7 @@
     "searchPlaceholder": "Name or email",
     "search": "Search",
     "directoryUnavailable": "The directory is not available for this organization.",
+    "directorySearchFailed": "Directory search failed. Try again.",
     "directoryTruncated": "Showing the first results only. Refine your search.",
     "noDirectoryResults": "No matching accounts.",
     "linkUser": "Link",

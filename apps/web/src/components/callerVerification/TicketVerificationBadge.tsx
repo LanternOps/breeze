@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { freshForTicket, type TicketVerification } from '@/lib/api/callerVerification';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
+import { useNow } from './useNow';
 
 type Props = { orgId: string; ticketId: string; /** Bump to re-read after a verification change. */ revision?: number };
 type BadgeState = 'fresh' | 'consumed' | 'stale' | 'pending' | 'failed' | 'none' | 'loadFailed';
@@ -13,11 +14,12 @@ export function TicketVerificationBadge(props: Props) {
   return useCallerVerificationEnabled() ? <LoadedBadge key={`${props.orgId}:${props.ticketId}`} {...props} /> : null;
 }
 
-function stateOf(data: TicketVerification): BadgeState {
+function stateOf(data: TicketVerification, now: number): BadgeState {
   const r = data.row;
   if (!r) return 'none';
   if (data.isConsumed) return 'consumed';
-  if (r.status === 'verified') return data.isFresh ? 'fresh' : 'stale';
+  // The server's isFresh is a snapshot: also lapse it locally at usableUntil.
+  if (r.status === 'verified') return data.isFresh && !!r.usableUntil && Date.parse(r.usableUntil) > now ? 'fresh' : 'stale';
   if (r.status === 'pending') return 'pending';
   if (FAILED.has(r.status)) return 'failed';
   return 'none';
@@ -37,6 +39,7 @@ function LoadedBadge({ orgId, ticketId, revision }: Props) {
   const { t } = useTranslation('callerVerificationTech');
   const [data, setData] = useState<TicketVerification | null>(null);
   const [failed, setFailed] = useState(false);
+  const now = useNow();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -47,7 +50,7 @@ function LoadedBadge({ orgId, ticketId, revision }: Props) {
   }, [orgId, ticketId, revision]);
 
   if (!data && !failed) return null;
-  const state: BadgeState = failed || !data ? 'loadFailed' : stateOf(data);
+  const state: BadgeState = failed || !data ? 'loadFailed' : stateOf(data, now);
   const label = state === 'fresh' ? t('badge.fresh', { tier: data!.row!.tier }) : t(/* i18n-dynamic */ `badge.${state}`);
   const decided = data?.row?.decidedAt;
   return (

@@ -108,6 +108,35 @@ it('offers an available workstation only when the mount can supply device contex
   expect(api.startVerification).toHaveBeenCalledWith({ orgId: ORG, contactId: CONTACT, actionScope: 'any', method: 'workstation', deviceId: TARGET, username: 'ada' });
 });
 
+it('hides an unavailable workstation even with device context, and never lists administrative step-up', async () => {
+  vi.mocked(api.methodsForContact).mockResolvedValue([...methods, { method: 'administrative_stepup', available: true, tier: 3, reason: 'administrative' }]);
+  render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} lockContact workstation={{ deviceId: TARGET, username: 'ada' }} onClose={vi.fn()} />);
+  await screen.findByTestId('cv-method-sms');
+  expect(screen.queryByTestId('cv-method-workstation')).toBeNull();
+  expect(screen.queryByTestId('cv-method-administrative_stepup')).toBeNull();
+});
+
+it('polls the started verification in the pinned org and reports the change', async () => {
+  const onChanged = vi.fn();
+  vi.mocked(api.getVerification).mockResolvedValue({ ...row, status: 'verified', decidedAt: new Date().toISOString(), usableUntil: new Date(Date.now() + 1800000).toISOString() });
+  render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} lockContact onClose={vi.fn()} onChanged={onChanged} />);
+  fireEvent.click(await screen.findByTestId('cv-method-sms'));
+  vi.useFakeTimers();
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-start')); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(api.getVerification).toHaveBeenCalledWith(ORG, row.id, expect.any(AbortSignal));
+  expect(screen.getByText('Verified')).toBeInTheDocument();
+  expect(onChanged).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'verified' }));
+});
+
+it('hides the callback form from a technician who did not start it', async () => {
+  vi.mocked(api.startVerification).mockResolvedValue({ ...row, method: 'callback_attestation', secrets: undefined, initiatedByUserId: 'someone-else' });
+  render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} lockContact onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByTestId('cv-method-callback_attestation'));
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-start')); });
+  expect(screen.queryByTestId('cv-attest-note')).toBeNull();
+});
+
 it('shows a method-load failure instead of an empty list', async () => {
   vi.mocked(api.methodsForContact).mockRejectedValue(new Error('boom'));
   render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} lockContact onClose={vi.fn()} />);

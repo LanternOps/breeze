@@ -138,6 +138,7 @@
     "searchPlaceholder": "Nome ou e-mail",
     "search": "Buscar",
     "directoryUnavailable": "O diretório não está disponível para esta organização.",
+    "directorySearchFailed": "A busca no diretório falhou. Tente novamente.",
     "directoryTruncated": "Mostrando apenas os primeiros resultados. Refine a busca.",
     "noDirectoryResults": "Nenhuma conta correspondente.",
     "linkUser": "Vincular",

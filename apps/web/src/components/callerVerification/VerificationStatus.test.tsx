@@ -13,10 +13,11 @@ it('shows the initiator the match number, request code and caller script', () =>
   expect(screen.getByText('Sent to +1 •••• 12')).toBeVisible();
 });
 
-it('never shows challenge numbers to another technician', () => {
-  const { secrets: _s, ...other } = row;
-  render(<VerificationStatus row={other} userId="someone-else" />);
+it.each([['someone-else'], [undefined]])('never shows challenge numbers to a non-initiator (userId=%s), even if secrets arrive', (userId) => {
+  render(<VerificationStatus row={row} userId={userId} />);
   expect(screen.queryByTestId('cv-match')).toBeNull();
+  expect(screen.queryByTestId('cv-reverse')).toBeNull();
+  expect(screen.queryByTestId('cv-script')).toBeNull();
   expect(screen.getByText(/Only the starting technician sees/)).toBeVisible();
 });
 

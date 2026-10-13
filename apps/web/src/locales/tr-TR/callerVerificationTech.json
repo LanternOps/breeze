@@ -138,6 +138,7 @@
     "searchPlaceholder": "Ad veya e-posta",
     "search": "Ara",
     "directoryUnavailable": "Bu kuruluş için dizin kullanılamıyor.",
+    "directorySearchFailed": "Dizin araması başarısız oldu. Yeniden deneyin.",
     "directoryTruncated": "Yalnızca ilk sonuçlar gösteriliyor. Aramayı daraltın.",
     "noDirectoryResults": "Eşleşen hesap yok.",
     "linkUser": "Bağla",

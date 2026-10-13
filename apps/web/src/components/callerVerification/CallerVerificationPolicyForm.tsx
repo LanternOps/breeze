@@ -144,9 +144,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
                   <output data-testid={`${id}-effective`} className="sr-only">{show(data.effective[key])}</output>
                 </p>
                 {num && (
-                  <input id={id} data-testid={id} type="number" step={1} min={min} max={max} value={value(key) as number}
-                    className="h-8 w-28 rounded-md border bg-background px-2"
-                    onChange={(e) => { const n = e.target.valueAsNumber; if (Number.isInteger(n) && n >= min! && n <= max!) update(key, n); }} />
+                  <NumberField id={id} min={min!} max={max!} value={value(key) as number} onCommit={(n) => update(key, n)} />
                 )}
                 {bool && (
                   <select id={id} data-testid={id} value={String(value(key))} className="h-8 rounded-md border bg-background px-2"
@@ -192,5 +190,28 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
         </div>
       )}
     </form>
+  );
+}
+
+/**
+ * Integer input that keeps the raw text while typing (so "3" on the way to
+ * "30" is not rejected) and commits on blur, clamped to [min, max]; an empty
+ * or non-numeric entry reverts to the current value.
+ */
+function NumberField({ id, min, max, value, onCommit }: { id: string; min: number; max: number; value: number; onCommit: (n: number) => void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+  const commit = () => {
+    const n = Number.parseInt(text, 10);
+    if (!Number.isFinite(n)) { setText(String(value)); return; }
+    const clamped = Math.min(max, Math.max(min, n));
+    setText(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+  return (
+    <input id={id} data-testid={id} type="number" step={1} min={min} max={max} value={text}
+      className="h-8 w-28 rounded-md border bg-background px-2"
+      onChange={(e) => setText(e.target.value)} onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
   );
 }

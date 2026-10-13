@@ -138,6 +138,7 @@
     "searchPlaceholder": "Name oder E-Mail",
     "search": "Suchen",
     "directoryUnavailable": "Für diese Organisation ist kein Verzeichnis verfügbar.",
+    "directorySearchFailed": "Verzeichnissuche fehlgeschlagen. Erneut versuchen.",
     "directoryTruncated": "Es werden nur die ersten Treffer angezeigt. Verfeinern Sie die Suche.",
     "noDirectoryResults": "Keine passenden Konten.",
     "linkUser": "Zuordnen",

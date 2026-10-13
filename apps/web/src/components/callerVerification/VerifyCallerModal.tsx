@@ -11,6 +11,7 @@ import {
 import { ContactPicker } from './ContactPicker';
 import { VerificationStatus } from './VerificationStatus';
 import { useVerification } from './useVerification';
+import { useNow } from './useNow';
 
 export interface VerifyCallerModalProps {
   orgId: string;
@@ -147,6 +148,7 @@ function VerificationFlow({ orgId, initial, onClose, onChanged, onAgain }:
   // A mutation result replaces the polling seed so the new state shows at once.
   const [seed, setSeed] = useState(initial);
   const { row, error } = useVerification(orgId, seed);
+  const now = useNow();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const changedRef = useRef(onChanged);
@@ -169,7 +171,7 @@ function VerificationFlow({ orgId, initial, onClose, onChanged, onAgain }:
   const owns = !!userId && userId === row.initiatedByUserId;
   return (
     <div className="space-y-4 text-sm">
-      <VerificationStatus row={row} userId={userId} />
+      <VerificationStatus row={row} userId={userId} now={now} />
       {error && <p role="alert" className="text-xs text-warning">{t('challenge.pollFailed')}</p>}
       {pending && row.method === 'callback_attestation' && owns && (
         <div className="space-y-2 rounded-md border p-3">

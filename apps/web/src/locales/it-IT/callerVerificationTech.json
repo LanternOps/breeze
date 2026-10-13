@@ -138,6 +138,7 @@
     "searchPlaceholder": "Nome o e-mail",
     "search": "Cerca",
     "directoryUnavailable": "La directory non è disponibile per questa organizzazione.",
+    "directorySearchFailed": "Ricerca nella directory non riuscita. Riprova.",
     "directoryTruncated": "Vengono mostrati solo i primi risultati. Affina la ricerca.",
     "noDirectoryResults": "Nessun account corrispondente.",
     "linkUser": "Collega",

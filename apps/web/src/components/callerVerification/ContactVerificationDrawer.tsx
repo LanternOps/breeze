@@ -65,7 +65,9 @@ export function ContactVerificationDrawer({ orgId, contactId, contactName, onClo
           </div>
         )}
         {!failed && !data && <p className="text-muted-foreground">{t('loading')}</p>}
-        {data && (
+        {/* A failed reload hides the last snapshot: a stale fence or a binding
+            that was just revoked must not keep looking current. */}
+        {data && !failed && (
           <>
             {data.fencedUntil && <FenceBanner until={data.fencedUntil} busy={busy}
               onSubmit={(reason) => run(() => fenceOverride(orgId, contactId, reason))} />}
@@ -202,6 +204,7 @@ function DirectoryLink({ orgId, busy, onLink }: { orgId: string; busy: boolean; 
   const [result, setResult] = useState<DirectorySearch | null>(null);
   const [searching, setSearching] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
 
@@ -213,15 +216,19 @@ function DirectoryLink({ orgId, busy, onLink }: { orgId: string; busy: boolean; 
     controller.current = c;
     setSearching(true);
     setUnavailable(false);
+    setSearchFailed(false);
     setResult(null);
     try {
       const r = await directoryUsers(orgId, q, c.signal);
       if (c.signal.aborted) return;
       if (!r.available) setUnavailable(true); else setResult(r);
-    } catch {
-      // 400/404 here means no usable directory for this session (unconfigured,
-      // changed tenant, or a site-restricted technician) — never offer candidates.
-      if (!c.signal.aborted) setUnavailable(true);
+    } catch (err) {
+      if (c.signal.aborted) return;
+      // 400/404 mean no usable directory for this session (unconfigured,
+      // changed tenant, or a site-restricted technician). Anything else is a
+      // failed search the technician should retry. Neither offers candidates.
+      if (err instanceof ActionError && (err.status === 400 || err.status === 404)) setUnavailable(true);
+      else setSearchFailed(true);
     } finally {
       if (!c.signal.aborted) setSearching(false);
     }
@@ -234,11 +241,12 @@ function DirectoryLink({ orgId, busy, onLink }: { orgId: string; busy: boolean; 
     <div className="space-y-2 rounded-md border p-3">
       <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); void search(); }}>
         <input data-testid="cv-directory-search" aria-label={t('drawer.searchDirectory')} placeholder={t('drawer.searchPlaceholder')}
-          className="h-8 flex-1 rounded-md border bg-background px-2" maxLength={120} value={query} onChange={(e) => setQuery(e.target.value)} />
+          className="h-8 flex-1 rounded-md border bg-background px-2" maxLength={120} value={query} onChange={(e) => setQuery(e.target.value.replace(/["'\\]/g, ''))} />
         <button type="submit" data-testid="cv-directory-submit" disabled={searching || !query.trim()}
           className="h-8 rounded-md border px-3 text-xs disabled:opacity-50">{t('drawer.search')}</button>
       </form>
       {unavailable && <p className="text-muted-foreground">{t('drawer.directoryUnavailable')}</p>}
+      {searchFailed && <p role="alert" className="text-destructive">{t('drawer.directorySearchFailed')}</p>}
       {result && result.users.length === 0 && <p className="text-muted-foreground">{t('drawer.noDirectoryResults')}</p>}
       {result?.truncated && <p className="text-xs text-muted-foreground">{t('drawer.directoryTruncated')}</p>}
       {result && result.users.length > 0 && (
