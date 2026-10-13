@@ -199,17 +199,22 @@ func TestHandleSetLogLevelReportsAppliedAndPersisted(t *testing.T) {
 func TestHandleSetLogLevelCanaryLine(t *testing.T) {
 	cases := []struct {
 		name     string
+		base     string // shipper MinLevel; "" means warn
 		level    string
 		persist  bool
 		wantLine int
 	}{
-		{"debug persisted", "debug", true, 1},
-		{"info persisted", "info", true, 1},
-		{"debug in memory only", "debug", false, 1},
-		{"info in memory only", "info", false, 1},
-		{"same as base", "warn", true, 0},
-		{"lowered", "error", true, 0},
-		{"lowered in memory only", "error", false, 0},
+		{"debug persisted", "", "debug", true, 1},
+		{"info persisted", "", "info", true, 1},
+		{"debug in memory only", "", "debug", false, 1},
+		{"info in memory only", "", "info", false, 1},
+		{"same as base", "", "warn", true, 0},
+		{"lowered", "", "error", true, 0},
+		{"lowered in memory only", "", "error", false, 0},
+		// Base error, raised to warn: the Info canary is below the warn
+		// shipping floor, so it must carry ShipAlways to ship at all.
+		{"base error raised to warn persisted", "error", "warn", true, 1},
+		{"base error raised to warn in memory only", "error", "warn", false, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,11 +238,15 @@ func TestHandleSetLogLevelCanaryLine(t *testing.T) {
 			if tc.persist {
 				overridePath = filepath.Join(t.TempDir(), logging.LevelOverrideFileName)
 			}
+			base := tc.base
+			if base == "" {
+				base = "warn"
+			}
 			logging.InitShipper(logging.ShipperConfig{
 				ServerURL:         func() string { return srv.URL },
 				AgentID:           "test-agent",
 				AuthToken:         secmem.NewSecureString("test-token"),
-				MinLevel:          "warn",
+				MinLevel:          base,
 				LevelOverridePath: overridePath,
 			})
 			t.Cleanup(logging.StopShipper)

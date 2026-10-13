@@ -189,23 +189,23 @@ func TestHealthSnapshot_SuccessThenFailureSameInstantEndsFailed(t *testing.T) {
 	}
 }
 
-// (a4) a completed outcome older than 10 minutes is no longer reported, so
+// (a4) a completed outcome older than 15 minutes is no longer reported, so
 // an agent that stopped attempting (warn-only, nothing to send) reads quiet
 // instead of failing forever.
-func TestHealthSnapshot_StaleOutcomeExpiresAfterTenMinutes(t *testing.T) {
+func TestHealthSnapshot_StaleOutcomeExpiresAfterFifteenMinutes(t *testing.T) {
 	srv := statusServer(t, http.StatusUnauthorized)
 	s := newHealthTestShipper(srv.URL)
 	clock := newFakeClock(time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC))
 	s.now = clock.Now
 
 	s.shipChunk(makeEntries(1))
-	clock.Advance(10*time.Minute - time.Second)
+	clock.Advance(15*time.Minute - time.Second)
 	requireOutcome(t, s.HealthSnapshot(), false, "auth rejected")
 
-	clock.Advance(time.Second) // exactly 10 minutes old
+	clock.Advance(time.Second) // exactly 15 minutes old
 	snap := s.HealthSnapshot()
 	if snap.LastAttemptOk != nil || snap.LastError != "" {
-		t.Fatalf("10-minute-old failure still reported: %+v", snap)
+		t.Fatalf("15-minute-old failure still reported: %+v", snap)
 	}
 	if snap.LastAttemptAt.IsZero() {
 		t.Fatal("expiry must drop the outcome, not the diagnostic attempt time")
@@ -218,7 +218,7 @@ func TestHealthSnapshot_StaleSuccessAlsoExpires(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC))
 	s.now = clock.Now
 	s.shipChunk(makeEntries(1))
-	clock.Advance(10 * time.Minute)
+	clock.Advance(15 * time.Minute)
 	if snap := s.HealthSnapshot(); snap.LastAttemptOk != nil {
 		t.Fatalf("stale success still reported: %+v", snap)
 	}

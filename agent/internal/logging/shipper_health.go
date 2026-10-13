@@ -22,7 +22,13 @@ import (
 // only sends when it has entries, so without an expiry one failed send from a
 // warn-only agent would read "failed" forever. Older outcomes are omitted, so
 // the API sees a quiet agent and ends the episode.
-const shipOutcomeTTL = 10 * time.Minute
+//
+// It must exceed the worst-case time to record ONE failed chunk: the shipper
+// makes up to two retries, each waiting at most retryAfterMaxCap (300s), i.e.
+// 10 minutes. At exactly that figure, a sustained 429/503 with long
+// Retry-After could age each failure out before the next landed and read as
+// "quiet". Keep one full retry window plus margin above 2*retryAfterMaxCap.
+const shipOutcomeTTL = 15 * time.Minute
 
 // maxShipErrorBytes is the wire bound on lastError (the API rejects >160).
 // The closed vocabulary below is far shorter; the cap is defence in depth.
