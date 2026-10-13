@@ -252,6 +252,20 @@ describe('run_script { groupId } executes the approved intent\'s frozen device i
     expect(mocks.resolveScriptRunTargets).not.toHaveBeenCalled();
   });
 
+  it('refuses a groupId call from an act-mode run frame (run targets, no actionIntentId)', async () => {
+    // Act-mode dispatch (aiAgents/runLoop.ts) never sets `actionIntentId`; only
+    // the two approval-release paths do. So even if revalidation were bypassed,
+    // a device-bound agent run cannot fan out to a group through this handler.
+    const out = JSON.parse(await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, groupId: GROUP_ID },
+      makeAuth(),
+      { runTargets: [DEVICE_1] },
+    ));
+    expect(out.error).toMatch(/group_target_not_released: a device-group run must be approved first/);
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(mocks.resolveScriptRunTargets).not.toHaveBeenCalled();
+  });
+
   it('dispatches exactly the intent\'s frozen deviceIds and never calls the resolver', async () => {
     await runScriptTool().handler(
       { scriptId: SCRIPT_ID, groupId: GROUP_ID },
