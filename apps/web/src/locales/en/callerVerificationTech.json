@@ -13,6 +13,11 @@
     "reset_password": "Reset password",
     "disable_user": "Disable account"
   },
+  "scriptActions": {
+    "any": "confirm this request",
+    "reset_password": "reset the password",
+    "disable_user": "disable the account"
+  },
   "methods": {
     "workstation": "Workstation prompt",
     "sms": "Text message link",
@@ -68,9 +73,10 @@
   },
   "challenge": {
     "scriptTitle": "Read this to the caller",
-    "scriptLink": "I've sent you a link. Open it and tap the number {{match}}. Don't read any code back to me.",
-    "reverseCode": "The page shows request code {{code}}. Ask the caller to confirm they see it.",
-    "match": "Number to tap: {{match}}",
+    "scriptLink": "I've sent you a link. The page shows request code {{code}} and asks to {{action}} for {{target}}. If that's right, tap {{match}}. If anything looks wrong, tap \"This is not me\".",
+    "reverseCode": "Request code",
+    "match": "Number to tap",
+    "knownNumber": "If the caller is unsure, they should hang up and call you back on a number they already have.",
     "sentTo": "Sent to {{destination}}",
     "expiresIn": "Challenge expires at {{time}}",
     "notInitiator": "Started by {{technician}}. Only the starting technician sees the challenge numbers.",
@@ -85,10 +91,13 @@
   },
   "result": {
     "verified": "Caller verified for {{action}}.",
-    "usableUntil": "Usable until {{time}} for one action.",
+    "usableUntil": "Usable once for {{action}}; expires in {{minutes}} min.",
+    "anotherTechnician": "Started by {{technician}}; usability is checked when the action runs.",
+    "reverify": "Verify again",
+    "grantExpired": "Verification expired",
     "consumed": "Already used for {{action}}.",
     "consumedUnknown": "Already used.",
-    "remaining": "{{count}} attempts left this hour",
+    "remaining": "Remaining attempts this hour: {{count}}",
     "incident": "A security incident was opened.",
     "viewIncident": "View incident",
     "rejectedHelp": "Do not proceed. Treat this call as suspicious.",
