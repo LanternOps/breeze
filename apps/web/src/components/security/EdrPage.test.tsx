@@ -50,6 +50,30 @@ describe('EdrPage', () => {
     expect(screen.queryByTestId('edr-tab-other-edr')).not.toBeInTheDocument();
   });
 
+  it('shows a retryable notice when the status call fails (500)', async () => {
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) } as Response);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<EdrPage />);
+    expect(await screen.findByTestId('edr-other-status-error')).toBeInTheDocument();
+    expect(errSpy).toHaveBeenCalled();
+    expect(screen.queryByTestId('edr-tab-other-edr')).not.toBeInTheDocument();
+    fetchWithAuth.mockResolvedValueOnce(statusResponse([provider('bitdefender', 'Bitdefender GravityZone')]));
+    fireEvent.click(screen.getByTestId('edr-other-status-retry'));
+    expect(await screen.findByTestId('edr-tab-other-edr')).toBeInTheDocument();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('edr-other-status-error')).not.toBeInTheDocument();
+    errSpy.mockRestore();
+  });
+
+  it('hides silently (no notice) on a 403', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden', json: async () => ({}) } as Response);
+    render(<EdrPage />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('edr-other-status-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('edr-tab-other-edr')).not.toBeInTheDocument();
+  });
+
   it('labels the tab with the provider label when exactly one provider exists', async () => {
     fetchWithAuth.mockResolvedValue(statusResponse([provider('bitdefender', 'Bitdefender GravityZone')]));
     render(<EdrPage />);

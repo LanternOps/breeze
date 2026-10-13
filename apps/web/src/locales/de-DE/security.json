@@ -209,6 +209,7 @@
   },
   "securityOtherEdr": {
     "tabLabel": "Weitere EDR",
+    "statusError": "Andere EDR-Anbieter konnten nicht geprüft werden.",
     "title": "Erkennungen weiterer EDR-Anbieter",
     "loading": "Erkennungen werden geladen...",
     "showing": "{{from}}-{{to}} von {{total}} werden angezeigt",

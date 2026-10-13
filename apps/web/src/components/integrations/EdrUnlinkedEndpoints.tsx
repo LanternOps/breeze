@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -10,8 +10,7 @@ import "@/lib/i18n";
 
 type EndpointFilter = "unlinked" | "ambiguous";
 type DeviceOption = { id: string; label: string };
-/** `null` = the device list for that org could not be loaded. */
-type OrgDevices = DeviceOption[] | null;
+type OrgDevices = DeviceOption[];
 
 export default function EdrUnlinkedEndpoints({
   connectionId,
@@ -26,6 +25,10 @@ export default function EdrUnlinkedEndpoints({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [devicesByOrg, setDevicesByOrg] = useState<Record<string, OrgDevices>>({});
+  const [truncatedOrgs, setTruncatedOrgs] = useState<Record<string, boolean>>({});
+  const [failedOrgs, setFailedOrgs] = useState<Record<string, boolean>>({});
+  // Orgs whose device fetch is in flight, so the effect never double-fetches.
+  const inflight = useRef(new Set<string>());
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<Record<string, boolean>>({});
 
@@ -47,30 +50,41 @@ export default function EdrUnlinkedEndpoints({
   }, [load]);
 
   // Devices are fetched once per distinct org the visible endpoints belong to
-  // (an endpoint can only be linked to a device of its own org).
+  // (an endpoint can only be linked to a device of its own org). A failed fetch
+  // is NOT cached as a device list, so it can be retried.
+  const loadDevices = useCallback(async (orgId: string) => {
+    if (inflight.current.has(orgId)) return;
+    inflight.current.add(orgId);
+    setFailedOrgs((f) => (f[orgId] ? { ...f, [orgId]: false } : f));
+    try {
+      const res = await fetchWithAuth(`/devices?orgId=${orgId}&limit=200`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const body = await res.json();
+      const data = Array.isArray(body?.data) ? body.data : [];
+      const total = typeof body?.pagination?.total === "number" ? body.pagination.total : undefined;
+      const more = Boolean(body?.pagination?.nextCursor) || (total !== undefined && total > data.length);
+      setDevicesByOrg((prev) => ({
+        ...prev,
+        [orgId]: data.map((d: { id: string; hostname?: string | null; displayName?: string | null }) => ({
+          id: d.id,
+          label: d.displayName || d.hostname || d.id,
+        })),
+      }));
+      setTruncatedOrgs((prev) => ({ ...prev, [orgId]: more }));
+    } catch (err) {
+      console.error("[EdrUnlinkedEndpoints] devices:", err);
+      setFailedOrgs((f) => ({ ...f, [orgId]: true }));
+    } finally {
+      inflight.current.delete(orgId);
+    }
+  }, []);
+
   useEffect(() => {
     if (!canManage) return;
-    const missing = [...new Set(rows.map((r) => r.orgId))].filter((orgId) => !(orgId in devicesByOrg));
-    for (const orgId of missing) {
-      void (async () => {
-        let list: OrgDevices = null;
-        try {
-          const res = await fetchWithAuth(`/devices?orgId=${orgId}&limit=200`);
-          if (res.ok) {
-            const body = await res.json();
-            const data = Array.isArray(body?.data) ? body.data : [];
-            list = data.map((d: { id: string; hostname?: string | null; displayName?: string | null }) => ({
-              id: d.id,
-              label: d.displayName || d.hostname || d.id,
-            }));
-          }
-        } catch (err) {
-          console.error("[EdrUnlinkedEndpoints] devices:", err);
-        }
-        setDevicesByOrg((prev) => ({ ...prev, [orgId]: list }));
-      })();
+    for (const orgId of new Set(rows.map((r) => r.orgId))) {
+      if (!(orgId in devicesByOrg) && !failedOrgs[orgId]) void loadDevices(orgId);
     }
-  }, [rows, canManage, devicesByOrg]);
+  }, [rows, canManage, devicesByOrg, failedOrgs, loadDevices]);
 
   const handleLink = async (endpointId: string) => {
     const deviceId = picked[endpointId];
@@ -136,6 +150,7 @@ export default function EdrUnlinkedEndpoints({
             <tbody>
               {rows.map((row) => {
                 const devices = devicesByOrg[row.orgId];
+                const devicesFailed = !!failedOrgs[row.orgId];
                 return (
                   <tr key={row.id} data-testid={`edr-endpoint-row-${row.id}`} className="border-b align-top last:border-0">
                     <td className="py-3 pr-4 font-medium">{row.hostname ?? row.vendorEndpointId}</td>
@@ -153,15 +168,15 @@ export default function EdrUnlinkedEndpoints({
                             aria-label={t("edrProviders.device")}
                             value={picked[row.id] ?? ""}
                             onChange={(e) => setPicked((p) => ({ ...p, [row.id]: e.target.value }))}
-                            disabled={saving[row.id] || devices === undefined || devices === null}
+                            disabled={saving[row.id] || devices === undefined}
                             className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm disabled:opacity-50"
                           >
                             <option value="">
-                              {devices === undefined
-                                ? t("common:states.loading")
-                                : devices === null
+                              {devices !== undefined
+                                ? t("edrProviders.selectDevice")
+                                : devicesFailed
                                   ? t("edrProviders.errorLoadDevices")
-                                  : t("edrProviders.selectDevice")}
+                                  : t("common:states.loading")}
                             </option>
                             {(devices ?? []).map((d) => (
                               <option key={d.id} value={d.id}>
@@ -169,6 +184,16 @@ export default function EdrUnlinkedEndpoints({
                               </option>
                             ))}
                           </select>
+                          {devicesFailed && devices === undefined && (
+                            <button
+                              type="button"
+                              data-testid={`edr-endpoint-devices-retry-${row.id}`}
+                              onClick={() => void loadDevices(row.orgId)}
+                              className="rounded-md border px-3 py-1.5 text-xs font-medium"
+                            >
+                              {t("common:actions.retry")}
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid={`edr-endpoint-link-${row.id}`}
@@ -179,6 +204,11 @@ export default function EdrUnlinkedEndpoints({
                             {t("edrProviders.link")}
                           </button>
                         </div>
+                        {truncatedOrgs[row.orgId] && (
+                          <p data-testid="edr-endpoint-devices-truncated" className="mt-1 text-xs text-muted-foreground">
+                            {t("edrProviders.devicesTruncated")}
+                          </p>
+                        )}
                       </td>
                     )}
                   </tr>

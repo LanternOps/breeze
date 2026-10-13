@@ -328,7 +328,7 @@ export default function EdrProvidersIntegration() {
             ) : (
               <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
                 <p>{testResult.error ?? testResult.message}</p>
-                {testResult.reauth && <p className="mt-2 text-muted-foreground">{t("edrProviders.reauthRequired")}</p>}
+                {testResult.reauth && <p data-testid="edr-test-reauth-hint" className="mt-2 text-muted-foreground">{t("edrProviders.reauthRequired")}</p>}
               </div>
             )}
             <div className="mt-6 flex justify-end">

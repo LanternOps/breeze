@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "No se pudieron cargar los inquilinos del proveedor. Inténtelo de nuevo.",
     "errorLoadEndpoints": "No se pudieron cargar los endpoints. Inténtelo de nuevo.",
     "errorLoadDevices": "No se pudieron cargar los dispositivos",
+    "tenantRemapConfirm": "Cambiar la asignación de {{tenant}} de {{from}} a {{to}} elimina los endpoints sincronizados de este inquilino de {{from}} y desvincula sus detecciones. Se volverán a sincronizar con la nueva asignación. ¿Continuar?",
+    "devicesTruncated": "Se muestran los primeros 200 dispositivos.",
     "createdToast": "Conexión agregada",
     "savedToast": "Conexión guardada",
     "deletedToast": "Conexión eliminada",

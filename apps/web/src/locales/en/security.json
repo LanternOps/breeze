@@ -209,6 +209,7 @@
   },
   "securityOtherEdr": {
     "tabLabel": "Other EDR",
+    "statusError": "Couldn't check for other EDR providers.",
     "title": "Other EDR detections",
     "loading": "Loading detections...",
     "showing": "Showing {{from}}-{{to}} of {{total}}",

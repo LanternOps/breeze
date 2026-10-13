@@ -76,4 +76,42 @@ describe("EdrUnlinkedEndpoints", () => {
     expect(await screen.findByTestId("edr-endpoints-error")).toBeInTheDocument();
     expect(screen.queryByTestId("edr-endpoints-empty")).toBeNull();
   });
+
+  it("shows a truncation hint when more devices exist than were returned", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/edr/endpoints?")) return res({ data: [endpoint] });
+      if (url.startsWith("/devices?"))
+        return res({ data: [{ id: "dev-1", hostname: "WS-01", displayName: null }], pagination: { total: 450, limit: 200, nextCursor: "c" } });
+      return res({});
+    });
+    render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
+    expect(await screen.findByTestId("edr-endpoint-devices-truncated")).toBeInTheDocument();
+  });
+
+  it("does not show the truncation hint when all devices were returned", async () => {
+    render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
+    await screen.findByRole("option", { name: "WS-01" });
+    expect(screen.queryByTestId("edr-endpoint-devices-truncated")).toBeNull();
+  });
+
+  it("does not cache a failed device fetch permanently (retry works)", async () => {
+    let fail = true;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/edr/endpoints?")) return res({ data: [endpoint] });
+      if (url.startsWith("/devices?")) {
+        return fail ? res({ error: "x" }, false, 500) : res({ data: [{ id: "dev-1", hostname: "WS-01", displayName: null }] });
+      }
+      return res({});
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
+    const retry = await screen.findByTestId("edr-endpoint-devices-retry-ep-1");
+    expect(errSpy).toHaveBeenCalled();
+    fail = false;
+    fireEvent.click(retry);
+    await screen.findByRole("option", { name: "WS-01" });
+    errSpy.mockRestore();
+  });
 });

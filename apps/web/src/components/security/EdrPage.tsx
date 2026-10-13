@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useHashState } from "@/lib/useHashState";
 import { ShieldAlert, Activity, Shield } from "lucide-react";
+import { errorKindOf } from "@/lib/httpError";
 import { fetchEdrStatus, type EdrStatusSummary } from "@/lib/edrProviders";
 import S1ThreatList from "./S1ThreatList";
 import HuntressIncidentList from "./HuntressIncidentList";
@@ -34,14 +35,26 @@ export default function EdrPage() {
   // least one provider; a failed load hides it (never shown as an empty tab).
   const [status, setStatus] = useState<EdrStatusSummary | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState(false);
+  const [statusAttempt, setStatusAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setStatusLoading(true);
+    setStatusError(false);
     fetchEdrStatus()
       .then((s) => {
         if (!cancelled) setStatus(s);
       })
-      .catch(() => {
-        if (!cancelled) setStatus(null);
+      .catch((err) => {
+        if (cancelled) return;
+        setStatus(null);
+        // A 403 is terminal for this user: hide the tab silently. Anything
+        // else is surfaced with a retry so a transient failure is not mistaken
+        // for "no other EDR providers".
+        if (errorKindOf(err) !== "denied") {
+          console.error("[EdrPage] status:", err);
+          setStatusError(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setStatusLoading(false);
@@ -49,7 +62,7 @@ export default function EdrPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [statusAttempt]);
 
   const hasOther = !!status && status.providers.length > 0;
   const providerKeys = new Set((status?.providers ?? []).map((p) => p.provider));
@@ -114,6 +127,23 @@ export default function EdrPage() {
           </button>
         )}
       </div>
+      {statusError && (
+        <div
+          data-testid="edr-other-status-error"
+          role="alert"
+          className="flex items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+        >
+          <span>{t("securityOtherEdr.statusError")}</span>
+          <button
+            type="button"
+            data-testid="edr-other-status-retry"
+            onClick={() => setStatusAttempt((n) => n + 1)}
+            className="rounded-md border border-amber-400 bg-white px-2 py-1 text-xs font-medium text-amber-900"
+          >
+            {t("common:actions.retry")}
+          </button>
+        </div>
+      )}
       {waitingForOther ? null : activeTab === "other-edr" && status ? (
         <OtherEdrDetectionList status={status} />
       ) : activeTab === "huntress" ? (

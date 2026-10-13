@@ -35,8 +35,10 @@ function route(rows: unknown[], suggestions: unknown[] = []) {
 }
 const puts = () => fetchMock.mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "PUT");
 
+let confirmSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
+  confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
 describe("EdrTenantMapping", () => {
@@ -61,6 +63,7 @@ describe("EdrTenantMapping", () => {
     route([tenant({ orgId: "org-1", orgName: "Acme", mappingSource: "manual" })]);
     render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
     fireEvent.change(await screen.findByTestId("edr-tenant-select-ten-1"), { target: { value: "__unmapped__" } });
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(JSON.parse((puts()[0]![1] as RequestInit).body as string)).toEqual({ orgId: null });
   });
@@ -106,5 +109,43 @@ describe("EdrTenantMapping", () => {
     await waitFor(() => expect(toastMock).toHaveBeenCalled());
     expect(toastMock).toHaveBeenCalledTimes(1);
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("does not PUT and keeps the old value when the remap confirm is declined", async () => {
+    confirmSpy.mockReturnValue(false);
+    route([tenant({ orgId: "org-1", orgName: "Acme", mappingSource: "manual" })]);
+    render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
+    const select = (await screen.findByTestId("edr-tenant-select-ten-1")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "org-2" } });
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(String(confirmSpy.mock.calls[0]![0])).toContain("Acme");
+    expect(String(confirmSpy.mock.calls[0]![0])).toContain("Globex");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(puts()).toHaveLength(0);
+    expect(select.value).toBe("org-1");
+  });
+
+  it("PUTs the new org when the remap confirm is accepted", async () => {
+    route([tenant({ orgId: "org-1", orgName: "Acme", mappingSource: "manual" })]);
+    render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
+    fireEvent.change(await screen.findByTestId("edr-tenant-select-ten-1"), { target: { value: "org-2" } });
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse((puts()[0]![1] as RequestInit).body as string)).toEqual({ orgId: "org-2" });
+  });
+
+  it("does not prompt when mapping a currently-unmapped tenant", async () => {
+    route([tenant()]);
+    render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
+    fireEvent.change(await screen.findByTestId("edr-tenant-select-ten-1"), { target: { value: "org-1" } });
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders a fallback option for a mapped org missing from the orgs list", async () => {
+    route([tenant({ orgId: "org-gone", orgName: "Old Co", mappingSource: "manual" })]);
+    render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
+    const select = (await screen.findByTestId("edr-tenant-select-ten-1")) as HTMLSelectElement;
+    expect(select.value).toBe("org-gone");
+    expect(screen.getByRole("option", { name: "Old Co" })).toBeInTheDocument();
   });
 });

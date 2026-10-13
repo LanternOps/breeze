@@ -209,6 +209,7 @@
   },
   "securityOtherEdr": {
     "tabLabel": "Diğer EDR",
+    "statusError": "Diğer EDR sağlayıcıları denetlenemedi.",
     "title": "Diğer EDR algılamaları",
     "loading": "Algılamalar yükleniyor...",
     "showing": "{{total}} kayıttan {{from}}-{{to}} gösteriliyor",

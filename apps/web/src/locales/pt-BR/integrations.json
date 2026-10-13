@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Não foi possível carregar os locatários do provedor. Tente novamente.",
     "errorLoadEndpoints": "Não foi possível carregar os endpoints. Tente novamente.",
     "errorLoadDevices": "Não foi possível carregar os dispositivos",
+    "tenantRemapConfirm": "Alterar o mapeamento de {{tenant}} de {{from}} para {{to}} remove os endpoints sincronizados deste locatário de {{from}} e desvincula suas detecções. Eles serão sincronizados novamente com o novo mapeamento. Continuar?",
+    "devicesTruncated": "Exibindo os primeiros 200 dispositivos.",
     "createdToast": "Conexão adicionada",
     "savedToast": "Conexão salva",
     "deletedToast": "Conexão excluída",

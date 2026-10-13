@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let scope: "system" | "partner" | "organization" = "partner";
@@ -243,5 +243,50 @@ describe("EdrProvidersIntegration", () => {
     const body = JSON.parse((calls("PATCH")[0]![1] as RequestInit).body as string);
     expect(body.name).toBe("Renamed");
     expect(body).not.toHaveProperty("credentials");
+  });
+
+  it("shows the reauth hint in the test modal when the test result carries reauth", async () => {
+    overrides = (url, method) =>
+      url === "/edr/connections/c1/test" && method === "POST"
+        ? res({ success: false, error: "bad key", reauth: true })
+        : undefined;
+    render(<EdrProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("edr-connection-test"));
+    const modal = await screen.findByTestId("edr-test-modal");
+    expect(within(modal).getByTestId("edr-test-reauth-hint")).toBeInTheDocument();
+  });
+
+  it("is fully read-only without canManagePartnerWide, even when reauth is required", async () => {
+    canManagePartnerWide = false;
+    connections = [conn({ status: "reauth_required" })];
+    overrides = (url) => {
+      if (url.endsWith("/tenants"))
+        return res({
+          data: [{
+            id: "ten-1", connectionId: "c1", vendorTenantId: "v1", vendorTenantName: "Acme North", orgId: null, orgName: null,
+            mappingSource: null, endpointCount: 1, openDetectionCount: 0, lastSeenAt: null, vendorMissingSince: null, lastDetectionSyncAt: null,
+          }],
+          suggestions: [{ tenantId: "ten-1", orgId: "org-1" }],
+          summary: { tenants: 1, unmappedTenants: 1, unmappedEndpointCount: 1 },
+        });
+      if (url.startsWith("/edr/endpoints"))
+        return res({ data: [{
+          id: "ep-1", orgId: "org-1", connectionId: "c1", tenantId: "ten-1", tenantName: "Acme North", provider: "bitdefender",
+          vendorEndpointId: "ve1", hostname: "ws-01", osName: "Windows 11", health: "healthy", lastSeenAt: null, breezeDeviceId: null,
+        }] });
+      return undefined;
+    };
+    render(<EdrProvidersIntegration />);
+    expect(await screen.findByTestId("edr-connection-reauth-banner")).toBeInTheDocument();
+    await screen.findByTestId("edr-tenant-row-ten-1");
+    await screen.findByTestId("edr-endpoint-row-ep-1");
+    expect(screen.queryByTestId("edr-connection-reauth")).toBeNull();
+    expect(screen.queryByTestId("edr-connection-edit-credentials")).toBeNull();
+    expect(screen.queryByTestId("edr-connection-cred-apiKey")).toBeNull();
+    expect(screen.queryByTestId("edr-connection-save")).toBeNull();
+    expect(screen.queryByTestId("edr-tenant-select-ten-1")).toBeNull();
+    expect(screen.queryByTestId("edr-tenant-apply-ten-1")).toBeNull();
+    expect(screen.queryByTestId("edr-endpoint-device-ep-1")).toBeNull();
+    expect(screen.queryByTestId("edr-endpoint-link-ep-1")).toBeNull();
   });
 });

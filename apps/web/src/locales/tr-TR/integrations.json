@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Sağlayıcı kiracıları yüklenemedi. Tekrar deneyin.",
     "errorLoadEndpoints": "Uç noktalar yüklenemedi. Tekrar deneyin.",
     "errorLoadDevices": "Cihazlar yüklenemedi",
+    "tenantRemapConfirm": "{{tenant}} eşlemesini {{from}} kurumundan {{to}} olarak değiştirmek, bu kiracının eşitlenmiş uç noktalarını {{from}} kurumundan kaldırır ve algılamalarının bağlantısını keser. Yeni eşlemeyle yeniden eşitlenirler. Devam edilsin mi?",
+    "devicesTruncated": "İlk 200 cihaz gösteriliyor.",
     "createdToast": "Bağlantı eklendi",
     "savedToast": "Bağlantı kaydedildi",
     "deletedToast": "Bağlantı silindi",

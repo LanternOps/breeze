@@ -157,6 +157,7 @@ export default function EdrProviderConnectionCard({
       onTestResult({
         success: false,
         error: body?.error ?? (err instanceof Error ? err.message : t("edrProviders.errorTest")),
+        reauth: body?.reauth,
       });
     } finally {
       // The API persists the outcome (status, possibly reauth_required) right

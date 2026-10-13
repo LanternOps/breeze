@@ -209,6 +209,7 @@
   },
   "securityOtherEdr": {
     "tabLabel": "Otro EDR",
+    "statusError": "No se pudo comprobar si hay otros proveedores de EDR.",
     "title": "Detecciones de otros EDR",
     "loading": "Cargando detecciones...",
     "showing": "Mostrando {{from}}-{{to}} de {{total}}",

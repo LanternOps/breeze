@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Impossibile caricare i tenant del provider. Riprova.",
     "errorLoadEndpoints": "Impossibile caricare gli endpoint. Riprova.",
     "errorLoadDevices": "Impossibile caricare i dispositivi",
+    "tenantRemapConfirm": "Modificare l'associazione di {{tenant}} da {{from}} a {{to}} rimuove gli endpoint sincronizzati di questo tenant da {{from}} e scollega i relativi rilevamenti. Verranno risincronizzati con la nuova associazione. Continuare?",
+    "devicesTruncated": "Visualizzazione dei primi 200 dispositivi.",
     "createdToast": "Connessione aggiunta",
     "savedToast": "Connessione salvata",
     "deletedToast": "Connessione eliminata",

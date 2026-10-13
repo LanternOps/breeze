@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Die Anbieter-Mandanten konnten nicht geladen werden. Versuchen Sie es erneut.",
     "errorLoadEndpoints": "Die Endpoints konnten nicht geladen werden. Versuchen Sie es erneut.",
     "errorLoadDevices": "Geräte konnten nicht geladen werden",
+    "tenantRemapConfirm": "Wenn Sie die Zuordnung von {{tenant}} von {{from}} zu {{to}} ändern, werden die synchronisierten Endpoints dieses Mandanten aus {{from}} entfernt und seine Erkennungen getrennt. Sie werden unter der neuen Zuordnung erneut synchronisiert. Fortfahren?",
+    "devicesTruncated": "Die ersten 200 Geräte werden angezeigt.",
     "createdToast": "Verbindung hinzugefügt",
     "savedToast": "Verbindung gespeichert",
     "deletedToast": "Verbindung gelöscht",

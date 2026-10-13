@@ -68,9 +68,23 @@ export default function EdrTenantMapping({
     }
   };
 
-  const onSelect = (tenantId: string, value: string) => {
+  const onSelect = (row: EdrTenantList["rows"][number], value: string) => {
     if (value === "") return; // inert placeholder
-    void handleMap(tenantId, value === UNMAPPED ? null : value);
+    const next = value === UNMAPPED ? null : value;
+    // Re-mapping an already-mapped tenant is destructive server-side (the old
+    // org's endpoints are deleted, detections detached), so confirm first. A
+    // declined confirm leaves the controlled select on its old value.
+    if (row.orgId && next !== row.orgId) {
+      const ok = window.confirm(
+        t("edrProviders.tenantRemapConfirm", {
+          tenant: row.vendorTenantName ?? row.vendorTenantId,
+          from: row.orgName ?? orgName(row.orgId),
+          to: next ? orgName(next) : t("edrProviders.keepUnmapped"),
+        }),
+      );
+      if (!ok) return;
+    }
+    void handleMap(row.id, next);
   };
 
   return (
@@ -141,12 +155,15 @@ export default function EdrTenantMapping({
                                 data-testid={`edr-tenant-select-${row.id}`}
                                 aria-label={t("common:labels.organization")}
                                 value={row.orgId ?? (row.mappingSource === "manual_unmapped" ? UNMAPPED : "")}
-                                onChange={(e) => onSelect(row.id, e.target.value)}
+                                onChange={(e) => onSelect(row, e.target.value)}
                                 disabled={saving[row.id]}
                                 className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm disabled:opacity-50"
                               >
                                 <option value="">{t("edrProviders.selectOrganization")}</option>
                                 <option value={UNMAPPED}>{t("edrProviders.keepUnmapped")}</option>
+                                {row.orgId && !orgs.some((o) => o.id === row.orgId) && (
+                                  <option value={row.orgId}>{row.orgName ?? row.orgId}</option>
+                                )}
                                 {orgs.map((org) => (
                                   <option key={org.id} value={org.id}>
                                     {org.name}

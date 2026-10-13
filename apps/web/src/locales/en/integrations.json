@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Could not load the vendor tenants. Try again.",
     "errorLoadEndpoints": "Could not load the endpoints. Try again.",
     "errorLoadDevices": "Could not load devices",
+    "tenantRemapConfirm": "Changing the mapping for {{tenant}} from {{from}} to {{to}} removes this tenant's synced endpoints from {{from}} and detaches its detections. They re-sync under the new mapping. Continue?",
+    "devicesTruncated": "Showing the first 200 devices.",
     "createdToast": "Connection added",
     "savedToast": "Connection saved",
     "deletedToast": "Connection deleted",

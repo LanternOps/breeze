@@ -1321,6 +1321,8 @@
     "errorLoadTenants": "Impossible de charger les locataires du fournisseur. Réessayez.",
     "errorLoadEndpoints": "Impossible de charger les terminaux. Réessayez.",
     "errorLoadDevices": "Impossible de charger les appareils",
+    "tenantRemapConfirm": "Modifier l'association de {{tenant}} de {{from}} à {{to}} supprime les terminaux synchronisés de ce locataire de {{from}} et détache ses détections. Ils seront resynchronisés avec la nouvelle association. Continuer?",
+    "devicesTruncated": "Affichage des 200 premiers appareils.",
     "createdToast": "Connexion ajoutée",
     "savedToast": "Connexion enregistrée",
     "deletedToast": "Connexion supprimée",
