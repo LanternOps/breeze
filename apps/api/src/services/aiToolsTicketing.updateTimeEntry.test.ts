@@ -15,6 +15,9 @@ vi.mock('./timeEntryService', async () => {
   return { ...actual, ...timeEntryMocks };
 });
 
+const workTypeMocks = vi.hoisted(() => ({ listWorkTypes: vi.fn() }));
+vi.mock('./workTypeService', () => workTypeMocks);
+
 const billingPermissionMocks = vi.hoisted(() => ({ getUserPermissions: vi.fn() }));
 vi.mock('./permissions', async () => ({
   ...await vi.importActual<typeof import('./permissions')>('./permissions'),
@@ -38,6 +41,7 @@ import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
 const ID = '33333333-3333-3333-3333-333333333333';
+const WT_ID = '55555555-5555-5555-5555-555555555555';
 const TICKET_ID = '44444444-4444-4444-4444-444444444444';
 
 const humanAuth = {
@@ -72,6 +76,7 @@ describe('manage_tickets update_time_entry', () => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
     billingPermissionMocks.getUserPermissions.mockResolvedValue(null);
+    workTypeMocks.listWorkTypes.mockResolvedValue([{ id: WT_ID, name: 'Remote' }]);
     timeEntryMocks.readTimeEntryById.mockResolvedValue({ id: ID, ticketId: null });
     timeEntryMocks.updateTimeEntry.mockResolvedValue({ id: ID, orgId: 'o-1', currencyCode: 'USD', description: 'x' });
   });
@@ -87,6 +92,11 @@ describe('manage_tickets update_time_entry', () => {
     expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
   });
 
+  it('rejects a non-UUID timeEntryId before any DB read', async () => {
+    expect((await run({ timeEntryId: 'te-1', description: 'x' })).error).toMatch(/UUID/);
+    expect(timeEntryMocks.readTimeEntryById).not.toHaveBeenCalled();
+  });
+
   it('rejects hourlyRate (rate edits stay behind time_entries:manage_billing in REST/UI)', async () => {
     expect((await run({ timeEntryId: ID, hourlyRate: 1 })).error).toMatch(/hourlyRate/);
     expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
@@ -98,7 +108,7 @@ describe('manage_tickets update_time_entry', () => {
   });
 
   it('applies the REST validator: oversized description', async () => {
-    expect((await run({ timeEntryId: ID, description: 'a'.repeat(10_001) })).error).toBeTruthy();
+    expect((await run({ timeEntryId: ID, description: 'a'.repeat(10_001) })).error).toMatch(/description/);
     expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
   });
 
@@ -149,7 +159,7 @@ describe('manage_tickets update_time_entry', () => {
     expect(timeEntryMocks.updateTimeEntry).toHaveBeenLastCalledWith(ID, { description: 'Replaced switch' }, expect.anything());
   });
 
-  it('billed entry: description-only edit succeeds, time edit surfaces the 409 as { error }', async () => {
+  it('billed entry: service 409 on a time edit surfaces as { error }; a description-only edit is passed through untouched', async () => {
     timeEntryMocks.updateTimeEntry.mockImplementation(async (_id: string, input: Record<string, unknown>) => {
       if (input.startedAt !== undefined) {
         throw new TimeEntryServiceError('This entry has been invoiced; only its description can change', 409, 'ENTRY_BILLED');
@@ -181,6 +191,21 @@ describe('manage_tickets update_time_entry', () => {
   it('returns not found when the entry does not exist', async () => {
     timeEntryMocks.readTimeEntryById.mockResolvedValue(null);
     expect((await run({ timeEntryId: ID, description: 'x' })).error).toMatch(/not found/i);
+    expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('workType alone resolves to workTypeId', async () => {
+    await run({ timeEntryId: ID, workType: 'remote' });
+    expect(timeEntryMocks.updateTimeEntry).toHaveBeenLastCalledWith(ID, { workTypeId: WT_ID }, expect.anything());
+  });
+
+  it('a blank workType alone is an empty patch, not a silent approval-clearing update', async () => {
+    expect((await run({ timeEntryId: ID, workType: '' })).error).toMatch(/at least one field/i);
+    expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('an unknown workType returns { error } naming valid options', async () => {
+    expect((await run({ timeEntryId: ID, workType: 'Nope' })).error).toMatch(/Unknown work type/);
     expect(timeEntryMocks.updateTimeEntry).not.toHaveBeenCalled();
   });
 });

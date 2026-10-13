@@ -53,6 +53,7 @@ import {
   TimeEntryServiceError
 } from './timeEntryService';
 import { updateTimeEntrySchema } from '@breeze/shared';
+import { z } from 'zod';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from './ticketMoveHourBlockGuard';
@@ -1437,6 +1438,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.timeEntryId !== 'string' || !input.timeEntryId) {
           return JSON.stringify({ error: 'timeEntryId is required for update_time_entry action' });
         }
+        // A hallucinated non-UUID id would make Postgres raise 22P02 and abort the request transaction.
+        if (!z.string().guid().safeParse(input.timeEntryId).success) {
+          return JSON.stringify({ error: 'timeEntryId must be a time entry UUID' });
+        }
         // Rate edits stay behind time_entries:manage_billing in REST/UI.
         if (input.hourlyRate !== undefined) {
           return JSON.stringify({ error: 'hourlyRate cannot be changed through update_time_entry; edit the rate in the Breeze UI' });
@@ -1455,15 +1460,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (Object.keys(patch).length > 0) {
           const parsed = updateTimeEntrySchema.safeParse(patch);
           if (!parsed.success) {
-            return JSON.stringify({ error: parsed.error.issues.map((i) => i.message).join('; ') });
+            return JSON.stringify({ error: parsed.error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; ') });
           }
           for (const [k, v] of Object.entries(parsed.data)) if (v !== undefined) data[k] = v;
-        }
-        for (const k of ['startedAt', 'endedAt']) {
-          const v = data[k];
-          if (v instanceof Date && Number.isNaN(v.getTime())) {
-            return JSON.stringify({ error: `${k} is not a valid date` });
-          }
         }
         // Scope: pre-check the entry's ticket like log_time_entry. The service
         // still enforces ownership and the billed lock.
@@ -1479,6 +1478,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             auth.partnerId!,
           );
           if (workTypeId !== undefined) data.workTypeId = workTypeId;
+          if (Object.keys(data).length === 0) {
+            // e.g. a blank workType: nothing to change, and the service would still clear approval.
+            return JSON.stringify({ error: 'update_time_entry needs at least one field to change (description, startedAt, endedAt, isBillable, workType)' });
+          }
           const entry = await updateTimeEntry(
             input.timeEntryId,
             data as Parameters<typeof updateTimeEntry>[1],
