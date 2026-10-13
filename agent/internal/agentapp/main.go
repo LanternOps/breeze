@@ -981,6 +981,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+	// #8619: a server-signalled watchdog target on a host whose watchdog is
+	// not registered is installed through the bounded, persisted Ensure path
+	// instead of the legacy swap. Never in a support session.
+	if !cfg.SupportMode {
+		hb.EnableWatchdogEnsure()
+	}
 
 	// Bare-metal recovery W04a: if the rebuild engine left a marker on this
 	// disk (i.e. this agent booted up as the RESULT of a bare-metal
