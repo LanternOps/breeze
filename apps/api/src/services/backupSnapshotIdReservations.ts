@@ -30,6 +30,7 @@ import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
+import type { SnapshotKeyRoot } from './backupKeyLayout';
 
 /** The unique violation every ownership refusal is reported under. */
 export const SNAPSHOT_ID_RESERVATION_CONSTRAINT = 'backup_snapshot_id_reservations_pkey';
@@ -75,7 +76,15 @@ export type SnapshotIdReservation = typeof backupSnapshotIdReservations.$inferSe
  * the caller's transaction usable; it is retried once with a new id.
  */
 export async function reserveNewSnapshotId(
-  input: { orgId: string; deviceId: string; configId: string; storageIdentity: string; jobId: string },
+  input: {
+    orgId: string;
+    deviceId: string;
+    configId: string;
+    storageIdentity: string;
+    jobId: string;
+    /** Key root the id's objects are written under; immutable once reserved (#7081). */
+    keyRoot: SnapshotKeyRoot;
+  },
   opts: { now?: Date; random?: (n: number) => Buffer } = {},
 ): Promise<string> {
   for (let attempt = 0; ; attempt++) {
@@ -92,6 +101,8 @@ export async function reserveNewSnapshotId(
           state: 'reserved',
           currentJobId: input.jobId,
           writeGeneration: 1,
+          keyLayout: input.keyRoot.layout,
+          keyPrefix: input.keyRoot.prefix,
         }),
       );
       return snapshotId;
