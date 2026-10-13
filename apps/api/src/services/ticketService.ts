@@ -599,6 +599,7 @@ export function toAddinTicketSummary(
     subject: string;
     status: string;
     priority: string | null;
+    ticketType?: TicketType;
     updatedAt: Date;
     submitterEmail: string | null;
   },
@@ -629,6 +630,7 @@ export async function listOrgTicketsForAddin(input: {
     subject: tickets.subject,
     status: tickets.status,
     priority: tickets.priority,
+    ticketType: tickets.ticketType,
     updatedAt: tickets.updatedAt,
     submitterEmail: tickets.submitterEmail
   };

@@ -263,7 +263,8 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
     submitterEmail: 'submitterEmail',
     requesterContactId: 'requesterContactId',
-    deletedAt: 'deletedAt'
+    deletedAt: 'deletedAt',
+    ticketType: 'ticketType'
   },
   // #4524: moveTicketOrg nulls the reverse pointer ticket_comments.agent_run_id,
   // so these two columns must exist on the mock or the WHERE builds on undefined.
@@ -5355,5 +5356,26 @@ describe('ticket_type — updateTicketFields', () => {
     const comment = valuesMock.mock.calls[0]![0];
     expect(comment.oldValue).toBeUndefined();
     expect(comment.newValue).toBeUndefined();
+  });
+});
+
+describe('ticket_type — listOrgTicketsForAddin (additive field)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('selects ticketType for both lists and returns it on each summary', async () => {
+    const row = {
+      id: 't-1', internalNumber: 'T-1', subject: 'S', status: 'open', priority: 'normal',
+      updatedAt: new Date('2026-08-14T00:00:00Z'), submitterEmail: null, ticketType: 'problem',
+    };
+    dbMocks.selectResult.mockResolvedValueOnce([row]).mockResolvedValueOnce([row]);
+
+    const result = await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    const { db } = await import('../db');
+    const selections = (db.select as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => c[0]);
+    expect(selections).toHaveLength(2);
+    for (const sel of selections) expect(sel).toMatchObject({ ticketType: 'ticketType' });
+    expect(result.openTickets[0]!.ticketType).toBe('problem');
+    expect(result.recentTickets[0]!.ticketType).toBe('problem');
   });
 });

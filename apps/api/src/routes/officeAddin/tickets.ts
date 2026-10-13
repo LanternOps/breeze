@@ -46,6 +46,7 @@ import {
   type TicketActor,
 } from '../../services/ticketService';
 import type { OfficeAddinTechAuth } from '../../middleware/officeAddinTechAuth';
+import type { TicketType } from '@breeze/shared';
 import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
 
 /**
@@ -153,6 +154,7 @@ const SUMMARY_COLUMNS = {
   subject: tickets.subject,
   status: tickets.status,
   priority: tickets.priority,
+  ticketType: tickets.ticketType,
   updatedAt: tickets.updatedAt,
   submitterEmail: tickets.submitterEmail,
   emailThreadKey: tickets.emailThreadKey,
@@ -165,6 +167,7 @@ interface TicketRowForSummary {
   subject: string;
   status: string;
   priority: string | null;
+  ticketType?: TicketType;
   updatedAt: Date;
   submitterEmail: string | null;
   emailThreadKey?: string | null;
@@ -701,6 +704,8 @@ officeAddinTicketRoutes.post(
             submitterName: input.from.name ?? undefined,
             submittedBy,
             requesterContactId,
+            // #7900: omitted -> the service default (incident), unstamped.
+            ...(input.ticketType !== undefined ? { ticketType: input.ticketType } : {}),
           },
           actor
         );
