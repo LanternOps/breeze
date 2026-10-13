@@ -871,6 +871,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional(),
   }),
 
+  get_edr_status: z.object({
+    orgId: uuid.optional(),
+  }),
+
+  list_edr_detections: z.object({
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+    status: z.enum(['open', 'all']).optional(),
+    provider: z.string().max(30).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
   s1_isolate_device: z.object({
     orgId: uuid.optional(),
     deviceId: uuid.optional(),

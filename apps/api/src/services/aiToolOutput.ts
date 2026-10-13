@@ -990,6 +990,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Huntress incident text: vendor-authored, but routinely echoes
   // endpoint-chosen artifact names (filenames, process names, paths).
   get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // EDR-framework detection rows: vendor-authored strings that routinely echo
+  // endpoint-chosen artifact names (threat/file/process names). get_edr_status
+  // is deliberately absent: it carries Breeze-generated labels and notes only.
+  list_edr_detections: new Set(['title', 'threatName', 'filePath', 'processName', 'category']),
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),

@@ -111,6 +111,9 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'get_cis_device_report',
   'get_contract',
   'get_device_vulnerabilities',
+  // EDR provider framework (#8164/#8166): same gap as get_huntress_incidents.
+  'get_edr_status',
+  'list_edr_detections',
   'get_huntress_incidents',
   'get_huntress_status',
   'get_invite_funnel',

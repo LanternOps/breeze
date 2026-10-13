@@ -97,6 +97,12 @@ export function edrOrgCondition(auth: AuthContext, orgId: string | undefined, co
 export interface ListEdrDetectionsQuery {
   orgId?: string;
   deviceId?: string;
+  /**
+   * Exact-device restriction (a device-bound AI agent run, #6086): only rows
+   * linked to one of these devices. Unlike the site rule it admits no
+   * never-linked rows. An empty list matches nothing.
+   */
+  deviceIds?: string[];
   severity?: EdrSeverity[];
   /** `open` (default) = open/in_progress/unknown; `all` = every status. */
   status?: 'open' | 'all' | EdrDetectionStatus;
@@ -115,6 +121,9 @@ export function buildDetectionConditions(scope: EdrReadScope, q: ListEdrDetectio
   const site = edrSitePredicate(scope);
   if (site) conds.push(site);
   if (q.deviceId) conds.push(eq(edrDetections.breezeDeviceId, q.deviceId));
+  if (q.deviceIds) {
+    conds.push(q.deviceIds.length > 0 ? inArray(edrDetections.breezeDeviceId, q.deviceIds) : sql`false`);
+  }
   if (q.severity && q.severity.length > 0) conds.push(inArray(edrDetections.severity, q.severity));
   const status = q.status ?? 'open';
   if (status === 'open') conds.push(inArray(edrDetections.status, [...EDR_OPEN_DETECTION_STATUSES]));

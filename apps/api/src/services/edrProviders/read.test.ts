@@ -132,6 +132,13 @@ describe('detection query (DB-less SQL)', () => {
     expect(sqlOf(unrestricted()).sql).not.toContain('"last_site_id" in');
   });
 
+  it('deviceIds restricts to exactly those linked devices (no never-linked rows); empty matches nothing', () => {
+    const some = sqlOf(unrestricted(), { deviceIds: ['d1', 'd2'] });
+    expect(some.sql).toMatch(/"edr_detections"\."breeze_device_id" in \(/);
+    expect(some.params).toEqual(expect.arrayContaining(['d1', 'd2']));
+    expect(sqlOf(unrestricted(), { deviceIds: [] }).sql).toContain('false');
+  });
+
   it('clamps limit to 200', () => {
     expect(buildListEdrDetectionsQuery(unrestricted(), { limit: 5000, offset: 0 }).limit).toBe(200);
   });
