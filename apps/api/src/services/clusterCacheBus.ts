@@ -225,7 +225,9 @@ export class ClusterCacheBus {
       return 'unavailable';
     }
     this.subscriber = sub;
-    this.seenReady = false;
+    // A client that connected before our listeners existed already spent its first
+    // `ready`; the next one we see is a reconnect and must resync.
+    this.seenReady = (sub as { status?: unknown }).status === 'ready';
     this.initialSubscribeRejected = false;
     this.listen(sub, 'message', (channel: string, message: string) => this.onMessage(sub, channel, message));
     this.listen(sub, 'ready', () => { void this.onReady(sub); });

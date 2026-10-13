@@ -286,6 +286,15 @@ describe('ClusterCacheBus reconnect resync (D6, #8144)', () => {
     expect(sub.subscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('a subscriber already connected at start() treats its next ready as a reconnect', async () => {
+    (sub as unknown as { status: string }).status = 'ready';
+    await bus.start();
+    sub.emit('ready');
+    await flush();
+    expect(sub.subscribe).toHaveBeenCalledTimes(2);
+    expect(t1.invalidate).toHaveBeenCalledTimes(1);
+  });
+
   it('a later ready re-subscribes, and clears every target only once the subscribe resolves', async () => {
     await bus.start();
     sub.emit('ready');
