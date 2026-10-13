@@ -62,8 +62,11 @@ describe('upStack caddy pin (#8718)', () => {
     expect(upStack(OPTS, deps).caddyPortPinned).toBe(false);
   });
   it('fails loudly if compose published a different port than the pin', () => {
-    const { deps } = recordingDeps(55001);
+    const { calls, deps } = recordingDeps(55001);
     expect(() => upStack({ ...OPTS, pinnedCaddyPort: 18080 }, deps)).toThrow(/18080.*55001/);
+    // no descriptor may claim a pin that did not hold
+    expect(calls).not.toContain('writeDescriptor');
+    expect(calls).not.toContain('recreate:api');
   });
 });
 

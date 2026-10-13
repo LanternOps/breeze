@@ -60,6 +60,13 @@ describe('caddyPortPin (#8718)', () => {
   });
 });
 
+describe('worktree override caddy publish (#8718)', () => {
+  it('publishes caddy as ${BREEZE_WT_CADDY_PORT:-0}:80 (the :-0 keeps the random-port default)', () => {
+    const override = readFileSync(path.resolve(__dirname, '../../../docker-compose.override.yml.worktree'), 'utf8');
+    expect(override).toMatch(/^\s*-\s*"\$\{BREEZE_WT_CADDY_PORT:-0\}:80"\s*$/m);
+  });
+});
+
 describe('writeEnvStack caddy pin (#8718)', () => {
   const prev = process.env.BREEZE_WT_CADDY_PORT;
   afterEach(() => {

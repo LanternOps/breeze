@@ -37,7 +37,7 @@ export function upStack(
   const caddyPort = deps.publishedPort(project, 'caddy', 80);
   const pinned = opts.pinnedCaddyPort ?? null;
   if (pinned !== null && pinned !== caddyPort) {
-    throw new Error(`BREEZE_WT_CADDY_PORT=${pinned} was requested but caddy published port ${caddyPort}. Is the compose override missing the pin?`);
+    throw new Error(`BREEZE_WT_CADDY_PORT=${pinned} was requested but caddy published port ${caddyPort}. Is the compose override missing the pin? (The stack is up; .breeze-stack.json was not refreshed.)`);
   }
   const baseUrl = `http://localhost:${caddyPort}`;
   // #6443 — the passkey origin/RP ID are only knowable once caddy's random

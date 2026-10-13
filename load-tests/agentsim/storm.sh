@@ -44,10 +44,12 @@ export STORM_API STORM_CADDY STORM_CPUS
 # #8718 — a scenario that restarts caddy moves its published host port unless
 # the stack was brought up with BREEZE_WT_CADDY_PORT, stranding every client
 # that read baseUrl. Name of the first event whose steps touch ${STORM_CADDY}:
-CADDY_EVENT="$(jq -r '[.events[]? | select([.. | strings] | any(test("STORM_CADDY"))) | .name][0] // empty' "$FILE")"
+CADDY_EVENT="$(jq -r '[.events[]? | select([(.start[]?, .end[]?) | .exec[]? | strings] | any(test("STORM_CADDY"))) | .name][0] // empty' "$FILE")" \
+  || { echo "storm: cannot parse scenario $FILE" >&2; exit 2; }
 if [ -n "$CADDY_EVENT" ]; then
   DESC_PORT="$(jq -r '.webPort // empty' "$DESC")"
-  LIVE_PORT="$(docker port "$STORM_CADDY" 80 2>/dev/null | head -n1 | sed 's/.*://')"
+  # sed reads the whole stream (no head → no SIGPIPE under pipefail); a failure leaves it empty.
+  LIVE_PORT="$(docker port "$STORM_CADDY" 80 2>/dev/null | sed -n '1s/.*://p' || true)"
   if [ "$(jq -r '.caddyPortPinned // false' "$DESC")" != true ] || [ -z "$DESC_PORT" ] || [ "$DESC_PORT" != "$LIVE_PORT" ]; then
     echo "storm: scenario '$SLUG' restarts caddy (event '$CADDY_EVENT'), which re-allocates the stack's random host port and strands the simulator (#8718). Re-run 'pnpm wt-stack up' with BREEZE_WT_CADDY_PORT=<free port> to pin it." >&2
     if [ "$DRY" != 1 ]; then exit 2; fi
@@ -114,9 +116,9 @@ echo "storm: report $REPORT"
 if [ -n "$CADDY_EVENT" ]; then
   DEAD="$(jq -r --arg first "$CADDY_EVENT" '
     (.storm.events // []) as $e | ($e | map(.name) | index($first)) as $i
-    | if $i == null then empty else [$e[$i:][] | select((.pool.okSamples // 0) == 0) | .name] | join(", ") end' "$REPORT" 2>/dev/null || true)"
+    | if $i == null then empty else [$e[$i:][] | select((.pool.samples // 0) > 0 and (.pool.okSamples // 0) == 0) | .name] | join(", ") end' "$REPORT" || true)"
   if [ -n "$DEAD" ]; then
-    echo "storm: the stack's front door was unreachable after '$CADDY_EVENT' (no /metrics/scrape sample answered in: $DEAD) — caddy's published port likely moved on restart; pin it with BREEZE_WT_CADDY_PORT (#8718)." >&2
+    echo "storm: the stack's front door was unreachable after '$CADDY_EVENT' (every /metrics/scrape failed in: $DEAD) — either caddy did not come back, or its published port moved on restart (pin it with BREEZE_WT_CADDY_PORT, #8718); also check METRICS_SCRAPE_TOKEN." >&2
   fi
 fi
 PASS="$(jq -r 'if (.storm.pass | type) == "boolean" then .storm.pass else "missing" end' "$REPORT" 2>/dev/null || echo unreadable)"
