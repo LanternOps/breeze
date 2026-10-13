@@ -1,6 +1,7 @@
 ---
 issue: 8078
 status: draft-for-approval
+tracking_issue: LanternOps/breeze#8601
 ---
 
 # Invoice Labor Line Detail Implementation Plan

@@ -1,6 +1,7 @@
 ---
 issue: 5237
 status: draft-for-approval
+tracking_issue: LanternOps/breeze#8597
 ---
 
 # Device-Group Targets for Run Script + Automations Implementation Plan

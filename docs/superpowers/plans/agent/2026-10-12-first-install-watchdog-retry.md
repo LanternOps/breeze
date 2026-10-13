@@ -2,6 +2,7 @@
 issue: 7583
 status: draft-for-approval
 blast_radius: high (agent-shipped code, privileged service registration, install exit codes, three nullable ADD COLUMNs on `devices`)
+tracking_issue: LanternOps/breeze#8618
 ---
 
 # Watchdog Install Retry (#7583) Implementation Plan
