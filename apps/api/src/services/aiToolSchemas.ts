@@ -10,7 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketTypeSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -397,10 +397,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'draft',
       // #8596 ticket-to-ticket links.
       'list_links',
+      'link_ticket',
+      'unlink_ticket',
     ]),
     ticketId: uuid.optional(),
-    // list: one type or several (#8596).
+    // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
+    targetTicketId: uuid.optional(),
+    targetTicketNumber: z.string().min(1).max(64).optional(),
+    linkType: ticketLinkTypeSchema.optional(),
+    linkId: uuid.optional(),
     alertId: uuid.optional(),
     commentId: uuid.optional(),
     expectedTicketId: uuid.optional(),
@@ -450,6 +456,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       submittedBy: uuid.nullable().optional(),
       submitterName: z.string().max(255).nullable().optional(),
       submitterEmail: z.string().email().max(255).nullable().optional(),
+      ticketType: ticketTypeSchema.optional(),
     }).optional(),
     overrides: z.object({
       subject: z.string().min(1).max(255).optional(),

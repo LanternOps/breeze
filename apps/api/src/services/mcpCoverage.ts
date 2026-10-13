@@ -184,8 +184,8 @@ export type McpExemptReason =
    * the same tracked feature. Not a design exemption and not a gap: the note
    * must name the wave sub-issue that ships the tool (mcp-coverage.test.ts
    * enforces an issue reference), and the entry flips to `tools` when that
-   * wave lands. First use: tickets/links.ts (#8592 W02 routes; W04, #8596,
-   * adds link/unlink to manage_tickets).
+   * wave lands. First use: tickets/links.ts (#8592 W02 routes), flipped to
+   * manage_tickets list_links/link_ticket/unlink_ticket by W04 (#8596).
    */
   | 'tool_in_later_wave';
 
@@ -662,7 +662,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/attachments.ts': { gap: '#6776' },
   'tickets/bulk.ts': { gap: '#6776' },
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
-  'tickets/links.ts': { exempt: 'tool_in_later_wave', note: 'Ticket-to-ticket links (#7900). W04 (#8596) ships link_ticket/unlink_ticket/list_links on manage_tickets; flip to tools then.' },
+  'tickets/links.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
   'tickets/forms.ts': { gap: '#6776' },

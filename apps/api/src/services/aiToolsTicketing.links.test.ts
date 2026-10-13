@@ -188,3 +188,170 @@ describe('manage_tickets list_links', () => {
     expect(svc.listTicketLinks).not.toHaveBeenCalled();
   });
 });
+
+// ── 4.3 write surface ─────────────────────────────────────────────────────────
+
+describe('manage_tickets link_ticket', () => {
+  it('validates its inputs before any lookup', async () => {
+    expect((await run({ action: 'link_ticket', targetTicketId: B, linkType: 'related' })).error).toMatch(/ticketId is required/);
+    expect((await run({ action: 'link_ticket', ticketId: A, linkType: 'related' })).error).toMatch(/targetTicketId or targetTicketNumber/);
+    expect((await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, targetTicketNumber: 'T-2', linkType: 'related' })).error)
+      .toMatch(/targetTicketId or targetTicketNumber/);
+    expect((await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'blocks' })).error).toMatch(/linkType/);
+    expect(selectCols).toHaveLength(0);
+    expect(svc.addTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('links two in-scope tickets, passing the human actor', async () => {
+    selectQueue.push([row(A)], [row(B)]);
+    svc.addTicketLink.mockResolvedValue(VIEW);
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'caused_by' });
+    expect(out).toEqual({ link: VIEW });
+    expect(svc.addTicketLink).toHaveBeenCalledWith(
+      { source: { id: A, orgId: ORG }, target: { id: B, orgId: ORG }, linkType: 'caused_by' },
+      expect.objectContaining({ kind: 'user', userId: 'user-1' }),
+    );
+  });
+
+  it('an ai_agent principal is recorded as itself (ai_agent actor, no users id)', async () => {
+    selectQueue.push([row(A)], [row(B)]);
+    svc.addTicketLink.mockResolvedValue(VIEW);
+    await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'related' }, agentAuth());
+    expect(svc.addTicketLink).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' }),
+    );
+  });
+
+  it('a target outside the caller scope is "not found" and nothing is written', async () => {
+    selectQueue.push([row(A)], [row(B, { deviceId: 'dev-forbidden' })]);
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'related' });
+    expect(out.error).toBe('Ticket not found');
+    expect(svc.addTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('a source outside the caller scope is "not found" and the target is never looked up', async () => {
+    selectQueue.push([row(A, { deviceId: 'dev-forbidden' })]);
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'related' });
+    expect(out.error).toBe('Ticket not found');
+    expect(selectCols).toHaveLength(1);
+    expect(svc.addTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('resolves targetTicketNumber inside the SOURCE ticket org, then scope-checks it', async () => {
+    selectQueue.push([row(A)], [row(B)]);
+    svc.findTicketIdByNumber.mockResolvedValue(B);
+    svc.addTicketLink.mockResolvedValue(VIEW);
+    await run({ action: 'link_ticket', ticketId: A, targetTicketNumber: 'T-2', linkType: 'resolves' });
+    expect(svc.findTicketIdByNumber).toHaveBeenCalledWith(ORG, 'T-2');
+    expect(svc.addTicketLink).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { id: B, orgId: ORG } }), expect.anything(),
+    );
+  });
+
+  it('an unknown ticket number is "not found"', async () => {
+    selectQueue.push([row(A)]);
+    svc.findTicketIdByNumber.mockResolvedValue(null);
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketNumber: 'T-404', linkType: 'related' });
+    expect(out.error).toBe('Ticket not found');
+    expect(svc.addTicketLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['LINK_CYCLE', 'This link would create a cycle'],
+    ['CROSS_ORG', 'Tickets can only be linked within one organization'],
+    ['LINK_LIMIT', 'A ticket can have at most 50 links'],
+    ['SOURCE_ALREADY_DUPLICATE', 'This ticket is already marked as a duplicate of another ticket'],
+  ] as const)('service refusal %s reaches the model as a typed tool error', async (code, message) => {
+    selectQueue.push([row(A)], [row(B)]);
+    svc.addTicketLink.mockRejectedValue(new TicketLinkError(code, message));
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'caused_by' });
+    expect(out).toEqual({ error: message, code });
+    // No `success` key: the SDK classifier would otherwise log it as a success.
+    expect(out).not.toHaveProperty('success');
+  });
+});
+
+describe('manage_tickets unlink_ticket', () => {
+  it('validates its inputs', async () => {
+    expect((await run({ action: 'unlink_ticket', linkId: L1 })).error).toMatch(/ticketId is required/);
+    expect((await run({ action: 'unlink_ticket', ticketId: A })).error).toMatch(/linkId is required/);
+    expect(svc.removeTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('removes a link whose counterpart the caller can see', async () => {
+    selectQueue.push([row(A)], [row(B)]);
+    svc.getTicketLinkForTicket.mockResolvedValue({ id: L1, otherTicketId: B });
+    const out = await run({ action: 'unlink_ticket', ticketId: A, linkId: L1 }, agentAuth());
+    expect(out).toEqual({ unlinked: true });
+    expect(svc.getTicketLinkForTicket).toHaveBeenCalledWith(A, L1);
+    expect(svc.removeTicketLink).toHaveBeenCalledWith(A, L1, expect.objectContaining({ kind: 'ai_agent', agentId: 'agent-1' }));
+  });
+
+  it('a link to a soft-deleted counterpart is removable (#8679): the counterpart load includes deleted rows', async () => {
+    selectQueue.push([row(A)], [row(B, { deletedAt: new Date() })]);
+    svc.getTicketLinkForTicket.mockResolvedValue({ id: L1, otherTicketId: B });
+    expect(await run({ action: 'unlink_ticket', ticketId: A, linkId: L1 })).toEqual({ unlinked: true });
+    const [sourceLoad, counterpartLoad] = compiledWheres();
+    expect(sourceLoad!.sql).toMatch(/"tickets"\."deleted_at" is null/);
+    expect(counterpartLoad!.sql).not.toMatch(/deleted_at/);
+  });
+
+  it('a link that is not on this ticket, or whose counterpart is out of scope, is "Link not found"', async () => {
+    selectQueue.push([row(A)]);
+    svc.getTicketLinkForTicket.mockResolvedValue(null);
+    expect((await run({ action: 'unlink_ticket', ticketId: A, linkId: L1 })).error).toBe('Link not found');
+
+    selectQueue.push([row(A)], [row(B, { deviceId: 'dev-forbidden' })]);
+    svc.getTicketLinkForTicket.mockResolvedValue({ id: L1, otherTicketId: B });
+    expect((await run({ action: 'unlink_ticket', ticketId: A, linkId: L1 })).error).toBe('Link not found');
+    expect(svc.removeTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('a ticket outside the caller scope is "not found" and the link is never looked up', async () => {
+    selectQueue.push([row(A, { deviceId: 'dev-forbidden' })]);
+    expect((await run({ action: 'unlink_ticket', ticketId: A, linkId: L1 })).error).toBe('Ticket not found');
+    expect(svc.getTicketLinkForTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_tickets ticketType on create and update_fields', () => {
+  it('create passes a valid ticketType to the service', async () => {
+    ticketSvc.createTicket.mockResolvedValue({ id: A, ticketType: 'service_request' });
+    await run({ action: 'create', orgId: ORG, subject: 'New laptop', ticketType: 'service_request' });
+    expect(ticketSvc.createTicket).toHaveBeenCalledWith(expect.objectContaining({ ticketType: 'service_request', source: 'ai' }), expect.anything());
+  });
+
+  it('create without ticketType leaves the service default in charge', async () => {
+    ticketSvc.createTicket.mockResolvedValue({ id: A });
+    await run({ action: 'create', orgId: ORG, subject: 'Printer down' });
+    expect(ticketSvc.createTicket.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+  });
+
+  it('create refuses an unknown ticketType', async () => {
+    const out = await run({ action: 'create', orgId: ORG, subject: 's', ticketType: 'bogus' });
+    expect(out.error).toMatch(/ticketType/);
+    expect(ticketSvc.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('update_fields accepts fields.ticketType', async () => {
+    selectQueue.push([row(A)]);
+    ticketSvc.updateTicketFields.mockResolvedValue({ id: A, ticketType: 'problem' });
+    await run({ action: 'update_fields', ticketId: A, fields: { ticketType: 'problem' } });
+    expect(ticketSvc.updateTicketFields).toHaveBeenCalledWith(A, { ticketType: 'problem' }, expect.anything());
+  });
+
+  it('update_fields refuses an unknown fields.ticketType', async () => {
+    const out = await run({ action: 'update_fields', ticketId: A, fields: { ticketType: 'bogus' } });
+    expect(out.error).toMatch(/fields\.ticketType/);
+    expect(ticketSvc.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('an ai_agent principal cannot reclassify through update_fields (category and priority only)', async () => {
+    selectQueue.push([row(A)]);
+    const out = await run({ action: 'update_fields', ticketId: A, fields: { ticketType: 'problem' } }, agentAuth());
+    expect(out.error).toMatch(/categoryId and priority/);
+    expect(ticketSvc.applyAiFieldUpdates).not.toHaveBeenCalled();
+    expect(ticketSvc.updateTicketFields).not.toHaveBeenCalled();
+  });
+});

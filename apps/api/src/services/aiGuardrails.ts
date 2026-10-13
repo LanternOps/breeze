@@ -88,7 +88,14 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     // only sets a currently-null device_id (never overwrites); draft only
     // writes an internal ticket_drafts row, never a customer-visible comment.
     'link_device',
-    'draft'
+    'draft',
+    // #8596: ticket-to-ticket links. Same tier as comment/assign: internal,
+    // reversible, bounded to one org (the service refuses cross-org links).
+    // Listing them here is also what denies them to a ticket-triggered
+    // (device-less) agent run — ticketShadowGuardrail.contract.test.ts
+    // derives its mutation set from this list.
+    'link_ticket',
+    'unlink_ticket'
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
@@ -939,8 +946,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
-    // #8596 — same grant as GET /tickets/:id/links.
+    // #8596 — same grants as routes/tickets/links.ts (GET read, POST/DELETE write).
     list_links: { resource: 'tickets', action: 'read' },
+    link_ticket: { resource: 'tickets', action: 'write' },
+    unlink_ticket: { resource: 'tickets', action: 'write' },
   },
   // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
   // and the templates route (reads are TICKETS_READ).
