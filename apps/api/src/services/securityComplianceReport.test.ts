@@ -549,6 +549,23 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(c.unprotectedCount).toBe(2);
   });
 
+  it('does not count provider "unknown" (failed collection, #8538) as native AV or list it as a product', async () => {
+    mockGeneratorQueries({
+      2: [{ id: 'u', hostname: 'pc-u', osType: 'windows', siteName: 'S' }],
+      3: [
+        { deviceId: 'u', provider: 'unknown', realTimeProtection: true, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }
+      ],
+      4: [],
+      5: []
+    });
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const c = r.summary!.controls as any;
+    expect(c.anyAvCoveragePct).toBe(0);
+    expect(c.unprotectedCount).toBe(1);
+    const names = (r.summary as any).securityProducts.map((p: any) => p.product.toLowerCase());
+    expect(names).not.toContain('unknown');
+  });
+
   it('handles a no-partner org (no policy → platform default decides MFA step-up)', async () => {
     const original = process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
     try {

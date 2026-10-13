@@ -105,6 +105,8 @@ describe('classifyDeviceProtection', () => {
     ['SentinelOne managed row', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
     ['native Defender row', status(), false, false, 'protected', 'protected'],
     ['other provider with RTP on', status({ provider: 'other' }), false, false, 'unprotected', 'unprotected'],
+    // #8538: 'unknown' (failed collection) is not a named AV provider either.
+    ['unknown provider with RTP on', status({ provider: 'unknown' }), false, false, 'unprotected', 'unprotected'],
     ['CrowdStrike with RTP off', status({ provider: 'crowdstrike', realTimeProtection: false }), false, false, 'unprotected', 'unprotected'],
     ['coverage dev-1 Defender', status(), false, false, 'protected', 'protected'],
     ['coverage dev-2 Defender', status(), false, false, 'protected', 'protected'],
