@@ -33,6 +33,7 @@ export const RETENTION_JOB_NAMES = [
   'audit_retention',
   'change_log_retention',
   'device_metrics_retention',
+  'edr_detection_retention',
   'event_log_retention',
   'filesystem_cleanup_run_retention',
   'intent_outbox_retention',

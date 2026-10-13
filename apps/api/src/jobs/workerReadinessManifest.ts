@@ -276,6 +276,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Worker, no flag gate, constructs and attaches unconditionally under its
   // own registry-key name.
   consumers('monitorEpisodeRetention'),
+  // #8164 W02 — one Worker, unconditional, attached under its registry name.
+  consumers('edrDetectionRetentionWorker'),
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),

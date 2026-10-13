@@ -332,6 +332,8 @@ const EXPECTED_NAMES = [
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
+  // EDR provider framework W02 (#8164).
+  'edrDetectionRetentionWorker',
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
