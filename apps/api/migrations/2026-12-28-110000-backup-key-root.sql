@@ -107,17 +107,17 @@ $$;
 
 DROP TRIGGER IF EXISTS backup_snapshots_key_root_immutable ON backup_snapshots;
 CREATE TRIGGER backup_snapshots_key_root_immutable
-  BEFORE UPDATE ON backup_snapshots
+  BEFORE UPDATE OF key_layout, key_prefix ON backup_snapshots
   FOR EACH ROW EXECUTE FUNCTION public.breeze_backup_key_root_immutable();
 
 DROP TRIGGER IF EXISTS backup_snapshot_id_reservations_key_root_immutable ON backup_snapshot_id_reservations;
 CREATE TRIGGER backup_snapshot_id_reservations_key_root_immutable
-  BEFORE UPDATE ON backup_snapshot_id_reservations
+  BEFORE UPDATE OF key_layout, key_prefix ON backup_snapshot_id_reservations
   FOR EACH ROW EXECUTE FUNCTION public.breeze_backup_key_root_immutable();
 
 DROP TRIGGER IF EXISTS backup_snapshot_retirements_key_root_immutable ON backup_snapshot_retirements;
 CREATE TRIGGER backup_snapshot_retirements_key_root_immutable
-  BEFORE UPDATE ON backup_snapshot_retirements
+  BEFORE UPDATE OF key_layout, key_prefix ON backup_snapshot_retirements
   FOR EACH ROW EXECUTE FUNCTION public.breeze_backup_key_root_immutable();
 
 -- 4. Reservation <-> snapshot root equality ----------------------------------

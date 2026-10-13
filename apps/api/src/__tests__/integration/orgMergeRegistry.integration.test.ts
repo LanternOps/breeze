@@ -284,6 +284,10 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Backup key root W01 (#8731, 2026-12-28-110000): BEFORE UPDATE OF key_layout, key_prefix.
+  'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  'backup_snapshot_retirements.backup_snapshot_retirements_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
   // fires on the devices repoint and only APPENDS lineage (closes the loser
   // epoch, opens survivor epoch +1, writes retirement markers); it never
