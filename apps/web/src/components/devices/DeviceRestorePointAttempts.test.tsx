@@ -230,4 +230,34 @@ describe('DeviceRestorePointAttempts', () => {
     const link = await screen.findByRole('link', { name: /view script run/i });
     expect(link.getAttribute('href')).toBe('#scripts/exec-9');
   });
+  it('treats a 200 with an unexpected body as an error, not as an empty ledger', async () => {
+    fetchMock.mockResolvedValue(respond({}));
+    render(<DeviceRestorePointAttempts deviceId="dev-1" />);
+    expect(await screen.findByTestId('restore-point-attempts-error')).toBeTruthy();
+    expect(screen.queryByTestId('restore-point-attempts-empty')).toBeNull();
+  });
+
+  it('renders an unknown trigger and an unknown status without crashing (version skew)', async () => {
+    fetchMock.mockResolvedValue(respond({ attempts: [attempt({ trigger: 'future_trigger', status: 'future_status' })] }));
+    render(<DeviceRestorePointAttempts deviceId="dev-1" />);
+    expect(await screen.findByText('future_trigger')).toBeTruthy();
+    expect(screen.getByTestId('restore-point-badge').getAttribute('data-tone')).toBe('neutral');
+  });
+
+  it('does not leave Load more stuck after the device changes mid-request', async () => {
+    fetchMock.mockResolvedValueOnce(respond({ attempts: [attempt()], nextBefore: 'C1' }));
+    const { rerender } = render(<DeviceRestorePointAttempts deviceId="dev-1" />);
+    await screen.findByTestId('restore-point-badge');
+
+    let resolveMore!: (r: Response) => void;
+    fetchMock.mockReturnValueOnce(new Promise<Response>((r) => { resolveMore = r; }));
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    fetchMock.mockResolvedValueOnce(respond({ attempts: [attempt()], nextBefore: 'C2' }));
+    rerender(<DeviceRestorePointAttempts deviceId="dev-2" />);
+    resolveMore(respond({ attempts: [] }));
+
+    const button = await screen.findByRole('button', { name: /load more/i });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
 });

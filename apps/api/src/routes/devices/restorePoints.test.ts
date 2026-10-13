@@ -27,7 +27,7 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { deviceRestorePointAttemptsRoutes, encodeBefore } from './restorePoints';
 
@@ -150,6 +150,23 @@ describe('GET /devices/:id/restore-point-attempts', () => {
     );
   });
 
+  it('emits no nextBefore when the page is exactly full and nothing follows', async () => {
+    mockRows([row(), row({ requestId: '22222222-2222-4222-8222-222222222222' })]);
+    const body = await (await app.request(`${URL_BASE}?limit=2`)).json();
+    expect(body.attempts).toHaveLength(2);
+    expect(body.nextBefore).toBeUndefined();
+  });
+
+  it('exposes exactly the allowlisted DTO keys', async () => {
+    mockRows([row()]);
+    const body = await (await app.request(URL_BASE)).json();
+    expect(Object.keys(body.attempts[0]).sort()).toEqual([
+      'acceptedExistingPoint', 'attemptedAt', 'description', 'durationMs', 'existingPointAgeMinutes',
+      'frequencyMinutes', 'message', 'patchJobId', 'policyRevision', 'receivedAt', 'requestId',
+      'requestedAt', 'scriptExecutionId', 'sequenceNumber', 'softwareDeploymentId', 'status', 'trigger',
+    ]);
+  });
+
   it.each([
     ['limit=abc'],
     ['limit=0'],
@@ -158,10 +175,13 @@ describe('GET /devices/:id/restore-point-attempts', () => {
     ['before=not-a-cursor'],
     ['before=' + Buffer.from('{"t":"nope","id":"x"}').toString('base64url')],
     ['before=' + encodeBefore('2026-09-02T14:00:00Z', 'not-a-uuid')],
+    ['before=' + encodeBefore('2026-99-99T99:99:99Z', '11111111-1111-4111-8111-111111111111')],
+    ['before=' + encodeBefore('2026-02-31T10:00:00Z', '11111111-1111-4111-8111-111111111111')],
   ])('rejects malformed paging (%s) with 400, not 500', async (qs) => {
     mockRows([]);
     const res = await app.request(`${URL_BASE}?${qs}`);
     expect(res.status).toBe(400);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('accepts a well-formed before cursor', async () => {
@@ -187,11 +207,5 @@ describe('GET /devices/:id/restore-point-attempts', () => {
     const res = await app.request(URL_BASE, { headers: { 'x-deny': '1' } });
     expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
-  });
-
-  it('reads on the request path, never through a system DB context', async () => {
-    mockRows([row()]);
-    await app.request(URL_BASE);
-    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

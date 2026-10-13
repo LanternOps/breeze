@@ -89,16 +89,14 @@ describe('GET /devices/:id/restore-point-attempts (real Postgres, breeze_app)', 
   runDb('keyset pages never skip or repeat across equal and sub-millisecond requested_at', async () => {
     const env = await setupTestEnvironment({ rolePermissions: [{ resource: 'devices', action: 'read' }] });
     const device = await createDevice({ orgId: env.organization.id, siteId: env.site.id });
-    const ids: string[] = [];
+    const rows: Array<{ id: string; at: string }> = [];
+    const add = async (at: string) =>
+      rows.push({ id: await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: at }), at });
     // Three rows sharing one instant, three differing only in microseconds,
     // one clearly older -- 7 rows, paged 2 at a time.
-    for (let i = 0; i < 3; i++) {
-      ids.push(await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: '2026-09-02T10:00:00.500000Z' }));
-    }
-    for (const micros of ['500123', '500456', '500789']) {
-      ids.push(await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: `2026-09-02T10:00:00.${micros}Z` }));
-    }
-    ids.push(await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: '2026-09-01T10:00:00.000000Z' }));
+    for (let i = 0; i < 3; i++) await add('2026-09-02T10:00:00.500000Z');
+    for (const micros of ['500123', '500456', '500789']) await add(`2026-09-02T10:00:00.${micros}Z`);
+    await add('2026-09-01T10:00:00.000000Z');
 
     const seen: string[] = [];
     let before: string | undefined;
@@ -109,9 +107,11 @@ describe('GET /devices/:id/restore-point-attempts (real Postgres, breeze_app)', 
       before = body.nextBefore;
       if (!before) break;
     }
-    expect(seen).toHaveLength(7);
-    expect(new Set(seen).size).toBe(7);
-    expect([...seen].sort()).toEqual([...ids].sort());
+    // Full order, not just membership: requested_at desc, then request_id desc.
+    const expected = [...rows]
+      .sort((x, y) => (x.at === y.at ? (x.id < y.id ? 1 : -1) : x.at < y.at ? 1 : -1))
+      .map((r) => r.id);
+    expect(seen).toEqual(expected);
   });
 
   runDb("another org's device is a 404 and its rows never leak", async () => {

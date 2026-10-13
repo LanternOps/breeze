@@ -43,10 +43,13 @@ async function fetchPage(deviceId: string, before?: string): Promise<Page> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = (await res.json()) as Partial<Page> | null;
-  return {
-    attempts: Array.isArray(body?.attempts) ? (body!.attempts as Attempt[]) : [],
-    nextBefore: typeof body?.nextBefore === 'string' ? body.nextBefore : undefined,
-  };
+  // A 200 with an unexpected body must be an error, not an empty ledger:
+  // "nothing recorded" is a claim about the device.
+  if (!body || !Array.isArray(body.attempts)) throw new Error('Unexpected response shape');
+  if (body.nextBefore !== undefined && typeof body.nextBefore !== 'string') {
+    throw new Error('Unexpected nextBefore type');
+  }
+  return { attempts: body.attempts as Attempt[], nextBefore: body.nextBefore };
 }
 
 export default function DeviceRestorePointAttempts({ deviceId }: { deviceId: string }) {
@@ -63,6 +66,8 @@ export default function DeviceRestorePointAttempts({ deviceId }: { deviceId: str
     const mine = ++generation.current;
     setState('loading');
     setMoreError(false);
+    // An in-flight load-more from the previous generation will not reset this.
+    setLoadingMore(false);
     try {
       const page = await fetchPage(deviceId);
       if (mine !== generation.current) return;
@@ -75,6 +80,7 @@ export default function DeviceRestorePointAttempts({ deviceId }: { deviceId: str
         void navigateTo('/login', { replace: true });
         return;
       }
+      console.error('[restore-point-attempts] load failed', { deviceId, err });
       setState('error');
     }
   }, [deviceId]);
@@ -105,6 +111,7 @@ export default function DeviceRestorePointAttempts({ deviceId }: { deviceId: str
         void navigateTo('/login', { replace: true });
         return;
       }
+      console.error('[restore-point-attempts] load more failed', { deviceId, err });
       setMoreError(true);
     } finally {
       if (mine === generation.current) setLoadingMore(false);

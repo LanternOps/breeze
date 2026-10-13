@@ -36,6 +36,9 @@ function decodeBefore(raw: string): { ts: string; id: string } | null {
     if (!parsed || typeof parsed !== 'object') return null;
     const { t, id } = parsed as { t?: unknown; id?: unknown };
     if (typeof t !== 'string' || !CURSOR_TS_REGEX.test(t)) return null;
+    // Shape alone admits 2026-99-99T99:99:99Z, which Postgres rejects (a 500). Round-trip it.
+    const when = new Date(t);
+    if (Number.isNaN(when.getTime()) || when.toISOString().slice(0, 19) !== t.slice(0, 19)) return null;
     if (typeof id !== 'string' || !PG_UUID_REGEX.test(id)) return null;
     return { ts: t, id };
   } catch {
