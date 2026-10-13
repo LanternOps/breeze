@@ -9,7 +9,8 @@
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
+import { deviceHardware, devices, organizations, ticketDrafts, tickets } from '../db/schema';
+import { getTicketApprovalSummary } from './ticketApproval/summary';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
@@ -401,6 +402,35 @@ function jsonError(error: string): string {
   return JSON.stringify({ error });
 }
 
+/**
+ * Customer work approval (#8196). The writers return `approvalHold` when the
+ * entry was recorded but is held from billing (`awaiting_approval`). The model
+ * is told so it does not report the time as billable or retry.
+ */
+function timeWriteResult(entry: { currencyCode?: string | null; approvalHold?: { requestId: string; trigger: string } | null }): string {
+  const hold = entry.approvalHold;
+  return JSON.stringify({
+    timeEntry: entry,
+    currencyCode: entryCurrency(entry),
+    ...(hold ? {
+      approvalHold: hold,
+      note: `Recorded; held pending customer approval (request ${hold.requestId}). It is not billed until the customer approves or staff record consent.`,
+    } : {}),
+  });
+}
+
+/** APPROVAL_REQUIRED (hard-mode timer start) is a refusal the model can act on; other service errors stay plain. */
+function timeServiceErrorResult(err: TimeEntryServiceError): string {
+  if (err.code === 'APPROVAL_REQUIRED') {
+    return JSON.stringify({
+      error: 'Customer approval is required before billable time can start on this ticket. Retry with isBillable=false to log it as non-billable, or ask a human to request customer approval. Use get_ticket_approval_status to see any pending request.',
+      code: 'APPROVAL_REQUIRED',
+      ...(err.details ? { details: err.details } : {}),
+    });
+  }
+  return JSON.stringify({ error: err.message });
+}
+
 const CHECKLIST_ACTIONS = [
   'list',
   'add_item',
@@ -557,6 +587,34 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     },
   });
 
+  // #8196 W05 — read-only. Same read model as GET /tickets/:id/approval-summary.
+  // There is deliberately NO decide / on-behalf / write-off / budget tool: consent
+  // is a person's act (spec §6.5), so an agent can only look, never grant.
+  aiTools.set('get_ticket_approval_status', {
+    tier: 1 as AiToolTier, domain: 'tickets', searchHint: 'ticket budget, customer approval pending, held time awaiting approval, why is time not billable', deviceArgs: [],
+    definition: {
+      name: 'get_ticket_approval_status',
+      description: 'Ticket budget and customer-approval status: budget, consumed and held (awaiting_approval) time, approved extensions, and requests with their state. Read-only.',
+      input_schema: { type: 'object' as const, properties: { ticketId: { type: 'string', description: 'Ticket UUID' } }, required: ['ticketId'] },
+    },
+    handler: async (input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (typeof input.ticketId !== 'string' || !input.ticketId) return jsonError('ticketId is required');
+      try {
+        const ticket = await findTicketWithAccess(input.ticketId, auth);
+        if (!ticket) return jsonError('Ticket not found');
+        // Same partner resolution as GET /tickets/:id/approval-summary.
+        let partnerId: string | null = ticket.partnerId ?? null;
+        if (!partnerId) {
+          const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, ticket.orgId)).limit(1);
+          partnerId = org?.partnerId ?? null;
+        }
+        if (!partnerId) return jsonError('Ticket not found');
+        return JSON.stringify({ approval: await getTicketApprovalSummary(db, { ticketId: ticket.id, partnerId, orgId: ticket.orgId }) });
+      } catch (err) { console.error('[get_ticket_approval_status]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
@@ -686,7 +744,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           isBillable: {
             type: 'boolean',
-            description: 'Whether this time is billable to the customer (log_time_entry / stop_timer; defaults from ticket category)'
+            description: 'Billable to customer (log_time_entry/start_timer/stop_timer; category default). Over-budget time is held as awaiting_approval: see get_ticket_approval_status'
           },
           workType: {
             type: 'string',
@@ -1295,10 +1353,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             // human's own tool call stays the column default.
             { source: context?.approverRelease ? 'ai_suggested' : 'manual' }
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
+          return timeWriteResult(entry);
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
-            return JSON.stringify({ error: err.message });
+            return timeServiceErrorResult(err);
           }
           throw err;
         }
@@ -1319,14 +1377,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
                 auth.partnerId!,
               ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
-              description: input.description ? String(input.description) : undefined
+              description: input.description ? String(input.description) : undefined,
+              // The non-billable retry after a 409 APPROVAL_REQUIRED (#8196).
+              isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
             await timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
+          return timeWriteResult(entry);
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
-            return JSON.stringify({ error: err.message });
+            return timeServiceErrorResult(err);
           }
           throw err;
         }
@@ -1349,10 +1409,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             await timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
+          return timeWriteResult(entry);
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
-            return JSON.stringify({ error: err.message });
+            return timeServiceErrorResult(err);
           }
           throw err;
         }

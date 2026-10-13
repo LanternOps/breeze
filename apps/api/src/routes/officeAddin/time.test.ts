@@ -201,6 +201,21 @@ describe('POST /time/start', () => {
     expect(await res.json()).toEqual({ error: 'APPROVAL_REQUIRED', details: { trigger: 'after_hours', pendingRequestId: null } });
   });
 
+  it('forwards isBillable:false on start for the non-billable retry (#8196 W05)', async () => {
+    hoisted.getRunningTimer.mockResolvedValue(null);
+    hoisted.startTimer.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID, startedAt: new Date(), endedAt: null });
+    const res = await makeApp().request('/time/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticketId: TICKET_ID, isBillable: false }),
+    });
+    expect(res.status).toBe(201);
+    expect(hoisted.startTimer).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: TICKET_ID, isBillable: false }),
+      expect.anything(),
+    );
+  });
+
   it('maps TICKET_ORG_DENIED from resolveTicketLink to a 404', async () => {
     hoisted.getRunningTimer.mockResolvedValue(null);
     hoisted.startTimer.mockRejectedValue(new TimeEntryServiceError('Ticket not found', 404, 'TICKET_ORG_DENIED'));

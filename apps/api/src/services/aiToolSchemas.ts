@@ -198,6 +198,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   get_running_timer: z.object({}),
   get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+  get_ticket_approval_status: z.object({ ticketId: uuid }),
 
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),

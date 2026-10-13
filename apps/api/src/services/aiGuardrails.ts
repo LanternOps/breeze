@@ -864,6 +864,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_time_entries: { resource: 'time_entries', action: 'read' },
   get_running_timer: { resource: 'time_entries', action: 'read' },
   get_timesheet: { resource: 'time_entries', action: 'read' },
+  get_ticket_approval_status: { resource: 'tickets', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },

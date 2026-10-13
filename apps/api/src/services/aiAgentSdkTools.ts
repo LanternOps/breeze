@@ -185,6 +185,7 @@ export const TOOL_TIERS = {
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
+  get_ticket_approval_status: 1,
   // #6930. Base tier; the mutating actions are Tier 2 in aiGuardrails.
   manage_ticket_checklist: 1,
 
@@ -1564,6 +1565,12 @@ export function buildBreezeSdkTools(
       registryDescription('get_timesheet'),
       { weekStart: z.string(), userId: uuid.optional() },
       makeHandler('get_timesheet', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_ticket_approval_status',
+      registryDescription('get_ticket_approval_status'),
+      { ticketId: uuid },
+      makeHandler('get_ticket_approval_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

@@ -632,7 +632,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ticketChecklistTemplates.ts': { gap: '#6776' },
   'ticketConfig.ts': { gap: '#6776' },
   'tickets/aiDrafts.ts': { tools: ['manage_tickets'] },
-  'tickets/approvals.ts': { exempt: 'human_only_approval', note: 'Customer work approval staff actions (#4617 spec §6.5): recording a customer decision on their behalf, writing off held time, and raising/cancelling/re-asking a request commit or withhold the customer\'s money and are human-only. AI read access to request status is via the time-entry/ticket tools (W05 owns tool result text).' },
+  'tickets/approvals.ts': { exempt: 'human_only_approval', note: 'Customer work approval staff actions (#4617 spec §6.5): recording a customer decision on their behalf, writing off held time, and raising/cancelling/re-asking a request commit or withhold the customer\'s money and are human-only. The one read, GET /tickets/:id/approval-summary, is exposed read-only as get_ticket_approval_status; nothing else here is reachable by an AI tool.' },
   'tickets/approvalSettings.ts': { exempt: 'human_only_approval', note: 'Customer work approval POLICY (partner default + org override, #4617 spec §6.5): AI may read request status, but may not set the policy that decides when a customer must consent to billable work.' },
   'tickets/attachments.ts': { gap: '#6776' },
   'tickets/bulk.ts': { gap: '#6776' },

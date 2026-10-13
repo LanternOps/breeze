@@ -199,6 +199,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_time_entries', description: 'List tracked time entries', category: 'Ticketing' },
       { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
+      { name: 'get_ticket_approval_status', description: 'View a ticket\'s budget and customer-approval status', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
