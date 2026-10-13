@@ -746,6 +746,34 @@
     "declaredEmpty": "Für {{site}} deklariert — kein Gerät meldet dieses Netzwerk",
     "declaredColumn": "Deklariert",
     "declaredYes": "Ja",
-    "declaredNo": "Nein"
+    "declaredNo": "Nein",
+    "crossSite": {
+      "rosterToggle": "Geräte außerhalb der Netzwerke dieses Standorts ({{count}})",
+      "observedHeading": "An anderen Standorten beobachtet ({{count}})",
+      "unknownHeading": "Standort unbekannt ({{count}})",
+      "observedEntry": "Im Netzwerk von {{site}} ({{prefix}}) · seit {{time}}",
+      "observedEntryNoTime": "Im Netzwerk von {{site}} ({{prefix}})",
+      "unrecognizedEntry": "{{prefix}} über {{gateway}} — keinem Standort als Netzwerk zugeordnet",
+      "unrecognizedEntryNoNetwork": "Keinem Standort als Netzwerk zugeordnet",
+      "hint": {
+        "declaredUnconfirmed": "Für {{site}} deklariert, aber noch kein Gerät von {{site}} bestätigt dieses Gateway.",
+        "consumerUncorroborated": "Üblicher Heimrouter-Bereich. Der Router konnte keinem Router von {{site}} zugeordnet werden.",
+        "gatewayMismatch": "Im deklarierten Bereich von {{site}}, aber über ein anderes Gateway.",
+        "ownGatewayMismatch": "Im deklarierten Bereich von {{site}}, aber über ein anderes Gateway ({{gateway}})."
+      },
+      "ambiguousEntry": "Für {{sites}} deklariert. Breeze kann nicht bestimmen, um welchen Standort es sich handelt.",
+      "lastReported": "Zuletzt gemeldet: {{prefix}} über {{gateway}}, {{when}}",
+      "locationNotCurrent": "Standort nicht aktuell",
+      "visitingBadge": "Zu Besuch",
+      "visiting": "+{{count}} zu Besuch",
+      "assignedTo": "Zugewiesen zu {{site}}",
+      "visitorAlt": "Gerät zu Besuch, zugewiesen zu {{site}}",
+      "visitingCard": "Geräte zu Besuch ({{prefix}})",
+      "observedChip": "{{count}} an anderen Standorten beobachtet",
+      "visitorExplanation": "Zugewiesen zu {{assigned}}. Meldet das Netzwerk {{prefix}} von {{site}} über {{gateway}}. Das Gateway stimmt mit den Geräten von {{site}} überein.",
+      "visitorExplanationMac": "Zugewiesen zu {{assigned}}. Meldet das Netzwerk {{prefix}} von {{site}} über {{gateway}}. Das Gateway stimmt mit den Geräten von {{site}} überein, einschließlich der MAC-Adresse des Routers.",
+      "ignoredDeclarations_one": "{{count}} deklarierter Subnetz-Eintrag wurde ignoriert (Bereich, Einzeladresse, IPv6 oder nicht lesbarer Text). Nur exakte IPv4-Präfixe identifizieren die Netzwerke eines Standorts.",
+      "ignoredDeclarations_other": "{{count}} deklarierte Subnetz-Einträge wurden ignoriert (Bereiche, Einzeladressen, IPv6 oder nicht lesbarer Text). Nur exakte IPv4-Präfixe identifizieren die Netzwerke eines Standorts."
+    }
   }
 }

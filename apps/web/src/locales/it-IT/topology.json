@@ -746,6 +746,34 @@
     "declaredEmpty": "Dichiarata per {{site}} — nessun dispositivo segnala questa rete",
     "declaredColumn": "Dichiarata",
     "declaredYes": "Sì",
-    "declaredNo": "Non dichiarata"
+    "declaredNo": "Non dichiarata",
+    "crossSite": {
+      "rosterToggle": "Dispositivi fuori dalle reti di questa sede ({{count}})",
+      "observedHeading": "Rilevati in altre sedi ({{count}})",
+      "unknownHeading": "Posizione sconosciuta ({{count}})",
+      "observedEntry": "Sulla rete di {{site}} ({{prefix}}) · dalle {{time}}",
+      "observedEntryNoTime": "Sulla rete di {{site}} ({{prefix}})",
+      "unrecognizedEntry": "{{prefix}} tramite {{gateway}} — non identificata come rete di alcuna sede",
+      "unrecognizedEntryNoNetwork": "Non identificata come rete di alcuna sede",
+      "hint": {
+        "declaredUnconfirmed": "Dichiarata per {{site}}, ma nessun dispositivo di {{site}} conferma ancora questo gateway.",
+        "consumerUncorroborated": "Intervallo tipico dei router domestici. Il router non è stato associato a quello di {{site}}.",
+        "gatewayMismatch": "Nell'intervallo dichiarato di {{site}}, ma tramite un gateway diverso.",
+        "ownGatewayMismatch": "Nell'intervallo dichiarato di {{site}}, ma tramite un gateway diverso ({{gateway}})."
+      },
+      "ambiguousEntry": "Dichiarata per {{sites}}. Breeze non può stabilire di quale sede si tratti.",
+      "lastReported": "Ultima segnalazione: {{prefix}} tramite {{gateway}}, {{when}}",
+      "locationNotCurrent": "Posizione non aggiornata",
+      "visitingBadge": "In visita",
+      "visiting": "+{{count}} in visita",
+      "assignedTo": "Assegnato a {{site}}",
+      "visitorAlt": "Dispositivo in visita, assegnato a {{site}}",
+      "visitingCard": "Dispositivi in visita ({{prefix}})",
+      "observedChip": "{{count}} rilevati in altre sedi",
+      "visitorExplanation": "Assegnato a {{assigned}}. Segnala la rete {{prefix}} di {{site}} tramite {{gateway}}. Il gateway corrisponde ai dispositivi di {{site}}.",
+      "visitorExplanationMac": "Assegnato a {{assigned}}. Segnala la rete {{prefix}} di {{site}} tramite {{gateway}}. Il gateway corrisponde ai dispositivi di {{site}}, incluso il MAC del suo router.",
+      "ignoredDeclarations_one": "{{count}} voce di sottorete dichiarata è stata ignorata (intervallo, indirizzo singolo, IPv6 o testo non interpretabile). Solo i prefissi IPv4 esatti identificano le reti di una sede.",
+      "ignoredDeclarations_other": "{{count}} voci di sottorete dichiarate sono state ignorate (intervalli, indirizzi singoli, IPv6 o testo non interpretabile). Solo i prefissi IPv4 esatti identificano le reti di una sede."
+    }
   }
 }

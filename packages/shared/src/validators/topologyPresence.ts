@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 
 const uuid = z.string().uuid();

@@ -298,7 +298,7 @@ it('moves undeclared networks to the roster, offers the toggle, and keeps its st
   expect(await screen.findByTestId('topology-site-intro')).toHaveTextContent('Devices assigned to Main Office, grouped by the network each one reports');
   expect(screen.queryByTestId('topology-declare-hint')).toBeNull();
   const roster = screen.getByTestId('topology-site-roster');
-  expect(roster).toHaveTextContent('Other / unidentified networks (2)');
+  expect(roster).toHaveTextContent("Devices not on this site's networks (2)");
   const toggle = screen.getByTestId('topology-show-other-networks');
   expect(toggle).not.toBeChecked();
   fireEvent.click(toggle);

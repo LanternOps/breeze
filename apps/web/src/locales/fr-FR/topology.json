@@ -746,6 +746,34 @@
     "declaredEmpty": "Déclaré pour {{site}} — aucun appareil ne signale ce réseau",
     "declaredColumn": "Déclaré",
     "declaredYes": "Oui",
-    "declaredNo": "Non"
+    "declaredNo": "Non",
+    "crossSite": {
+      "rosterToggle": "Appareils hors des réseaux de ce site ({{count}})",
+      "observedHeading": "Observés sur d'autres sites ({{count}})",
+      "unknownHeading": "Emplacement inconnu ({{count}})",
+      "observedEntry": "Sur le réseau de {{site}} ({{prefix}}) · depuis {{time}}",
+      "observedEntryNoTime": "Sur le réseau de {{site}} ({{prefix}})",
+      "unrecognizedEntry": "{{prefix}} via {{gateway}} — non identifié comme réseau d'un site",
+      "unrecognizedEntryNoNetwork": "Non identifié comme réseau d'un site",
+      "hint": {
+        "declaredUnconfirmed": "Déclaré pour {{site}}, mais aucun appareil de {{site}} ne confirme encore cette passerelle.",
+        "consumerUncorroborated": "Plage courante des routeurs domestiques. Le routeur n'a pas pu être associé à celui de {{site}}.",
+        "gatewayMismatch": "Dans la plage déclarée de {{site}}, mais via une autre passerelle.",
+        "ownGatewayMismatch": "Dans la plage déclarée de {{site}}, mais via une autre passerelle ({{gateway}})."
+      },
+      "ambiguousEntry": "Déclaré pour {{sites}}. Breeze ne peut pas déterminer de quel site il s'agit.",
+      "lastReported": "Dernier signalement : {{prefix}} via {{gateway}}, {{when}}",
+      "locationNotCurrent": "Emplacement non à jour",
+      "visitingBadge": "En visite",
+      "visiting": "+{{count}} en visite",
+      "assignedTo": "Affecté à {{site}}",
+      "visitorAlt": "Appareil en visite, affecté à {{site}}",
+      "visitingCard": "Appareils en visite ({{prefix}})",
+      "observedChip": "{{count}} observés sur d'autres sites",
+      "visitorExplanation": "Affecté à {{assigned}}. Signale le réseau {{prefix}} de {{site}} via {{gateway}}. La passerelle correspond aux appareils de {{site}}.",
+      "visitorExplanationMac": "Affecté à {{assigned}}. Signale le réseau {{prefix}} de {{site}} via {{gateway}}. La passerelle correspond aux appareils de {{site}}, y compris à l'adresse MAC de son routeur.",
+      "ignoredDeclarations_one": "{{count}} entrée de sous-réseau déclarée a été ignorée (plage, adresse unique, IPv6 ou texte illisible). Seuls les préfixes IPv4 exacts identifient les réseaux d'un site.",
+      "ignoredDeclarations_other": "{{count}} entrées de sous-réseau déclarées ont été ignorées (plages, adresses uniques, IPv6 ou texte illisible). Seuls les préfixes IPv4 exacts identifient les réseaux d'un site."
+    }
   }
 }
