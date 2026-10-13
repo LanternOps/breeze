@@ -8,6 +8,7 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import { lineWorkedVsBilled } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -499,6 +500,9 @@ export interface InvoiceLine {
    *  non-time-entry lines and legacy rows predating the column; optional
    *  because older test fixtures and API responses predate the field. */
   workedMinutes?: number | null;
+  /** #8604: the partner-local day (YYYY-MM-DD) the line was worked. Non-null only
+   *  when the invoice prints dates and the line is a dated time-entry line. */
+  workDate?: string | null;
 }
 
 /** #6467 — one line naming the worked time whenever it differs from the
@@ -509,11 +513,8 @@ export interface InvoiceLine {
  *  on this page — the note is plain English; that gap is pre-existing and
  *  portal-wide, not specific to this note. */
 export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: number | null }): string | null {
-  if (l.workedMinutes == null) return null;
-  const worked = (l.workedMinutes / 60).toFixed(2);
-  const billed = Number(l.quantity).toFixed(2);
-  if (worked === billed) return null;
-  return `${worked} h worked · ${billed} h billed`;
+  const wb = lineWorkedVsBilled(l);
+  return wb ? `${wb.worked} h worked · ${wb.billed} h billed` : null;
 }
 
 import type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
@@ -547,6 +548,8 @@ export interface InvoiceDetail {
     notes: string | null;
     sellerSnapshot?: SellerSnapshot | null;
     termsAndConditions?: string | null;
+    /** #8604: resolved line grouping; 'day' only when dates are on. */
+    lineGrouping?: 'entry' | 'day';
   };
   lines: InvoiceLine[];
   /** Partner branding for the document shell, matching QuoteDetail. Optional:
@@ -768,6 +771,8 @@ export interface PublicInvoiceDetail {
     sellerSnapshot?: SellerSnapshot | null;
     termsAndConditions?: string | null;
     paidAt?: string | null;
+    /** #8604: resolved line grouping; 'day' only when dates are on. */
+    lineGrouping?: 'entry' | 'day';
   };
   lines: InvoiceLine[];
   chargeNow: { amount: string; isDeposit: boolean } | null;
