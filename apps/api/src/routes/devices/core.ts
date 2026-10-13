@@ -99,6 +99,7 @@ import {
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 import { deriveLogShipping } from '../../services/logShippingHealth';
+import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
  * These get SET NULL rather than deleted during cascade.
@@ -1739,6 +1740,9 @@ coreRoutes.get(
       ...projectPublicDevice(device),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
       logShipping: deriveLogShipping(device, new Date()),
+      // #8620 — banner view only (terminal states, closed vocab); the raw
+      // watchdog_install_* columns are not in PUBLIC_DEVICE_FIELDS.
+      watchdogInstall: deriveWatchdogInstallBanner(device),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

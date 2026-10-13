@@ -1366,6 +1366,22 @@
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
     },
+    "watchdogInstall": {
+      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede `breeze-agent service install --watchdog` komutunu çalıştırın.",
+      "unsupported": "Otomatik watchdog kurulumu bu ana makinede desteklenmiyor ({{since}} tarihinden beri).",
+      "reason": {
+        "network": "indirme adresine ulaşılamadı",
+        "server": "sunucu indirmeyi reddetti",
+        "policy": "indirme ağ ilkesi tarafından engellendi",
+        "signature": "indirilen watchdog imza doğrulamasından geçemedi",
+        "checksum": "indirilen watchdog bütünlük denetiminden geçemedi",
+        "devBuild": "bu bir geliştirme sürümüdür",
+        "unsupportedOs": "bu işletim sistemi desteklenmiyor",
+        "installCmd": "kurulum komutu başarısız oldu",
+        "locked": "başka bir kurulum zaten devam ediyordu",
+        "unknown": "tanınmayan bir hata oluştu"
+      }
+    },
     "logShipping": {
       "label": "Günlük gönderimi",
       "state": {

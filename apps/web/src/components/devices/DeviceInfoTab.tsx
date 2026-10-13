@@ -84,6 +84,15 @@ type DeviceInfo = {
   helperVersion?: string | null;
   helperInstallIssue?: string | null;
   helperInstallIssueSince?: string | null;
+  /**
+   * Terminal watchdog-install failure view (#8620). The API only sends it for
+   * `gave_up` / `unsupported`; every other state is null. Closed vocabulary.
+   */
+  watchdogInstall?: {
+    state: string;
+    errorClass: string;
+    since: string | null;
+  } | null;
   /** Derived read view from the API (#8608); absent until an agent reports. */
   logShipping?: {
     state: "healthy" | "quiet" | "failing" | "unknown";
@@ -242,6 +251,74 @@ const LOG_SHIPPING_CHIP_CLASS: Record<string, string> = {
   quiet: "bg-muted/40 text-muted-foreground border-muted",
   failing: "bg-warning/10 text-warning border-warning/40",
 };
+
+/**
+ * Terminal watchdog-install failure (#8620). Read-only; the API only sends the
+ * view for `gave_up` / `unsupported`, and this renders nothing for anything
+ * else (including a state a newer API might add).
+ */
+function WatchdogInstallNotice({ watchdogInstall }: { watchdogInstall: DeviceInfo["watchdogInstall"] }) {
+  const { t } = useTranslation("devices");
+  if (!watchdogInstall) return null;
+  const { state } = watchdogInstall;
+  if (state !== "gave_up" && state !== "unsupported") return null;
+
+  const since = watchdogInstall.since ? new Date(watchdogInstall.since).toLocaleDateString() : "—";
+  let message: string;
+  if (state === "unsupported") {
+    message = t("deviceInfoTab.watchdogInstall.unsupported", { since });
+  } else {
+    // Closed `lastErrorClass` vocabulary; the raw token is never rendered and
+    // anything outside it falls through to the generic reason.
+    let reason: string;
+    switch (watchdogInstall.errorClass) {
+      case "network":
+        reason = t("deviceInfoTab.watchdogInstall.reason.network");
+        break;
+      case "server":
+        reason = t("deviceInfoTab.watchdogInstall.reason.server");
+        break;
+      case "policy":
+        reason = t("deviceInfoTab.watchdogInstall.reason.policy");
+        break;
+      case "signature":
+        reason = t("deviceInfoTab.watchdogInstall.reason.signature");
+        break;
+      case "checksum":
+        reason = t("deviceInfoTab.watchdogInstall.reason.checksum");
+        break;
+      case "dev_build":
+        reason = t("deviceInfoTab.watchdogInstall.reason.devBuild");
+        break;
+      case "unsupported_os":
+        reason = t("deviceInfoTab.watchdogInstall.reason.unsupportedOs");
+        break;
+      case "install_cmd":
+        reason = t("deviceInfoTab.watchdogInstall.reason.installCmd");
+        break;
+      case "locked":
+        reason = t("deviceInfoTab.watchdogInstall.reason.locked");
+        break;
+      default:
+        reason = t("deviceInfoTab.watchdogInstall.reason.unknown");
+    }
+    message = t("deviceInfoTab.watchdogInstall.gaveUp", { since, reason });
+  }
+
+  return (
+    <div
+      data-testid="watchdog-install-issue"
+      role="status"
+      className={
+        state === "unsupported"
+          ? "rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+          : "rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+      }
+    >
+      {message}
+    </div>
+  );
+}
 
 /**
  * Log-shipping health (#8609). Renders nothing for `unknown`/absent so
@@ -1251,6 +1328,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             })()}
           </div>
         ) : null}
+        <WatchdogInstallNotice watchdogInstall={info?.watchdogInstall} />
         <LogShippingRow logShipping={info?.logShipping} />
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">

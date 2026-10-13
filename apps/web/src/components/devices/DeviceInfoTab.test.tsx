@@ -700,6 +700,83 @@ describe('DeviceInfoTab — Breeze Assist install issue (#6925)', () => {
   });
 });
 
+// #8620 — terminal watchdog-install failure banner. Read-only: the API only
+// sends a `watchdogInstall` view for terminal states, and the banner never
+// renders the raw error-class token.
+describe('DeviceInfoTab — watchdog install banner (#8620)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  const SINCE = '2026-12-20T00:00:00.000Z';
+
+  it('explains a gave_up install with a localized reason, the since-date and the remedy', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'signature', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).toMatch(/could not be installed automatically/i);
+    expect(notice.textContent).toMatch(/signature/i);
+    expect(notice.textContent).toContain('service install --watchdog');
+    expect(notice.textContent).toContain(new Date(SINCE).toLocaleDateString());
+    // The raw class token is never rendered.
+    expect(notice.textContent).not.toContain('install_cmd');
+  });
+
+  it('maps an error class through the fixed phrase table, never the raw token', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'install_cmd', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).not.toContain('install_cmd');
+    expect(notice.textContent).toMatch(/install command/i);
+  });
+
+  it('falls back to a generic reason for an unknown class', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'brand_new_class', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).not.toContain('brand_new_class');
+    expect(notice.textContent).toMatch(/could not be installed automatically/i);
+  });
+
+  it('shows a neutral notice for an unsupported host', async () => {
+    load({ watchdogInstall: { state: 'unsupported', errorClass: 'unsupported_os', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).toMatch(/not supported/i);
+    expect(notice.textContent).not.toContain('unsupported_os');
+  });
+
+  it.each([
+    ['null', null],
+    ['an in-progress state', { state: 'retrying', errorClass: 'network', since: SINCE }],
+    ['a deliberate opt-out', { state: 'opted_out', errorClass: null, since: SINCE }],
+  ])('renders nothing for %s', async (_label, watchdogInstall) => {
+    load({ watchdogInstall });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('watchdog-install-issue')).toBeNull();
+  });
+
+  it('renders nothing when the payload has no watchdogInstall key (older API)', async () => {
+    load({});
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('watchdog-install-issue')).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — log shipping health line (#8609)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

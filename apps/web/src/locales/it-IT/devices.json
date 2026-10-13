@@ -1366,6 +1366,22 @@
       "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
       "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
     },
+    "watchdogInstall": {
+      "gaveUp": "Non è stato possibile installare automaticamente il watchdog (dal {{since}}): {{reason}}. Esegui `breeze-agent service install --watchdog` sull’host per riprovare.",
+      "unsupported": "L’installazione automatica del watchdog non è supportata su questo host (dal {{since}}).",
+      "reason": {
+        "network": "il download non era raggiungibile",
+        "server": "il server ha rifiutato il download",
+        "policy": "il download è stato bloccato dai criteri di rete",
+        "signature": "il watchdog scaricato non ha superato la verifica della firma",
+        "checksum": "il watchdog scaricato non ha superato il controllo di integrità",
+        "devBuild": "questa è una build di sviluppo",
+        "unsupportedOs": "questo sistema operativo non è supportato",
+        "installCmd": "il comando di installazione non è riuscito",
+        "locked": "un’altra installazione era già in corso",
+        "unknown": "si è verificato un errore non riconosciuto"
+      }
+    },
     "logShipping": {
       "label": "Invio dei log",
       "state": {

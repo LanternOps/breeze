@@ -36,10 +36,11 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
-  // Agents from #8618 W1 send a bounded `watchdogInstall` object. Until the API
-  // ingests it (W2), a beat carrying it — well-formed or not — must still be
-  // accepted, with the unknown key stripped rather than rejected.
-  it('accepts and strips the agent watchdogInstall report it does not ingest yet (#8619)', () => {
+  // Agents from #8618 W1 send a bounded `watchdogInstall` object; since W2
+  // (#8620) the API ingests it. The wire field is z.unknown(), so a beat
+  // carrying it — well-formed or not — is always accepted and the value is
+  // handed to parseWatchdogInstall untouched (see the dedicated block below).
+  it('accepts every watchdogInstall shape an agent can send (#8619, #8620)', () => {
     for (const watchdogInstall of [
       { state: 'gave_up', attempts: 8, lastAttemptAt: '2026-10-12T12:00:00Z', lastErrorClass: 'signature' },
       { state: 'retrying' },
@@ -48,7 +49,7 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     ]) {
       const r = heartbeatSchema.safeParse({ ...minimal, watchdogInstall });
       expect(r.success).toBe(true);
-      if (r.success) expect(r.data).not.toHaveProperty('watchdogInstall');
+      if (r.success) expect((r.data as Record<string, unknown>).watchdogInstall).toEqual(watchdogInstall);
     }
   });
 
@@ -999,5 +1000,43 @@ describe('heartbeatSchema — logShipping tolerance (#8608)', () => {
     const r = preChange.safeParse({ ...minimal, logShipping: valid });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data).not.toHaveProperty('logShipping');
+  });
+});
+
+// Watchdog install retry W02 (#8620). The wire field is z.unknown().optional():
+// old agents omit it and must still parse; a malformed object can never reject
+// the beat. Strict parsing lives in parseWatchdogInstall.
+describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const valid = { state: 'gave_up', attempts: 5, lastAttemptAt: '2026-12-26T10:00:00Z', lastErrorClass: 'signature' };
+
+  it('an old agent that omits the field parses, and the key stays undefined', () => {
+    const r = heartbeatSchema.safeParse(minimal);
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).watchdogInstall).toBeUndefined();
+  });
+
+  it('carries a well-formed watchdogInstall object through untouched', () => {
+    const r = heartbeatSchema.safeParse({ ...minimal, watchdogInstall: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).watchdogInstall).toEqual(valid);
+  });
+
+  it.each([
+    ['a string', 'garbage'],
+    ['a number', 42],
+    ['null', null],
+    ['unknown state', { state: 'x' }],
+    ['oversized attempts', { state: 'gave_up', attempts: 1_000_000 }],
+    ['a 5KB state', { state: 'x'.repeat(5000) }],
+  ])('never rejects the heartbeat for %s', (_label, bad) => {
+    expect(heartbeatSchema.safeParse({ ...minimal, watchdogInstall: bad }).success).toBe(true);
+  });
+
+  it('new payload against the PRE-change schema snapshot parses and strips the key (new agent / old API)', () => {
+    const preChange = z.object({ status: z.enum(['ok', 'warning', 'error']), agentVersion: z.string() });
+    const r = preChange.safeParse({ ...minimal, watchdogInstall: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).not.toHaveProperty('watchdogInstall');
   });
 });
