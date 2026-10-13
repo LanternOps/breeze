@@ -1170,3 +1170,34 @@ describe('manage_backup_configs writes a destination change and its key record t
     expect(txn.log).toEqual(['insert:1', 'record:1']);
   });
 });
+
+describe('manage_software_policies update refuses a generated (security_agents) policy (#6960)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  it('returns the read-only refusal and writes nothing', async () => {
+    mockSelectReturns({ id: 'policy-1', orgId: ORG_ID, partnerId: null, name: 'Security agents', managedByLinkId: 'link-1' });
+    const output = await getToolByName('manage_software_policies').handler(
+      { action: 'update', policyId: 'policy-1', name: 'Renamed' },
+      makeOrgAuth(),
+    );
+    const parsed = JSON.parse(output);
+    expect(parsed.code).toBe('managed_software_policy_read_only');
+    expect(parsed.error).toMatch(/configuration policy/i);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('still updates an ordinary policy', async () => {
+    mockSelectReturns({ id: 'policy-1', orgId: ORG_ID, partnerId: null, name: 'Ordinary', managedByLinkId: null });
+    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
+    const output = await getToolByName('manage_software_policies').handler(
+      { action: 'update', policyId: 'policy-1', name: 'Renamed' },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).success).toBe(true);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+});
