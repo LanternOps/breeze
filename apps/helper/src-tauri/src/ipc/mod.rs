@@ -3,6 +3,7 @@
 //! Wire format and HMAC live in [`envelope`] and must match the Go
 //! `agent/internal/ipc` package byte-for-byte.
 
+pub mod caller_verify;
 pub mod client;
 pub mod consent;
 pub mod desktop;

@@ -795,6 +795,41 @@ fn get_consent_request(app: tauri::AppHandle) -> Option<serde_json::Value> {
         .and_then(|bridge| bridge.current())
 }
 
+/// The pending caller-verification request for this window. Only the window
+/// labelled `caller-verify-<verification_id>` may read it.
+#[tauri::command]
+fn get_caller_verify_request(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::caller_verify::CallerVerifyBridge>>,
+    verification_id: String,
+) -> Result<crate::ipc::caller_verify::View, String> {
+    if !crate::ipc::caller_verify::label_matches(window.label(), &verification_id) {
+        return Err("wrong window".into());
+    }
+    bridge
+        .get(&verification_id)
+        .ok_or_else(|| "request unavailable".into())
+}
+
+/// Submit the local user's choice (`<one of the 3 numbers>` | `not_me` |
+/// `timeout`). Single-use; the Rust side enforces the deadline. Closes the
+/// window on success.
+#[tauri::command]
+fn submit_caller_verify(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::caller_verify::CallerVerifyBridge>>,
+    verification_id: String,
+    choice: String,
+) -> Result<(), String> {
+    if !crate::ipc::caller_verify::label_matches(window.label(), &verification_id) {
+        return Err("wrong window".into());
+    }
+    bridge.submit(&verification_id, &choice)?;
+    // The answer is already queued; a failed close must not look like a failed submit.
+    let _ = window.close();
+    Ok(())
+}
+
 /// Update the helper status file when chat activity changes.
 /// Called from the frontend when a chat session starts/ends or on message activity.
 #[tauri::command]
@@ -1389,6 +1424,8 @@ pub fn run() {
             submit_consent,
             consent_presented,
             get_consent_request,
+            get_caller_verify_request,
+            submit_caller_verify,
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
@@ -1605,9 +1642,15 @@ pub fn run() {
             // Tauri command (which the React consent window invokes).
             let bridge = std::sync::Arc::new(crate::ipc::desktop::ConsentBridge::default());
             app.manage(bridge.clone());
+            // Caller verification (W02): pending prompts for the
+            // `caller-verify-<id>` windows, shared with the IPC loop.
+            let caller_verify =
+                std::sync::Arc::new(crate::ipc::caller_verify::CallerVerifyBridge::default());
+            app.manage(caller_verify.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
                 bridge,
+                caller_verify,
             };
             let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
                 stop: stop_rx,
@@ -1842,6 +1885,23 @@ mod tests {
             "/tmp/helper_config.yaml",
             "--show",
         ])));
+    }
+
+    // #8138 + caller verification (W02): the caller-verify prompt is a
+    // separate window that surfaces only for an active request. Launch, the
+    // tray and the main-window show path must never build or show it, and the
+    // main window stays `.visible(false)` at build time. (The request-arm-only
+    // call-site proof lives in ipc::caller_verify's tests.)
+    #[test]
+    fn launch_and_tray_paths_never_surface_the_caller_verify_window() {
+        let src = include_str!("lib.rs");
+        let prod = src.split("\nmod tests {").next().unwrap();
+        assert!(!prod.contains("caller_verify::show_window"));
+        assert!(!prod.contains("caller_verify::window_url"));
+        assert!(!include_str!("app_shell.rs").contains("caller-verify"));
+        assert!(!include_str!("app_shell.rs").contains("caller_verify"));
+        // Main window still built hidden.
+        assert!(prod.contains(".visible(false);"));
     }
 
     // #8138: window-state must not restore VISIBLE, or a window that was open

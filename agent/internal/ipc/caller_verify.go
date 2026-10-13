@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Caller verification (#6354 W02). The agent forwards a caller_verify device
@@ -68,7 +69,8 @@ func (r CallerVerifyRequest) Validate() error {
 		"username": r.Username, "technicianName": r.TechnicianName, "orgName": r.OrgName,
 		"actionLabel": r.ActionLabel, "targetLabel": r.TargetLabel,
 	} {
-		if strings.TrimSpace(v) == "" || len(v) > 320 {
+		// Characters, not bytes: matches the API's and the helper's limits.
+		if strings.TrimSpace(v) == "" || utf8.RuneCountInString(v) > 320 {
 			return fmt.Errorf("invalid %s", name)
 		}
 	}

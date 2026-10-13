@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,12 @@ func TestCallerVerifyRequestValidate(t *testing.T) {
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
+	// 320 multi-byte characters is within the shared limit.
+	wide := validCallerVerifyRequest()
+	wide.TargetLabel = strings.Repeat("é", 320)
+	if err := wide.Validate(); err != nil {
+		t.Fatalf("320-character label rejected: %v", err)
+	}
 	for name, mutate := range map[string]func(*CallerVerifyRequest){
 		"bad id":          func(r *CallerVerifyRequest) { r.VerificationID = "v" },
 		"no user":         func(r *CallerVerifyRequest) { r.Username = " " },
@@ -85,6 +92,7 @@ func TestCallerVerifyRequestValidate(t *testing.T) {
 		"reserved choice": func(r *CallerVerifyRequest) { r.Choices = []string{"not_me", "17", "86"} },
 		"reverse code":    func(r *CallerVerifyRequest) { r.ReverseCode = "73a9" },
 		"no technician":   func(r *CallerVerifyRequest) { r.TechnicianName = "" },
+		"long label":      func(r *CallerVerifyRequest) { r.TargetLabel = strings.Repeat("a", 321) },
 	} {
 		r := validCallerVerifyRequest()
 		mutate(&r)
