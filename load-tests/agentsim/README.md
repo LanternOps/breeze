@@ -124,6 +124,7 @@ measurements.
 ```bash
 export AGENT_ENROLL_RATE_LIMIT=5000 BREEZE_ADMISSION_MODE=enforce
 export METRICS_SCRAPE_TOKEN="$(openssl rand -hex 24)"     # lab-only; the simulator reads it from env
+export BREEZE_WT_CADDY_PORT=18080                         # any free port; required for socket-drop / storm-suite (see below)
 pnpm wt-stack up
 mkdir -p load-tests/agentsim/.state
 ( umask 077; load-tests/agentsim/lab-setup.sh > load-tests/agentsim/.state/lab.env )
@@ -142,6 +143,16 @@ labels into `STORM_API` / `STORM_CADDY` (`STORM_CPUS` defaults to 0.5), runs
 when a gate failed. A scenario's `exec` actions may only run `docker`, expand
 only `${STORM_*}` variables (an unset or empty one is refused at load time), and
 never go through a shell.
+
+**Pin caddy's port for `socket-drop` / `storm-suite`.** `wt-stack` publishes caddy
+on a random host port, and `docker restart` re-allocates it, so after the
+restart the simulator, the scrape loop and `admission-watch.sh` would all talk
+to a dead port for the rest of the run (#8718). Set `BREEZE_WT_CADDY_PORT=<free
+port>` when running `pnpm wt-stack up` (the descriptor then carries
+`caddyPortPinned: true`). `storm.sh` exits 2 for a scenario that restarts caddy
+on an unpinned stack (`--dry-run` prints the same warning and still prints the
+plan). If a run still shows `pool.okSamples` 0 after a caddy event, `storm.sh`
+prints a one-line diagnosis pointing here; it does not change the verdict.
 
 | Scenario | Lever | Honest about |
 |---|---|---|
