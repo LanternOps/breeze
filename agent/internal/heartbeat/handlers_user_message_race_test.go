@@ -81,24 +81,3 @@ func TestHelperFailedShowFallsBackToNativeImmediately(t *testing.T) {
 		t.Fatal("a card that was not shown must not be stored for replay")
 	}
 }
-
-// Where the Assist helper has no Windows session id ("0"/""), the native
-// fallback must still skip the same user's screen, or one person gets a card
-// and a toast (and, for critical, a dialog) for the same message.
-func TestAssistWithoutWinSessionSuppressesSameUserNativeDuplicate(t *testing.T) {
-	assist := newHelperProbe(t, ipc.HelperRoleAssist, "alice", "0", []string{ipc.ScopeAssist, ipc.ScopeMessaging})
-	sameUser := newHelperProbe(t, ipc.HelperRoleUser, "alice", "0", []string{"notify"})
-	otherUser := newHelperProbe(t, ipc.HelperRoleUser, "bob", "0", []string{"notify"})
-	h, _ := newMessagingHeartbeat(t, assist.session, sameUser.session, otherUser.session)
-
-	res := handleNotifyUser(h, Command{ID: "cmd-0", Type: CmdNotifyUser, Payload: messagePayload("critical", time.Now().Add(time.Hour))})
-	if res.Status != "completed" {
-		t.Fatalf("status = %s (%s)", res.Status, res.Error)
-	}
-	if got := sameUser.types(); len(got) != 0 {
-		t.Fatalf("same user got %v next to the Assist card", got)
-	}
-	if got := otherUser.types(); len(got) != 1 || got[0] != ipc.TypeNotify {
-		t.Fatalf("other user got %v, want the native toast", got)
-	}
-}

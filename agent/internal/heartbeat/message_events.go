@@ -102,7 +102,7 @@ func (h *Heartbeat) postMessageEvent(ev messageEvent) error {
 	if err != nil {
 		return fmt.Errorf("post message event: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("message-events returned status %d: %s", resp.StatusCode, string(errBody))
@@ -112,12 +112,23 @@ func (h *Heartbeat) postMessageEvent(ev messageEvent) error {
 
 // isMessagingAssistSession is the single predicate for "this helper may draw
 // endpoint message cards": an Assist-role helper holding the messaging scope
-// (granted only on advertisement) in the active console session.
+// (granted only on advertisement) in the active console session of a Windows
+// host. Everywhere else the message goes out as a native toast.
 func (h *Heartbeat) isMessagingAssistSession(s *sessionbroker.Session) bool {
-	if s == nil || s.HelperRole != ipc.HelperRoleAssist || !s.HasScope(ipc.ScopeMessaging) {
+	if s == nil || h.sessionBroker == nil || s.HelperRole != ipc.HelperRoleAssist || !s.HasScope(ipc.ScopeMessaging) {
 		return false
 	}
-	return h.sessionBroker == nil || h.sessionBroker.SessionInConsoleSession(s)
+	return h.sessionBroker.SessionMayDrawMessageCards(s)
+}
+
+// messagingAssistSession picks the card surface among the sessions that pass
+// isMessagingAssistSession, so a stale off-console Assist helper can never be
+// chosen and push the whole device onto the native path.
+func (h *Heartbeat) messagingAssistSession() *sessionbroker.Session {
+	if h.sessionBroker == nil {
+		return nil
+	}
+	return h.sessionBroker.PreferredSessionWithScopeMatching(ipc.ScopeMessaging, h.isMessagingAssistSession)
 }
 
 // handleMessageEventFromHelper turns a helper's message_presented / ack /

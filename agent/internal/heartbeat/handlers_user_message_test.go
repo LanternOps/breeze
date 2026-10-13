@@ -123,8 +123,13 @@ func (r *eventRecorder) snapshot() []messageEvent {
 func newMessagingHeartbeat(t *testing.T, sessions ...*sessionbroker.Session) (*Heartbeat, *eventRecorder) {
 	t.Helper()
 	rec := &eventRecorder{}
+	// The card is a Windows console-session surface: drive the Windows path on
+	// every host with the console in session 1. Tests override as needed.
+	broker := newTestBrokerWithSessions(t, sessions...)
+	broker.SetGOOSForTest("windows")
+	broker.SetConsoleSessionIDFunc(func() string { return "1" })
 	h := &Heartbeat{
-		sessionBroker:    newTestBrokerWithSessions(t, sessions...),
+		sessionBroker:    broker,
 		endpointMessages: newMessageStore(filepath.Join(t.TempDir(), "endpoint_messages.json")),
 		messageEventSink: rec.sink,
 	}

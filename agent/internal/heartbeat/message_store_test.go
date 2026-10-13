@@ -120,3 +120,24 @@ func TestStoreIsBounded(t *testing.T) {
 		t.Fatalf("store holds %d messages, want cap %d", got, maxStoredEndpointMessages)
 	}
 }
+
+// A Put whose save fails must not leave the message live in memory: the caller
+// treats it as not stored (no MarkTerminal), so a leftover entry would replay
+// a card after the device already fell back to the native toast.
+func TestStorePutFailedSaveLeavesNothingToReplay(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	s := newMessageStore(filepath.Join(blocker, "endpoint_messages.json"))
+	if err := s.Put(testShow("unsaved", now.Add(time.Hour)), now); err == nil {
+		t.Fatal("Put into an unwritable dir reported success")
+	}
+	if _, ok := s.Get("unsaved"); ok {
+		t.Fatal("a message whose save failed is still live in memory")
+	}
+	if got := s.Pending(now); len(got) != 0 {
+		t.Fatalf("Pending = %v, want nothing to replay", got)
+	}
+}

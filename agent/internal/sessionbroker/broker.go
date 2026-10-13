@@ -1148,6 +1148,36 @@ func (b *Broker) SessionInConsoleSession(s *Session) bool {
 	return s.WinSessionID == b.ConsoleSessionID()
 }
 
+// SessionMayDrawMessageCards reports whether s sits where an endpoint message
+// card (#8741) may be drawn: the active console session of a WINDOWS host.
+// Unlike SessionInConsoleSession it is false on every other OS — the card is a
+// Windows-only surface in W1, and macOS/Linux users get the native toast. An
+// unknown console ("" / the "0" sentinel) or helper session never matches.
+func (b *Broker) SessionMayDrawMessageCards(s *Session) bool {
+	if s == nil || b.effectiveGOOS() != "windows" {
+		return false
+	}
+	console := b.ConsoleSessionID()
+	return console != "" && s.WinSessionID == console
+}
+
+// PreferredSessionWithScopeMatching returns the best connected session that
+// holds scope AND satisfies keep, so a caller with a placement rule (e.g. the
+// console-only message card) never settles on a newer session that fails it.
+// keep runs outside the broker lock.
+func (b *Broker) PreferredSessionWithScopeMatching(scope string, keep func(*Session) bool) *Session {
+	var best *Session
+	for _, s := range b.SessionsWithScope(scope) {
+		if keep != nil && !keep(s) {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
 // PreferredRunAsUserSession returns the run_as_user helper to target for the
 // current host. On Windows it is constrained to the active console session so a
 // co-logged-in user's helper can never intercept a run_as_user script meant for

@@ -18,7 +18,8 @@ import (
 // single-session toast path untouched.
 const endpointMessageSource = "endpoint_message"
 
-const endpointMessageHelperTimeout = 10 * time.Second
+// var so tests can shorten it.
+var endpointMessageHelperTimeout = 10 * time.Second
 
 // Defence in depth: the API validates these limits; the agent refuses a
 // payload outside them rather than forwarding it to a helper.
@@ -80,7 +81,7 @@ func nativeMessageRequest(show ipc.MessageShow) ipc.NotifyRequest {
 	}
 	return ipc.NotifyRequest{
 		Title:          title,
-		Body:           show.Body,
+		Body:           plainTextFromMarkdown(show.Body),
 		Urgency:        urgency,
 		FallbackDialog: show.Severity == "critical",
 	}
@@ -136,23 +137,19 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 	if err != nil {
 		return fail(err.Error())
 	}
-	persistent := tools.GetPayloadBool(cmd.Payload, "persistent", true)
-
 	store := h.endpointMessageStore()
 	assistOK, alreadyResolved := false, false
 	var assist *sessionbroker.Session
-	if s := h.sessionBroker.PreferredSessionWithScope(ipc.ScopeMessaging); h.isMessagingAssistSession(s) {
+	if s := h.messagingAssistSession(); s != nil {
 		assist = s
 		// Store BEFORE the card can appear: an ack or close that arrives while
 		// we wait for message_presented must find the message, or it is lost
 		// and the card would be replayed after it was acknowledged.
 		stored := false
-		if persistent {
-			if err := store.Put(show, time.Now()); err != nil {
-				log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())
-			} else {
-				stored = true
-			}
+		if err := store.Put(show, time.Now()); err != nil {
+			log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())
+		} else {
+			stored = true
 		}
 		resp, err := h.sessionBroker.SendCommandAndWait(s, "msg-"+cmd.ID, ipc.TypeMessageShow, show, endpointMessageHelperTimeout)
 		var presented ipc.MessagePresented
@@ -171,6 +168,15 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 			log.Warn("assist helper sent an unknown message_presented status; using native fallback", "status", presented.Status)
 		default:
 			assistOK = true
+		}
+		if !assistOK && !alreadyResolved {
+			// The helper may still draw (or have drawn) the card after we gave
+			// up waiting — a timeout is the common case. Retract it BEFORE the
+			// native fallback so no orphan card stays up whose ack would be
+			// dropped as unknown. Idempotent on the helper side.
+			if err := s.SendNotify("msg-retract-"+cmd.ID, ipc.TypeMessageRetract, ipc.MessageRef{MessageID: show.MessageID}); err != nil {
+				log.Warn("could not retract unconfirmed message card", "messageId", show.MessageID, "error", err.Error())
+			}
 		}
 		if !assistOK && stored {
 			// Not on screen (or already closed by the user): never replay it.

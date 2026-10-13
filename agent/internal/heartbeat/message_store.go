@@ -35,8 +35,10 @@ type storedMessage struct {
 // after it authenticates the agent resends Pending(). Acked, closed and expired
 // messages are removed, so they never reappear (Review Focus 4).
 //
-// The file sits in the agent data dir with 0600 permissions. It holds message
-// text for at most the message's own lifetime (≤ 168 h).
+// The file sits in the agent data dir. On Unix it is written 0600; on Windows
+// the mode bits are not enforced and protection comes from the data dir's
+// ProgramData ACL (SYSTEM + Administrators). It holds message text for at most
+// the message's own lifetime (≤ 168 h).
 type messageStore struct {
 	mu   sync.Mutex
 	path string
@@ -94,7 +96,13 @@ func (s *messageStore) Put(m ipc.MessageShow, now time.Time) error {
 	s.pruneLocked(now)
 	s.msgs[m.MessageID] = storedMessage{Show: m, ExpiresAt: expires}
 	s.enforceCapLocked()
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		// The caller treats a failed Put as "not stored" and never retires it;
+		// a copy left in memory would replay the card after a native fallback.
+		delete(s.msgs, m.MessageID)
+		return err
+	}
+	return nil
 }
 
 // Get returns a live (not terminal) message by id.
@@ -175,7 +183,7 @@ func (s *messageStore) enforceCapLocked() {
 	}
 }
 
-// saveLocked writes the store atomically (temp file + rename) with 0600.
+// saveLocked writes the store atomically (temp file + rename); 0600 on Unix.
 func (s *messageStore) saveLocked() error {
 	if s.path == "" {
 		return nil
