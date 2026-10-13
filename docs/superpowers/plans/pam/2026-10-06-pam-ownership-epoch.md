@@ -1159,6 +1159,36 @@ Tests: `orgEvidenceHold.integration.test.ts`,
 
 ---
 
+### W6-pre shipped (#8746)
+
+Prerequisites W06 builds on; they change some Wave 6 file-list items below.
+
+- **The evidence hold scopes erasure; it no longer refuses it.**
+  `cascadeDeleteOrg` erases a held shell except for two things: its
+  `organizations` row and `EVIDENCE_HOLD_RETAINED_TABLES`.
+  - The retained set is the 4 chain tables plus the 2 epoch tables. It is
+    exactly the set of tables that carry `breeze_merged_lineage_select`.
+  - The shell's own held lineage is not touched.
+  - When the erasure finishes, it writes the engine-owned key
+    `settings.evidenceHoldScopedErasureAt`.
+
+  Phase C, the sweeper's stamp path and the admin route all pass held shells
+  to this erasure. The sweeper's case 1 retries a held shell only until that
+  key is set.
+- **The emptiness check for release stays at the 4 chain tables.** It is named
+  once, as `EVIDENCE_HOLD_CHAIN_TABLES`. A loser's epoch rows are immutable, so
+  they never empty out, and counting them would mean retention never releases
+  a hold.
+- **`writeEvidenceHold` is idempotent:** `ON CONFLICT DO NOTHING`, and a
+  Phase B retry returns the reason already stored.
+- **Org move:** `elevation_requests` has left `breeze_device_child_orgid_tables()`.
+  - A dedicated `AFTER UPDATE OF org_id` trigger on `devices` and the route
+    loop restamp only **un-actuated** requests.
+  - An actuated request of any epoch stays where it is.
+  - This replaces the "remove `elevation_requests` from the restamp list" item
+    below. Un-actuated requests must still follow the device.
+  - OD4 (expiring pending requests) is still W06's job.
+
 ## Wave 6 — Enablement behind a flag, plus the full matrix
 
 **Files:**
