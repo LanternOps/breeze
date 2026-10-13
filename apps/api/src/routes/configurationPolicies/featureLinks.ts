@@ -57,7 +57,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
-import { PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
+import { omitUnsentLegacyApprovalKeys, PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
@@ -573,7 +573,9 @@ featureLinkRoutes.patch(
             400
           );
         }
-        data.inlineSettings = parsed.data;
+        // #8671: the schema defaults omitted approval keys; forward only the
+        // ones the client sent (the service keeps the stored values).
+        data.inlineSettings = omitUnsentLegacyApprovalKeys(data.inlineSettings, parsed.data);
       }
       if (existingLink.featureType === 'backup') {
         // PATCH may keep the existing profile reference (featurePolicyId

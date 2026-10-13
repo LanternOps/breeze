@@ -413,6 +413,9 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-billing-quick-add-description"
           />
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="time-entry-note-invoice-cue">
+            {t('ticketTimeBilling.noteInvoiceCue')}
+          </p>
           <label className="block text-[11px] text-muted-foreground">
             {t('workType.label')}
             <WorkTypeSelect value={workTypeId === undefined ? summary?.defaults?.workTypeId ?? null : workTypeId} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />

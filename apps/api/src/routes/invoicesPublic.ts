@@ -12,7 +12,7 @@ import { invoices, invoiceLines, invoiceStripePayments, tickets } from '../db/sc
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
-import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
+import { toCustomerInvoiceHeader, toCustomerInvoiceLine, customerLineDetail, markViewed } from '../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
@@ -145,6 +145,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       taxable: invoiceLines.taxable,
       lineTotal: invoiceLines.lineTotal,
       workedMinutes: invoiceLines.workedMinutes,
+      sourceType: invoiceLines.sourceType,
+      workDate: invoiceLines.workDate,
     }).from(invoiceLines)
       .leftJoin(tickets, and(
         eq(invoiceLines.ticketId, tickets.id),
@@ -188,7 +190,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       collectionInProgress,
       autopayStatus: customerAutopay.status,
       autopayEnrolled: customerAutopay.enrolled,
-      lines: rows.map(toCustomerInvoiceLine),
+      // #8604: toggles applied server-side from the FROZEN columns.
+      lines: rows.map((r) => toCustomerInvoiceLine(r, customerLineDetail(inv), inv.documentLocale ?? 'en')),
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0

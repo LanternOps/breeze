@@ -151,6 +151,10 @@ interface InvRow {
   id: string; partnerId: string; orgId: string; invoiceNumber: string | null; status: string;
   currencyCode: string; issueDate: string | null; dueDate: string | null;
   subtotal: string; taxTotal: string; total: string;
+  /** #8604 W03: line detail frozen at issue — optional; NULL/absent = a
+   *  pre-W03 row, which renders (and pushes) with the defaults. */
+  lineGrouping?: string | null; lineShowDate?: boolean | null;
+  lineShowNote?: boolean | null; lineShowWorkedTime?: boolean | null;
 }
 interface LineRow {
   id: string; invoiceId: string; catalogItemId: string | null; name: string | null; description: string | null;
@@ -159,6 +163,8 @@ interface LineRow {
   /** #6467: worked minutes for a time_entry line — optional so existing
    *  fixtures (all non-time-entry) are unaffected. */
   workedMinutes?: number | null;
+  /** #8604: 'time_entry' marks the lines the note toggle applies to. */
+  sourceType?: string | null;
 }
 interface MappingRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
@@ -902,6 +908,68 @@ describe('pushInvoiceToAccounting', () => {
 
     const [, payload] = pushInvoiceMock.mock.calls[0]!;
     expect(payload.lines[0].description).toBe('Remote');
+  });
+
+  // #8604 W03: the accounting copy honours the invoice's FROZEN line detail,
+  // the same as the PDF and the customer surfaces. A withheld technician note
+  // must not reach Xero/QuickBooks, and neither must a withheld worked-time
+  // disclosure. Defaults (and pre-W03 all-NULL rows) push exactly as before.
+  describe('frozen invoice line detail (#8604)', () => {
+    const detailLines: Partial<LineRow>[] = [
+      // Assembled time-entry line: no name, the note IS the description.
+      { id: 'line-1', name: null, description: 'Rebuilt the print queue', sourceType: 'time_entry', quantity: '1.00', lineTotal: '150.00', workedMinutes: 30 },
+      // Named time-entry line (editor-renamed).
+      { id: 'line-2', name: 'On-site visit', description: 'Swapped the switch', sourceType: 'time_entry', quantity: '2.00', lineTotal: '300.00', workedMinutes: 150 },
+      // Manual (non-time) line: never affected by either toggle.
+      { id: 'line-3', name: null, description: 'Patch cable', sourceType: 'manual', quantity: '1.00', lineTotal: '10.00', workedMinutes: null },
+    ];
+    const pushedDescriptions = () => {
+      const [, payload] = pushInvoiceMock.mock.calls[0]!;
+      return payload.lines.map((l: { description: string }) => l.description);
+    };
+    const BASELINE = [
+      'Rebuilt the print queue — 0.50 h worked, 1.00 h billed',
+      'On-site visit — 2.50 h worked, 2.00 h billed',
+      'Patch cable',
+    ];
+
+    it('baseline: a pre-W03 invoice (all line_* NULL) pushes the pre-#8604 descriptions', async () => {
+      setup({ lines: detailLines });
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      expect(pushedDescriptions()).toEqual(BASELINE);
+    });
+
+    it('baseline: explicitly frozen defaults push the same descriptions', async () => {
+      setup({
+        invoice: { lineGrouping: 'entry', lineShowDate: false, lineShowNote: true, lineShowWorkedTime: true },
+        lines: detailLines,
+      });
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      expect(pushedDescriptions()).toEqual(BASELINE);
+    });
+
+    it('note off: an unnamed time-entry line pushes the generic label, never the note', async () => {
+      setup({ invoice: { lineShowNote: false }, lines: detailLines });
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      expect(pushedDescriptions()).toEqual([
+        'Labor — 0.50 h worked, 1.00 h billed',
+        'On-site visit — 2.50 h worked, 2.00 h billed',
+        'Patch cable',
+      ]);
+      expect(JSON.stringify(pushInvoiceMock.mock.calls[0]![1])).not.toContain('print queue');
+    });
+
+    it('worked time off: no worked-vs-billed text on any line', async () => {
+      setup({ invoice: { lineShowWorkedTime: false }, lines: detailLines });
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      expect(pushedDescriptions()).toEqual(['Rebuilt the print queue', 'On-site visit', 'Patch cable']);
+    });
+
+    it('both off: label only on the time-entry line, names and manual lines untouched', async () => {
+      setup({ invoice: { lineShowNote: false, lineShowWorkedTime: false }, lines: detailLines });
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      expect(pushedDescriptions()).toEqual(['Labor', 'On-site visit', 'Patch cable']);
+    });
   });
 
   it('flags synced_with_tax_variance when remoteTaxTotal differs from invoice taxTotal by more than 1 cent', async () => {

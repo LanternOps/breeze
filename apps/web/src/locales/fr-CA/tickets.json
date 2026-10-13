@@ -245,7 +245,8 @@
       "deleteLost": "L’entrée a changé pendant sa suppression. Rechargez et réessayez.",
       "notFound": "Cette entrée n’existe plus."
     },
-    "deleteEntryWithDescription": "Supprimer l’entrée de temps de {{duration}} de {{tech}} : {{description}}"
+    "deleteEntryWithDescription": "Supprimer l’entrée de temps de {{duration}} de {{tech}} : {{description}}",
+    "noteInvoiceCue": "Les clients voient cette note sur leur facture, sauf si vos paramètres de facturation masquent les notes."
   },
   "inboundReviewQueue": {
     "title": "File de révision",

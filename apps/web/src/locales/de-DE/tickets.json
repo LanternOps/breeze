@@ -245,7 +245,8 @@
       "deleteLost": "Der Eintrag wurde während des Löschens geändert. Neu laden und erneut versuchen.",
       "notFound": "Dieser Eintrag existiert nicht mehr."
     },
-    "deleteEntryWithDescription": "Zeiteintrag über {{duration}} von {{tech}} löschen: {{description}}"
+    "deleteEntryWithDescription": "Zeiteintrag über {{duration}} von {{tech}} löschen: {{description}}",
+    "noteInvoiceCue": "Kunden sehen diese Notiz auf ihrer Rechnung, sofern Ihre Abrechnungseinstellungen Notizen nicht ausblenden."
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",

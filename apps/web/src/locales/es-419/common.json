@@ -496,7 +496,9 @@
       "noGroups": "No hay grupos de dispositivos disponibles",
       "deviceCount": "dispositivos {{count}}",
       "loadSaved": "Cargar filtro guardado:",
-      "select": "Seleccionar"
+      "select": "Seleccionar",
+      "dynamic": "Dinámico",
+      "refusedGroup": "No disponible como destino: las reglas de este grupo se basan en campos que el propio dispositivo informa ({{fields}})."
     },
     "preview": {
       "title": "Dispositivos coincidentes",
@@ -1711,7 +1713,8 @@
         "deleteEntry": "Eliminar entrada {{id}}",
         "deleteConfirmTitle": "¿Eliminar entrada de tiempo?",
         "deleteConfirmMessage": "Esto elimina de forma permanente la entrada de {{duration}} del ticket {{ticket}}. No se puede deshacer.",
-        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer."
+        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer.",
+        "noteInvoiceCue": "Los clientes ven esta nota en su factura, a menos que tu configuración de facturación oculte las notas."
       },
       "sourceBadge": {
         "timer": "Temporizador",

@@ -716,6 +716,7 @@ export default function PatchesPage() {
               gracePeriodHours: values.gracePeriodHours,
               autoApprove: values.autoApprove,
               categoryRules: values.categoryRules,
+              appRules: values.appRules,
             }),
           }),
         errorFallback: isEditing ? t('patchesPage.errors.updateRing') : t('patchesPage.errors.createRing'),
@@ -1030,6 +1031,7 @@ export default function PatchesPage() {
               gracePeriodHours: editingRing.gracePeriodHours,
               autoApprove: editingRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
               categoryRules: editingRing.categoryRules,
+              appRules: editingRing.appRules ?? [],
             } : undefined}
           />
         </div>

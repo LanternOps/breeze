@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Esta política controla apenas se os dispositivos capturam solicitações de elevação. As decisões (aprovar automaticamente, negar ou exigir aprovação), a fila de solicitações e o histórico de auditoria são gerenciados no",
         "privilegedAccessConsole": "console de Acesso Privilegiado"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Regras de aplicativos",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloqueie aplicativos específicos da aplicação automática de patches ou fixe-os em uma versão máxima.",
-        "blocked": "Bloqueado",
-        "pinned": "Fixado",
-        "maxVersion": "Versão máxima",
-        "pinnedApplicationsNeedAVersion": "Aplicativos fixados precisam de uma versão.",
-        "addApplication": "Adicionar aplicativo",
-        "searchCatalogAndDetectedApplications": "Pesquisar no catálogo e nos aplicativos detectados...",
-        "searching": "Pesquisando...",
-        "catalog": "catálogo",
-        "couldnTLoadApplicationsYouCanStill": "Não foi possível carregar os aplicativos — você ainda pode adicionar um pelo ID do pacote abaixo.",
-        "noMatches": "Nenhuma correspondência.",
-        "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
-        "block": "block",
-        "pin": "pin",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Remover regra de {{application}}"
-      },
       "patchTab": {
         "daily": "Diário",
         "weekly": "Semanal",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Salvar alterações",
         "createRing": "Criar anel",
-        "thirdPartyRingHint": "As regras de aprovação automática para atualizações de terceiros são configuradas no anel de atualização vinculado."
+        "thirdPartyRingHint": "As regras de aprovação automática para atualizações de terceiros são configuradas no anel de atualização vinculado.",
+        "ringOwnsApprovalHint": "A aprovação automática e as regras de aplicativo são definidas no anel de atualização vinculado.",
+        "noRingManualApprovalHint": "Nenhum anel vinculado — os patches só são instalados após aprovação manual.",
+        "unavailableRingOption": "Anel indisponível",
+        "ringInvalidTitle": "O anel de atualização vinculado não está mais disponível.",
+        "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
+        "ringInvalidLegacyRules": "Esta política ainda tem regras de aplicativo de antes de elas passarem para os anéis ({{rules}}). O anel escolhido já deve ter exatamente essas regras — adicione-as a ele primeiro.",
+        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",

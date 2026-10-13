@@ -614,6 +614,9 @@ export default function TimesheetPage() {
                             placeholder={t('common:labels.description')}
                             className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
                           />
+                          <p className="mt-1 w-full text-xs text-muted-foreground" data-testid="time-entry-note-invoice-cue">
+                            {t('longTail.time.TimesheetPage.noteInvoiceCue')}
+                          </p>
                           <div className="w-full sm:w-40">
                             <WorkTypeSelect
                               value={editForm.workTypeId}

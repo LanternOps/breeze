@@ -152,6 +152,7 @@ import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
 import * as svc from './invoiceService';
+import { DEFAULT_INVOICE_LINE_DETAIL } from '@breeze/shared';
 import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
@@ -501,6 +502,7 @@ describe('invoiceService guards', () => {
       'id',
       'invoiceNumber',
       'issueDate',
+      'lineGrouping',
       'notes',
       'sellerSnapshot',
       'status',
@@ -543,7 +545,7 @@ describe('invoiceService guards', () => {
       unitPrice: '100',
       taxable: false,
       lineTotal: '100',
-    })).toEqual({
+    }, DEFAULT_INVOICE_LINE_DETAIL)).toEqual({
       ticketNumber: 'T-100',
       ticketCategory: null,
       name: 'Support',
@@ -553,6 +555,36 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '100',
       workedMinutes: null,
+      workDate: null,
+    });
+  });
+
+  // #8604: the customer payload applies the frozen line-detail toggles itself,
+  // so a withheld note / worked time / date never leaves the server.
+  describe('toCustomerInvoiceLine — #8604 line detail', () => {
+    const te = {
+      ticketNumber: null, name: null, description: 'Diagnosed paper jam', quantity: '1.50', unitPrice: '100.00',
+      taxable: false, lineTotal: '150.00', workedMinutes: 110, sourceType: 'time_entry', workDate: '2026-09-16',
+    };
+    const D = { grouping: 'entry' as const, showDate: false, showNote: true, showWorkedTime: true };
+
+    it('defaults: note and worked minutes travel, the date does not', () => {
+      expect(svc.toCustomerInvoiceLine(te, DEFAULT_INVOICE_LINE_DETAIL)).toMatchObject({ name: null, description: 'Diagnosed paper jam', workedMinutes: 110, workDate: null });
+    });
+    it('date ON carries the work date', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showDate: true }).workDate).toBe('2026-09-16');
+    });
+    it('note OFF withholds a time-entry note and titles the line with the localised labor label', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false })).toMatchObject({ name: 'Labor', description: '' });
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false }, 'pt-BR')).toMatchObject({ name: 'Mão de obra', description: '' });
+      expect(svc.toCustomerInvoiceLine({ ...te, name: 'Remote support' }, { ...D, showNote: false })).toMatchObject({ name: 'Remote support', description: '' });
+    });
+    it('note OFF leaves non-time lines alone', () => {
+      expect(svc.toCustomerInvoiceLine({ ...te, sourceType: 'part', description: 'Fuser unit', workedMinutes: null }, { ...D, showNote: false }))
+        .toMatchObject({ name: null, description: 'Fuser unit' });
+    });
+    it('worked time OFF withholds workedMinutes', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showWorkedTime: false }).workedMinutes).toBeNull();
     });
   });
 
@@ -569,7 +601,7 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '225.00',
       workedMinutes: 30,
-    })).toMatchObject({ workedMinutes: 30 });
+    }, DEFAULT_INVOICE_LINE_DETAIL)).toMatchObject({ workedMinutes: 30 });
   });
 
   it('joins tickets and scopes both sides to the invoice org', async () => {
@@ -623,7 +655,7 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
     expect(result.lines[0]).toEqual({
       ticketNumber: null,
@@ -636,7 +668,28 @@ describe('invoiceService guards', () => {
       taxable: true,
       lineTotal: '150.00',
       workedMinutes: null,
+      workDate: null,
     });
+  });
+
+  // #8604: the portal reads lines through getCustomerInvoice, so the frozen
+  // toggles on the issued invoice row must reach the serializer. A regression
+  // to default detail here would leak withheld notes / worked time.
+  it('getCustomerInvoice applies the issued invoice frozen line-detail toggles', async () => {
+    queueResult([{
+      id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1',
+      lineGrouping: 'entry', lineShowDate: true, lineShowNote: false, lineShowWorkedTime: false,
+    }]);
+    queueResult([{
+      id: 'l1', invoiceId: 'i1', orgId: 'org1', sourceType: 'time_entry', name: null,
+      description: 'Internal tech note', quantity: '1.50', unitPrice: '100.00', taxable: false,
+      lineTotal: '150.00', customerVisible: true, sortOrder: 0, workedMinutes: 110, workDate: '2026-09-16',
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(result.lines[0]).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });
+    expect(JSON.stringify(result)).not.toContain('Internal tech note');
   });
 
   // #3319: the portal DTO used to collapse the pair as `description ?? name`,
@@ -668,7 +721,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
   });
 
@@ -723,6 +776,21 @@ describe('invoiceService guards', () => {
     const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
     expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toContain('notifyCustomerOnBehalfAcceptance');
     expect(row.notifyCustomerOnBehalfAcceptance).toBe(true);
+  });
+
+  it('#8604: updatePartnerBillingSettings writes and returns the four line-detail defaults', async () => {
+    const detail = { invoiceLineGrouping: 'day' as const, invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: false };
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...detail }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...detail },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    expect(setMock.mock.calls.at(-1)![0]).toMatchObject(detail);
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toEqual(expect.arrayContaining(Object.keys(detail)));
+    expect(row).toMatchObject(detail);
   });
 
   it('updatePartnerBillingSettings persists a scale-5 tax rate and a 2-decimal markup', async () => {

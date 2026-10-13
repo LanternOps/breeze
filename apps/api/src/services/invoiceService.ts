@@ -72,7 +72,8 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { tApi } from '../i18n';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -576,7 +577,12 @@ export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor)
  *  resolveInvoiceTermsDays), so a draft dueDate is advisory until then. */
 export async function updateInvoice(
   invoiceId: string,
-  patch: { notes?: string; siteId?: string | null; dueDate?: string; termsAndConditions?: string | null },
+  patch: {
+    notes?: string; siteId?: string | null; dueDate?: string; termsAndConditions?: string | null;
+    // #8604 per-invoice line itemization override; null = inherit the partner default.
+    lineGrouping?: InvoiceLineGrouping | null; lineShowDate?: boolean | null;
+    lineShowNote?: boolean | null; lineShowWorkedTime?: boolean | null;
+  },
   actor: InvoiceActor
 ) {
   return db.transaction(async (tx) => {
@@ -590,6 +596,11 @@ export async function updateInvoice(
     if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
     if (patch.dueDate !== undefined) set.dueDate = patch.dueDate;  // date string
     if (patch.termsAndConditions !== undefined) set.termsAndConditions = patch.termsAndConditions;
+    // #8604: draft-only by construction (lockDraftInvoice above); frozen at issue.
+    if (patch.lineGrouping !== undefined) set.lineGrouping = patch.lineGrouping;
+    if (patch.lineShowDate !== undefined) set.lineShowDate = patch.lineShowDate;
+    if (patch.lineShowNote !== undefined) set.lineShowNote = patch.lineShowNote;
+    if (patch.lineShowWorkedTime !== undefined) set.lineShowWorkedTime = patch.lineShowWorkedTime;
     await tx.update(invoices).set(set).where(eq(invoices.id, invoiceId));
     return getOwnedInvoiceOr404(invoiceId, tx);
   });
@@ -875,7 +886,22 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,
     billToEmail,
+    // #8604: the line itemization this document renders with — a draft
+    // previews override ?? partner default; issued reads the frozen columns.
+    // The raw nullable overrides stay on `invoice` for the draft editor.
+    lineDetail: await resolveDocumentLineDetail(inv),
   };
+}
+
+/** #8604: resolved line itemization for the staff invoice view. Only a draft
+ *  consults the partner row (resolveInvoiceLineDetail ignores it otherwise). */
+async function resolveDocumentLineDetail(inv: InvoiceRow): Promise<InvoiceLineDetail> {
+  if (inv.status !== 'draft') return resolveInvoiceLineDetail(inv, null);
+  const [partner] = await db.select({
+    invoiceLineGrouping: partners.invoiceLineGrouping, invoiceLineShowDate: partners.invoiceLineShowDate,
+    invoiceLineShowNote: partners.invoiceLineShowNote, invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
+  }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+  return resolveInvoiceLineDetail(inv, partner ?? null);
 }
 
 export type CustomerInvoiceLine = {
@@ -896,8 +922,12 @@ export type CustomerInvoiceLine = {
   lineTotal: string;
   /** #6467: worked minutes for a time_entry line — the portal renders the
    *  worked-vs-billed note from this, never from `description`. Null for
-   *  non-time-entry lines and legacy rows predating the column. */
+   *  non-time-entry lines and legacy rows predating the column, and withheld
+   *  (null) when the invoice's #8604 worked-time toggle is off. */
   workedMinutes: number | null;
+  /** #8604: the day the line was worked (YYYY-MM-DD, partner-local). Null
+   *  unless the invoice prints dates and the line has one. */
+  workDate: string | null;
 };
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -920,7 +950,10 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
   | 'notes'
   | 'sellerSnapshot'
   | 'termsAndConditions'
->;
+> & {
+  /** #8604: resolved per-day/per-entry presentation (frozen at issue). */
+  lineGrouping: InvoiceLineGrouping;
+};
 
 type CustomerInvoiceLineSource = {
   ticketId?: string | null;
@@ -934,10 +967,31 @@ type CustomerInvoiceLineSource = {
   taxable: boolean;
   lineTotal: string;
   workedMinutes?: number | null;
+  sourceType?: string | null;
+  workDate?: string | null;
 };
 
-/** Explicit serialization boundary: never spread an invoice_lines row here. */
-export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
+/** #8604: the customer view's line itemization. Customer surfaces only ever
+ *  show issued invoices, so this reads the frozen columns (a NULL column =
+ *  issued before #8604 = the default document). */
+export function customerLineDetail(invoice: Pick<InvoiceRow,
+  'status' | 'lineGrouping' | 'lineShowDate' | 'lineShowNote' | 'lineShowWorkedTime'>): InvoiceLineDetail {
+  return resolveInvoiceLineDetail(invoice, null);
+}
+
+/** Explicit serialization boundary: never spread an invoice_lines row here.
+ *  #8604: the line-detail toggles are applied HERE, server-side, so a
+ *  withheld note / worked time / date never reaches the customer payload. A
+ *  hidden time-entry note is replaced by the localised generic labor label. */
+export function toCustomerInvoiceLine(
+  line: CustomerInvoiceLineSource,
+  // Required (no default): an omitted detail must not fail open and ship a
+  // withheld note / worked time to the customer (#8604).
+  detail: InvoiceLineDetail,
+  locale = 'en',
+): CustomerInvoiceLine {
+  const text = invoiceLineText(line, detail);
+  const noteWithheld = !detail.showNote && line.sourceType === 'time_entry';
   return {
     ticketNumber: line.ticketNumber ?? null,
     ticketCategory: line.ticketCategory ?? null,
@@ -945,6 +999,25 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
     // blurb and never the title.
+    name: noteWithheld ? (text.title ?? tApi(isSupportedLocale(locale) ? locale : 'en', 'pdf:invoice.laborLine')) : line.name ?? null,
+    description: noteWithheld ? '' : line.description ?? '',
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    taxable: line.taxable,
+    lineTotal: line.lineTotal,
+    workedMinutes: detail.showWorkedTime ? line.workedMinutes ?? null : null,
+    workDate: detail.showDate ? line.workDate ?? null : null,
+  };
+}
+
+/** Second serialization boundary for a line ALREADY built by
+ *  toCustomerInvoiceLine (the portal route re-projects the service result):
+ *  picks the exact safe keyset and passes values through untouched, so the
+ *  #8604 toggles applied upstream are never re-run with defaults. */
+export function projectCustomerInvoiceLine(line: CustomerInvoiceLine): CustomerInvoiceLine {
+  return {
+    ticketNumber: line.ticketNumber ?? null,
+    ticketCategory: line.ticketCategory ?? null,
     name: line.name ?? null,
     description: line.description ?? '',
     quantity: line.quantity,
@@ -952,6 +1025,7 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
     taxable: line.taxable,
     lineTotal: line.lineTotal,
     workedMinutes: line.workedMinutes ?? null,
+    workDate: line.workDate ?? null,
   };
 }
 
@@ -975,6 +1049,7 @@ export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHea
     notes: invoice.notes,
     sellerSnapshot: invoice.sellerSnapshot,
     termsAndConditions: invoice.termsAndConditions,
+    lineGrouping: customerLineDetail(invoice).grouping,
   };
 }
 
@@ -997,6 +1072,8 @@ export async function getCustomerInvoice(
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
     workedMinutes: invoiceLines.workedMinutes,
+    sourceType: invoiceLines.sourceType,
+    workDate: invoiceLines.workDate,
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
@@ -1007,7 +1084,8 @@ export async function getCustomerInvoice(
     eq(invoiceLines.orgId, inv.orgId),
     eq(invoiceLines.customerVisible, true),
   )).orderBy(invoiceLines.sortOrder);
-  const lines = rows.map(toCustomerInvoiceLine);
+  const detail = customerLineDetail(inv);
+  const lines = rows.map((r) => toCustomerInvoiceLine(r, detail, inv.documentLocale ?? 'en'));
   // partnerId rides OUTSIDE the serialized header: the portal route needs it
   // for the partner-name branding lookup, but CustomerInvoiceHeader is the
   // customer payload and internal ids stay out of it. Reading it off the
@@ -1050,6 +1128,10 @@ export async function updatePartnerBillingSettings(
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
     invoiceDeviceAppendix?: boolean;
+    invoiceLineGrouping?: InvoiceLineGrouping;
+    invoiceLineShowDate?: boolean;
+    invoiceLineShowNote?: boolean;
+    invoiceLineShowWorkedTime?: boolean;
     autoEmailInvoiceOnQuoteAccept?: boolean;
     notifyCustomerOnBehalfAcceptance?: boolean;
     catalogAiStyle?: string | null;
@@ -1077,6 +1159,10 @@ export async function updatePartnerBillingSettings(
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
   if (patch.invoiceDeviceAppendix !== undefined) set.invoiceDeviceAppendix = patch.invoiceDeviceAppendix;
+  if (patch.invoiceLineGrouping !== undefined) set.invoiceLineGrouping = patch.invoiceLineGrouping;
+  if (patch.invoiceLineShowDate !== undefined) set.invoiceLineShowDate = patch.invoiceLineShowDate;
+  if (patch.invoiceLineShowNote !== undefined) set.invoiceLineShowNote = patch.invoiceLineShowNote;
+  if (patch.invoiceLineShowWorkedTime !== undefined) set.invoiceLineShowWorkedTime = patch.invoiceLineShowWorkedTime;
   if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
   if (patch.notifyCustomerOnBehalfAcceptance !== undefined) set.notifyCustomerOnBehalfAcceptance = patch.notifyCustomerOnBehalfAcceptance;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
@@ -1095,6 +1181,8 @@ export async function updatePartnerBillingSettings(
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
     invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+    invoiceLineGrouping: partners.invoiceLineGrouping, invoiceLineShowDate: partners.invoiceLineShowDate,
+    invoiceLineShowNote: partners.invoiceLineShowNote, invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
     autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
     notifyCustomerOnBehalfAcceptance: partners.notifyCustomerOnBehalfAcceptance,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
@@ -1599,6 +1687,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // sanctioned re-render produces. Same two-writer rule document_locale
       // follows, for the same reason.
       deviceAppendix: inv.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false,
+      // #8604: freeze the line itemization (date / note / worked time /
+      // grouping) the same way — resolved override ?? partner default, written
+      // as concrete values the renderer reads exclusively from now on.
+      ...stampInvoiceLineDetail(inv, partner),
       // #6227 presentation snapshot (settings audit rule 6): freeze the theme
       // and page size the customer will see, through the ONE resolver. A draft
       // carries NULL (live partner preview), so this resolves the partner's
@@ -2413,6 +2505,12 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       // evidence_version IS, because the evidence itself is being cloned — a
       // clone must not read as a pre-W07 invoice.
       evidenceVersion: inv.evidenceVersion,
+      // #8604: the voided invoice's frozen line itemization becomes the
+      // replacement draft's override, so the reissue keeps the presentation
+      // the customer already saw (still editable while it is a draft). An
+      // invoice issued before #8604 carries NULLs → the draft inherits.
+      lineGrouping: inv.lineGrouping, lineShowDate: inv.lineShowDate,
+      lineShowNote: inv.lineShowNote, lineShowWorkedTime: inv.lineShowWorkedTime,
     }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));

@@ -196,6 +196,45 @@ describe('invoice crud + lines routes', () => {
     expect(svc.updateInvoice).not.toHaveBeenCalled();
   });
 
+  it('#8604: PATCH /:id passes the line itemization override through, null = inherit', async () => {
+    (svc.updateInvoice as any).mockResolvedValue({ id: INV_ID, status: 'draft' });
+    const res = await app().request(`/${INV_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineGrouping: 'day', lineShowDate: true, lineShowNote: null, lineShowWorkedTime: false })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.updateInvoice).toHaveBeenCalledWith(
+      INV_ID,
+      { lineGrouping: 'day', lineShowDate: true, lineShowNote: null, lineShowWorkedTime: false },
+      expect.anything()
+    );
+  });
+
+  it('#8604: PATCH /:id accepts null (clear to billing default) for every override field', async () => {
+    (svc.updateInvoice as any).mockResolvedValue({ id: INV_ID, status: 'draft' });
+    const all = { lineGrouping: null, lineShowDate: null, lineShowNote: null, lineShowWorkedTime: null };
+    const res = await app().request(`/${INV_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(all)
+    });
+    expect(res.status).toBe(200);
+    expect(svc.updateInvoice).toHaveBeenCalledWith(INV_ID, all, expect.anything());
+  });
+
+  it('#8604: PATCH /:id rejects an unknown grouping or a non-boolean toggle (400, no service call)', async () => {
+    for (const body of [{ lineGrouping: 'week' }, { lineShowDate: 'yes' }]) {
+      const res = await app().request(`/${INV_ID}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(svc.updateInvoice).not.toHaveBeenCalled();
+  });
+
   it('DELETE /:id deletes a draft invoice', async () => {
     (svc.deleteDraftInvoice as any).mockResolvedValue({ id: INV_ID, orgId: ORG_ID });
     const res = await app().request(`/${INV_ID}`, { method: 'DELETE' });

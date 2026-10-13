@@ -860,9 +860,12 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         }
         return;
       }
-      case 'ticket.updated': {
-        // Plain field edits (subject, priority, …) notify no one in Phase 1 —
-        // explicit no-op case so the exhaustiveness default stays meaningful.
+      case 'ticket.updated':
+      case 'ticket.link_added':
+      case 'ticket.link_removed': {
+        // Plain field edits (subject, priority, …) and ticket-to-ticket link
+        // changes (#7900 W02) notify no one in Phase 1 — explicit no-op case
+        // so the exhaustiveness default stays meaningful.
         return;
       }
       case 'ticket.autoresponse': {

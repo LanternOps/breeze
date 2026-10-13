@@ -245,7 +245,8 @@
       "deleteLost": "Giriş silinirken değişti. Yeniden yükleyip tekrar dene.",
       "notFound": "Bu giriş artık mevcut değil."
     },
-    "deleteEntryWithDescription": "{{tech}} tarafından girilen {{duration}} zaman girişini sil: {{description}}"
+    "deleteEntryWithDescription": "{{tech}} tarafından girilen {{duration}} zaman girişini sil: {{description}}",
+    "noteInvoiceCue": "Faturalama ayarlarınız notları gizlemedikçe müşteriler bu notu faturalarında görür."
   },
   "inboundReviewQueue": {
     "title": "İnceleme kuyruğu",

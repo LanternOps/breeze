@@ -153,6 +153,12 @@ describe('TicketTimeBilling', () => {
     })));
   });
 
+  it('#8604: quick-add tells the tech the note prints on the invoice', async () => {
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.getByTestId('time-entry-note-invoice-cue')).toHaveTextContent(/on their invoice/i);
+  });
+
   it('quick-add posts a manual entry with computed start/end', async () => {
     render(<TicketTimeBilling ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));

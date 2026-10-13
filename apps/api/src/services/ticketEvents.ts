@@ -2,11 +2,12 @@ import { randomUUID } from 'crypto';
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
-import { ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { ticketStatusEnum, ticketSourceEnum, ticketLinkTypeEnum } from '../db/schema';
 
 // Derived locally to avoid an import cycle (ticketService imports ticketEvents).
 type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
+type TicketLinkType = (typeof ticketLinkTypeEnum.enumValues)[number];
 
 export const TICKET_EVENTS_QUEUE = 'ticket-events';
 
@@ -65,6 +66,14 @@ export type TicketEvent = TicketEventEnvelope & (
   // existing pending one was re-asked or bumped at `revision`).
   | { type: 'ticket.approval_requested'; payload: { requestId: string; trigger: 'budget' | 'after_hours'; revision: number; created: boolean } }
   | { type: 'ticket.approval_decided'; payload: { requestId: string; trigger: 'budget' | 'after_hours'; status: 'approved' | 'denied' | 'expired' | 'cancelled' } }
+  // Ticket-to-ticket links (#7900 W02). Emitted once for EACH of the two
+  // tickets, so either ticket's consumers see the change. Ids and enum labels
+  // only. `direction` is how the link reads from THIS event's ticket
+  // ('outgoing': this ticket is the stored source). `reason: 'org_move'` marks
+  // a link an org move deleted (emitted only for the noted tickets, after the
+  // move commits). No notification fan-out today (ticketNotifyWorker no-op).
+  | { type: 'ticket.link_added'; payload: { linkId: string; linkType: TicketLinkType; otherTicketId: string; direction: 'outgoing' | 'incoming' } }
+  | { type: 'ticket.link_removed'; payload: { linkType: TicketLinkType; otherTicketId: string; reason: 'user' | 'org_move' } }
 );
 
 export type TicketEventType = TicketEvent['type'];

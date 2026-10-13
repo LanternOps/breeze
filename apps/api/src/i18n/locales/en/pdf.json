@@ -18,7 +18,8 @@
     "depositDue": "Deposit due",
     "ticketWork": "Ticket work",
     "payOnline": "Pay online:",
-    "billedVsWorked": "{{worked}} h worked · {{billed}} h billed"
+    "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
+    "laborLine": "Labor"
   },
   "quote": {
     "title": "QUOTE",

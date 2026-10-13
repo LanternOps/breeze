@@ -151,6 +151,14 @@ export const partners = pgTable('partners', {
   // keeps gate === read-back with no #3608 stored-false ambiguity. Resolved
   // ONCE at issue onto invoices.device_appendix; never read at render time.
   invoiceDeviceAppendix: boolean('invoice_device_appendix').notNull().default(false),
+  // #8604: invoice labor line itemization defaults (resolver:
+  // resolveInvoiceLineDetail in @breeze/shared). Defaults reproduce the
+  // pre-#8604 document. Frozen at issue onto invoices.line_*; never read at
+  // render time for an issued invoice. grouping is CHECK ('entry','day') in SQL.
+  invoiceLineGrouping: varchar('invoice_line_grouping', { length: 8 }).notNull().default('entry'),
+  invoiceLineShowDate: boolean('invoice_line_show_date').notNull().default(false),
+  invoiceLineShowNote: boolean('invoice_line_show_note').notNull().default(true),
+  invoiceLineShowWorkedTime: boolean('invoice_line_show_worked_time').notNull().default(true),
   // Partner-authored AI copy style for enrich/polish (NULL = built-in house
   // format: generic customer-friendly name + "• "-bulleted spec description).
   catalogAiStyle: text('catalog_ai_style'),

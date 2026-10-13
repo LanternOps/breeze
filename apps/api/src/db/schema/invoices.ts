@@ -89,6 +89,15 @@ export const invoices = pgTable('invoices', {
   // reads ONLY this column afterwards, so a later partner-default change cannot
   // alter what a sanctioned re-render produces.
   deviceAppendix: boolean('device_appendix'),
+  // #8604 line itemization override. NULL on a draft = inherit the partner's
+  // invoice_line_* default; both issue writers stamp the RESOLVED values and
+  // renderers read only these afterwards (resolveInvoiceLineDetail). NULL on an
+  // issued row = issued before #8604 → the default (= pre-#8604) document.
+  // line_grouping is CHECK (NULL | 'entry' | 'day') in SQL.
+  lineGrouping: varchar('line_grouping', { length: 8 }),
+  lineShowDate: boolean('line_show_date'),
+  lineShowNote: boolean('line_show_note'),
+  lineShowWorkedTime: boolean('line_show_worked_time'),
   // #6227 presentation snapshot. NULL on a draft = preview the partner's live
   // document_theme / document_page_size; both issue writers (issueInvoice and
   // the quote-accept direct issue) freeze the RESOLVED values here, and every

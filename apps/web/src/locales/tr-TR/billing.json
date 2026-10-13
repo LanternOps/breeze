@@ -1771,7 +1771,8 @@
       "saveNotes": "Notlar kaydedilemedi.",
       "saveTerms": "Şartlar kaydedilemedi.",
       "updateLine": "Satır güncellenemedi.",
-      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
+      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
+      "saveLineDetail": "Zaman kayıtlarının nasıl yazdırıldığı güncellenemedi"
     },
     "fields": {
       "descriptionOptional": "Açıklama (isteğe bağlı)",
@@ -1838,6 +1839,19 @@
     "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
     "unsavedField": {
       "lines": "Satır öğeleri"
+    },
+    "lineDetail": {
+      "default": "Faturalama varsayılanı",
+      "grouping": "Düzen",
+      "groupingDay": "Güne göre grupla",
+      "groupingEntry": "Kayıt başına bir satır",
+      "help": "Faturalama varsayılanını yalnızca bu taslak için geçersiz kılar.",
+      "hide": "Gizle",
+      "show": "Göster",
+      "showDate": "Çalışılan tarih",
+      "showNote": "Teknisyen notu",
+      "showWorkedTime": "Çalışılan ve faturalanan süre",
+      "title": "Zaman kaydı satırları"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2099,7 @@
     "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
     "fallbackTitle": "Fatura",
     "issued": "Verildi",
+    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
@@ -2354,7 +2369,15 @@
       "prefixInvalid": "1 ile 12 karakter arasında bir ön ek girin.",
       "taxRateInvalid": "0 ile 100 arasında bir vergi oranı girin.",
       "termsDaysInvalid": "0 ile 365 arasında tam sayı olarak gün girin.",
-      "title": "Faturalandırma varsayılanları"
+      "title": "Faturalandırma varsayılanları",
+      "lineDetailTitle": "Faturalardaki zaman kaydı satırları",
+      "lineDetailHelp": "Müşterilerin zaman kayıtlarında neyi göreceğini seçin. Taslak bir fatura bunu geçersiz kılabilir; seçim fatura düzenlendiğinde sabitlenir.",
+      "lineShowDate": "Çalışılan tarihi göster",
+      "lineShowNote": "Teknisyen notunu göster",
+      "lineShowWorkedTime": "Çalışılan ve faturalanan süreyi göster",
+      "lineGrouping": "Düzen",
+      "lineGroupingEntry": "Kayıt başına bir satır",
+      "lineGroupingDay": "Güne göre grupla"
     },
     "loadError": "Faturalandırma ayarları yüklenemedi.",
     "loading": "Faturalandırma ayarları yükleniyor…",

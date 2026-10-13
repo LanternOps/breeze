@@ -496,7 +496,9 @@
       "noGroups": "Kullanılabilir cihaz grubu yok",
       "deviceCount": "{{count}} cihazlar",
       "loadSaved": "Kaydedilen filtreyi yükle:",
-      "select": "Seç"
+      "select": "Seç",
+      "dynamic": "Dinamik",
+      "refusedGroup": "Hedef olarak kullanılamaz: bu grubun kuralları cihazın kendisinin bildirdiği alanlara dayanıyor ({{fields}})."
     },
     "preview": {
       "title": "Eşleşen Cihazlar",
@@ -1711,7 +1713,8 @@
         "deleteEntry": "Girişi sil {{id}}",
         "deleteConfirmTitle": "Zaman girişi silinsin mi?",
         "deleteConfirmMessage": "Bu işlem {{ticket}} biletindeki {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
-        "deleteConfirmMessageNoTicket": "Bu işlem {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz."
+        "deleteConfirmMessageNoTicket": "Bu işlem {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
+        "noteInvoiceCue": "Faturalama ayarlarınız notları gizlemedikçe müşteriler bu notu faturalarında görür."
       },
       "sourceBadge": {
         "timer": "Zamanlayıcı",

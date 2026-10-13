@@ -983,6 +983,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
+  // ticket_links (#7900 W02): typed ticket-to-ticket links, shape 1 (direct
+  // org_id). Both legs are composite (ticket_id, org_id) FKs to
+  // tickets(id, org_id) ON DELETE CASCADE, so it is a child of `tickets` and
+  // must precede it: localeCompare 'ticket_forms' < 'ticket_links' <
+  // 'ticket_mailbox_connections', and 'ticket_links' < 'tickets'.
+  'ticket_links',
   // ticket_mailbox_connections: Gmail rows carry org_id (Microsoft rows are
   // partner-scoped, org_id NULL and not matched by the org cascade). In the org
   // cascade so a merge repoints the Gmail row (REPOINT_TABLES) instead of the FK

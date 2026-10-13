@@ -138,6 +138,17 @@ describe('TimesheetPage', () => {
     expect(screen.getByTestId('timesheet-entry-te-3').textContent).not.toContain('$');
   });
 
+  it('#8604: the edit form tells the tech the note prints on the invoice', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes(week);
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId(`timesheet-edit-${entry.id}`));
+    expect(screen.getByTestId('time-entry-note-invoice-cue')).toHaveTextContent(/on their invoice/i);
+  });
+
   // Review #5 (#3776): a billed entry may still have its description edited, but
   // the API rejects the PATCH (409 ENTRY_BILLED) if any locked field is PRESENT
   // in the body — so the body must carry only the description for billed rows.

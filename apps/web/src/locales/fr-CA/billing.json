@@ -1771,7 +1771,8 @@
       "saveNotes": "Impossible d'enregistrer les notes.",
       "saveTerms": "Impossible d'enregistrer les conditions.",
       "updateLine": "Impossible de mettre à jour la ligne.",
-      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
+      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle.",
+      "saveLineDetail": "Impossible de mettre à jour l’impression des saisies de temps"
     },
     "fields": {
       "descriptionOptional": "Description (facultatif)",
@@ -1838,6 +1839,19 @@
     "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
     "unsavedField": {
       "lines": "Lignes"
+    },
+    "lineDetail": {
+      "default": "Valeur par défaut de la facturation",
+      "grouping": "Présentation",
+      "groupingDay": "Regrouper par jour",
+      "groupingEntry": "Une ligne par saisie",
+      "help": "Remplace votre valeur de facturation par défaut pour ce brouillon seulement.",
+      "hide": "Masquer",
+      "show": "Afficher",
+      "showDate": "Date du travail",
+      "showNote": "Note du technicien",
+      "showWorkedTime": "Temps travaillé et facturé",
+      "title": "Lignes de saisie de temps"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2099,7 @@
     "empty": "Cette facture ne contient encore aucune ligne.",
     "fallbackTitle": "Facture",
     "issued": "Émise",
+    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
@@ -2354,7 +2369,15 @@
       "prefixInvalid": "Saisissez un préfixe de 1 à 12 caractères.",
       "taxRateInvalid": "Saisissez un taux de taxe de 0 à 100.",
       "termsDaysInvalid": "Saisissez un nombre entier de jours de 0 à 365.",
-      "title": "Valeurs par défaut de facturation"
+      "title": "Valeurs par défaut de facturation",
+      "lineDetailTitle": "Lignes de saisie de temps sur les factures",
+      "lineDetailHelp": "Choisissez ce que les clients voient pour les saisies de temps. Un brouillon de facture peut remplacer ce choix; il est figé à l’émission de la facture.",
+      "lineShowDate": "Afficher la date du travail",
+      "lineShowNote": "Afficher la note du technicien",
+      "lineShowWorkedTime": "Afficher le temps travaillé et le temps facturé",
+      "lineGrouping": "Présentation",
+      "lineGroupingEntry": "Une ligne par saisie",
+      "lineGroupingDay": "Regrouper par jour"
     },
     "loadError": "Échec du chargement des paramètres de facturation.",
     "loading": "Chargement des paramètres de facturation…",

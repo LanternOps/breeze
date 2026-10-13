@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Esta política solo controla si los dispositivos capturan indicaciones de elevación. Los veredictos (aprobar automáticamente, denegar, requerir aprobación), la cola de solicitudes y el historial de auditoría se administran en el",
         "privilegedAccessConsole": "Consola de acceso privilegiado"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Reglas de aplicación",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquee aplicaciones específicas para que no se apliquen parches automatizados o fíjelas a una versión máxima.",
-        "blocked": "Bloqueado",
-        "pinned": "Fijado",
-        "maxVersion": "versión máxima",
-        "pinnedApplicationsNeedAVersion": "Las aplicaciones fijadas necesitan una versión.",
-        "addApplication": "Agregar aplicación",
-        "searchCatalogAndDetectedApplications": "Buscar catálogo y aplicaciones detectadas...",
-        "searching": "Buscando...",
-        "catalog": "catálogo",
-        "couldnTLoadApplicationsYouCanStill": "No se pudieron cargar las aplicaciones; aún puede agregarlas mediante el paquete ID a continuación.",
-        "noMatches": "Sin coincidencias.",
-        "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
-        "block": "bloquear",
-        "pin": "PIN",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Eliminar regla para {{application}}"
-      },
       "patchTab": {
         "daily": "A diario",
         "weekly": "Semanalmente",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Guardar cambios",
         "createRing": "Crear anillo",
-        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado."
+        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado.",
+        "ringOwnsApprovalHint": "La aprobación automática y las reglas de aplicación se configuran en el anillo de actualización vinculado.",
+        "noRingManualApprovalHint": "Ningún anillo vinculado: los parches se instalan solo después de la aprobación manual.",
+        "unavailableRingOption": "Anillo no disponible",
+        "ringInvalidTitle": "El anillo de actualización vinculado ya no está disponible.",
+        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
+        "ringInvalidLegacyRules": "Esta directiva aún tiene reglas de aplicación de antes de que pasaran a los anillos ({{rules}}). El anillo que elija ya debe tener exactamente estas reglas: agréguelas primero a él.",
+        "approvalRulesMovedToRing": "La aprobación automática y las reglas de aplicación ahora se configuran en el anillo de actualización. Edítelas en el anillo vinculado. Si esta página estaba abierta antes de la actualización, recárguela y vuelva a guardar."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",

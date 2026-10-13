@@ -452,6 +452,83 @@ describe('featureLinks routes', () => {
     });
   });
 
+  // #8671: patchInlineSettingsSchema defaults `apps` / `autoApprove*`, so a
+  // PATCH that omits them must not reach the service as an explicit `[]` /
+  // `false` — the service would judge that as an approval-rule edit and, on a
+  // ring change, the write would wipe the link's stored legacy rules.
+  describe('PATCH /:id/features/:linkId — patch legacy approval keys (#8671)', () => {
+    const LEGACY_KEYS = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'];
+    const RING_ID = '44444444-4444-4444-8444-444444444444';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_PATCH_LINK);
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+    });
+
+    function sentInline(): Record<string, unknown> {
+      return updateFeatureLinkMock.mock.calls[0]![1].inlineSettings;
+    }
+
+    it('does not forward schema-defaulted approval keys the client did not send', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { scheduleTime: '04:00' } }),
+      });
+      expect(res.status).toBe(200);
+      const inline = sentInline();
+      expect(inline).toMatchObject({ scheduleTime: '04:00', sources: ['os'] });
+      for (const key of LEGACY_KEYS) expect(inline).not.toHaveProperty(key);
+    });
+
+    it('does not forward them on a ring change either', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { scheduleTime: '04:00' } }),
+      });
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock.mock.calls[0]![1].featurePolicyId).toBe(RING_ID);
+      for (const key of LEGACY_KEYS) expect(sentInline()).not.toHaveProperty(key);
+    });
+
+    it('forwards explicitly sent approval keys, parsed, so the service still judges them', async () => {
+      const apps = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { apps, autoApprove: true, autoApproveSeverities: ['critical'] } }),
+      });
+      expect(res.status).toBe(200);
+      expect(sentInline()).toMatchObject({ apps, autoApprove: true, autoApproveSeverities: ['critical'] });
+      expect(sentInline()).not.toHaveProperty('autoApproveDeferralDays');
+    });
+
+    it('forwards an explicit empty apps list as []', async () => {
+      await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(sentInline()).toMatchObject({ apps: [] });
+    });
+
+    it('maps the service refusal to 400 APPROVAL_RULES_MOVED_TO_RING', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
+    });
+  });
+
   describe('feature link reserved export material validation', () => {
     it.each([
       'security', 'software_policy', 'peripheral_control',

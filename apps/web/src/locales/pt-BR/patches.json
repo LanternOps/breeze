@@ -570,7 +570,26 @@
     "badges": {
       "manual": "Manual",
       "os": "SO: {{severities}}",
-      "thirdParty": "Apps de terceiros"
+      "thirdParty": "Apps de terceiros",
+      "appRules_one": "{{count}} regra de aplicativo",
+      "appRules_other": "{{count}} regras de aplicativo"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Regras de aplicativos",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloqueie aplicativos específicos da aplicação automática de patches ou fixe-os em uma versão máxima.",
+    "blocked": "Bloqueado",
+    "pinned": "Fixado",
+    "maxVersion": "Versão máxima",
+    "pinnedApplicationsNeedAVersion": "Aplicativos fixados precisam de uma versão.",
+    "addApplication": "Adicionar aplicativo",
+    "searchCatalogAndDetectedApplications": "Pesquisar no catálogo e nos aplicativos detectados...",
+    "searching": "Pesquisando...",
+    "catalog": "catálogo",
+    "couldnTLoadApplicationsYouCanStill": "Não foi possível carregar os aplicativos — você ainda pode adicionar um pelo ID do pacote abaixo.",
+    "noMatches": "Nenhuma correspondência.",
+    "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
+    "removeRuleFor": "Remover regra de {{application}}",
+    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
   }
 }

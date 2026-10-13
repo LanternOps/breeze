@@ -17,6 +17,8 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { assertNoPendingApprovalRequest } from './ticketMoveApprovalGuard';
 import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
+import { lockOrgTicketLinks } from './ticketLinkLock';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -3292,6 +3294,7 @@ export async function moveTicketOrg(
 
   let updated: typeof tickets.$inferSelect | undefined;
   let guard: MoveCurrencyGuardDetails | null = null;
+  let removedLinks: RemovedTicketLink[] = [];
   await db.transaction(async (tx) => {
     // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
     // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
@@ -3315,12 +3318,21 @@ export async function moveTicketOrg(
     // reason as the two above it — and the Partner API tickets surface adds
     // the fourth and fifth, ticket_external_refs_ticket_org_fk and
     // partner_api_idempotency_keys_ticket_org_fk. Still BY NAME, never `ALL`.
+    // #7900 W02 adds ticket_links_source_org_fk / ticket_links_target_org_fk:
+    // a link to or from this ticket is DELETED after the rewrite loop below
+    // (TICKET_ORG_MOVE_DELETE_TABLES), so the ticket UPDATE must not check it
+    // first; at COMMIT no such row remains.
     //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED`
     );
+    // #7900 W02: the per-org ticket_links lock, SHARED, before any row lock —
+    // so this move and a link add/remove of the same org never interleave
+    // (they would lock ticket and link rows in opposite orders: 40P01). Moves
+    // do not block each other. See services/ticketLinkLock.ts.
+    await lockOrgTicketLinks(tx, ticket.orgId, 'shared');
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → ai_operator_task_targets
@@ -3636,6 +3648,23 @@ export async function moveTicketOrg(
           : sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
       );
     }
+    // #7900 W02 — TICKET_ORG_MOVE_DELETE_TABLES, the tail of the shared lock
+    // order (ticketOrgMoveLockOrder.ts). A link cannot follow its ticket: its
+    // counterpart stays in the source org, and both composite FKs share one
+    // org_id. So every link touching this ticket is deleted (approved decision
+    // 10), under the FK deferral at the top of this transaction. The surviving
+    // counterparts are noted AFTER commit (below), never here: a comment
+    // insert takes the counterpart's ticket row lock (feed re-stamp trigger),
+    // and two concurrent moves of the two ends of one link would then wait on
+    // each other. Inside the move the only extra lock is the link row itself.
+    // "After commit" means the outermost transaction (a request path runs this
+    // as a savepoint), hence runAfterDbContextCommit in the scheduler.
+    const removedLinkRows = await tx.execute(sql`
+      DELETE FROM ticket_links WHERE source_ticket_id = ${ticketId}::uuid OR target_ticket_id = ${ticketId}::uuid
+      RETURNING org_id, source_ticket_id, target_ticket_id, link_type,
+                (source_ticket_id = ${ticketId}::uuid) AS source_moved,
+                (target_ticket_id = ${ticketId}::uuid) AS target_moved`);
+    removedLinks = removedTicketLinksFromRows(removedLinkRows);
     const strandedCount = guard?.accepted ? guard.unbilledTimeEntries + guard.unbilledParts : 0;
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
@@ -3653,6 +3682,8 @@ export async function moveTicketOrg(
     });
   });
   if (!updated) throw new TicketServiceError('Ticket not found', 404);
+  // After the OUTERMOST transaction commits, best-effort: see the DELETE above.
+  scheduleTicketLinkRemovalNotes(removedLinks);
 
   await emitTicketEvent({
     type: 'ticket.updated',
