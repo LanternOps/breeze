@@ -259,3 +259,35 @@ func TestApplyIdentityAssertionV2EpochOnlyRestartLoopIsBounded(t *testing.T) {
 	}
 	expectNoRestart(t, s, 50*time.Millisecond)
 }
+
+// #8382 — a refusal is reported once so the server stops re-signing. The two
+// epoch refusals report too: a same-epoch org change as env_override when
+// BREEZE_ORG_ID is set (the post-restart shape of an override), else invalid.
+func TestEpochRefusalsAreReportedToTheServer(t *testing.T) {
+	cases := []struct {
+		name     string
+		local    uint64
+		orgEnv   string
+		wantCode string
+	}{
+		{"lower epoch", 3, "", identityRejectionInvalid},
+		{"org change at the same epoch", 2, "", identityRejectionInvalid},
+		{"org change at the same epoch under an override", 2, identityTestOrgA, identityRejectionEnvOverride},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withIdentitySeams(t, nil)
+			t.Setenv("BREEZE_ORG_ID", tc.orgEnv)
+			t.Setenv("BREEZE_SITE_ID", "")
+			h := identityTestHeartbeat() // org A
+			h.config.OwnershipEpoch = tc.local
+			if h.applyIdentityAssertion(goldenAssertionV2()) {
+				t.Fatal("refused assertion reported a restart")
+			}
+			got := h.identityRejectionForBeat()
+			if got == nil || got.Code != tc.wantCode || got.OrgID != identityTestOrgB || got.SiteID != identityTestSiteB {
+				t.Fatalf("rejection = %+v, want %s for org B / site B", got, tc.wantCode)
+			}
+		})
+	}
+}
