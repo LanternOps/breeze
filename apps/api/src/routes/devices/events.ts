@@ -496,6 +496,8 @@ const actionLabels: Record<string, string> = {
   'device.command.queue': 'Command queued',
   'device.update': 'Device updated',
   'device.site_move': 'Device moved to another site',
+  'device.site_assignment_confirmed': 'Site assignment confirmed (suggestions off)',
+  'device.site_assignment_unconfirmed': 'Site assignment confirmation cleared (suggestions on)',
   'device.decommission': 'Device decommissioned',
   'device.agent_token.rotate': 'Agent token rotated',
   'device.patch.install.queue': 'Patch installation queued',

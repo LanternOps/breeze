@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest';
  */
 const SERVICES = resolve(__dirname, '..');
 const TOPOLOGY = __dirname;
-const PRESENCE_MODULE = /presence(Read|Evaluator|Classifier|Visibility|Inputs)\b/;
-const PRESENCE_TABLE = /topology_(device_presence|site_fingerprints|org_presence_state)|topologyDevicePresence|topologySiteFingerprints|topologyOrgPresenceState/;
+const PRESENCE_MODULE = /presence(Read|Evaluator|Classifier|Visibility|Inputs|Eligibility)\b/;
+const PRESENCE_TABLE = /topology_(device_presence|site_fingerprints|org_presence_state)|topologyDevicePresence|topologySiteFingerprints|topologyOrgPresenceState|site_assignment_confirmed_at|siteAssignmentConfirmedAt/;
 
 function sources(dir: string, match: (name: string) => boolean): string[] {
   return readdirSync(dir).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts') && match(name)).map((name) => join(dir, name));

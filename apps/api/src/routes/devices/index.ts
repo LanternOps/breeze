@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { coreRoutes } from './core';
+import { siteAssignmentConfirmationRoutes } from './siteAssignmentConfirmation';
 import { metricsRoutes } from './metrics';
 import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
@@ -136,6 +137,8 @@ deviceRoutes.route('/', removalConfigRoutes);
 deviceRoutes.route('/', bulkLifecycleRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
+// Topology site location W3 (#7887): PUT/DELETE /:id/site-assignment-confirmation ("Keep at <site>").
+deviceRoutes.route('/', siteAssignmentConfirmationRoutes);
 deviceRoutes.route('/', coreRoutes);
 
 // Mount sub-resource routes

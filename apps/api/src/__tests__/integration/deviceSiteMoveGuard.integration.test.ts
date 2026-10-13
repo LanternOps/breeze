@@ -141,4 +141,62 @@ describe('PATCH /devices/:id site-move guard (real Postgres)', () => {
     const [audit] = await waitForAudits(f.deviceId, 1);
     expect(audit!.details).toMatchObject({ fromSiteId: f.siteA, toSiteId: f.siteB, toSiteName: 'Lakeside', expectedSiteId: f.siteA, trigger: 'manual' });
   });
+
+  // Site location W3 (#7887, S§11, S§12.3).
+  const seedSuggestion = async () => {
+    await getTestDb().execute(sql`INSERT INTO topology_org_presence_state (org_id, fingerprint_version, coverage, evaluated_at)
+      VALUES (${f.orgId}::uuid, 3, 'complete', now()) ON CONFLICT (org_id) DO UPDATE SET fingerprint_version = 3, coverage = 'complete'`);
+    await getTestDb().execute(sql`INSERT INTO topology_device_presence (device_id, org_id, assigned_site_id, state, matched_site_id, prefix,
+        gateway_address, mac_corroborated, fingerprint_version, evaluated_at, fresh_until, suggested_site_id, suggestion_first_at, suggestion_last_at, suggestion_days)
+      VALUES (${f.deviceId}::uuid, ${f.orgId}::uuid, ${f.siteA}::uuid, 'visiting', ${f.siteB}::uuid, '10.1.5.0/24', '10.1.5.1', true, 3, now(),
+        now() + interval '30 minutes', ${f.siteB}::uuid, '2026-09-14T08:00:00Z', '2026-10-02T18:00:00Z', 9)`);
+  };
+
+  it('a topology_suggestion move records the presence-row evidence (read before the move trigger deletes the row)', async () => {
+    await seedSuggestion();
+    const moved = await patch(f.token, f.deviceId, { siteId: f.siteB, expectedSiteId: f.siteA, siteMoveTrigger: 'topology_suggestion' });
+    expect(moved.status).toBe(200);
+    const [audit] = await waitForAudits(f.deviceId, 1);
+    expect(audit!.details).toMatchObject({ trigger: 'topology_suggestion', suggestionState: 'eligible',
+      evidence: { matchedSiteId: f.siteB, prefix: '10.1.5.0/24', gatewayAddress: '10.1.5.1', macCorroborated: true, days: 9,
+        firstObservedAt: '2026-09-14T08:00:00.000Z', lastObservedAt: '2026-10-02T18:00:00.000Z', fingerprintVersion: '3' } });
+    const presence = (await getTestDb().execute(sql`SELECT 1 FROM topology_device_presence WHERE device_id = ${f.deviceId}::uuid`)) as unknown as unknown[];
+    expect(presence).toHaveLength(0);
+  });
+
+  it('a forged evidence key is a 400 and moves nothing', async () => {
+    await seedSuggestion();
+    const res = await patch(f.token, f.deviceId, { siteId: f.siteB, expectedSiteId: f.siteA, siteMoveTrigger: 'topology_suggestion', evidence: { days: 30 } });
+    expect(res.status).toBe(400);
+    expect(await currentSite(f.deviceId)).toBe(f.siteA);
+  });
+
+  it('PUT/DELETE site-assignment-confirmation set and clear the confirmation, audit it, and never move the device', async () => {
+    const call = (method: 'PUT' | 'DELETE') => app.request(`/devices/${f.deviceId}/site-assignment-confirmation`, {
+      method, headers: { Authorization: `Bearer ${f.token}` } });
+    const confirmed = await call('PUT');
+    expect(confirmed.status).toBe(200);
+    const body = await confirmed.json() as { confirmedAt: string };
+    expect(Date.parse(body.confirmedAt)).toBeGreaterThan(Date.now() - 60_000);
+    expect(await currentSite(f.deviceId)).toBe(f.siteA);
+    const confirmation = async () => ((await getTestDb().execute(sql`SELECT site_assignment_confirmed_at AS c FROM devices
+      WHERE id = ${f.deviceId}::uuid`)) as unknown as { c: unknown }[])[0]!.c;
+    expect(await confirmation()).not.toBeNull();
+
+    const cleared = await call('DELETE');
+    expect(await cleared.json()).toEqual({ confirmedAt: null });
+    expect(await confirmation()).toBeNull();
+    let actions: string[] = [];
+    for (let attempt = 0; attempt < 40 && actions.length < 2; attempt++) {
+      actions = ((await getTestDb().execute(sql`SELECT action, details FROM audit_logs WHERE resource_id = ${f.deviceId}::uuid
+        AND action LIKE 'device.site_assignment_%' ORDER BY timestamp`)) as unknown as { action: string }[]).map((r) => r.action);
+      if (actions.length < 2) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(actions).toEqual(['device.site_assignment_confirmed', 'device.site_assignment_unconfirmed']);
+
+    // A move clears a confirmation centrally (trigger), whatever the path.
+    expect((await call('PUT')).status).toBe(200);
+    expect((await patch(f.token, f.deviceId, { siteId: f.siteB, expectedSiteId: f.siteA })).status).toBe(200);
+    expect(await confirmation()).toBeNull();
+  });
 });

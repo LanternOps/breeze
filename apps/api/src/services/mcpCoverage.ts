@@ -421,6 +421,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/provision.ts': { exempt: 'identity' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
   'devices/restorePoints.ts': { exempt: 'internal_plumbing', note: 'Read-only console list of the System Restore request ledger (#4759 W08); no AI-tool consumer yet and neither the plan nor the spec calls for a tool.' },
+  'devices/siteAssignmentConfirmation.ts': { exempt: 'internal_plumbing', note: 'Wrong-site suggestion dismissal ("Keep at <site>", site location W3, #7887). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP out of presence, and a suggestion is accepted or dismissed only by a technician in the topology UI.' },
   'devices/scripts.ts': { tools: ['run_script', 'get_script_execution_history'] },
   'devices/sessions.ts': { tools: ['get_active_users', 'get_user_experience_metrics'] },
   'devices/software.ts': { gap: '#6782' },

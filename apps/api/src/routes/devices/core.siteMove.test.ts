@@ -219,6 +219,69 @@ describe('PATCH /devices/:id site-move guard', () => {
     }));
   });
 
+  describe('topology_suggestion moves: server-derived evidence (W3, S§12.3)', () => {
+    const presenceRow = (over: Record<string, unknown> = {}) => ({
+      suggested_site_id: SITE_B, suggestion_days: 9, suggestion_first_at: '2026-09-14T08:00:00.000Z', suggestion_last_at: '2026-10-02T18:00:00.000Z',
+      matched_site_id: SITE_B, prefix: '10.1.5.0/24', gateway_address: '10.1.5.1', mac_corroborated: true, fingerprint_version: '42',
+      assigned_site_id: SITE_A, version_ok: true, fresh: true, confirmed: false, ...over,
+    });
+    const siteMoveDetails = () => vi.mocked(writeRouteAudit).mock.calls.find(([, e]) => e.action === 'device.site_move')![1].details as Record<string, unknown>;
+
+    it('records server-derived evidence from the presence row, read before the move deletes it', async () => {
+      moveSelects();
+      vi.mocked(db.execute).mockResolvedValueOnce([presenceRow()] as never);
+      const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A, siteMoveTrigger: 'topology_suggestion' });
+      expect(res.status).toBe(200);
+      expect(siteMoveDetails()).toMatchObject({
+        trigger: 'topology_suggestion', suggestionState: 'eligible',
+        evidence: { matchedSiteId: SITE_B, prefix: '10.1.5.0/24', gatewayAddress: '10.1.5.1', macCorroborated: true, days: 9,
+          firstObservedAt: '2026-09-14T08:00:00.000Z', lastObservedAt: '2026-10-02T18:00:00.000Z', fingerprintVersion: '42' },
+      });
+      // Read outside (before) the savepoint whose UPDATE fires the presence-row delete.
+      const readOrder = vi.mocked(db.execute).mock.invocationCallOrder[0]!;
+      expect(readOrder).toBeLessThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
+    });
+
+    it('rejects client-supplied evidence with 400 (never accepted, never recorded)', async () => {
+      moveSelects();
+      const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A, siteMoveTrigger: 'topology_suggestion', evidence: { forged: true } });
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the suggestion names another site', { suggested_site_id: SITE_C }],
+      ['there is no suggestion any more', { suggested_site_id: null, suggestion_days: null, suggestion_first_at: null, suggestion_last_at: null }],
+      ['the presence row is stale', { fresh: false }],
+      ['the presence row is from an older evaluation', { version_ok: false }],
+      ['the device was confirmed since', { confirmed: true }],
+    ])('still moves and records not_eligible when %s', async (_name, over) => {
+      moveSelects();
+      vi.mocked(db.execute).mockResolvedValueOnce([presenceRow(over)] as never);
+      const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A, siteMoveTrigger: 'topology_suggestion' });
+      expect(res.status).toBe(200);
+      expect(siteMoveDetails()).toMatchObject({ trigger: 'topology_suggestion', suggestionState: 'not_eligible' });
+    });
+
+    it('records not_eligible with no evidence when the device has no presence row', async () => {
+      moveSelects();
+      vi.mocked(db.execute).mockResolvedValueOnce([] as never);
+      const res = await patch({ siteId: SITE_B, siteMoveTrigger: 'topology_suggestion' });
+      expect(res.status).toBe(200);
+      expect(siteMoveDetails()).toMatchObject({ suggestionState: 'not_eligible', evidence: null });
+    });
+
+    it('a manual move reads no presence and records no suggestion fields', async () => {
+      moveSelects();
+      const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A });
+      expect(res.status).toBe(200);
+      expect(db.execute).not.toHaveBeenCalled();
+      expect(siteMoveDetails()).not.toHaveProperty('suggestionState');
+      expect(siteMoveDetails()).not.toHaveProperty('evidence');
+    });
+  });
+
   it('does not write device.site_move when siteId is unchanged', async () => {
     queueSelects([[device]]);
     vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([device]) }) }) } as never);

@@ -133,6 +133,8 @@ const dataChangeActions = new Set([
   'device.delete',
   'device.update',
   'device.site_move',
+  'device.site_assignment_confirmed',
+  'device.site_assignment_unconfirmed',
   'policy.update',
   'policy.evaluate',
   'automation.policy.evaluate',
