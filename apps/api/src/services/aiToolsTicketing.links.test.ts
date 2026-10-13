@@ -238,6 +238,22 @@ describe('manage_tickets link_ticket', () => {
     expect(svc.addTicketLink).not.toHaveBeenCalled();
   });
 
+  it('the target load excludes soft-deleted tickets and applies the caller org condition', async () => {
+    // RLS is the primary org guard; the load also carries the caller's org
+    // predicate and never resolves a soft-deleted target (that would let a
+    // link be created to a deleted ticket).
+    const { eq } = await import('drizzle-orm');
+    selectQueue.push([row(A)], []);
+    const auth = humanAuth({ orgCondition: (col: unknown) => eq(col as never, ORG) });
+    const out = await run({ action: 'link_ticket', ticketId: A, targetTicketId: B, linkType: 'related' }, auth);
+    expect(out.error).toBe('Ticket not found');
+    const targetLoad = compiledWheres()[1]!;
+    expect(targetLoad.sql).toMatch(/"tickets"\."deleted_at" is null/);
+    expect(targetLoad.sql).toMatch(/"tickets"\."org_id" = \$\d/);
+    expect(targetLoad.params).toEqual(expect.arrayContaining([B, ORG]));
+    expect(svc.addTicketLink).not.toHaveBeenCalled();
+  });
+
   it('resolves targetTicketNumber inside the SOURCE ticket org, then scope-checks it', async () => {
     selectQueue.push([row(A)], [row(B)]);
     svc.findTicketIdByNumber.mockResolvedValue(B);
