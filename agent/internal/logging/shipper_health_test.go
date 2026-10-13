@@ -299,7 +299,7 @@ func TestHealthSnapshot_TerminalFailureSites(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := ln.Addr().String()
-		ln.Close() // nothing listens: connection refused
+		_ = ln.Close() // nothing listens: connection refused
 		s := newHealthTestShipper("http://" + addr)
 		s.shipChunk(makeEntries(1))
 		requireOutcome(t, s.HealthSnapshot(), false, "connection refused")
