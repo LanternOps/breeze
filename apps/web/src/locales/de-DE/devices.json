@@ -1971,7 +1971,7 @@
       "excluded": "Durch Richtlinie ausgeschlossen",
       "excludedSourceTitle": "Die Quellen der Patch-Richtlinie umfassen diesen Patch nicht, daher überspringen geplante Patch-Läufe ihn.",
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
-      "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel der Patch-Richtlinie hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
+      "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
       "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
       "pending": "Genehmigung ausstehend",
       "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",

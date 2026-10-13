@@ -1971,7 +1971,7 @@
       "excluded": "Exclu par la stratégie",
       "excludedSourceTitle": "Les sources de la stratégie de correctifs ne couvrent pas ce correctif : les exécutions planifiées l'ignorent.",
       "excludedCategoryTitle": "L'anneau de mise à jour {{ring}} exclut la catégorie de ce correctif : les exécutions planifiées l'ignorent.",
-      "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de la stratégie de correctifs retient ce correctif : les exécutions planifiées l'ignorent.",
+      "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de l'anneau de mise à jour lié retient ce correctif : les exécutions planifiées l'ignorent.",
       "excludedRingReferenceTitle": "Retenu : la stratégie de correctifs de cet appareil est liée à un anneau de mise à jour qui n'existe plus ou n'est pas disponible pour ce partenaire. Corrigez l'anneau de mise à jour de la stratégie pour reprendre l'application des correctifs.",
       "pending": "Approbation en attente",
       "needsApprovalRingTitle": "L'anneau de mise à jour {{ring}} n'approuve pas automatiquement ce correctif. Approuvez-le manuellement pour l'installer.",

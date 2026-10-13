@@ -570,7 +570,26 @@
     "badges": {
       "manual": "Manuelle",
       "os": "SE : {{severities}}",
-      "thirdParty": "Applications tierces"
+      "thirdParty": "Applications tierces",
+      "appRules_one": "{{count}} règle d'application",
+      "appRules_other": "{{count}} règles d'application"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Règles d’application",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquez certaines applications pour les exclure de l’application automatique des correctifs, ou limitez-les à une version maximale.",
+    "blocked": "Bloqué",
+    "pinned": "Épinglé",
+    "maxVersion": "Version Max",
+    "pinnedApplicationsNeedAVersion": "Les applications épinglées ont besoin d’une version.",
+    "addApplication": "Ajouter une application",
+    "searchCatalogAndDetectedApplications": "Rechercher dans le catalogue et les applications détectées...",
+    "searching": "Cherche...",
+    "catalog": "Catalogue",
+    "couldnTLoadApplicationsYouCanStill": "Impossible de charger les applications — vous pouvez toujours ajouter par paquet ID ci-dessous.",
+    "noMatches": "Pas d’allumettes.",
+    "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
+    "removeRuleFor": "Supprimer la règle pour {{application}}",
+    "scopeNote": "Ces règles s'appliquent à chaque appareil dont la politique de configuration est liée à cet anneau."
   }
 }

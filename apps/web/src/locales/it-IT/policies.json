@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Questo criterio controlla solo se i dispositivi acquisiscono i prompt di elevazione. Verdetti (approvazione automatica, diniego, richiesta di approvazione), coda delle richieste e cronologia di audit sono gestiti nella",
         "privilegedAccessConsole": "console di Accesso privilegiato"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Regole applicazioni",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Blocca applicazioni specifiche dalla gestione automatica delle patch oppure fissale a una versione massima.",
-        "blocked": "Bloccata",
-        "pinned": "Bloccata a versione",
-        "maxVersion": "Versione massima",
-        "pinnedApplicationsNeedAVersion": "Le applicazioni bloccate a versione richiedono una versione.",
-        "addApplication": "Aggiungi applicazione",
-        "searchCatalogAndDetectedApplications": "Cerca nel catalogo e tra le applicazioni rilevate...",
-        "searching": "Ricerca in corso...",
-        "catalog": "catalog",
-        "couldnTLoadApplicationsYouCanStill": "Impossibile caricare le applicazioni: puoi comunque aggiungerle sotto tramite ID pacchetto.",
-        "noMatches": "Nessuna corrispondenza.",
-        "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
-        "block": "block",
-        "pin": "pin",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Rimuovi regola per {{application}}"
-      },
       "patchTab": {
         "daily": "Giornaliero",
         "weekly": "Settimanale",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Salva modifiche",
         "createRing": "Crea anello",
-        "thirdPartyRingHint": "Le regole di approvazione automatica per gli aggiornamenti di terze parti si configurano nell'anello di aggiornamento collegato."
+        "thirdPartyRingHint": "Le regole di approvazione automatica per gli aggiornamenti di terze parti si configurano nell'anello di aggiornamento collegato.",
+        "ringOwnsApprovalHint": "L'approvazione automatica e le regole delle applicazioni si impostano nell'anello di aggiornamento collegato.",
+        "noRingManualApprovalHint": "Nessun anello collegato: le patch vengono installate solo dopo l'approvazione manuale.",
+        "unavailableRingOption": "Anello non disponibile",
+        "ringInvalidTitle": "L'anello di aggiornamento collegato non è più disponibile.",
+        "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
+        "ringInvalidLegacyRules": "Questo criterio contiene ancora regole delle applicazioni precedenti al loro spostamento negli anelli ({{rules}}). L'anello scelto deve già avere esattamente queste regole: aggiungile prima lì.",
+        "approvalRulesMovedToRing": "L'approvazione automatica e le regole delle applicazioni ora si impostano nell'anello di aggiornamento. Modificale nell'anello collegato. Se questa pagina era aperta prima dell'aggiornamento, ricaricala e salva di nuovo."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",

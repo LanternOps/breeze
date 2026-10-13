@@ -6,9 +6,8 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { fetchWithAuth } from "../../../stores/auth";
-import PatchAppRulesSection, {
-  type PolicyAppRule,
-} from "./PatchAppRulesSection";
+import type { RingAppRule } from "../../patches/RingAppRulesSection";
+import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
 import UpdateRingForm, {
   type UpdateRingFormValues,
@@ -30,13 +29,11 @@ type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
 /** #5128 W3 — what a scheduled install does when the device is offline. */
 type OfflineBehavior = "skip" | "queue";
 type PatchSourceOption = "os" | "third_party";
-type PatchSeverity = "critical" | "important" | "moderate" | "low";
+// #8187: no approval keys (`autoApprove*`, `apps`). The Update Ring owns them,
+// and the API judges any sent one as an attempt to edit ring-owned rules
+// (400 APPROVAL_RULES_MOVED_TO_RING), so the tab neither holds nor sends them.
 type PatchDeploymentSettings = {
   sources: PatchSourceOption[];
-  autoApprove: boolean;
-  autoApproveSeverities: PatchSeverity[];
-  autoApproveDeferralDays: number;
-  apps: PolicyAppRule[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -57,10 +54,6 @@ type PatchDeploymentSettings = {
 };
 const defaults: PatchDeploymentSettings = {
   sources: ["os"],
-  autoApprove: false,
-  autoApproveSeverities: [],
-  autoApproveDeferralDays: 0,
-  apps: [],
   scheduleFrequency: "weekly",
   scheduleTime: "02:00",
   scheduleDayOfWeek: "sun",
@@ -76,6 +69,32 @@ const defaults: PatchDeploymentSettings = {
   rebootPromptButton: null,
   exclusiveWindowsUpdate: false,
 };
+/** Keys a link may still store from before the Update Ring owned approval (#8187). */
+const RING_OWNED_APPROVAL_KEYS = new Set([
+  "apps",
+  "autoApprove",
+  "autoApproveSeverities",
+  "autoApproveDeferralDays",
+]);
+/** The link's stored settings as tab state, minus the ring-owned approval keys. */
+function settingsFromInline(
+  inline: Record<string, unknown> | null | undefined,
+): Partial<PatchDeploymentSettings> {
+  const kept = Object.fromEntries(
+    Object.entries(inline ?? {}).filter(([key]) => !RING_OWNED_APPROVAL_KEYS.has(key)),
+  ) as Partial<PatchDeploymentSettings>;
+  return { ...kept, sources: normalizeSources(kept.sources) };
+}
+/** The legacy app rules a link still stores (W04 strips them), for the repair prompt. */
+function legacyAppRules(inline: Record<string, unknown> | null | undefined): RingAppRule[] {
+  const apps = inline?.apps;
+  return Array.isArray(apps)
+    ? apps.filter(
+        (rule): rule is RingAppRule =>
+          !!rule && typeof rule === "object" && typeof (rule as RingAppRule).packageId === "string",
+      )
+    : [];
+}
 /** Blank input means "use the built-in text", stored as null. */
 function promptTextOrNull(value: string): string | null {
   return value.trim() === "" ? null : value;
@@ -236,17 +255,13 @@ export default function PatchTab({
   );
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
+  // Only a successful load can say a linked ring is missing from the list.
+  const [ringsLoaded, setRingsLoaded] = useState(false);
   const [ringsError, setRingsError] = useState<string>();
-  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
-    const inline = effectiveLink?.inlineSettings as
-      | Partial<PatchDeploymentSettings>
-      | undefined;
-    return {
-      ...defaults,
-      ...inline,
-      sources: normalizeSources(inline?.sources),
-    };
-  });
+  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => ({
+    ...defaults,
+    ...settingsFromInline(effectiveLink?.inlineSettings),
+  }));
   const [validationError, setValidationError] = useState<string>();
   const [promptError, setPromptError] = useState<string>();
   // Inline ring create/edit — the same editor as /patches, so an admin never
@@ -281,6 +296,7 @@ export default function PatchTab({
       // auto_approve JSONB is `{}` — the DB default / pre-#1317 rows — would
       // otherwise fail the editor's zod validation and silently refuse to save).
       setRings(raw.map((r: Record<string, unknown>) => normalizeRing(r)));
+      setRingsLoaded(true);
     } catch (err) {
       setRingsError(
         err instanceof Error ? err.message : "Failed to load update rings",
@@ -298,12 +314,8 @@ export default function PatchTab({
       setSelectedRingId(link.featurePolicyId);
     }
     if (link?.inlineSettings) {
-      const inline = link.inlineSettings as Partial<PatchDeploymentSettings>;
-      setSettings((prev) => ({
-        ...prev,
-        ...inline,
-        sources: normalizeSources(inline.sources),
-      }));
+      const inline = link.inlineSettings;
+      setSettings((prev) => ({ ...prev, ...settingsFromInline(inline) }));
     }
   }, [existingLink, parentLink]);
   const update = <K extends keyof PatchDeploymentSettings>(
@@ -331,16 +343,6 @@ export default function PatchTab({
           { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
         );
   };
-  const validateSettings = (): string | null => {
-    if (
-      settings.apps.some(
-        (app) => app.action === "pin" && !app.pinnedVersion?.trim(),
-      )
-    ) {
-      return "Pinned applications need a version.";
-    }
-    return null;
-  };
   /**
    * Every pre-save check. Returns the banner message, "" when the only problem
    * is already shown inline next to the prompt-text fields (so it is not shown
@@ -353,7 +355,7 @@ export default function PatchTab({
       promptMessage && promptFieldsVisible ? promptMessage : undefined,
     );
     if (promptMessage) return promptFieldsVisible ? "" : promptMessage;
-    return validateSettings();
+    return null;
   };
   const handleSave = async () => {
     clearError();
@@ -424,6 +426,12 @@ export default function PatchTab({
     }
   };
   const selectedRing = rings.find((r) => r.id === selectedRingId);
+  // #8186: a link whose ring vanished, was never valid, or belongs to another
+  // partner fails closed (no auto-approval). Say so and keep the picker usable
+  // so the link can be repaired.
+  const ringInvalid =
+    ringsLoaded && !ringsLoading && selectedRingId !== "" && !selectedRing;
+  const ringLegacyRules = legacyAppRules(effectiveLink?.inlineSettings);
   const meta = FEATURE_META.patch;
   const openCreateRing = () => {
     setRingEditorError(undefined);
@@ -456,11 +464,17 @@ export default function PatchTab({
           gracePeriodHours: values.gracePeriodHours,
           autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
+          appRules: values.appRules,
         }),
       });
       if (!response.ok) {
+        // Surface the server's reason (e.g. a duplicate application rule).
+        const body: unknown = await response.json().catch(() => null);
         throw new Error(
-          editing ? "Failed to update ring" : "Failed to create update ring",
+          extractApiError(
+            body,
+            editing ? "Failed to update ring" : "Failed to create update ring",
+          ),
         );
       }
       let createdId: string | undefined;
@@ -534,6 +548,13 @@ export default function PatchTab({
                   "policies:configurationPolicies.featureTabs.patchTab.noRingManualApprovalsOnly",
                 )}
               </option>
+              {ringInvalid && (
+                <option value={selectedRingId} disabled>
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.unavailableRingOption",
+                  )}
+                </option>
+              )}
               {rings.map((ring) => (
                 <option key={ring.id} value={ring.id}>
                   [{ring.ringOrder}] {ring.name}
@@ -567,6 +588,49 @@ export default function PatchTab({
         )}
         {ringsError && (
           <p className="mt-2 text-xs text-destructive">{ringsError}</p>
+        )}
+        {ringInvalid ? (
+          <div
+            role="alert"
+            data-testid="patch-ring-invalid"
+            className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs"
+          >
+            <p className="font-medium text-destructive">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.ringInvalidTitle",
+              )}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.ringInvalidBody",
+              )}
+            </p>
+            {ringLegacyRules.length > 0 && (
+              <p className="mt-1 text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringInvalidLegacyRules",
+                  {
+                    rules: ringLegacyRules
+                      .map((rule) => rule.displayName ?? rule.packageId)
+                      .join(", "),
+                  },
+                )}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p
+            className="mt-2 text-xs text-muted-foreground"
+            data-testid="patch-ring-owns-approval-hint"
+          >
+            {selectedRingId
+              ? i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringOwnsApprovalHint",
+                )
+              : i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.noRingManualApprovalHint",
+                )}
+          </p>
         )}
         {selectedRing && (
           <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
@@ -655,8 +719,6 @@ export default function PatchTab({
           {i18n.t("policies:configurationPolicies.featureTabs.patchTab.thirdPartyRingHint")}
         </p>
       </div>
-
-      <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />
 
       {/* Schedule */}
       <div className="mt-6">
@@ -1209,6 +1271,7 @@ export default function PatchTab({
                       deferralDays: 0,
                     },
                     categoryRules: selectedRing.categoryRules,
+                    appRules: selectedRing.appRules ?? [],
                   }
                 : undefined
             }

@@ -3,30 +3,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuthMock = vi.fn();
 
-vi.mock('../../../stores/auth', () => ({
+vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuthMock(...args),
 }));
 
-import PatchAppRulesSection, { type PolicyAppRule } from './PatchAppRulesSection';
+import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
 
 const options = [
   { source: 'third_party', packageId: 'Mozilla.Firefox', vendor: 'Mozilla', displayName: 'Firefox', inCatalog: true },
   { source: 'third_party', packageId: 'VideoLAN.VLC', vendor: 'VideoLAN', displayName: 'VLC', inCatalog: false },
 ];
 
-describe('PatchAppRulesSection', () => {
+describe('RingAppRulesSection', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     fetchWithAuthMock.mockResolvedValue({ ok: true, json: async () => ({ data: options }) });
   });
 
   it('renders existing rules with action and pinned version', () => {
-    const apps: PolicyAppRule[] = [
+    const rules: RingAppRule[] = [
       { source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' },
       { source: 'third_party', packageId: 'VideoLAN.VLC', displayName: 'VLC', action: 'pin', pinnedVersion: '3.0.20' },
     ];
 
-    render(<PatchAppRulesSection apps={apps} onChange={() => {}} />);
+    render(<RingAppRulesSection rules={rules} onChange={() => {}} />);
 
     expect(screen.getByText('Firefox')).toBeTruthy();
     expect(screen.getByTestId('app-rule-action-third_party|mozilla.firefox')).toHaveValue('block');
@@ -35,7 +35,7 @@ describe('PatchAppRulesSection', () => {
 
   it('adds a block rule from picker search results', async () => {
     const onChange = vi.fn();
-    render(<PatchAppRulesSection apps={[]} onChange={onChange} />);
+    render(<RingAppRulesSection rules={[]} onChange={onChange} />);
 
     fireEvent.click(screen.getByTestId('app-rules-add'));
     fireEvent.change(screen.getByTestId('app-rules-search'), { target: { value: 'fire' } });
@@ -60,8 +60,8 @@ describe('PatchAppRulesSection', () => {
     });
 
     render(
-      <PatchAppRulesSection
-        apps={[{ source: 'third_party', packageId: 'mozilla.firefox', action: 'block' }]}
+      <RingAppRulesSection
+        rules={[{ source: 'third_party', packageId: 'mozilla.firefox', action: 'block' }]}
         onChange={onChange}
       />
     );
@@ -78,8 +78,8 @@ describe('PatchAppRulesSection', () => {
   it('removes a rule', () => {
     const onChange = vi.fn();
     render(
-      <PatchAppRulesSection
-        apps={[{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]}
+      <RingAppRulesSection
+        rules={[{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]}
         onChange={onChange}
       />
     );
@@ -92,8 +92,8 @@ describe('PatchAppRulesSection', () => {
   it('switches a rule to pin and sets the version', () => {
     const onChange = vi.fn();
     render(
-      <PatchAppRulesSection
-        apps={[{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin', pinnedVersion: '' }]}
+      <RingAppRulesSection
+        rules={[{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin', pinnedVersion: '' }]}
         onChange={onChange}
       />
     );
@@ -109,21 +109,21 @@ describe('PatchAppRulesSection', () => {
 
   it('uses source|lowercased-packageId identity so similar ids do not collide', () => {
     const onChange = vi.fn();
-    const apps: PolicyAppRule[] = [
+    const rules: RingAppRule[] = [
       // Under the old `${source}-${packageId}` scheme both rules keyed to 'third-party_Foo-Bar'-style collisions.
       { source: 'third_party', packageId: 'Foo-Bar', action: 'block' },
       { source: 'third_party-Foo', packageId: 'Bar', action: 'block' },
     ];
-    render(<PatchAppRulesSection apps={apps} onChange={onChange} />);
+    render(<RingAppRulesSection rules={rules} onChange={onChange} />);
 
     fireEvent.click(screen.getByTestId('app-rule-remove-third_party|foo-bar'));
 
-    expect(onChange).toHaveBeenCalledWith([apps[1]]);
+    expect(onChange).toHaveBeenCalledWith([rules[1]]);
   });
 
   it('shows a load error and clears stale options when the fetch returns non-OK', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    render(<PatchAppRulesSection apps={[]} onChange={() => {}} />);
+    render(<RingAppRulesSection rules={[]} onChange={() => {}} />);
 
     fireEvent.click(screen.getByTestId('app-rules-add'));
     fireEvent.change(screen.getByTestId('app-rules-search'), { target: { value: 'fire' } });
@@ -143,7 +143,7 @@ describe('PatchAppRulesSection', () => {
   it('shows the load error instead of "No matches." when the fetch rejects', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuthMock.mockRejectedValue(new Error('network down'));
-    render(<PatchAppRulesSection apps={[]} onChange={() => {}} />);
+    render(<RingAppRulesSection rules={[]} onChange={() => {}} />);
 
     fireEvent.click(screen.getByTestId('app-rules-add'));
     fireEvent.change(screen.getByTestId('app-rules-search'), { target: { value: 'fire' } });
@@ -158,7 +158,7 @@ describe('PatchAppRulesSection', () => {
   it('recovers from a load error once a fetch succeeds again', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuthMock.mockResolvedValueOnce({ ok: false, status: 500 });
-    render(<PatchAppRulesSection apps={[]} onChange={() => {}} />);
+    render(<RingAppRulesSection rules={[]} onChange={() => {}} />);
 
     fireEvent.click(screen.getByTestId('app-rules-add'));
     fireEvent.change(screen.getByTestId('app-rules-search'), { target: { value: 'fire' } });
@@ -168,5 +168,31 @@ describe('PatchAppRulesSection', () => {
     await screen.findByTestId('app-option-third_party-Mozilla.Firefox');
     expect(screen.queryByTestId('app-rules-load-error')).toBeNull();
     consoleSpy.mockRestore();
+  });
+
+  // #8187: a manual entry's source is the literal API value, never a
+  // translated string, and the section carries the ring-form test ids.
+  it('adds a manual package id as a third_party block rule', () => {
+    const onChange = vi.fn();
+    render(<RingAppRulesSection rules={[]} onChange={onChange} />);
+
+    expect(screen.getByTestId('ring-app-rules-section')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('app-rules-add'));
+    fireEvent.change(screen.getByTestId('app-rules-manual-id'), { target: { value: 'Contoso.Agent' } });
+    fireEvent.click(screen.getByTestId('app-rules-manual-add'));
+
+    expect(onChange).toHaveBeenCalledWith([
+      { source: 'third_party', packageId: 'Contoso.Agent', displayName: undefined, action: 'block' },
+    ]);
+  });
+
+  it('asks the picker for partner-wide options (no orgId)', async () => {
+    render(<RingAppRulesSection rules={[]} onChange={() => {}} />);
+    fireEvent.click(screen.getByTestId('app-rules-add'));
+    fireEvent.change(screen.getByTestId('app-rules-search'), { target: { value: 'fire' } });
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const url = String(fetchWithAuthMock.mock.calls.at(-1)![0]);
+    expect(url).toMatch(/^\/patches\/app-options\?/);
+    expect(url).not.toContain('orgId');
   });
 });

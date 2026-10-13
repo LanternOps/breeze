@@ -1971,7 +1971,7 @@
       "excluded": "İlke tarafından hariç tutuldu",
       "excludedSourceTitle": "Yama ilkesinin kaynakları bu yamayı kapsamıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
-      "excludedAppRuleTitle": "Yama ilkesindeki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
       "pending": "Onay bekliyor",
       "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",

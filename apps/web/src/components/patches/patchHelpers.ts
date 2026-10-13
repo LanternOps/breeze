@@ -200,6 +200,10 @@ export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
     gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
     autoApprove: normalizeRingAutoApprove(raw.autoApprove),
     categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
+    // #8187: the ring's per-app block / pin rules. The editor round-trips this
+    // value, so anything that is not a list (missing on an older API, or a
+    // malformed row) loads as no rules rather than reaching the form.
+    appRules: Array.isArray(raw.appRules) ? raw.appRules as UpdateRingItem['appRules'] : [],
     deviceCount: raw.deviceCount != null ? Number(raw.deviceCount) : undefined,
     updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
   };
