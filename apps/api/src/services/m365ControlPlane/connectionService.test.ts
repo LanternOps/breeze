@@ -355,6 +355,12 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(deriveGrantHealth(snapshot({ grantsVerifiedAt: null, observedGrants: [], status: 'degraded' }), manifest).state).toBe('degraded');
   });
 
+  it('flags an actions row stored at manifest v1 (delegated-ID manifest) as manifest-stale (#8648)', () => {
+    const manifest = M365_PERMISSION_PROFILES['customer-graph-actions'];
+    expect(manifest.version).toBe(2);
+    expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 1, status: 'degraded' }), manifest).state).toBe('manifest-stale');
+  });
+
   it('does not claim definitive drift before the first authoritative grant observation', () => {
     const manifest = M365_PERMISSION_PROFILES['customer-graph-read'];
     const unknown = deriveGrantHealth(snapshot({

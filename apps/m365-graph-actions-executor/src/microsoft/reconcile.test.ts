@@ -36,6 +36,17 @@ describe('reconcileCustomerGraphActions', () => {
     expect(result.unexpectedGrants).toEqual([]);
   });
 
+  it('does not treat the delegated scope IDs as the required grants (#8648)', () => {
+    const result = reconcile([
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4', value: null },
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7', value: null },
+    ]);
+
+    expect(result.outcome).toBe('missing_and_unexpected');
+    expect(result.missingGrants).toHaveLength(2);
+    expect(result.unexpectedGrants).toHaveLength(2);
+  });
+
   it('returns observed=2/missing=0/unexpected=0 for exactly the two actions grants', () => {
     const result = reconcile(expected);
 

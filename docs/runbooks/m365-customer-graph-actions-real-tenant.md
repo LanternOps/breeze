@@ -25,7 +25,7 @@ Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Ne
 
 ## Authoritative permission manifest — exactly two grants
 
-The expected profile is `customer-graph-actions`, manifest version `1`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with **exactly** these two application roles — no more, no fewer:
+The expected profile is `customer-graph-actions`, manifest version `2`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with **exactly** these two application roles — no more, no fewer:
 
 | Permission | App role ID |
 |---|---|
