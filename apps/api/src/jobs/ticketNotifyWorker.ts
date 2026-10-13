@@ -7,6 +7,8 @@
  *   - ticket.commented (isPublic) → email to requester
  *   - ticket.status_changed → resolved → email to requester
  *   - ticket.sla_breached → in-app + email to assignee
+ *   - ticket.approval_requested / ticket.approval_decided → customer approver /
+ *     notify emails + staff in-app (ticketApprovalNotify.ts, #4617)
  *
  * Pre-commit emission contract: ticketService emits events while the request
  * transaction is still open (see emitTicketEvent usage in ticketService.ts).
@@ -41,6 +43,13 @@ import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
 import { attachWorkerObservability } from './workerObservability';
 import { createNotification } from '../services/userNotifications';
+import {
+  admitApprovalMail,
+  collectApprovalDecided,
+  collectApprovalRequested,
+  type ApprovalCollected,
+  type ApprovalMail,
+} from './ticketApprovalNotify';
 import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import { sendPushoverNotification, validatePushoverConfig, type PushoverConfig, type PushoverNotificationPayload } from '../services/notificationSenders';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../services/partnerPushoverDefaults';
@@ -811,6 +820,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   let emailPayloads: EmailPayload[] = [];
   let pending: PendingPush[] = [];
   let pushover: Collected['pushover'];
+  let approvalThrottle: ApprovalCollected['throttle'] = null;
 
   await runWithSystemDbAccess(async () => {
     switch (event.type) {
@@ -897,10 +907,13 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
       }
       case 'ticket.approval_requested':
       case 'ticket.approval_decided': {
-        // #4617 W02: the approval engine emits these; W04 adds the approver /
-        // notify emails and the staff in-app notification. Logged, not mailed.
-        console.log('[TicketNotify] approval event (no notification until W04):', event.type,
-          `ticketId=${event.ticketId}`, `requestId=${event.payload.requestId}`);
+        // #4617 W04: customer approver / notify emails + staff in-app rows.
+        // Re-validated against the committed request row (ticketApprovalNotify.ts).
+        const collected = event.type === 'ticket.approval_requested'
+          ? await collectApprovalRequested(event)
+          : await collectApprovalDecided(event);
+        emailPayloads = collected.emails.map(approvalMailPayload);
+        approvalThrottle = collected.throttle;
         return;
       }
       default: {
@@ -929,6 +942,12 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
     }
   }
 
+  // Approval re-notification throttle: claimed in Redis with no DB context
+  // open, only when there is mail to send (in-app rows were already written).
+  if (approvalThrottle && emailPayloads.length > 0 && !(await admitApprovalMail(approvalThrottle, eventId))) {
+    emailPayloads = [];
+  }
+
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
   await sendEmailPayloads(emailPayloads);
 
@@ -945,6 +964,23 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
       console.warn('[TicketNotify] ticket-assignment Pushover failed', err instanceof Error ? err.message : err);
     }
   }
+}
+
+/**
+ * Customer approval mail: partner lane, one recipient per message, best effort
+ * — a BullMQ retry would re-send to every recipient, so one bad address must
+ * not fail the job.
+ */
+function approvalMailPayload(m: ApprovalMail): EmailPayload {
+  return {
+    to: m.to,
+    subject: stripHeaderBreaks(m.subject),
+    html: m.html,
+    bestEffort: true,
+    purpose: 'ticket.customer_notification',
+    partnerId: m.partnerId,
+    partnerName: m.partnerName,
+  };
 }
 
 async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {

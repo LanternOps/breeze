@@ -55,9 +55,14 @@ export type TicketEvent = TicketEventEnvelope & (
   // ticketNotifyWorker — the single outbound code path.
   // Payload-only: ticketId/orgId/partnerId come from TicketEventEnvelope.
   | { type: 'ticket.autoresponse'; payload: { to: string; internalNumber: string | null; subject: string } }
-  // Customer work approval (#4617 spec §6.4). W02 emits ids only; the notify
-  // worker's cases are no-ops until W04 adds the approver/notify emails.
-  // `created` = a new request (else an existing pending one was re-asked at `revision`).
+  // Customer work approval (#4617 spec §6.4). Ids and enum labels only; the
+  // notify worker (jobs/ticketApprovalNotify.ts) loads the request in system
+  // context and re-validates it against the committed row, because some
+  // emitters queue these inside their transaction (the portal decide route
+  // queues after commit). `revision` is the request revision the emitter wrote:
+  // the worker retries while the committed row is behind it and drops the
+  // event once a newer revision exists. `created` = a new request (else an
+  // existing pending one was re-asked or bumped at `revision`).
   | { type: 'ticket.approval_requested'; payload: { requestId: string; trigger: 'budget' | 'after_hours'; revision: number; created: boolean } }
   | { type: 'ticket.approval_decided'; payload: { requestId: string; trigger: 'budget' | 'after_hours'; status: 'approved' | 'denied' | 'expired' | 'cancelled' } }
 );
