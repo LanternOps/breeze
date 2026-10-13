@@ -393,8 +393,21 @@ describe('EDR connection routes', () => {
       expect(encryptMock).not.toHaveBeenCalled();
     });
 
+    it('baseUrl-only change resolving to a DIFFERENT vendorRootId -> 409, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await patch({ baseUrl: ACCESS_URL });
+      expect(res.status).toBe(409);
+      expect(dbState.updated).toHaveLength(0);
+    });
+
     it('credentials resolving to the SAME vendorRootId still rotate', async () => {
       dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3, capabilityNotes: [],
+      };
       expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
       expect(dbState.updated).toHaveLength(1);
     });
