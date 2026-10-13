@@ -4,6 +4,7 @@ import {
   resolveFindingLinkOut,
   buildIncidentFeedQueries,
   buildIncidentFeed,
+  foldLegs,
 } from './incidents.helpers';
 import type { AuthContext } from '../middleware/auth';
 import { withHostTimeZone } from '../testUtils/hostTimeZone';
@@ -140,6 +141,21 @@ describe('buildIncidentFeedQueries (DB-less build guard)', () => {
       source: 'huntress',
     });
     expect(built).toBeNull();
+  });
+});
+
+// #8166 A2: the per-combination ternary became a leg list. Every one of the
+// 2^4 include combinations must keep the included legs, in order, and drop
+// none; zero legs is an empty feed (null).
+describe('foldLegs', () => {
+  const KEYS = ['tracked', 'huntress', 's1', 'edr'] as const;
+  it.each(Array.from({ length: 16 }, (_, m) => m))('include mask %i', (mask) => {
+    const legs = KEYS.map((key, i) => ({ key, include: !!(mask & (1 << i)), query: { __leg: key } }));
+    const included = legs.filter((l) => l.include).map((l) => l.query);
+    const out = foldLegs(legs, (queries: unknown[]) => ({ union: queries }));
+    if (included.length === 0) expect(out).toBeNull();
+    else if (included.length === 1) expect(out).toBe(included[0]);
+    else expect(out).toEqual({ union: included });
   });
 });
 

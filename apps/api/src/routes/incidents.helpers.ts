@@ -185,6 +185,28 @@ function nativeSeverityRank(): SQL<number> {
     WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p4' THEN 4 ELSE 3 END`;
 }
 
+export type FeedLegKey = 'tracked' | 'huntress' | 's1' | 'edr';
+export type FeedLeg = { key: FeedLegKey; include: boolean; query: any };
+
+/**
+ * Combine the included feed legs into one UNION ALL, preserving leg order.
+ * Returns null when no leg is included (empty feed); a single included leg is
+ * returned as-is. Production uses Drizzle's VARIADIC `unionAll(q0, q1, ...)`
+ * (a flat UNION ALL, the same SQL the old per-combination ternary emitted);
+ * the combiner is injectable so the 2^n include matrix is unit-testable
+ * without a DB. The legs are typed `any` because Drizzle cannot infer the
+ * union of table names across a dynamic list.
+ */
+export function foldLegs(
+  legs: FeedLeg[],
+  combine: (queries: any[]) => any = (queries) => (unionAll as any)(...queries),
+): any | null {
+  const queries = legs.filter((l) => l.include).map((l) => l.query);
+  if (queries.length === 0) return null;
+  if (queries.length === 1) return queries[0];
+  return combine(queries);
+}
+
 export type IncidentFeedParams = {
   orgId?: string;
   kind?: 'tracked' | 'finding';
@@ -330,23 +352,11 @@ export function buildIncidentFeedQueries(
   const includeHuntress = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
   const includeS1 = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
   if (!includeTracked && !includeHuntress && !includeS1) return null;
-
-  // Build UNION ALL explicitly per active combination so Drizzle can infer
-  // each call's table-name union type (dynamic `legs[]` array spreads lose it).
-  const baseQ: any =
-    includeTracked && includeHuntress && includeS1
-      ? unionAll(trackedQ, huntressQ, s1Q)
-      : includeHuntress && includeS1
-        ? unionAll(huntressQ, s1Q)
-        : includeTracked && includeHuntress
-          ? unionAll(trackedQ, huntressQ)
-          : includeTracked && includeS1
-            ? unionAll(trackedQ, s1Q)
-            : includeTracked
-              ? trackedQ
-              : includeHuntress
-                ? huntressQ
-                : s1Q;
+  const baseQ: any = foldLegs([
+    { key: 'tracked', include: includeTracked, query: trackedQ },
+    { key: 'huntress', include: includeHuntress, query: huntressQ },
+    { key: 's1', include: includeS1, query: s1Q },
+  ]);
   const sub = baseQ.as('feed');
 
   const countQuery = db.select({ count: sql<number>`count(*)` }).from(sub);
