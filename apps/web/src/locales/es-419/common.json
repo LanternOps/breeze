@@ -496,7 +496,9 @@
       "noGroups": "No hay grupos de dispositivos disponibles",
       "deviceCount": "dispositivos {{count}}",
       "loadSaved": "Cargar filtro guardado:",
-      "select": "Seleccionar"
+      "select": "Seleccionar",
+      "dynamic": "Dinámico",
+      "refusedGroup": "No disponible como destino: las reglas de este grupo se basan en campos que el propio dispositivo informa ({{fields}})."
     },
     "preview": {
       "title": "Dispositivos coincidentes",

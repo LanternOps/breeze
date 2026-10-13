@@ -7,12 +7,19 @@ import { Dialog } from '../shared/Dialog';
 import ProgressBar from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
 import { hasSecretParameters, runtimeParameters, secretsBlockedForRun, type ScriptParameter } from './ScriptFormSchema';
-import type { FilterConditionGroup, ScriptAdmissionResult } from '@breeze/shared';
+import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import ScriptParametersForm, { validateParameters as validateParamsHelper } from './ScriptParametersForm';
 import { useDeviceOptions, type UseDeviceOptionsResult } from '../../hooks/useDeviceOptions';
 import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
+import GroupTargetPicker, { type GroupSelectionSummary } from './GroupTargetPicker';
+import {
+  MAX_SCRIPT_RUN_TARGETS,
+  describeScriptExecuteError,
+  type ScriptExecuteResult,
+  type ScriptRunTarget,
+} from '../../lib/scriptExecute';
 
 export type Device = {
   id: string;
@@ -36,10 +43,12 @@ type ScriptExecutionModalProps = {
   onClose: () => void;
   onExecute: (
     scriptId: string,
-    deviceIds: string[],
+    // Explicit device ids, or `{ type: 'groups', groupIds }` for a saved-group
+    // run (#8599). The caller owns the POST.
+    target: ScriptRunTarget,
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ) => Promise<ScriptAdmissionResult>;
+  ) => Promise<ScriptExecuteResult>;
   // #4885 "Run again" — pre-fill the picker/form from a past execution instead
   // of opening blank. Both are read once at mount (the modal is remounted
   // fresh on every open by every caller today), so a parent re-render with a
@@ -74,7 +83,14 @@ export default function ScriptExecutionModal({
   const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({});
   const [runAs, setRunAs] = useState<'system' | 'user'>('system');
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
-  const [admissionResult, setAdmissionResult] = useState<ScriptAdmissionResult | null>(null);
+  const [admissionResult, setAdmissionResult] = useState<ScriptExecuteResult | null>(null);
+  // #8599 — what the operator is targeting. Component state, not the URL hash:
+  // this modal opens over pages (e.g. the device Scripts tab) that already own
+  // the hash for their own tab/selection.
+  const [targetMode, setTargetMode] = useState<'devices' | 'groups'>('devices');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [groupSummary, setGroupSummary] = useState<GroupSelectionSummary | null>(null);
+  const groupMode = targetMode === 'groups';
   const [errorMessage, setErrorMessage] = useState<string>();
   const [showConfirm, setShowConfirm] = useState(false);
   const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
@@ -272,8 +288,15 @@ export default function ScriptExecutionModal({
   useEffect(() => cancelAutoClose, [cancelAutoClose]);
 
   const handleClearSelection = () => {
-    setSelectedDeviceIds(new Set());
+    if (groupMode) setSelectedGroupIds([]);
+    else setSelectedDeviceIds(new Set());
   };
+
+  const selectedTargetCount = groupMode ? selectedGroupIds.length : selectedDeviceIds.size;
+  // Unique devices across the chosen groups, once their membership has loaded.
+  const groupDeviceCount = groupMode && groupSummary?.status === 'ready' ? groupSummary.uniqueDevices : null;
+  const overGroupCap = groupDeviceCount !== null && groupDeviceCount > MAX_SCRIPT_RUN_TARGETS;
+  const groupNames = groupSummary?.groupNames ?? new Map<string, string>();
 
   const handleParameterChange = (name: string, value: string | number | boolean) => {
     setParameters(prev => ({ ...prev, [name]: value }));
@@ -292,10 +315,11 @@ export default function ScriptExecutionModal({
   const handleExecute = async () => {
     if (!showConfirm) {
       if (!validateParameters()) return;
-      if (selectedDeviceIds.size === 0) {
-        setErrorMessage(t('scriptExecutionModal.errors.selectDevice'));
+      if (selectedTargetCount === 0) {
+        setErrorMessage(groupMode ? t('scriptExecutionModal.groups.errors.selectGroup') : t('scriptExecutionModal.errors.selectDevice'));
         return;
       }
+      if (overGroupCap) return;
       setShowConfirm(true);
       return;
     }
@@ -305,7 +329,10 @@ export default function ScriptExecutionModal({
     setAdmissionResult(null);
 
     try {
-      const result = await onExecute(script.id, Array.from(selectedDeviceIds), parameters, runAs);
+      const target: ScriptRunTarget = groupMode
+        ? { type: 'groups', groupIds: selectedGroupIds }
+        : Array.from(selectedDeviceIds);
+      const result = await onExecute(script.id, target, parameters, runAs);
       setAdmissionResult(result);
       const admittedCount = result.targets.filter(target => target.admission === 'admitted').length;
       const presentationState: ExecutionState = admittedCount === result.targets.length && admittedCount > 0
@@ -331,11 +358,12 @@ export default function ScriptExecutionModal({
           setExecutionState('idle');
           setAdmissionResult(null);
           setSelectedDeviceIds(new Set());
+          setSelectedGroupIds([]);
         }, 1500);
       }
     } catch (err) {
       setExecutionState('transport_error');
-      setErrorMessage(err instanceof Error ? err.message : t('scriptExecutionModal.errors.executionFailed'));
+      setErrorMessage(describeScriptExecuteError(err, t, groupNames, t('scriptExecutionModal.errors.executionFailed')));
       setShowConfirm(false);
     }
   };
@@ -437,23 +465,71 @@ export default function ScriptExecutionModal({
             />
           )}
 
-          {/* Device Selection */}
+          {/* Target selection */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">{t('scriptExecutionModal.sections.selectDevices')}</h3>
+              <h3 className="text-sm font-semibold">
+                {groupMode ? t('scriptExecutionModal.groups.title') : t('scriptExecutionModal.sections.selectDevices')}
+              </h3>
               <div className="flex items-center gap-2">
-                {selectedDeviceIds.size > 0 && (
+                {selectedTargetCount > 0 && (
                   <button
                     type="button"
                     onClick={handleClearSelection}
                     className="text-xs text-muted-foreground hover:underline"
                   >
-                    {t('scriptExecutionModal.actions.clear', { count: selectedDeviceIds.size })}
+                    {t('scriptExecutionModal.actions.clear', { count: selectedTargetCount })}
                   </button>
                 )}
               </div>
             </div>
 
+            <div className="flex items-center gap-2" role="group" aria-label={t('scriptExecutionModal.targetMode.label')}>
+              {(['devices', 'groups'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={targetMode === mode}
+                  data-testid={`run-target-mode-${mode}`}
+                  disabled={executionState === 'submitting'}
+                  onClick={() => {
+                    setTargetMode(mode);
+                    setShowConfirm(false);
+                    setErrorMessage(undefined);
+                  }}
+                  className={cn(
+                    'h-8 rounded-md border px-3 text-xs font-medium transition disabled:opacity-50',
+                    targetMode === mode ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
+                  )}
+                >
+                  {t(/* i18n-dynamic */ `scriptExecutionModal.targetMode.${mode}`)}
+                </button>
+              ))}
+            </div>
+
+            {groupMode && (
+              <>
+                <GroupTargetPicker
+                  scriptOsTypes={script.osTypes}
+                  selectedIds={selectedGroupIds}
+                  onSelectedIdsChange={(ids) => { setSelectedGroupIds(ids); setShowConfirm(false); }}
+                  onSummaryChange={setGroupSummary}
+                  orgId={orgId}
+                />
+                {overGroupCap && groupDeviceCount !== null && (
+                  <div
+                    role="alert"
+                    data-testid="group-over-cap"
+                    className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                  >
+                    {t('scriptExecutionModal.groups.overCap', { count: groupDeviceCount, max: MAX_SCRIPT_RUN_TARGETS })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {!groupMode && (
+              <>
             {/* Filters */}
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               {sites.length > 0 && (
@@ -551,6 +627,8 @@ export default function ScriptExecutionModal({
                 })}
               </p>
             ) : null}
+              </>
+            )}
           </div>
 
           {/* Execution Progress */}
@@ -567,23 +645,27 @@ export default function ScriptExecutionModal({
               )}
               <ProgressBar
                 current={admissionResult?.targets.filter(target => target.admission === 'admitted').length ?? 0}
-                total={selectedDeviceIds.size}
+                total={groupMode ? (admissionResult?.targets.length ?? groupDeviceCount ?? 0) : selectedDeviceIds.size}
                 label={executionState === 'submitting'
-                  ? t('scriptExecutionModal.progress.submitting', { count: selectedDeviceIds.size })
+                  ? groupMode
+                    ? t('scriptExecutionModal.groups.submitting', { count: selectedGroupIds.length })
+                    : t('scriptExecutionModal.progress.submitting', { count: selectedDeviceIds.size })
                   : t('scriptExecutionModal.progress.admitted', {
                     admitted: admissionResult?.targets.filter(target => target.admission === 'admitted').length ?? 0,
-                    count: admissionResult?.targets.length ?? selectedDeviceIds.size,
+                    count: admissionResult?.targets.length ?? (groupMode ? groupDeviceCount ?? 0 : selectedDeviceIds.size),
                   })}
                 variant={executionState === 'rejected' ? 'error' : executionState === 'partially_admitted' ? 'warning' : 'default'}
               />
               <div className="space-y-1">
-                {(admissionResult?.targets ?? Array.from(selectedDeviceIds).map(requestedDeviceId => ({
+                {(admissionResult?.targets ?? (groupMode ? [] : Array.from(selectedDeviceIds)).map(requestedDeviceId => ({
                   requestedDeviceId,
                   admission: 'admitted' as const,
                   reasonCode: undefined,
                 }))).map((target) => {
                   const device = deviceOptions.options.find(d => d.id === target.requestedDeviceId);
-                  const label = device?.displayName ?? device?.hostname ?? target.requestedDeviceId;
+                  const label = device?.displayName ?? device?.hostname
+                    ?? groupSummary?.deviceLabels.get(target.requestedDeviceId)
+                    ?? target.requestedDeviceId;
                   const targetState = executionState === 'submitting'
                     ? t('scriptExecutionModal.progress.submittingTarget')
                     : target.admission === 'admitted'
@@ -605,9 +687,25 @@ export default function ScriptExecutionModal({
             </div>
           )}
 
+          {/* Server notes on a group run (e.g. a group refused as an execution target) */}
+          {admissionResult?.warnings && admissionResult.warnings.length > 0 && (
+            <div
+              role="status"
+              data-testid="script-execute-warnings"
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-400"
+            >
+              <p className="font-medium">{t('scriptExecutionModal.groups.warningsTitle')}</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {admissionResult.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Error Message */}
           {errorMessage && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div role="alert" data-testid="script-execute-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               {errorMessage}
             </div>
           )}
@@ -618,13 +716,26 @@ export default function ScriptExecutionModal({
               <p className="text-sm font-medium text-warning">
                 {t('scriptExecutionModal.confirm.title')}
               </p>
-              <p className="text-sm text-warning/80 mt-1">
-                {t('scriptExecutionModal.confirm.description', {
-                  name: script.name,
-                  count: selectedDeviceIds.size,
-                  runAs: runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user')
-                })}
-              </p>
+              {groupMode ? (
+                <p data-testid="group-confirm-text" className="text-sm text-warning/80 mt-1">
+                  {t('scriptExecutionModal.groups.confirmDescription', {
+                    name: script.name,
+                    groups: selectedGroupIds.length,
+                    runAs: runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user')
+                  })}{' '}
+                  {groupDeviceCount !== null
+                    ? t('scriptExecutionModal.groups.confirmMembers', { count: groupDeviceCount })
+                    : t('scriptExecutionModal.groups.confirmMembersUnknown')}
+                </p>
+              ) : (
+                <p className="text-sm text-warning/80 mt-1">
+                  {t('scriptExecutionModal.confirm.description', {
+                    name: script.name,
+                    count: selectedDeviceIds.size,
+                    runAs: runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user')
+                  })}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -632,8 +743,12 @@ export default function ScriptExecutionModal({
         {/* Footer */}
         <div className="flex items-center justify-between border-t px-6 py-4">
           <div className="text-sm text-muted-foreground">
-            <p>{t('scriptExecutionModal.selectedCount', { count: selectedDeviceIds.size })}</p>
-            {selectedDeviceIds.size > 0 && deviceOptions.state === 'truncated' && (
+            <p>
+              {groupMode
+                ? t('scriptExecutionModal.groups.selectedCount', { count: selectedGroupIds.length })
+                : t('scriptExecutionModal.selectedCount', { count: selectedDeviceIds.size })}
+            </p>
+            {!groupMode && selectedDeviceIds.size > 0 && deviceOptions.state === 'truncated' && (
               <p data-testid="script-execute-blocked-reason" role="alert" className="mt-0.5 text-destructive">
                 {t('scriptExecutionModal.executeBlocked')}
               </p>
@@ -651,7 +766,11 @@ export default function ScriptExecutionModal({
             <button
               type="button"
               onClick={handleExecute}
-              disabled={executionState !== 'idle' || selectedDeviceIds.size === 0 || !deviceOptions.canSubmit}
+              disabled={
+                executionState !== 'idle'
+                || selectedTargetCount === 0
+                || (groupMode ? overGroupCap : !deviceOptions.canSubmit)
+              }
               className={cn(
                 'inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
                 showConfirm

@@ -496,7 +496,9 @@
       "noGroups": "Aucun groupe d’appareils disponible",
       "deviceCount": "{{count}} appareils",
       "loadSaved": "Charger le filtre enregistré :",
-      "select": "Sélectionner"
+      "select": "Sélectionner",
+      "dynamic": "Dynamique",
+      "refusedGroup": "Indisponible comme cible : les règles de ce groupe reposent sur des champs que l'appareil signale lui-même ({{fields}})."
     },
     "preview": {
       "title": "Dispositifs de correspondance",

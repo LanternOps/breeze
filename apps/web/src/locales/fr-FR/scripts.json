@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Impossible de récupérer l’automatisation",
       "generic": "Une erreur est survenue",
-      "save": "Impossible d’enregistrer l’automatisation"
+      "save": "Impossible d’enregistrer l’automatisation",
+      "invalidTarget": "La cible d'appareils n'est pas valide : {{detail}}"
     },
     "loading": "Chargement de l’automatisation...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "Aucune action définie. Cliquez sur \"Ajouter une action\" pour en créer une."
-    }
+    },
+    "partnerGroupsNote": "Les automatisations à l'échelle du partenaire ne peuvent pas cibler des groupes d'appareils ou des appareils précis, car chacun appartient à une seule organisation. Utilisez Tous les appareils ou un filtre avancé.",
+    "partnerTargetBlocked": "Cette automatisation à l'échelle du partenaire cible des groupes d'appareils ou des appareils précis, ce qui n'est pas pris en charge. Remplacez la cible par Tous les appareils ou un filtre avancé avant d'enregistrer."
   },
   "automationList": {
     "elevated": "Privilèges élevés",
@@ -979,6 +982,43 @@
     },
     "toasts": {
       "runsWhenOnline": "S'exécute quand l'appareil est en ligne"
+    },
+    "targetMode": {
+      "label": "Exécuter sur",
+      "devices": "Appareils",
+      "groups": "Groupes d'appareils"
+    },
+    "groups": {
+      "title": "Sélectionner des groupes d'appareils",
+      "searchPlaceholder": "Rechercher des groupes",
+      "selectedCount": "{{count}} groupe(s) sélectionné(s)",
+      "dynamic": "Dynamique",
+      "deviceCount": "{{count}} appareil(s)",
+      "refusedReason": "Indisponible comme cible d'exécution : les règles de ce groupe reposent sur des champs que l'appareil signale lui-même ({{fields}}).",
+      "loading": "Chargement des groupes d'appareils...",
+      "loadFailed": "Impossible de charger les groupes d'appareils.",
+      "retry": "Réessayer",
+      "empty": "Aucun groupe d'appareils trouvé.",
+      "tooManyGroups": "Une exécution peut cibler au plus {{max}} groupes.",
+      "countingMembers": "Dénombrement des membres...",
+      "countFailed": "Impossible de dénombrer les membres des groupes sélectionnés. Le serveur vérifie la limite lors de l'exécution.",
+      "summaryUnique": "{{count}} appareil(s) unique(s) dans les groupes sélectionnés",
+      "summaryCompatible": "{{count}} peuvent exécuter ce script (système d'exploitation compatible)",
+      "summaryOffline": "{{count}} d'entre eux sont hors ligne et s'exécuteront lorsque l'appareil sera en ligne",
+      "membershipNote": "L'appartenance aux groupes dynamiques correspond à la dernière évaluation et est relue au démarrage de l'exécution.",
+      "overCap": "Ces groupes contiennent {{count}} appareils uniques, au-delà de la limite de {{max}} par exécution. Désélectionnez un groupe ou scindez l'exécution.",
+      "submitting": "Envoi à {{count}} groupe(s)...",
+      "warningsTitle": "Remarques du serveur",
+      "confirmDescription": "Exécuter « {{name}} » sur {{groups}} groupe(s) d'appareils en tant que {{runAs}}. Les scripts sont mis en file d'attente et démarrent immédiatement.",
+      "confirmMembers": "{{count}} appareil(s) unique(s) font partie de ces groupes en ce moment ; l'appartenance est relue lorsque vous confirmez.",
+      "confirmMembersUnknown": "Le nombre d'appareils n'est pas encore connu ; l'appartenance est lue lorsque vous confirmez.",
+      "errors": {
+        "selectGroup": "Veuillez sélectionner au moins un groupe d'appareils",
+        "tooManyTargets": "Ces groupes représentent {{count}} appareils, au-delà de la limite de {{max}} par exécution. Désélectionnez un groupe ou scindez l'exécution.",
+        "perGroup": "Appareils par groupe : {{groups}}.",
+        "groupNotFound": "{{count}} groupe(s) sélectionné(s) n'existent plus ou ne sont pas accessibles. Rechargez la liste et réessayez.",
+        "noTargets": "Aucun des groupes sélectionnés ne contient actuellement d'appareil sur lequel ce script peut s'exécuter ; rien n'a été exécuté."
+      }
     }
   },
   "secretParameters": {

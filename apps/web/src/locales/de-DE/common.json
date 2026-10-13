@@ -496,7 +496,9 @@
       "noGroups": "Keine Gerätegruppen verfügbar",
       "deviceCount": "{{count}} Geräte",
       "loadSaved": "Gespeicherten Filter laden:",
-      "select": "Auswählen"
+      "select": "Auswählen",
+      "dynamic": "Dynamisch",
+      "refusedGroup": "Als Ziel nicht verfügbar: Die Regeln dieser Gruppe beruhen auf Feldern, die ein Gerät selbst meldet ({{fields}})."
     },
     "preview": {
       "title": "Übereinstimmende Geräte",

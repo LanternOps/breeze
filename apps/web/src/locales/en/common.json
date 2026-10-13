@@ -496,7 +496,9 @@
       "noGroups": "No device groups available",
       "deviceCount": "{{count}} devices",
       "loadSaved": "Load saved filter:",
-      "select": "Select"
+      "select": "Select",
+      "dynamic": "Dynamic",
+      "refusedGroup": "Unavailable as a target: this group's rules match on fields a device reports about itself ({{fields}})."
     },
     "preview": {
       "title": "Matching Devices",

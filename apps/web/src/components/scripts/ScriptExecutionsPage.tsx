@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { postScriptExecute, isGroupTarget, type ScriptExecuteResult, type ScriptRunTarget } from '@/lib/scriptExecute';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Play } from 'lucide-react';
 import ExecutionHistory, { type ScriptExecution } from './ExecutionHistory';
@@ -7,12 +8,10 @@ import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
-import type { ScriptAdmissionResult } from '@breeze/shared';
 import { handleActionError } from '@/lib/runAction';
 import { requestScriptExecutionCancel } from '@/lib/cancelScriptExecution';
 import { usePermissions } from '@/lib/permissions';
@@ -199,28 +198,19 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const handleExecute = async (
     _scriptId: string,
-    deviceIds: string[],
+    target: ScriptRunTarget,
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ) => {
-    // runaction-exempt: this throws to ScriptExecutionModal, which renders the
-    // failure (or the per-target admission result) inline in its own form —
-    // a toast on top would be redundant, not a silent failure.
-    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
-      method: 'POST',
-      body: JSON.stringify({ deviceIds, parameters, runAs })
-    });
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        void navigateTo('/login', { replace: true });
-        throw new Error(t('scriptExecutionsPage.errors.execute'));
-      }
-      const data = await response.json();
-      throw new Error(extractApiError(data, t('scriptExecutionsPage.errors.execute')));
-    }
-
-    const admission = await response.json() as ScriptAdmissionResult;
+  ): Promise<ScriptExecuteResult> => {
+    // Failures throw an ActionError (toast suppressed) to ScriptExecutionModal,
+    // which renders them, or the per-target admission result, inline.
+    const admission = await postScriptExecute(
+      scriptId,
+      target,
+      parameters,
+      runAs,
+      t('scriptExecutionsPage.errors.execute'),
+    );
     const admittedTargets = admission.targets.filter(target => target.admission === 'admitted');
     if (admittedTargets.length > 0) {
       await fetchExecutions();
@@ -230,8 +220,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       // multi-device run has no single "the" device, so it stays on this
       // execution-history page (already the right place) via a self-navigate
       // that picks up the just-fetched row.
-      if (deviceIds.length === 1) {
-        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      if (!isGroupTarget(target) && target.length === 1) {
+        void navigateTo(deviceScriptsHref(target[0]!, admittedTargets[0]?.executionId));
       } else {
         void navigateTo(scriptExecutionsHref(scriptId));
       }
