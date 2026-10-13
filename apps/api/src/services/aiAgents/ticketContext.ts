@@ -225,6 +225,8 @@ export interface TicketRunContext {
   description: string | null;
   status: string;
   priority: string;
+  /** #7900: the ITIL type (incident | service_request | problem | change). */
+  ticketType: string;
   category: string | null;
   tags: string[];
   dueDate: string | null;
@@ -267,6 +269,7 @@ interface RawTicketRow {
   description: string | null;
   status: string;
   priority: string;
+  ticketType: string;
   category: string | null;
   tags: string[] | null;
   dueDate: Date | string | null;
@@ -440,6 +443,7 @@ export function assembleTicketContext(args: {
       description: description || null,
       status: args.ticket.status,
       priority: args.ticket.priority,
+      ticketType: args.ticket.ticketType,
       category: args.ticket.category,
       tags: args.ticket.tags ?? [],
       dueDate: isoString(args.ticket.dueDate),
@@ -672,6 +676,7 @@ export async function loadTicketContext(ticketId: string, orgId: string): Promis
       description: tickets.description,
       status: tickets.status,
       priority: tickets.priority,
+      ticketType: tickets.ticketType,
       category: tickets.category,
       tags: tickets.tags,
       dueDate: tickets.dueDate,

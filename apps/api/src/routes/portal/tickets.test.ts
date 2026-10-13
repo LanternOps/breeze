@@ -1657,3 +1657,90 @@ describe('portal ticket ownership — compiled WHERE at every read site', () => 
     expect(params).not.toContain(null);
   });
 });
+
+// ── ticketType is staff-only this wave (#7900 W01) ───────────────────────────
+// The portal neither accepts nor exposes tickets.ticket_type. These pin the
+// CURRENT behaviour: create strips the key (plain z.object, never .strict()) and
+// forwards explicit fields only; list/detail select explicit columns and map rows
+// explicitly. `tickets` in the schema mock is the real table, so a regression
+// that selects tickets.ticketType shows up as a `ticketType` key on the select.
+
+describe('portal never exposes or accepts ticketType (#7900 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('POST /tickets: body ticketType is not a 400 and is not forwarded to createTicket', async () => {
+    createTicketMock.mockResolvedValue(CREATED_TICKET);
+    const res = await buildPostApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Printer', description: 'Broken', ticketType: 'problem' })
+    });
+
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect(createTicketMock.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+    const body = await res.json();
+    expect(body.ticket).not.toHaveProperty('ticketType');
+  });
+
+  it('GET /tickets: select omits ticketType and response rows do not carry it', async () => {
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve([{ count: 1 }])),
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(() => ({
+              limit: vi.fn(() => ({
+                offset: vi.fn(() => Promise.resolve([{ ...TICKET_ROW, ticketType: 'problem', statusName: 'New' }]))
+              }))
+            }))
+          }))
+        }))
+      }))
+    }));
+
+    const res = await buildApp().request('/tickets', { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    const selectArgs = dbSelectMock.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(selectArgs.length).toBeGreaterThanOrEqual(2);
+    for (const cols of selectArgs) expect(cols).not.toHaveProperty('ticketType');
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).not.toHaveProperty('ticketType');
+    expect(JSON.stringify(body)).not.toContain('problem');
+  });
+
+  it('GET /tickets/:id: select omits ticketType and the response does not carry it', async () => {
+    let callCount = 0;
+    dbSelectMock.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          from: vi.fn(() => ({
+            leftJoin: vi.fn(() => ({
+              where: vi.fn(() => ({
+                limit: vi.fn(() => Promise.resolve([{ ...TICKET_ROW, ticketType: 'problem', statusName: 'New' }]))
+              }))
+            }))
+          }))
+        };
+      }
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ orderBy: vi.fn(() => Promise.resolve([])) }))
+        }))
+      };
+    });
+
+    const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    expect(dbSelectMock.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('ticketType');
+    expect(JSON.stringify(body)).not.toContain('problem');
+  });
+});
