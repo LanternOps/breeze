@@ -882,6 +882,21 @@ export async function moveDeviceOrgInTransaction(
     // ON UPDATE CASCADE, so the devices row flip above already performed
     // the trusted org-only restamp inside this transaction.
     if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
+    if (table === 'elevation_requests') {
+      // PAM ownership epochs W6-pre (#8746): an ACTUATED request of ANY epoch
+      // is PAM-chain evidence frozen at its (org_id, device_epoch);
+      // breeze_pam_chain_epoch_guard() refuses (42501) a restamp of it. Only
+      // un-actuated requests follow the device (the guard re-anchors them into
+      // the new epoch). Same statement as the
+      // devices_restamp_unactuated_elevation_requests trigger, which has
+      // normally already run, so this copy matches nothing.
+      await tx.execute(
+        sql`UPDATE elevation_requests r SET org_id = ${targetOrgId}::uuid
+            WHERE r.device_id = ${deviceId}::uuid AND r.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+              AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)`,
+      );
+      continue;
+    }
     if (table === 'tickets') {
       // Deliberately NOT filtered on `org_id IS DISTINCT FROM` like the
       // generic branch below: breeze_cascade_device_org_id() has already
