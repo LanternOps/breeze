@@ -70,7 +70,7 @@ func TestSamplerRecordsFailuresAsNotOK(t *testing.T) {
 	f := newFakeAPI(t)
 	f.setScrape("tok", scrapeFixture)
 	samp := &PoolSampler{URL: f.srv.URL + "/metrics/scrape", Token: "wrong", Interval: 20 * ms, Client: http.DefaultClient, Start: time.Now()}
-	ctx, cancel := context.WithTimeout(context.Background(), 70*ms)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*ms)
 	defer cancel()
 	samp.Run(ctx)
 	got := samp.Samples()
@@ -83,7 +83,7 @@ func TestSamplerReadsThePool(t *testing.T) {
 	f := newFakeAPI(t)
 	f.setScrape("tok", scrapeFixture)
 	samp := &PoolSampler{URL: f.srv.URL + "/metrics/scrape", Token: "tok", Interval: 20 * ms, Client: http.DefaultClient, Start: time.Now()}
-	ctx, cancel := context.WithTimeout(context.Background(), 70*ms)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*ms)
 	defer cancel()
 	samp.Run(ctx)
 	got := samp.Samples()

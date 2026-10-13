@@ -170,7 +170,7 @@ point is seconds from run start; latency is milliseconds.
 | `storm.events[].heartbeat` | p50/p95/p99/max per phase (`pre`, `storm`, `recovery`) with each phase's transport-error count next to it (latency cannot see a request that got no response), and `maxGapS` |
 | `storm.events[].errors` | Logical requests (after the agent's own retries) that still failed, over start → end + recovery; `lostPct`. `crawl-config` 401/404 count as success |
 | `storm.events[].pool` | `minEffectiveRatio`, `maxWaiting`, `maxWedged`, `longestScrapeGapS`, and `recoveryS`: seconds from the end until the first sample with `effective == permits` and nothing wedged (null if never) |
-| `storm.gates[]`, `storm.pass` | One result per set gate per event |
+| `storm.gates[]`, `storm.pass` | One result per set gate per event (`value: null` when its data was never observed, which fails). `pass` is also false when a step failed, an event never ran, or an event is `truncated` (the run ended inside its recovery window): a fault that never fired is not a pass |
 
 ### Gates
 

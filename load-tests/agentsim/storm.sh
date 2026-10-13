@@ -89,11 +89,17 @@ if [ -n "$WATCH_PID" ]; then
 fi
 
 # run.sh is `exec go run`, and go run turns the binary's exit 3 into 1, so the
-# gate verdict is read from the report. `.storm.pass != false`, not
-# `.storm.pass // true`: jq's // treats false as missing.
-if [ ! -f "$REPORT" ] || { [ "$rc" != 0 ] && [ "$rc" != 1 ]; }; then
-  exit "$rc"
+# verdict is read from the report. A missing report, or one without a boolean
+# .storm.pass, is a run failure (exit 1), never a pass and never "gate failed".
+if [ "$rc" != 0 ] && [ "$rc" != 1 ]; then exit "$rc"; fi
+if [ ! -f "$REPORT" ]; then
+  echo "storm: no report at $REPORT (simulator exit $rc)" >&2
+  exit 1
 fi
 echo "storm: report $REPORT"
-jq -e '.storm.pass != false' "$REPORT" >/dev/null || exit 3
-exit "$rc"
+PASS="$(jq -r 'if (.storm.pass | type) == "boolean" then .storm.pass else "missing" end' "$REPORT" 2>/dev/null || echo unreadable)"
+case "$PASS" in
+  true) exit "$rc" ;;
+  false) exit 3 ;;
+  *) echo "storm: report has no storm verdict ($PASS)" >&2; exit 1 ;;
+esac

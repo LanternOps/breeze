@@ -74,16 +74,20 @@ func TestRunStormDropsEverySocket(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := runnerConfig(f, t.TempDir())
 	cfg.Commander.PerMinute = 0
-	cfg.Duration, cfg.Warmup = 3*time.Second, 200*ms
-	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{800 * ms}, Recovery: Duration{time.Second},
+	cfg.Duration, cfg.Warmup = 4*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{1500 * ms}, Recovery: Duration{time.Second},
 		Start: []Action{{Internal: ActionDropSockets}}}}}
 	cfg.StormPreWindow = 300 * ms
 	cfg.TimelineStep = 100 * ms
-	if _, err := Run(context.Background(), cfg); err != nil {
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := f.count(RouteWSUpgrade); got < 10 {
 		t.Fatalf("upgrades %d: 5 agents must each dial, be dropped, and redial", got)
+	}
+	if rep.Storm.StepsFailed != 0 || !rep.Storm.Pass {
+		t.Fatalf("the drop closed sockets, so the storm passes: %+v", rep.Storm.Steps)
 	}
 }
 
@@ -146,8 +150,8 @@ func TestRunStormSamplesThePool(t *testing.T) {
 	f.setScrape("tok", healthy)
 	cfg := runnerConfig(f, t.TempDir())
 	cfg.Commander.PerMinute = 0
-	cfg.Duration, cfg.Warmup = 4*time.Second, 200*ms
-	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{800 * ms}, Recovery: Duration{2 * time.Second},
+	cfg.Duration, cfg.Warmup = 5*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{time.Second}, Recovery: Duration{3 * time.Second},
 		Start: []Action{{Internal: ActionDropSockets}}}}}
 	cfg.StormPreWindow, cfg.TimelineStep = 300*ms, 100*ms
 	cfg.ScrapeToken, cfg.ScrapeInterval = "tok", time.Second

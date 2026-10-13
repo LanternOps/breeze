@@ -77,6 +77,7 @@ type StormEvent struct {
 	StartS          float64        `json:"startS"`
 	EndS            float64        `json:"endS"`
 	RecoveryWindowS float64        `json:"recoveryWindowS"`
+	Truncated       bool           `json:"truncated,omitempty"` // the run ended before the recovery window did
 	Reconnect       ReconnectCurve `json:"reconnect"`
 	Heartbeat       HeartbeatBlock `json:"heartbeat"`
 	Errors          ErrorBlock     `json:"errors"`
@@ -203,16 +204,9 @@ func heartbeatBlock(rec *Recorder, ev EventWindow, buckets []Bucket, runEndS flo
 			Recovery: rec.PhaseTransportErrors(ev.Name, "recovery"),
 		},
 	}
-	step := bucketStep(buckets)
-	for _, b := range buckets {
-		if inEventWindow(b, step, ev) && b.MaxHeartbeatGapS > hb.MaxGapS {
-			hb.MaxGapS = b.MaxHeartbeatGapS
-		}
-	}
-	if ev.closeS() >= runEndS { // a gap still open when the run ended never got a closing beat
-		end := rec.Start.Add(time.Duration(runEndS * float64(time.Second)))
-		hb.MaxGapS = math.Max(hb.MaxGapS, rec.OpenGaps(end))
-	}
+	at := func(s float64) time.Time { return rec.Start.Add(time.Duration(s * float64(time.Second))) }
+	closeS := math.Min(ev.closeS(), runEndS)
+	hb.MaxGapS = rec.MaxGapOverlapping(at(ev.StartS), at(closeS), at(runEndS))
 	return hb
 }
 
@@ -341,8 +335,12 @@ func evaluateGates(events []StormEvent, g Gates) []GateResult {
 			}
 		}
 		if g.LostPct > 0 {
-			v := ev.Errors.LostPct
-			add("lost-pct", ev.Name, g.LostPct, &v, v <= g.LostPct)
+			if ev.Errors.Requests > 0 {
+				v := ev.Errors.LostPct
+				add("lost-pct", ev.Name, g.LostPct, &v, v <= g.LostPct)
+			} else {
+				add("lost-pct", ev.Name, g.LostPct, nil, false)
+			}
 		}
 	}
 	return out
@@ -394,9 +392,9 @@ type PoolReport struct {
 	Samples         []PoolSample `json:"samples"`
 }
 
-// StormReport is the storm analysis. Pass is false when any evaluated gate
-// failed; StepsFailed and EventsPlanned vs len(Events) make a fault that
-// never fired visible even when no gate is set.
+// StormReport is the storm analysis. Pass is false when a step failed, an
+// event never ran or was truncated by the run end, or any evaluated gate
+// failed: a fault that never fired is not a pass, even with no gate set.
 type StormReport struct {
 	Scenario      string       `json:"scenario"`
 	File          string       `json:"file,omitempty"`
@@ -433,7 +431,7 @@ func buildStorm(rec *Recorder, cfg Config, ended time.Time, in *StormInputs) *St
 			EndS: end.Sub(rec.Start).Seconds(), RecoveryS: se.Recovery.Seconds()}
 		out := StormEvent{Name: ev.Name, StartS: ev.StartS, EndS: ev.EndS, RecoveryWindowS: ev.RecoveryS,
 			Reconnect: reconnectCurve(buckets, ev), Heartbeat: heartbeatBlock(rec, ev, buckets, runEndS),
-			Errors: errorBlock(buckets, ev)}
+			Errors: errorBlock(buckets, ev), Truncated: ev.closeS() > runEndS}
 		if in.Sampled {
 			out.Pool = poolBlock(in.Samples, ev)
 			if out.Pool.Samples == 0 {
@@ -445,7 +443,15 @@ func buildStorm(rec *Recorder, cfg Config, ended time.Time, in *StormInputs) *St
 		sr.Events = append(sr.Events, out)
 	}
 	sr.Gates = append(sr.Gates, evaluateGates(sr.Events, cfg.Gates)...)
-	sr.Pass = true
+	// A storm passes only when every planned fault fired (no failed step),
+	// every event ran through its whole recovery window, and every set gate
+	// passed. A fault that never happened must not read as a resilient API.
+	sr.Pass = sr.StepsFailed == 0 && len(sr.Events) == sr.EventsPlanned
+	for _, e := range sr.Events {
+		if e.Truncated {
+			sr.Pass = false
+		}
+	}
 	for _, g := range sr.Gates {
 		if !g.Pass {
 			sr.Pass = false

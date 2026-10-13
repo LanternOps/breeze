@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,7 @@ type Recorder struct {
 	// checks. lastOK is each agent's last successful heartbeat (under mu).
 	timeline *Timeline
 	lastOK   map[int]time.Time
+	gaps     []gapSpan // every closed heartbeat gap, for per-event max-gap
 
 	// Storm phases (scheduler.go). phase is "event/phase" or "" outside every
 	// phase; heartbeat attempts land in that phase's histogram (latency, for
@@ -237,10 +239,37 @@ func (r *Recorder) HeartbeatOK(index int, ts time.Time) {
 	}
 	prev, seen := r.lastOK[index]
 	r.lastOK[index] = ts
+	if seen {
+		r.gaps = append(r.gaps, gapSpan{from: prev, to: ts})
+	}
 	r.mu.Unlock()
 	if seen {
 		t.HeartbeatGap(ts, ts.Sub(prev))
 	}
+}
+
+// gapSpan is the time between one agent's consecutive successful heartbeats.
+type gapSpan struct{ from, to time.Time }
+
+// MaxGapOverlapping is the longest heartbeat gap (seconds) that overlaps
+// [from, to], wherever its ends fall: a gap that opens before an event and
+// closes after its recovery window still belongs to it. An agent whose last
+// success is before to and never beat again is measured to runEnd.
+func (r *Recorder) MaxGapOverlapping(from, to, runEnd time.Time) float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var maxS float64
+	for _, g := range r.gaps {
+		if g.to.After(from) && g.from.Before(to) {
+			maxS = math.Max(maxS, g.to.Sub(g.from).Seconds())
+		}
+	}
+	for _, last := range r.lastOK {
+		if last.Before(to) {
+			maxS = math.Max(maxS, runEnd.Sub(last).Seconds())
+		}
+	}
+	return maxS
 }
 
 // OpenGaps is the longest time any agent has gone without a successful

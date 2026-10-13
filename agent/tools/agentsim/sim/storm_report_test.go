@@ -121,7 +121,7 @@ func TestGates(t *testing.T) {
 	ev := StormEvent{Name: "kill",
 		Heartbeat: HeartbeatBlock{Storm: LatencyReport{Count: 50, P95: 1400}, Recovery: LatencyReport{Count: 80, P95: 300}, MaxGapS: 70},
 		Pool:      PoolBlock{OKSamples: 3, MinEffectiveRatio: 0.9, RecoveryS: ptr(12.0)},
-		Errors:    ErrorBlock{LostPct: 0.5}}
+		Errors:    ErrorBlock{Requests: 200, LostPct: 0.5}}
 	g := Gates{HeartbeatP95: time.Second, PoolMinRatio: 0.8, PoolRecovery: 30 * time.Second, MaxGap: 180 * time.Second, LostPct: 1}
 	res := evaluateGates([]StormEvent{ev}, g)
 	if len(res) != 5 {
@@ -137,9 +137,13 @@ func TestGates(t *testing.T) {
 		t.Fatalf("only heartbeat-p95 (storm phase 1.4 s) should fail: %+v", res)
 	}
 	empty := StormEvent{Name: "x", Heartbeat: HeartbeatBlock{}}
-	for _, r := range evaluateGates([]StormEvent{empty}, Gates{HeartbeatP95: time.Second, PoolMinRatio: 0.8, PoolRecovery: time.Minute, MaxGap: time.Minute}) {
-		if r.Pass {
-			t.Fatalf("a gate with no data must fail, not pass: %+v", r)
+	emptyRes := evaluateGates([]StormEvent{empty}, Gates{HeartbeatP95: time.Second, PoolMinRatio: 0.8, PoolRecovery: time.Minute, MaxGap: time.Minute, LostPct: 1})
+	if len(emptyRes) != 5 {
+		t.Fatalf("every set gate must yield a result even with no data: %+v", emptyRes)
+	}
+	for _, r := range emptyRes {
+		if r.Pass || r.Value != nil {
+			t.Fatalf("a gate with no data must fail with a null value, not pass: %+v", r)
 		}
 	}
 	if res := evaluateGates([]StormEvent{ev}, Gates{}); len(res) != 0 {
@@ -147,10 +151,88 @@ func TestGates(t *testing.T) {
 	}
 	noRecovery := ev
 	noRecovery.Pool.RecoveryS = nil
-	for _, r := range evaluateGates([]StormEvent{noRecovery}, Gates{PoolRecovery: 30 * time.Second}) {
-		if r.Pass || r.Value != nil {
-			t.Fatalf("a pool that never recovered fails with a null value: %+v", r)
+	nr := evaluateGates([]StormEvent{noRecovery}, Gates{PoolRecovery: 30 * time.Second})
+	if len(nr) != 1 || nr[0].Pass || nr[0].Value != nil {
+		t.Fatalf("a pool that never recovered fails with a null value: %+v", nr)
+	}
+}
+
+// Each gate's fail branch, driven over its threshold one at a time.
+func TestGatesFailOverThreshold(t *testing.T) {
+	base := StormEvent{Name: "e",
+		Heartbeat: HeartbeatBlock{Storm: LatencyReport{Count: 5, P95: 100}, Recovery: LatencyReport{Count: 5, P95: 100}, MaxGapS: 10},
+		Pool:      PoolBlock{OKSamples: 3, MinEffectiveRatio: 1, RecoveryS: ptr(5.0)},
+		Errors:    ErrorBlock{Requests: 100, LostPct: 0}}
+	cases := map[string]struct {
+		mutate func(*StormEvent)
+		g      Gates
+	}{
+		"heartbeat-p95":  {func(e *StormEvent) { e.Heartbeat.Recovery.P95 = 1500 }, Gates{HeartbeatP95: time.Second}}, // recovery phase alone
+		"pool-min-ratio": {func(e *StormEvent) { e.Pool.MinEffectiveRatio = 0.5 }, Gates{PoolMinRatio: 0.8}},
+		"pool-recovery":  {func(e *StormEvent) { e.Pool.RecoveryS = ptr(45.0) }, Gates{PoolRecovery: 30 * time.Second}},
+		"max-gap":        {func(e *StormEvent) { e.Heartbeat.MaxGapS = 200 }, Gates{MaxGap: 180 * time.Second}},
+		"lost-pct":       {func(e *StormEvent) { e.Errors.LostPct = 2 }, Gates{LostPct: 1}},
+	}
+	for gate, c := range cases {
+		ok := evaluateGates([]StormEvent{base}, c.g)
+		if len(ok) != 1 || !ok[0].Pass {
+			t.Errorf("%s: the healthy base must pass: %+v", gate, ok)
 		}
+		ev := base
+		c.mutate(&ev)
+		bad := evaluateGates([]StormEvent{ev}, c.g)
+		if len(bad) != 1 || bad[0].Pass || bad[0].Gate != gate {
+			t.Errorf("%s: over threshold must fail: %+v", gate, bad)
+		}
+	}
+}
+
+// A storm whose fault never fired, never ran, or was cut short is not a pass,
+// with or without gates.
+func TestStormPassNeedsEveryFaultToRunToTheEnd(t *testing.T) {
+	t0 := time.Now().Add(-10 * time.Minute)
+	mk := func() (*Recorder, Config) {
+		rec := NewRecorder("r", t0, t0.Add(time.Minute), t0.Add(10*time.Minute))
+		rec.EnableTimeline(time.Second, 10*time.Minute)
+		cfg := validConfig()
+		cfg.Storm = &Scenario{Name: "k", Events: []Event{{Name: "k", At: Duration{2 * time.Minute}, Start: []Action{{Internal: ActionDropSockets}}}}}
+		return rec, cfg
+	}
+	ev := ScheduledEvent{Name: "k", PreWindow: time.Minute, Start: t0.Add(3 * time.Minute), End: t0.Add(3 * time.Minute), Recovery: 3 * time.Minute}
+	okStep := StepRecord{Event: "k", Phase: "start", OK: true}
+
+	rec, cfg := mk()
+	if r := BuildReport(rec, cfg, t0.Add(10*time.Minute), 1, &StormInputs{Events: []ScheduledEvent{ev}, Steps: []StepRecord{okStep}}); !r.Storm.Pass {
+		t.Fatalf("a complete storm with no gates passes: %+v", r.Storm)
+	}
+	rec, cfg = mk()
+	failed := okStep
+	failed.OK = false
+	if r := BuildReport(rec, cfg, t0.Add(10*time.Minute), 1, &StormInputs{Events: []ScheduledEvent{ev}, Steps: []StepRecord{failed}}); r.Storm.Pass {
+		t.Fatal("a failed fault action must fail the storm")
+	}
+	rec, cfg = mk()
+	if r := BuildReport(rec, cfg, t0.Add(10*time.Minute), 1, &StormInputs{}); r.Storm.Pass {
+		t.Fatal("an event that never ran must fail the storm")
+	}
+	rec, cfg = mk()
+	r := BuildReport(rec, cfg, t0.Add(4*time.Minute), 1, &StormInputs{Events: []ScheduledEvent{ev}, Steps: []StepRecord{okStep}})
+	if r.Storm.Pass || !r.Storm.Events[0].Truncated {
+		t.Fatalf("a recovery window cut off by the run end must be marked and fail: %+v", r.Storm.Events)
+	}
+}
+
+// A gap that starts before the event and ends after its recovery window is
+// still the event's gap.
+func TestMaxGapSpanningTheWindow(t *testing.T) {
+	t0 := time.Now().Add(-time.Hour)
+	rec := NewRecorder("r", t0, t0, t0.Add(time.Hour))
+	rec.EnableTimeline(time.Second, time.Hour)
+	rec.HeartbeatOK(1, t0.Add(50*time.Second))
+	rec.HeartbeatOK(1, t0.Add(400*time.Second)) // silent 50 → 400; the event window is 60 → 300
+	hb := heartbeatBlock(rec, EventWindow{Name: "e", PreS: 10, StartS: 60, EndS: 120, RecoveryS: 180}, rec.Timeline().Buckets(), 3600)
+	if hb.MaxGapS != 350 {
+		t.Fatalf("maxGapS %v, want 350", hb.MaxGapS)
 	}
 }
 

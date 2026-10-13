@@ -135,9 +135,15 @@ func printStorm(w io.Writer, s *sim.StormReport) {
 		_, _ = fmt.Fprintf(w, "  WARNING: %d of %d storm events ran (the run ended first)\n", len(s.Events), s.EventsPlanned)
 	}
 	for _, e := range s.Events {
-		pool := "pool not sampled"
+		pool := e.Pool.Note
+		if e.Pool.Samples > 0 && e.Pool.OKSamples == 0 {
+			pool = fmt.Sprintf("pool: 0 of %d scrapes ok (see pool.samples[].error)", e.Pool.Samples)
+		}
 		if e.Pool.OKSamples > 0 {
 			pool = fmt.Sprintf("pool min %.2f recovered %s", e.Pool.MinEffectiveRatio, secs(e.Pool.RecoveryS))
+		}
+		if e.Truncated {
+			pool += " [TRUNCATED: the run ended inside the recovery window]"
 		}
 		_, _ = fmt.Fprintf(w, "  storm %s: t90 %s, trough %d/%d, hb p95 storm/recovery %.0f/%.0f ms, lost %.2f%%, %s\n",
 			e.Name, secs(e.Reconnect.T90S), e.Reconnect.Trough, e.Reconnect.Baseline,

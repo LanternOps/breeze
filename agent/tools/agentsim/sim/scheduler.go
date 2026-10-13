@@ -101,7 +101,9 @@ func (s *Scheduler) Run(ctx context.Context, windowOpen time.Time) {
 		idx := len(s.events) - 1
 		s.mu.Unlock()
 		s.runActions(ctx, ev.Name, "start", planned, ev.Start)
-		held := sleepCtx(ctx, ev.Hold.D)
+		// Hold counts from the planned start, so a slow start action (docker
+		// stop --time 30) does not push the end, or the next event, back.
+		held := sleepUntil(ctx, planned.Add(ev.Hold.D))
 		endCtx := ctx
 		if !held {
 			endCtx = context.WithoutCancel(ctx)
@@ -133,8 +135,9 @@ func (s *Scheduler) runActions(ctx context.Context, event, phase string, planned
 				rec.Output = "internal action " + a.Internal + " is not wired in this run"
 				break
 			}
-			rec.OK = true
-			rec.Output = fmt.Sprintf("closed %d sockets", f())
+			n := f()
+			rec.OK = n > 0 // closing nothing did not inject the fault
+			rec.Output = fmt.Sprintf("closed %d sockets", n)
 		default:
 			out, err := s.Exec.Exec(ctx, a.Exec)
 			rec.OK = err == nil
