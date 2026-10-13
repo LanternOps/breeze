@@ -17,6 +17,9 @@ function apiCatalog(): Map<string, string> {
   for (const m of block![1]!.matchAll(/\{\s*key:\s*'([^']+)'[^}]*?type:\s*'([^']+)'/g)) {
     fields.set(m[1]!, m[2]!);
   }
+  // Every entry must have been parsed: an entry the regex skips (e.g. a `}`
+  // inside a description) would otherwise drop out of the comparison silently.
+  expect(fields.size).toBe(block![1]!.match(/\{\s*key:\s*'/g)!.length);
   return fields;
 }
 
