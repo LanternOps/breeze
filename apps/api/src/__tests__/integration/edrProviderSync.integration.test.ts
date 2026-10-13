@@ -97,6 +97,7 @@ import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDev
 import { getTestDb } from './setup';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { persistDetections } from '../../services/edrProviders/persist';
+import { evaluateEdrAlerts } from '../../services/edrProviders/alerts';
 import type { VendorEdrDetection } from '../../services/edrProviders/types';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -537,6 +538,34 @@ describe('edr sync — real job functions against Postgres', () => {
     await new Promise((r) => setTimeout(r, 20));
     await syncEdrDetections(fx.connectionId);
     expect(detectionEvents()).toHaveLength(1);
+  });
+
+  // #8166 A6: a linked detection raises ONE device alert (deduped across runs);
+  // when the vendor closes it, the next evaluation resolves the alert.
+  runDb('Phase 4: linked detection alert is raised once and resolves when the detection closes', async () => {
+    const fx = await seedJob();
+    const tenantId = await fx.addTenant(`co-al-${sfx()}`, fx.orgA.id, { lastDetectionSyncAt: new Date() });
+    const [det] = await withSystemDbAccessContext(() => db.insert(edrDetections).values({
+      connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, provider: 'bitdefender',
+      vendorDetectionId: `inc-al-${sfx()}`, vendorKind: 'incident', severity: 'critical', status: 'open',
+      breezeDeviceId: fx.deviceA.id, title: 'Trojan', detectedAt: new Date(),
+    }).returning({ id: edrDetections.id }));
+    const openAlerts = () => adminRows<Row>(sql`
+      SELECT id, status, severity FROM alerts
+      WHERE context->>'source' = 'edr_provider' AND context->>'detectionId' = ${det!.id}`);
+
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 1, suppressed: 0 });
+    const raised = await openAlerts();
+    expect(raised).toHaveLength(1);
+    expect(raised[0]).toMatchObject({ status: 'active', severity: 'critical' });
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 0 });
+    expect(await openAlerts()).toHaveLength(1);
+
+    await admin().execute(sql`UPDATE edr_detections SET status = 'resolved' WHERE id = ${det!.id}::uuid`);
+    await evaluateEdrAlerts(fx.connectionId, { now: new Date() });
+    const after = await openAlerts();
+    expect(after).toHaveLength(1);
+    expect(after[0]!.status).toBe('resolved');
   });
 
   runDb('a company missing from listTenants is tombstoned, not deleted; its endpoints go after 7 days', async () => {

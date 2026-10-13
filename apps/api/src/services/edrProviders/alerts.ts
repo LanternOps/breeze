@@ -15,7 +15,8 @@
  * `notified_severity` is stamped only after the publish succeeded, row by row,
  * so a failed row retries on the next run and never blocks the others.
  *
- * Alerts require a device: an unlinked detection raises the event only.
+ * Alerts require a device: an unlinked detection raises the event only. A
+ * detection alert resolves once its detection is closed, tombstoned or gone.
  */
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { EdrSeverity } from '@breeze/shared';
@@ -93,6 +94,8 @@ export interface EdrAlertDeps {
   /** Compare-and-set stamp; false when the row moved on (severity changed / tombstoned). */
   stamp(detectionId: string, severity: EdrSeverity): Promise<boolean>;
   stampMany(detectionIds: string[]): Promise<number>;
+  /** Resolve this connection's open detection alerts whose detection closed, was tombstoned or is gone. */
+  resolveClosedDetectionAlerts(connectionId: string): Promise<number>;
 }
 
 const system = <T>(fn: () => Promise<T>, label: string): Promise<T> =>
@@ -172,6 +175,31 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
       .returning({ id: edrDetections.id });
     return updated.length;
   }, 'edrProviderAlerts.stampMany'),
+
+  resolveClosedDetectionAlerts: (connectionId) => system(async () => {
+    const stale = await db
+      .select({ id: alerts.id, status: alerts.status, suppressedUntil: alerts.suppressedUntil })
+      .from(alerts)
+      .where(and(
+        inArray(alerts.status, ['active', 'acknowledged', 'suppressed']),
+        sql`${alerts.context}->>'source' = ${EDR_ALERT_SOURCE}`,
+        sql`${alerts.context}->>'kind' = 'detection'`,
+        sql`${alerts.context}->>'connectionId' = ${connectionId}`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM edr_detections d
+          WHERE d.id::text = ${alerts.context}->>'detectionId'
+            AND d.detached_at IS NULL
+            AND d.status IN ('open', 'in_progress', 'unknown')
+        )`,
+      ));
+    let resolved = 0;
+    for (const a of stale) {
+      // An indefinitely-suppressed alert keeps its mute (backupProviders precedent).
+      if (a.status === 'suppressed' && a.suppressedUntil === null) continue;
+      if (await resolveAlert(a.id, RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+    }
+    return resolved;
+  }, 'edrProviderAlerts.resolveClosed'),
 };
 
 function alertSeverity(severity: EdrSeverity): 'critical' | 'high' | 'medium' {
@@ -264,6 +292,12 @@ export async function evaluateEdrAlerts(
     await deps.stampMany([...silent, ...suppressedIds]);
   } catch (error) {
     logFailure('stampMany', error, { connectionId });
+  }
+  try {
+    // The vendor closed (or a remap tombstoned) a detection: its alert clears.
+    await deps.resolveClosedDetectionAlerts(connectionId);
+  } catch (error) {
+    logFailure('resolveClosedDetectionAlerts', error, { connectionId });
   }
   if (suppressedIds.length > 0) {
     console.info(

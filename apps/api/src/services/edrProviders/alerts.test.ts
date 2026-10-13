@@ -65,6 +65,7 @@ function fakeDeps(rows: DetectionCandidate[], over: Partial<EdrAlertDeps> = {}) 
     publish: vi.fn(async (type, orgId, payload) => { published.push({ type, orgId, payload: payload as Record<string, unknown> }); }),
     stamp: vi.fn(async (id) => { stamped.push(id); return true; }),
     stampMany: vi.fn(async (ids) => { stamped.push(...ids); return ids.length; }),
+    resolveClosedDetectionAlerts: vi.fn(async () => 0),
     ...over,
   };
   return { deps, published, alerts, stamped };
@@ -179,6 +180,20 @@ describe('evaluateEdrAlerts', () => {
     const { deps } = fakeDeps([]);
     await evaluateEdrAlerts('conn-1', { now: NOW }, deps);
     expect(deps.loadCandidates).toHaveBeenCalledWith('conn-1');
+  });
+
+  it('resolves open detection alerts whose detection closed / vanished, once per run', async () => {
+    const { deps } = fakeDeps([]);
+    await evaluateEdrAlerts('conn-1', { now: NOW }, deps);
+    expect(deps.resolveClosedDetectionAlerts).toHaveBeenCalledWith('conn-1');
+  });
+
+  it('a failing resolve pass never throws and does not block publishing', async () => {
+    const { deps, published } = fakeDeps([candidate()], {
+      resolveClosedDetectionAlerts: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    await expect(evaluateEdrAlerts('conn-1', { now: NOW }, deps)).resolves.toEqual({ published: 1, suppressed: 0 });
+    expect(published).toHaveLength(1);
   });
 
   it('never throws out of the evaluator when the loader fails', async () => {
