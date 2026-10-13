@@ -538,6 +538,7 @@
       "more": "Carregar mais",
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
+      "unknownUser": "Usuário desconhecido",
       "reverted": "Revertido",
       "deadline": "Desfazer fica indisponível após a aposentadoria de alertas legados remover o avaliador de origem."
     },

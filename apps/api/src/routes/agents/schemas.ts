@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { softwareInventoryReportSchema } from '@breeze/shared';
+import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { redactSecretsFromOutput } from '../../services/secretRedaction';
 
 // ============================================
 // Enrollment
@@ -555,6 +556,7 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'trash_metadata_too_large',
   'unsupported_encoding',
   'invalid_argument',
+  'scan_in_progress',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];
@@ -563,6 +565,109 @@ const AGENT_COMMAND_ERROR_CODE_SET: ReadonlySet<string> = new Set(AGENT_COMMAND_
 
 export function isAgentCommandErrorCode(value: unknown): value is AgentCommandErrorCode {
   return typeof value === 'string' && AGENT_COMMAND_ERROR_CODE_SET.has(value);
+}
+
+/**
+ * The nine statuses an agent can report for a System Restore checkpoint
+ * attempt (#4609, W06 #4757). Mirrors `Status` in
+ * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * it is server-only, written at command-creation time, and an agent claiming
+ * it is malformed. Pinned against the shared union and the ledger statuses in
+ * restorePointResultSchema.test.ts.
+ */
+export const RESTORE_POINT_OUTCOME_STATUSES = [
+  'created',
+  'existing_accepted',
+  'skipped_disabled',
+  'skipped_definition_only',
+  'unsupported',
+  'busy',
+  'insufficient_privileges',
+  'verification_failed',
+  'failed',
+] as const satisfies ReadonlyArray<RestorePointOutcome['status']>;
+
+const RESTORE_POINT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INT64_MIN = -(2n ** 63n);
+const INT64_MAX = 2n ** 63n - 1n;
+/** The ledger's duration/age/frequency columns are Postgres `integer`. */
+const PG_INT4_MAX = 2_147_483_647;
+
+/**
+ * The agent's checkpoint outcome, carried under the top-level `restorePoint`
+ * key of a command result. Validated INSIDE the ingest step, never at the
+ * transport (see `commandResultSchema.restorePoint`). Unknown keys are stripped.
+ */
+export const restorePointOutcomeSchema = z.object({
+  status: z.enum(RESTORE_POINT_OUTCOME_STATUSES),
+  // Echo of the server-stamped request id; the ledger column is uuid, so a
+  // non-uuid value is rejected here rather than raising 22P02 in the UPDATE.
+  requestId: z.string().max(64).regex(RESTORE_POINT_UUID_REGEX),
+  // STRING, never a number: Windows sequence numbers are INT64 and exceed the
+  // JS safe-integer range, so a numeric field would silently round large values.
+  sequenceNumber: z
+    .string()
+    .regex(/^-?[0-9]{1,20}$/)
+    // Zod runs this even after the regex fails, so re-check the shape before
+    // BigInt() (which throws on non-decimal input).
+    .refine((v) => {
+      if (!/^-?[0-9]{1,20}$/.test(v)) return false;
+      const n = BigInt(v);
+      return n >= INT64_MIN && n <= INT64_MAX;
+    }, 'sequenceNumber is outside the int64 range')
+    .optional(),
+  description: z.string().max(512).optional(),
+  message: z.string().max(10_000).optional(),
+  // Agent clock; parsed defensively at ingest (the Go agent may send '').
+  attemptedAt: z.string().max(64),
+  durationMs: z.number().int().min(0).max(PG_INT4_MAX),
+  existingPointAgeMinutes: z.number().int().min(0).max(PG_INT4_MAX).optional(),
+  frequencyMinutes: z.number().int().min(0).max(PG_INT4_MAX).optional(),
+});
+
+// Compile-time: the parsed shape is assignable to the shared wire type.
+const _restorePointOutcomeMatchesShared = (o: z.infer<typeof restorePointOutcomeSchema>): RestorePointOutcome => o;
+void _restorePointOutcomeMatchesShared;
+
+export type RestorePointOutcomeClassification =
+  | { ok: true; outcome: RestorePointOutcome }
+  | { ok: false; reason: 'unknown_status' | 'malformed' };
+
+/**
+ * Validate a raw agent-supplied `restorePoint` value. Never throws.
+ * `unknown_status` is an otherwise-recognisable outcome whose status is not one
+ * of the nine (a future agent value, or the server-only 'requested');
+ * everything else that fails is `malformed`.
+ */
+export function classifyRestorePointOutcome(raw: unknown): RestorePointOutcomeClassification {
+  const parsed = restorePointOutcomeSchema.safeParse(raw);
+  if (parsed.success) {
+    // #2434: `message` / `description` are agent-authored free text (a VSS or
+    // PowerShell error can embed a path or token). Redacted HERE, at the one
+    // parse point, so both consumers -- the stored device_commands result and
+    // the ledger row (exported as `included`) -- only ever see redacted text.
+    const outcome = parsed.data;
+    return {
+      ok: true,
+      outcome: {
+        ...outcome,
+        ...(outcome.message !== undefined ? { message: redactSecretsFromOutput(outcome.message) } : {}),
+        ...(outcome.description !== undefined ? { description: redactSecretsFromOutput(outcome.description) } : {}),
+      },
+    };
+  }
+  const statusIsUnknownString =
+    raw !== null &&
+    typeof raw === 'object' &&
+    typeof (raw as { status?: unknown }).status === 'string' &&
+    parsed.error.issues.some((issue) => issue.path.length === 1 && issue.path[0] === 'status');
+  return { ok: false, reason: statusIsUnknownString ? 'unknown_status' : 'malformed' };
+}
+
+/** The validated outcome, or null when absent/invalid. Never throws. */
+export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | null {
+  const classified = classifyRestorePointOutcome(raw);
+  return classified.ok ? classified.outcome : null;
 }
 
 export const commandResultSchema = z.object({
@@ -583,6 +688,12 @@ export const commandResultSchema = z.object({
   // them as absent (prose fallback); a malformed value is dropped via
   // `.catch` rather than failing the parse.
   errorCode: z.string().max(64).optional().catch(undefined),
+  // #4609 W06: the System Restore checkpoint outcome. Deliberately LENIENT at
+  // the transport (same reasoning as errorCode): a newer agent may add a status
+  // this API has not learned, and a 400 here would strand a completed patch /
+  // script / install. Validated by classifyRestorePointOutcome inside the
+  // ingest step, after the terminal compare-and-set.
+  restorePoint: z.unknown().optional(),
   result: z.any().optional().refine(
     (val) => {
       const size = commandResultResultByteLength(val);
@@ -613,7 +724,8 @@ export const securityProviderValues = [
   'emsisoft',
   'webroot',
   'withsecure',
-  'other'
+  'other',
+  'unknown'
 ] as const;
 
 export type SecurityProviderValue = (typeof securityProviderValues)[number];

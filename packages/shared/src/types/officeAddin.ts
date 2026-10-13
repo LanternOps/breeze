@@ -93,4 +93,10 @@ export interface AddinTimeEntry {
   ticketNumber: string | null;
   ticketSubject: string | null;
   userName: string | null;
+  /**
+   * #8196: set when the entry was recorded but held from billing pending
+   * customer approval (`billingStatus` is `awaiting_approval`). Absent/null
+   * when nothing is held.
+   */
+  approvalHold?: { requestId: string; trigger: 'budget' | 'after_hours' } | null;
 }

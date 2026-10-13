@@ -864,10 +864,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_time_entries: { resource: 'time_entries', action: 'read' },
   get_running_timer: { resource: 'time_entries', action: 'read' },
   get_timesheet: { resource: 'time_entries', action: 'read' },
+  get_ticket_approval_status: { resource: 'tickets', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_device_time_status: { resource: 'devices', action: 'read' },
+  query_device_workloads: { resource: 'devices', action: 'read' },
   list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
@@ -1351,6 +1353,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  get_fleet_device_stats: { resource: 'devices', action: 'read' },
   get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.

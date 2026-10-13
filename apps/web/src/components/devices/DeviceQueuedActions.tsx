@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Clock } from "lucide-react";
+import { AlertTriangle, Clock } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
 import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -10,9 +10,27 @@ type QueuedCommand = {
   id: string;
   type: string;
   createdAt: string;
+  executedAt?: string | null;
+  targetRole?: string;
   deliverBy: string | null;
   createdBy: string | null;
 };
+
+// #8296 — mirrors POWER_STATE_BARRIER_TYPES (apps/api/src/services/
+// commandClaimEligibility.ts): these are held at claim time while any
+// delivered (`sent`) command is still running on the device.
+const POWER_COMMAND_TYPES = new Set(["reboot", "shutdown", "reboot_safe_mode"]);
+
+// Mirrors MARK_FAILED_MIN_AGE_MS on POST /devices/:id/commands/:cmdId/mark-failed.
+// The server enforces it (409 TOO_RECENT); this only decides whether to show
+// the button or the "in N min" hint.
+const MARK_FAILED_MIN_AGE_MINUTES = 10;
+
+function runningMinutes(command: QueuedCommand, now: number): number {
+  const startedAt = Date.parse(command.executedAt ?? command.createdAt);
+  if (Number.isNaN(startedAt)) return 0;
+  return Math.max(0, Math.floor((now - startedAt) / 60_000));
+}
 
 type DeviceQueuedActionsProps = {
   deviceId: string;
@@ -45,6 +63,32 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
   // stays silent: the auth redirect owns telling the user about that one.
   const [loadError, setLoadError] = useState(false);
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
+  // #8296 — delivered commands still running on the device. Only fetched when
+  // a power command is queued, because that is the only case where they hold
+  // something back.
+  const [runningRows, setRunningRows] = useState<QueuedCommand[]>([]);
+  const [markingIds, setMarkingIds] = useState<Set<string>>(new Set());
+  const [now, setNow] = useState(() => Date.now());
+
+  // The running commands are supplementary: a failure to load them hides the
+  // hold banner but must not turn the queued list itself into an error state.
+  const loadRunning = useCallback(async () => {
+    try {
+      const res = await fetchWithAuth(`/devices/${deviceId}/commands?status=sent&limit=50`);
+      if (!res.ok) {
+        if (res.status !== 401) {
+          console.error(`[DeviceQueuedActions] failed to load running commands: HTTP ${res.status}`);
+        }
+        setRunningRows([]);
+        return;
+      }
+      const json = await res.json();
+      setRunningRows(Array.isArray(json?.data) ? json.data : []);
+    } catch (err) {
+      console.error('[DeviceQueuedActions] failed to load running commands', err);
+      setRunningRows([]);
+    }
+  }, [deviceId]);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -57,26 +101,80 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
         console.error(`[DeviceQueuedActions] failed to load pending commands: HTTP ${res.status}`);
         setLoadError(true);
         setRows([]);
+        setRunningRows([]);
         return;
       }
       const json = await res.json();
       const data: QueuedCommand[] = Array.isArray(json?.data) ? json.data : [];
       setRows(data);
+      if (data.some((row) => POWER_COMMAND_TYPES.has(row.type))) {
+        await loadRunning();
+      } else {
+        setRunningRows([]);
+      }
+      setNow(Date.now());
     } catch (err) {
       console.error('[DeviceQueuedActions] failed to load pending commands', err);
       setLoadError(true);
       setRows([]);
+      setRunningRows([]);
     } finally {
       setLoaded(true);
     }
-  }, [deviceId]);
+  }, [deviceId, loadRunning]);
 
   useEffect(() => {
     setLoaded(false);
     setLoadError(false);
     setRows([]);
+    setRunningRows([]);
     void load();
   }, [load]);
+
+  const heldPowerRow = rows.find((row) => POWER_COMMAND_TYPES.has(row.type));
+  // The barrier counts only running commands for the SAME target role
+  // (commandDispatch.ts in-flight count), so only those are holding it.
+  const heldRole = heldPowerRow?.targetRole ?? "agent";
+  const holdingRows = heldPowerRow
+    ? runningRows.filter((row) => (row.targetRole ?? "agent") === heldRole)
+    : [];
+  const showHold = !loadError && !!heldPowerRow && holdingRows.length > 0;
+
+  // Keep the "running for N min" age and the Mark failed eligibility current
+  // while the banner is on screen.
+  useEffect(() => {
+    if (!showHold) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [showHold]);
+
+  const handleMarkFailed = async (commandId: string) => {
+    if (markingIds.has(commandId)) return;
+    setMarkingIds((prev) => new Set(prev).add(commandId));
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/devices/${deviceId}/commands/${commandId}/mark-failed`, { method: "POST" }),
+        errorFallback: t("queuedActions.powerHold.markFailedFailed"),
+        successMessage: t("queuedActions.powerHold.markedFailed"),
+      });
+      void load();
+    } catch (err) {
+      // 409 means the row is no longer running (its result landed, or the
+      // reaper got there first) or it is younger than the server allows —
+      // reload so the banner reflects the device's real state. Any
+      // ActionError was already toasted by runAction; 401 belongs to the
+      // auth redirect.
+      if (err instanceof ActionError && err.status === 409) {
+        void load();
+      }
+    } finally {
+      setMarkingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(commandId);
+        return next;
+      });
+    }
+  };
 
   const handleCancel = async (commandId: string) => {
     if (cancellingIds.has(commandId)) return;
@@ -117,6 +215,58 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
         <Clock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         <h3 className="text-sm font-semibold">{t("queuedActions.title")}</h3>
       </div>
+      {showHold && heldPowerRow && (
+        <div
+          role="status"
+          data-testid="power-hold-banner"
+          className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm"
+        >
+          <p className="flex items-center gap-2 font-medium text-warning">
+            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {t("queuedActions.powerHold.title", { action: humanizeCommandType(heldPowerRow.type) })}
+          </p>
+          <ul className="mt-2 space-y-2">
+            {holdingRows.map((running) => {
+              const minutes = runningMinutes(running, now);
+              const eligible = minutes >= MARK_FAILED_MIN_AGE_MINUTES;
+              return (
+                <li
+                  key={running.id}
+                  data-testid="power-hold-running-row"
+                  className="flex items-center justify-between gap-3"
+                >
+                  <p className="min-w-0 text-xs text-muted-foreground">
+                    {t("queuedActions.powerHold.body", {
+                      action: humanizeCommandType(heldPowerRow.type),
+                      command: humanizeCommandType(running.type),
+                      minutes,
+                    })}
+                    {!eligible && (
+                      <>
+                        {" "}
+                        {t("queuedActions.powerHold.markFailedIn", {
+                          minutes: MARK_FAILED_MIN_AGE_MINUTES - minutes,
+                        })}
+                      </>
+                    )}
+                  </p>
+                  {eligible && (
+                    <button
+                      type="button"
+                      data-testid="power-hold-mark-failed"
+                      onClick={() => handleMarkFailed(running.id)}
+                      disabled={markingIds.has(running.id)}
+                      className="shrink-0 rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      {t("queuedActions.powerHold.markFailed")}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       {loadError ? (
         <p className="mt-3 text-sm text-muted-foreground">
           {t("queuedActions.loadFailed")}{" "}

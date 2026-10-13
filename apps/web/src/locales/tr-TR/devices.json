@@ -358,7 +358,9 @@
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
-    "toADifferentSite": "farklı bir siteye taşı."
+    "toADifferentSite": "farklı bir siteye taşı.",
+    "deviceMovedByOther": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin",
+    "policyNote": "Taşıma, {{device}} cihazına uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onu otomatik olarak geri taşımaz."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Grup oluşturulamadı",
@@ -912,6 +914,7 @@
     "diskCleanup": "Disk Temizleme",
     "diskUsageAnalysisAndCleanup": "Disk kullanım analizi ve temizleme",
     "bootPerf": "Önyükleme Performansı",
+    "systemRestore": "Sistem Geri Yükleme",
     "startupTimeAndBootProcessAnalysis": "Başlatma süresi ve önyükleme süreci analizi",
     "backup": "Yedekleme",
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
@@ -945,7 +948,9 @@
       "management": "Yönetim",
       "history": "Geçmiş ve Ağ",
       "extensions": "Uzantılar"
-    }
+    },
+    "workloads": "İş yükleri",
+    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -2243,7 +2248,8 @@
     "displayName": "Görünen Ad",
     "errors": {
       "loadSites": "Siteler yüklenemedi",
-      "saveSettings": "Ayarlar kaydedilemedi"
+      "saveSettings": "Ayarlar kaydedilemedi",
+      "siteChanged": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin"
     },
     "hostname": "Ana bilgisayar adı: {{hostname}}",
     "saved": "Cihaz ayarları kaydedildi",
@@ -3696,7 +3702,15 @@
     "cancelled": "Sıradaki eylem iptal edildi",
     "cancelFailed": "Sıradaki eylem iptal edilemedi",
     "loadFailed": "Sıradaki eylemler yüklenemedi.",
-    "empty": "Sıraya alınmış eylem yok"
+    "empty": "Sıraya alınmış eylem yok",
+    "powerHold": {
+      "title": "{{action}} çalışan bir komutu bekliyor",
+      "body": "{{action}}, cihaz çalışan komutlarını bitirdiğinde gönderilir. {{command}} {{minutes}} dakikadır sonuç vermeden çalışıyor.",
+      "markFailed": "Başarısız olarak işaretle",
+      "markFailedIn": "{{minutes}} dakika sonra başarısız olarak işaretleyebilirsiniz.",
+      "markedFailed": "Komut başarısız olarak işaretlendi",
+      "markFailedFailed": "Komut başarısız olarak işaretlenemedi"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Manuel varlık ekle",
@@ -3958,6 +3972,64 @@
       "pdc_emulator": "Etki alanı PDC öykünücüsü",
       "forest_root_pdc_emulator": "Orman kökü PDC öykünücüsü",
       "unknown": "Bilinmiyor"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Bu cihazın iş yükleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "agentTooOld": "Aracı çok eski — iş yüklerini bildirmesi için aracıyı güncelleyin.",
+    "noRuntimes": "Bu cihazda kapsayıcı veya VM çalışma zamanı algılanmadı.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Sürüm {{version}}",
+    "versionUnknown": "Sürüm bilinmiyor",
+    "detection": {
+      "absent": "Yüklü değil",
+      "unknown": "Algılama sonuçsuz"
+    },
+    "status": {
+      "ok": "Toplanıyor",
+      "disabled": "Toplama kapalı — bir yapılandırma ilkesinde İş yükü envanterini etkinleştirin",
+      "unavailable": "Çalışma zamanı çalışmıyor",
+      "permission_denied": "İzin reddedildi",
+      "error": "Toplama başarısız oldu",
+      "unsupported": "Bu cihazda desteklenmiyor"
+    },
+    "detectOnly": "Yalnızca algılandı — bu çalışma zamanının iş yükleri listelenmez.",
+    "counts": "{{total}} iş yükü · {{running}} çalışıyor · {{stopped}} durdu",
+    "partial": "Kısmi anlık görüntü — bazı ayrıntılar okunamadı, bu nedenle toplananlar gösteriliyor.",
+    "truncated": "Çalışma zamanının bildirdiği {{observed}} iş yükünden {{reported}} tanesi gösteriliyor.",
+    "lastError": "Son hata: {{error}}",
+    "lastCollected": "Son toplama {{time}}",
+    "empty": "Bildirilen iş yükü yok.",
+    "columns": {
+      "name": "Ad",
+      "state": "Durum",
+      "image": "İmaj / konuk OS",
+      "compose": "Compose projesi",
+      "started": "Başlangıç"
+    },
+    "states": {
+      "running": "Çalışıyor",
+      "stopped": "Durdu",
+      "paused": "Duraklatıldı",
+      "restarting": "Yeniden başlatılıyor",
+      "other": "Diğer"
+    },
+    "policy": {
+      "title": "İş yükü envanteri",
+      "description": "Kapsayıcı ve VM ana makinelerindeki kapsayıcıları ve sanal makineleri listele",
+      "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
+      "enabled": "İş yüklerini listele",
+      "runtimesHeading": "Listelenecek çalışma zamanları",
+      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "interval": "Toplama aralığı (dakika)",
+      "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
     }
   }
 }

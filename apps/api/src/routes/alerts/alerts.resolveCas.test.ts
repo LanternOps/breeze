@@ -26,8 +26,9 @@ import type { SQL } from 'drizzle-orm';
  *    hardening pass (`8763a3239`) — which is NOT on main, so this file re-proves
  *    the property for the alert-resolve predicate rather than inheriting it.
  */
-const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted(() => {
+const { dbMock, updateWheres, updateSets, updateReturns, selectRows, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
+  const updateSets: Record<string, unknown>[] = [];
   const updateReturns: unknown[][] = [];
   // Feeds the post-CAS cooldown lookups (alert rule, then its template).
   const selectRows: unknown[][] = [];
@@ -48,15 +49,18 @@ const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted
       from: () => ({ where: () => ({ limit: () => Promise.resolve(selectRows.shift() ?? []) }) }),
     }),
     update: () => ({
-      set: () => ({
-        where: (predicate: unknown) => {
-          updateWheres.push(predicate);
-          return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
-        },
-      }),
+      set: (values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return {
+          where: (predicate: unknown) => {
+            updateWheres.push(predicate);
+            return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
+          },
+        };
+      },
     }),
   };
-  return { dbMock, updateWheres, updateReturns, selectRows, alertRow };
+  return { dbMock, updateWheres, updateSets, updateReturns, selectRows, alertRow };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -135,6 +139,7 @@ const resolveRequest = () =>
 
 beforeEach(() => {
   updateWheres.length = 0;
+  updateSets.length = 0;
   updateReturns.length = 0;
   selectRows.length = 0;
   vi.clearAllMocks();
@@ -190,6 +195,15 @@ describe('POST /alerts/:id/resolve — the winning caller', () => {
     expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.resolved');
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("stamps resolution_reason 'manual' on the human resolve (#7281)", async () => {
+    updateReturns.push([{ ...alertRow, status: 'resolved' }]);
+
+    await resolveRequest();
+
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toMatchObject({ status: 'resolved', resolutionReason: 'manual' });
   });
 
   it('still short-circuits an alert the pre-read already saw as resolved', async () => {

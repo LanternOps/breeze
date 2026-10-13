@@ -33,6 +33,7 @@ import {
 } from '../deviceOrgMove/moveDeviceOrgInTransaction';
 import { TicketMoveCurrencyBlockedError } from '../ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../pamDeviceMoveGuard';
 import { TicketServiceError } from '../ticketService';
 import { isTransientLockError, pgErrorNode } from '../../utils/pgErrors';
@@ -84,6 +85,7 @@ export type ParkedAssignRefusalCode =
   | 'POOL_MEMBERSHIP_REFUSED'
   | 'TICKET_MOVE_CURRENCY_BLOCKED'
   | 'HOUR_BLOCK_DRAWN_TIME'
+  | 'APPROVAL_REQUEST_PENDING'
   | 'PAM_DEVICE_MOVE_BLOCKED'
   | 'DELIVERABLE_TICKET_PINNED'
   // Lost a lock race (a bounded lock wait timed out, or a deadlock victim):
@@ -105,6 +107,7 @@ const REFUSAL_MESSAGES: Record<ParkedAssignRefusalCode, string> = {
   POOL_MEMBERSHIP_REFUSED: 'This device cannot be moved this way',
   TICKET_MOVE_CURRENCY_BLOCKED: 'Tickets on this device bill in a different currency than the target organization',
   HOUR_BLOCK_DRAWN_TIME: 'Tickets on this device carry time drawn from a block of prepaid hours',
+  APPROVAL_REQUEST_PENDING: 'A ticket on this device has a pending customer approval request',
   PAM_DEVICE_MOVE_BLOCKED: 'This device carries privileged-access history and cannot change organization',
   DELIVERABLE_TICKET_PINNED: 'A ticket on this device is pinned to a service deliverable',
   ASSIGNMENT_BUSY: 'Another change to this partner\'s devices is in progress. Try again in a moment',
@@ -352,6 +355,7 @@ function engineRefusal(err: unknown): ParkedAssignmentRefusedError | null {
   }
   if (err instanceof TicketMoveCurrencyBlockedError) return new ParkedAssignmentRefusedError('TICKET_MOVE_CURRENCY_BLOCKED');
   if (err instanceof TicketMoveHourBlockError) return new ParkedAssignmentRefusedError('HOUR_BLOCK_DRAWN_TIME');
+  if (err instanceof TicketMoveApprovalPendingError) return new ParkedAssignmentRefusedError('APPROVAL_REQUEST_PENDING');
   if (err instanceof PamDeviceMoveBlockedError) return new ParkedAssignmentRefusedError('PAM_DEVICE_MOVE_BLOCKED');
   if (err instanceof TicketServiceError && err.code === 'DELIVERABLE_TICKET_PINNED') {
     return new ParkedAssignmentRefusedError('DELIVERABLE_TICKET_PINNED');

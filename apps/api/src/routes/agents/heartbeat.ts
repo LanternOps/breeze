@@ -23,6 +23,7 @@ import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
 import {
   BACKUP_HELPER_PROTOCOL_MIN_VERSION,
@@ -1359,6 +1360,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       )).returning({ id: bareMetalRecoveries.id });
       recoveryMarkerAck = true;
       if (won) {
+        refreshReadinessAfterRecovery(agent.orgId, device.id);
         deviceUpdates.recoveredAt = checkedInNow;
         deviceUpdates.recoveredFromSnapshotId = rec.snapshotId;
         writeAuditEvent(c, {

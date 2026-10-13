@@ -176,3 +176,24 @@ func TestNormalizeDesktopInputEventRejectsNonBooleanCapsLock(t *testing.T) {
 		}
 	}
 }
+
+// The WS relay must keep stripping the W2b ordering fields. A WS session has no
+// input_reset path, so if seq crossed the relay the agent would treat the
+// session as sequenced and gate its input forever.
+func TestNormalizeDesktopInputEventDropsOrderingFields(t *testing.T) {
+	t.Parallel()
+
+	event, err := normalizeDesktopInputEvent(map[string]any{
+		"type": "key_down", "key": "a",
+		"seq": float64(7), "after": float64(6), "epoch": float64(3), "geoEpoch": float64(2),
+	})
+	if err != nil {
+		t.Fatalf("normalizeDesktopInputEvent error = %v", err)
+	}
+	if event.Seq != 0 || event.After != 0 || event.Epoch != 0 || event.GeoEpoch != 0 {
+		t.Fatalf("relay forwarded ordering fields: %+v", event)
+	}
+	if _, err := normalizeDesktopInputEvent(map[string]any{"type": "input_reset", "seq": float64(1), "epoch": float64(1)}); err == nil {
+		t.Fatal("relay accepted input_reset; the WS transport has no sequenced protocol")
+	}
+}

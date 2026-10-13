@@ -1153,6 +1153,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	uploadsInFlight := 0
 	var stagedBytes int64
 	next, head := 0, 0
+	// runEnding is set once a worker hands back an outcome that ends the run
+	// when its file reaches the head (writer still active, source gone,
+	// stopped). Nothing is admitted after that: the run ends at that file
+	// whatever the files before it do, so a new upload could only run
+	// against a fence that will not open or a dead snapshot and be
+	// discarded. The serial loop never started the file after its abort
+	// point either (#8490).
+	runEnding := false
 	// drainUploads cancels every worker and waits until each has returned.
 	// Every exit runs it before anything else touches the snapshot's prefix:
 	// abortStopped's cleanup and abortSourceGone's partial publish call it
@@ -1183,6 +1191,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		done.done, done.outcome = true, d.outcome
 		stagedBytes -= done.charged
 		done.charged = 0
+		if o := d.outcome; o.writerStillActive != nil || o.sourceGone != nil || o.stopped {
+			runEnding = true
+		}
 	}
 
 	// abortStopped is the single exit point for every errBackupStopped
@@ -1296,7 +1307,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	for head < len(files) {
 		// Admit files in walk order while the window, the worker bound and
 		// the staged-bytes budget allow.
-		for next < len(files) && next-head < window && uploadsInFlight < workers && ctx.Err() == nil {
+		for next < len(files) && next-head < window && uploadsInFlight < workers && ctx.Err() == nil && !runEnding {
 			i, file := next, files[next]
 			s := &uploadSlot{}
 			if file.kind != "" {
@@ -1335,6 +1346,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		s := slots[head]
 		if s == nil {
 			// Nothing admitted at the head: admission stops only on cancel.
+			// (It also stops on runEnding, but the slot that set it was
+			// admitted, so head reaches that slot and returns there first.)
 			return abortStopped()
 		}
 		if s.kind == slotUpload && !s.done {

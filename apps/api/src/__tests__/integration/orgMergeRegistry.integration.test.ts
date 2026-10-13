@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
+import { partners, organizations, contracts, contractLines } from '../../db/schema';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getOrgMergePolicies, __testOnly } from '../../services/orgMergeRegistry';
 import { buildRepointDedupe } from '../../services/orgMergeExecutors';
@@ -212,6 +214,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // and fire regardless.
   'pam_actuations.pam_actuations_transition_guard':
     'RAISEs 42501 iff org_id changed (apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql); generation/tombstone checks otherwise',
+  // PAM ownership epochs W2 (#8204, 2026-12-23-120000): RAISEs 42501 iff
+  // (device_id, org_id, device_epoch) changes. pam_actuations is blocks-merge,
+  // so a merge never writes it.
+  'pam_actuations.pam_actuations_epoch_guard':
+    'RAISEs 42501 iff (device_id, org_id, device_epoch) changes; blocks-merge table, never repointed',
   // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
   // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
@@ -472,6 +479,24 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
     dischargedBy: 'pam_actuations',
     requiredPolicyKind: 'blocks-merge',
     note: 'RAISEs 23514 on any devices.org_id change while the device has a pam_actuations row; a loser org with such rows is refused by the blocks-merge policy before the devices repoint',
+  },
+  // PAM ownership epochs W2 (#8204). Two branches on an org_id change:
+  //  - the request has a pam_actuations row: RAISE 42501 (evidence is frozen
+  //    to its epoch). A loser with such a row is refused by blocks-merge.
+  //  - no actuation: the row is re-anchored to its device's current epoch,
+  //    which requires the device to already be in the new org (else 23514).
+  //    The walk guarantees it even though elevation_requests sorts BEFORE
+  //    devices: the `sites` repoint (near the head of the walk) moves every
+  //    loser device through devices_site_org_fk ON UPDATE CASCADE (site_id is
+  //    NOT NULL, and PostgreSQL never defers a referential action), and that
+  //    devices UPDATE fires breeze_cascade_device_org_id, which restamps the
+  //    device's requests in the same statement. Pinned end to end by
+  //    orgMerge.integration.test.ts ('an un-actuated elevation request
+  //    follows its device into the survivor epoch').
+  'elevation_requests.elevation_requests_epoch_guard': {
+    dischargedBy: 'pam_actuations',
+    requiredPolicyKind: 'blocks-merge',
+    note: 'RAISEs 42501 on an org_id change of an actuated request (loser refused by blocks-merge); an un-actuated request is re-anchored to its device epoch, and follows its device via the devices repoint cascade',
   },
 };
 
@@ -918,5 +943,35 @@ describe('Org merge repoint-dedupe executors run against real Postgres', () => {
         throw new Error('org-merge-executors-smoke-rollback');
       })
     ).rejects.toThrow('org-merge-executors-smoke-rollback');
+  });
+});
+
+describe('contract_lines live-block index vs the merge registry (#4547 W03, Open Decision 14)', () => {
+  it('contract_lines is a plain repoint, and repointing a second live block onto the same org violates the live-block index — the reason orgMerge refuses such a pair before it fences anything', async () => {
+    expect(getOrgMergePolicies().get('contract_lines')).toMatchObject({ kind: 'repoint' });
+
+    const sfx = randomUUID().slice(0, 8);
+    const { a, b } = await withSystemDbAccessContext(async () => {
+      const [p] = await db.insert(partners).values({ name: `MB ${sfx}`, slug: `mb-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
+      const seed = async (tag: string) => {
+        const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: `MB ${tag} ${sfx}`, slug: `mb-${tag}-${sfx}`, currencyCode: 'USD' }).returning({ id: organizations.id });
+        const [c] = await db.insert(contracts).values({ partnerId: p!.id, orgId: o!.id, name: 'Block', status: 'draft', intervalMonths: 1, startDate: '2026-12-01', currencyCode: 'USD', billingTiming: 'advance' }).returning({ id: contracts.id });
+        const [l] = await db.insert(contractLines).values({
+          contractId: c!.id, orgId: o!.id, lineType: 'hour_block', description: 'Block', unitPrice: '1.00', taxable: false,
+          includedQuantity: '1.00', overageMode: 'bill', overageUnitPrice: '1.00', rolloverPolicy: 'none', hourBlockFirstPeriodStart: '2026-12-01',
+        }).returning({ id: contractLines.id });
+        return { orgId: o!.id, lineId: l!.id };
+      };
+      return { a: await seed('a'), b: await seed('b') };
+    });
+
+    // What the registry's plain repoint does to the loser's block (constraints deferred, as the merge walk does).
+    // The failed statement aborts the transaction, so the error surfaces when the context
+    // exits: catch it outside. Nothing is committed either way.
+    const err = await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
+    }).then(() => null, (e: unknown) => e);
+    expect(isPgUniqueViolation(err, 'contract_lines_one_live_hour_block_per_org_uq')).toBe(true);
   });
 });

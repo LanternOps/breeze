@@ -29,6 +29,7 @@ export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './warrantyInlineSettings';
+export * from './systemProtectionInlineSettings';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';

@@ -130,6 +130,8 @@ const REFUSAL_PATTERNS: readonly RegExp[] = [
   /^trash metadata exceeds maximum size/i,
   /^unsupported encoding:/i,
   /^(path|destPath|newPath|oldPath|sourcePath|trashId) is required/i,
+  // filesystem_analysis_gate.go (#8509): a second scan refused while one runs.
+  /^filesystem analysis already in progress/i,
 ];
 
 /** Refusals that are specifically a state conflict the user can reconcile. */
@@ -184,6 +186,7 @@ const AGENT_ERROR_CODE_KIND: Record<AgentCommandErrorCode, AgentRefusalKind> = {
   trash_metadata_too_large: ERROR_CODES.AGENT_COMMAND_REJECTED,
   unsupported_encoding: ERROR_CODES.AGENT_COMMAND_REJECTED,
   invalid_argument: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  scan_in_progress: ERROR_CODES.AGENT_COMMAND_REJECTED,
 };
 
 function failureForKind(kind: AgentRefusalKind, raw: string): CommandFailure {

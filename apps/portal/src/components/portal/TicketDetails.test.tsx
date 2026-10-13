@@ -55,6 +55,25 @@ describe('TicketDetails — statuses', () => {
   });
 });
 
+describe('TicketDetails — pending approval banner (#8200)', () => {
+  it('shows a banner linking to the request when work awaits approval', () => {
+    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', askSentence: 'Approve up to 1 h more on ticket #T-1' }} />);
+    const banner = screen.getByTestId('ticket-pending-approval');
+    expect(banner.textContent).toContain('This ticket has work waiting for your approval');
+    expect(banner.textContent).toContain('Approve up to 1 h more on ticket #T-1');
+    const link = screen.getByTestId('ticket-pending-approval-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toMatch(/\/approvals#req-9$/);
+  });
+
+  it('shows no banner without a pending approval', () => {
+    const { unmount } = render(<TicketDetails ticket={ticket()} />);
+    expect(screen.queryByTestId('ticket-pending-approval')).toBeNull();
+    unmount();
+    render(<TicketDetails ticket={ticket()} pendingApproval={null} />);
+    expect(screen.queryByTestId('ticket-pending-approval')).toBeNull();
+  });
+});
+
 describe('TicketDetails — SLA status', () => {
   it.each([
     ['breached', 'SLA breached'],

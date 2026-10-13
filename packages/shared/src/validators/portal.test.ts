@@ -5,7 +5,8 @@ import {
   bulkInvitePortalUsersSchema,
   updatePortalUserSchema,
   findUnsafePortalCssPattern,
-  PORTAL_CUSTOM_CSS_MAX_LENGTH
+  PORTAL_CUSTOM_CSS_MAX_LENGTH,
+  PORTAL_SENSITIVE_FLAG_KEYS
 } from './portal';
 
 describe('updatePortalSettingsSchema', () => {
@@ -101,6 +102,14 @@ describe('updatePortalSettingsSchema', () => {
   it.each([true, false])('accepts the Network Alerts flag=%s', (enableNetworkAlerts) => {
     expect(updatePortalSettingsSchema.parse({ enableNetworkAlerts }))
       .toEqual({ enableNetworkAlerts });
+  });
+
+  it.each([true, false])('accepts the Support hours flag=%s', (enableHourBlock) => {
+    expect(updatePortalSettingsSchema.parse({ enableHourBlock })).toEqual({ enableHourBlock });
+  });
+
+  it.each([null, 'true', 1])('rejects a non-boolean Support hours flag=%s', (enableHourBlock) => {
+    expect(updatePortalSettingsSchema.safeParse({ enableHourBlock }).success).toBe(false);
   });
 
   it('rejects non-boolean portal visibility flags', () => {
@@ -265,6 +274,10 @@ describe('updatePortalSettingsSchema W04 flags', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableHardwareInventory: true }).success).toBe(true);
     expect(updatePortalSettingsSchema.safeParse({ enablePerformanceMetrics: true }).success).toBe(true);
     expect(updatePortalSettingsSchema.safeParse({ enableSoftwareInventory: true }).success).toBe(true);
+    expect(updatePortalSettingsSchema.safeParse({ enablePatchDetail: true }).success).toBe(true);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
+    expect(updatePortalSettingsSchema.safeParse({ enableVulnerabilityDetail: true }).success).toBe(true);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enableVulnerabilityDetail');
   });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);

@@ -24,7 +24,8 @@
         "perDeviceRole": "Por rol de dispositivo",
         "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por asiento",
-        "manual": "Cantidad manual"
+        "manual": "Cantidad manual",
+        "hourBlock": "Bolsa de horas"
       },
       "dynamicGroup": "dinámico",
       "deletedGroup": "{{name}} (grupo eliminado)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Versión publicada",
       "warnings": {
         "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de los acuerdos admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Horas incluidas por período",
+        "extraRate": "Precio por hora adicional",
+        "rolloverMode": "Horas sin usar al final del período",
+        "rolloverExpire": "Vencen",
+        "rolloverCarry": "Se trasladan",
+        "carryCap": "Límite de horas trasladables (vacío para sin límite)",
+        "alertPct": "Alertar al usar este % de la bolsa (opcional)",
+        "required": "Ingresa las horas incluidas y el precio por hora adicional.",
+        "firstPeriod": "Las horas cuentan desde el primer período de facturación aún por facturar; en un contrato en borrador se define al activarlo. El tiempo anterior se factura como de costumbre.",
+        "midPeriodEdit": "Los cambios se aplican al período abierto actual ({{start}} – {{end}}) cuando se cierre.",
+        "midPeriodEditNoDates": "Los cambios se aplican al período abierto actual cuando se cierre.",
+        "onlyOne": "Esta organización ya tiene una bolsa activa. Retírala antes de agregar otra."
+      },
+      "row": {
+        "perPeriod": "{{hours}} horas por período",
+        "retiredBadge": "Retirada",
+        "startsOn": "Cuenta desde {{date}}"
+      },
+      "errors": {
+        "exists": "Esta organización ya tiene una línea de bolsa de horas activa. Retírala primero y luego agrega la nueva.",
+        "locked": "Ese campo no se puede cambiar en una línea de bolsa de horas."
+      },
+      "retire": {
+        "title": "Retirar bolsa de horas",
+        "message": "«{{description}}» tiene historial de facturación, por lo que se retira en lugar de eliminarse. No habrá períodos nuevos; los períodos ya facturados se siguen liquidando. Los períodos cerrados permanecen en el contrato.",
+        "confirm": "Retirar bolsa",
+        "toast": "Bolsa de horas retirada"
+      },
+      "detail": {
+        "title": "Bolsa de horas",
+        "usage": "{{used}} de {{included}} horas usadas · {{remaining}} restantes · el período termina el {{end}}",
+        "carried": "Incluye {{hours}} horas trasladadas.",
+        "unapproved": "{{hours}} horas de este tiempo aún no están aprobadas.",
+        "foreign": "{{hours}} horas se registraron en otra moneda; igualmente descuentan de la bolsa.",
+        "over": "{{hours}} horas por encima de la bolsa → {{amount}} al cierre del período",
+        "advanceNote": "El exceso se factura en la factura siguiente.",
+        "arrearsNote": "El exceso se factura en la factura de este período.",
+        "lateEntry": "{{hours}} horas se registraron después del cierre de su período y se facturan por separado.",
+        "startsLater": "La bolsa comienza el {{date}}.",
+        "extraRate": "Horas adicionales: {{rate}} cada una",
+        "loadFailed": "No se pudo cargar el uso de la bolsa."
+      },
+      "history": {
+        "title": "Períodos de bolsa cerrados",
+        "empty": "Aún no se ha cerrado ningún período de bolsa.",
+        "included": "Incluidas",
+        "carriedIn": "Trasladadas de entrada",
+        "used": "Usadas",
+        "over": "Exceso",
+        "carriedOut": "Trasladadas de salida",
+        "loadMore": "Cargar más",
+        "invoiceRemoved": "Factura del exceso eliminada: horas no facturadas"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "fuente de factura",
       "title": "Nueva factura",
       "to": "A",
-      "working": "Procesando…"
+      "working": "Procesando…",
+      "heldForHourBlock_one": "{{count}} registro de tiempo ({{hours}} horas) está retenido para la bolsa de horas de esta organización y se facturará cuando se cierre el período de la bolsa.",
+      "heldForHourBlock_other": "{{count}} registros de tiempo ({{hours}} horas) están retenidos para la bolsa de horas de esta organización y se facturarán cuando se cierre el período de la bolsa."
     },
     "empty": {
       "description": "Reúna el tiempo y las piezas no facturados en un borrador o inicie una factura en blanco.",

@@ -61,6 +61,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'time_sync',
   // #3834. APPENDED, matching the migration's ADD VALUE order.
   'workload_inventory',
+  // #4609. APPENDED, matching the migration's ADD VALUE order.
+  'system_protection',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

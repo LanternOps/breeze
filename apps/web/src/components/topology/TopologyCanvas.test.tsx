@@ -20,7 +20,7 @@ beforeAll(() => {
 afterEach(() => { cleanup(); created.length = 0; });
 
 const empty: TopologyRender = { nodes: [], edges: [], grouped: false, hiddenNetworkCount: 0, hiddenDeviceCount: 0,
-  site: {} as TopologyRender['site'] };
+  site: {} as TopologyRender['site'], roster: [], siteHasDeclarations: false };
 
 it('never runs Cytoscape\'s default grid layout: positions are always set by the canvas itself (#8113)', async () => {
   const { default: TopologyCanvas } = await import('./TopologyCanvas');

@@ -13,13 +13,13 @@ import type { PamSettings } from '../routes/agents/pamSettings';
  * is derived from exactly that org's row and its own partner's row. Nothing
  * here is secret.
  *
- * Staleness: a settings change reaches an org's agents up to one TTL later
- * than before on other API instances (and an agent only learns of it at its
- * next 60 s beat in any case). The org/partner settings routes in
- * routes/orgs.ts invalidate this process at once. Other writers of
- * `organizations.settings` / `partners.settings` (imports, onboarding, the
- * topology bootstrap) rely on the TTL. An org merge re-points automation_policies,
- * so the target org's policy probe can be up to one TTL stale after a merge.
+ * Staleness: writers below invalidate every API instance within about 1 s
+ * through the cluster bus (W05, #8144): the org/partner settings routes in
+ * routes/orgs.ts call invalidateAgentOrgSettingsCaches after their write, and
+ * the publish runs only once their transaction commits. Writers not listed
+ * rely on the TTL; `__tests__/orgSettingsWriters.contract.test.ts` classifies
+ * every `organizations` / `partners` writer so a new one cannot skip this
+ * silently. An agent only learns of a change at its next 60 s beat in any case.
  *
  * The loaders live with their resolvers (`getOrgAgentUpdateConfigCached` in
  * routes/agents/helpers.ts, `loadAgentTopologyFlags` in
@@ -36,17 +36,21 @@ export const orgAgentUpdateConfigCache = new HotPathTtlCache<string, AgentUpdate
   name: 'org-agent-update-config',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgTopologyFlagsCache = new HotPathTtlCache<string, TopologyFlags>({
   name: 'org-topology-flags',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 /**
  * Drop the cached per-org agent settings on this process, now and again once
  * the caller's transaction settles (writers call this before their COMMIT).
+ * All three caches are `cluster: true`, so the drop is also announced to every
+ * other API instance once the outermost transaction commits (W05, #8144).
  * Without an org id every org is dropped — the right call after a PARTNER
  * settings change, which feeds every org under that partner.
  */
@@ -64,8 +68,9 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  * the full scope of each value (the probe also depends on the org's partner,
  * which is a property of the org). Nothing here is secret.
  *
- * Staleness on OTHER API instances is up to one TTL (60 s) — process-local
- * invalidation only until W1b. On the writing instance:
+ * Writers below invalidate every API instance within about 1 s through the
+ * cluster bus (W05, #8144), once their transaction commits. Writers not listed
+ * rely on the TTL (60 s). An org merge invalidates all three for both orgs.
  *   - policy probe (automation_policies rules, org-owned + the partner's
  *     partner-wide): POST /policies/:id/deactivate invalidates — the only
  *     invalidating write today, because no route creates automation_policies
@@ -77,24 +82,27 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  *     120 s per-device Redis helper cache.
  *   - PAM org fallback (pam_org_config.uac_interception_enabled): NO route
  *     writes it today. TTL only. A future writer must call
- *     `orgPamFallbackCache.invalidateAroundCommit(orgId)`.
+ *     `invalidateOrgPamFallbackCache(orgId)`.
  */
 export const orgPolicyProbeCache = new HotPathTtlCache<string, PolicyProbeConfigUpdate | null>({
   name: 'org-policy-probe',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgHelperSettingsCache = new HotPathTtlCache<string, { enabled: boolean }>({
   name: 'org-helper-legacy-settings',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgPamFallbackCache = new HotPathTtlCache<string, PamSettings>({
   name: 'org-pam-fallback',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 /** Without an org id (a partner-wide policy changed) every org is dropped. */
@@ -104,4 +112,9 @@ export function invalidateOrgPolicyProbeCache(orgId?: string): void {
 
 export function invalidateOrgHelperSettingsCache(orgId: string): void {
   orgHelperSettingsCache.invalidateAroundCommit(orgId);
+}
+
+/** The PAM org fallback has no writer today; a future one calls this (and an org merge does). */
+export function invalidateOrgPamFallbackCache(orgId: string): void {
+  orgPamFallbackCache.invalidateAroundCommit(orgId);
 }

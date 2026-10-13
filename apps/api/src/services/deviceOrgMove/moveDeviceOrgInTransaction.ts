@@ -23,7 +23,7 @@ import {
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
   DEVICE_ORG_FK_CASCADE_TABLES,
-  DEVICE_SITE_DENORMALIZED_TABLES,
+  rewriteDeviceSiteDenormalizedTables,
 } from '../../routes/devices/core';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { propagateCancelledDeviceCommands } from '../commandCancelPropagation';
@@ -36,6 +36,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../ticketMoveCurrencyGuard';
 import { assertNoHourBlockDrawnTime } from '../ticketMoveHourBlockGuard';
+import { assertNoPendingApprovalRequest } from '../ticketMoveApprovalGuard';
 import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
 import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
@@ -943,6 +944,9 @@ export async function moveDeviceOrgInTransaction(
   const ticketIds = (
     await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))
   ).map((r) => r.id);
+  // #4617: a pending customer approval request blocks the move (409
+  // APPROVAL_REQUEST_PENDING); lock-free, see ticketMoveApprovalGuard.ts.
+  await assertNoPendingApprovalRequest(tx, { ticketIds });
   // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME).
   await assertNoHourBlockDrawnTime(tx, { ticketIds });
   currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
@@ -1311,16 +1315,11 @@ export async function moveDeviceOrgInTransaction(
     ? alertChildCounts
     : null;
 
-  // Rewrite denormalized site_id on every device-scoped table that has
-  // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
-  // in core.ts). Skipping any of these strands rows under the OLD
-  // site_id. PATCH /devices/:id (core.ts) performs the same propagation
-  // for same-org site changes; keep both loops in lockstep.
-  for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
-    await tx.execute(
-      sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,
-    );
-  }
+  // Rewrite denormalized site_id through rewriteDeviceSiteDenormalizedTables
+  // (core.ts), the helper PATCH /devices/:id uses too, so the two paths
+  // cannot drift. Only the device's current-epoch rows follow the site;
+  // earlier epochs keep their event-time site (W2, #8204).
+  await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
   return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome };
 }

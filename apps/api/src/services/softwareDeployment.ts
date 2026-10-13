@@ -19,6 +19,12 @@ import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import { deliveryTtlMs } from './commandOfflinePolicy';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  restorePointPayloadField,
+} from './restorePointRequest';
+import {
   evaluateManagedSoftwareDispatch,
   type ManagedSoftwareDispatchDenialReason,
   getManagedSoftwarePolicyMode,
@@ -156,6 +162,19 @@ export interface SoftwareInstallDispatchOutcome {
  * The caller (routes/software.ts retry endpoint) MUST bump retryCount in the DB
  * before calling this, and pass that same post-bump value here.
  */
+/**
+ * Thrown by {@link dispatchSoftwareInstallToDevice} when the install was NOT
+ * handed to the agent: the seam refused it (no command row) or the push claim
+ * cancelled it. Distinguishes "nothing was sent" from a failure after the
+ * command row already exists (e.g. the deployment-result link write).
+ */
+export class SoftwareInstallDispatchRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SoftwareInstallDispatchRefusedError';
+  }
+}
+
 export async function dispatchSoftwareInstallToDevice(
   deploymentId: string,
   device: { id: string; agentId: string },
@@ -176,13 +195,13 @@ export async function dispatchSoftwareInstallToDevice(
   });
 
   if (!res.ok) {
-    throw new Error(`software_install dispatch refused for device ${device.id}: ${res.error}`);
+    throw new SoftwareInstallDispatchRefusedError(`software_install dispatch refused for device ${device.id}: ${res.error}`);
   }
   // The push's claim-time eligibility cancelled the row before the result row
   // below is linked to it, so nothing else will terminalise that result: refuse
   // like the seam's own refusals, and the caller fails it with this reason.
   if (res.delivery === 'cancelled') {
-    throw new Error(
+    throw new SoftwareInstallDispatchRefusedError(
       `software_install dispatch refused for device ${device.id}: ${cancelledCommandError(res.cancelReason)}`,
     );
   }
@@ -212,6 +231,54 @@ export async function dispatchSoftwareInstallToDevice(
       }
       : {}),
   };
+}
+
+/**
+ * #4609 W05: stamp the System Restore checkpoint decision onto one device's
+ * install payload, then dispatch it. The ONE place both fan-out builders (the
+ * package-manager path and the download-URL path) resolve it, so neither can
+ * drift. Runs inside each builder's per-device try, so a resolution failure
+ * fails that device visibly through the builder's existing catch.
+ *
+ * Every business attempt (first dispatch, or a retry that bumped retryCount
+ * and so gets a new command id) re-enters here and re-resolves with a fresh
+ * requestId; transport redelivery of the same command id never does.
+ */
+async function dispatchSoftwareInstallWithRestorePoint(
+  deploymentId: string,
+  orgId: string,
+  device: { id: string; agentId: string; osType: string | null },
+  payload: AgentCommand['payload'] & { softwareName?: unknown },
+  createdBy: string | null | undefined,
+  retryCount: number,
+  options: { deferDelivery?: boolean },
+): Promise<SoftwareInstallDispatchOutcome> {
+  const restorePoint = await buildRestorePointRequest({
+    deviceId: device.id,
+    orgId,
+    osType: device.osType,
+    trigger: 'software_install',
+    label: `install ${typeof payload.softwareName === 'string' ? payload.softwareName : 'software'}`,
+    softwareDeploymentId: deploymentId,
+  });
+  let dispatch: SoftwareInstallDispatchOutcome;
+  try {
+    dispatch = await dispatchSoftwareInstallToDevice(
+      deploymentId,
+      device,
+      { ...payload, ...restorePointPayloadField(restorePoint) },
+      createdBy,
+      retryCount,
+      options,
+    );
+  } catch (err) {
+    // Only a refusal means nothing was sent. Any other throw can come after the
+    // command row exists (it still carries the block), so the row is kept.
+    if (err instanceof SoftwareInstallDispatchRefusedError) await discardRestorePointRequest(restorePoint);
+    throw err;
+  }
+  await linkRestorePointCommand(restorePoint, dispatch.deviceCommandId);
+  return dispatch;
 }
 
 /** Structural subset of a software_versions row the install fan-out needs. */
@@ -538,7 +605,7 @@ async function dispatchManagerInstalls(
     // silent-death bug this feature exists to remove.
     let dispatch: SoftwareInstallDispatchOutcome;
     try {
-      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount, {
+      dispatch = await dispatchSoftwareInstallWithRestorePoint(deploymentId, orgId, device, payload, createdBy, retryCount, {
         deferDelivery: input.deferDelivery,
       });
     } catch (err) {
@@ -708,6 +775,7 @@ export async function buildAndDispatchSoftwareInstalls(
       siteId: devices.siteId,
       hostname: devices.hostname,
       customFields: devices.customFields,
+      osType: devices.osType,
       // Wave 6 Task 5: the agent's outbound-network-policy capability, written
       // from the heartbeat handshake. 0 = pre-Wave-6 agent with no dial-time
       // destination policy.
@@ -1011,7 +1079,7 @@ export async function buildAndDispatchSoftwareInstalls(
     // silent-death bug this feature exists to remove.
     let dispatch: SoftwareInstallDispatchOutcome;
     try {
-      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount, {
+      dispatch = await dispatchSoftwareInstallWithRestorePoint(deploymentId, orgId, device, payload, createdBy, retryCount, {
         deferDelivery: input.deferDelivery,
       });
     } catch (err) {

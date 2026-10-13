@@ -52,7 +52,7 @@ function addinTimeActorFrom(auth: OfficeAddinTechAuth): TimeEntryActor {
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TimeEntryServiceError) {
-    return c.json({ error: err.code ?? err.message }, err.status);
+    return c.json({ error: err.code ?? err.message, ...(err.details ? { details: err.details } : {}) }, err.status);
   }
   throw err;
 }

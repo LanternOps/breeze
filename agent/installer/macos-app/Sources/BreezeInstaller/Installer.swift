@@ -42,9 +42,6 @@ struct Installer {
         if let secret = enrollmentSecret, !secret.isEmpty {
             enrollArgs += ["--enrollment-secret", Installer.shellEscape(secret)]
         }
-        if let site = siteId, !site.isEmpty {
-            enrollArgs += ["--site-id", Installer.shellEscape(site)]
-        }
         let enrollCmd = enrollArgs.joined(separator: " ")
         let command = "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && /usr/local/bin/breeze-agent enroll \(enrollCmd)"
         let prompt = "Breeze needs to install the agent and configure system services."

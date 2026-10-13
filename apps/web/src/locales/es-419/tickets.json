@@ -451,7 +451,9 @@
       "allMissingRate": "No se pudo facturar nada: a todas las entradas de tiempo facturables de este ticket les falta la tarifa por hora.",
       "missingRateHeading": "Entradas de tiempo sin tarifa por hora (no facturadas; defina una tarifa y vuelva a crear la factura):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Definir una tarifa en la hoja de horas"
+      "setRate": "Definir una tarifa en la hoja de horas",
+      "heldForHourBlock_one": "{{count}} registro de tiempo ({{hours}} horas) está retenido para la bolsa de horas de esta organización y se facturará cuando se cierre el período de la bolsa.",
+      "heldForHourBlock_other": "{{count}} registros de tiempo ({{hours}} horas) están retenidos para la bolsa de horas de esta organización y se facturarán cuando se cierre el período de la bolsa."
     },
     "move": {
       "open": "Mover a otra organización...",
@@ -551,5 +553,123 @@
     "missingRate": "Facturable · tarifa no configurada",
     "recalculated": "La facturación se recalcula para este tipo de trabajo al guardar.",
     "unavailable": "Resultado de facturación no disponible"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Esta solicitud de aprobación ya no está pendiente.",
+      "requestChanged": "La solicitud cambió mientras la revisaba. Se recargó la versión más reciente; revísela e inténtelo de nuevo.",
+      "requestExpired": "Esta solicitud de aprobación venció. Vuelva a solicitarla para enviar una nueva.",
+      "requestAlreadyPending": "Ya hay una solicitud de aprobación pendiente en este ticket por el mismo motivo.",
+      "requestNotReaskable": "Solo se puede volver a solicitar una solicitud rechazada, vencida o cancelada que aún tenga tiempo retenido.",
+      "nothingHeld": "Este ticket no tiene tiempo retenido para el que solicitar aprobación.",
+      "approvalsDisabled": "La aprobación del cliente no está habilitada para este cliente.",
+      "entryNotResolvable": "Este tiempo solo se puede dar de baja cuando su solicitud de aprobación fue rechazada, venció o se canceló.",
+      "approvalRequestPending": "Este ticket tiene una solicitud de aprobación a la espera del cliente, por lo que no se puede mover. Cancele o resuelva primero la solicitud.",
+      "sourceAwaitingApproval": "Parte del tiempo de esta factura está esperando la aprobación del cliente. Consiga que se apruebe o dé de baja ese tiempo antes de emitirla.",
+      "approvalRequired": "Se necesita la aprobación del cliente antes de registrar tiempo facturable en este ticket. Solicite la aprobación desde el panel de aprobaciones del ticket."
+    },
+    "budget": {
+      "title": "Presupuesto y aprobación",
+      "hours": "Presupuesto (horas)",
+      "amount": "Monto del presupuesto",
+      "save": "Guardar presupuesto",
+      "saved": "Presupuesto guardado",
+      "saveFailed": "No se pudo guardar el presupuesto",
+      "invalidHours": "Ingrese horas mayores que 0 o déjelo en blanco para no tener límite.",
+      "invalidAmount": "Ingrese un monto mayor que 0 con un máximo de 2 decimales o déjelo en blanco.",
+      "ceiling": "Tope {{ceiling}}",
+      "ceilingWithExtensions": "Tope {{ceiling}} (presupuesto {{budget}} + {{extra}} aprobadas)",
+      "noBudget": "Sin presupuesto definido",
+      "usedLegend": "Usado {{value}}",
+      "heldLegend": "Esperando aprobación {{value}}",
+      "unpriced_one": "{{count}} entrada retenida aún no tiene precio.",
+      "unpriced_other": "{{count}} entradas retenidas aún no tienen precio.",
+      "barLabel": "Uso del presupuesto",
+      "requestApproval": "Solicitar aprobación"
+    },
+    "request": {
+      "trigger": "Motivo",
+      "triggerBudget": "Presupuesto excedido",
+      "triggerAfterHours": "Trabajo fuera de horario",
+      "extensionMinutes": "Minutos adicionales",
+      "extensionAmount": "Monto adicional",
+      "windowStart": "Cubre desde",
+      "windowEnd": "Cubre hasta",
+      "message": "Mensaje para el cliente (opcional)",
+      "submit": "Enviar solicitud",
+      "sent": "Solicitud de aprobación enviada",
+      "failed": "No se pudo enviar la solicitud de aprobación",
+      "invalidExtension": "Ingrese minutos adicionales o un monto adicional mayor que 0.",
+      "invalidWindow": "Elija un inicio y un fin, con el fin posterior al inicio y a no más de 14 días de distancia."
+    },
+    "panel": {
+      "title": "Aprobaciones del cliente",
+      "status": {
+        "pending": "Pendiente",
+        "approved": "Aprobada",
+        "denied": "Rechazada",
+        "expired": "Vencida",
+        "cancelled": "Cancelada"
+      },
+      "revision": "Revisión {{n}}",
+      "ask": "Solicita {{ask}}",
+      "window": "Cubre del {{from}} al {{to}}",
+      "expires": "Vence {{when}}",
+      "heldEntries_one": "{{count}} entrada retenida",
+      "heldEntries_other": "{{count}} entradas retenidas",
+      "approvers": "Aprobadores",
+      "notified": "Notificados",
+      "noneListed": "Ninguno",
+      "noApprover": "No hay aprobador registrado: agregue un contacto de facturación o registre la decisión en su nombre.",
+      "decidedByCustomer": "Decidido por {{who}}",
+      "customerFallback": "el cliente",
+      "decidedOnBehalf": "Registrado por {{user}} en nombre de {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "De palabra",
+        "email": "Correo electrónico",
+        "signedDocument": "Documento firmado",
+        "other": "Otro"
+      },
+      "cancel": "Cancelar solicitud",
+      "cancelConfirmTitle": "¿Cancelar esta solicitud de aprobación?",
+      "cancelConfirmMessage": "El cliente ya no podrá responder. El tiempo ya retenido sigue retenido hasta que vuelva a solicitar o lo dé de baja.",
+      "cancelled": "Solicitud de aprobación cancelada",
+      "cancelFailed": "No se pudo cancelar la solicitud",
+      "reask": "Volver a solicitar",
+      "reaskSubmit": "Enviar de nuevo",
+      "reasked": "Solicitud de aprobación enviada de nuevo",
+      "reaskFailed": "No se pudo volver a solicitar",
+      "record": "Registrar decisión"
+    },
+    "record": {
+      "title": "Registrar la decisión del cliente",
+      "intro": "Úselo cuando el cliente le comunicó su decisión fuera de Breeze. Queda registrada a su nombre.",
+      "target": "Revisión {{revision}} · {{ask}}",
+      "decision": "Decisión",
+      "approve": "Aprobada",
+      "deny": "Rechazada",
+      "method": "¿Cómo se comunicó?",
+      "reference": "Referencia",
+      "referencePlaceholder": "p. ej., llamada del 12 de oct., asunto del correo, número de documento",
+      "signerName": "Nombre del cliente",
+      "signerEmail": "Correo del cliente (opcional)",
+      "note": "Nota (opcional)",
+      "submit": "Registrar decisión",
+      "recorded": "Decisión registrada",
+      "failed": "No se pudo registrar la decisión"
+    },
+    "held": {
+      "chip": "Esperando aprobación del cliente",
+      "writeOff": "Dar de baja",
+      "writeOffTitle": "¿Dar de baja el tiempo retenido?",
+      "writeOffMessage": "Este tiempo está retenido porque el cliente no lo aprobó. Al darlo de baja se marca sin cargo y no se facturará.",
+      "writtenOff": "Tiempo dado de baja",
+      "writeOffFailed": "No se pudo dar de baja el tiempo"
+    },
+    "timer": {
+      "startNonBillable": "Iniciar como no facturable"
+    },
+    "loadError": "No se pudieron cargar las aprobaciones del cliente",
+    "retry": "Reintentar"
   }
 }

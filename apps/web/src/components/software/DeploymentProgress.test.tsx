@@ -537,3 +537,65 @@ describe("DeploymentProgress — in-flight installs (#3578)", () => {
     expect(screen.queryByTestId(/^deployment-result-elapsed-/)).not.toBeInTheDocument();
   });
 });
+
+describe("DeploymentProgress restore-point badge (#4759)", () => {
+  const restorePoint = (status: string) => ({
+    status,
+    requestId: "r-1",
+    attemptedAt: "2026-07-20T10:00:30Z",
+    durationMs: 900,
+    message: null,
+    existingPointAgeMinutes: null,
+    frequencyMinutes: null,
+  });
+
+  it("renders the badge on a device row whose result carries an outcome", async () => {
+    routeFetch({
+      detail: detailPayload("completed", { completed: 1, total: 1 }),
+      results: {
+        data: [{ ...RESULT_COMPLETED, restorePoint: restorePoint("created") }],
+        total: 1,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    const row = screen.getByTestId("deployment-result-row-res-1");
+    expect(within(row).getByTestId("restore-point-badge").textContent).toMatch(
+      /restore point creation confirmed/i,
+    );
+  });
+
+  it("shows only the rows that have an outcome, one badge per device", async () => {
+    routeFetch({
+      detail: detailPayload("completed", { completed: 2, total: 2 }),
+      results: {
+        data: [
+          { ...RESULT_COMPLETED, restorePoint: restorePoint("requested") },
+          { ...RESULT_QUEUED_OFFLINE, restorePoint: null },
+        ],
+        total: 2,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(screen.getAllByTestId("restore-point-badge")).toHaveLength(1);
+    const row = screen.getByTestId("deployment-result-row-res-1");
+    expect(within(row).getByTestId("restore-point-badge").textContent).toMatch(/awaiting the device/i);
+  });
+
+  it("renders no badge when no row has an outcome (agents that predate #4609)", async () => {
+    routeFetch({
+      detail: detailPayload("completed", { completed: 1, total: 1 }),
+      results: { data: [RESULT_COMPLETED], total: 1 },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(screen.queryByTestId("restore-point-badge")).not.toBeInTheDocument();
+  });
+});

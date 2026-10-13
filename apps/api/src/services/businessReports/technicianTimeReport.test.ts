@@ -180,6 +180,9 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     expect(s.groups[0]!.billedMinutes).toBe(1200);
     expect(s.groups[0]!.billingConversion).toBeCloseTo(1200 / 1600, 6);
     expect(calls[0]!.sql).toMatch(/e\.is_approved AND e\.billing_status IN \('billed', 'contract'\)/);
+    // #4617: time held for customer approval ('awaiting_approval') is never billed — it stays in the
+    // billable-quantity denominator but out of the billed numerator.
+    expect(calls[0]!.sql).not.toMatch(/awaiting_approval/);
   });
 
   it('billable value is one entry per currency — never collapsed — as numeric strings', async () => {

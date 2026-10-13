@@ -248,6 +248,26 @@ describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => 
     expect(summary).not.toHaveTextContent('Devices on this range report different gateways');
   });
 
+  it('says whether a network card is declared for the site, and names the empty declared card', () => {
+    const open = (extra: Record<string, unknown>) => {
+      const graph = withPhone({}, extra);
+      render(<TopologyInspector graph={graph} siteName="Main Office" selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+      return screen.getByTestId('topology-declaration');
+    };
+    expect(open({ declaration: { state: 'declared', sources: ['discovery_profile'] } })).toHaveTextContent('Declared for this site (discovery profile)');
+    cleanup();
+    expect(open({ declaration: { state: 'declared', sources: ['network_baseline'] } })).toHaveTextContent('Declared for this site (network baseline)');
+    cleanup();
+    expect(open({ declaration: { state: 'declared', sources: ['discovery_profile', 'network_baseline'] } })).toHaveTextContent('Declared for this site (discovery profile and network baseline)');
+    cleanup();
+    expect(open({ declaration: { state: 'undeclared', sources: [] } })).toHaveTextContent('Not declared for Main Office');
+    cleanup();
+    expect(open({ basis: 'declared_site_network', declaration: { state: 'declared', sources: ['discovery_profile'] } })).toHaveTextContent('Declared for Main Office — no device reports this network');
+    cleanup();
+    render(<TopologyInspector graph={withPhone({})} selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.queryByTestId('topology-declaration')).toBeNull();
+  });
+
   it('shows corroborated gateway MACs on a gateway group', () => {
     const graph = topologyGraphFixture();
     graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.1', memberCount: 0, frontierToken: 't', authority: false,

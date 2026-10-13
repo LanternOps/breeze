@@ -24,7 +24,8 @@
         "perDeviceRole": "Per device role",
         "perDeviceGroup": "Per device group",
         "perSeat": "Per seat",
-        "manual": "Manual quantity"
+        "manual": "Manual quantity",
+        "hourBlock": "Block hours"
       },
       "dynamicGroup": "dynamic",
       "deletedGroup": "{{name}} (deleted group)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Version published",
       "warnings": {
         "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Agreement bodies support headings, bold, italic, underline, lists and links."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Hours included per period",
+        "extraRate": "Price per extra hour",
+        "rolloverMode": "Unused hours at period end",
+        "rolloverExpire": "Expire",
+        "rolloverCarry": "Carry forward",
+        "carryCap": "Carry-forward limit in hours (blank for no limit)",
+        "alertPct": "Alert at % of block used (optional)",
+        "required": "Enter the included hours and the price per extra hour.",
+        "firstPeriod": "Hours count from the first billing period still to be invoiced; on a draft contract this is set when it is activated. Earlier time bills as usual.",
+        "midPeriodEdit": "Changes apply to the current open period ({{start}} – {{end}}) at its close.",
+        "midPeriodEditNoDates": "Changes apply to the current open period at its close.",
+        "onlyOne": "This organization already has an active block. Retire it before adding another."
+      },
+      "row": {
+        "perPeriod": "{{hours}} hours per period",
+        "retiredBadge": "Retired",
+        "startsOn": "Counts from {{date}}"
+      },
+      "errors": {
+        "exists": "This organization already has an active block-hours line. Retire it first, then add the new one.",
+        "locked": "That field can't be changed on a block-hours line."
+      },
+      "retire": {
+        "title": "Retire block hours",
+        "message": "\"{{description}}\" has billing history, so it is retired instead of deleted. No new periods; already-billed periods still settle. Its closed periods stay on the contract.",
+        "confirm": "Retire block",
+        "toast": "Block hours retired"
+      },
+      "detail": {
+        "title": "Block hours",
+        "usage": "{{used}} of {{included}} hours used · {{remaining}} remaining · period ends {{end}}",
+        "carried": "Includes {{hours}} hours carried forward.",
+        "unapproved": "{{hours}} hours of this time are not yet approved.",
+        "foreign": "{{hours}} hours were logged in another currency; they still draw down the block.",
+        "over": "{{hours}} hours over the block → {{amount}} at period close",
+        "advanceNote": "Overage bills on the following invoice.",
+        "arrearsNote": "Overage bills on this period's invoice.",
+        "lateEntry": "{{hours}} hours were entered after their period closed and bill separately.",
+        "startsLater": "Block starts {{date}}.",
+        "extraRate": "Extra hours: {{rate}} each",
+        "loadFailed": "Block usage couldn't be loaded."
+      },
+      "history": {
+        "title": "Closed block periods",
+        "empty": "No block period has closed yet.",
+        "included": "Included",
+        "carriedIn": "Carried in",
+        "used": "Used",
+        "over": "Over",
+        "carriedOut": "Carried out",
+        "loadMore": "Load more",
+        "invoiceRemoved": "Overage invoice removed — hours not billed"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "Invoice source",
       "title": "New invoice",
       "to": "To",
-      "working": "Working…"
+      "working": "Working…",
+      "heldForHourBlock_one": "{{count}} time entry ({{hours}} hours) is held for this organization's block hours and will be billed when the block period closes.",
+      "heldForHourBlock_other": "{{count}} time entries ({{hours}} hours) are held for this organization's block hours and will be billed when the block period closes."
     },
     "empty": {
       "description": "Assemble unbilled time and parts into a draft, or start a blank invoice.",

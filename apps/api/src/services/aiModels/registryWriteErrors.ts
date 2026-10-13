@@ -20,7 +20,10 @@ export type RegistryWriteCode =
   // a new endpoint URL needs its own key (or none) in the same write; a
   // connection holds a bounded number of hand-entered models.
   | 'managed_by_env' | 'connection_in_use' | 'duplicate_model' | 'not_gateway'
-  | 'key_required_for_new_endpoint' | 'too_many_models';
+  | 'key_required_for_new_endpoint' | 'too_many_models'
+  // #8510: only a hand-added model can be removed; discovered/platform/catalog
+  // rows are re-created by the next sync, so they are disabled instead.
+  | 'not_removable';
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 

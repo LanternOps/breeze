@@ -45,6 +45,8 @@ interface TicketDetailsProps {
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
+  /** A work-approval request on this ticket that the viewer can decide (#8200). */
+  pendingApproval?: { id: string; askSentence?: string } | null;
 }
 
 /**
@@ -199,7 +201,7 @@ function ReplyComposer({
   );
 }
 
-export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps) {
+export function TicketDetails({ ticket, error, statusCode, pendingApproval }: TicketDetailsProps) {
   // The API returns public replies newest-first; this reads as a conversation
   // under the description, so show them oldest-first. `comments` is defensively
   // defaulted for any payload that predates the field. Local state so a reply
@@ -256,6 +258,26 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
           Back to tickets
         </a>
       </div>
+
+      {pendingApproval && (
+        <div
+          role="status"
+          data-testid="ticket-pending-approval"
+          className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-warning/10 p-4 text-sm text-warning-on-tint"
+        >
+          <div>
+            <p className="font-semibold">This ticket has work waiting for your approval</p>
+            {pendingApproval.askSentence && <p className="mt-0.5">{pendingApproval.askSentence}</p>}
+          </div>
+          <a
+            href={`${withBase('/approvals')}#${encodeURIComponent(pendingApproval.id)}`}
+            data-testid="ticket-pending-approval-link"
+            className="font-semibold underline underline-offset-4"
+          >
+            Review request
+          </a>
+        </div>
+      )}
 
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div>

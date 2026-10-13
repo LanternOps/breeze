@@ -64,7 +64,7 @@ function protectionLabel(opts: {
   rtp: boolean | null;
 }): string {
   const parts = [...opts.managed];
-  if (opts.nativeProvider && opts.nativeProvider !== 'other') {
+  if (opts.nativeProvider && opts.nativeProvider !== 'other' && opts.nativeProvider !== 'unknown') {
     parts.push(prettySecurityProvider(opts.nativeProvider));
   }
   if (parts.length === 0) return 'None detected';
@@ -438,7 +438,7 @@ export async function generateSecurityCompliancePostureReport(
     if (s1Devices.has(d.id)) managed.push('SentinelOne');
     const isManaged = managed.length > 0;
     const rtp = ss?.realTimeProtection ?? null;
-    const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && rtp === true);
+    const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && ss.provider !== 'unknown' && rtp === true);
 
     const protection = classifyDeviceProtection({
       securityStatus: ss
@@ -552,7 +552,7 @@ export async function generateSecurityCompliancePostureReport(
     });
   }
   for (const row of ssRows) {
-    if (row.provider === 'other') continue;
+    if (row.provider === 'other' || row.provider === 'unknown') continue;
     productEvidence.push({
       product: prettySecurityProvider(row.provider),
       category: categoryForEndpointProvider(row.provider),

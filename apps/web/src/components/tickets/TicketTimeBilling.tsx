@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { approvalFriendly } from '../../lib/ticketApproval';
+import { AwaitingApprovalChip, WriteOffHeldButton, isAwaitingApproval } from '../time/HeldEntryControls';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged, deleteTimeEntryAction } from '../../lib/timerActions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import WorkTypeSelect from '../shared/WorkTypeSelect';
@@ -49,7 +51,7 @@ interface EntryRow {
   /** W06 (#3900) server-stamped provenance; absent on an older API. */
   source?: string | null;
   /** #8133: an invoiced entry is not offered for deletion (the API refuses it). */
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
 }
 
 /** #8133: localized copy for the API's refusals of a time-entry DELETE. */
@@ -134,6 +136,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const [rateDirty, setRateDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [startingTimer, setStartingTimer] = useState(false);
+  // Hard-mode approval gate (#8196): the start was refused with APPROVAL_REQUIRED.
+  const [approvalBlocked, setApprovalBlocked] = useState(false);
 
   // Assigned during render so it is already current when the ticketId prop
   // changes — a state update would land a tick too late for an in-flight fetch.
@@ -167,6 +171,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   }, [refresh]);
 
   useEffect(() => {
+    setApprovalBlocked(false);
     setQuickAddOpen(false);
     setWorkTypeId(undefined);
     setTimerWorkTypeId(undefined);
@@ -195,14 +200,25 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // a different complaint — never show both.
   const missingRate = !workTypeChanged && billable && typedRate === '' && summary?.defaults?.coverage !== 'included';
 
-  const startTimer = () => {
+  const startTimer = (opts: { nonBillable?: boolean } = {}) => {
     // Guard against double-fire: a start request takes a beat server-side, and
     // overlapping starts race the one-running-timer unique index. Disabling the
     // button in flight keeps the happy path single-shot.
     if (startingTimer) return;
     setStartingTimer(true);
-    void startTimerAction({ ticketId, ...(timerWorkTypeId !== undefined ? { workTypeId: timerWorkTypeId } : {}) })
-      .catch((err) => handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed')))
+    setApprovalBlocked(false);
+    void startTimerAction(
+      {
+        ticketId,
+        ...(timerWorkTypeId !== undefined ? { workTypeId: timerWorkTypeId } : {}),
+        ...(opts.nonBillable ? { isBillable: false } : {}),
+      },
+      approvalFriendly(t),
+    )
+      .catch((err) => {
+        if (err instanceof ActionError && err.code === 'APPROVAL_REQUIRED') setApprovalBlocked(true);
+        handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed'));
+      })
       .finally(() => setStartingTimer(false));
   };
 
@@ -339,7 +355,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
       <div className="mt-2 flex gap-2">
         <button
           type="button"
-          onClick={startTimer}
+          onClick={() => startTimer()}
           disabled={startingTimer}
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-start-timer"
@@ -355,6 +371,25 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           {t('ticketTimeBilling.logTime')}
         </button>
       </div>
+
+      {approvalBlocked && (
+        <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900" role="alert" data-testid="ticket-billing-approval-required">
+          <p>{t('ticketApproval.errors.approvalRequired')}</p>
+          {/* Only billing managers may start non-billable (the server enforces it),
+              so a tech without the grant gets guidance, not a button that would 403. */}
+          {canManageBilling && (
+            <button
+              type="button"
+              onClick={() => startTimer({ nonBillable: true })}
+              disabled={startingTimer}
+              className="mt-1.5 rounded-md border border-amber-400 px-2 py-1 text-xs hover:bg-amber-100 disabled:opacity-50"
+              data-testid="ticket-billing-start-non-billable"
+            >
+              {t('ticketApproval.timer.startNonBillable')}
+            </button>
+          )}
+        </div>
+      )}
 
       {quickAddOpen && (
         <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-billing-quick-add">
@@ -445,6 +480,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               <span className="min-w-0 truncate text-muted-foreground">
                 {entry.userName ?? t('ticketTimeBilling.techFallback')}
                 {entry.description ? ` — ${entry.description}` : ''}
+                {isAwaitingApproval(entry) && <AwaitingApprovalChip entryId={entry.id} className="ml-1" />}
                 {sourceBadgeLabelKey(entry.source) && (
                   <span
                     data-testid={`time-entry-source-${entry.id}`}
@@ -462,6 +498,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                   </span>
                 )}
               </span>
+              {isAwaitingApproval(entry) && <WriteOffHeldButton entryId={entry.id} className="shrink-0 !px-1.5 !py-0.5 !text-[11px]" />}
               {canWriteTime && entry.billingStatus !== 'billed' && (
                 <button
                   type="button"

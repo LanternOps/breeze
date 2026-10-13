@@ -538,6 +538,7 @@
       "more": "Load more",
       "empty": "No conversion history.",
       "system": "System",
+      "unknownUser": "Unknown user",
       "reverted": "Reverted",
       "deadline": "Undo is unavailable after the legacy alerting retirement removes the source runtime."
     },

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import * as SHARED from '@breeze/shared';
 import {
   DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
   PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES,
@@ -10,6 +11,21 @@ import {
   partnerServicePrincipalMcpScopesMissingRead,
   validatePartnerServicePrincipalScopes,
 } from './partnerServicePrincipalScopes';
+
+describe('partner service principal scope registry is the @breeze/shared one (#8173)', () => {
+  it('re-exports the shared lists so the API and the web UI cannot diverge', () => {
+    expect([...PARTNER_SERVICE_PRINCIPAL_SCOPES]).toEqual([...SHARED.PARTNER_SERVICE_PRINCIPAL_SCOPES]);
+    expect(PARTNER_SERVICE_PRINCIPAL_SCOPES).toBe(SHARED.PARTNER_SERVICE_PRINCIPAL_SCOPES);
+    expect(PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES).toBe(SHARED.PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES);
+  });
+
+  it('accepts every scope a shared preset can fill in', () => {
+    for (const preset of SHARED.PARTNER_SERVICE_PRINCIPAL_SCOPE_PRESETS) {
+      if (preset.scopes.length === 0) continue;
+      expect(validatePartnerServicePrincipalScopes([...preset.scopes]).ok, preset.id).toBe(true);
+    }
+  });
+});
 
 describe('partner service principal MCP scopes', () => {
   it('are grantable but never in the default scope set', () => {

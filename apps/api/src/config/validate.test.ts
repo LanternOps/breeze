@@ -3910,6 +3910,21 @@ describe('execution-plane env (W01): BREEZE_REGION / BREEZE_AI_WORKSPACE_ENABLED
       },
     );
   });
+
+  it('refuses boot when TUNNEL_ORIGIN_TEMPLATE shares the app registrable domain', () => {
+    withEnv({ ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test', TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.tunnel.breeze-app.test' }, () => {
+      expect(() => validateConfig()).toThrow(/TUNNEL_ORIGIN_TEMPLATE/);
+    });
+  });
+
+  it('boots with a tunnel template on a separate registrable domain', () => {
+    withEnv({
+      ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test',
+      TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.us.breezetunnel.test', TUNNEL_FRAME_ANCESTOR: 'https://us.breeze-app.test',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
 });
 
 // #7640: compose maps these as `${VAR:-}`, so the key is always injected, as ''

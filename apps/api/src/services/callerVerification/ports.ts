@@ -29,12 +29,25 @@ export interface CallerVerificationPorts {
 }
 
 export const callerVerificationPorts: CallerVerificationPorts = {
-  mailboxes: async () => { throw new Invalid('subject_mailboxes_unknown', 'Mailbox read adapter is unavailable'); },
+  // W03: the target's canonical mailbox set (direct Graph / control plane /
+  // Delegant). Callers wrap this in withMailboxReader + runOutsideDbContext.
+  mailboxes: async ({ orgId, target }) => [...await (await import('./mailboxes')).fetchTargetMailboxes(orgId, target)],
   administrativeEligible: async () => false,
   consumeStepUp: async () => { throw new Invalid('stepup_invalidated', 'Interactive step-up adapter is unavailable'); },
-  available: async () => false,
-  prepare: async () => { throw new Invalid('method_disabled', 'Delivery adapter is unavailable'); },
-  deliver: async () => { throw new Invalid('method_disabled', 'Delivery adapter is unavailable'); },
+  // W03: sms/email go to the link adapter; workstation stays unavailable until
+  // W02 installs its adapter. linkPorts is imported lazily (it reaches the
+  // deliverer, which imports the service that imports these ports).
+  available: async (method) => (method === 'sms' || method === 'email'
+    ? (await import('./linkPorts')).linkAvailable(method)
+    : false),
+  prepare: async (row, token) => {
+    if (row.method === 'sms' || row.method === 'email') return (await import('./linkPorts')).prepareLink(row, token);
+    throw new Invalid('method_disabled', 'Delivery adapter is unavailable');
+  },
+  deliver: async (id) => {
+    if (await (await import('./linkPorts')).deliverIfLink(id)) return;
+    throw new Invalid('method_disabled', 'Delivery adapter is unavailable');
+  },
 };
 
 export function configureCallerVerificationPorts(ports: Partial<CallerVerificationPorts>): void {

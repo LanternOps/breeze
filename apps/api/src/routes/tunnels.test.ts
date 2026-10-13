@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './tunnels';
+import { __resetTunnelOriginConfigForTests } from '../config/tunnelOrigin';
+import { isTunnelOriginEnabledForOrg } from '../services/tunnelOriginOptIn';
 
 // --- UUID constants ---
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -16,6 +18,16 @@ const { rateLimiterMock } = vi.hoisted(() => ({
     remaining: 19,
     resetAt: new Date(Date.now() + 60_000),
   })),
+}));
+
+const { cancelPendingMock } = vi.hoisted(() => ({ cancelPendingMock: vi.fn(() => 0) }));
+vi.mock('../services/tunnelOriginOptIn', () => ({
+  isTunnelOriginEnabledForOrg: vi.fn(async () => true),
+}));
+
+vi.mock('../services/agentCommandAwait', () => ({
+  sendCommandToAgentAwaitResult: vi.fn(),
+  cancelPendingAgentCommandsByPrefix: cancelPendingMock,
 }));
 
 const { authorizeContinuationMock } = vi.hoisted(() => ({
@@ -3003,6 +3015,24 @@ describe('Audit logging — mutating tunnel endpoints', () => {
     expect(audits[0].details).toEqual(expect.objectContaining({ sessionUserId: 'owner-9999' }));
   });
 
+  it('DELETE /tunnels/:id cancels the tunnel’s in-flight proxied requests', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([sessionRecord]) as any)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.insert).mockImplementation(vi.fn().mockReturnValue(makeAuditAwareInsertChain([])) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID },
+    });
+
+    expect(res.status).toBe(200);
+    expect(cancelPendingMock).toHaveBeenCalledWith(`http-req-${SESSION_ID}-`, 'tunnel_closed');
+  });
+
   it('POST /allowlist writes a tunnel.allowlist.create audit row with the rule', async () => {
     const insertMock = vi.fn().mockReturnValue(
       makeAuditAwareInsertChain([{ id: RULE_ID, orgId: ORG_ID }])
@@ -3348,6 +3378,64 @@ describe('POST /tunnels/:id/http-ticket', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty('ticket');
+  });
+
+  describe('server-built url', () => {
+    const hostEnv = () => {
+      process.env.TUNNEL_ORIGIN_TEMPLATE = 'https://{id}.us.breezetunnel.test';
+      process.env.TUNNEL_FRAME_ANCESTOR = 'https://app.breeze-app.test';
+      __resetTunnelOriginConfigForTests();
+    };
+    const mint = async (query = '') => {
+      vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+      vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+      return app.request(`/tunnels/${SESSION_ID}/http-ticket${query}`, { method: 'POST' });
+    };
+
+    beforeEach(() => {
+      vi.mocked(isTunnelOriginEnabledForOrg).mockResolvedValue(true);
+    });
+    afterEach(() => {
+      delete process.env.TUNNEL_ORIGIN_TEMPLATE;
+      delete process.env.TUNNEL_FRAME_ANCESTOR;
+      __resetTunnelOriginConfigForTests();
+    });
+
+    it('returns a path-mode url when host mode is off', async () => {
+      const res = await mint();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ticket).toEqual({ ticket: 'ws-ticket-abc', expiresInSeconds: 60 });
+      expect(body.url).toBe(`/api/v1/tunnel-http/${SESSION_ID}/?__bzt=ws-ticket-abc`);
+      expect(body.mode).toBe('path');
+    });
+
+    it('returns the tunnel-origin enter url in host mode', async () => {
+      hostEnv();
+      const body = await (await mint()).json();
+      expect(body.url).toBe(`https://${SESSION_ID}.us.breezetunnel.test/__bz/enter?t=ws-ticket-abc`);
+      expect(body.mode).toBe('host');
+      expect(isTunnelOriginEnabledForOrg).toHaveBeenCalledWith(ORG_ID);
+    });
+
+    it('falls back to path mode when the partner has not opted in', async () => {
+      hostEnv();
+      vi.mocked(isTunnelOriginEnabledForOrg).mockResolvedValue(false);
+      const body = await (await mint()).json();
+      expect(body.mode).toBe('path');
+      expect(body.url).toBe(`/api/v1/tunnel-http/${SESSION_ID}/?__bzt=ws-ticket-abc`);
+    });
+
+    it('builds a new-tab url for ?mode=tab', async () => {
+      hostEnv();
+      const body = await (await mint('?mode=tab')).json();
+      expect(body.url).toBe(`https://${SESSION_ID}.us.breezetunnel.test/__bz/enter?t=ws-ticket-abc&mode=tab`);
+    });
+
+    it('rejects an unknown mode', async () => {
+      const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket?mode=popup`, { method: 'POST' });
+      expect(res.status).toBe(400);
+    });
   });
 
   it('returns 404 when the tunnel is not found', async () => {

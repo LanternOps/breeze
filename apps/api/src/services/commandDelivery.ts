@@ -18,6 +18,7 @@ import {
 } from './sensitiveCommandPayload';
 import { captureException } from './sentry';
 import { prepareDiagnosticDelivery } from './diagnosticAccess/delivery';
+import { isStaleRestorePointPayload, refreshRestorePointForDelivery } from './restorePointRequest';
 
 export {
   CommandDeliveryDeferredError,
@@ -122,6 +123,22 @@ for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
 // credential — is resolved as before (services/backupStorageWriteDelivery.ts).
 for (const type of BACKUP_WRITE_GATED_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBackupWriteCommand);
+}
+
+/**
+ * The refresher to run for one claimed command: the type's registered
+ * refresher, followed -- only when the payload carries an EXPIRED
+ * `restorePoint` snapshot (#4609 W05) -- by the restore-point re-stamp step.
+ * Type-agnostic and composed rather than registered, because a type may have
+ * at most one registered refresher (software_install already does).
+ *
+ * Every payload without the key, and every fresh block (including transport
+ * redelivery of the same command id), takes exactly the pre-W05 path.
+ */
+function refresherForClaimedPayload(type: string, payload: unknown): DeliveryRefresher | undefined {
+  const base = deliveryRefreshers[type];
+  if (!isStaleRestorePointPayload(payload, new Date())) return base;
+  return async (p, ctx) => refreshRestorePointForDelivery(base ? await base(p, ctx) : p, ctx);
 }
 
 /**
@@ -359,7 +376,7 @@ async function refreshClaimedCommandPayloads(
 ): Promise<ClaimedCommand[]> {
   const out: ClaimedCommand[] = [];
   for (const cmd of claimed) {
-    const refresher = deliveryRefreshers[cmd.type];
+    const refresher = refresherForClaimedPayload(cmd.type, cmd.payload);
     if (!refresher) {
       out.push(cmd);
       continue;
@@ -436,7 +453,7 @@ export async function refreshClaimedPayloadForPush(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
 ): Promise<PushRefreshOutcome> {
-  const refresher = deliveryRefreshers[type];
+  const refresher = refresherForClaimedPayload(type, payload);
   if (!refresher) return { ok: true, payload };
   try {
     return { ok: true, payload: await runRefresher(refresher, payload, ctx) };

@@ -201,6 +201,27 @@ is in the repository's
 Open-source projects that already use these routes are listed in the
 [Community Ecosystem](/features/community-ecosystem/).
 
+### Scope presets
+
+When you create a service principal (**Settings → Service principals**), the
+dialog offers task-named presets. A preset only fills in the scope checkboxes;
+you can still add or remove scopes before saving, and the principal does not
+record which preset you started from. Each scope is listed with a one-line
+description of what it exposes.
+
+| Preset | Scopes selected |
+|---|---|
+| Read-only documentation / asset sync (the default) | `organizations:read`, `sites:read`, `devices:read`, `inventory:read`, `configuration:read`, `scripts:read`, `backup-configuration:read`, `custom-fields:read` |
+| Tenant provisioning | The read-only set above, plus `organizations:write`, `sites:write`, `enrollment-keys:write`. `enrollment-keys:write` requires an expiry and at least one source IP or CIDR. |
+| Alert feed | `organizations:read`, `alerts:read` |
+| Ticketing integration | `organizations:read`, `tickets:read`, `tickets:write` |
+| AI / MCP client | `ai:read`. Add `ai:write` or `ai:execute` only if the client needs them; `ai:execute_admin` is never pre-selected. |
+| Custom | None. Choose each scope yourself. |
+
+### Endpoints
+
+Each route requires the listed scope on the principal.
+
 | Method | Path | Scope | Description |
 |---|---|---|---|
 | `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations |
@@ -230,7 +251,7 @@ Open-source projects that already use these routes are listed in the
 | `PATCH` | `/partner-api/contracts/:id` | `contracts:write` | Update header fields. Schedule fields (`billingTiming`, `intervalMonths`, `startDate`) are draft-only. |
 | `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
 | `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
-| `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. |
+| `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. Responds `{ "data": { "ok": true, "retired": <boolean> } }`; `retired` is `true` when a block-hours line with billing history was retired instead of deleted. |
 | `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). |
 | `PATCH` | `/partner-api/tickets/:id` | `tickets:write` | Update fields (not status/assignee, never SLA targets). Unknown keys are rejected. |
 | `POST` | `/partner-api/tickets/:id/status` | `tickets:write` | Change status (`status` or `statusId`, `resolutionNote` required when resolving). |
@@ -961,7 +982,7 @@ Selected catalog and billing operations. Resource CRUD follows the standard REST
 | `POST` | `/contracts/bulk-delete` | Delete multiple draft contracts |
 | `POST` | `/contracts/:id/lines` | Add a contract line |
 | `PATCH` | `/contracts/:id/lines/:lineId` | Edit a line in place. The line **type** is immutable — remove and re-add to change it |
-| `DELETE` | `/contracts/:id/lines/:lineId` | Remove a line. Returns `404 LINE_NOT_FOUND` when the line does not exist (it used to answer `200` and do nothing) |
+| `DELETE` | `/contracts/:id/lines/:lineId` | Remove a line. Returns `404 LINE_NOT_FOUND` when the line does not exist (it used to answer `200` and do nothing). Responds `{ "data": { "ok": true, "retired": <boolean> } }`; `retired` is `true` when a block-hours line with billing history was retired instead of deleted |
 | `GET` | `/contracts/:id/periods/:periodId/outcome` | What a billing period actually billed: snapshot device total, uncovered total (with a per-role breakdown), flagged total, and billed overage total. `404 PERIOD_NOT_FOUND` |
 | `GET` | `/invoices/:id/lines/:lineId/devices` | Per-device evidence for one generated invoice line — hostname, role, and whether the device counted as included, overage, or flagged. Cursor-paginated (`limit` default 100, max 500). Lines from invoices generated before this shipped return `recorded: false`. `404 INVOICE_LINE_NOT_FOUND` |
 

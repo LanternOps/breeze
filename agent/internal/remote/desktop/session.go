@@ -46,6 +46,19 @@ type Session struct {
 	clipboardSync *clipboard.ClipboardSync
 	cursorDC      *webrtc.DataChannel
 	controlDC     *webrtc.DataChannel
+
+	// viewerChannels maps each viewer data-channel label to the channel now
+	// serving it. A replaced channel's messages are ignored and its late close
+	// does not reset the stream its successor carries. Guarded by mu.
+	viewerChannels map[string]any
+	// inputRAttached is set once the viewer opens a reliable input-r: it
+	// speaks W2b, so it is sent input_epoch announcements. Viewers that never
+	// open it are never sent a control message they predate.
+	inputRAttached atomic.Bool
+	// geometryMu serialises input geometry transitions (monitor switch,
+	// desktop switch): epoch bump, capturer swap, offset commit, announcement.
+	// Lock order: geometryMu, then mu. The input worker never takes it.
+	geometryMu    sync.Mutex
 	audioTrack    *webrtc.TrackLocalStaticSample
 	audioCapturer AudioCapturer
 	audioEnabled  atomic.Bool

@@ -339,6 +339,8 @@ const EXPECTED_NAMES = [
   // AI Suggested Fixes W1.
   'fixOutcomeWorker',
   'aiModelDiscoveryWorker',
+  // Workload image currency W05 (#8194).
+  'imageCurrencyWorker',
 ];
 
 // ---------------------------------------------------------------------------

@@ -730,6 +730,22 @@
     "linkVia": "par {{name}}",
     "siteNetworks_one": "{{count}} réseau",
     "siteNetworks_other": "{{count}} réseaux",
-    "noObservedLink": "Aucun lien observé entre {{network}} et {{primary}}"
+    "noObservedLink": "Aucun lien observé entre {{network}} et {{primary}}",
+    "rosterHeading": "Autres réseaux / réseaux non identifiés ({{count}})",
+    "rosterNetworkVia": "{{prefix}} par {{gateways}}",
+    "rosterUnidentified": "Réseau non identifié",
+    "notDeclared": "Non déclaré pour {{site}}",
+    "showOtherNetworks": "Afficher les autres réseaux sur la carte",
+    "declareHint": "Aucun réseau n'est déclaré pour {{site}}. Les appareils sont regroupés selon les réseaux qu'ils signalent. Déclarez les réseaux de ce site dans un profil de découverte afin que Breeze puisse distinguer les visiteurs et les appareils mal affectés.",
+    "declareHintLink": "Ouvrir les profils de découverte",
+    "siteIntro": "Appareils affectés à {{site}}, regroupés selon le réseau que chacun signale",
+    "thisSite": "ce site",
+    "declaredDiscovery": "Déclaré pour ce site (profil de découverte)",
+    "declaredBaseline": "Déclaré pour ce site (référence réseau)",
+    "declaredBoth": "Déclaré pour ce site (profil de découverte et référence réseau)",
+    "declaredEmpty": "Déclaré pour {{site}} — aucun appareil ne signale ce réseau",
+    "declaredColumn": "Déclaré",
+    "declaredYes": "Oui",
+    "declaredNo": "Non"
   }
 }

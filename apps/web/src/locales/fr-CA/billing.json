@@ -24,7 +24,8 @@
         "perDeviceRole": "Par rôle d'appareil",
         "perDeviceGroup": "Par groupe d'appareils",
         "perSeat": "Par utilisateur",
-        "manual": "Quantité manuelle"
+        "manual": "Quantité manuelle",
+        "hourBlock": "Banque d'heures"
       },
       "dynamicGroup": "dynamique",
       "deletedGroup": "{{name}} (groupe supprimé)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Version publiée",
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des ententes prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Heures incluses par période",
+        "extraRate": "Prix par heure supplémentaire",
+        "rolloverMode": "Heures inutilisées à la fin de la période",
+        "rolloverExpire": "Expirent",
+        "rolloverCarry": "Reportées",
+        "carryCap": "Plafond de report en heures (vide pour aucune limite)",
+        "alertPct": "Alerter à ce % de la banque utilisé (facultatif)",
+        "required": "Saisissez les heures incluses et le prix par heure supplémentaire.",
+        "firstPeriod": "Les heures comptent à partir de la première période de facturation encore à facturer; pour un contrat brouillon, elle est fixée à l'activation. Le temps antérieur est facturé comme d'habitude.",
+        "midPeriodEdit": "Les modifications s'appliquent à la période en cours ({{start}} – {{end}}) à sa clôture.",
+        "midPeriodEditNoDates": "Les modifications s'appliquent à la période en cours à sa clôture.",
+        "onlyOne": "Cette organisation a déjà une banque active. Retirez-la avant d'en ajouter une autre."
+      },
+      "row": {
+        "perPeriod": "{{hours}} heures par période",
+        "retiredBadge": "Retirée",
+        "startsOn": "Compte à partir du {{date}}"
+      },
+      "errors": {
+        "exists": "Cette organisation a déjà une ligne de banque d'heures active. Retirez-la d'abord, puis ajoutez la nouvelle.",
+        "locked": "Ce champ ne peut pas être modifié sur une ligne de banque d'heures."
+      },
+      "retire": {
+        "title": "Retirer la banque d'heures",
+        "message": "« {{description}} » a un historique de facturation; elle est donc retirée plutôt que supprimée. Plus de nouvelles périodes; les périodes déjà facturées sont tout de même réglées. Les périodes clôturées restent au contrat.",
+        "confirm": "Retirer la banque",
+        "toast": "Banque d'heures retirée"
+      },
+      "detail": {
+        "title": "Banque d'heures",
+        "usage": "{{used}} heures utilisées sur {{included}} · {{remaining}} restantes · la période se termine le {{end}}",
+        "carried": "Comprend {{hours}} heures reportées.",
+        "unapproved": "{{hours}} heures de ce temps ne sont pas encore approuvées.",
+        "foreign": "{{hours}} heures ont été saisies dans une autre devise; elles réduisent quand même la banque.",
+        "over": "{{hours}} heures au-delà de la banque → {{amount}} à la clôture de la période",
+        "advanceNote": "Le dépassement est facturé sur la facture suivante.",
+        "arrearsNote": "Le dépassement est facturé sur la facture de cette période.",
+        "lateEntry": "{{hours}} heures ont été saisies après la clôture de leur période et sont facturées séparément.",
+        "startsLater": "La banque commence le {{date}}.",
+        "extraRate": "Heures supplémentaires : {{rate}} chacune",
+        "loadFailed": "Impossible de charger l'utilisation de la banque."
+      },
+      "history": {
+        "title": "Périodes de banque clôturées",
+        "empty": "Aucune période de banque n'a encore été clôturée.",
+        "included": "Incluses",
+        "carriedIn": "Reportées en entrée",
+        "used": "Utilisées",
+        "over": "Dépassement",
+        "carriedOut": "Reportées en sortie",
+        "loadMore": "Charger plus",
+        "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "Source de facture",
       "title": "Nouvelle facture",
       "to": "À",
-      "working": "Traitement…"
+      "working": "Traitement…",
+      "heldForHourBlock_one": "{{count}} saisie de temps ({{hours}} heures) est retenue pour la banque d'heures de cette organisation et sera facturée à la clôture de la période de la banque.",
+      "heldForHourBlock_other": "{{count}} saisies de temps ({{hours}} heures) sont retenues pour la banque d'heures de cette organisation et seront facturées à la clôture de la période de la banque."
     },
     "empty": {
       "description": "Assemblez le temps et les pièces non facturés dans un brouillon ou démarrez une facture vierge.",

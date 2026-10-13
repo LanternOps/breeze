@@ -28,6 +28,11 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import {
+  clampSessionTimeoutInSettings,
+  sessionTimeoutMinutesSchema,
+  sessionTimeoutSettingsError,
+} from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
@@ -243,7 +248,9 @@ const createPartnerSchema = z.object({
   // plan and maxDevices are managed by the billing service (via direct DB writes).
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   billingEmail: z.string().email().optional()
 });
 
@@ -268,6 +275,8 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   aiForOfficeEnabled: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
+  }).refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
   }),
 });
 
@@ -303,7 +312,9 @@ export const createOrganizationSchema = z.object({
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -785,7 +796,7 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: z.number().int().min(1).optional(),
+    sessionTimeout: sessionTimeoutMinutesSchema.optional(),
     maxSessions: z.number().int().min(1).optional(),
     ipAllowlist: z
       .array(z.string())
@@ -982,6 +993,10 @@ const partnerSettingsSchema = z.object({
   // only the feature block it owns (`ml.anomalies`, `ml.remediation_suggestions`)
   // and must send that block COMPLETE.
   ml: mlSettingsSchema.optional(),
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -1022,7 +1037,8 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
+  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -2583,6 +2599,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       if (!parsed.success) {
         return c.json({ error: 'Invalid AI approval settings', details: parsed.error.issues }, 400);
       }
+    }
+
+    // #6111 — security.sessionTimeout ceiling (the org settings blob is z.any()).
+    const sessionTimeoutError = sessionTimeoutSettingsError(settingsObj);
+    if (sessionTimeoutError) {
+      return c.json({ error: sessionTimeoutError }, 400);
     }
 
     // Enforce partner locks on settings categories (after auth check).

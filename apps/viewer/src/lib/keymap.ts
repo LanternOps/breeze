@@ -176,3 +176,23 @@ export function isCapsLock(e: KeyboardEvent): boolean {
 export function getCapsLockState(e: KeyboardEvent): boolean {
   return typeof e.getModifierState === 'function' && e.getModifierState('CapsLock');
 }
+
+/**
+ * The W2c (#8247) key fields: the physical key (`code`, DOM KeyboardEvent.code)
+ * and the Num Lock state. Empty unless the agent advertised key codes, so the
+ * event is unchanged for every other agent.
+ *
+ * `omitCode` is for a modifier the Cmd↔Ctrl remap renamed: an agent that
+ * injects from `code` would otherwise press the physical key and undo the remap.
+ */
+export function extendedKeyFields(
+  e: KeyboardEvent,
+  enabled: boolean,
+  opts: { omitCode?: boolean } = {},
+): { code?: string; numLock?: boolean } {
+  if (!enabled) return {};
+  const fields: { code?: string; numLock?: boolean } = {};
+  if (!opts.omitCode && e.code) fields.code = e.code;
+  fields.numLock = typeof e.getModifierState === 'function' && e.getModifierState('NumLock');
+  return fields;
+}

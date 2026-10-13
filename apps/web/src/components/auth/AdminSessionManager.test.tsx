@@ -220,6 +220,32 @@ describe('AdminSessionManager All Organizations mode (#2347)', () => {
     expect(apiLogoutMock).not.toHaveBeenCalled();
   });
 
+  it('clamps a configured timeout above the 720-minute ceiling to 12 hours (#6111)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 1440 } } })
+    );
+
+    render(<AdminSessionManager />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(719 * 60_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2 * 60_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
+  });
+
   it('still logs out once the configured partner timeout elapses in All Organizations mode', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({ settings: { security: { sessionTimeout: 2 } } })

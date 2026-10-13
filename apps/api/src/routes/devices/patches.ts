@@ -15,6 +15,12 @@ import { loadDevicePatchInstallState, type PatchInstallAttempt } from '../../ser
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
 import { loadDevicePatchApprovalView, type DevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  restorePointPayloadField,
+} from '../../services/restorePointRequest';
 import type { DevicePatchApprovalEvaluation } from '@breeze/shared';
 
 export const patchesRoutes = new Hono();
@@ -620,7 +626,8 @@ patchesRoutes.post(
         source: patches.source,
         externalId: patches.externalId,
         packageId: patches.packageId,
-        title: patches.title
+        title: patches.title,
+        category: patches.category
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -671,12 +678,35 @@ patchesRoutes.post(
       }, 409);
     }
 
+    // #4609 W05: the System Restore checkpoint decision for this install,
+    // through the same chokepoint as scheduled patch jobs. Null (no policy,
+    // non-Windows) leaves the payload exactly as before; `category` travels
+    // only alongside a stamped block (the agent's definitions-only skip).
+    let restorePoint;
+    try {
+      restorePoint = await buildRestorePointRequest({
+        deviceId,
+        orgId: device.orgId,
+        osType: device.osType,
+        trigger: 'patch',
+        label: `install ${data.patchIds.length} update${data.patchIds.length === 1 ? '' : 's'}`,
+      });
+    } catch (err) {
+      console.error('[devices/patches] System Restore checkpoint policy resolution failed', {
+        deviceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err);
+      return c.json({ error: 'Failed to resolve the System Restore checkpoint policy' }, 503);
+    }
+
     const queued = await queueCommandForExecution(
       deviceId,
       'install_patches',
       {
         patchIds: data.patchIds,
-        patches: patchRefs
+        patches: restorePoint ? patchRefs : patchRefs.map(({ category: _category, ...ref }) => ref),
+        ...restorePointPayloadField(restorePoint)
       },
       {
         userId: auth.user.id,
@@ -685,10 +715,12 @@ patchesRoutes.post(
     );
 
     if (!queued.command) {
+      await discardRestorePointRequest(restorePoint);
       return c.json({ error: queued.error || 'Failed to queue install_patches command' }, 503);
     }
 
     const command = queued.command;
+    await linkRestorePointCommand(restorePoint, command.id);
 
     const patchNames = patchRefs.map(p => p.title).filter(Boolean);
 

@@ -730,6 +730,22 @@
     "linkVia": "via {{name}}",
     "siteNetworks_one": "{{count}} network",
     "siteNetworks_other": "{{count}} networks",
-    "noObservedLink": "No observed link between {{network}} and {{primary}}"
+    "noObservedLink": "No observed link between {{network}} and {{primary}}",
+    "rosterHeading": "Other / unidentified networks ({{count}})",
+    "rosterNetworkVia": "{{prefix}} via {{gateways}}",
+    "rosterUnidentified": "Network not identified",
+    "notDeclared": "Not declared for {{site}}",
+    "showOtherNetworks": "Show other networks on the map",
+    "declareHint": "No networks are declared for {{site}}. Devices are grouped by the networks they report. Declare this site's networks in a discovery profile so Breeze can tell visitors and misassigned devices apart.",
+    "declareHintLink": "Open discovery profiles",
+    "siteIntro": "Devices assigned to {{site}}, grouped by the network each one reports",
+    "thisSite": "this site",
+    "declaredDiscovery": "Declared for this site (discovery profile)",
+    "declaredBaseline": "Declared for this site (network baseline)",
+    "declaredBoth": "Declared for this site (discovery profile and network baseline)",
+    "declaredEmpty": "Declared for {{site}} \u2014 no device reports this network",
+    "declaredColumn": "Declared",
+    "declaredYes": "Yes",
+    "declaredNo": "No"
   }
 }

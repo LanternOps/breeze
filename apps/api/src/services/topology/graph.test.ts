@@ -4,13 +4,14 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { graphResponseSchema } from '@breeze/shared';
 import type { TopologyRequestContext } from './access';
 
-const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), version: vi.fn(), access: vi.fn(), permissions: vi.fn(), flags: vi.fn(), exclusions: vi.fn(), coverage: vi.fn() }));
+const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), version: vi.fn(), access: vi.fn(), permissions: vi.fn(), flags: vi.fn(), exclusions: vi.fn(), coverage: vi.fn(), declarations: vi.fn() }));
 vi.mock('../../db', () => ({ db: { execute: mocks.execute, transaction: mocks.transaction } }));
 vi.mock('../permissions', async (original) => ({ ...await original<object>(), getPermissionAuthorityVersion: mocks.version, getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
 vi.mock('./exclusions', async (original) => ({ ...await original<object>(), loadActiveExclusions: mocks.exclusions }));
 vi.mock('./physicalCoverage', async (original) => ({ ...await original<object>(), readGraphCoverage: mocks.coverage }));
+vi.mock('./siteNetworkDeclarations', async (original) => ({ ...await original<object>(), readSiteNetworkDeclarations: mocks.declarations }));
 vi.mock('../secretCrypto', () => ({ getSecretDerivedKeyMaterials: () => ({ active: { key: Buffer.alloc(32, 7) }, retained: [{ key: Buffer.alloc(32, 7) }] }) }));
 import { getTopologyGraph, listTopologyNodes, expandTopologyGraph, getTopologyRelationship, getTopologyRelationshipEvidence, getTopologyHealth, getTopologyLinkHealth, getTopologyNode, getTopologyGroupMembers } from './graph';
 import { relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyLinkHealthResponseSchema } from '@breeze/shared';
@@ -38,6 +39,7 @@ beforeEach(() => {
   mocks.flags.mockResolvedValue(flagsOn);
   mocks.exclusions.mockResolvedValue(new Set());
   mocks.coverage.mockResolvedValue({ state: 'limited', reasons: [{ code: 'legacy_evidence_only', message: 'Legacy only' }] });
+  mocks.declarations.mockResolvedValue({ prefixes: new Map(), ignored: 0 });
 });
 
 it('starts with a nonempty bounded graph and reports omitted entities and boundary provenance', async () => {
@@ -424,11 +426,27 @@ describe('grouped overview presentation (2026-10-02)', () => {
     expect(read.sql).not.toMatch(/\b(insert|update|delete)\b/i);
   });
 
+  it('marks cards with this site\'s declarations, read once for the viewed scope (site location W1)', async () => {
+    mocks.declarations.mockResolvedValue({ prefixes: new Map([['10.1.2.0/24', [{ kind: 'discovery_profile', id: REL }]], ['10.1.9.0/24', [{ kind: 'network_baseline', id: NET }]]]), ignored: 1 });
+    rows().mockResolvedValueOnce(groupInput);
+    const graph = await getTopologyGraph(ctx, { ...twoNodes, view: 'overview' });
+    expect(graphResponseSchema.safeParse(graph).success).toBe(true);
+    expect(mocks.declarations).toHaveBeenCalledTimes(1);
+    expect(mocks.declarations.mock.calls[0]![1]).toEqual({ orgId: ORG, siteId: SITE });
+    const cards = Object.fromEntries(graph.presentation.nodes.filter((entry) => entry.group?.kind === 'network').map((entry) => [entry.group!.prefix, entry.group!]));
+    expect(cards['10.1.2.0/24']).toMatchObject({ basis: 'inferred_site_prefix', declaration: { state: 'declared', sources: ['discovery_profile'] } });
+    expect(cards['10.1.9.0/24']).toMatchObject({ basis: 'declared_site_network', members: [], declaration: { state: 'declared', sources: ['network_baseline'] } });
+  });
+
   it('skips the complete-site group read when the caller does not render groups (AI reads)', async () => {
+    mocks.declarations.mockResolvedValue({ prefixes: new Map([['10.1.2.0/24', [{ kind: 'discovery_profile', id: REL }]]]), ignored: 0 });
     rows();
     const graph = await getTopologyGraph(ctx, { ...twoNodes, view: 'overview' }, { presentationGroups: false });
     expect(graph.presentation.nodes.some((entry) => entry.group)).toBe(false);
     expect(groupRead()).toBeUndefined();
+    // Site location W1 (S§14): AI reads never consult declarations and never serialize them.
+    expect(mocks.declarations).not.toHaveBeenCalled();
+    expect(JSON.stringify(graph)).not.toMatch(/declaration|declared_site_network/);
   });
 
   it('never groups the physical view and never re-reads groups for a group-member read', async () => {

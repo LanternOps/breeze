@@ -29,6 +29,12 @@ export default function AllowanceCell(
     );
   }
 
+  // #4547: a block's quantity cell is its entitlement, not a counted-vs-included figure
+  // (the live balance lives in the estimate's hourBlock and the detail panel).
+  if (line.lineType === 'hour_block') {
+    return <span data-testid="allowance-hour-block">{t('contracts.hourBlock.row.perPeriod', { hours: Number(line.includedQuantity ?? 0) })}</span>;
+  }
+
   const base = AUTO_QTY_TYPES.has(line.lineType)
     ? (estimate ? String(estimate.quantity) : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
     : (line.lineType === 'manual' ? (line.manualQuantity ?? '0') : '1');

@@ -1000,6 +1000,8 @@
     "codeExpires": "Expira às {{time}}",
     "overdueNotice": "Ainda sem confirmação — verifique o console de recuperação.",
     "fileIndexPreparing": "Preparando o índice de arquivos para referências entre snapshots…",
+    "snapshotsLoadFailed": "Não foi possível carregar os snapshots. Recarregue a página para tentar novamente.",
+    "noSnapshots": "Ainda não há snapshots restauráveis em bare-metal. É necessário um backup completo da máquina marcado como restaurável em bare-metal.",
     "statusFailed": "Falha na recuperação",
     "statusRefused": "Recuperação recusada",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Restaurando",
       "validated": "Validada",
       "rebooted": "Reiniciada",
-      "checked_in": "Confirmada"
+      "checked_in": "Confirmada",
+      "completed": "Concluído"
     }
   },
   "backupHealth": {

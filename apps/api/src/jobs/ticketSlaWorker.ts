@@ -5,6 +5,7 @@ import { db } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { emitTicketEvent } from '../services/ticketEvents';
+import { expireDueApprovalRequests } from '../services/ticketApproval/decisions';
 import { getEventBus } from '../services/eventBus';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -27,7 +28,15 @@ const QUEUE_NAME = 'ticket-sla-monitor';
 const SWEEP_INTERVAL_MS = 60 * 1000;
 const MAX_BREACHES_PER_RUN = 200; // per target per sweep
 
-type SlaSweepJobData = { type: 'sla-sweep'; queuedAt: string };
+/**
+ * #4617 spec §5.6: customer approval requests past `expires_at` are marked
+ * `expired` every 5 minutes on this same queue. Their entries stay held.
+ */
+const APPROVAL_EXPIRY_INTERVAL_MS = 5 * 60 * 1000;
+
+type SlaSweepJobData =
+  | { type: 'sla-sweep'; queuedAt: string }
+  | { type: 'approval-expiry'; queuedAt: string };
 
 export type BreachedTicketRow = {
   id: string;
@@ -142,7 +151,8 @@ async function notifyBreaches(rows: Array<BreachedTicketRow & { target: 'respons
 function createWorker(): Worker<SlaSweepJobData> {
   return new Worker<SlaSweepJobData>(
     QUEUE_NAME,
-    async (_job: Job<SlaSweepJobData>) => {
+    async (job: Job<SlaSweepJobData>) => {
+      if (job.data?.type === 'approval-expiry') return runApprovalExpiry();
       try {
         // DB stamping inside the system context; notifications after it exits.
         const rows = await runWithSystemDbAccess(sweepTicketSlaBreaches);
@@ -161,14 +171,43 @@ function createWorker(): Worker<SlaSweepJobData> {
   );
 }
 
+/**
+ * expireDueApprovalRequests opens its OWN system transaction per request (each
+ * under its ticket lock, SKIP LOCKED) — it is deliberately not wrapped in one
+ * worker-level context. Events are emitted after every transaction committed.
+ */
+async function runApprovalExpiry(): Promise<{ expired: number }> {
+  try {
+    const { expired, events } = await expireDueApprovalRequests(new Date());
+    if (expired > 0) console.log(`[TicketSlaWorker] Expired ${expired} customer approval request(s)`);
+    for (const event of events) await emitTicketEvent(event);
+    return { expired };
+  } catch (err) {
+    console.error('[TicketSlaWorker] Approval expiry failed:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    throw err;
+  }
+}
+
 async function scheduleRepeatableJob(): Promise<void> {
   const queue = getQueue();
   const repeatables = await queue.getRepeatableJobs();
   for (const job of repeatables) {
-    if (job.name === 'sla-sweep') {
+    if (job.name === 'sla-sweep' || job.name === 'ticket-approval-expiry') {
       await queue.removeRepeatableByKey(job.key);
     }
   }
+  await queue.add(
+    'ticket-approval-expiry',
+    { type: 'approval-expiry', queuedAt: new Date().toISOString() },
+    {
+      // jobId rule: '-' separators, 0 colons (BullMQ repeat-key parsing, #1118)
+      jobId: 'ticket-approval-expiry',
+      repeat: { every: APPROVAL_EXPIRY_INTERVAL_MS },
+      removeOnComplete: { count: 20 },
+      removeOnFail: { count: 200 }
+    }
+  );
   await queue.add(
     'sla-sweep',
     { type: 'sla-sweep', queuedAt: new Date().toISOString() },

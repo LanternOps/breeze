@@ -627,31 +627,15 @@ describe('hour_block fails closed until its engine ships (#4547 W01)', () => {
     expect(addContractLine).not.toHaveBeenCalled();
   });
 
-  it('computeContractEstimate (resolveLineQty) refuses a forged hour_block line', async () => {
-    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]);
-    queueResult([blockLine]);
-    await expect(svc.computeContractEstimate('c1', actor))
-      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
-  });
-
-  it('updateContractLine refuses to patch a forged hour_block line', async () => {
-    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'draft', currencyCode: 'USD' }]);
-    queueResult([blockLine]);
-    await expect(svc.updateContractLine('c1', 'cl-block', { description: 'x' } as never, actor))
-      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
-    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
-  });
-
-  it('createContractWithLinesDetailed (quote conversion) refuses an hour_block line before inserting any line', async () => {
-    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]); // contract insert
+  it('createContractWithLinesDetailed (quote conversion) rejects an hour_block line with 400 INVALID_STATE before any contract insert (#4547 W03)', async () => {
     await expect(svc.createContractWithLinesDetailed({
       partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
       startDate: '2026-01-01', currencyCode: 'USD',
       lines: [{ lineType: 'hour_block', description: 'Prepaid hours', unitPrice: '500.00', taxable: false }],
-    } as never)).rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
-    // Only the contract row was inserted; no contract_lines insert followed.
+    } as never)).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
+    // Nothing was inserted: no orphan draft contract, no line.
     const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
-    expect(values).toHaveLength(1);
+    expect(values).toHaveLength(0);
   });
 });
 

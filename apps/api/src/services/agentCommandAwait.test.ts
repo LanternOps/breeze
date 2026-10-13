@@ -5,7 +5,7 @@ vi.mock('../routes/agentWs', () => ({
   sendCommandToAgent: vi.fn(),
 }));
 
-import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand } from './agentCommandAwait';
+import { sendCommandToAgentAwaitResult, resolvePendingAgentCommand, cancelPendingAgentCommandsByPrefix, CANCELLED_PREFIX_TOMBSTONE_TTL_MS, __resetCancelledPrefixTombstonesForTests } from './agentCommandAwait';
 import { sendCommandToAgent } from '../routes/agentWs';
 
 const mockSendCommandToAgent = vi.mocked(sendCommandToAgent);
@@ -19,6 +19,7 @@ describe('agentCommandAwait', () => {
   });
 
   afterEach(() => {
+    __resetCancelledPrefixTombstonesForTests();
     vi.useRealTimers();
   });
 
@@ -96,5 +97,50 @@ describe('agentCommandAwait', () => {
     await p;
 
     expect(mockSendCommandToAgent).toHaveBeenCalledWith('my-agent-id', cmd);
+  });
+
+  it('cancelPendingAgentCommandsByPrefix resolves only the matching in-flight commands', async () => {
+    mockSendCommandToAgent.mockReturnValue(true);
+    const closing = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T1-a', type: 'http_request', payload: {} }, 60_000);
+    const other = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T2-b', type: 'http_request', payload: {} }, 60_000);
+
+    expect(cancelPendingAgentCommandsByPrefix('http-req-T1-', 'tunnel_closed')).toBe(1);
+    await expect(closing).resolves.toEqual({ status: 'failed', error: 'tunnel_closed' });
+    // A late result for the cancelled id is a no-op; the other tunnel is untouched.
+    expect(resolvePendingAgentCommand('http-req-T1-a', { status: 'completed' })).toBe(false);
+    expect(resolvePendingAgentCommand('http-req-T2-b', { status: 'completed' })).toBe(true);
+    await expect(other).resolves.toEqual({ status: 'completed' });
+  });
+
+  describe('cancellation tombstones', () => {
+    it('refuses a send matching a fresh tombstone without contacting the agent', async () => {
+      cancelPendingAgentCommandsByPrefix('http-req-T3-', 'tunnel_closed');
+      const r = await sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T3-x', type: 'http_request', payload: {} }, 1000);
+      expect(r).toEqual({ status: 'failed', error: 'tunnel_closed' });
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('does not block a different tunnel prefix', async () => {
+      mockSendCommandToAgent.mockReturnValue(true);
+      cancelPendingAgentCommandsByPrefix('http-req-T4-', 'tunnel_closed');
+      const p = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T5-x', type: 'http_request', payload: {} }, 1000);
+      expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
+      resolvePendingAgentCommand('http-req-T5-x', { status: 'completed' });
+      await expect(p).resolves.toEqual({ status: 'completed' });
+    });
+
+    it('outlives the body-read + request-timeout window', () => {
+      expect(CANCELLED_PREFIX_TOMBSTONE_TTL_MS).toBeGreaterThan(300_000 + 25_000);
+    });
+
+    it('stops blocking once the tombstone expires', async () => {
+      mockSendCommandToAgent.mockReturnValue(true);
+      cancelPendingAgentCommandsByPrefix('http-req-T6-', 'tunnel_closed');
+      vi.advanceTimersByTime(CANCELLED_PREFIX_TOMBSTONE_TTL_MS + 1);
+      const p = sendCommandToAgentAwaitResult('agent-1', { id: 'http-req-T6-x', type: 'http_request', payload: {} }, 1000);
+      expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
+      resolvePendingAgentCommand('http-req-T6-x', { status: 'completed' });
+      await p;
+    });
   });
 });

@@ -233,6 +233,11 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // #4617 W02 customer approval: the gate holds/releases a ticket's own time
+  // entries (awaiting_approval <-> not_billed/no_charge) under that ticket's
+  // row lock, keyed by entry id on one ticket of one org — never partner-wide config.
+  'services/ticketApproval/requests.ts': 'customer approval gate: holds one ticket\'s time entries on its approval request, ticket/org-axis authority — same billing-status class as timeEntryService.ts',
+  'services/ticketApproval/decisions.ts': 'customer approval decisions: release, re-hold or write off one ticket\'s held time entries under the ticket lock, ticket/org-axis authority — same class as timeEntryService.ts',
   // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
   // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
   // every write is `user_id = actor.userId` and every read/delete is scoped to

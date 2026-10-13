@@ -1000,6 +1000,8 @@
     "codeExpires": "Expire à {{time}}",
     "overdueNotice": "Aucune confirmation pour l'instant — consultez la console de récupération.",
     "fileIndexPreparing": "Préparation de l'index des fichiers pour les références inter-instantanés…",
+    "snapshotsLoadFailed": "Impossible de charger les instantanés. Rechargez la page pour réessayer.",
+    "noSnapshots": "Aucun instantané restaurable en bare-metal pour l'instant. Une sauvegarde complète de la machine marquée restaurable en bare-metal est requise.",
     "statusFailed": "Échec de la récupération",
     "statusRefused": "Récupération refusée",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Restauration en cours",
       "validated": "Validée",
       "rebooted": "Redémarrée",
-      "checked_in": "Confirmée"
+      "checked_in": "Confirmée",
+      "completed": "Terminé"
     }
   },
   "backupHealth": {

@@ -538,6 +538,7 @@
       "more": "Daha fazla yükle",
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
+      "unknownUser": "Bilinmeyen kullanıcı",
       "reverted": "Geri alındı",
       "deadline": "Eski uyarıların emekliye ayrılması kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     },

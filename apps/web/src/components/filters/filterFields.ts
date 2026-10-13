@@ -11,7 +11,7 @@
 // it on a number field would render the wrong widget. Every operator listed
 // here is both backend-valid and renderable by ValueInput/OperatorSelector.
 import type { FilterFieldDefinition, FilterOperator } from '@breeze/shared';
-import { DEVICE_FUNCTION_KEYS } from '@breeze/shared';
+import { DEVICE_FUNCTION_KEYS, WORKLOAD_RUNTIMES } from '@breeze/shared';
 
 const S: FilterOperator[] = ['equals', 'notEquals', 'contains', 'notContains', 'startsWith', 'endsWith', 'matches', 'in', 'notIn', 'isNull', 'isNotNull'];
 const N: FilterOperator[] = ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals', 'isNull', 'isNotNull'];
@@ -38,6 +38,10 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
     enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: S },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: B },
+  // Workload host inventory (#8193): devices.hosts_workloads / workload_runtimes.
+  { key: 'hostsWorkloads', label: 'Hosts Workloads', category: 'core', type: 'boolean', operators: B },
+  { key: 'workloadRuntimes', label: 'Workload Runtimes', category: 'core', type: 'array', operators: A,
+    enumValues: [...WORKLOAD_RUNTIMES] },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: N },
   { key: 'watchdogStatus', label: 'Watchdog Status', category: 'core', type: 'enum', operators: E, enumValues: ['connected', 'failover', 'offline'] },
   { key: 'quarantinedAt', label: 'Quarantined At', category: 'core', type: 'datetime', operators: DT },

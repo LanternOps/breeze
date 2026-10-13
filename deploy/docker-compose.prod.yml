@@ -62,6 +62,17 @@ x-api-env: &api-env
   EVENT_LOOP_MONITOR_INTERVAL_MS: ${EVENT_LOOP_MONITOR_INTERVAL_MS:-}
   EVENT_LOOP_STARVATION_WARN_MS: ${EVENT_LOOP_STARVATION_WARN_MS:-}
   EVENT_LOOP_MONITOR_DISABLED: ${EVENT_LOOP_MONITOR_DISABLED:-}
+  # Agent admission control (W08, #8147). observe (default) never refuses;
+  # enforce sheds low-priority agent work under event-loop / DB pressure; off
+  # is the kill switch. Empty reads as unset, so the code defaults apply.
+  BREEZE_ADMISSION_MODE: ${BREEZE_ADMISSION_MODE:-}
+  BREEZE_ADMISSION_LAG_MS: ${BREEZE_ADMISSION_LAG_MS:-}
+  BREEZE_ADMISSION_DB_WAIT_MS: ${BREEZE_ADMISSION_DB_WAIT_MS:-}
+  BREEZE_ADMISSION_EMERGENCY_MS: ${BREEZE_ADMISSION_EMERGENCY_MS:-}
+  BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT: ${BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT:-}
+  BREEZE_ADMISSION_WS_RATE_PER_SEC: ${BREEZE_ADMISSION_WS_RATE_PER_SEC:-}
+  BREEZE_ADMISSION_WS_BURST: ${BREEZE_ADMISSION_WS_BURST:-}
+  BREEZE_ADMISSION_WS_MAX_SETUPS: ${BREEZE_ADMISSION_WS_MAX_SETUPS:-}
   REDIS_HOST: redis
   REDIS_PORT: 6379
   REDIS_PASSWORD_FILE: /run/secrets/redis_password
@@ -86,6 +97,10 @@ x-api-env: &api-env
   PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
   DASHBOARD_URL: https://${BREEZE_DOMAIN}
   PUBLIC_API_URL: https://${BREEZE_DOMAIN}
+  # Network Proxy host mode (optional; unset = path mode). The tunnel domain
+  # must be a different registrable domain from BREEZE_DOMAIN.
+  TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
+  TUNNEL_FRAME_ANCESTOR: ${TUNNEL_FRAME_ANCESTOR:-}
   # Customer-portal origin for emailed links (quotes, invoices). Portal is
   # served under /portal on the main domain.
   PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}

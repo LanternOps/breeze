@@ -23,11 +23,14 @@ import {
   isModifierOnly,
   isCapsLock,
   getCapsLockState,
+  extendedKeyFields,
   keyNameModeFor,
   resolveKeyUpName,
 } from '../lib/keymap';
 import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
+import { InputSequencer } from '../lib/inputSequencer';
+import { ReliableInputRouter } from '../lib/reliableInput';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
@@ -197,6 +200,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // unsupported and Paste Text keeps using per-character key synthesis
   // (issue #4089). Lifecycle is unit-tested in lib/inputCapabilities.test.ts.
   const inputCapabilitiesRef = useRef(createInputCapabilitiesGate());
+  // Agent key name → physical code sent on its key_down, so every release of
+  // it (key_up, focus-loss release) carries the same code (W2c key codes).
+  const heldCodeByKeyRef = useRef<Map<string, string>>(new Map());
+  const wheelAccXRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
+  // Reliable input protocol (W03, #8239): routes input to `input` or `input-r`
+  // and stamps seq/epoch once the agent advertises reliableInput. With any
+  // other agent it passes events through unchanged. One per viewer window, so
+  // seq never restarts (the agent silently drops a seq that goes backwards).
+  // Lifecycle is unit-tested in lib/reliableInput.test.ts.
+  const reliableInputRef = useRef<ReliableInputRouter | null>(null);
+  if (reliableInputRef.current === null) {
+    reliableInputRef.current = new ReliableInputRouter(new InputSequencer(), {
+      lossyChannel: () => webrtcRef.current?.inputChannel ?? null,
+      openReliableChannel: () => webrtcRef.current?.openReliableInput() ?? null,
+      // The agent released (or is releasing) everything it held: forget ours,
+      // so no release goes out for a press it no longer knows about.
+      reconcileHeld: () => {
+        const held = pressedKeysRef.current.size + pressedButtonsRef.current.size;
+        pressedKeysRef.current.clear();
+        heldKeyNameByCodeRef.current.clear();
+        heldCodeByKeyRef.current.clear();
+        pressedButtonsRef.current.clear();
+        if (held > 0) setInputNotice('Held keys and mouse buttons were released on the remote.');
+      },
+      onNotice: (message) => setInputNotice(message),
+    });
+  }
+  const reliableInput = reliableInputRef.current;
   const userDisconnectRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
@@ -675,6 +706,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     if (!sessionWrapper) return false;
 
+    // Close the old transport's input-r; this one runs its own handshake.
+    reliableInput.detach();
     webrtcRef.current = sessionWrapper;
     setWebrtcEpoch((e) => e + 1);
 
@@ -1338,6 +1371,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             break;
           case 'monitor_switched':
             setActiveMonitor(msg.index ?? 0);
+            // Carries the new geometry epoch (and reset epoch) for input.
+            reliableInput.onControlMessage(msg);
             // Request a keyframe so the browser decoder gets a fresh IDR
             // with the new resolution's SPS/PPS immediately.
             ch.send(JSON.stringify({ type: 'request_keyframe' }));
@@ -1353,6 +1388,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             break;
           case 'input_capabilities':
             inputCapabilitiesRef.current.apply(msg);
+            reliableInput.onCapabilities(inputCapabilitiesRef.current.snapshot());
+            break;
+          // The agent released all held input and moved to a new reset epoch.
+          case 'input_epoch':
+            reliableInput.onControlMessage(msg);
             break;
           // Sent only when a paste did NOT fully land. The progress indicator
           // completes on send, not on delivery, so without this the operator
@@ -1407,6 +1447,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      // This control channel is gone; the next one re-runs the handshake.
 	      // Release anything waiting on the old answer so a paste can't hang.
 	      inputCapabilitiesRef.current.release();
+	      reliableInput.detach();
 	    };
 	    // webrtcEpoch: re-attach to the NEW control channel after an
 	    // auto-reconnect — without it this stays bound to the dead channel and
@@ -1588,25 +1629,26 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // The live input channel's send, with any stranded releases flushed first,
   // or null when no channel is open.
   const getInputSender = useCallback((): ((event: Record<string, unknown>) => void) | null => {
-    let send: ((data: string) => void) | null = null;
+    let send: ((event: Record<string, unknown>) => void) | null = null;
     if (transportRef.current === 'webrtc') {
-      const ch = webrtcRef.current?.inputChannel;
-      if (ch && ch.readyState === 'open') send = (data) => ch.send(data);
+      const lossy = webrtcRef.current?.inputChannel;
+      // The router picks input or input-r; against an agent without
+      // reliableInput it sends exactly what was sent before, on input.
+      if (lossy && lossy.readyState === 'open') send = (event) => { reliableInput.send(event); };
     } else {
       const wsSession = wsRef.current;
-      if (wsSession) send = (data) => wsSession.inputChannel.send(data);
+      if (wsSession) send = (event) => wsSession.inputChannel.send(JSON.stringify(event));
     }
     if (!send) return null;
     const stranded = strandedReleasesRef.current;
     if (stranded) {
       strandedReleasesRef.current = null;
       if (stranded.destination === inputDestinationRef.current) {
-        for (const ev of stranded.events) send(JSON.stringify(ev));
+        for (const ev of stranded.events) send(ev);
       }
     }
-    const live = send;
-    return (event) => live(JSON.stringify(event));
-  }, []);
+    return send;
+  }, [reliableInput]);
 
   const sendInputFn = useCallback((event: Record<string, unknown>): boolean => {
     const send = getInputSender();
@@ -1628,7 +1670,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // key_up, so the remote would keep it down.
   const releaseAllKeys = useCallback(() => {
     const releases: Array<Record<string, unknown>> = [];
-    for (const key of pressedKeysRef.current) releases.push({ type: 'key_up', key });
+    const withCodes = reliableInput.extended().keyCodes;
+    for (const key of pressedKeysRef.current) {
+      const code = withCodes ? heldCodeByKeyRef.current.get(key) : undefined;
+      releases.push(code ? { type: 'key_up', key, code } : { type: 'key_up', key });
+    }
     const at = lastPointerRef.current;
     if (at) {
       for (const button of pressedButtonsRef.current) {
@@ -1637,11 +1683,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     pressedKeysRef.current.clear();
     heldKeyNameByCodeRef.current.clear();
+    heldCodeByKeyRef.current.clear();
     pressedButtonsRef.current.clear();
-    if (releases.length === 0) return;
+    if (releases.length === 0) {
+      // Reliable input: ask the agent to release anything it still holds
+      // (no-op otherwise). Same at the end of the releases below.
+      reliableInput.resetHeld();
+      return;
+    }
     const send = getInputSender();
     if (send) {
       for (const ev of releases) send(ev);
+      reliableInput.resetHeld();
       return;
     }
     const destination = inputDestinationRef.current;
@@ -1650,7 +1703,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       destination,
       events: prior?.destination === destination ? [...prior.events, ...releases] : releases,
     };
-  }, [getInputSender]);
+  }, [getInputSender, reliableInput]);
   releaseAllKeysRef.current = releaseAllKeys;
 
   // A new session's channel may open with releases still stranded from the
@@ -1704,8 +1757,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (strandedReleasesRef.current) getInputSender();
 
     webrtcMouseMovePendingRef.current = null;
-    ch.send(JSON.stringify({ type: 'mouse_move', x: pending.x, y: pending.y }));
-  }, [getInputSender]);
+    reliableInput.send({ type: 'mouse_move', x: pending.x, y: pending.y });
+  }, [getInputSender, reliableInput]);
 
   // Native wheel handler to enable preventDefault on non-passive listener
   useEffect(() => {
@@ -1718,14 +1771,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       e.preventDefault();
       const r = wheelDeltaToSteps(wheelAccRef.current, e.deltaY, e.deltaMode);
       wheelAccRef.current = r.acc;
-      if (r.steps === 0) return;
+      // Horizontal wheel only for an agent that injects it (W2c); otherwise
+      // deltaX is dropped here, as it always was. Positive = right.
+      let stepsX = 0;
+      if (reliableInput.extended().horizontalWheel) {
+        const rx = wheelDeltaToSteps(wheelAccXRef.current, e.deltaX, e.deltaMode);
+        wheelAccXRef.current = rx.acc;
+        stepsX = rx.steps;
+      }
+      if (r.steps === 0 && stepsX === 0) return;
       const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
-      sendInputFn({ type: 'mouse_scroll', x, y, delta: r.steps });
+      sendInputFn(stepsX !== 0
+        ? { type: 'mouse_scroll', x, y, delta: r.steps, deltaX: stepsX }
+        : { type: 'mouse_scroll', x, y, delta: r.steps });
     }
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [transport, scaleCoordsFn, sendInputFn]);
+  }, [transport, scaleCoordsFn, sendInputFn, reliableInput]);
 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
@@ -1747,8 +1810,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // preventDefault on mousedown suppresses the browser's default focus behavior,
     // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
     (e.currentTarget as HTMLElement).focus();
-    // Back/forward have no agent equivalent; they used to arrive as a left click.
-    const button = mouseButtonName(e.button);
+    // Back/forward only for an agent that injects them (W2c); otherwise they
+    // are dropped (they used to arrive as a left click).
+    const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     if (!button) return;
     // Flush any pending RAF mouse_move so the cursor is at the correct
     // position when the button press fires (consistent with mouseup).
@@ -1765,10 +1829,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
-  }, [scaleCoordsFn, sendInputFn]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
-    const button = mouseButtonName(e.button);
+    const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     // A release for a press that started elsewhere (toolbar, another window)
     // or was already released on focus loss is not ours to send.
     if (!button || !pressedButtonsRef.current.has(button)) return;
@@ -1787,7 +1851,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.delete(button);
     sendInputFn({ type: 'mouse_up', x, y, button });
-  }, [scaleCoordsFn, sendInputFn]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1930,6 +1994,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // under, so the agent sets the remote modifier flags explicitly instead of
     // inheriting whatever the remote machine had latched (issue #3595).
     const capsLock = getCapsLockState(ne);
+    // W2c physical key + Num Lock; empty for every agent without key codes.
+    const keyCodes = reliableInput.extended().keyCodes;
+    const keyFields = extendedKeyFields(ne, keyCodes);
 
     // Modifier keys pressed alone: forward as key_down so Shift+Click,
     // Ctrl+Click, etc. hold the modifier on the remote machine for
@@ -1938,6 +2005,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (isModifierOnly(ne)) {
       let modKey = mapKey(ne);
       if (!modKey) return;
+      const remapped = remapCmdCtrl && (modKey === 'ctrl' || modKey === 'meta');
       if (remapCmdCtrl) {
         if (modKey === 'ctrl') modKey = 'meta';
         else if (modKey === 'meta') modKey = 'ctrl';
@@ -1945,7 +2013,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (e.repeat) return;
       if (pressedKeysRef.current.has(modKey)) return;
       pressedKeysRef.current.add(modKey);
-      sendInputFn({ type: 'key_down', key: modKey, capsLock });
+      const modFields = extendedKeyFields(ne, keyCodes, { omitCode: remapped });
+      if (modFields.code) heldCodeByKeyRef.current.set(modKey, modFields.code);
+      sendInputFn({ type: 'key_down', key: modKey, capsLock, ...modFields });
       return;
     }
 
@@ -1958,7 +2028,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // injecting the key entirely.
     if (isCapsLock(ne)) {
       if (e.repeat) return;
-      sendInputFn({ type: 'key_down', key: 'capslock', capsLock });
+      sendInputFn({ type: 'key_down', key: 'capslock', capsLock, ...keyFields });
       return;
     }
 
@@ -2020,10 +2090,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           remapActive: remapCmdCtrl,
         });
         if (routing === 'held') {
-          sendInputFn({ type: 'key_down', key: pasteKey, capsLock });
-          sendInputFn({ type: 'key_up', key: pasteKey, capsLock });
+          sendInputFn({ type: 'key_down', key: pasteKey, capsLock, ...keyFields });
+          sendInputFn({ type: 'key_up', key: pasteKey, capsLock, ...keyFields });
         } else {
-          sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
+          sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock, ...keyFields });
           forgetModifiersReleasedByKeyPress(pasteModifiers);
         }
       };
@@ -2060,7 +2130,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       physicalMeta: ne.metaKey,
       remapActive: remapCmdCtrl,
     }) === 'key_press') {
-      sendInputFn({ type: 'key_press', key, modifiers, capsLock });
+      sendInputFn({ type: 'key_press', key, modifiers, capsLock, ...keyFields });
       forgetModifiersReleasedByKeyPress(modifiers);
       return;
     }
@@ -2070,27 +2140,29 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // macOS, so OS repeats are forwarded there (Linux's X server repeats itself).
     if (pressedKeysRef.current.has(key)) {
       if (e.repeat && shouldForwardKeyRepeat(remoteOs)) {
-        sendInputFn({ type: 'key_down', key, capsLock });
+        sendInputFn({ type: 'key_down', key, capsLock, ...keyFields });
       }
       return;
     }
     if (e.repeat) return;
     pressedKeysRef.current.add(key);
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
-    sendInputFn({ type: 'key_down', key, capsLock });
-  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs]);
+    if (keyFields.code) heldCodeByKeyRef.current.set(key, keyFields.code);
+    sendInputFn({ type: 'key_down', key, capsLock, ...keyFields });
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
     const ne = e.nativeEvent;
     const capsLock = getCapsLockState(ne);
+    const keyCodes = reliableInput.extended().keyCodes;
 
     // Caps Lock never enters pressedKeysRef (see handleKeyDown), so its release
     // is forwarded unconditionally rather than gated on membership. On macOS
     // this is the ONLY event fired when Caps Lock is disengaged.
     if (isCapsLock(ne)) {
-      sendInputFn({ type: 'key_up', key: 'capslock', capsLock });
+      sendInputFn({ type: 'key_up', key: 'capslock', capsLock, ...extendedKeyFields(ne, keyCodes) });
       return;
     }
 
@@ -2099,6 +2171,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     // Apply the same ctrl↔meta remap used on key_down so the agent sees
     // the matching release for the key that was pressed.
+    const remapped = isModifierOnly(ne) && remapCmdCtrl && (key === 'ctrl' || key === 'meta');
     if (isModifierOnly(ne) && remapCmdCtrl) {
       if (key === 'ctrl') key = 'meta';
       else if (key === 'meta') key = 'ctrl';
@@ -2106,8 +2179,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
-    sendInputFn({ type: 'key_up', key, capsLock });
-  }, [sendInputFn, remapCmdCtrl, keyNameMode]);
+    heldCodeByKeyRef.current.delete(key);
+    sendInputFn({ type: 'key_up', key, capsLock, ...extendedKeyFields(ne, keyCodes, { omitCode: remapped }) });
+  }, [sendInputFn, remapCmdCtrl, keyNameMode, reliableInput]);
 
   // ── Toolbar: config changes ────────────────────────────────────────
 

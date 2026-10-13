@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TICKET_ATTACHMENT_LIMITS } from '../constants/ticketAttachments';
 import { retiredLabourPricingFields } from './retiredLabourPricing';
+import { positiveMoneyAmountSchema } from './ticketApproval';
 
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
@@ -100,7 +101,12 @@ export const updateTicketSchema = z.object({
   // #5367: re-point the requester CONTACT explicitly. An explicit value wins
   // over the link the service otherwise derives from the login/address (the
   // same precedence createTicket gives a named contact); null clears it.
-  requesterContactId: z.string().guid().nullable().optional()
+  requesterContactId: z.string().guid().nullable().optional(),
+  // #4617 spec §4.2: the ticket budget is a document value. `null` clears an
+  // axis. The currency is never accepted from the client — the service stamps
+  // `budgetCurrencyCode` from the org when `budgetAmount` is set.
+  budgetMinutes: z.number().int().positive().max(1_000_000).nullable().optional(),
+  budgetAmount: positiveMoneyAmountSchema.nullable().optional(),
 });
 
 /**

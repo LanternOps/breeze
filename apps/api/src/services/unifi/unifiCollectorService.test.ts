@@ -1,5 +1,6 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import * as svc from './unifiCollectorService';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from '../clusterCacheBus';
 
 vi.mock('../secretCrypto', () => ({
   encryptSecret: vi.fn(() => 'ENC'),
@@ -168,5 +169,52 @@ describe('agent collector absence (#8053)', () => {
     });
 
     expect(await isCachedAbsent('dev-1', 'org-1')).toBe(false);
+  });
+});
+
+describe('unifi-agent-collector-absence is cluster-invalidated (W05 #8144, C8)', () => {
+  const row = {
+    id: 'col-1', integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: 'h1',
+    collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', isEnabled: true,
+    pollIntervalSeconds: 60, status: 'pending', firmwareOk: null, lastPollAt: null, lastPollStatus: null, lastPollError: null,
+  };
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('upsertCollector publishes the <orgId>:<deviceId> key after the write', async () => {
+    const db = makeDb({ insertRows: [row] });
+    await svc.upsertCollector(db, {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: 'h1',
+      collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', apiKey: 'k',
+    });
+    expect(published).toEqual([['unifi-agent-collector-absence', 'org-1:dev-1']]);
+    // Ordered after the write call (the route holds the request context, so the real publish waits for COMMIT).
+    expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
+  });
+
+  it('upsertSelfHostedController publishes the <orgId>:<deviceId> key', async () => {
+    await svc.upsertSelfHostedController(makeDb({ insertRows: [{ ...row, unifiHostId: null }] }), {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1',
+      collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', apiKey: 'k',
+    });
+    expect(published).toEqual([['unifi-agent-collector-absence', 'org-1:dev-1']]);
+  });
+
+  it('a failed upsert publishes nothing', async () => {
+    await expect(svc.upsertCollector(makeDb({ insertRows: [] }), {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: 'h1',
+      collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', apiKey: 'k',
+    })).rejects.toThrow();
+    expect(published).toEqual([]);
   });
 });

@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Supportanfrage prüfen", "loading": "Anfrage wird geladen…", "hello": "Hallo {{name}}",
+  "request": "{{technician}} von {{partner}} möchte:",
+  "reset_password": "Das Passwort für {{target}} zurücksetzen", "disable_user": "Das Konto von {{target}} deaktivieren",
+  "any": "Eine Supportanfrage für {{target}} bestätigen", "target": "das betreffende Konto", "provider": "Ihren Supportanbieter",
+  "reverse": "Anfragecode", "choose": "Tippen Sie auf die Zahl, die Ihnen Ihr Techniker nennt. Lesen Sie niemals einen Code vor.",
+  "notMe": "Das bin nicht ich", "caution": "Tippen Sie nur auf eine Zahl, wenn Sie gerade mit {{technician}} telefonieren. Wenn Sie unsicher sind, legen Sie auf und rufen Sie {{partner}} unter der Ihnen bereits bekannten Nummer an.",
+  "expires": "Läuft in {{seconds}} Sekunden ab", "expired": "Diese Anfrage ist nicht verfügbar oder abgelaufen.",
+  "received": "Ihre Antwort wurde empfangen.", "failed": "Ihre Antwort konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
+  "loadFailed": "Die Anfrage konnte nicht geladen werden. Bitte versuchen Sie es erneut.", "retry": "Erneut versuchen", "sending": "Wird gesendet…"
+} }

@@ -85,7 +85,15 @@ vi.mock('./ticketMoveCurrencyGuard', async () => {
 });
 // #8181: the block-drawn guard runs real Postgres in hourBlockOrgMove.integration.test.ts;
 // here it is a mock so its placement relative to the currency guard can be pinned.
-const { hourBlockGuardMock } = vi.hoisted(() => ({ hourBlockGuardMock: vi.fn().mockResolvedValue(undefined) }));
+const { hourBlockGuardMock, approvalGuardMock } = vi.hoisted(() => ({
+  hourBlockGuardMock: vi.fn().mockResolvedValue(undefined),
+  approvalGuardMock: vi.fn().mockResolvedValue(undefined),
+}));
+// #4617: the pending-approval move guard (real-DB behaviour in ticketApprovalRequests.integration.test.ts).
+vi.mock('./ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
 vi.mock('./ticketMoveHourBlockGuard', async () => {
   const actual = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
   return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
@@ -4561,6 +4569,27 @@ describe('moveTicketOrg', () => {
     const guardOrder = guardMock.mock.invocationCallOrder[0]!;
     expect(updateOrder).toBeLessThan(blockOrder);
     expect(blockOrder).toBeLessThan(guardOrder);
+  });
+
+  it('(g) #4617: the pending-approval guard runs on the moving ticket after tx.update(tickets), before the other guards', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+    await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
+    expect(approvalGuardMock).toHaveBeenCalledWith(expect.anything(), { ticketIds: ['t1'] });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const approvalOrder = approvalGuardMock.mock.invocationCallOrder.at(-1)!;
+    expect(updateOrder).toBeLessThan(approvalOrder);
+    expect(approvalOrder).toBeLessThan(hourBlockGuardMock.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('(h) #4617: a pending-approval refusal is a 409 that aborts before any child rewrite', async () => {
+    const { TicketMoveApprovalPendingError } = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+    seedCrossCurrencyMove();
+    approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }));
+    await expect(moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 1 } });
+    expect(guardMock).not.toHaveBeenCalled();
+    expect(hourBlockGuardMock).not.toHaveBeenCalled();
   });
 
   it('(f) #8181: a block-drawn refusal aborts before the currency guard and any child rewrite', async () => {

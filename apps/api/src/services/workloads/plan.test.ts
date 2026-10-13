@@ -53,6 +53,21 @@ const input = (over: Partial<WorkloadSyncInput> = {}): WorkloadSyncInput => ({
 
 const onlyPlan = (over: Partial<WorkloadSyncInput>) => planWorkloadSync(input(over)).runtimes[0]!;
 
+describe('incompleteSnapshot (W05 digest-unknown flag)', () => {
+  it.each([
+    ['ok + incomplete', { collection: 'ok', complete: false }, true],
+    ['ok + complete', { collection: 'ok', complete: true }, false],
+    ['error', { collection: 'error', complete: false, error: 'x' }, false],
+  ])('%s', (_name, over, expected) => {
+    expect(onlyPlan({ runtimes: [runtimeReport({ ...over, workloads: [item('a')] })] }).incompleteSnapshot).toBe(expected);
+  });
+
+  it('is false when the policy turns the runtime off', () => {
+    const plan = onlyPlan({ runtimes: [runtimeReport({ complete: false, workloads: [item('a')] })], isEnabled: () => false });
+    expect(plan.incompleteSnapshot).toBe(false);
+  });
+});
+
 describe('ordering guard', () => {
   it.each([
     ['older', hoursAgo(1)],

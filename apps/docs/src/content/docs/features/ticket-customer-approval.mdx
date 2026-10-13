@@ -1,0 +1,113 @@
+---
+title: Customer Approval for Ticket Work
+description: Ask the customer to approve over-budget and after-hours work before it is billed -- ticket budgets, after-hours work types, held time, the staff panel, the customer portal, emails and expiry.
+sidebar:
+  label: "Customer Approval"
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Some customers want to know before a ticket costs more than planned, and some work types (an after-hours call-out, for example) carry a premium the customer has to agree to. Customer approval lets a technician keep working and recording time while the money question is settled in the open: time that crosses a budget or uses an after-hours work type is **held** until the customer approves, or until staff record the customer's consent.
+
+<Aside type="note">
+This feature is **off until a partner turns it on**. Nothing about timers, time entries or invoices changes for a partner whose **Customer approval** setting is not enabled.
+</Aside>
+
+## How it works
+
+1. A ticket has a **budget** (hours, an amount, or both) and/or a work type marked **after-hours**.
+2. When a billable time entry would cross the budget, or uses an after-hours work type that has no consent covering it, Breeze records the entry and marks it **Awaiting approval**.
+3. A **request** is created for the customer. Designated approvers decide it from the customer portal, or staff record the decision on the customer's behalf.
+4. On approval, the held entries are re-checked against the new ceiling and released to normal billing. On denial, expiry or cancellation they stay held until staff resolve them.
+
+Breeze never refuses to *record* work that already happened. The hold applies to billing, and the server enforces it: a held entry cannot be invoiced.
+
+## Settings
+
+Customer approval resolves **partner default → organization override**, and the resolved values are copied onto each request when it is created, so a later settings change never rewrites a request in flight.
+
+| Setting | Meaning | Default |
+|---|---|---|
+| **Enabled** | Master switch. Off means no gate, no requests, no holds. | Off |
+| **Budget trigger** | Raise requests when work crosses a ticket budget. | On |
+| **After-hours trigger** | Raise requests for after-hours work types. | On |
+| **Enforcement** | **Soft** records and holds. **Hard** also refuses to *start* a billable timer that would need approval. | Soft |
+| **Request lifetime** | Hours a request stays pending before it expires (1 to 720). | 72 |
+
+Partner defaults live in the **Customer approval** section of the time tracking settings and need partner-wide rights to edit. Each organization can override any field in its ticketing settings; clearing an override returns that field to the partner default.
+
+## Ticket budgets
+
+Open a ticket and use the **Budget** card to set a budget in hours, an amount, or both. The card shows consumed time against the ceiling, with held time shaded separately. The ceiling is the budget plus any approved extensions.
+
+The amount is expressed in the organization's currency, and Breeze rejects amounts that currency cannot represent (for example fractional units in a currency with none). Organization-scoped users can view the budget but not change it.
+
+## After-hours work types
+
+In the **Work Types** card on the Billing **Rates** tab, tick **After-hours** on any work type that should need consent. Breeze does not read the clock: the flag belongs to the work type the technician (or the ticket category default) selects. An after-hours entry is covered when an approved after-hours request on the ticket has a coverage window that contains the entry's start, or when it was released by an approved request.
+
+## The gate and held time
+
+| Situation | Soft | Hard |
+|---|---|---|
+| Entry fits the budget and is not uncovered after-hours | Recorded normally | Same |
+| Finished entry (manual log, timer stop, edit) crosses the line | Recorded as **Awaiting approval**, linked to a pending request | Same -- past work is never refused |
+| Billable timer **start** at or over the ceiling, or on an uncovered after-hours work type | Allowed; held at stop | Refused with an **Approval required** message |
+
+When a hard-mode start is refused, the technician can retry the start as **non-billable** (this needs the same billing permission as any change to an entry's billable flag; without it they are told to ask someone who has it) or ask for approval. Held entries stay editable; editing one re-runs the check and may release it.
+
+One entry can need both kinds of consent. After-hours is evaluated first, and a release re-runs the budget check.
+
+## The staff panel
+
+On a ticket, the **Approvals** panel lists every request with its status, the ask, and the figures it was based on. From it, staff can:
+
+- **Request approval** -- raise an ask yourself, optionally with an after-hours coverage window. A staff-raised amount is a floor: automatic recomputation never lowers it.
+- **Cancel** a pending request. Linked entries re-run the check; those that fit are released and the rest stay held on a new request.
+- **Ask again** -- after a denial or expiry, create a fresh request and move the held entries onto it.
+- **Record on behalf** -- capture the customer's decision when it came by another route. Pick the **method** (verbal, email, signed document or other), enter a **reference** (required, for example an email subject or document id) and the signer's name. This needs the *record approval* ticket permission, which is separate from general ticket write access.
+- **Write off** held time -- sets the entry to no charge, audited. This needs the billing management permission for time entries.
+
+Held entries show an **Awaiting approval** chip in the ticket time list and the timesheet. If no approver is on file, the panel says so and suggests adding a billing contact or recording the decision on behalf.
+
+Breeze has no "bill without consent" action: a held entry leaves the hold only by approval, by a write-off, or by being re-evaluated under a higher ceiling.
+
+## The customer portal
+
+Customers see an **Approvals** page in the portal, with a pending count in the navigation and a banner on the ticket when a request is waiting.
+
+- **Approvers** are active organization contacts with the **billing** role, frozen on the request when it is created. They can approve or deny.
+- **Notify-only** recipients -- the ticket requester and any after-hours contacts, minus the approvers -- can see the request but cannot decide it.
+
+The page shows the ticket number and subject, what is being asked, and the figures at request time, not the whole ticket. To decide, the approver types their **name** and chooses **Approve** or **Deny**, with an optional note. The decision records their address and browser details.
+
+If staff change the request after the page was loaded (for example by adding more held time), the decision is refused with **"This request was updated, please review again"**, so a customer only ever approves the amount they saw. Deciding an already-decided request, or one that has expired, gets its own clear message too.
+
+## Emails
+
+| Email | Goes to | Contents |
+|---|---|---|
+| **Approval request (approver)** | Approvers | The ask and a link to approve or deny in the portal |
+| **Approval request (notify)** | Notify-only recipients | The same facts, with no decision link |
+| **Decision** | Approvers and notify-only recipients | Confirmation that the request was approved or denied |
+
+These send through the partner's normal email lane and can be overridden with partner email templates. Repeat sends for the same request are throttled. If ticketing is switched off for the customer, no request email is sent and staff get an in-app prompt to record the decision on behalf. Staff are also notified in-app when a request is decided.
+
+## Expiry
+
+A pending request expires after the configured lifetime. Its entries stay held. Staff then **Ask again** or write the time off.
+
+## What a pending request blocks
+
+- **Invoicing.** An invoice cannot be issued while any of its source time is awaiting approval; the error names what is held.
+- **Moving the ticket to another organization.** A pending request must be resolved first, because it belongs to the original customer's billing contacts.
+
+## Other places it appears
+
+- **Outlook add-in.** Starting a timer that needs approval offers **Log as non-billable**. Entries recorded but held show a "held pending customer approval" notice.
+- **Mobile app.** Held entries carry an **Awaiting approval** badge but stay editable. A refused start asks **"Approval required. Log as non-billable?"**. Time recorded offline is replayed as finished entries, which are held rather than refused; if a queued entry is ever rejected it is parked for the technician, never dropped.
+- **AI assistant.** The assistant can read a ticket's budget and approval status and is told when time it logs is held. It cannot decide, record on behalf, write off or change a budget -- consent is a person's act.
+
+## Status
+
+Customer approval is complete across the API, the staff web interface, the customer portal, the Outlook add-in, the mobile app and the AI assistant's tool text. By design there is no AI tool to decide a request, record consent on behalf, write off held time or set a budget.

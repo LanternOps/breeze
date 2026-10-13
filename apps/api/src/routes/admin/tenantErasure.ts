@@ -29,7 +29,12 @@ import { requireMfa } from '../../middleware/auth';
 import { enqueueTenantErasure } from '../../jobs/tenantErasure';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { hasActiveBackupLegalHold, LEGAL_HOLD_ACTIVE_MESSAGE } from '../../services/tenantCascade';
+import {
+  EVIDENCE_HOLD_ACTIVE_MESSAGE,
+  hasActiveBackupLegalHold,
+  LEGAL_HOLD_ACTIVE_MESSAGE,
+} from '../../services/tenantCascade';
+import { EVIDENCE_HOLD_DEFERRED_ACTION, findEvidenceHold } from '../../services/orgEvidenceHold';
 
 export const tenantErasureRoutes = new Hono();
 
@@ -99,6 +104,37 @@ tenantErasureRoutes.post(
       });
       return c.json(
         { error: LEGAL_HOLD_ACTIVE_MESSAGE, code: 'LEGAL_HOLD_ACTIVE' as const },
+        409,
+      );
+    }
+
+    // Same fast path for a merged-away org kept under an evidence hold
+    // (PAM ownership epochs W5): cascadeDeleteOrg refuses it regardless, but
+    // the refused job reports as a successful skip, so say so here.
+    const evidenceHold = await withSystemDbAccessContext(() => findEvidenceHold(orgId));
+    if (evidenceHold) {
+      await createAuditLog({
+        orgId: null,
+        actorType: 'user',
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: EVIDENCE_HOLD_DEFERRED_ACTION,
+        resourceType: 'organization',
+        resourceId: orgId,
+        resourceName: org.name,
+        details: {
+          stage: 'admin_request',
+          reason: 'EVIDENCE_HOLD_ACTIVE',
+          survivorOrgId: evidenceHold.survivorOrgId,
+          mergeEventId: evidenceHold.mergeEventId,
+        },
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+        result: 'failure',
+        errorMessage: EVIDENCE_HOLD_ACTIVE_MESSAGE,
+      });
+      return c.json(
+        { error: EVIDENCE_HOLD_ACTIVE_MESSAGE, code: 'EVIDENCE_HOLD_ACTIVE' as const },
         409,
       );
     }

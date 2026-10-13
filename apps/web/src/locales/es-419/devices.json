@@ -358,7 +358,9 @@
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
-    "toADifferentSite": "a un sitio diferente."
+    "toADifferentSite": "a un sitio diferente.",
+    "deviceMovedByOther": "Alguien más movió este dispositivo: recarga para ver su sitio actual",
+    "policyNote": "Al moverlo cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a {{device}}. Breeze no lo devolverá automáticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "No se pudo crear el grupo",
@@ -912,6 +914,7 @@
     "diskCleanup": "Limpieza de disco",
     "diskUsageAnalysisAndCleanup": "Análisis y limpieza del uso del disco.",
     "bootPerf": "Rendimiento de arranque",
+    "systemRestore": "Restaurar sistema",
     "startupTimeAndBootProcessAnalysis": "Análisis del tiempo de inicio y del proceso de arranque.",
     "backup": "Respaldo",
     "backupStatusJobsSnapshotsAndVerification": "Estado de la copia de seguridad, trabajos, instantáneas y verificación",
@@ -945,7 +948,9 @@
       "management": "Administración",
       "history": "Historial y red",
       "extensions": "Extensiones"
-    }
+    },
+    "workloads": "Cargas de trabajo",
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -2243,7 +2248,8 @@
     "displayName": "Nombre para mostrar",
     "errors": {
       "loadSites": "No se pudieron cargar los sitios",
-      "saveSettings": "No se pudo guardar la configuración"
+      "saveSettings": "No se pudo guardar la configuración",
+      "siteChanged": "Alguien más movió este dispositivo: recarga para ver su sitio actual"
     },
     "hostname": "Nombre de host: {{hostname}}",
     "saved": "Configuración del dispositivo guardada",
@@ -3696,7 +3702,15 @@
     "cancelled": "Acción en cola cancelada",
     "cancelFailed": "No se pudo cancelar la acción en cola",
     "loadFailed": "No se pudieron cargar las acciones en cola.",
-    "empty": "No hay acciones en cola"
+    "empty": "No hay acciones en cola",
+    "powerHold": {
+      "title": "{{action}} está esperando un comando en ejecución",
+      "body": "{{action}} se enviará cuando el dispositivo termine los comandos en ejecución. {{command}} lleva {{minutes}} min en ejecución sin resultado.",
+      "markFailed": "Marcar como fallido",
+      "markFailedIn": "Podrás marcarlo como fallido en {{minutes}} min.",
+      "markedFailed": "Comando marcado como fallido",
+      "markFailedFailed": "No se pudo marcar el comando como fallido"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Agregar activo manual",
@@ -3958,6 +3972,64 @@
       "pdc_emulator": "Emulador de PDC del dominio",
       "forest_root_pdc_emulator": "Emulador de PDC de la raíz del bosque",
       "unknown": "Desconocido"
+    }
+  },
+  "workloads": {
+    "loadFailed": "No se pudieron cargar las cargas de trabajo de este dispositivo.",
+    "retry": "Reintentar",
+    "agentTooOld": "Agente demasiado antiguo: actualice el agente para informar cargas de trabajo.",
+    "noRuntimes": "No se detectó ningún runtime de contenedores o VM en este dispositivo.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Versión {{version}}",
+    "versionUnknown": "Versión desconocida",
+    "detection": {
+      "absent": "No instalado",
+      "unknown": "Detección no concluyente"
+    },
+    "status": {
+      "ok": "Recopilando",
+      "disabled": "La recopilación está desactivada: habilite Inventario de cargas de trabajo en una política de configuración",
+      "unavailable": "El runtime no se está ejecutando",
+      "permission_denied": "Permiso denegado",
+      "error": "Falló la recopilación",
+      "unsupported": "No compatible con este dispositivo"
+    },
+    "detectOnly": "Solo detectado: las cargas de trabajo de este runtime no se enumeran.",
+    "counts": "{{total}} cargas de trabajo · {{running}} en ejecución · {{stopped}} detenidas",
+    "partial": "Instantánea parcial: no se pudieron leer algunos detalles, por lo que se muestra lo recopilado.",
+    "truncated": "Se muestran {{reported}} de {{observed}} cargas de trabajo informadas por el runtime.",
+    "lastError": "Último error: {{error}}",
+    "lastCollected": "Última recopilación {{time}}",
+    "empty": "No se informaron cargas de trabajo.",
+    "columns": {
+      "name": "Nombre",
+      "state": "Estado",
+      "image": "Imagen / OS invitado",
+      "compose": "Proyecto de Compose",
+      "started": "Iniciado"
+    },
+    "states": {
+      "running": "En ejecución",
+      "stopped": "Detenida",
+      "paused": "En pausa",
+      "restarting": "Reiniciando",
+      "other": "Otro"
+    },
+    "policy": {
+      "title": "Inventario de cargas de trabajo",
+      "description": "Enumera los contenedores y las máquinas virtuales en hosts de contenedores y VM",
+      "offNote": "Los runtimes siempre se detectan, pero la lista de cargas de trabajo permanece desactivada hasta que una política la habilite.",
+      "enabled": "Enumerar cargas de trabajo",
+      "runtimesHeading": "Runtimes a enumerar",
+      "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
+      "interval": "Intervalo de recopilación (minutos)",
+      "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
     }
   }
 }

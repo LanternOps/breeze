@@ -300,6 +300,10 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
+### System Restore tab
+
+Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection).
+
 ### Device function
 
 **Function** (v0.113.0+) records what a device is *for*, as distinct from the billable **Device Role**. The built-in functions are Domain controller, File server, Print server, Hypervisor, Database server, Line-of-business workstation, Finance workstation, Executive workstation, Shared workstation, Conference room, Kiosk, Core switch, Edge firewall, Backup target and Unknown; **Custom…** lets you enter your own short label.
@@ -387,4 +391,4 @@ Two filters narrow the list: a **Type** filter (including dedicated **Hardware**
 
 ---
 
-Related pages: [Device Groups](/features/device-groups/) for organizing devices into collections, [Tags](/features/tags/) and [Custom Fields](/features/custom-fields/) for metadata, [Change Tracking](/features/change-tracking/) for software and configuration change auditing, and [IP History](/features/ip-history/) for the timeline of a device's network addresses.
+Related pages: [Device Groups](/features/device-groups/) for organizing devices into collections, [Tags](/features/tags/) and [Custom Fields](/features/custom-fields/) for metadata, [Change Tracking](/features/change-tracking/) for software and configuration change auditing, [IP History](/features/ip-history/) for the timeline of a device's network addresses, and [Workload Inventory](/features/workload-inventory/) for the containers and VMs on a host (the **Workloads** tab).

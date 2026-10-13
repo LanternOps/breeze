@@ -451,7 +451,9 @@
       "allMissingRate": "Hiçbir şey faturalanamadı: bu biletteki her faturalanabilir zaman kaydının saatlik ücreti eksik.",
       "missingRateHeading": "Saatlik ücreti olmayan zaman kayıtları (faturalanmadı — bir ücret belirleyip faturayı yeniden oluşturun):",
       "missingRateEntry": "{{description}} — {{hours}} sa",
-      "setRate": "Zaman çizelgesinde bir ücret belirle"
+      "setRate": "Zaman çizelgesinde bir ücret belirle",
+      "heldForHourBlock_one": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak.",
+      "heldForHourBlock_other": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak."
     },
     "move": {
       "open": "Başka bir kuruluşa taşıyın…",
@@ -551,5 +553,123 @@
     "missingRate": "Faturalandırılabilir · ücret yapılandırılmamış",
     "recalculated": "Kaydedildiğinde bu iş türü için faturalandırma yeniden hesaplanır.",
     "unavailable": "Faturalandırma sonucu kullanılamıyor"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Bu onay talebi artık beklemede değil.",
+      "requestChanged": "Talep siz incelerken değişti. En son sürüm yeniden yüklendi; gözden geçirip tekrar deneyin.",
+      "requestExpired": "Bu onay talebinin süresi doldu. Yenisini göndermek için yeniden isteyin.",
+      "requestAlreadyPending": "Bu kayıtta aynı nedenle bekleyen bir onay talebi zaten var.",
+      "requestNotReaskable": "Yalnızca reddedilmiş, süresi dolmuş veya iptal edilmiş ve hâlâ bekletilen süresi olan bir talep yeniden istenebilir.",
+      "nothingHeld": "Bu kayıtta onay istenecek bekletilen süre yok.",
+      "approvalsDisabled": "Müşteri onayı bu müşteri için etkin değil.",
+      "entryNotResolvable": "Bu süre ancak onay talebi reddedildikten, süresi dolduktan veya iptal edildikten sonra silinebilir.",
+      "approvalRequestPending": "Bu kayıtta müşteriden yanıt bekleyen bir onay talebi var, bu yüzden taşınamaz. Önce talebi iptal edin veya sonuçlandırın.",
+      "sourceAwaitingApproval": "Bu faturadaki sürenin bir kısmı müşteri onayı bekliyor. Faturayı kesmeden önce onaylatın veya silin.",
+      "approvalRequired": "Bu kayıtta faturalanabilir süre izlenmeden önce müşteri onayı gerekir. Onayı kaydın Onaylar panelinden isteyin."
+    },
+    "budget": {
+      "title": "Bütçe ve onay",
+      "hours": "Bütçe (saat)",
+      "amount": "Bütçe tutarı",
+      "save": "Bütçeyi kaydet",
+      "saved": "Bütçe kaydedildi",
+      "saveFailed": "Bütçe kaydedilemedi",
+      "invalidHours": "0'dan büyük bir saat girin veya sınırsız için boş bırakın.",
+      "invalidAmount": "En fazla 2 ondalık basamaklı, 0'dan büyük bir tutar girin veya boş bırakın.",
+      "ceiling": "Üst sınır {{ceiling}}",
+      "ceilingWithExtensions": "Üst sınır {{ceiling}} (bütçe {{budget}} + {{extra}} onaylı)",
+      "noBudget": "Bütçe belirlenmedi",
+      "usedLegend": "Kullanılan {{value}}",
+      "heldLegend": "Onay bekleyen {{value}}",
+      "unpriced_one": "{{count}} bekletilen girişin henüz fiyatı yok.",
+      "unpriced_other": "{{count}} bekletilen girişin henüz fiyatı yok.",
+      "barLabel": "Bütçe kullanımı",
+      "requestApproval": "Onay iste"
+    },
+    "request": {
+      "trigger": "Neden",
+      "triggerBudget": "Bütçe aşıldı",
+      "triggerAfterHours": "Mesai dışı çalışma",
+      "extensionMinutes": "Ek dakika",
+      "extensionAmount": "Ek tutar",
+      "windowStart": "Başlangıç",
+      "windowEnd": "Bitiş",
+      "message": "Müşteriye mesaj (isteğe bağlı)",
+      "submit": "Talebi gönder",
+      "sent": "Onay talebi gönderildi",
+      "failed": "Onay talebi gönderilemedi",
+      "invalidExtension": "0'dan büyük ek dakika veya ek tutar girin.",
+      "invalidWindow": "Bir başlangıç ve bitiş seçin; bitiş başlangıçtan sonra olmalı ve en fazla 14 gün arayla olmalıdır."
+    },
+    "panel": {
+      "title": "Müşteri onayları",
+      "status": {
+        "pending": "Beklemede",
+        "approved": "Onaylandı",
+        "denied": "Reddedildi",
+        "expired": "Süresi doldu",
+        "cancelled": "İptal edildi"
+      },
+      "revision": "Revizyon {{n}}",
+      "ask": "İstenen: {{ask}}",
+      "window": "{{from}} – {{to}} arasını kapsar",
+      "expires": "Bitiş: {{when}}",
+      "heldEntries_one": "{{count}} bekletilen giriş",
+      "heldEntries_other": "{{count}} bekletilen giriş",
+      "approvers": "Onaylayanlar",
+      "notified": "Bilgilendirilenler",
+      "noneListed": "Yok",
+      "noApprover": "Kayıtlı onaylayıcı yok: bir faturalama kişisi ekleyin veya kararı müşteri adına kaydedin.",
+      "decidedByCustomer": "Karar veren: {{who}}",
+      "customerFallback": "müşteri",
+      "decidedOnBehalf": "{{user}} tarafından {{signer}} adına kaydedildi · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Sözlü",
+        "email": "E-posta",
+        "signedDocument": "İmzalı belge",
+        "other": "Diğer"
+      },
+      "cancel": "Talebi iptal et",
+      "cancelConfirmTitle": "Bu onay talebi iptal edilsin mi?",
+      "cancelConfirmMessage": "Müşteri artık yanıt veremeyecek. Zaten bekletilen süre, yeniden isteyene veya silene kadar bekletilmeye devam eder.",
+      "cancelled": "Onay talebi iptal edildi",
+      "cancelFailed": "Talep iptal edilemedi",
+      "reask": "Yeniden iste",
+      "reaskSubmit": "Tekrar gönder",
+      "reasked": "Onay talebi tekrar gönderildi",
+      "reaskFailed": "Yeniden istenemedi",
+      "record": "Kararı kaydet"
+    },
+    "record": {
+      "title": "Müşterinin kararını kaydet",
+      "intro": "Müşteri kararını Breeze dışında size ilettiyse bunu kullanın. Kayıt sizin adınıza tutulur.",
+      "target": "Revizyon {{revision}} · {{ask}}",
+      "decision": "Karar",
+      "approve": "Onaylandı",
+      "deny": "Reddedildi",
+      "method": "Nasıl iletildi?",
+      "reference": "Referans",
+      "referencePlaceholder": "ör. 12 Eki telefon görüşmesi, e-posta konusu, belge numarası",
+      "signerName": "Müşteri adı",
+      "signerEmail": "Müşteri e-postası (isteğe bağlı)",
+      "note": "Not (isteğe bağlı)",
+      "submit": "Kararı kaydet",
+      "recorded": "Karar kaydedildi",
+      "failed": "Karar kaydedilemedi"
+    },
+    "held": {
+      "chip": "Müşteri onayı bekleniyor",
+      "writeOff": "Sil",
+      "writeOffTitle": "Bekletilen süre silinsin mi?",
+      "writeOffMessage": "Bu süre, müşteri onaylamadığı için bekletiliyor. Silindiğinde ücretsiz olarak işaretlenir ve faturalanmaz.",
+      "writtenOff": "Süre silindi",
+      "writeOffFailed": "Süre silinemedi"
+    },
+    "timer": {
+      "startNonBillable": "Faturalanamaz olarak başlat"
+    },
+    "loadError": "Müşteri onayları yüklenemedi",
+    "retry": "Yeniden dene"
   }
 }
