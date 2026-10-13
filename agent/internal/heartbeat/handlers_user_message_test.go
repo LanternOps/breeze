@@ -20,6 +20,18 @@ type helperProbe struct {
 	client  *ipc.Conn
 	mu      sync.Mutex
 	got     []*ipc.Envelope
+	// presentStatus is sent as message_presented.status (empty = shown).
+	presentStatus string
+	// beforePresented runs after message_show arrives and before the
+	// correlated message_presented reply (e.g. a racing user ack).
+	beforePresented func(show ipc.MessageShow)
+}
+
+func (p *helperProbe) setPresent(status string, before func(ipc.MessageShow)) {
+	p.mu.Lock()
+	p.presentStatus = status
+	p.beforePresented = before
+	p.mu.Unlock()
 }
 
 func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession string, scopes []string) *helperProbe {
@@ -43,7 +55,13 @@ func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession stri
 			case ipc.TypeMessageShow:
 				var show ipc.MessageShow
 				_ = json.Unmarshal(env.Payload, &show)
-				payload, _ := json.Marshal(ipc.MessageRef{MessageID: show.MessageID})
+				p.mu.Lock()
+				status, before := p.presentStatus, p.beforePresented
+				p.mu.Unlock()
+				if before != nil {
+					before(show)
+				}
+				payload, _ := json.Marshal(ipc.MessagePresented{MessageID: show.MessageID, Status: status})
 				_ = p.client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeMessagePresented, Payload: payload})
 			case ipc.TypeNotify:
 				payload, _ := json.Marshal(ipc.NotifyResult{Delivered: true})

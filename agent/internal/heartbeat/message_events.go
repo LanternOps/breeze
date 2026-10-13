@@ -172,8 +172,9 @@ func (h *Heartbeat) replayEndpointMessages(s *sessionbroker.Session) {
 		show.Replay = true
 		id := fmt.Sprintf("msg-replay-%s-%d", show.MessageID, time.Now().UnixNano())
 		if err := s.SendNotify(id, ipc.TypeMessageShow, show); err != nil {
+			// Keep going: the message stays stored and is retried at the next
+			// helper auth; one failed write must not strand the rest.
 			log.Warn("endpoint message replay failed", "messageId", show.MessageID, "error", err.Error())
-			return
 		}
 	}
 	if len(pending) > 0 {

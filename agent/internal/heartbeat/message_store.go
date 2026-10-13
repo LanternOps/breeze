@@ -153,6 +153,9 @@ func (s *messageStore) pruneLocked(now time.Time) bool {
 		if !m.ExpiresAt.After(now) {
 			delete(s.msgs, id)
 			changed = true
+			// No upstream event in W1: the helper reports expiry while it is
+			// running; this covers expiry while it was not.
+			log.Info("endpoint message expired in the replay store", "messageId", id)
 		}
 	}
 	return changed

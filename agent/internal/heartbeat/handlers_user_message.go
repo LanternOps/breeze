@@ -138,32 +138,65 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 	}
 	persistent := tools.GetPayloadBool(cmd.Payload, "persistent", true)
 
-	assistOK := false
+	store := h.endpointMessageStore()
+	assistOK, alreadyResolved := false, false
 	var assist *sessionbroker.Session
 	if s := h.sessionBroker.PreferredSessionWithScope(ipc.ScopeMessaging); h.isMessagingAssistSession(s) {
 		assist = s
+		// Store BEFORE the card can appear: an ack or close that arrives while
+		// we wait for message_presented must find the message, or it is lost
+		// and the card would be replayed after it was acknowledged.
+		stored := false
+		if persistent {
+			if err := store.Put(show, time.Now()); err != nil {
+				log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())
+			} else {
+				stored = true
+			}
+		}
 		resp, err := h.sessionBroker.SendCommandAndWait(s, "msg-"+cmd.ID, ipc.TypeMessageShow, show, endpointMessageHelperTimeout)
+		var presented ipc.MessagePresented
 		switch {
 		case err != nil:
 			log.Warn("assist message card not presented; using native fallback", "error", err.Error())
 		case resp == nil || resp.Error != "":
 			log.Warn("assist helper refused message card; using native fallback", "error", respError(resp))
+		case json.Unmarshal(resp.Payload, &presented) != nil:
+			log.Warn("assist helper sent an unreadable message_presented; using native fallback")
+		case presented.Status == ipc.MessagePresentedAlreadyResolved:
+			alreadyResolved = true
+		case presented.Status == ipc.MessagePresentedFailed:
+			log.Warn("assist helper could not draw the message card; using native fallback")
+		case presented.Status != "":
+			log.Warn("assist helper sent an unknown message_presented status; using native fallback", "status", presented.Status)
 		default:
 			assistOK = true
 		}
+		if !assistOK && stored {
+			// Not on screen (or already closed by the user): never replay it.
+			store.MarkTerminal(show.MessageID)
+		}
 	}
 
-	exclude := ""
-	if assistOK {
-		exclude = assist.WinSessionID
-		if persistent {
-			if err := h.endpointMessageStore().Put(show, time.Now()); err != nil {
-				log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())
-			}
-		}
-		h.emitMessageEvent(newMessageEvent(show, messageEventDisplayed, assist))
+	if alreadyResolved {
+		// The user already acknowledged or closed this message on this helper
+		// (a redelivered command). Showing it again natively would resurrect it.
+		return tools.NewSuccessResult(map[string]any{
+			"delivered":       true,
+			"surface":         "assist",
+			"alreadyResolved": true,
+			"nativeDelivered": 0,
+			"uid":             assist.UID,
+			"username":        assist.Username,
+		}, time.Since(start).Milliseconds())
 	}
-	natives := h.sendNativeMessage(cmd.ID, show, h.sessionBroker.NotifyTargetsExcept(exclude))
+
+	targets := h.sessionBroker.NotifyTargetsExcept("")
+	if assistOK {
+		h.emitMessageEvent(newMessageEvent(show, messageEventDisplayed, assist))
+		targets = nativeTargetsBesideCard(targets, assist)
+	}
+	natives := h.sendNativeMessage(cmd.ID, show, targets)
 	nativeDelivered := 0
 	for _, d := range natives {
 		if d.delivered {
@@ -199,6 +232,27 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 		"uid":             primary.UID,
 		"username":        primary.Username,
 	}, time.Since(start).Milliseconds())
+}
+
+// nativeTargetsBesideCard drops the notify targets that draw on the same
+// screen as the Assist card, so the person who has the card does not also get
+// a toast (or, for critical, a dialog). The screen is the Windows session when
+// it is known; where it is not ("" or the "0" sentinel) it is the same signed-in
+// identity.
+func nativeTargetsBesideCard(targets []*sessionbroker.Session, assist *sessionbroker.Session) []*sessionbroker.Session {
+	win := assist.WinSessionID
+	knownWin := win != "" && win != "0"
+	out := make([]*sessionbroker.Session, 0, len(targets))
+	for _, s := range targets {
+		if knownWin && s.WinSessionID == win {
+			continue
+		}
+		if !knownWin && s.IdentityKey == assist.IdentityKey {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func respError(resp *ipc.Envelope) string {

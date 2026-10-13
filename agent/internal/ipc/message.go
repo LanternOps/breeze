@@ -799,6 +799,26 @@ type MessageRef struct {
 	MessageID string `json:"messageId"`
 }
 
+// MessagePresented is the helper's reply to message_show (same envelope id).
+// Status is empty when the card is on screen. A helper that cannot or will
+// not draw it says so instead of staying silent, so the agent neither waits
+// out its timeout nor shows a message the user already closed.
+type MessagePresented struct {
+	MessageID string `json:"messageId"`
+	Status    string `json:"status,omitempty"`
+}
+
+// MessagePresented.Status values.
+const (
+	// MessagePresentedAlreadyResolved: this helper already saw the user
+	// acknowledge, close or outlive this message. Nothing is drawn and the
+	// agent must not fall back to a native toast.
+	MessagePresentedAlreadyResolved = "already_resolved"
+	// MessagePresentedFailed: the card could not be drawn (invalid content,
+	// window error). The agent falls back to the native path at once.
+	MessagePresentedFailed = "failed"
+)
+
 // Message dismissal reasons carried by message_dismissed.
 const (
 	MessageDismissReasonUser    = "user"
