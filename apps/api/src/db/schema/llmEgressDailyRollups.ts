@@ -9,7 +9,7 @@ import { bigint, date, index, pgTable, primaryKey, text, timestamp, uuid } from 
  *
  * RLS shape 1 (direct `org_id`), composite `(org_id, partner_id)` FK to
  * `organizations` (DEFERRABLE INITIALLY IMMEDIATE) — see
- * `2026-12-26-200000-llm-egress-daily-rollups.sql`.
+ * `2026-12-27-010000-llm-egress-daily-rollups.sql`.
  */
 export const llmEgressDailyRollups = pgTable('llm_egress_daily_rollups', {
   orgId: uuid('org_id').notNull(),
