@@ -2198,7 +2198,8 @@
         "viewInSource": "Ver em {{source}}",
         "promoteFromEdr": "Promover a partir da visualização de EDR",
         "pagination": "Página {{page}} de {{totalPages}} ({{total}} no total)",
-        "previous": "Anterior"
+        "previous": "Anterior",
+        "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
         "errors": {

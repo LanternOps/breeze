@@ -2198,7 +2198,8 @@
         "viewInSource": "{{source}}'da görüntüle",
         "promoteFromEdr": "EDR görünümünden yükseltme",
         "pagination": "Sayfa {{page}} / {{totalPages}} ({{total}} toplam)",
-        "previous": "Önceki"
+        "previous": "Önceki",
+        "genericEdrProvider": "EDR sağlayıcısı"
       },
       "IncidentDetailPage": {
         "errors": {

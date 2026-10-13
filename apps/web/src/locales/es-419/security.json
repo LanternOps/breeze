@@ -207,6 +207,76 @@
     "sentineloneThreats": "SentinelOne Amenazas",
     "threatsAndIncidentsAcrossYourFleetFrom": "Amenazas e incidentes en toda su flota desde SentinelOne y Huntress."
   },
+  "securityOtherEdr": {
+    "tabLabel": "Otro EDR",
+    "title": "Detecciones de otros EDR",
+    "loading": "Cargando detecciones...",
+    "showing": "Mostrando {{from}}-{{to}} de {{total}}",
+    "refresh": "Actualizar",
+    "filters": {
+      "severity": "Gravedad",
+      "status": "Estado",
+      "provider": "Proveedor",
+      "allSeverities": "Todas las gravedades",
+      "allProviders": "Todos los proveedores",
+      "openDefault": "Abiertas (predeterminado)",
+      "allStatuses": "Todos los estados"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa",
+      "unknown": "Desconocida"
+    },
+    "statuses": {
+      "open": "Abierta",
+      "in_progress": "En curso",
+      "mitigated": "Mitigada",
+      "resolved": "Resuelta",
+      "false_positive": "Falso positivo",
+      "dismissed": "Descartada",
+      "unknown": "Desconocido"
+    },
+    "connectionStatuses": {
+      "connected": "Conectado",
+      "error": "Error",
+      "reauth_required": "Se requiere reautenticación"
+    },
+    "tenants": {
+      "stale": "Inquilinos desactualizados",
+      "failed": "Inquilinos con error",
+      "pending": "Inquilinos pendientes",
+      "unmapped": "Inquilinos sin asignar"
+    },
+    "openDetections": "Detecciones abiertas",
+    "endpoints": "Endpoints",
+    "linkedEndpoints": "Endpoints vinculados",
+    "unhealthyEndpoints": "Endpoints en mal estado",
+    "lastDetectionSync": "Última sincronización de detecciones",
+    "never": "Nunca",
+    "coverageHeading": "Información de cobertura",
+    "emptyPartial": "No se devolvieron detecciones. La cobertura está incompleta: consulte las notas anteriores.",
+    "empty": "Ninguna detección coincide con sus filtros.",
+    "table": {
+      "provider": "Proveedor",
+      "detection": "Detección",
+      "severity": "Gravedad",
+      "status": "Estado",
+      "device": "Dispositivo",
+      "detected": "Detectada",
+      "actions": "Acciones"
+    },
+    "unnamedDetection": "Detección",
+    "detached": "Desvinculado",
+    "promoteToIncident": "Promover a incidente",
+    "promoted": "Promovida",
+    "alreadyPromoted": "Ya promovida",
+    "promoteFailed": "No se pudo crear el incidente",
+    "previous": "Anterior",
+    "next": "Siguiente"
+  },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "No se pudo cargar el estado de EDR. Actualice para intentarlo de nuevo.",
     "endpointDetectionAndAmpResponse": "Detección y respuesta de terminales",
