@@ -85,10 +85,12 @@ func warnSpawnCredentialOnce(username, msg string, args ...any) {
 //
 // Group order is primary gid, then breeze, then the rest, so truncation to
 // maxGroups can never drop the group the helper needs to reach the agent.
-// Breeze is only ever placed first when the user is already a member (it is in
-// groupIDs) — membership is the authorization signal, not the spawn path. The
-// single exception is a failed group lookup, where breezeGID (when resolvable)
-// is added so the helper still works, and a warning is returned.
+// On the normal path breeze is carried only when the user is already a member
+// (it is in groupIDs) — membership is the authorization signal, not the spawn
+// path. The deliberate exception is a failed group lookup: membership cannot
+// be checked, and dropping breeze would reintroduce #8398, so breezeGID (when
+// resolvable) is added and a warning is returned. The agent socket's
+// peer-credential and binary-path checks still gate admission.
 //
 // gid 0 is never carried as a supplementary group: this child draws a GUI and
 // talks to the agent, and root-group access is not part of that.
@@ -148,8 +150,14 @@ func spawnCredentialFromIDs(uid, gid string, groupIDs []string, groupIDsErr erro
 	}
 
 	if maxGroups > 0 && len(cred.Groups) > maxGroups {
-		warning = fmt.Sprintf("user is in %d groups, more than the %d this OS allows a process; the helper keeps its primary and breeze groups and drops the rest past the limit",
-			len(cred.Groups), maxGroups)
+		kept := "the helper keeps its primary and breeze groups and drops the rest past the limit"
+		if !memberOfBreeze {
+			// Either the user is not a member, or breeze could not be resolved
+			// and so could not be moved ahead of the cut.
+			kept = "the breeze group was not prioritised (unresolved or not a member) and may have been dropped; the helper may be unable to reach the agent socket"
+		}
+		warning = fmt.Sprintf("user is in %d groups, more than the %d this OS allows a process; %s",
+			len(cred.Groups), maxGroups, kept)
 		cred.Groups = cred.Groups[:maxGroups]
 	}
 	return cred, warning, nil
