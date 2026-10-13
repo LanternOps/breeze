@@ -3824,6 +3824,27 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 
+  it.each([
+    { capabilities: { pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 1 }, expected: 1 },
+    { capabilities: undefined, expected: 0 },
+    { capabilities: {}, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 0 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 2 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 1.5 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: '1' }, expected: 0 },
+  ])('rewrites the independent PAM reset capability without stale or inferred support: %j', async ({ capabilities, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, securityCapabilities: capabilities }),
+    });
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.pamReconciliationResetProtocolVersion).toBe(expected);
+    expect(update.pamLifetimeProtocolVersion).toBe(0);
+  });
+
   // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
@@ -7238,7 +7259,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...minimalHeartbeatBody,
-        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
       }),
     });
 
@@ -7250,7 +7271,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
       'device-1', 10, 'agent', undefined,
-      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
     );
   });
 
@@ -7289,7 +7310,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       10,
       'agent',
       ['self_uninstall'],
-      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0 },
     );
   });
 

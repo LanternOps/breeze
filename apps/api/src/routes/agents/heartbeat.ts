@@ -1060,6 +1060,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
+    pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -1870,6 +1871,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
+      pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
     },
   );
 
