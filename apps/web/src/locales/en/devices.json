@@ -4085,5 +4085,53 @@
       "all": "All",
       "empty": "No workloads match this image status."
     }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Other EDR providers",
+    "loadError": "Some EDR provider data could not be loaded.",
+    "duplicateNotice": "Linked by two consoles: this device appears in more than one {{provider}} connection.",
+    "openDetections": "Open detections",
+    "coverageHeading": "Coverage may be incomplete",
+    "fields": {
+      "health": "Health",
+      "status": "Status",
+      "isolation": "Isolation",
+      "agentVersion": "Agent version",
+      "lastSeen": "Last seen"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "unhealthy": "Unhealthy",
+      "unknown": "Unknown"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Unknown"
+    },
+    "isolation": {
+      "isolated": "Isolated",
+      "not_isolated": "Not isolated",
+      "pending": "Pending",
+      "unknown": "Unknown"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info",
+      "unknown": "Unknown"
+    },
+    "detectionStatus": {
+      "open": "Open",
+      "in_progress": "In progress",
+      "mitigated": "Mitigated",
+      "resolved": "Resolved",
+      "false_positive": "False positive",
+      "dismissed": "Dismissed",
+      "unknown": "Unknown"
+    }
   }
 }

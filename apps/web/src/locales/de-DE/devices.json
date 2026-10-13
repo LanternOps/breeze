@@ -4085,5 +4085,53 @@
       "all": "Alle",
       "empty": "Keine Workloads mit diesem Image-Status."
     }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Weitere EDR-Anbieter",
+    "loadError": "Einige EDR-Anbieterdaten konnten nicht geladen werden.",
+    "duplicateNotice": "Über zwei Konsolen verknüpft: Dieses Gerät erscheint in mehr als einer {{provider}}-Verbindung.",
+    "openDetections": "Offene Erkennungen",
+    "coverageHeading": "Die Abdeckung ist möglicherweise unvollständig",
+    "fields": {
+      "health": "Zustand",
+      "status": "Status",
+      "isolation": "Isolierung",
+      "agentVersion": "Agent-Version",
+      "lastSeen": "Zuletzt gesehen"
+    },
+    "health": {
+      "healthy": "Gesund",
+      "degraded": "Eingeschränkt",
+      "unhealthy": "Fehlerhaft",
+      "unknown": "Unbekannt"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Unbekannt"
+    },
+    "isolation": {
+      "isolated": "Isoliert",
+      "not_isolated": "Nicht isoliert",
+      "pending": "Ausstehend",
+      "unknown": "Unbekannt"
+    },
+    "severity": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Info",
+      "unknown": "Unbekannt"
+    },
+    "detectionStatus": {
+      "open": "Offen",
+      "in_progress": "In Bearbeitung",
+      "mitigated": "Eingedämmt",
+      "resolved": "Behoben",
+      "false_positive": "Fehlalarm",
+      "dismissed": "Verworfen",
+      "unknown": "Unbekannt"
+    }
   }
 }

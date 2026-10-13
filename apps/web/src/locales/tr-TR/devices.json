@@ -4085,5 +4085,53 @@
       "all": "Tümü",
       "empty": "Bu imaj durumuyla eşleşen iş yükü yok."
     }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Diğer EDR sağlayıcıları",
+    "loadError": "Bazı EDR sağlayıcı verileri yüklenemedi.",
+    "duplicateNotice": "İki konsol tarafından bağlandı: bu cihaz birden fazla {{provider}} bağlantısında görünüyor.",
+    "openDetections": "Açık tespitler",
+    "coverageHeading": "Kapsam eksik olabilir",
+    "fields": {
+      "health": "Sağlık",
+      "status": "Durum",
+      "isolation": "İzolasyon",
+      "agentVersion": "Ajan sürümü",
+      "lastSeen": "Son görülme"
+    },
+    "health": {
+      "healthy": "Sağlıklı",
+      "degraded": "Düşük performanslı",
+      "unhealthy": "Sağlıksız",
+      "unknown": "Bilinmiyor"
+    },
+    "online": {
+      "online": "Çevrimiçi",
+      "offline": "Çevrimdışı",
+      "unknown": "Bilinmiyor"
+    },
+    "isolation": {
+      "isolated": "İzole",
+      "not_isolated": "İzole değil",
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi",
+      "unknown": "Bilinmiyor"
+    },
+    "detectionStatus": {
+      "open": "Açık",
+      "in_progress": "Devam ediyor",
+      "mitigated": "Hafifletildi",
+      "resolved": "Çözüldü",
+      "false_positive": "Yanlış pozitif",
+      "dismissed": "Yoksayıldı",
+      "unknown": "Bilinmiyor"
+    }
   }
 }

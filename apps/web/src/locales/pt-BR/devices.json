@@ -4085,5 +4085,53 @@
       "all": "Todas",
       "empty": "Nenhuma carga de trabalho corresponde a este status de imagem."
     }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Outros provedores de EDR",
+    "loadError": "Não foi possível carregar alguns dados dos provedores de EDR.",
+    "duplicateNotice": "Vinculado por dois consoles: este dispositivo aparece em mais de uma conexão {{provider}}.",
+    "openDetections": "Detecções abertas",
+    "coverageHeading": "A cobertura pode estar incompleta",
+    "fields": {
+      "health": "Integridade",
+      "status": "Status",
+      "isolation": "Isolamento",
+      "agentVersion": "Versão do agente",
+      "lastSeen": "Visto pela última vez"
+    },
+    "health": {
+      "healthy": "Saudável",
+      "degraded": "Degradado",
+      "unhealthy": "Não saudável",
+      "unknown": "Desconhecido"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Desconhecido"
+    },
+    "isolation": {
+      "isolated": "Isolado",
+      "not_isolated": "Não isolado",
+      "pending": "Pendente",
+      "unknown": "Desconhecido"
+    },
+    "severity": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Info",
+      "unknown": "Desconhecida"
+    },
+    "detectionStatus": {
+      "open": "Aberta",
+      "in_progress": "Em andamento",
+      "mitigated": "Mitigada",
+      "resolved": "Resolvida",
+      "false_positive": "Falso positivo",
+      "dismissed": "Descartada",
+      "unknown": "Desconhecido"
+    }
   }
 }
