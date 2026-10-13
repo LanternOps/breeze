@@ -64,6 +64,15 @@ export function requestFromRow(row: Pick<OpenRow, 'action' | 'payload'>): EdrAct
 
 const ms = (d: Date | string | null): number | null => (d ? new Date(d).getTime() : null);
 
+/** A vendor read failed: the row stays as it is, but an outage must be visible. */
+function logVendorReadFailure(actionId: string, op: string, err: unknown): void {
+  const code = (err as { code?: unknown } | null)?.code;
+  console.warn(`[EdrActionStatus] ${op} failed for action ${actionId}; left unchanged`, {
+    code: typeof code === 'string' ? code : undefined,
+    message: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+  });
+}
+
 async function settleOne(
   adapter: EdrProviderAdapter,
   ctx: EdrAdapterContext,
@@ -82,8 +91,9 @@ async function settleOne(
     let result;
     try {
       result = await adapter.getActionStatus(ctx, tenant, row.vendorActionId);
-    } catch {
+    } catch (err) {
       // Transient: unchanged until the timeout (spec §4.3 terminal-vs-transient rule).
+      logVendorReadFailure(row.id, 'getActionStatus', err);
       return timedOut ? { status: 'failed', error: 'vendor_status_timeout' } : null;
     }
     if (result.status === 'succeeded') return { status: 'succeeded', error: null };
@@ -98,13 +108,19 @@ async function settleOne(
   if (req && tenant && adapter.reconcileAction) {
     try {
       verdict = await adapter.reconcileAction(ctx, tenant, req);
-    } catch {
+    } catch (err) {
+      logVendorReadFailure(row.id, 'reconcileAction', err);
       verdict = 'unknown';
     }
   }
   if (verdict === 'applied') return { status: 'succeeded', error: 'reconciled_applied' };
-  if (verdict === 'not_applied') return { status: 'failed', error: 'not_sent_or_rejected' };
-  return age > EDR_ACTION_UNKNOWN_GIVEUP_MS ? { status: 'failed', error: 'outcome_unknown_reissue_manually' } : null;
+  // Only `applied` settles early. "Not applied yet" is not evidence of "not
+  // sent": a vendor task may be pending or the endpoint offline, and failing
+  // the row early would release the in-flight slot for a duplicate request.
+  if (age <= EDR_ACTION_UNKNOWN_GIVEUP_MS) return null;
+  return verdict === 'not_applied'
+    ? { status: 'failed', error: 'not_sent_or_rejected' }
+    : { status: 'failed', error: 'outcome_unknown_reissue_manually' };
 }
 
 export async function pollEdrActionStatus(connectionId: string, now: Date): Promise<{ checked: number; settled: number }> {

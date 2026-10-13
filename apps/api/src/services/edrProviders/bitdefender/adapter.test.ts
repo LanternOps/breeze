@@ -420,6 +420,10 @@ describe('response actions', () => {
       ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', ok('action-restore-ok.json'), { status: 'succeeded' }],
       ['scan', 'network.createScanTask', ok('action-scan-ok.json'), { status: 'submitted', vendorActionId: '6a0000000000000000000b01' }],
       ['scan', 'network.createScanTask', rpc(true), { status: 'succeeded' }],
+      // Review fix: a task-id answer to isolate/restore is still "accepted" — completion is
+      // observed through inventory isIsolated / reconcileAction, never the scan-task list.
+      ['isolate', 'incidents.createIsolateEndpointTask', rpc(['6a0000000000000000000c01']), { status: 'succeeded' }],
+      ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', rpc(['6a0000000000000000000c02']), { status: 'succeeded' }],
     ];
     it.each(routes)('%s -> %s maps the result and passes the idempotency key as request id', async (action, key, reply, expected) => {
       const { ctx, calls } = makeCtx({ [key]: reply });

@@ -281,7 +281,11 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const r = req.action === 'isolate' ? await client.createIsolateEndpointTask(id, idempotencyKey)
       : req.action === 'unisolate' ? await client.createRestoreEndpointFromIsolationTask(id, idempotencyKey)
         : await client.createScanTask(id, idempotencyKey);
-    return r.kind === 'accepted' ? { status: 'succeeded' } : { status: 'submitted', vendorActionId: r.taskId };
+    // Only a scan has a pollable task (getScanTasksList). For isolate/restore any
+    // accepted answer — boolean or task id ([U]) — means "the vendor took it";
+    // completion is observed via inventory isIsolated and reconcileAction.
+    if (req.action !== 'scan' || r.kind === 'accepted') return { status: 'succeeded' };
+    return { status: 'submitted', vendorActionId: r.taskId };
   },
 
   async getActionStatus(ctx, _tenant, vendorActionId) {

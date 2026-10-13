@@ -107,10 +107,13 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
   });
 
   it.each([
-    ['applied', 'succeeded', 'reconciled_applied'],
-    ['not_applied', 'failed', 'not_sent_or_rejected'],
-  ] as const)('queued + reconcile %s → %s/%s via CAS on the observed status', async (verdict, status, error) => {
-    arrange([row()]);
+    // applied settles as soon as the grace has passed…
+    ['applied', 'succeeded', 'reconciled_applied', EDR_ACTION_UNKNOWN_GRACE_MS + 1000],
+    // …but not_applied only after the give-up window: a pending vendor task or an
+    // offline endpoint reads "not isolated yet" (review fix).
+    ['not_applied', 'failed', 'not_sent_or_rejected', EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000],
+  ] as const)('queued + reconcile %s → %s/%s via CAS on the observed status', async (verdict, status, error, age) => {
+    arrange([row({ requestedAt: ago(age) })]);
     h.reconcileAction.mockResolvedValue(verdict);
     expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 1 });
     expect(h.reconcileAction.mock.calls[0]!.slice(1)).toEqual([
@@ -122,6 +125,22 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: `edr.action.${status}`, details: expect.objectContaining({ reconciled: true }),
     }));
+  });
+
+  it('queued + not_applied inside the give-up window → unchanged (the task may still apply)', async () => {
+    arrange([row({ requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS + 60_000) })]);
+    h.reconcileAction.mockResolvedValue('not_applied');
+    expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+    expect(h.state.updates).toHaveLength(0);
+  });
+
+  it('vendor read failures are logged with the action id (not silently treated as pending)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    arrange([row()]);
+    h.reconcileAction.mockRejectedValue(Object.assign(new Error('boom'), { code: 'http_error' }));
+    await pollEdrActionStatus('c1', NOW);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('act-1'), expect.anything());
+    warn.mockRestore();
   });
 
   it('queued + unknown verdict, young → unchanged; past the give-up window → failed for manual re-issue', async () => {

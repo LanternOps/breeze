@@ -242,11 +242,14 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
         });
         // Breeze-generated fields only; vendor text never reaches the model.
         return JSON.stringify({
-          success: outcome.status !== 'failed',
+          success: outcome.status !== 'failed' && !outcome.outcomeUnknown,
           actionId: outcome.actionId,
           status: outcome.status,
           outcomeUnknown: outcome.outcomeUnknown,
           ...(outcome.error ? { error: outcome.error } : {}),
+          ...(outcome.outcomeUnknown
+            ? { note: 'The vendor did not confirm the request; Breeze is checking whether it took effect. Do not retry.' }
+            : {}),
         });
       } catch (err) {
         if (err instanceof EdrActionError) return JSON.stringify({ error: err.code, message: err.message });

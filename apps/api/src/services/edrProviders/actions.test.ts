@@ -12,6 +12,7 @@ const h = vi.hoisted(() => {
     selects: [] as unknown[][], // queued results for db.select() chains, FIFO
     inserted: [] as Record<string, unknown>[],
     insertError: null as unknown,
+    updateError: null as unknown,
     updates: [] as { table: string; set: Record<string, unknown>; where: unknown; ctx: string | null }[],
     callerCtxs: [] as unknown[],
   };
@@ -42,6 +43,7 @@ const h = vi.hoisted(() => {
       set: vi.fn((set: Record<string, unknown>) => ({
         where: vi.fn(async (where: unknown) => {
           state.log.push(`update:${tableName(table)}:${state.held}`);
+          if (state.updateError) throw state.updateError;
           state.updates.push({ table: tableName(table), set, where, ctx: state.held });
           return [];
         }),
@@ -197,7 +199,7 @@ async function refusal(p: Promise<unknown>): Promise<EdrActionError> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  Object.assign(h.state, { held: null, log: [], selects: [], inserted: [], insertError: null, updates: [], callerCtxs: [] });
+  Object.assign(h.state, { held: null, log: [], selects: [], inserted: [], insertError: null, updateError: null, updates: [], callerCtxs: [] });
   h.edrActionsEnabled.mockReturnValue(true);
   h.supportsAction.mockReturnValue({ ok: true });
   h.checkEdrActionRateLimit.mockResolvedValue({ ok: true });
@@ -405,6 +407,32 @@ describe('dispatchEdrAction — the single action door', () => {
     expect(e.code).toBe('audit_unavailable');
     expect(h.performAction).not.toHaveBeenCalled();
     expect(h.state.updates[0]).toMatchObject({ table: 'edr_actions', set: { status: 'failed', error: 'audit_unavailable' } });
+  });
+
+  it('7. audit failure AND a failing cleanup write still surface audit_unavailable (never a raw error), and are logged', async () => {
+    arrange();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.createAuditLog.mockRejectedValue(new Error('audit db down'));
+    h.state.updateError = new Error('pool exhausted');
+    const e = await refusal(dispatchEdrAction(actor(), ISOLATE));
+    expect(e.code).toBe('audit_unavailable');
+    expect(h.performAction).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('9. an outcome write that throws after the vendor accepted still returns the vendor outcome (logged; the reconciler settles the row)', async () => {
+    arrange();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.performAction.mockImplementation(async () => {
+      h.state.updateError = new Error('deadlock');
+      return { status: 'succeeded' };
+    });
+    const out = await dispatchEdrAction(actor(), ISOLATE);
+    expect(out).toMatchObject({ actionId: 'act-1', status: 'succeeded', httpStatus: 200 });
+    expect(h.performAction).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('act-1'), expect.anything());
+    err.mockRestore();
   });
 
   it('7. requestedBy is stored exactly as passed (null stays null); AI provenance recorded', async () => {

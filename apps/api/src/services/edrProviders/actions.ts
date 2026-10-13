@@ -385,11 +385,17 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
       result: 'success',
       initiatedBy: actor.requestedVia === 'ai' ? 'ai' : 'manual',
     });
-  } catch {
+  } catch (auditErr) {
     // An action Breeze cannot account for is not taken.
-    await withSystemDbAccessContext(() => db.update(edrActions)
-      .set({ status: 'failed', error: 'audit_unavailable', completedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued'))), 'edrActions.auditFailed');
+    console.error(`[EdrActions] request audit failed for action ${actionId}; not sent`, auditErr);
+    try {
+      await withSystemDbAccessContext(() => db.update(edrActions)
+        .set({ status: 'failed', error: 'audit_unavailable', completedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued'))), 'edrActions.auditFailed');
+    } catch (cleanupErr) {
+      // The row stays queued (no vendor call was made); the reconciler gives it up.
+      console.error(`[EdrActions] could not mark action ${actionId} audit_unavailable`, cleanupErr);
+    }
     throw new EdrActionError('audit_unavailable', 503, 'The audit log is unavailable; the action was not sent');
   }
 
@@ -410,19 +416,29 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     thrown = err;
   }
 
-  // 9. Compare-and-set outcome write.
+  // 9. Compare-and-set outcome write. The vendor has already answered, so a
+  // failing write must not turn into a raw error (the caller would lose the
+  // action id and might re-issue): log it and return what the vendor said. The
+  // row stays `queued` and the reconciler settles it from vendor state.
   let outcome: EdrActionOutcome;
   const writeAt = new Date();
+  const guardedWrite = async (fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await withSystemDbAccessContext(fn, 'edrActions.outcome');
+    } catch (writeErr) {
+      console.error(`[EdrActions] outcome write failed for action ${actionId}; left queued for the reconciler`, writeErr);
+    }
+  };
   if (result) {
     const set = result.status === 'succeeded'
       ? { status: 'succeeded' as const, submittedAt: writeAt, completedAt: writeAt, updatedAt: writeAt }
       : { status: 'submitted' as const, vendorActionId: result.vendorActionId.slice(0, 255), submittedAt: writeAt, updatedAt: writeAt };
-    await withSystemDbAccessContext(() => db.update(edrActions).set(set)
-      .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued'))), 'edrActions.outcome');
+    await guardedWrite(() => db.update(edrActions).set(set)
+      .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued'))));
     outcome = { actionId, status: result.status, outcomeUnknown: false, error: null, message: null, httpStatus: 200 };
   } else {
     const c = classifyVendorActionError(thrown, secretsOf(creds));
-    await withSystemDbAccessContext(async () => {
+    await guardedWrite(async () => {
       await db.update(edrActions)
         .set(c.rowStatus === 'failed'
           ? { status: 'failed', error: c.code, completedAt: writeAt, updatedAt: writeAt }
@@ -442,7 +458,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
           .set({ status: 'reauth_required', updatedAt: writeAt })
           .where(eq(edrConnections.id, connection.id));
       }
-    }, 'edrActions.outcome');
+    });
     outcome = {
       actionId,
       status: c.rowStatus,

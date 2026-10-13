@@ -153,9 +153,25 @@ describe('POST /edr/actions', () => {
     expect(h.dispatch).toHaveBeenCalledTimes(3);
   });
 
-  it('a non-EdrActionError is not swallowed', async () => {
+  it('a non-EdrActionError is a 500 with an internal_error code (logged, not swallowed)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     h.dispatch.mockRejectedValue(new Error('boom'));
-    expect((await post({ targetKind: 'endpoint', endpointIds: [E1], action: 'isolate' })).status).toBe(500);
+    const res = await post({ targetKind: 'endpoint', endpointIds: [E1], action: 'isolate' });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: 'internal_error' });
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('an unexpected error on a LATER target keeps the earlier targets\' results (they were already sent)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.dispatch.mockResolvedValueOnce(ok('a')).mockRejectedValueOnce(new Error('pool'));
+    const res = await post({ targetKind: 'endpoint', endpointIds: [E1, E2], action: 'isolate' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ endpointId: E1, actionId: 'a' });
+    expect(body.data[1]).toMatchObject({ endpointId: E2, code: 'internal_error', httpStatus: 500 });
+    err.mockRestore();
   });
 
   it.each([

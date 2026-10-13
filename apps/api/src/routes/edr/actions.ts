@@ -104,7 +104,13 @@ edrActionRoutes.post(
       try {
         results.push({ ...t.key, ...(await dispatchEdrAction(actor, t.input)) });
       } catch (err) {
-        if (!(err instanceof EdrActionError)) throw err;
+        if (!(err instanceof EdrActionError)) {
+          // Earlier targets may already have reached the vendor: keep their
+          // results instead of collapsing the batch into a bare 500.
+          console.error('[EdrActions] unexpected dispatch error', { ...t.key, err });
+          results.push({ ...t.key, error: 'Internal error dispatching this action', code: 'internal_error', httpStatus: 500 });
+          continue;
+        }
         results.push({
           ...t.key,
           error: err.message,

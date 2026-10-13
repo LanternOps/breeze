@@ -229,6 +229,15 @@ describe('edr_endpoint_action — handler', () => {
     expect(h.dispatch.mock.calls[0]![0].restriction).toEqual({ allowedDeviceIds: [DEVICE], allowedSiteIds: ['s1'] });
   });
 
+  it('an unknown vendor outcome is NOT reported as success, and tells the model not to retry', async () => {
+    h.dispatch.mockResolvedValue({
+      actionId: 'a', status: 'queued', outcomeUnknown: true, error: 'dispatch_outcome_unknown', message: 'x', httpStatus: 202,
+    });
+    const out = await run({ deviceId: DEVICE, action: 'scan' });
+    expect(out).toMatchObject({ success: false, actionId: 'a', status: 'queued', outcomeUnknown: true });
+    expect(String(out.note)).toMatch(/do not retry/i);
+  });
+
   it('EdrActionError maps to { error: code, message }; vendor raw text never appears', async () => {
     h.dispatch.mockRejectedValue(new EdrActionError('unsupported', 422, 'Already isolated'));
     expect(await run({ deviceId: DEVICE, action: 'scan' })).toEqual({ error: 'unsupported', message: 'Already isolated' });
