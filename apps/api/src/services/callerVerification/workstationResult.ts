@@ -82,7 +82,12 @@ export async function handleCallerVerifyResult({ commandId, resolvedDeviceId, re
       .where(and(eq(v.agentCommandId, commandId), eq(v.method, 'workstation')))
       .limit(1)
       .for('share', { of: devices });
-    if (!owned) return;
+    if (!owned) {
+      // Not this device's workstation verification (moved org, foreign
+      // device, unlinked command). Nothing is applied; say so.
+      console.warn('[callerVerification] workstation result not tied to a verification on this device; ignored', { commandId, deviceId: resolvedDeviceId });
+      return;
+    }
 
     const value = readWorkstationResult(stdout, result.result);
     const decision = decisionForResult(value, result.error);

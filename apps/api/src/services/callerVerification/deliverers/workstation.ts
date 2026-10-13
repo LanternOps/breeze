@@ -27,9 +27,10 @@ import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../partnerTrust
 import { isParkedDevice } from '../../unassignedPool/deliveryEligibility';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '../../commandDispatch';
 import { dispatchCommandToAgent } from '../../agentCommandRelay';
+import { captureException } from '../../sentry';
 import { CallerVerificationValidationError as Invalid } from '../errors';
 import type { CallerVerificationActionScope, VerificationRow } from '../types';
-import { workstationUserAvailable } from '../workstationCapabilities';
+import { workstationReadiness } from '../workstationCapabilities';
 import {
   CALLER_VERIFY_COMMAND,
   WORKSTATION_TIMEOUT_MAX_MS,
@@ -67,7 +68,9 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
   if (!device) throw new Invalid('not_found', 'Device not found');
   // The selected device+user must be reporting a ready helper right now,
   // whether it was suggested or picked by hand. The agent re-checks again.
-  if (!(await workstationUserAvailable(row.orgId, device.id, row.osUsername))) {
+  const readiness = await workstationReadiness(row.orgId, [device.id]);
+  if (!readiness) throw new Invalid('readiness_unavailable', 'Helper readiness cannot be checked right now');
+  if (!readiness.get(device.id)?.includes(row.osUsername)) {
     throw new Invalid('helper_outdated', 'No compatible console helper for that user');
   }
   try {
@@ -81,17 +84,21 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
 
   const choices = shuffledChoices(row.matchValue, row.decoyValues);
   const lifetimeMs = row.expiresAt.getTime() - row.createdAt.getTime();
-  const payload: WorkstationCommand = workstationCommandSchema.parse({
+  const parsed = workstationCommandSchema.safeParse({
     verificationId: row.id,
     username: row.osUsername,
-    technicianName: row.technicianLabel.slice(0, 255),
-    orgName: org.name.slice(0, 255),
+    technicianName: row.technicianLabel.trim().slice(0, 255),
+    orgName: org.name.trim().slice(0, 255),
     actionLabel: workstationActionLabel(row.actionScope),
     targetLabel: (row.targetLabel ?? row.osUsername).slice(0, 320),
     reverseCode: row.reverseCode,
     choices,
     timeoutMs: Math.max(WORKSTATION_TIMEOUT_MIN_MS, Math.min(WORKSTATION_TIMEOUT_MAX_MS, lifetimeMs)),
   });
+  // A label the card cannot carry (empty technician name, over-long username)
+  // is a request error, not a 500.
+  if (!parsed.success) throw new Invalid('invalid_request', 'Workstation challenge cannot be built from this request');
+  const payload: WorkstationCommand = parsed.data;
 
   // Inserted directly on the caller's transaction. Not through queueCommand:
   // that module statically reaches the socket registry, which would drag
@@ -135,7 +142,13 @@ export async function deliverWorkstation(verificationId: string): Promise<void> 
     .innerJoin(devices, and(eq(devices.id, deviceCommands.deviceId), eq(devices.orgId, v.orgId)))
     .where(and(eq(v.id, verificationId), eq(v.method, 'workstation'), eq(v.status, 'pending'), gt(v.expiresAt, new Date())))
     .limit(1), 'callerVerification.deliverWorkstation.load');
-  if (!row?.agentId) return;
+  if (!row) return; // no longer pending, expired, cancelled or moved: nothing to push
+  if (!row.agentId) {
+    // Prepare accepted an online device; an agentless one here is a data fault.
+    console.error('[callerVerification] workstation device has no agent id; leaving the command for expiry', { verificationId });
+    captureException(new Error('caller verification workstation device has no agent id'), undefined, { verificationId });
+    return;
+  }
   const payload = workstationCommandSchema.parse(row.payload);
 
   // Same claim-time eligibility the heartbeat claim applies; only a claimed
@@ -152,5 +165,8 @@ export async function deliverWorkstation(verificationId: string): Promise<void> 
   }
   await system(() => releaseClaimedCommandDelivery(row.commandId, claim.executedAt), 'callerVerification.deliverWorkstation.release');
   if (outcome.status === 'infrastructure_error') throw new Error(`caller_verify dispatch failed: ${outcome.message}`);
+  if (outcome.status === 'owner_mismatch') {
+    console.warn('[callerVerification] workstation dispatch owner mismatch; released for heartbeat delivery', { verificationId });
+  }
   // offline / expired / owner_mismatch: a polling agent claims it on its next heartbeat.
 }

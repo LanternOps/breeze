@@ -36,11 +36,7 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
     })
     .from(devices)
     .where(eq(devices.agentId, agentId))
-    .limit(1)
-    // Caller verification (#6354 W02): held for the request transaction so a
-    // device org move (FOR UPDATE on this row before it revokes workstation
-    // grants) cannot interleave with the login observation below.
-    .for('share');
+    .limit(1);
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
@@ -154,6 +150,18 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
       }
     });
 
+    // Caller verification (#6354 W02): only when the report carries OS identity
+    // evidence, share-lock the device for the rest of the request so a device
+    // org move (FOR UPDATE on this row before it revokes workstation grants)
+    // cannot interleave with the observation. Taken late, and only then, so
+    // ordinary session reports never queue concurrent heartbeat writes.
+    const observes = activeSessions.some((session) => session.principal)
+      || (data.events ?? []).some((event) => event.type === 'login' && event.principal);
+    if (observes) {
+      const [locked] = await db.select({ orgId: devices.orgId }).from(devices)
+        .where(eq(devices.id, device.id)).limit(1).for('share');
+      if (locked?.orgId !== device.orgId) throw new Error('Device organization changed during session report');
+    }
     // Caller verification (#6354): independent login telemetry. Runs in the
     // ambient agent-auth transaction (the nested session transaction above has
     // released its savepoint, not committed the request). Errors are NOT

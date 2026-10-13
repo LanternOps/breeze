@@ -377,7 +377,9 @@ commandsRoutes.post(
           const recorded = await late.persistCallerNotMeReceipt({
             commandId, deviceId: command.deviceId, stdout: lateStdout, result: data.result,
           });
-          if (recorded) {
+          if (!recorded) {
+            console.warn(`[agents] late caller rejection for command ${commandId} could not be recorded; ignored`);
+          } else {
             await late.handleCallerVerifyResult({
               agentId: agent.agentId ?? agentId, command, commandId, result: data,
               resolvedDeviceId: command.deviceId, stdout: lateStdout,

@@ -60,17 +60,27 @@ import { sessionsRoutes } from './sessions';
 import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
 import { writeAuditEvent } from '../../services/auditEvents';
 
-// #6354 W02: the device row is share-locked for the request so an org move
-// (which locks it FOR UPDATE) cannot interleave with login observation.
+// #6354 W02: when a report carries OS identity, the device row is
+// share-locked (a second read) so an org move cannot interleave with login
+// observation. Reports without identity take no lock.
 const deviceLockModes: string[] = [];
 function mockDeviceLookup() {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: 'org-1', hostname: 'host-1' }]),
+      }),
+    }),
+  } as any);
+}
+function mockDeviceLock(orgId = 'org-1') {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockReturnValue({
           for: vi.fn(async (mode: string) => {
             deviceLockModes.push(mode);
-            return [{ id: DEVICE_ID, orgId: 'org-1', hostname: 'host-1' }];
+            return [{ orgId }];
           }),
         }),
       }),
@@ -122,6 +132,7 @@ describe('PUT /agents/:id/sessions', () => {
 
   it('forwards independent login principal from an authenticated session report', async () => {
     mockDeviceLookup();
+    mockDeviceLock();
     const principal = { sid: 'S-1-5-21-1', username: 'alex', upn: 'alex@example.com' };
     const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -131,15 +142,37 @@ describe('PUT /agents/:id/sessions', () => {
     expect(observeSessionPrincipal).toHaveBeenCalledWith('org-1', 'host-1', 'alex', principal);
   });
 
-  it('share-locks the device row for the request (#6354 W02)', async () => {
+  it('share-locks the device only for a report carrying OS identity (#6354 W02)', async () => {
     deviceLockModes.length = 0;
     mockDeviceLookup();
+    const plain = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [], events: [{ type: 'login', username: 'alex', sessionType: 'console' }] }),
+    });
+    expect(plain.status).toBe(200);
+    expect(deviceLockModes).toEqual([]);
+
+    mockDeviceLookup();
+    mockDeviceLock();
+    const principal = { sid: 'S-1-5-21-1', username: 'alex', upn: 'alex@example.com' };
+    const withIdentity = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [], events: [{ type: 'login', username: 'alex', sessionType: 'console', principal }] }),
+    });
+    expect(withIdentity.status).toBe(200);
+    expect(deviceLockModes).toEqual(['share']);
+  });
+
+  it('refuses to observe when the device moved org during the report (#6354 W02)', async () => {
+    mockDeviceLookup();
+    mockDeviceLock('org-2');
+    const principal = { sid: 'S-1-5-21-1', username: 'alex', upn: 'alex@example.com' };
     const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessions: [], events: [] }),
+      body: JSON.stringify({ sessions: [], events: [{ type: 'login', username: 'alex', sessionType: 'console', principal }] }),
     });
-    expect(response.status).toBe(200);
-    expect(deviceLockModes).toEqual(['share']);
+    expect(response.status).toBe(500);
+    expect(observeSessionPrincipal).not.toHaveBeenCalled();
   });
 
   it('rejects a principal that carries both sid and uid', async () => {

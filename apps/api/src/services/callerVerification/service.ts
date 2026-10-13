@@ -18,7 +18,7 @@ import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, assertInTransaction, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { tickets } from '../../db/schema/portal';
-import { devices } from '../../db/schema/devices';
+import { devices, deviceCommands } from '../../db/schema/devices';
 import { incidents } from '../../db/schema/incidentResponse';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { callerVerificationEnabled } from '../../config/env';
@@ -406,6 +406,15 @@ export async function cancel(actor: CallerVerificationActor, orgId: string, id: 
   const [row] = await db.update(v).set({ status: 'cancelled', decidedAt: new Date() })
     .where(and(eq(v.orgId, orgId), eq(v.id, id), eq(v.status, 'pending'))).returning();
   if (row) await recordEffect(row, 'cancelled', actor.userId);
+  // W02: a cancelled workstation challenge must not still pop up on the
+  // user's screen. Withdraw its command if no agent has claimed it yet (a
+  // card already on screen expires on its own; its answer is a no-op).
+  if (row?.agentCommandId) {
+    await db.update(deviceCommands).set({
+      status: 'cancelled', completedAt: new Date(),
+      result: { status: 'cancelled', reason: 'caller_verification_cancelled' },
+    }).where(and(eq(deviceCommands.id, row.agentCommandId), eq(deviceCommands.status, 'pending')));
+  }
   return get(actor, orgId, id);
 }
 

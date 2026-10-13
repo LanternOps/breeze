@@ -240,6 +240,16 @@ it('cancel only cancels a pending row', async () => {
   expect(recordEffect).not.toHaveBeenCalled();
 });
 
+it('cancelling a workstation verification withdraws its undelivered command (#6354 W02)', async () => {
+  const command = '66666666-6666-4666-8666-666666666666';
+  const pending = stored({ method: 'workstation', agentCommandId: command });
+  const cancelled = stored({ method: 'workstation', agentCommandId: command, status: 'cancelled', decidedAt: new Date() });
+  state.results.push(...getReads(pending), [cancelled], [], ...getReads(cancelled));
+  await cancel(actor, org, user);
+  const sets = state.calls.filter((c) => c.name === 'set').map((c) => c.args[0] as Record<string, unknown>);
+  expect(sets).toContainEqual(expect.objectContaining({ status: 'cancelled', result: expect.objectContaining({ reason: 'caller_verification_cancelled' }) }));
+});
+
 describe('public not_me window (#6354 W03)', () => {
   const DAY = 86_400_000;
   beforeEach(() => vi.mocked(handleRejection).mockClear());

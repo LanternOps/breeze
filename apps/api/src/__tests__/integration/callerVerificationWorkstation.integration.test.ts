@@ -231,8 +231,8 @@ it('a late "not me" survives a terminal command and reconciliation applies it on
   await reconcileCallerVerifications();
   expect((await loaded(view.id)).row.status).toBe('rejected_by_user');
   await sys(async () => {
-    const audits = await db.select().from(auditLogs).where(and(eq(auditLogs.resourceId, view.id), eq(auditLogs.action, 'caller_verification.rejected_by_user')));
-    expect(audits.length).toBeLessThanOrEqual(1);
+    const audits = await db.select().from(auditLogs).where(and(eq(auditLogs.resourceId, view.id), eq(auditLogs.action, 'caller_verification.rejected')));
+    expect(audits).toHaveLength(1);
   });
 });
 
@@ -298,4 +298,65 @@ it('suggestions never cross org or site reach', async () => {
       expect.objectContaining({ deviceId: a.device.id, available: true }),
     ]);
   });
+});
+
+it('a matching number after expiry never verifies or binds, on any path', async () => {
+  const f = await fixture();
+  const view = await withDbAccessContext(f.context, () => service.start(f.actor, startInput(f)));
+  const { row, command } = await loaded(view.id);
+  const stdout = JSON.stringify({ delivered: true, choice: row.matchValue, principal: { sid: 'S-1-5-21-1000-2000-3000-1003', username: 'alex', upn: f.upn } });
+  await sys(async () => { await db.update(v).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(v.id, view.id)); });
+  await withDbAccessContext(f.orgContext, () => handleCallerVerifyResult(resultParams(f, command!, stdout)));
+  expect((await loaded(view.id)).row.status).toBe('expired');
+  await sys(async () => {
+    await db.update(deviceCommands).set({ status: 'completed', result: { status: 'completed', stdout } }).where(eq(deviceCommands.id, command!.id));
+  });
+  await reconcileCallerVerifications();
+  expect((await loaded(view.id)).row.status).toBe('expired');
+  await sys(async () => {
+    expect((await db.select().from(b).where(eq(b.id, f.binding.id)))[0]!.osPrincipal).toBeNull();
+  });
+});
+
+it.each(['expired', 'undeliverable', 'cancelled'] as const)('a late "not me" after the row settled as %s still rejects, once', async (settled) => {
+  const f = await fixture();
+  const view = await withDbAccessContext(f.context, () => service.start(f.actor, startInput(f)));
+  const { command } = await loaded(view.id);
+  await sys(async () => {
+    await db.update(v).set({ status: settled, decidedAt: new Date() }).where(eq(v.id, view.id));
+    await db.update(deviceCommands).set({ status: 'failed', completedAt: new Date(), result: { status: 'failed' } }).where(eq(deviceCommands.id, command!.id));
+  });
+  // What the Go agent really sends: stdout JSON.
+  const stdout = JSON.stringify({ delivered: true, choice: 'not_me' });
+  expect(await sys(() => persistCallerNotMeReceipt({ commandId: command!.id, deviceId: f.device.id, stdout }))).toBe(true);
+  await reconcileCallerVerifications();
+  await reconcileCallerVerifications();
+  expect((await loaded(view.id)).row.status).toBe('rejected_by_user');
+  await sys(async () => {
+    const audits = await db.select().from(auditLogs).where(and(eq(auditLogs.resourceId, view.id), eq(auditLogs.action, 'caller_verification.rejected')));
+    expect(audits).toHaveLength(1);
+  });
+});
+
+it('reconciliation leaves a prompt that is still in flight alone', async () => {
+  const f = await fixture();
+  const view = await withDbAccessContext(f.context, () => service.start(f.actor, startInput(f)));
+  const { command } = await loaded(view.id);
+  await sys(async () => { await db.update(deviceCommands).set({ status: 'sent', executedAt: new Date() }).where(eq(deviceCommands.id, command!.id)); });
+  await reconcileCallerVerifications();
+  const after = await loaded(view.id);
+  expect(after.row.status).toBe('pending');
+  expect(after.command!.status).toBe('sent');
+});
+
+it('cancelling withdraws a command no agent has claimed yet', async () => {
+  const f = await fixture();
+  const view = await withDbAccessContext(f.context, () => service.start(f.actor, startInput(f)));
+  await withDbAccessContext(f.context, () => service.cancel(f.actor, f.org.id, view.id));
+  const after = await loaded(view.id);
+  expect(after.row.status).toBe('cancelled');
+  expect(after.command).toMatchObject({ status: 'cancelled', result: { reason: 'caller_verification_cancelled' } });
+  dispatch.mockClear();
+  await deliverWorkstation(view.id);
+  expect(dispatch).not.toHaveBeenCalled();
 });

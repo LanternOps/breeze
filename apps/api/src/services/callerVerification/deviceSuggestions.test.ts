@@ -9,7 +9,7 @@ const m = vi.hoisted(() => ({
 vi.mock('../../db', () => ({ db: new Proxy({}, { get: (_, key) => m.db[key] }) }));
 vi.mock('./access', () => ({ reachableContact: m.contact }));
 vi.mock('./subjects', () => ({ bindingsForContact: m.bindings }));
-vi.mock('./workstationCapabilities', () => ({ workstationUserAvailable: m.ready }));
+vi.mock('./workstationCapabilities', () => ({ workstationReadiness: m.ready }));
 
 import { makeDbMock } from './testing';
 import { deviceSuggestions, matchSuggestedUsername, suggestionCandidates } from './deviceSuggestions';
@@ -55,14 +55,23 @@ describe('deviceSuggestions', () => {
       { id: 'd1', hostname: 'ready-pc', lastUser: 'alex' },
       { id: 'd2', hostname: 'old-pc', lastUser: 'alex' },
     ]);
-    m.ready.mockImplementation(async (_o: string, device: string) => device === 'd1');
+    m.ready.mockResolvedValue(new Map([['d1', ['alex']], ['d2', []]]));
     const rows = await deviceSuggestions(actor, 'org', 'c');
     expect(m.contact).toHaveBeenCalledWith(actor, 'org', 'c');
     expect(rows).toEqual([
       { deviceId: 'd1', hostname: 'ready-pc', username: 'alex', hasBinding: true, available: true },
       { deviceId: 'd2', hostname: 'old-pc', username: 'alex', hasBinding: true, available: false, unavailableReason: 'helper_outdated' },
     ]);
-    expect(m.ready).toHaveBeenCalledWith('org', 'd1', 'alex');
+    expect(m.ready).toHaveBeenCalledTimes(1); // one round trip for every device
+    expect(m.ready).toHaveBeenCalledWith('org', ['d1', 'd2']);
+  });
+
+  it('marks every suggestion readiness_unavailable when the store cannot be read', async () => {
+    state.results.push([{ id: 'd1', hostname: 'pc', lastUser: 'alex' }]);
+    m.ready.mockResolvedValue(null);
+    expect(await deviceSuggestions(actor, 'org', 'c')).toEqual([
+      { deviceId: 'd1', hostname: 'pc', username: 'alex', hasBinding: true, available: false, unavailableReason: 'readiness_unavailable' },
+    ]);
   });
 
   it('refuses an unreachable contact before touching devices', async () => {

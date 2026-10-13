@@ -19,7 +19,8 @@ vi.mock('../../../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown, label?: string) => { m.contexts.push(`system:${label ?? ''}`); return fn(); },
 }));
 vi.mock('../../../config/env', () => ({ callerVerificationEnabled: () => m.enabled }));
-vi.mock('../workstationCapabilities', () => ({ workstationUserAvailable: m.ready }));
+vi.mock('../workstationCapabilities', () => ({ workstationReadiness: m.ready }));
+vi.mock('../../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../partnerTrust.commands', async () => {
   class TrustDeniedError extends Error {
     constructor(readonly code: string) { super(code); }
@@ -51,7 +52,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.contexts = []; m.inTx = true; m.enabled = true;
   state = makeDbMock(); m.db = state.db;
-  m.ready.mockResolvedValue(true);
+  m.ready.mockImplementation(async (_org: string, ids: string[]) => new Map(ids.map((id) => [id, ['alex']])));
   m.trust.mockResolvedValue(undefined);
   m.parked.mockResolvedValue(false);
 });
@@ -118,9 +119,24 @@ describe('prepareWorkstationVerification', () => {
 
   it('refuses a selected device whose helper cannot render the card', async () => {
     state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }]);
-    m.ready.mockResolvedValue(false);
+    m.ready.mockResolvedValue(new Map([['device-1', ['someone-else']]]));
     await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'helper_outdated' });
-    expect(m.ready).toHaveBeenCalledWith('org-1', 'device-1', 'alex');
+    expect(m.ready).toHaveBeenCalledWith('org-1', ['device-1']);
+    expect(inserted()).toHaveLength(0);
+  });
+
+  it('says the readiness store is unavailable instead of blaming the helper', async () => {
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }]);
+    m.ready.mockResolvedValue(null);
+    await expect(prepareWorkstationVerification(row)).rejects.toMatchObject({ code: 'readiness_unavailable' });
+    expect(inserted()).toHaveLength(0);
+  });
+
+  it('turns a label the card cannot carry into a request error, not a crash', async () => {
+    state.results.push([{ id: 'device-1', orgId: 'org-1', status: 'online' }], [{ name: 'Acme' }]);
+    const err = await prepareWorkstationVerification({ ...row, technicianLabel: '   ' }).catch((e) => e);
+    expect(err).toBeInstanceOf(CallerVerificationValidationError);
+    expect(err.code).toBe('invalid_request');
     expect(inserted()).toHaveLength(0);
   });
 

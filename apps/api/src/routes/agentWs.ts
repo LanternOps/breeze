@@ -2165,7 +2165,10 @@ async function applyLateCallerVerifyRejection(
       commandId: result.commandId, deviceId: owned.deviceId, stdout: result.stdout, result: result.result,
     }), 'callerVerification.wsLateRejection.receipt'),
   );
-  if (!recorded) return true;
+  if (!recorded) {
+    console.warn(`[AgentWs] late caller rejection for command ${result.commandId} could not be recorded; ignored`);
+    return true;
+  }
   try {
     await runWithAgentOrgDbAccess('agentWs.commandResult.callerRejection', orgId, partnerId, () =>
       late.handleCallerVerifyResult({

@@ -54,6 +54,11 @@ describe('reconciliationInput', () => {
     expect(reconciliationInput('pending', command({ status: 'pending', result: null }) as never)).toBeNull();
   });
 
+  it('reads a server-side command timeout as the challenge expiring', () => {
+    expect(reconciliationInput('pending', command({ status: 'failed', result: { status: 'timeout', error: 'no response from agent' } }) as never))
+      .toEqual({ result: { status: 'completed', result: { delivered: true, choice: 'timeout' } }, stdout: undefined });
+  });
+
   it('reports a failed or cancelled command as a failed result (never an approval)', () => {
     expect(reconciliationInput('pending', command({ status: 'cancelled', result: { reason: 'org_moved' } }) as never))
       .toEqual({ result: { status: 'failed', result: undefined, error: undefined }, stdout: undefined });

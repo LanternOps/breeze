@@ -53,6 +53,11 @@ export function reconciliationInput(status: string, command: CommandRow): Replay
     return { result: { status: 'completed', result: { delivered: true, choice: 'not_me' } }, stdout: undefined };
   }
   if (status !== 'pending' || IN_FLIGHT.has(command.status)) return null;
+  // The server timed the command out (wait deadline / stale reaper): that is
+  // the challenge expiring, not an undeliverable device.
+  if (stored?.status === 'timeout') {
+    return { result: { status: 'completed', result: { delivered: true, choice: 'timeout' } }, stdout: undefined };
+  }
   return {
     result: {
       status: command.status === 'completed' && stored?.status === 'completed' ? 'completed' : 'failed',

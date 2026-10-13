@@ -18,7 +18,7 @@ import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { reachableContact } from './access';
 import { bindingsForContact } from './subjects';
-import { workstationUserAvailable } from './workstationCapabilities';
+import { workstationReadiness } from './workstationCapabilities';
 import type { BindingRow, CallerVerificationActor } from './types';
 
 export type DeviceSuggestion = {
@@ -27,7 +27,8 @@ export type DeviceSuggestion = {
   username: string;
   hasBinding: boolean;
   available: boolean;
-  unavailableReason?: 'helper_outdated';
+  /** helper_outdated: no ready helper for that user; readiness_unavailable: the readiness store could not be read. */
+  unavailableReason?: 'helper_outdated' | 'readiness_unavailable';
 };
 
 const MAX_SUGGESTIONS = 50;
@@ -79,15 +80,18 @@ export async function deviceSuggestions(actor: CallerVerificationActor, orgId: s
     .orderBy(devices.hostname, devices.id)
     .limit(MAX_SUGGESTIONS);
 
-  const result: DeviceSuggestion[] = [];
-  for (const row of rows) {
+  const matched = rows.flatMap((row) => {
     const match = matchSuggestedUsername(row.lastUser, candidates, bound);
-    if (!match) continue;
-    const available = await workstationUserAvailable(orgId, row.id, match.username);
-    result.push({
+    return match ? [{ row, match }] : [];
+  });
+  // One round trip for every suggested device (this runs inside start's
+  // transaction via methodsForContact).
+  const readiness = await workstationReadiness(orgId, matched.map(({ row }) => row.id));
+  return matched.map(({ row, match }) => {
+    const available = !!readiness?.get(row.id)?.includes(match.username);
+    return {
       deviceId: row.id, hostname: row.hostname, ...match, available,
-      ...(available ? {} : { unavailableReason: 'helper_outdated' as const }),
-    });
-  }
-  return result;
+      ...(available ? {} : { unavailableReason: readiness ? 'helper_outdated' as const : 'readiness_unavailable' as const }),
+    };
+  });
 }
