@@ -98,13 +98,14 @@ tests:
             value: 60
 
       # Agent cost per region: eu (600 + 600) / 30 = 40; us 1200 / 30 = 40; ap none
-      - expr: breeze:agent_cost_cpu_ms_per_agent_minute:region
+      # (round(x * 1000): rate() extrapolation leaves float noise in the last bits)
+      - expr: round(breeze:agent_cost_cpu_ms_per_agent_minute:region * 1000)
         eval_time: 10m
         exp_samples:
-          - labels: 'breeze:agent_cost_cpu_ms_per_agent_minute:region{region="eu"}'
-            value: 40
-          - labels: 'breeze:agent_cost_cpu_ms_per_agent_minute:region{region="us"}'
-            value: 40
+          - labels: '{region="eu"}'
+            value: 40000
+          - labels: '{region="us"}'
+            value: 40000
 
       # Zero-socket region produces no per-agent sample (the `> 0` guard)
       - expr: breeze:agent_cost_cpu_ms_per_agent_minute:region{region="ap"}
@@ -128,29 +129,29 @@ tests:
           - labels: 'breeze:db_tx_per_agent_minute:region{region="eu"}'
             value: 4
 
-      # Heartbeat latency (server histogram)
-      - expr: breeze:heartbeat_latency_seconds:p50_region
+      # Heartbeat latency (server histogram), in microseconds via round(x * 1e6)
+      - expr: round(breeze:heartbeat_latency_seconds:p50_region * 1e6)
         eval_time: 10m
         exp_samples:
           # rank 50 in the (0.01, 0.025] bucket of 80: 0.01 + 0.015 * 50/80
-          - labels: 'breeze:heartbeat_latency_seconds:p50_region{region="eu"}'
-            value: 0.019375
-      - expr: breeze:heartbeat_latency_seconds:p95_region
+          - labels: '{region="eu"}'
+            value: 19375
+      - expr: round(breeze:heartbeat_latency_seconds:p95_region * 1e6)
         eval_time: 10m
         exp_samples:
-          - labels: 'breeze:heartbeat_latency_seconds:p95_region{region="eu"}'
-            value: 0.05
-      - expr: breeze:heartbeat_latency_seconds:p99_region
+          - labels: '{region="eu"}'
+            value: 50000
+      - expr: round(breeze:heartbeat_latency_seconds:p99_region * 1e6)
         eval_time: 10m
         exp_samples:
           # rank 99 in the (0.05, 0.1] bucket of 5: 0.05 + 0.05 * 4/5
-          - labels: 'breeze:heartbeat_latency_seconds:p99_region{region="eu"}'
-            value: 0.09
-      - expr: breeze:heartbeat_latency_seconds:p95_instance
+          - labels: '{region="eu"}'
+            value: 90000
+      - expr: round(breeze:heartbeat_latency_seconds:p95_instance * 1e6)
         eval_time: 10m
         exp_samples:
-          - labels: 'breeze:heartbeat_latency_seconds:p95_instance{instance="a",region="eu"}'
-            value: 0.05
+          - labels: '{instance="a",region="eu"}'
+            value: 50000
 
       # Request mix (G2): (30 + 30) / 30 = 2; /api/v1/devices excluded
       - expr: breeze:agent_requests_per_agent_minute:region
