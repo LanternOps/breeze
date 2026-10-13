@@ -4209,7 +4209,10 @@ describe('moveTicketOrg', () => {
     // ticket_approval_requests — same 10 tables as the 'moves ticket to a
     // same-partner org' test below) + 1 ticket_links delete on both legs
     // (#7900 W02, the TICKET_ORG_MOVE_DELETE_TABLES tail, after the rewrites).
-    expect(texts).toHaveLength(13);
+    // + 1 shared ticket_links advisory lock right after SET CONSTRAINTS
+    // (services/ticketLinkLock.ts), before any row lock.
+    expect(texts).toHaveLength(14);
+    expect(texts[1]).toMatch(/^SELECT pg_advisory_xact_lock_shared\(hashtextextended\(/);
     const linkDelete = texts.findIndex((t) => /DELETE FROM ticket_links WHERE source_ticket_id = .* OR target_ticket_id = /.test(t));
     expect(linkDelete).toBe(texts.length - 1);
     // The Operator target detach severs the plain ticket_id FK and stamps the

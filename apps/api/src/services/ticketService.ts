@@ -18,6 +18,7 @@ import { assertNoPendingApprovalRequest } from './ticketMoveApprovalGuard';
 import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
+import { lockOrgTicketLinks } from './ticketLinkLock';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -3327,6 +3328,11 @@ export async function moveTicketOrg(
     await tx.execute(
       sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED`
     );
+    // #7900 W02: the per-org ticket_links lock, SHARED, before any row lock —
+    // so this move and a link add/remove of the same org never interleave
+    // (they would lock ticket and link rows in opposite orders: 40P01). Moves
+    // do not block each other. See services/ticketLinkLock.ts.
+    await lockOrgTicketLinks(tx, ticket.orgId, 'shared');
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → ai_operator_task_targets

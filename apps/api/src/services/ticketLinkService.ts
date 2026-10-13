@@ -5,6 +5,7 @@ import { ticketComments, ticketLinks, tickets } from '../db/schema';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createAuditLogAsync } from './auditService';
 import { emitTicketEvent } from './ticketEvents';
+import { lockOrgTicketLinks } from './ticketLinkLock';
 import {
   actorAuditIdentity,
   actorAuthorFields,
@@ -177,19 +178,6 @@ export async function getTicketLinkForTicket(ticketId: string, linkId: string) {
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/**
- * Serializes every link write of one org until the OUTERMOST transaction ends
- * (an xact advisory lock; a request path runs this as a savepoint). Locking
- * only the two endpoint tickets is not enough: under READ COMMITTED two
- * concurrent adds (a->b and c->d with b->c and d->a present) each pass the
- * cycle check and jointly close a cycle; the same race defeats the
- * duplicate_of depth rule and the link cap. Link writes are rare, so one lock
- * per org costs nothing measurable. Taken BEFORE the ticket row locks.
- */
-async function lockOrgLinks(tx: Tx, orgId: string): Promise<void> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ticket_links:${orgId}`}, 0))`);
-}
-
 interface LockedTicket { id: string; orgId: string; partnerId: string | null; deleted: boolean; number: string }
 
 async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<string, LockedTicket>> {
@@ -222,13 +210,13 @@ async function assertDuplicateRules(tx: Tx, sourceId: string, targetId: string):
     SELECT source_ticket_id, target_ticket_id FROM ticket_links
      WHERE link_type = 'duplicate_of'
        AND (source_ticket_id IN (${sourceId}::uuid, ${targetId}::uuid) OR target_ticket_id = ${sourceId}::uuid)`) as unknown as Array<{ source_ticket_id: string; target_ticket_id: string }>;
-  const sourceDup = rows.find((r) => r.source_ticket_id === sourceId);
-  if (sourceDup) {
-    throw new TicketLinkError('SOURCE_ALREADY_DUPLICATE', 'This ticket is already marked as a duplicate of another ticket', { canonicalTicketId: sourceDup.target_ticket_id });
+  // No third-ticket id in the error details: the canonical ticket may be one
+  // the caller cannot see (site scope), and only source/target passed scope.
+  if (rows.some((r) => r.source_ticket_id === sourceId)) {
+    throw new TicketLinkError('SOURCE_ALREADY_DUPLICATE', 'This ticket is already marked as a duplicate of another ticket');
   }
-  const targetDup = rows.find((r) => r.source_ticket_id === targetId);
-  if (targetDup) {
-    throw new TicketLinkError('DUPLICATE_TARGET_IS_DUPLICATE', 'The target is itself a duplicate; link to its canonical ticket instead', { canonicalTicketId: targetDup.target_ticket_id });
+  if (rows.some((r) => r.source_ticket_id === targetId)) {
+    throw new TicketLinkError('DUPLICATE_TARGET_IS_DUPLICATE', 'The target is itself a duplicate; link to its canonical ticket instead');
   }
   if (rows.some((r) => r.target_ticket_id === sourceId)) {
     throw new TicketLinkError('SOURCE_HAS_DUPLICATES', 'Other tickets are duplicates of this ticket, so it cannot itself be a duplicate');
@@ -243,7 +231,7 @@ async function assertUnderLimit(tx: Tx, ids: readonly [string, string]): Promise
      GROUP BY t.id`) as unknown as Array<{ id: string; n: number }>;
   const full = rows.find((r) => r.n >= TICKET_LINK_LIMIT);
   if (full) {
-    throw new TicketLinkError('LINK_LIMIT', `A ticket can have at most ${TICKET_LINK_LIMIT} links`, { ticketId: full.id, limit: TICKET_LINK_LIMIT });
+    throw new TicketLinkError('LINK_LIMIT', `A ticket can have at most ${TICKET_LINK_LIMIT} links`, { limit: TICKET_LINK_LIMIT });
   }
 }
 
@@ -260,7 +248,10 @@ export async function addTicketLink(
   const [storedSource, storedTarget] = canonical(source.id, target.id, linkType);
 
   const { linkId, locked } = await db.transaction(async (tx) => {
-    await lockOrgLinks(tx, orgId);
+    // Exclusive per-org link lock, before any row lock (services/ticketLinkLock.ts):
+    // keeps the cycle / duplicate-depth / cap checks race-free and keeps
+    // link writes from interleaving with an org move of this org.
+    await lockOrgTicketLinks(tx, orgId, 'exclusive');
     const locked = await lockTickets(tx, [storedSource, storedTarget].sort() as [string, string]);
     const s = locked.get(source.id);
     const t = locked.get(target.id);
@@ -275,7 +266,7 @@ export async function addTicketLink(
       eq(ticketLinks.targetTicketId, storedTarget),
       eq(ticketLinks.linkType, linkType),
     )).limit(1);
-    if (existing) throw new TicketLinkError('ALREADY_LINKED', 'These tickets are already linked this way', { linkId: existing.id });
+    if (existing) throw new TicketLinkError('ALREADY_LINKED', 'These tickets are already linked this way');
 
     if (linkType === 'duplicate_of') await assertDuplicateRules(tx, storedSource, storedTarget);
     if ((linkType === 'caused_by' || linkType === 'resolves') && await wouldCloseCycle(tx, storedSource, storedTarget, linkType)) {
@@ -356,6 +347,16 @@ export async function addTicketLink(
 
 export async function removeTicketLink(ticketId: string, linkId: string, actor: TicketActor): Promise<void> {
   const removed = await db.transaction(async (tx) => {
+    // Same lock order as addTicketLink — org link lock, then both tickets in
+    // id order, then the link row — so a remove never holds the link row while
+    // waiting for a ticket row (the comment feed trigger below locks both).
+    const [found] = await tx.select({ orgId: ticketLinks.orgId, sourceTicketId: ticketLinks.sourceTicketId, targetTicketId: ticketLinks.targetTicketId })
+      .from(ticketLinks)
+      .where(and(eq(ticketLinks.id, linkId), or(eq(ticketLinks.sourceTicketId, ticketId), eq(ticketLinks.targetTicketId, ticketId))))
+      .limit(1);
+    if (!found) throw new TicketLinkError('NOT_FOUND', 'Link not found');
+    await lockOrgTicketLinks(tx, found.orgId, 'exclusive');
+    await lockTickets(tx, [found.sourceTicketId, found.targetTicketId].sort() as [string, string]);
     const [row] = await tx.delete(ticketLinks).where(and(
       eq(ticketLinks.id, linkId),
       or(eq(ticketLinks.sourceTicketId, ticketId), eq(ticketLinks.targetTicketId, ticketId)),

@@ -47,6 +47,7 @@ import {
 } from '../unassignedPool/orgType';
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } from '../ticketService';
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
+import { lockOrgTicketLinks } from '../ticketLinkLock';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -194,6 +195,12 @@ export async function moveDeviceOrgInTransaction(
   await tx.execute(
     sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED`,
   );
+  // #7900 W02: the source org's ticket_links lock, SHARED, before any row
+  // lock (an advisory lock, so the step-up row lock below is still the first
+  // ROW lock). This move and a link add/remove of the same org never
+  // interleave — they would lock ticket and link rows in opposite orders
+  // (40P01); moves do not block each other. See services/ticketLinkLock.ts.
+  await lockOrgTicketLinks(tx, sourceOrgId, 'shared');
   // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
   // transaction, deliberately BEFORE the organisation FOR SHARE reads
   // below: the actor's auth state is held stable until commit, and a

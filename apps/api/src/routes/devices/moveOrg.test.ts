@@ -1504,7 +1504,10 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements[0]).toBe(
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
       );
-      expect(statements.slice(1, 5)).toEqual([
+      // #7900 W02 — the source org's ticket_links advisory lock, SHARED, is
+      // the second statement: before any row lock (services/ticketLinkLock.ts).
+      expect(statements[1]).toMatch(/^SELECT pg_advisory_xact_lock_shared\(hashtextextended\(ticket_links:/);
+      expect(statements.slice(2, 6)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
         'SELECT organizations FOR share (after 0 updates)',
         'PAM guard',
@@ -1518,7 +1521,7 @@ describe('POST /devices/:id/move-org', () => {
       // must not invert that hierarchy), and strictly BEFORE the org flip, since
       // the flip's own trigger restamps the value rows and the coherence trigger
       // would refuse them while they still name the source org's definition.
-      expect(collapseStmt(statements[5]!)).toContain(
+      expect(collapseStmt(statements[6]!)).toContain(
         'breeze_rehome_device_custom_field_values',
       );
       // #4622 — the manual-asset detach sits between the custom-field re-home
@@ -1530,7 +1533,7 @@ describe('POST /devices/:id/move-org', () => {
       // breeze_cascade_device_org_id(), which shares the after-row queue with
       // that check and is ordered against it only by trigger name — arrives too
       // late and the move aborts with 23503.
-      expect(collapseStmt(statements[6]!)).toContain(
+      expect(collapseStmt(statements[7]!)).toContain(
         'UPDATE manual_assets SET linked_device_id = NULL',
       );
       // #5329 (M365 tenant sync W02, spec §3.4) — the Intune link detach sits
@@ -1542,7 +1545,7 @@ describe('POST /devices/:id/move-org', () => {
       // discovers by a column named `device_id` and this one is
       // `breeze_device_id`, so the route statement is the ONLY thing standing
       // between an Intune-linked device and a 23503 on every move.
-      const intuneDetach = collapseStmt(statements[7]!);
+      const intuneDetach = collapseStmt(statements[8]!);
       expect(intuneDetach).toContain(
         'UPDATE m365_intune_devices SET breeze_device_id = NULL',
       );
@@ -1557,7 +1560,7 @@ describe('POST /devices/:id/move-org', () => {
       // column literally named `device_id` and this one is `breeze_device_id`
       // — so this statement is the ONLY thing standing between a
       // Cove-linked device and a 23503 on every cross-org move.
-      const providerDetach = collapseStmt(statements[8]!);
+      const providerDetach = collapseStmt(statements[9]!);
       expect(providerDetach).toContain(
         'UPDATE backup_provider_devices SET breeze_device_id = NULL',
       );
@@ -1572,12 +1575,12 @@ describe('POST /devices/:id/move-org', () => {
       // devices(id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE and nothing
       // trigger-side mirrors a breeze_device_id column. The ROWS stay in the
       // source org (their org_id comes from the vendor tenant mapping).
-      const edrEndpointDetach = collapseStmt(statements[9]!);
+      const edrEndpointDetach = collapseStmt(statements[10]!);
       expect(edrEndpointDetach).toContain(
         'UPDATE edr_endpoints SET breeze_device_id = NULL, device_match_source = NULL',
       );
       expect(edrEndpointDetach).toMatch(/AND org_id =/);
-      const edrDetectionDetach = collapseStmt(statements[10]!);
+      const edrDetectionDetach = collapseStmt(statements[11]!);
       expect(edrDetectionDetach).toContain('UPDATE edr_detections SET breeze_device_id = NULL');
       // D14: a detached finding keeps the last device's site restriction, so
       // a site-restricted technician does not gain visibility of it. The
@@ -1585,7 +1588,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(edrDetectionDetach).toContain('device_detached_at = now()');
       expect(edrDetectionDetach).toMatch(/last_site_id = \(SELECT site_id FROM devices WHERE id =/);
       expect(edrDetectionDetach).toMatch(/AND org_id =/);
-      const edrActionDetach = collapseStmt(statements[11]!);
+      const edrActionDetach = collapseStmt(statements[12]!);
       expect(edrActionDetach).toContain('UPDATE edr_actions SET breeze_device_id = NULL');
       expect(edrActionDetach).toMatch(/AND org_id =/);
       // Caller verification (#6354 W01) — the device row lock and the
@@ -1597,19 +1600,19 @@ describe('POST /devices/:id/move-org', () => {
       // discovery_profiles_pinned_device_org_fk ((pinned_device_id, org_id) ->
       // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE and nothing
       // trigger-side mirrors a pinned_device_id column.
-      const discoveryPinDetach = collapseStmt(statements[12]!);
+      const discoveryPinDetach = collapseStmt(statements[13]!);
       expect(discoveryPinDetach).toContain('UPDATE discovery_profiles SET pinned_device_id = NULL');
       expect(discoveryPinDetach).toMatch(/AND org_id =/);
-      expect(statements[13]).toBe('SELECT devices FOR update');
-      expect(collapseStmt(statements[14]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
-      expect(collapseStmt(statements[15]!)).toContain('UPDATE caller_verifications');
+      expect(statements[14]).toBe('SELECT devices FOR update');
+      expect(collapseStmt(statements[15]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
+      expect(collapseStmt(statements[16]!)).toContain('UPDATE caller_verifications');
       // Diagnostic access grants approved in the SOURCE org die before the flip
       // (its trigger restamps them into the target org): pending requests
       // expire, active grants are revoked. Other approvers' approval rows are
       // expired post-commit in system scope (they are per-approver under RLS).
-      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
-      expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[18]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[18]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[19]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

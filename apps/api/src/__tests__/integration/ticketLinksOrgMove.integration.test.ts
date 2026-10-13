@@ -25,6 +25,7 @@ import { devices, ticketComments, ticketLinks, tickets } from '../../db/schema';
 import { moveTicketOrg } from '../../services/ticketService';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { noteTicketLinksRemovedByOrgMove } from '../../services/ticketLinkMoveNotes';
+import { lockOrgTicketLinks } from '../../services/ticketLinkLock';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -154,6 +155,37 @@ describe('ticket_links across org moves (real DB)', () => {
     expect(await removalNotes(f.C.id)).toHaveLength(1);
     expect((await removalNotes(f.A.id))[0]!.content).toContain(f.C.number);
   });
+
+  for (const axis of ['ticket', 'device'] as const) {
+    it(`${axis} axis: a mover waits for an in-flight link write of its source org (shared vs exclusive advisory lock)`, async () => {
+      // Without this serialization a mover (ticket row -> link row) and a
+      // link writer (link row -> ticket rows via the comment feed trigger)
+      // lock in opposite orders: 40P01.
+      const f = await seed();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((r) => { signalLocked = r; });
+      const writer = sys(() => db.transaction(async (tx) => {
+        await lockOrgTicketLinks(tx, f.orgX, 'exclusive');
+        signalLocked();
+        await gate;
+      }));
+      await locked;
+      let moved = false;
+      const move = (axis === 'ticket'
+        ? sys(() => moveTicketOrg(f.A.id, f.orgY, { kind: 'user', userId: f.userId }))
+        : moveDevice(f)
+      ).then(() => { moved = true; });
+      await new Promise((r) => setTimeout(r, 750));
+      expect(moved).toBe(false);
+      release();
+      await writer;
+      await move;
+      expect(moved).toBe(true);
+      expect(await orgOf(f.A.id)).toBe(f.orgY);
+    });
+  }
 
   it('concurrent moves of the two ends of one link both complete (no 40P01, no 23503)', async () => {
     const f = await seed();
