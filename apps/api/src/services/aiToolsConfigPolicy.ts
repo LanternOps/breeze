@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { securitySettingsAutoQuarantine, withoutFeatureLinkAuthority } from './securityScanQuarantineAuthority';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
@@ -157,6 +158,14 @@ function rejectElevatedAutomationActions(raw: unknown): string | null {
  * carries no driver or schema detail.
  */
 function warrantyConsentRefusal(err: unknown): string | null {
+  // #8186: approval / app rules now live on the Update Ring. Say where, so
+  // the model can redo the change there instead of seeing a generic failure.
+  if (err instanceof PolicyApprovalFieldMovedError) {
+    return JSON.stringify({
+      error: `${err.message} Edit them with manage_update_rings, and link the ring with featurePolicyId.`,
+      code: err.code,
+    });
+  }
   if (!(err instanceof WarrantyConsentError)) return null;
   return JSON.stringify({
     error: `${err.message} Ask a user to switch it on from the policy's Warranty tab, where they accept HP's licence themselves.`,
