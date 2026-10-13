@@ -1414,6 +1414,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Caller verification (#6354 W02) — repairs workstation decisions the
+    // transports could not finish (terminal command results, late "not me"
+    // receipts) through the same leaf result handler. 'socket-owner': the
+    // caller-verification service graph includes workstation delivery, which
+    // claims commands through commandDispatch (same as the publisher).
+    name: 'callerVerificationReconciliation',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/callerVerificationReconciliation');
+      return { init: m.initializeCallerVerificationReconciliation, shutdown: m.shutdownCallerVerificationReconciliation };
+    },
+  },
+  {
     name: 'ticketSlaWorker',
     placement: 'global',
     load: async () => {
