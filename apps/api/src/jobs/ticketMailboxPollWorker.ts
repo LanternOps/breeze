@@ -63,7 +63,7 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
   } catch (err) {
     const status = (err as { status?: number }).status;
     if (status === 410) {
-      await resetDeltaCursor(c);
+      await resetDeltaCursor(c, c.deltaLink);
       console.warn('[mailboxPoll] delta token gone (410); cursor reset', { id: c.id });
       return;
     }
@@ -144,9 +144,15 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     console.warn('[mailboxPoll] sweep budget spent; left messages unread', { id: c.id, count: markReadSkipped });
   }
 
-  if (page.deltaLink) {
+  // A round that did not finish this sweep stores its resumeLink, so the next
+  // sweep continues it instead of starting over (#8400).
+  const cursor = page.deltaLink ?? page.resumeLink ?? null;
+  if (page.resumeLink) {
+    console.info('[mailboxPoll] delta round continues next sweep', { id: c.id, messages: page.messages.length });
+  }
+  if (cursor) {
     const polledAt = new Date();
-    await updateDeltaCursor(c, page.deltaLink, polledAt, lastMessageAt ?? polledAt);
+    await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt);
   }
 }
 

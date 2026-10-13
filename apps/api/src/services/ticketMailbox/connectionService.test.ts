@@ -373,8 +373,8 @@ describe('ticket mailbox connection service', () => {
     };
     dbMocks.updateResults.push([{ id: CONNECTION_ID }], [{ id: CONNECTION_ID }]);
 
-    await updateDeltaCursor(snapshot, 'delta-next', new Date(), null);
-    await resetDeltaCursor(snapshot);
+    await updateDeltaCursor(snapshot, null, 'delta-next', new Date(), null);
+    await resetDeltaCursor(snapshot, 'delta-next');
 
     expect(dbMocks.updatedValues[0]).toMatchObject({ deltaLink: 'delta-next', consecutiveTransientFailures: 0, lastTransientFailureAt: null });
     expect(dbMocks.updatedValues[1]).toEqual({ deltaLink: null, updatedAt: expect.any(Date) });
@@ -399,7 +399,7 @@ describe('ticket mailbox connection service', () => {
 
     await expect(isConnectedMailboxSnapshotCurrent(snapshot)).resolves.toBe(true);
     await expect(setConnectedMailboxStatus(snapshot, 'error', 'poll failed')).resolves.toBe(true);
-    await expect(updateDeltaCursor(snapshot, 'delta-next', new Date(), null)).resolves.toBe(true);
+    await expect(updateDeltaCursor(snapshot, null, 'delta-next', new Date(), null)).resolves.toBe(true);
 
     for (const where of [dbMocks.selectWheres.at(-1), ...dbMocks.updateWheres.slice(-2)]) {
       expect(where).toEqual(expect.objectContaining({
@@ -413,6 +413,23 @@ describe('ticket mailbox connection service', () => {
         ]),
       }));
     }
+  });
+
+  it('cursor writes compare-and-swap on the cursor the sweep started from (#8400)', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    dbMocks.updateResults.push([]);
+
+    // Another sweep already moved the cursor: the update matches no row.
+    await expect(updateDeltaCursor(snapshot, 'delta-old', 'delta-next', new Date(), null)).resolves.toBe(false);
+    expect(dbMocks.updateWheres.at(-1)).toEqual(expect.objectContaining({
+      op: 'and',
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: ticketMailboxConnections.deltaLink, value: 'delta-old' },
+      ]),
+    }));
   });
 
   it('rechecks no-transition retests against the original status and exact generation', async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql, isNull } from 'drizzle-orm';
+import { and, eq, sql, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketMailboxConnections,
@@ -620,13 +620,14 @@ export async function restoreVerifiedConnection(
   return rows.length === 1;
 }
 
-function connectedSnapshotPredicate(snapshot: MailboxConnectionSnapshot) {
+function connectedSnapshotPredicate(snapshot: MailboxConnectionSnapshot, ...extra: SQL[]) {
   return and(
     eq(ticketMailboxConnections.id, snapshot.id),
     eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
     eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
     eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
     eq(ticketMailboxConnections.status, 'connected'),
+    ...extra,
   );
 }
 
@@ -701,9 +702,17 @@ export async function setConnectedMailboxStatus(
 /** Worker-only. Self-wraps in system context: ticket_mailbox_connections is
  *  FORCE RLS (partner-axis), and the poll worker runs with no request DB context,
  *  so a bare write would match zero rows silently and the cursor would never
- *  advance. */
+ *  advance.
+ *
+ *  Compare-and-swap on the cursor the sweep started from (`expectedFromDeltaLink`,
+ *  null for a first sync), as updateHistoryCursor does for Gmail: worker
+ *  concurrency 1 is per worker, so two sweeps can overlap. Without it a slower
+ *  sweep could write an older cursor (a deltaLink, or a resumeLink mid-round,
+ *  #8400) over a newer one and move the mailbox backward. The loser's update
+ *  matches 0 rows and the next sweep re-reads the advanced cursor. */
 export async function updateDeltaCursor(
   snapshot: MailboxConnectionSnapshot,
+  expectedFromDeltaLink: string | null,
   deltaLink: string,
   polledAt: Date,
   lastMessageAt: Date | null,
@@ -714,12 +723,13 @@ export async function updateDeltaCursor(
         deltaLink,
         lastPolledAt: polledAt,
         ...(lastMessageAt ? { lastMessageAt } : {}),
-        // A completed poll ends any run of transient failures (#8308).
+        // A poll that completed, or advanced a long round (#8400), ends any run
+        // of transient failures (#8308).
         consecutiveTransientFailures: 0,
         lastTransientFailureAt: null,
         updatedAt: new Date(),
       })
-      .where(connectedSnapshotPredicate(snapshot))
+      .where(connectedSnapshotPredicate(snapshot, deltaCursorIs(expectedFromDeltaLink)))
       .returning({ id: ticketMailboxConnections.id });
     return rows.length === 1;
   }));
@@ -738,15 +748,27 @@ export async function disableConnection(id: string, partnerId: string): Promise<
   return rows.length === 1;
 }
 
+/** Matches the cursor a sweep started from (null for a first sync). */
+function deltaCursorIs(expected: string | null): SQL {
+  return expected === null
+    ? isNull(ticketMailboxConnections.deltaLink)
+    : eq(ticketMailboxConnections.deltaLink, expected);
+}
+
 /** 410 Gone: Graph invalidated the delta token. Clear it so the next sweep restarts
  *  the delta from "now" (no history backfill). Stays 'connected'. Worker-only;
- *  self-wraps in system context (FORCE RLS — see updateDeltaCursor). */
-export async function resetDeltaCursor(snapshot: MailboxConnectionSnapshot): Promise<boolean> {
+ *  self-wraps in system context (FORCE RLS — see updateDeltaCursor). Same
+ *  compare-and-swap as updateDeltaCursor: only the cursor that got the 410 is
+ *  cleared, never one another sweep has since advanced (#8400). */
+export async function resetDeltaCursor(
+  snapshot: MailboxConnectionSnapshot,
+  expectedFromDeltaLink: string | null,
+): Promise<boolean> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.update(ticketMailboxConnections)
       // Not a completed poll, so a run of transient failures is left as is (#8308).
       .set({ deltaLink: null, updatedAt: new Date() })
-      .where(connectedSnapshotPredicate(snapshot))
+      .where(connectedSnapshotPredicate(snapshot, deltaCursorIs(expectedFromDeltaLink)))
       .returning({ id: ticketMailboxConnections.id });
     return rows.length === 1;
   }));

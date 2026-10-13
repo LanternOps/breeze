@@ -41,6 +41,13 @@ export interface GraphMessage {
 export interface DeltaPage {
   messages: GraphMessage[];
   deltaLink: string | null;
+  /**
+   * Set when the round did not finish in this sweep (budget spent after at least
+   * one page, or GRAPH_DELTA_MAX_PAGES_PER_SWEEP reached): the nextLink to continue from. The caller
+   * processes `messages` and stores this as the cursor, so a long round, such as
+   * a large mailbox's first sync, advances across sweeps (#8400).
+   */
+  resumeLink?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -64,12 +71,52 @@ export const GRAPH_POLL_TIMEOUT_MS = 60_000;
  * (#8308). GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but
  * responsive Graph could otherwise hold the concurrency-1 sweep for many minutes.
  * The sweep computes one deadline from this and passes it to listInboxDelta and
- * markRead. When it is spent during the delta read, listInboxDelta throws
- * GraphSweepBudgetError (transient): the caller discards the partial read and
- * keeps the stored deltaLink, so the next sweep resumes from the same point and
- * no mail is skipped.
+ * markRead. When it is spent during the delta read after at least one page,
+ * listInboxDelta returns the pages it read with a resumeLink (the next page's
+ * URL); the caller processes them and stores the resumeLink as the cursor, so the
+ * next sweep continues the round. A large first sync therefore finishes over
+ * several sweeps instead of restarting each time. When it is spent before the
+ * first page, listInboxDelta throws GraphSweepBudgetError (transient) and the
+ * stored cursor stays put. No mail is skipped either way.
  */
 export const GRAPH_POLL_SWEEP_BUDGET_MS = 120_000;
+
+/**
+ * Requested page size for the delta read. Graph's default page for message delta
+ * is small, so a large inbox takes many round trips; Graph may still return fewer
+ * per page, and the nextLink loop handles that.
+ */
+export const GRAPH_DELTA_PAGE_SIZE = 200;
+
+/**
+ * Most delta pages one sweep reads before handing back a resumeLink (#8400).
+ * Bounds what one sweep holds in memory (bodies and headers are selected) to
+ * at most 50 x GRAPH_DELTA_PAGE_SIZE = 10,000 messages.
+ */
+export const GRAPH_DELTA_MAX_PAGES_PER_SWEEP = 50;
+const DELTA_PREFER = { Prefer: `odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}` };
+
+/** One delta page. Throws GraphSweepBudgetError when the budget ends the request or its body read. */
+async function readDeltaPage(
+  url: string,
+  token: string,
+  deadlineAt: number,
+): Promise<{ value?: GraphMessage[]; '@odata.nextLink'?: string; '@odata.deltaLink'?: string }> {
+  const res = await graphFetch(url, token, { headers: DELTA_PREFER }, GRAPH_POLL_TIMEOUT_MS, deadlineAt);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
+  try {
+    return (await res.json()) as Awaited<ReturnType<typeof readDeltaPage>>;
+  } catch (err) {
+    // The body read shares the request's signal, so the budget can end it too.
+    if (Date.now() >= deadlineAt) throw new GraphSweepBudgetError('Graph sweep budget spent', { cause: err });
+    throw err;
+  }
+}
 
 /** The sweep budget for one mailbox's delta read ran out (#8308). Transient. */
 export class GraphSweepBudgetError extends Error {
@@ -155,40 +202,37 @@ export async function listInboxDelta(
     `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages/delta` +
       `?${encodeURIComponent('$select')}=${encodeURIComponent(DELTA_SELECT)}`;
   const messages: GraphMessage[] = [];
+  // A continuation URL seen twice in one sweep (including the stored cursor it
+  // started from) means Graph is not advancing; resuming would replay the same
+  // pages every sweep while looking healthy, so it fails instead.
+  const seen = new Set<string>([url]);
 
-  for (let guard = 0; guard < 1000; guard++) {
-    const res = await graphFetch(url, token, undefined, GRAPH_POLL_TIMEOUT_MS, deadlineAt);
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
-      (err as Error & { status?: number }).status = res.status;
-      throw err;
-    }
-
-    let data: {
-      value?: GraphMessage[];
-      '@odata.nextLink'?: string;
-      '@odata.deltaLink'?: string;
-    };
+  for (let pageNo = 0; pageNo < GRAPH_DELTA_MAX_PAGES_PER_SWEEP; pageNo++) {
+    let data: Awaited<ReturnType<typeof readDeltaPage>>;
     try {
-      data = (await res.json()) as typeof data;
+      data = await readDeltaPage(url, token, deadlineAt);
     } catch (err) {
-      // The body read shares the request's signal, so the budget can end it too.
-      if (Date.now() >= deadlineAt) throw new GraphSweepBudgetError('Graph sweep budget spent', { cause: err });
+      // Budget spent after at least one page: hand back what was read and where
+      // to continue (#8400). Before the first page there is nothing to keep.
+      if (err instanceof GraphSweepBudgetError && pageNo > 0) {
+        return { messages, deltaLink: null, resumeLink: url };
+      }
       throw err;
     }
     if (Array.isArray(data.value)) messages.push(...data.value);
-    if (data['@odata.nextLink']) {
-      url = data['@odata.nextLink'];
+    const next = data['@odata.nextLink'];
+    if (next) {
+      if (seen.has(next)) throw new Error('Graph delta nextLink repeated; the round is not advancing');
+      seen.add(next);
+      url = next;
       continue;
     }
 
     return { messages, deltaLink: data['@odata.deltaLink'] ?? null };
   }
 
-  // A round that never ends is treated like a spent budget: nothing from the
-  // partial read is used and the stored deltaLink stays put.
-  throw new GraphSweepBudgetError('Graph delta round exceeded the page limit');
+  // Per-sweep page cap reached: continue the round next sweep, like a spent budget.
+  return { messages, deltaLink: null, resumeLink: url };
 }
 
 /**

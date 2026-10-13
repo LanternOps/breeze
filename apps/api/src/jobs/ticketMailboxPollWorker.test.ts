@@ -122,7 +122,7 @@ describe('runMailboxSweep', () => {
     expect(markRead).toHaveBeenCalledTimes(2);
     expect(updateDeltaCursor).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'c1', consentAttemptId: conn().consentAttemptId }),
-      'delta-new', expect.any(Date), expect.anything(),
+      null, 'delta-new', expect.any(Date), expect.anything(),
     );
     const enqueueOrder = vi.mocked(enqueueInboundEmail).mock.invocationCallOrder[0]!;
     const cursorOrder = vi.mocked(updateDeltaCursor).mock.invocationCallOrder[0]!;
@@ -152,7 +152,7 @@ describe('runMailboxSweep', () => {
     );
     expect(updateDeltaCursor).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'good', consentAttemptId: conn().consentAttemptId }),
-      'd', expect.any(Date), expect.anything(),
+      null, 'd', expect.any(Date), expect.anything(),
     );
   });
 
@@ -163,8 +163,19 @@ describe('runMailboxSweep', () => {
     await runMailboxSweep();
     expect(resetDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({
       id: 'c1', consentAttemptId: conn().consentAttemptId,
-    }));
+    }), null);
     expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
+    expect(updateDeltaCursor).not.toHaveBeenCalled();
+  });
+
+  it('requests the stored resume cursor and resets it when Graph answers 410 (#8400)', async () => {
+    const stored = 'https://graph.microsoft.com/v1.0/users/x/mailFolders/inbox/messages/delta?$skiptoken=abc';
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: stored })] as any);
+    vi.mocked(listInboxDelta).mockImplementationOnce(async () => { const e: any = new Error('410'); e.status = 410; throw e; });
+
+    await runMailboxSweep();
+    expect(vi.mocked(listInboxDelta).mock.calls[0]![2]).toBe(stored);
+    expect(resetDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), stored);
     expect(updateDeltaCursor).not.toHaveBeenCalled();
   });
 
@@ -216,6 +227,33 @@ describe('runMailboxSweep', () => {
     expect(vi.mocked(markRead).mock.calls.map((c) => c[3])).toEqual([deadlineAt, deadlineAt]);
   });
 
+  it('a round that did not finish stores its resumeLink as the cursor after enqueueing (#8400)', async () => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockResolvedValueOnce({
+      messages: [{ id: 'm1' }, { id: 'm2' }],
+      deltaLink: null,
+      resumeLink: 'https://graph.microsoft.com/next-7',
+    } as any);
+
+    await runMailboxSweep();
+    expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
+    expect(updateDeltaCursor).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'c1' }), null, 'https://graph.microsoft.com/next-7', expect.any(Date), expect.any(Date),
+    );
+    expect(recordTransientPollFailure).not.toHaveBeenCalled();
+  });
+
+  it('advances the cursor with a compare-and-swap on the cursor the sweep started from', async () => {
+    const stored = 'https://graph.microsoft.com/next-7';
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: stored })] as any);
+    vi.mocked(listInboxDelta).mockResolvedValueOnce({ messages: [], deltaLink: null, resumeLink: 'https://graph.microsoft.com/next-9' } as any);
+
+    await runMailboxSweep();
+    expect(updateDeltaCursor).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'c1' }), stored, 'https://graph.microsoft.com/next-9', expect.any(Date), expect.any(Date),
+    );
+  });
+
   it('skips mark-read once the sweep budget is spent but still enqueues and advances the cursor (#8308)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
@@ -232,7 +270,7 @@ describe('runMailboxSweep', () => {
     }
     expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
     expect(markRead).not.toHaveBeenCalled();
-    expect(updateDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'delta-new', expect.any(Date), expect.any(Date));
+    expect(updateDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), null, 'delta-new', expect.any(Date), expect.any(Date));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('left messages unread'), { id: 'c1', count: 2 });
   });
 

@@ -18,8 +18,12 @@ interface MailboxConnectionDTO {
   lastPolledAt: string | null;
   lastMessageAt: string | null;
   verificationError: string | null;
-  /** Consecutive transient poll failures while still connected (#8308); 0 when the last poll succeeded. */
-  transientPollFailures: number;
+  /**
+   * Consecutive transient poll failures while still connected (#8308), parsed
+   * from the API's `transientPollFailures: { count, lastAt } | null` (null when
+   * healthy, and for Gmail rows). 0 when the API sends null.
+   */
+  transientPollFailureCount: number;
   /** Pending row whose consent attempt can no longer complete (#6936). */
   consentExpired: boolean;
 }
@@ -74,7 +78,7 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     lastPolledAt: value.lastPolledAt,
     lastMessageAt: value.lastMessageAt,
     verificationError,
-    transientPollFailures: parseTransientPollFailures(value.transientPollFailures),
+    transientPollFailureCount: parseTransientPollFailures(value.transientPollFailures),
     consentExpired,
   };
 }
@@ -289,9 +293,9 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                   {t('m365Mailbox.reauthRequired')}
                 </p>
               ) : null}
-              {c.status === 'connected' && c.transientPollFailures >= TRANSIENT_FAILURE_NOTICE_THRESHOLD ? (
+              {c.status === 'connected' && c.transientPollFailureCount >= TRANSIENT_FAILURE_NOTICE_THRESHOLD ? (
                 <p className="text-xs text-destructive" data-testid="m365-poll-failing">
-                  {t('m365Mailbox.pollFailing', { failures: c.transientPollFailures })}
+                  {t('m365Mailbox.pollFailing', { failures: c.transientPollFailureCount })}
                 </p>
               ) : null}
               {c.status === 'error' && c.verificationError ? (

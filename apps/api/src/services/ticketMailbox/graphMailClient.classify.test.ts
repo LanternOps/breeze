@@ -5,6 +5,8 @@ import {
   markRead,
   getFileAttachmentBytes,
   GRAPH_POLL_TIMEOUT_MS,
+  GRAPH_DELTA_PAGE_SIZE,
+  GRAPH_DELTA_MAX_PAGES_PER_SWEEP,
   GRAPH_POLL_SWEEP_BUDGET_MS,
   GraphSweepBudgetError,
 } from './graphMailClient';
@@ -196,7 +198,7 @@ describe('sweep budget for one mailbox (#8308)', () => {
 
   const page = (body: Record<string, unknown>) => new Response(JSON.stringify(body), { status: 200 });
 
-  it('stops paging once the budget is spent and returns no partial read', async () => {
+  it('stops paging once the budget is spent and returns the pages read with where to resume', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     let n = 0;
@@ -208,12 +210,12 @@ describe('sweep budget for one mailbox (#8308)', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const err = await listInboxDelta('tok', 'support@example.com', 'https://graph.microsoft.com/stored-delta')
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(GraphSweepBudgetError);
-    expect(classifyGraphPollError(err)).toBe('transient');
+    const result = await listInboxDelta('tok', 'support@example.com', 'https://graph.microsoft.com/stored-delta');
     // 0 s, 50 s and 100 s start a request; at 150 s the 120 s budget is spent.
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    expect(result.deltaLink).toBeNull();
+    expect(result.resumeLink).toBe('https://graph.microsoft.com/next-3');
   });
 
   it('cuts the last request\'s timeout down to what is left of the budget', async () => {
@@ -269,6 +271,70 @@ describe('sweep budget for one mailbox (#8308)', () => {
     expect(((err as Error).cause as Error).name).toBe('TimeoutError');
   });
 
+  it('a budget spent before the first page is a transient failure with nothing to resume', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => page({ value: [] })));
+    const err = await listInboxDelta('tok', 'support@example.com', null, { deadlineAt: Date.now() - 1 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphSweepBudgetError);
+    expect(classifyGraphPollError(err)).toBe('transient');
+  });
+
+  it('a many-page first sync completes across sweeps, each sweep within the budget (#8400)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const PAGES = 40;
+    const pageUrl = (i: number) => `https://graph.microsoft.com/next-${i}`;
+    const fetchMock = vi.fn(async (url: string) => {
+      // 40 s per page: three pages use the whole 120 s budget, so the fourth
+      // request is never started.
+      vi.setSystemTime(Date.now() + 40_000);
+      const i = url.startsWith('https://graph.microsoft.com/next-') ? Number(url.split('-').pop()) : 0;
+      return i + 1 < PAGES
+        ? page({ value: [{ id: `m${i}` }], '@odata.nextLink': pageUrl(i + 1) })
+        : page({ value: [{ id: `m${i}` }], '@odata.deltaLink': 'https://graph.microsoft.com/delta-final' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let sweeps = 0;
+    for (; sweeps < 100; sweeps++) {
+      const started = Date.now();
+      const result = await listInboxDelta('tok', 'support@example.com', cursor);
+      expect(Date.now() - started).toBeLessThanOrEqual(GRAPH_POLL_SWEEP_BUDGET_MS);
+      seen.push(...result.messages.map((m) => m.id));
+      if (result.deltaLink) {
+        cursor = result.deltaLink;
+        break;
+      }
+      expect(result.resumeLink).toBeDefined();
+      cursor = result.resumeLink!;
+    }
+    expect(cursor).toBe('https://graph.microsoft.com/delta-final');
+    // Every message exactly once, in order, and more than one sweep was needed.
+    expect(seen).toEqual(Array.from({ length: PAGES }, (_, i) => `m${i}`));
+    expect(sweeps).toBeGreaterThan(1);
+  });
+
+  it('asks Graph for large delta pages on every request of the round', async () => {
+    let n = 0;
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => {
+      n += 1;
+      return n === 1
+        ? page({ value: [], '@odata.nextLink': 'https://graph.microsoft.com/next-1' })
+        : page({ value: [], '@odata.deltaLink': 'https://graph.microsoft.com/delta-final' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listInboxDelta('tok', 'support@example.com', null);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Prefer).toBe(`odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}`);
+      expect(headers.Authorization).toBe('Bearer tok');
+    }
+  });
+
   it('markRead honours the sweep deadline it is given', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
     const err = await markRead('tok', 'support@example.com', 'msg-1', Date.now() - 1).catch((e: unknown) => e);
@@ -276,15 +342,39 @@ describe('sweep budget for one mailbox (#8308)', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('a delta round that never ends is treated as a spent budget, not a partial success', async () => {
+  it('a delta round that hits the per-sweep page cap resumes next sweep instead of failing', async () => {
     let n = 0;
     vi.stubGlobal('fetch', vi.fn(async () => {
       n += 1;
       return page({ value: [{ id: `m${n}` }], '@odata.nextLink': `https://graph.microsoft.com/next-${n}` });
     }));
 
+    const result = await listInboxDelta('tok', 'support@example.com', null);
+    expect(n).toBe(GRAPH_DELTA_MAX_PAGES_PER_SWEEP);
+    expect(result.messages).toHaveLength(GRAPH_DELTA_MAX_PAGES_PER_SWEEP);
+    expect(result.deltaLink).toBeNull();
+    expect(result.resumeLink).toBe(`https://graph.microsoft.com/next-${GRAPH_DELTA_MAX_PAGES_PER_SWEEP}`);
+  });
+
+  it('fails instead of resuming when Graph repeats a nextLink in the same sweep', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      n += 1;
+      // next-1, next-2, then back to next-1.
+      const next = n === 3 ? 1 : n;
+      return page({ value: [{ id: `m${n}` }], '@odata.nextLink': `https://graph.microsoft.com/next-${next}` });
+    }));
+
     const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(GraphSweepBudgetError);
-    expect(n).toBe(1000);
+    expect((err as Error).message).toMatch(/nextLink repeated/);
+    expect(classifyGraphPollError(err)).toBe('fatal');
+  });
+
+  it('fails when the next page points back at the stored cursor it started from', async () => {
+    const stored = 'https://graph.microsoft.com/next-7';
+    vi.stubGlobal('fetch', vi.fn(async () => page({ value: [{ id: 'm' }], '@odata.nextLink': stored })));
+
+    const err = await listInboxDelta('tok', 'support@example.com', stored).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/nextLink repeated/);
   });
 });
