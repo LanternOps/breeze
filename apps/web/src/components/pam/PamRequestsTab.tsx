@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Inbox } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -73,8 +73,8 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const [ruleDraft, setRuleDraft] = useState<ElevationRequest | null>(null);
 
   const fetchRequests = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
+    async (signal?: AbortSignal, { silent = false }: { silent?: boolean } = {}) => {
+      if (!silent) setLoading(true);
       setError(null);
       try {
         const params = new URLSearchParams();
@@ -112,9 +112,12 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
     [status, flowType, page, stableT],
   );
 
+  const lastTickRef = useRef(liveTick);
   useEffect(() => {
+    const silent = liveTick !== lastTickRef.current;
+    lastTickRef.current = liveTick;
     const controller = new AbortController();
-    void fetchRequests(controller.signal);
+    void fetchRequests(controller.signal, { silent });
     return () => controller.abort();
   }, [fetchRequests, liveTick]);
 

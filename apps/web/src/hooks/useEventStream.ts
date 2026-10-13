@@ -43,8 +43,8 @@ export function useEventStream(options: EventStreamOptions) {
   const connectWsRef = useRef<() => void>(() => {});
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const readyRef = useRef(false);
   const subscribedRef = useRef<Set<string>>(new Set());
-  const pendingRef = useRef<Array<{ action: string; types: string[] }>>([]);
   const retriesRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -115,8 +115,11 @@ export function useEventStream(options: EventStreamOptions) {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        if (!isCurrent()) return;
+      // Transport open precedes the server's asynchronous ticket validation.
+      // Subscriptions sent before its acknowledgement can be discarded.
+      const markReady = () => {
+        if (!isCurrent() || readyRef.current) return;
+        readyRef.current = true;
         retriesRef.current = 0;
         setConnected(true);
         optionsRef.current.onConnected?.();
@@ -124,11 +127,6 @@ export function useEventStream(options: EventStreamOptions) {
         if (subscribedRef.current.size > 0) {
           send({ action: 'subscribe', types: Array.from(subscribedRef.current) });
         }
-
-        for (const msg of pendingRef.current) {
-          send(msg);
-        }
-        pendingRef.current = [];
 
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
         pingTimerRef.current = setInterval(() => {
@@ -145,6 +143,10 @@ export function useEventStream(options: EventStreamOptions) {
           console.warn('[useEventStream] Received malformed message from server');
           return;
         }
+        if (msg.type === 'connected') {
+          markReady();
+          return;
+        }
         if (msg.type === 'event' && msg.data) {
           try {
             optionsRef.current.onEvent(msg.data as EventStreamEvent);
@@ -156,6 +158,7 @@ export function useEventStream(options: EventStreamOptions) {
 
       ws.onclose = () => {
         if (!isCurrent()) return;
+        readyRef.current = false;
         setConnected(false);
         optionsRef.current.onDisconnected?.();
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
@@ -176,20 +179,16 @@ export function useEventStream(options: EventStreamOptions) {
   const subscribe = useCallback((types: string[]) => {
     for (const t of types) subscribedRef.current.add(t);
     const msg = { action: 'subscribe' as const, types };
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
       send(msg);
-    } else {
-      pendingRef.current.push(msg);
     }
   }, [send]);
 
   const unsubscribe = useCallback((types: string[]) => {
     for (const t of types) subscribedRef.current.delete(t);
     const msg = { action: 'unsubscribe' as const, types };
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
       send(msg);
-    } else {
-      pendingRef.current.push(msg);
     }
   }, [send]);
 
@@ -198,6 +197,7 @@ export function useEventStream(options: EventStreamOptions) {
     retriesRef.current = 0;
     ticketFailuresRef.current = 0;
     setConnected(false);
+    readyRef.current = false;
     connectWs();
 
     return () => {
@@ -216,6 +216,7 @@ export function useEventStream(options: EventStreamOptions) {
         ws.close();
       }
       wsRef.current = null;
+      readyRef.current = false;
     };
   }, [connectWs]);
 

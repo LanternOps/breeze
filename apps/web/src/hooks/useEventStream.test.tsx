@@ -21,7 +21,9 @@ class MockWebSocket {
   send = vi.fn();
   close = vi.fn(() => { this.readyState = 3; this.onclose?.(); });
   constructor(public url: string) { sockets.push(this); }
-  open() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
+  openTransport() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
+  acknowledge() { this.onmessage?.({ data: JSON.stringify({ type: 'connected' }) }); }
+  open() { this.openTransport(); this.acknowledge(); }
 }
 
 function response(ticket: string) {
@@ -45,6 +47,66 @@ afterEach(() => {
 });
 
 describe('useEventStream partner scope', () => {
+  it.each(['notification.created', 'device.updated'])(
+    'restores %s subscriptions only after the replacement stream is authenticated',
+    async (type) => {
+      useEventStreamScope.getState().setPartnerId('partner-a');
+      const onEvent = vi.fn();
+      const onConnected = vi.fn();
+      const { result } = renderHook(() => useEventStream({ onEvent, onConnected }));
+      act(() => result.current.subscribe([type]));
+      await waitFor(() => expect(sockets).toHaveLength(1));
+      const oldMessage = sockets[0]!.onmessage!;
+      act(() => sockets[0]!.open());
+      act(() => useEventStreamScope.getState().setPartnerId('partner-b'));
+      await waitFor(() => expect(sockets).toHaveLength(2));
+      act(() => {
+        sockets[1]!.openTransport();
+        oldMessage({ data: JSON.stringify({ type: 'connected' }) });
+      });
+      expect(result.current.connected).toBe(false);
+      expect(sockets[1]!.send).not.toHaveBeenCalled();
+      act(() => { sockets[1]!.acknowledge(); sockets[1]!.acknowledge(); });
+      expect(onConnected).toHaveBeenCalledTimes(2);
+      expect(sockets[1]!.send).toHaveBeenCalledExactlyOnceWith(
+        JSON.stringify({ action: 'subscribe', types: [type] }),
+      );
+      const event = { type, orgId: 'org-b', payload: {}, metadata: {} };
+      act(() => sockets[1]!.onmessage?.({ data: JSON.stringify({ type: 'event', data: event }) }));
+      expect(onEvent).toHaveBeenCalledExactlyOnceWith(event);
+      act(() => result.current.unsubscribe([type]));
+      expect(sockets[1]!.send).toHaveBeenLastCalledWith(
+        JSON.stringify({ action: 'unsubscribe', types: [type] }),
+      );
+    },
+  );
+
+  it('waits for server authentication before subscribing and declaring the stream live', async () => {
+    const onConnected = vi.fn();
+    const onEvent = vi.fn();
+    const { result } = renderHook(() => useEventStream({ onEvent, onConnected }));
+    act(() => result.current.subscribe(['elevation.requested']));
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    act(() => sockets[0]!.openTransport());
+    act(() => {
+      result.current.subscribe(['elevation.approved']);
+      result.current.unsubscribe(['elevation.approved']);
+    });
+    expect(result.current.connected).toBe(false);
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(sockets[0]!.send).not.toHaveBeenCalled();
+
+    act(() => sockets[0]!.acknowledge());
+    expect(result.current.connected).toBe(true);
+    expect(onConnected).toHaveBeenCalledOnce();
+    expect(sockets[0]!.send).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({ action: 'subscribe', types: ['elevation.requested'] }),
+    );
+    const event = { type: 'elevation.requested', orgId: 'org-a', payload: {}, metadata: {} };
+    act(() => sockets[0]!.onmessage?.({ data: JSON.stringify({ type: 'event', data: event }) }));
+    expect(onEvent).toHaveBeenCalledWith(event);
+  });
+
   it('preserves the default ticket URL without a selected partner', async () => {
     renderHook(() => useEventStream({ onEvent: vi.fn() }));
     await waitFor(() => expect(sockets).toHaveLength(1));
