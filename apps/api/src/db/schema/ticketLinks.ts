@@ -8,7 +8,7 @@ export const ticketLinkTypeEnum = pgEnum('ticket_link_type', ['caused_by', 'reso
 
 /**
  * A typed link between two tickets of ONE organization (#7900, migration
- * 2026-12-26-190000). A row reads "source <link_type> target"; the inverse
+ * 2026-12-27-040000). A row reads "source <link_type> target"; the inverse
  * label is derived at read time (`ticketLinkLabel` in @breeze/shared), so a
  * link is exactly one row. `related` is symmetric and stored canonically
  * (source < target, CHECK).

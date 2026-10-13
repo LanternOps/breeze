@@ -2,7 +2,7 @@
  * ticket_links — RLS, constraint and FK isolation against real Postgres
  * (#7900, feature #8592 W02).
  *
- * Migration under test: 2026-12-26-190000-ticket-links.sql
+ * Migration under test: 2026-12-27-040000-ticket-links.sql
  *
  * Shape 1 (direct org_id, RLS auto-discovered by rls-coverage). Everything
  * runs through the real postgres.js driver as `breeze_app`, so the policy is
