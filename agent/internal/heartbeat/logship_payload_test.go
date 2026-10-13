@@ -195,6 +195,12 @@ func TestLogShipPayload_ClampsToAPIBounds(t *testing.T) {
 	attachLogShipping(&p)
 	obj := marshalLogShipping(t, &p)["logShipping"].(map[string]any)
 	assertMatchesAPIShape(t, obj)
+	if got := obj["lastError"].(string); len(got) != 160 {
+		t.Fatalf("lastError len = %d, want exactly 160", len(got))
+	}
+	if obj["queueDepth"] != float64(1_000_000) || obj["droppedLogs"] != float64(1_000_000_000) {
+		t.Fatalf("clamped to %v / %v, want the API maxima", obj["queueDepth"], obj["droppedLogs"])
+	}
 	if p.DroppedLogs != 9_000_000_000 {
 		t.Fatalf("top-level droppedLogs must stay unclamped, got %d", p.DroppedLogs)
 	}
@@ -241,10 +247,16 @@ func TestLogShipPayload_CommitDroppedOnlyAfterSuccessfulBeat(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			stubLogShippingSnapshot(t, failingSnapshot())
+			// Stateful stub: commit zeroes the counter the next snapshot reads,
+			// like the real shipper, so a commit that ran before the body was
+			// marshalled would show up as 0 at the server.
+			counter := failingSnapshot()
+			prevSnap := logShippingSnapshot
+			logShippingSnapshot = func() logging.HealthSnapshot { return counter }
+			t.Cleanup(func() { logShippingSnapshot = prevSnap })
 			commits := 0
 			prevCommit := commitDroppedLogCount
-			commitDroppedLogCount = func() { commits++ }
+			commitDroppedLogCount = func() { commits++; counter.Dropped = 0 }
 			t.Cleanup(func() { commitDroppedLogCount = prevCommit })
 
 			h := newRecoveryMarkerTestHeartbeat(&config.Config{AgentID: "agent-1", ServerURL: srv.URL, AuthToken: "t"})
@@ -264,6 +276,17 @@ func TestLogShipPayload_CommitDroppedOnlyAfterSuccessfulBeat(t *testing.T) {
 			nested := body["logShipping"].(map[string]any)["droppedLogs"]
 			if body["droppedLogs"] != float64(7) || nested != float64(7) {
 				t.Fatalf("server saw droppedLogs %v / nested %v, want pre-commit 7 / 7", body["droppedLogs"], nested)
+			}
+			// The next beat reports 0 after a committed success, and keeps the
+			// 7 for retry after a failed POST.
+			next := HeartbeatPayload{Status: "ok"}
+			attachLogShipping(&next)
+			wantNext := int64(7)
+			if tc.status == http.StatusOK {
+				wantNext = 0
+			}
+			if next.LogShipping.DroppedLogs != wantNext || next.DroppedLogs != wantNext {
+				t.Fatalf("next beat droppedLogs nested %d / top %d, want %d", next.LogShipping.DroppedLogs, next.DroppedLogs, wantNext)
 			}
 		})
 	}

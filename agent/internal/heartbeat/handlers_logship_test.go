@@ -1,9 +1,14 @@
 package heartbeat
 
 import (
+	"compress/gzip"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +213,19 @@ func TestHandleSetLogLevelCanaryLine(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			var shippedMu sync.Mutex
+			var shipped strings.Builder
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if zr, err := gzip.NewReader(r.Body); err == nil {
+					b, _ := io.ReadAll(zr)
+					shippedMu.Lock()
+					shipped.Write(b)
+					shippedMu.Unlock()
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
 			buf := &syncBuffer{}
 			logging.Init("text", "debug", buf)
 			t.Cleanup(func() { logging.Init("text", "info", nil) })
@@ -216,7 +234,7 @@ func TestHandleSetLogLevelCanaryLine(t *testing.T) {
 				overridePath = filepath.Join(t.TempDir(), logging.LevelOverrideFileName)
 			}
 			logging.InitShipper(logging.ShipperConfig{
-				ServerURL:         func() string { return "http://127.0.0.1:1" },
+				ServerURL:         func() string { return srv.URL },
 				AgentID:           "test-agent",
 				AuthToken:         secmem.NewSecureString("test-token"),
 				MinLevel:          "warn",
@@ -234,6 +252,15 @@ func TestHandleSetLogLevelCanaryLine(t *testing.T) {
 			}
 			if got := strings.Count(buf.String(), "log shipping level raised"); got != tc.wantLine {
 				t.Fatalf("canary lines = %d, want %d; log:\n%s", got, tc.wantLine, buf.String())
+			}
+			// The line must actually ship at the raised level (W5 keys on it
+			// in agent_logs, not in the local log). StopShipper drains.
+			logging.StopShipper()
+			shippedMu.Lock()
+			gotShipped := strings.Count(shipped.String(), "log shipping level raised")
+			shippedMu.Unlock()
+			if gotShipped != tc.wantLine {
+				t.Fatalf("shipped canary lines = %d, want %d", gotShipped, tc.wantLine)
 			}
 		})
 	}

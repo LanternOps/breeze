@@ -136,6 +136,8 @@ func TestHealthSnapshot_InFlightReportsPriorOutcome(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) }) // before srv.Close: a failed assertion must not deadlock it
 	s := newHealthTestShipper(srv.URL)
 
 	if !s.shipChunk(makeEntries(1)) {
@@ -156,7 +158,7 @@ func TestHealthSnapshot_InFlightReportsPriorOutcome(t *testing.T) {
 	if !during.LastAttemptAt.Equal(before.LastAttemptAt) {
 		t.Fatalf("in-flight request moved LastAttemptAt: %v -> %v", before.LastAttemptAt, during.LastAttemptAt)
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	<-done
 }
 
