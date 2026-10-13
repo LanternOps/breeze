@@ -46,6 +46,7 @@ import {
   type PoolMembershipVia,
 } from '../unassignedPool/orgType';
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } from '../ticketService';
+import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -139,6 +140,13 @@ export interface MoveDeviceOrgResult {
   alertChildRewrite: AlertChildOrgRewriteCounts | null;
   /** #3257 W05 — custom-field values re-pointed / dropped. */
   customFieldRehome: { rehomed: number; dropped: number };
+  /**
+   * #7900 W02 — ticket links the move deleted. The caller passes them to
+   * scheduleTicketLinkRemovalNotes once the move is final (never from inside
+   * the transaction body: a caller that catches a later refusal and still
+   * commits its outer transaction would otherwise note a move that rolled back).
+   */
+  removedTicketLinks: RemovedTicketLink[];
 }
 
 export async function moveDeviceOrgInTransaction(
@@ -173,13 +181,18 @@ export async function moveDeviceOrgInTransaction(
   // ticket_external_refs_ticket_org_fk and
   // partner_api_idempotency_keys_ticket_org_fk.
   //
+  // #7900 W02 adds ticket_links_source_org_fk / ticket_links_target_org_fk:
+  // breeze_cascade_device_org_id() re-stamps tickets.org_id inside the
+  // devices UPDATE, long before the child tail deletes the links of the
+  // moved tickets, so an IMMEDIATE check would 23503 first.
+  //
   // The device-org cascade trigger restamps tickets.org_id before the
   // loop below can align partner_id; defer their composite FK too.
   //
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED`,
   );
   // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
   // transaction, deliberately BEFORE the organisation FOR SHARE reads
@@ -1122,6 +1135,25 @@ export async function moveDeviceOrgInTransaction(
     sql`UPDATE ${sql.identifier('ticket_approval_requests')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
 
+  // ticket_links (#7900 W02) — TICKET_ORG_MOVE_DELETE_TABLES, the tail of the
+  // shared lock order (services/ticketOrgMoveLockOrder.ts), after
+  // ticket_approval_requests exactly as on the ticket axis. A link cannot
+  // follow a moved ticket (its counterpart may stay behind, and both composite
+  // FKs share one org_id), so every link with EITHER leg on a ticket bound to
+  // this device is deleted — including a link between two of this device's
+  // tickets (approved decision 10: delete, not re-stamp). Both FKs are
+  // deferred at the top of this transaction. The notes on the surviving
+  // tickets are written by the CALLERS after the outermost transaction
+  // commits (scheduleTicketLinkRemovalNotes), never in here: see moveTicketOrg.
+  const removedLinkRows = await tx.execute(sql`
+    DELETE FROM ticket_links
+     WHERE source_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)
+        OR target_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)
+    RETURNING org_id, source_ticket_id, target_ticket_id, link_type,
+              (source_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS source_moved,
+              (target_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS target_moved`);
+  const removedTicketLinks = removedTicketLinksFromRows(removedLinkRows);
+
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
   // core.ts): alert_correlation_groups, alert_correlation_members and
   // ai_alert_verdicts all denormalize org_id but have NO device_id
@@ -1325,5 +1357,5 @@ export async function moveDeviceOrgInTransaction(
   // earlier epochs keep their event-time site (W2, #8204).
   await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
-  return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome };
+  return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome, removedTicketLinks };
 }

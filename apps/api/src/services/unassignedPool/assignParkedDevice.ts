@@ -68,6 +68,7 @@ import {
   type IdentityCollision,
 } from './assignParkedDeviceSteps';
 import { devicePoolAssignmentEvents } from '../../db/schema';
+import { scheduleTicketLinkRemovalNotes } from '../ticketLinkMoveNotes';
 import type { DevicePoolAssignmentMethod } from '../../db/schema/devicePoolAssignmentEvents';
 
 export type ParkedAssignRefusalCode =
@@ -415,6 +416,11 @@ function afterCommit(
 ): void {
   const { item } = committed;
   const collidingDeviceIds = committed.collisions.map((c) => c.id);
+
+  // #7900 W02: notes on tickets that lost a link when the device's tickets
+  // left the holding org. Committed already; scheduled through the commit-only
+  // queue so a context still held by the caller is respected.
+  safely(item.deviceId, 'ticket link notes', () => scheduleTicketLinkRemovalNotes(committed.move.removedTicketLinks));
 
   safely(item.deviceId, 'audit', () => {
     const { customFieldRehome } = committed.move;

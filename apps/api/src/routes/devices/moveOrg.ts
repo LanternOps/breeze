@@ -35,6 +35,7 @@ import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { checkPoolMembershipTransition } from '../../services/unassignedPool/orgType';
 import { TicketServiceError } from '../../services/ticketService';
+import { scheduleTicketLinkRemovalNotes } from '../../services/ticketLinkMoveNotes';
 import {
   DevicePoolMembershipRefusedError,
   moveDeviceOrgInTransaction,
@@ -316,6 +317,11 @@ moveOrgRoutes.post(
     }
 
     const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome } = moved!;
+
+    // #7900 W02: notes on tickets that lost a link to one of this device's
+    // tickets. Registered here, once the move is final, and run only after
+    // the request transaction commits (never inside the move: see moveTicketOrg).
+    scheduleTicketLinkRemovalNotes(moved!.removedTicketLinks);
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);

@@ -150,6 +150,14 @@ vi.mock('../../services/ticketMoveApprovalGuard', async () => {
   return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
 });
 
+const { scheduleTicketLinkRemovalNotesMock } = vi.hoisted(() => ({ scheduleTicketLinkRemovalNotesMock: vi.fn() }));
+vi.mock('../../services/ticketLinkMoveNotes', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketLinkMoveNotes')>(
+    '../../services/ticketLinkMoveNotes',
+  );
+  return { ...actual, scheduleTicketLinkRemovalNotes: scheduleTicketLinkRemovalNotesMock };
+});
+
 vi.mock('../../services/pamDeviceMoveGuard', async () => {
   const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
     '../../services/pamDeviceMoveGuard',
@@ -675,6 +683,19 @@ describe('POST /devices/:id/move-org', () => {
       const claimRestamp = statements.findIndex((s) => /UPDATE\s+"?partner_api_idempotency_keys"?\s+SET org_id/.test(s));
       expect(claimDelete).toBeGreaterThan(refRestamp);
       expect(claimRestamp).toBeGreaterThan(claimDelete);
+      // #7900 W02: ticket_links is DELETED (both legs) as the tail of the
+      // shared ticket-child lock order — after the last re-stamp
+      // (ticket_approval_requests) and before the alert-axis children.
+      const approvalRestamp = statements.findIndex((s) => /UPDATE\s+"?ticket_approval_requests"?\s+SET org_id/.test(s));
+      const linkDelete = statements.findIndex((s) => /DELETE FROM ticket_links\b/.test(s));
+      const firstAlertChild = statements.findIndex((s) => s.includes(ALERT_CHILD_ORG_REWRITE_TABLES[0]!));
+      expect(approvalRestamp).toBeGreaterThan(-1);
+      expect(linkDelete).toBeGreaterThan(approvalRestamp);
+      expect(firstAlertChild).toBeGreaterThan(linkDelete);
+      expect(statements[linkDelete]).toMatch(/source_ticket_id IN \(SELECT id FROM tickets WHERE device_id = .*\)\s+OR target_ticket_id IN \(SELECT id FROM tickets WHERE device_id = /);
+      // Notes on the surviving tickets are scheduled by the route, after the
+      // move is final — never written inside the move transaction.
+      expect(scheduleTicketLinkRemovalNotesMock).toHaveBeenCalledTimes(1);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
       // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
       // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
@@ -1481,7 +1502,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1603,7 +1624,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });
