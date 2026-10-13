@@ -4,15 +4,18 @@
 // the API. Every read and write is best-effort: a missing, corrupt or
 // unreadable store means defaults, and a failed write is logged and dropped.
 //
-// Keyboard mode (text vs physical) is not remembered yet: it does not exist
-// until W6.
+// Keyboard mode (W06, #8242) is remembered per device too, and the last
+// choice becomes the default for devices that have none of their own (stored
+// under the `defaults` key).
 
 import { isViewScaling, type ViewScaling } from './displayScaling';
+import { DEFAULT_KEYBOARD_MODE, isKeyboardMode, type KeyboardMode } from './keyboardMode';
 
 export interface DevicePrefs {
   remapCmdCtrl?: boolean;
   viewScaling?: ViewScaling;
   audio?: boolean;
+  keyboardMode?: KeyboardMode;
 }
 
 /** The subset of the Tauri Store API used here, so tests can swap it. */
@@ -22,6 +25,7 @@ export interface PrefsStore {
 }
 
 const STORE_FILE = 'viewer-prefs.json';
+const DEFAULTS_KEY = 'defaults';
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 type Log = (message: string) => void;
@@ -38,6 +42,7 @@ export function sanitizeDevicePrefs(raw: unknown): DevicePrefs {
   if (typeof r.remapCmdCtrl === 'boolean') out.remapCmdCtrl = r.remapCmdCtrl;
   if (isViewScaling(r.viewScaling)) out.viewScaling = r.viewScaling;
   if (typeof r.audio === 'boolean') out.audio = r.audio;
+  if (isKeyboardMode(r.keyboardMode)) out.keyboardMode = r.keyboardMode;
   return out;
 }
 
@@ -56,6 +61,37 @@ export async function loadDevicePrefs(
   }
 }
 
+/**
+ * The keyboard mode for a device: its own choice, else the global default,
+ * else "Type what I see". Never throws.
+ */
+export async function loadKeyboardMode(
+  store: PrefsStore | null,
+  deviceId: string | undefined | null,
+  log: Log = defaultLog,
+): Promise<KeyboardMode> {
+  if (!store) return DEFAULT_KEYBOARD_MODE;
+  const device = await loadDevicePrefs(store, deviceId, log);
+  if (device.keyboardMode) return device.keyboardMode;
+  try {
+    return sanitizeDevicePrefs(await store.get(DEFAULTS_KEY)).keyboardMode ?? DEFAULT_KEYBOARD_MODE;
+  } catch (err) {
+    log(`read failed: ${err instanceof Error ? err.message : String(err)}`);
+    return DEFAULT_KEYBOARD_MODE;
+  }
+}
+
+/** Remembers the mode for the device and as the default for new devices. */
+export async function saveKeyboardMode(
+  store: PrefsStore | null,
+  deviceId: string | undefined | null,
+  mode: KeyboardMode,
+  log: Log = defaultLog,
+): Promise<void> {
+  await saveDevicePrefs(store, deviceId, { keyboardMode: mode }, log);
+  await mergeInto(store, DEFAULTS_KEY, { keyboardMode: mode }, log);
+}
+
 // Saves are read-modify-write; run them one at a time so two changes made
 // together (a scaling change and an audio toggle) cannot drop each other.
 let saveQueue: Promise<void> = Promise.resolve();
@@ -67,7 +103,10 @@ export function saveDevicePrefs(
   patch: DevicePrefs,
   log: Log = defaultLog,
 ): Promise<void> {
-  const key = devicePrefsKey(deviceId);
+  return mergeInto(store, devicePrefsKey(deviceId), patch, log);
+}
+
+function mergeInto(store: PrefsStore | null, key: string | null, patch: DevicePrefs, log: Log): Promise<void> {
   if (!store || !key) return Promise.resolve();
   const run = async () => {
     try {
