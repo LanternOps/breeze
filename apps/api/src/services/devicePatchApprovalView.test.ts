@@ -151,14 +151,14 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     expect(view.byPatchId.get(P4)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
   });
 
-  it("names no ring and auto-approves nothing when the linked ring belongs to another partner", async () => {
+  it("names no ring and excludes everything (ring_reference_invalid) when the linked ring belongs to another partner (#8186)", async () => {
     mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 }, 0, '99999999-9999-9999-9999-999999999999');
     mockEvaluatorReads([row({ patchId: P1, severity: 'critical' })]);
 
     const view = await loadDevicePatchApprovalView(DEV, ORG);
 
     expect(view.evaluation.ring).toBeNull();
-    expect(view.byPatchId.get(P1)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'ring_reference_invalid', holdUntil: null });
   });
 
   it('reports every patch as excluded (ring_reference_invalid) when the policy links an unresolvable ring (#8186)', async () => {
