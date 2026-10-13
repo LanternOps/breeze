@@ -428,7 +428,11 @@ export function buildScriptBuilderTools(
       'Run a saved script on one or more devices. The script must be saved first. Requires user approval.',
       {
         scriptId: uuid.describe('The saved script ID to execute'),
-        deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
+        // Exactly one of deviceIds / groupId (#8600); the raw-shape form cannot
+        // refine, so `toolInputSchemas.run_script` (the handler this routes to)
+        // enforces it at dispatch.
+        deviceIds: z.array(uuid).min(1).max(10).optional().describe('Target device IDs (max 10). Omit when groupId is given.'),
+        groupId: uuid.optional().describe('Saved device group UUID to run on instead of deviceIds. Resolved to its current members when approval is requested; refused above 10 devices.'),
         parameters: z.record(z.string(), z.unknown()).optional(),
         // #4888 — the same run-context pair the `run_script` handler this tool
         // dispatches to accepts. Adding fields here does NOT disturb the #4883

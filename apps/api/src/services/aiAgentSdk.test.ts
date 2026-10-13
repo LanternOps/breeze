@@ -1474,6 +1474,49 @@ describe('createSessionPreToolUse', () => {
       });
     });
 
+    // #8600 — a device-group run_script: the intent froze the group's resolved
+    // deviceIds, and the chat approver must read THAT (plus the count + id
+    // hash folded into the stored reason), never the model's `{ groupId }`.
+    it('shows the frozen resolved deviceIds, not the raw groupId, on a device-group run_script card', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Run script abcd1234...',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue(null);
+      mockInsertReturning({ id: 'exec-grp' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-grp', approvalRequestIds: ['appr-grp'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const frozenArgs = { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1', 'd-2'] };
+      const frozenReason = 'Run script abcd1234.... Device group 44444444... resolved to 2 devices (ids sha256 0123456789ab)';
+      vi.mocked(db.select).mockImplementation(((projection?: Record<string, unknown>) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue(
+              projection && 'arguments' in projection ? [{ arguments: frozenArgs, reason: frozenReason }] : [],
+            ),
+          })),
+        })),
+      })) as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('run_script', {
+        scriptId: 'abcd1234-0000-0000-0000-000000000000',
+        groupId: '44444444-4444-4444-8444-444444444444',
+      });
+
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.input).toEqual(frozenArgs);
+      expect(published.input).not.toHaveProperty('groupId');
+      expect(published.description).toBe(frozenReason);
+    });
+
     it('leaves a non-script tool\'s approval untouched — no run-context sentence, no structured field', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,

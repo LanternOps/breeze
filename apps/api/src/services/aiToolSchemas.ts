@@ -1052,11 +1052,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   run_script: z.object({
     // EXACTLY ONE of these (AI script authoring, spec §4.2). Both optional at
-    // the field level so the refinement below owns the message; the JSON
-    // schema's `required: ['deviceIds']` says the same thing to the model.
+    // the field level so the refinement below owns the message.
     scriptId: uuid.optional(),
     proposalId: uuid.optional(),
-    deviceIds: z.array(uuid).min(1).max(10),
+    // EXACTLY ONE of these too (#8600). `groupId` is a saved device group,
+    // resolved to concrete `deviceIds` when the action intent is created
+    // (actionIntents/runScriptGroupTarget.ts), so the approval pins the
+    // resolved list. A group resolving above 10 devices is refused there.
+    deviceIds: z.array(uuid).min(1).max(10).optional(),
+    groupId: uuid.optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     // Optional content pin for a library script: lowercase-hex sha256 of the
     // content in scriptVersions.sha256Content form (the `contentSha256`
@@ -1077,6 +1081,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
         code: z.ZodIssueCode.custom,
         path: ['scriptId'],
         message: 'run_script takes exactly one of scriptId or proposalId',
+      });
+    }
+    if ((data.deviceIds !== undefined) === (data.groupId !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['deviceIds'],
+        message: 'run_script takes exactly one of deviceIds or groupId',
       });
     }
     // A proposal's content is literal and its digest pins that literal content;

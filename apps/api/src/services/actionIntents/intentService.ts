@@ -1371,6 +1371,40 @@ export async function createActionIntent(
     };
   }
 
+  // #8600 (device-group targets W03): `run_script { groupId }` is resolved
+  // to concrete device ids HERE, so the approved set is the executed set. It
+  // must run before everything below that reads `input.input`: the guardrail
+  // check, the agent-policy re-check and scope assertion, the argument digest
+  // and idempotency key, the effect digest and the approver resolution. The
+  // stored arguments hold `deviceIds` only. The group id, count and a short
+  // hash of the ids are display material for the approver (reason, label and
+  // target summary), never arguments. Every intent path funnels through this
+  // function, so chat, the agent run loop and the promote route all get it.
+  // Loaded on demand (like the topology block above): the resolver's schema
+  // imports are irrelevant to every other intent.
+  let runScriptGroupNote: string | null = null;
+  if (!externalTool && input.toolName === 'run_script' && input.input.groupId !== undefined && input.input.groupId !== null) {
+    const { normalizeRunScriptGroupTarget, RunScriptGroupTargetError } = await import('./runScriptGroupTarget');
+    const groupOrg = resolveWritableToolOrgId(auth, input.orgId);
+    if (!groupOrg.orgId) {
+      throw new ActionIntentError(groupOrg.error ?? 'Organization context required', 'org_resolution_failed');
+    }
+    let normalized: Awaited<ReturnType<typeof normalizeRunScriptGroupTarget>>;
+    try {
+      normalized = await normalizeRunScriptGroupTarget(auth, input.input, groupOrg.orgId);
+    } catch (err) {
+      if (err instanceof RunScriptGroupTargetError) throw new ActionIntentError(err.message, err.code);
+      throw err;
+    }
+    runScriptGroupNote = `group ${normalized.group.groupId} -> ${normalized.group.count} device(s), ids sha256 ${normalized.group.idsHash}`;
+    input = {
+      ...input,
+      input: normalized.args,
+      reason: input.reason ? `${input.reason}. ${normalized.note}` : normalized.note,
+      ...(input.actionLabel ? { actionLabel: `${input.actionLabel}. ${normalized.note}` } : {}),
+    };
+  }
+
   const { check: guardrail, context: guardrailContext } = externalTool
     ? {
         check: {
@@ -1813,7 +1847,9 @@ export async function createActionIntent(
   // argument keys it carries (values are on the card's argument JSON).
   const targetSummary = externalTool
     ? `${input.toolName} (external tool from ${externalTool.sourceName})`
-    : buildTargetSummary(input.toolName, input.input);
+    : runScriptGroupNote
+      ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
+      : buildTargetSummary(input.toolName, input.input);
   const impactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'

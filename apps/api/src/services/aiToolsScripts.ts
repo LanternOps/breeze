@@ -21,6 +21,7 @@
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
+  actionIntents,
   devices,
   organizations,
   scripts,
@@ -244,10 +245,73 @@ function callerMayUseVerifiedScript(
 }
 
 /**
+ * #8600 (device-group targets W03): a `run_script { groupId }` call runs only
+ * as the release of an approved action intent, and executes that intent's
+ * FROZEN arguments. `createActionIntent` resolved the group to concrete
+ * `deviceIds` before the approval was requested, so the approved set is the
+ * executed set. The handler NEVER resolves a group: membership that moved
+ * after approval must not reach the run.
+ *
+ * Why the row and not the raw input: the inline chat release executes with the
+ * model's own tool input (`makeToolHandler` hands `executeTool` the same args
+ * the preToolUse gate saw), which still says `groupId`. The durable release
+ * worker already passes the row's `arguments`, which carry no `groupId` and
+ * never reach this branch.
+ *
+ * Read under a system context like the other release-time reads; the caller's
+ * own authority is re-checked (`canAccessOrg` here, and per device by
+ * `verifyDeviceAccess` in the dispatch loops below).
+ */
+async function loadFrozenGroupTargetArguments(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  actionIntentId: string | undefined,
+): Promise<{ ok: true; args: Record<string, unknown> } | { ok: false; reason: string }> {
+  const refused = (reason: string) => ({ ok: false as const, reason });
+  if (!actionIntentId) {
+    return refused('a device-group run must be approved first; it executes only as the release of its approved action');
+  }
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({
+      id: actionIntents.id,
+      orgId: actionIntents.orgId,
+      actionName: actionIntents.actionName,
+      status: actionIntents.status,
+      arguments: actionIntents.arguments,
+    })
+    .from(actionIntents)
+    .where(eq(actionIntents.id, actionIntentId))
+    .limit(1)));
+  const mismatch = 'the approved action does not match this call';
+  if (!row || row.actionName !== 'run_script' || row.status !== 'executing' || !auth.canAccessOrg(row.orgId)) {
+    return refused(mismatch);
+  }
+  const args = row.arguments && typeof row.arguments === 'object' ? row.arguments as Record<string, unknown> : null;
+  if (!args || args.groupId !== undefined) return refused(mismatch);
+  const deviceIds = args.deviceIds;
+  if (!Array.isArray(deviceIds) || deviceIds.length === 0 || !deviceIds.every((id) => typeof id === 'string')) {
+    return refused(mismatch);
+  }
+  if ((args.scriptId ?? null) !== (input.scriptId ?? null) || (args.proposalId ?? null) !== (input.proposalId ?? null)) {
+    return refused(mismatch);
+  }
+  return { ok: true, args };
+}
+
+/**
  * The run_script handler, at module scope so the proposal branch is directly
  * testable through `__testOnly.runScriptHandler`. Registered below.
  */
 const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
+  // ---- #8600: device-group target — execute the approved, frozen list -------
+  if (input.groupId !== undefined && input.groupId !== null) {
+    const frozen = await loadFrozenGroupTargetArguments(input, auth, context?.actionIntentId);
+    if (!frozen.ok) {
+      return JSON.stringify({ error: `group_target_not_released: ${frozen.reason}` });
+    }
+    input = frozen.args;
+  }
+
   // ---- AI script authoring (spec §4.2): run_script { proposalId } ----------
   if (typeof input.proposalId === 'string') {
     if (!aiScriptAuthoringEnabled()) {
@@ -790,13 +854,14 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     selfManagedDbContext: true,
     definition: {
       name: 'run_script',
-      description: "Run a saved scriptId or reviewed proposalId from propose_script on devices; never both. A pending proposalId is refused with proposal_review_pending — poll get_script_proposal until it finishes, then retry. Maintenance-window suppression is deferred, not failure. Approval is required.",
+      description: "Run a saved scriptId or reviewed proposalId from propose_script on deviceIds or one device groupId (max 10 devices); never both of either pair. A pending proposalId is refused with proposal_review_pending — poll get_script_proposal until it finishes, then retry. Maintenance-window suppression is deferred, not failure. Approval is required.",
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing library script to run' },
           proposalId: { type: 'string', description: 'UUID of a REVIEWED AI-authored proposal from propose_script; mutually exclusive with scriptId. If pending, poll get_script_proposal until done, then retry.' },
-          deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
+          deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on (max 10). Give exactly one of deviceIds or groupId.' },
+          groupId: { type: 'string', description: 'Saved device group UUID to run on instead of deviceIds. Resolved to its current members when approval is requested, and that list is what runs; refused if it exceeds 10 devices.' },
           parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
           expectedContentSha256: { type: 'string', description: 'Optional: contentSha256 from get_script_details. If the script changed, nothing runs and it returns error script_content_mismatch.' },
           // #4888 — see services/scriptRunRequest.ts. Shared with the three
@@ -804,7 +869,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           // express a run context on every surface, not just some of them.
           ...AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES
         },
-        required: ['deviceIds']
+        // Exactly one of deviceIds / groupId; toolInputSchemas.run_script
+        // enforces it, so neither is listed as required here (#8600).
+        required: []
       }
     },
     handler: runScriptHandler,

@@ -1553,9 +1553,14 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // Topology M4-D3 (#6000): the approver must read the PINNED effect —
           // the server-materialized arguments and approval text the digest
           // binds — never the model's raw input.
+          // #8600: same rule for a device-group run_script — the intent froze
+          // the group's resolved deviceIds (plus a count + id hash in its
+          // reason), and THAT is what the approver must read, not `{groupId}`.
           const pinnedCard = toolName === 'diagnose_connectivity'
-            ? await loadPinnedApprovalCard(session.orgId, intent.id)
-            : null;
+            ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run one approved topology connectivity check')
+            : toolName === 'run_script' && (input as Record<string, unknown>).groupId != null
+              ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run a script on the devices resolved from a device group')
+              : null;
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -2386,12 +2391,17 @@ export async function attachChatProposalToSession(
  */
 /**
  * The stored (immutable) arguments and approval text of a pinned-effect intent
- * (topology M4-D3). A read failure yields an EMPTY input and a fixed text —
+ * (topology M4-D3), or of a device-group run_script whose group the intent
+ * resolved and froze (#8600). A read failure yields an EMPTY input and a fixed text —
  * never the model's input — the approval stays bound to the pinned digest
  * server-side either way.
  */
-async function loadPinnedApprovalCard(orgId: string, intentId: string): Promise<{ input: Record<string, unknown>; description: string }> {
-  const fallback = { input: {}, description: 'Run one approved topology connectivity check' };
+async function loadPinnedApprovalCard(
+  orgId: string,
+  intentId: string,
+  fallbackDescription: string,
+): Promise<{ input: Record<string, unknown>; description: string }> {
+  const fallback = { input: {}, description: fallbackDescription };
   try {
     const [row] = await withDbAccessContext(
       { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
