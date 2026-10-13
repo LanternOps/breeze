@@ -326,6 +326,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'c2c/jobs.ts': { tools: ['query_c2c_jobs', 'trigger_c2c_sync'] },
   'c2c/m365Auth.ts': { exempt: 'vendor_console_admin' },
   'callerVerification.ts': { exempt: 'human_only_verification' },
+  'callerVerificationWorkstation.ts': { exempt: 'human_only_verification', note: 'Device suggestions for a technician choosing where to send a caller-verification card; registered on callerVerification.ts.' },
   'callerVerifyPublic.ts': { exempt: 'human_only_verification', note: 'Anonymous caller-verification card; the caller themself answers, never an agent.' },
   'catalog/bundles.ts': { tools: ['manage_catalog'] },
   'catalog/catalog.ts': { tools: ['search_catalog', 'get_catalog_item', 'manage_catalog'] },

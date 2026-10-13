@@ -28,7 +28,7 @@ const id = '22222222-2222-4222-8222-222222222222';
 const path = `/orgs/${org}/caller-verifications`;
 const contactPath = `/orgs/${org}/contacts/${id}`;
 const routes = [
-  ['POST', path], ['GET', `${path}/${id}`], ['POST', `${path}/${id}/cancel`], ['POST', `${path}/${id}/attest`],
+  ['POST', path], ['GET', `${path}/device-suggestions?contactId=${id}`], ['GET', `${path}/${id}`], ['POST', `${path}/${id}/cancel`], ['POST', `${path}/${id}/attest`],
   ['GET', `${contactPath}/caller-verifications`], ['GET', `${contactPath}/caller-verifications/methods`],
   ['POST', `${contactPath}/caller-verification-bindings`], ['DELETE', `${contactPath}/caller-verification-bindings/${id}`],
   ['POST', `${contactPath}/caller-verification-destinations/${id}/attest`], ['POST', `${contactPath}/caller-verifications/fence-override`],

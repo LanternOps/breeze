@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn() }));
+const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn(), suggestions: vi.fn(), prepare: vi.fn(), available: vi.fn() }));
 vi.mock('../../db', () => ({
   db: new Proxy({}, { get: (_, key) => ref.db[key] }),
   assertInTransaction: vi.fn(),
@@ -13,11 +13,13 @@ vi.mock('./rejection', () => ({ handleRejection: vi.fn() }));
 vi.mock('./gate', () => ({ fencedUntil: async () => null }));
 vi.mock('./policy', async (original) => ({ ...await original<typeof import('./policy')>(), getEffectivePolicy: ref.policy }));
 vi.mock('./subjects', () => ({ bindingsForContact: ref.bindings }));
+vi.mock('./deviceSuggestions', () => ({ deviceSuggestions: ref.suggestions }));
+vi.mock('./ports', () => ({ callerVerificationPorts: { prepare: ref.prepare, available: ref.available, deliver: vi.fn() } }));
 vi.mock('./destinations', async (original) => ({ ...await original<typeof import('./destinations')>(), currentDestination: async () => null }));
 
 import { makeDbMock } from './testing';
 import { resolveEffectivePolicy } from './policy';
-import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel, applyDecision } from './service';
+import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel, applyDecision, methodsForContact } from './service';
 import { handleRejection } from './rejection';
 import { recordEffect } from './effects';
 import type { VerificationRow, CallerVerificationActor } from './types';
@@ -33,6 +35,9 @@ beforeEach(() => {
   ref.db = state.db;
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
   ref.policy.mockResolvedValue(resolveEffectivePolicy(null, null));
+  ref.suggestions.mockReset().mockResolvedValue([]);
+  ref.prepare.mockReset().mockResolvedValue(undefined);
+  ref.available.mockReset().mockResolvedValue(false);
   ref.bindings.mockImplementation(async (_org: string, contactId: string) => [{ id: contactId, contactId, orgId: org, entraOid: contactId, entraTenantId: 'tenant', revokedAt: null }]);
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -96,10 +101,54 @@ it('a site-level manager cannot authorize another account at initiation', async 
   await expect(start(actor, { ...input, targetContactId: target, actionScope: 'disable_user' })).rejects.toMatchObject({ code: 'requester_not_authorized' });
 });
 
-it('does not advertise or start a workstation without its adapter', async () => {
-  state.results.push([contact], [contact], [contact]);
-  await expect(start(actor, { ...input, method: 'workstation', deviceId: user, username: 'caller' })).rejects.toMatchObject({ code: 'helper_outdated' });
-  expect(state.calls.filter((c) => c.name === 'insert')).toEqual([]);
+describe('workstation availability (#6354 W02)', () => {
+  const device = { id: '55555555-5555-4555-8555-555555555555', orgId: org, siteId: null, hostname: 'pc-1' };
+
+  it('advertises workstation only when one of the contact suggested devices is ready', async () => {
+    state.results.push([contact]);
+    ref.suggestions.mockResolvedValueOnce([{ deviceId: device.id, hostname: 'pc-1', username: 'alex', hasBinding: false, available: false, unavailableReason: 'helper_outdated' }]);
+    const off = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(off).toMatchObject({ available: false, unavailableReason: 'helper_outdated', tier: 1 });
+
+    state.results.push([contact]);
+    ref.suggestions.mockResolvedValueOnce([
+      { deviceId: device.id, hostname: 'pc-1', username: 'alex', hasBinding: false, available: false, unavailableReason: 'helper_outdated' },
+      { deviceId: 'd2', hostname: 'pc-2', username: 'alex', hasBinding: false, available: true },
+    ]);
+    const on = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(on).toMatchObject({ available: true });
+    expect(on).not.toHaveProperty('unavailableReason');
+    expect(ref.suggestions).toHaveBeenLastCalledWith(actor, org, user);
+  });
+
+  it('never consults suggestions when policy disables the method', async () => {
+    ref.policy.mockResolvedValue({ ...resolveEffectivePolicy(null, null), allowedMethods: ['callback_attestation'] });
+    state.results.push([contact]);
+    const row = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(row).toMatchObject({ available: false, unavailableReason: 'method_disabled' });
+    expect(ref.suggestions).not.toHaveBeenCalled();
+  });
+
+  it('refuses a workstation start with no ready suggestion and no selected device', async () => {
+    state.results.push([contact], [contact], [contact]);
+    await expect(start(actor, { ...input, method: 'workstation', username: 'alex' })).rejects.toMatchObject({ code: 'helper_outdated' });
+    expect(state.calls.filter((c) => c.name === 'insert')).toEqual([]);
+    expect(ref.prepare).not.toHaveBeenCalled();
+  });
+
+  it('lets the adapter judge a hand-picked device and fails the start when it refuses', async () => {
+    state.results.push([contact], [contact], [contact], [device], [contact], [contact], [{ count: 0 }], [{ id: user, method: 'workstation' }]);
+    ref.prepare.mockRejectedValueOnce(Object.assign(new Error('No compatible console helper'), { code: 'helper_outdated' }));
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'helper_outdated' });
+    expect(ref.prepare).toHaveBeenCalledWith(expect.objectContaining({ method: 'workstation' }), null);
+  });
+
+  it('still refuses a hand-picked device for any other unavailability', async () => {
+    ref.policy.mockResolvedValue({ ...resolveEffectivePolicy(null, null), allowedMethods: ['callback_attestation'] });
+    state.results.push([contact], [contact], [contact]);
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'method_disabled' });
+    expect(ref.prepare).not.toHaveBeenCalled();
+  });
 });
 
 it('creates a callback row and returns its initiator secrets', async () => {

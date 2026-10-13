@@ -37,6 +37,7 @@ import { callerVerificationPorts as ports } from './ports';
 import { fencedUntil } from './gate';
 import { recordEffect } from './effects';
 import { handleRejection } from './rejection';
+import { deviceSuggestions } from './deviceSuggestions';
 
 // ---------------------------------------------------------------------------
 // Cross-wave contracts (fixed by the index plan)
@@ -201,7 +202,11 @@ export async function methodsForContact(
     else if (!p.allowedMethods.includes(method)) unavailableReason = 'method_disabled';
     else if (actionScope !== 'any' && !bindings.some((r) => !!r.entraOid)) unavailableReason = 'no_binding';
     else if (kind && (!destination || !normalizeDestination(kind, contact[kind]))) unavailableReason = 'no_destination';
-    else if (method !== 'callback_attestation' && !(await ports.available(method, orgId))) unavailableReason = method === 'workstation' ? 'helper_outdated' : 'method_disabled';
+    // W02: workstation readiness is per device + OS user, so the contact-level
+    // answer aggregates the contact's device suggestions (any one ready).
+    // start() re-checks the device the technician actually selected.
+    else if (method === 'workstation' && !(await deviceSuggestions(actor, orgId, contactId)).some((d) => d.available)) unavailableReason = 'helper_outdated';
+    else if (method !== 'callback_attestation' && method !== 'workstation' && !(await ports.available(method, orgId))) unavailableReason = 'method_disabled';
     rows.push({ method, available: !unavailableReason, ...tier, ...(unavailableReason ? { unavailableReason } : {}) });
   }
   return rows;
@@ -269,7 +274,11 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
   }
   const methods = await methodsForContact(actor, orgId, contactId, input.actionScope);
   const method = methods.find((m) => m.method === input.method)!;
-  if (!method.available) throw new Invalid(method.unavailableReason!, 'Method unavailable');
+  // A technician may pick a workstation that is not among the suggestions;
+  // then the aggregate readiness does not apply and the workstation adapter
+  // (ports.prepare) checks that exact device + OS user instead.
+  const selectedWorkstation = input.method === 'workstation' && !!input.deviceId && method.unavailableReason === 'helper_outdated';
+  if (!method.available && !selectedWorkstation) throw new Invalid(method.unavailableReason!, 'Method unavailable');
 
   let ticket: typeof tickets.$inferSelect | undefined;
   if (p.requireTicket && !input.ticketId) throw new Invalid('ticket_required', 'A ticket is required');
