@@ -295,6 +295,7 @@ import { registerTopologyPhysicalAuthorities } from './services/topology/physica
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { getClusterCacheBus } from './services/clusterCacheBus';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
@@ -1475,6 +1476,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownAgentCommandRelayWorker,
       ],
     },
+    // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
+    { name: 'cluster-cache-bus', tasks: [() => getClusterCacheBus().stop()] },
     // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
     { name: 'eventbus', tasks: [async () => getEventBus().close()] },
     // 5. The ONLY owner of the Redis quits.
@@ -1907,6 +1910,12 @@ async function bootstrap(): Promise<void> {
   // was disconnected or re-keyed/re-pointed (on any replica) since it was
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
+
+  // W05 (#8144): subscribe to cluster cache invalidations before serving, so a
+  // write on another instance reaches this one's hot-path caches. Bounded at
+  // 1 s and never throws; without Redis the caches stay TTL-only.
+  const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
+  console.log(`[clusterCache] subscriber ${clusterCacheOutcome}`);
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.
