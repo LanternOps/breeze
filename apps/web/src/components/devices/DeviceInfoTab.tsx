@@ -287,9 +287,9 @@ function LogShippingRow({ logShipping }: { logShipping: DeviceInfo["logShipping"
           reason = t("deviceInfoTab.logShipping.reason.unspecified");
       }
     }
-    const since = logShipping?.failingSince
-      ? new Date(logShipping.failingSince).toLocaleDateString()
-      : "—";
+    const sinceDate = logShipping?.failingSince ? new Date(logShipping.failingSince) : null;
+    const since =
+      sinceDate && !Number.isNaN(sinceDate.getTime()) ? sinceDate.toLocaleDateString() : "—";
     tooltip = t("deviceInfoTab.logShipping.tooltip.failing", { since, reason });
   } else {
     tooltip =

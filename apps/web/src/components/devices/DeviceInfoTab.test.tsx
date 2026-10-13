@@ -767,7 +767,8 @@ describe('DeviceInfoTab — log shipping health line (#8609)', () => {
     load({ logShipping: { state: 'failing', failingSince: '2026-10-01T00:00:00.000Z', lastError: 'http 503' } });
     await renderLoaded();
     const chip = await screen.findByTestId('log-shipping-health');
-    expect(chip.getAttribute('title')).toMatch(/503/);
+    expect(chip.getAttribute('title')).toContain('HTTP 503');
+    expect(chip.getAttribute('title')).not.toContain('http 503');
   });
 
   it('never renders raw text for an unrecognized lastError', async () => {
@@ -783,6 +784,41 @@ describe('DeviceInfoTab — log shipping health line (#8609)', () => {
     expect(chip.getAttribute('title')).toMatch(/unspecified/i);
     expect(container.innerHTML).not.toContain('10.1.2.3');
     expect(container.innerHTML).not.toContain('boom');
+  });
+
+  it.each([
+    ['timeout', /request timed out/i],
+    ['dns', /could not be resolved/i],
+    ['connection refused', /connection was refused/i],
+    ['tls', /secure connection failed/i],
+    ['auth rejected', /rejected the agent credentials/i],
+    ['url unresolved', /address could not be determined/i],
+    ['other', /another upload error/i],
+  ])('maps lastError %s to its own localized reason', async (raw, expected) => {
+    load({ logShipping: { state: 'failing', failingSince: '2026-10-01T00:00:00.000Z', lastError: raw } });
+    await renderLoaded();
+    const title = (await screen.findByTestId('log-shipping-health')).getAttribute('title') ?? '';
+    expect(title).toMatch(expected);
+    expect(title).not.toMatch(new RegExp(`Reason: ${raw}`, 'i'));
+    expect(title).not.toMatch(/unspecified/i);
+  });
+
+  it.each(['http 5xx', 'http 99999', 'http 50', 'http 503 ', 'HTTP 503', 'http 503\nx'])(
+    'falls back to unspecified for malformed http reason %j',
+    async (raw) => {
+      load({ logShipping: { state: 'failing', failingSince: '2026-10-01T00:00:00.000Z', lastError: raw } });
+      await renderLoaded();
+      const title = (await screen.findByTestId('log-shipping-health')).getAttribute('title') ?? '';
+      expect(title).toMatch(/unspecified/i);
+    },
+  );
+
+  it('shows a dash instead of "Invalid Date" for a malformed failingSince', async () => {
+    load({ logShipping: { state: 'failing', failingSince: 'garbage', lastError: 'timeout' } });
+    await renderLoaded();
+    const title = (await screen.findByTestId('log-shipping-health')).getAttribute('title') ?? '';
+    expect(title).not.toContain('Invalid Date');
+    expect(title).toContain('since —');
   });
 
   it('falls back to unspecified when failing with no lastError', async () => {
