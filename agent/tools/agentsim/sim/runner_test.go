@@ -53,6 +53,40 @@ func TestRunEnrollsOnceThenReusesTheStore(t *testing.T) {
 	}
 }
 
+func TestRunWithoutAStormHasNoStormSections(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := runnerConfig(f, t.TempDir())
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(rep)
+	for _, k := range []string{`"timeline"`, `"pool"`, `"storm"`} {
+		if strings.Contains(string(data), k) {
+			t.Fatalf("%s present in a plain run (W07 reads this schema; additive and omitted)", k)
+		}
+	}
+}
+
+// A storm run registers every agent socket with the hub and runs the
+// scheduler: the internal drop-sockets action closes them all.
+func TestRunStormDropsEverySocket(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := runnerConfig(f, t.TempDir())
+	cfg.Commander.PerMinute = 0
+	cfg.Duration, cfg.Warmup = 3*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{800 * ms}, Recovery: Duration{time.Second},
+		Start: []Action{{Internal: ActionDropSockets}}}}}
+	cfg.StormPreWindow = 300 * ms
+	cfg.TimelineStep = 100 * ms
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.count(RouteWSUpgrade); got < 10 {
+		t.Fatalf("upgrades %d: 5 agents must each dial, be dropped, and redial", got)
+	}
+}
+
 func TestRunRefusesAShortStoreWithoutAKey(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := runnerConfig(f, t.TempDir())
