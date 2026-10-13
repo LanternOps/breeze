@@ -38,6 +38,8 @@ type fakeAPI struct {
 	pingEvery   time.Duration
 	nextAgent   int
 	nextCommand int
+	// holdHeartbeat, when set, blocks every heartbeat until it is closed.
+	holdHeartbeat chan struct{}
 }
 
 type fakeSocket struct {
@@ -172,6 +174,12 @@ func (f *fakeAPI) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := pathSegment(r.URL.Path, 3)
 	f.mu.Lock()
+	hold := f.holdHeartbeat
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	f.mu.Lock()
 	cmds := f.pending[agentID]
 	delete(f.pending, agentID)
 	f.mu.Unlock()
@@ -294,6 +302,11 @@ func (f *fakeAPI) pongs() int                   { f.mu.Lock(); defer f.mu.Unlock
 func (f *fakeAPI) setRejectWS(v bool)           { f.mu.Lock(); f.rejectWS = v; f.mu.Unlock() }
 func (f *fakeAPI) setPingEvery(d time.Duration) { f.mu.Lock(); f.pingEvery = d; f.mu.Unlock() }
 func (f *fakeAPI) setEnroll429(n int)           { f.mu.Lock(); f.enroll429 = n; f.mu.Unlock() }
+func (f *fakeAPI) setHoldHeartbeat(c chan struct{}) {
+	f.mu.Lock()
+	f.holdHeartbeat = c
+	f.mu.Unlock()
+}
 func (f *fakeAPI) socketFor(agentID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

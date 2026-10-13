@@ -122,12 +122,26 @@ func (a *Agent) send(ctx context.Context, method, path string, payload any) (*ht
 		headers.Set("Content-Type", "application/json")
 	}
 	resp, err := httputil.Do(withLogicalRequest(ctx), a.client, method, a.cfg.ServerURL+path, body, headers, a.cfg.Retry)
+	a.recordOutcome(ctx, RouteKey(method, path), resp, err)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	return resp, data, err
+}
+
+// recordOutcome records one logical request's final result, unless the run's
+// own context cut it off (run end is not a failure, as in recordingTransport).
+func (a *Agent) recordOutcome(ctx context.Context, route string, resp *http.Response, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	a.rec.ObserveOutcome(route, time.Now(), outcomeOK(route, status, err))
 }
 
 func (a *Agent) sendAsync(ctx context.Context, method, action string, payload any) {
@@ -201,6 +215,7 @@ func (a *Agent) heartbeat(ctx context.Context) int {
 		return 0
 	}
 	if resp.StatusCode == http.StatusOK {
+		a.rec.HeartbeatOK(a.identity().Index, time.Now())
 		var hr heartbeat.HeartbeatResponse
 		if json.Unmarshal(body, &hr) == nil {
 			for _, c := range hr.Commands {
@@ -282,7 +297,9 @@ func (a *Agent) unifiLoop(ctx context.Context) {
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+a.identity().AuthToken)
-		if resp, err := a.client.Do(req); err == nil {
+		resp, err := a.client.Do(req)
+		a.recordOutcome(ctx, RouteUnifi, resp, err)
+		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}

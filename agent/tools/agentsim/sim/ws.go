@@ -109,8 +109,10 @@ func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) {
 	s.conn = conn
 	s.mu.Unlock()
 	s.connected.Store(true)
+	rec.SocketUp()
 	stop := make(chan struct{})
 	defer func() {
+		rec.SocketDown()
 		close(stop)
 		s.connected.Store(false)
 		s.mu.Lock()

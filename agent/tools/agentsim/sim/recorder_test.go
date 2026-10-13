@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -60,6 +61,64 @@ func TestRecordingTransportIgnoresRequestsCancelledByTheRunEnding(t *testing.T) 
 	}
 	if st := rec.routes[RouteUnifi]; st != nil && (st.transportErrors != 0 || st.attempts != 0) {
 		t.Fatalf("a request cancelled by the run ending was recorded: %+v", st)
+	}
+}
+
+func TestRecorderFeedsTheTimelineOutsideTheSteadyWindow(t *testing.T) {
+	start := time.Now()
+	rec := NewRecorder("t", start, start.Add(time.Hour), start.Add(2*time.Hour)) // window far away
+	rec.EnableTimeline(time.Second, 10*time.Second)
+	rec.ObserveHTTP(RouteHeartbeat, true, start.Add(time.Second), 30*ms, 503, nil)
+	rec.ObserveOutcome(RouteHeartbeat, start.Add(2*time.Second), false)
+	rec.ObserveOutcome(RouteCrawlConfig, start.Add(2*time.Second), true)
+	rec.WSConnected(true, 10*ms)
+	b := rec.timeline.Buckets()
+	if b[1].Attempts503 != 1 || b[2].HeartbeatsLost != 1 || b[2].RequestsLost != 1 {
+		t.Fatalf("timeline not fed outside the window: %+v %+v", b[1], b[2])
+	}
+	var connects uint64
+	for _, x := range b {
+		connects += x.WSConnects
+	}
+	if connects != 1 {
+		t.Fatalf("ws connects on the timeline %d, want 1", connects)
+	}
+}
+
+func TestOutcomeFromResponse(t *testing.T) {
+	cases := []struct {
+		route  string
+		status int
+		err    error
+		want   bool
+	}{
+		{RouteHeartbeat, 200, nil, true},
+		{RouteHeartbeat, 503, nil, false},
+		{RouteHeartbeat, 0, errors.New("reset"), false},
+		{RouteCrawlConfig, 401, nil, true}, // workspace module off (README)
+		{RouteCrawlConfig, 404, nil, true},
+		{RouteSoftware, 429, nil, false},
+	}
+	for _, c := range cases {
+		if got := outcomeOK(c.route, c.status, c.err); got != c.want {
+			t.Errorf("%s %d %v: got %v", c.route, c.status, c.err, got)
+		}
+	}
+}
+
+func TestHeartbeatGapIsTimeBetweenSuccesses(t *testing.T) {
+	start := time.Now()
+	rec := NewRecorder("t", start, start, start.Add(time.Hour))
+	rec.EnableTimeline(time.Second, 200*time.Second)
+	rec.HeartbeatOK(7, start.Add(10*time.Second))
+	rec.HeartbeatOK(7, start.Add(80*time.Second))
+	rec.HeartbeatOK(8, start.Add(81*time.Second)) // another agent's first beat: no gap
+	b := rec.timeline.Buckets()
+	if b[80].MaxHeartbeatGapS != 70 || b[81].MaxHeartbeatGapS != 0 {
+		t.Fatalf("gap buckets: %v / %v", b[80].MaxHeartbeatGapS, b[81].MaxHeartbeatGapS)
+	}
+	if got := rec.OpenGaps(start.Add(150 * time.Second)); got != 70 {
+		t.Fatalf("open gap at run end %v, want 70 (agent 7 silent since 80 s)", got)
 	}
 }
 

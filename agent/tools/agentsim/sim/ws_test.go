@@ -22,6 +22,29 @@ func runAgent(t *testing.T, f *fakeAPI, mutate func(*Config)) (*Agent, Identity,
 	return a, id, rec, cancel
 }
 
+func runAgentWithTimeline(t *testing.T, f *fakeAPI) (*Agent, Identity, *Recorder, context.CancelFunc) {
+	t.Helper()
+	cfg := testConfig(f, t.TempDir())
+	id := f.preEnroll(0)
+	rec := newTestRecorder()
+	rec.EnableTimeline(time.Second, time.Minute)
+	a := NewAgent(&cfg, rec, id, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	done := make(chan struct{})
+	go func() { a.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return a, id, rec, cancel
+}
+
+func TestLiveGaugeFollowsTheSocket(t *testing.T) {
+	f := newFakeAPI(t)
+	_, _, rec, _ := runAgentWithTimeline(t, f)
+	eventually(t, 2*time.Second, func() bool { return rec.timeline.live.Load() == 1 }, "gauge never rose to 1")
+	f.setRejectWS(true)
+	f.dropSockets()
+	eventually(t, time.Second, func() bool { return rec.timeline.live.Load() == 0 }, "gauge did not fall after the drop")
+}
+
 func TestWSCommandIsAnsweredOverTheSocket(t *testing.T) {
 	f := newFakeAPI(t)
 	_, id, _, _ := runAgent(t, f, nil)
