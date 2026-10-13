@@ -105,7 +105,7 @@ describe('SiteMoveSuggestion', () => {
     await waitFor(() => expect(screen.getByTestId('topology-suggestion-site-changed')).toBeInTheDocument());
     expect(screen.getByTestId('topology-suggestion-site-changed').textContent).toBe('This device was moved by someone else — reload to see its current site');
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'This device was moved by someone else — reload to see its current site' }));
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledOnce(); // stale presence is refetched
   });
 
   it('a 401 is left to the auth redirect: no toast, no refetch', async () => {

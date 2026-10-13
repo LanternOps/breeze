@@ -164,6 +164,28 @@ describe('PATCH /devices/:id site-move guard (real Postgres)', () => {
     expect(presence).toHaveLength(0);
   });
 
+  it.each([
+    ['the presence row is stale', (id: string) => sql`UPDATE topology_device_presence SET fresh_until = now() - interval '1 minute' WHERE device_id = ${id}::uuid`],
+    ['the presence row is from an older evaluation', (id: string) => sql`UPDATE topology_device_presence SET fingerprint_version = 2 WHERE device_id = ${id}::uuid`],
+    ['the device was confirmed since', (id: string) => sql`UPDATE devices SET site_assignment_confirmed_at = now() WHERE id = ${id}::uuid`],
+  ])('a topology_suggestion move still moves but records not_eligible when %s (real SQL)', async (_name, change) => {
+    await seedSuggestion();
+    await getTestDb().execute(change(f.deviceId));
+    const moved = await patch(f.token, f.deviceId, { siteId: f.siteB, expectedSiteId: f.siteA, siteMoveTrigger: 'topology_suggestion' });
+    expect(moved.status).toBe(200);
+    const [audit] = await waitForAudits(f.deviceId, 1);
+    expect(audit!.details).toMatchObject({ trigger: 'topology_suggestion', suggestionState: 'not_eligible' });
+  });
+
+  it('site-assignment confirmation: another org gets 404 and nothing is written', async () => {
+    const other = await setupTestEnvironment({ scope: 'organization' });
+    const token = await assuredToken(other);
+    const res = await app.request(`/devices/${f.deviceId}/site-assignment-confirmation`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(404);
+    const [row] = (await getTestDb().execute(sql`SELECT site_assignment_confirmed_at AS c FROM devices WHERE id = ${f.deviceId}::uuid`)) as unknown as { c: unknown }[];
+    expect(row!.c).toBeNull();
+  });
+
   it('a forged evidence key is a 400 and moves nothing', async () => {
     await seedSuggestion();
     const res = await patch(f.token, f.deviceId, { siteId: f.siteB, expectedSiteId: f.siteA, siteMoveTrigger: 'topology_suggestion', evidence: { days: 30 } });

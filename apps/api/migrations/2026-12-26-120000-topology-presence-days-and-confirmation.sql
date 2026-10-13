@@ -10,7 +10,7 @@
 -- SECURITY DEFINER one elects system scope in-body and restores the caller's, as W2's triggers do).
 
 -- ---------------------------------------------------------------------------
--- Dismissal (S§11): a confirmed assignment suppresses suggestions until the device moves or an admin clears
+-- Dismissal (S§11): a confirmed assignment suppresses suggestions until the device moves or a user with devices:write clears
 -- it. No expiry (owner decision Q2). The actor lives in the audit log, not in a column.
 -- ---------------------------------------------------------------------------
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS site_assignment_confirmed_at timestamptz;
@@ -109,7 +109,8 @@ END $$;
 -- on an ORG change, delete the device's day rows first. They name source-org sites through composite
 -- (x, org_id) FKs, and the AFTER trigger breeze_cascade_device_org_id() re-stamps org_id on every device-child
 -- table, which would 23503 on assigned_site_id (the same reason W2 deletes the presence row here). A same-org
--- site move keeps them: they record the historical assignment, and eligibility ignores rows of a previous one.
+-- site move keeps them: they record the historical assignment, and eligibility counts only rows recorded under the
+-- device's current assigned site.
 -- Skipped while the source org is fenced for a merge: a merge repoints devices, sites and these rows to the
 -- survivor together under deferred constraints (orgMergeRegistry REPOINT_TABLES), so the history survives.
 -- Still writes nothing on devices and never RAISEs.

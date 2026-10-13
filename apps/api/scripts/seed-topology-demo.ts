@@ -430,6 +430,10 @@ async function seedPresenceHistory(orgId: string, deviceIds: Map<string, string>
     ORDER BY d.hostname`), 'demo suggestions');
   log(`presence: evaluated ${first.status}/${second.status} (coverage ${second.coverage}); ${rows.length} synthetic day rows; `
     + `suggestions: ${suggested.map((r) => `${r.hostname} (${r.days} days)`).join(', ') || 'none'}`);
+  // The demo exists to show the suggestions: fail loudly rather than leave a demo that looks seeded but shows none.
+  if (second.status !== 'evaluated' || suggested.length !== 2) {
+    throw new Error(`presence demo: expected 2 suggestions after evaluation, got ${suggested.length} (status ${second.status}, coverage ${second.coverage})`);
+  }
 }
 
 // -------------------------------------------------------------- keep fresh ---

@@ -269,6 +269,17 @@ describe('presence visibility — cross-site leak tests', () => {
     expect(entry(onA, 'MIS2')!.suggestion).toBeNull();
   });
 
+  it('a stored suggestion on an expired or older-version row is never emitted', async () => {
+    await suggest('MIS1', f.siteB);
+    await suggest('MIS2', f.siteB);
+    await getTestDb().execute(sql`UPDATE topology_device_presence SET fresh_until = now() - interval '1 minute' WHERE device_id = ${f.ids.MIS1!}::uuid`);
+    await getTestDb().execute(sql`UPDATE topology_device_presence SET fingerprint_version = fingerprint_version - 1 WHERE device_id = ${f.ids.MIS2!}::uuid`);
+    const onA = await body(f.users.both.token, f.siteA);
+    for (const key of ['MIS1', 'MIS2']) expect(entry(onA, key), key).toMatchObject({ state: 'unknown', reason: 'not_current', suggestion: null });
+    const onB = await body(f.users.both.token, f.siteB);
+    expect(onB.visitors.filter((v) => v.suggestion)).toEqual([]);
+  });
+
   it('site header suggestion count counts only visible', async () => {
     await suggest('MIS1', f.siteB);
     await suggest('LAP', f.siteA);

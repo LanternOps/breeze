@@ -12,7 +12,8 @@ import { formatDate } from '../../lib/dateTimeFormat';
  *    (409 if someone else moved it first) and siteMoveTrigger 'topology_suggestion'; the server derives the evidence.
  *  - "Keep at <A>": records the confirmation (PUT …/site-assignment-confirmation); nothing moves.
  *  - Confirmed device: "Suggestions off" with "Turn on" (DELETE).
- * Both actions need devices:write (`canMove`); the routes re-check it, MFA and both sites. Every mutation goes through
+ * Both actions need devices:write (`canMove`); the routes re-check it and MFA, plus both sites for a move and the device's
+ * site for "Keep" / "Turn on". Every mutation goes through
  * runAction. The API only sends a suggestion the viewer may see (both sites), so this never names a hidden site.
  * Copy never says "always" or "away" (S§10.3).
  */
@@ -62,7 +63,8 @@ export default function SiteMoveSuggestion({ deviceId, deviceName, assignedSite,
     try { await action(); setConfirming(false); onChanged(); }
     catch (cause) {
       // Someone else moved the device (or the confirmation raced a move): the suggestion no longer applies.
-      if (cause instanceof ActionError && cause.status === 409 && (cause.body as { error?: unknown } | undefined)?.error === 'device_site_changed') setMoved(true);
+      // The presence shown is stale: refetch so the roster and header counts catch up too.
+      if (cause instanceof ActionError && cause.status === 409 && (cause.body as { error?: unknown } | undefined)?.error === 'device_site_changed') { setMoved(true); onChanged(); }
       handleActionError(cause, fallback);
     }
     finally { setBusy(false); }

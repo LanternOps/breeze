@@ -185,7 +185,7 @@ const isoOf = (value: string | Date) => new Date(value).toISOString();
 
 /**
  * S§10.2 for the evaluated devices. Only devices currently visiting a uniquely anchored site can be eligible, so
- * only their day rows (last SUGGESTION_READ_DAYS days, one statement per batch) and confirmations are read.
+ * only their day rows (last SUGGESTION_READ_DAYS days) and confirmations are read, two statements per batch of 1,000.
  * Returns deviceId -> suggestion (absent = not eligible).
  */
 async function computeSuggestions(tx: Tx, orgId: string, drafts: PresenceDraft[], fingerprints: FingerprintDraft[],

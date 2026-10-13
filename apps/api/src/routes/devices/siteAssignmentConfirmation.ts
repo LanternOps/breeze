@@ -35,9 +35,9 @@ async function setConfirmation(c: Context, confirmed: boolean) {
     .where(and(eq(devices.id, device.id), eq(devices.siteId, device.siteId)))
     .returning({ confirmedAt: devices.siteAssignmentConfirmedAt });
   if (!row) return c.json({ error: 'device_site_changed' as const }, 409);
-  // Re-evaluate the org soon (the worker's 30 s debounce) rather than at the hourly pass: "Keep at" clears the stored
-  // suggestion, and "Turn on" brings an eligible one back, within a minute or so. Same RLS context; only an existing
-  // state row is touched (an org never evaluated has no suggestions to change). Keeps the first dirty_at stamp.
+  // Re-evaluate the org soon (30 s debounce, 60 s tick: up to ~90 s) rather than at the hourly pass: "Keep at" clears the
+  // stored suggestion, and "Turn on" brings an eligible one back. Same RLS context; only an existing state row is touched
+  // (an org with no state row has never been evaluated, so it has no suggestions to change). Keeps the first dirty_at stamp.
   await db.execute(sql`UPDATE topology_org_presence_state SET dirty_at = coalesce(dirty_at, now()), dirty_seq = dirty_seq + 1, updated_at = now()
     WHERE org_id = ${device.orgId}::uuid`);
 

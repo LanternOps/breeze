@@ -155,6 +155,18 @@ describe('wrong-site suggestions (S§10.2)', () => {
     expect(device!.site_id).toBe(f.siteA);
   });
 
+  it('rule 6: once a second site declares the prefix, the suggestion is not stored', async () => {
+    const f = await scenario();
+    const now = new Date();
+    await seedVisits(f, 'MIS1', 8, now);
+    await evaluateOrgPresence(f.orgId, now);
+    expect(await suggestionOf(f.ids.MIS1!)).toMatchObject({ suggested_site_id: f.siteB });
+    // Main Office also declares Lakeside's prefix: ambiguous, so Lakeside is no longer uniquely anchored.
+    await f.scoped(() => getTestDb().execute(sql`INSERT INTO network_baselines (org_id, site_id, subnet) VALUES (${f.orgId}::uuid, ${f.siteA}::uuid, '10.1.5.0/24')`));
+    await evaluateOrgPresence(f.orgId, new Date(now.getTime() + 5 * 60_000));
+    expect(await suggestionOf(f.ids.MIS1!)).toMatchObject({ suggested_site_id: null });
+  });
+
   it('a suggestion stops being stored once it is no longer eligible', async () => {
     const f = await scenario();
     const now = new Date();
