@@ -20,7 +20,7 @@ const MODULES = [
   'src/routes/devices/siteAssignmentConfirmation.ts',
   'scripts/seed-topology-demo.lib.ts',
   'migrations/2026-12-25-140000-topology-presence-read-model.sql',
-  'migrations/2026-12-26-190000-topology-presence-days-and-confirmation.sql',
+  'migrations/2026-12-27-000000-topology-presence-days-and-confirmation.sql',
 ];
 
 /** Every SET clause of an UPDATE on devices, up to its WHERE/RETURNING/statement end. */
