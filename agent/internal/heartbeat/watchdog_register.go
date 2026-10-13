@@ -48,10 +48,15 @@ func runWatchdogInstallCommand(timeout time.Duration, name string, args ...strin
 	if err == nil {
 		return nil
 	}
-	if len(out) > 4096 {
-		out = out[len(out)-4096:]
+	// The output is our own (verified) watchdog binary's installer text — no
+	// download URLs — and is the only diagnostic when the install fails, so
+	// its tail goes to a shipped Warn line.
+	if len(out) > 512 {
+		out = out[len(out)-512:]
 	}
-	log.Debug("watchdog service install output", "output", string(out))
+	if len(out) > 0 {
+		log.Warn("watchdog service install failed", "outputTail", string(out))
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("watchdog service install timed out after %s", timeout)
 	}
@@ -59,5 +64,7 @@ func runWatchdogInstallCommand(timeout time.Duration, name string, args ...strin
 	if errors.As(err, &exitErr) {
 		return fmt.Errorf("watchdog service install exited with status %d", exitErr.ExitCode())
 	}
-	return errors.New("watchdog service install could not be started")
+	// A start failure (ENOENT, EACCES, noexec mount, wrong-arch binary) is a
+	// path plus an errno — no URL — and is what an operator needs to fix it.
+	return fmt.Errorf("watchdog service install could not be started: %w", err)
 }

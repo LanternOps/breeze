@@ -74,12 +74,29 @@ type watchdogEnsureState struct {
 	now         func() time.Time
 	rnd         func() float64
 
-	sweepOnce sync.Once
+	mu              sync.Mutex
+	report          *WatchdogInstallReport
+	corruptWarned   bool
+	unknownWarned   bool
+	optOutErrWarned bool
+}
 
-	mu            sync.Mutex
-	report        *WatchdogInstallReport
-	corruptWarned bool
-	unknownWarned bool
+// optedOut reports the operator opt-out, failing closed. A marker that cannot
+// be stat'ed reads as opted out (an ambiguous state must not trigger a
+// privileged install), but the cause is logged once so an I/O or permission
+// fault is not mistaken for operator intent.
+func (e *watchdogEnsureState) optedOut() bool {
+	optedOut, err := e.store.OptOutState()
+	if err != nil {
+		e.mu.Lock()
+		warn := !e.optOutErrWarned
+		e.optOutErrWarned = true
+		e.mu.Unlock()
+		if warn {
+			log.Warn("watchdog opt-out marker could not be checked; treating the watchdog as opted out", "error", err.Error())
+		}
+	}
+	return optedOut
 }
 
 // EnableWatchdogEnsure wires the production Ensure seams. Called once from the
@@ -217,7 +234,7 @@ func (h *Heartbeat) ensureMissingWatchdog(e *watchdogEnsureState, version string
 		e.setReport(&WatchdogInstallReport{State: watchdogInstallGaveUp, LastErrorClass: string(watchdoginstall.ClassDevBuild)})
 		return
 	}
-	if e.store.OptedOut() {
+	if e.optedOut() {
 		e.setReport(&WatchdogInstallReport{State: watchdogInstallOptedOut})
 		return
 	}
@@ -270,13 +287,21 @@ func (h *Heartbeat) ensureMissingWatchdog(e *watchdogEnsureState, version string
 	// or another process may have spent the attempt.
 	if s := e.detect(); s != watchdoginstall.StatusMissing {
 		if s == watchdoginstall.StatusRegistered && e.waitRunning(0) {
-			_ = e.store.Reset()
+			if rerr := e.store.Reset(); rerr != nil {
+				log.Warn("could not clear watchdog install retry state", "error", rerr.Error())
+			}
 			e.setReport(nil)
 			return
 		}
 		if s != watchdoginstall.StatusRegistered {
 			return
 		}
+	}
+	// An operator may have run `service install --no-watchdog` since the first
+	// check; honour it before reserving anything.
+	if e.optedOut() {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallOptedOut})
+		return
 	}
 	now = e.now()
 	if rec, ok = e.loadDue(now, h.agentVersion, false); !ok {
@@ -363,16 +388,19 @@ func (e *watchdogEnsureState) loadDue(now time.Time, agentVersion string, report
 // runs its own `service install`, then requires it to be registered AND
 // running. Every failure is returned for classification.
 func (e *watchdogEnsureState) attempt(version string) error {
-	e.sweepOnce.Do(func() {
-		if n := watchdoginstall.SweepStageDirs(e.stageRoot, watchdogStageSweepAge, e.now()); n > 0 {
-			log.Info("removed stale watchdog install staging directories", "count", n)
-		}
-	})
+	// Attempts are rare (bounded schedule), so sweep orphans before each one.
+	if n := watchdoginstall.SweepStageDirs(e.stageRoot, watchdogStageSweepAge, e.now()); n > 0 {
+		log.Info("removed stale watchdog install staging directories", "count", n)
+	}
 	dir, err := watchdoginstall.NewAttemptDir(e.stageRoot)
 	if err != nil {
 		return fmt.Errorf("%w: %v", watchdoginstall.ErrInstallCommand, err)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	defer func() {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			log.Warn("could not remove watchdog install staging directory; the next attempt's sweep retries", "dir", dir, "error", rerr.Error())
+		}
+	}()
 
 	downloaded, err := e.download(version, dir)
 	if err != nil {

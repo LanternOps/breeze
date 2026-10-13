@@ -144,12 +144,27 @@ func (s Store) Reset() error {
 // stat outcome — present, permission error, I/O error, unset Dir — reads as
 // opted out, because an ambiguous state must not trigger a privileged install.
 func (s Store) OptedOut() bool {
+	optedOut, _ := s.OptOutState()
+	return optedOut
+}
+
+// OptOutState is OptedOut plus the reason when the answer was forced by a
+// failed check (err != nil ⇒ optedOut is true, fail closed). Callers that can
+// log should, so a permission or I/O fault is not mistaken for operator intent.
+func (s Store) OptOutState() (optedOut bool, err error) {
 	p, err := s.path(OptOutFileName)
 	if err != nil {
-		return true
+		return true, err
 	}
 	_, err = os.Lstat(p)
-	return !errors.Is(err, fs.ErrNotExist)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return true, err
+	}
 }
 
 // SetOptedOut writes (true) or removes (false) the opt-out marker. Both are

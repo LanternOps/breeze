@@ -60,7 +60,13 @@ func AcquireLock(dir string) (*Lock, error) {
 	if err := lockFile(f); err != nil {
 		_ = f.Close()
 		unclaim()
-		return nil, ErrLockHeld
+		// Only contention is "held"; any other failure (no lock support,
+		// I/O error) is surfaced so the caller logs it instead of deferring
+		// silently forever.
+		if isLockContention(err) {
+			return nil, ErrLockHeld
+		}
+		return nil, fmt.Errorf("lock watchdog install lock: %w", err)
 	}
 	return &Lock{path: p, file: f}, nil
 }

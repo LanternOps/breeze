@@ -207,6 +207,12 @@ func TestOptOutMarker_UnreadableMeansOptedOut(t *testing.T) {
 	if !s.OptedOut() {
 		t.Fatal("unreadable marker must read as opted out")
 	}
+	if optedOut, err := s.OptOutState(); !optedOut || err == nil {
+		t.Fatalf("OptOutState must fail closed AND surface the cause: optedOut=%v err=%v", optedOut, err)
+	}
+	if optedOut, err := (Store{Dir: dir}).OptOutState(); optedOut || err != nil {
+		t.Fatalf("absent marker: optedOut=%v err=%v", optedOut, err)
+	}
 }
 
 func TestStore_EmptyDirIsRejected(t *testing.T) {
