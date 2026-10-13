@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Approved PAM v2 commands attempt immediate delivery through the agent command relay after the queue transaction commits, retaining canonical claims and heartbeat fallback instead of waiting for the next heartbeat.
-- Dashboard event subscriptions wait for authenticated connection acknowledgement, preventing silent subscription loss. Privileged Access catches up after reconnect/focus and refreshes visible data periodically without hiding existing rows.
-
 ### Added
 - PAM enabled through organization policy provisions the dormant elevation account after reconciliation and before admitting requests, even when `pam_enabled` is false locally. A later verified missing-account recovery clears the provisioning latch so policy can provision the account again. Recovery requires independent account, job, process, and token absence proof while retaining replay protection; unreadable ledgers and unknown tokens remain fail-closed.
 - Supported Windows PAM reconciliation retry endpoint requiring current tenant/site access, `pam:approve`, `devices:execute`, applicable MFA assurance, and partner trust. Unsupported and holding-organization devices return 409; trust denials return 403. Deploy the additive reset-capability migration and updated agent; a queued retry never deletes ledger or outbox evidence.
@@ -36,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New partners now require MFA by default: `settings.security.requireMfa` is set to `true` at partner creation on every creation path (signup, platform-admin `POST /orgs/partners`, dev seed — the seeded Default Partner opts out so local stacks keep password-only admins). Existing partners are not changed; their policy-managers see a daily-dismissible banner until they turn **Require MFA** on. Self-hosters who do not want it turn the toggle off in Settings → Partner → Security. (Strix scan follow-up, spec `docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md`.)
 - Microsoft 365 ticket mailbox consent now verifies the Microsoft tenant and consenting administrator identity and binds verified tenant ownership to the Breeze partner. Existing active connections, plus disabled rows that retain legacy tenant or cursor state, require consent again after upgrade; clean disabled rows remain disabled.
 - Seven core `/api/v1` route namespaces are now reserved against extension hijack: `service-principals`, `partner-service-principals`, `partner-api`, `billing`, `support`, `ticket-forms`, `ticket-response-templates`. The extension gateway mounts `app.all('/api/v1/:routeNamespace/*')` before the core sub-routers, so an installed + enabled extension declaring one of these as its `routeNamespace` previously shadowed that core surface fleet-wide, receiving the full request including the `Authorization` header. `POST /api/v1/billing/portal` (MFA + `BILLING_MANAGE` gated, returns a Stripe customer-portal session URL) was among the exposed routes. `CORE_NAMESPACES` is now derived from the route mounts at test time instead of being a hand-maintained list copy-pasted from the reserved set — the previous form made its own assertion tautological, which is how all seven shipped (#2634, #2635, #2641).
+
+- Approved PAM v2 commands attempt immediate delivery through the agent command relay after the queue transaction commits, retaining canonical claims and heartbeat fallback instead of waiting for the next heartbeat.
+- Dashboard event subscriptions wait for authenticated connection acknowledgement, preventing silent subscription loss. Privileged Access catches up after reconnect/focus and refreshes visible data periodically without hiding existing rows.
 
 ### Critical for self-hosters upgrading to this release
 
