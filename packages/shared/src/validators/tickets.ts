@@ -14,6 +14,40 @@ export type TicketType = z.infer<typeof ticketTypeSchema>;
 export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 
+// #7900 W02: ticket-to-ticket links (ticket_links). A stored row reads
+// "source <type> target"; the label seen from the TARGET is the inverse,
+// derived here so the API, web and AI surfaces never disagree on it. The set
+// is fixed (extending it is a migration, not a config change).
+export const TICKET_LINK_TYPES = ['caused_by', 'resolves', 'related', 'duplicate_of'] as const;
+export const ticketLinkTypeSchema = z.enum(TICKET_LINK_TYPES);
+export type TicketLinkType = z.infer<typeof ticketLinkTypeSchema>;
+export type TicketLinkDirection = 'outgoing' | 'incoming';
+export type TicketLinkLabel = TicketLinkType | 'causes' | 'resolved_by' | 'duplicates';
+const TICKET_LINK_INVERSE: Record<TicketLinkType, TicketLinkLabel> = {
+  caused_by: 'causes',
+  resolves: 'resolved_by',
+  duplicate_of: 'duplicates',
+  related: 'related',
+};
+/** The label of a link as seen from one of its two tickets. */
+export function ticketLinkLabel(linkType: TicketLinkType, direction: TicketLinkDirection): TicketLinkLabel {
+  return direction === 'outgoing' ? linkType : TICKET_LINK_INVERSE[linkType];
+}
+
+// POST /tickets/:id/links. Exactly one target key: an id, or a ticket number
+// resolved inside the source ticket's organization.
+export const createTicketLinkSchema = z
+  .object({
+    targetTicketId: z.string().guid().optional(),
+    targetTicketNumber: z.string().trim().min(1).max(50).optional(),
+    linkType: ticketLinkTypeSchema,
+  })
+  .refine((v) => (v.targetTicketId === undefined) !== (v.targetTicketNumber === undefined), {
+    message: 'Provide exactly one of targetTicketId or targetTicketNumber',
+    path: ['targetTicketId'],
+  });
+export type CreateTicketLinkInput = z.infer<typeof createTicketLinkSchema>;
+
 // Partner API correlation key (Partner API tickets surface): the ticket's
 // id/url in the external PSA/ITSM, namespaced by the service principal that
 // owns the integration (ticket_external_refs). Exported for the Partner API

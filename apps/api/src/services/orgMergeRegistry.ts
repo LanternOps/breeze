@@ -1172,6 +1172,13 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_email_links",
   "ticket_external_refs",
   "ticket_forms",
+  // ticket_links (#7900 W02). Own org_id (shape 1); both legs live in the
+  // loser org and both tickets repoint with it, so a plain repoint keeps every
+  // link intact. Its unique keys are on ticket ids (globally unique), so no
+  // dedupe key. Its two composite (ticket_id, org_id) FKs are DEFERRABLE
+  // INITIALLY IMMEDIATE, covered by orgMerge's SET CONSTRAINTS ALL DEFERRED.
+  // Walk position among the ticket children: TICKET_CHILD_ORG_REWRITE_LOCK_ORDER.
+  "ticket_links",
   "ticket_outbox",
   "ticket_parts",
   // #4524: a merge repoints tickets.org_id by direct SQL, so it changes a
