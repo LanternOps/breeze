@@ -53,6 +53,8 @@ export interface CompositionCaptureDeps {
   enabled: () => boolean;
 }
 
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock']);
+
 /** One printable character (a code point), as produced by a key. */
 function isPrintable(key: string): boolean {
   return [...key].length === 1;
@@ -80,6 +82,9 @@ export class CompositionCapture {
       this.deadPending = true;
       return this.suppress(e);
     }
+    // A modifier between the dead key and the letter (´ then Shift+E for É)
+    // keeps the dead state: it is forwarded, so its release is too.
+    if (this.deadPending && MODIFIER_KEYS.has(e.key)) return 'forward';
     if (this.deadPending) {
       this.deadPending = false;
       if (isPrintable(e.key) && !e.ctrlKey && !e.metaKey) return this.suppress(e);

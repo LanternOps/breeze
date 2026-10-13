@@ -42,10 +42,12 @@ describe('keyboardModeSupport', () => {
     expect(keyboardModeSupport({ ...full, typeText: false }).composition).toBe(false);
   });
 
-  it('WebSocket has no control channel, so no composition capture', () => {
-    const s = keyboardModeSupport({ ...full, transport: 'websocket' });
+  it('WebSocket has no control channel: no composition capture, and Physical says why', () => {
+    const s = keyboardModeSupport({ ...full, keyCodes: false, transport: 'websocket' });
     expect(s.composition).toBe(false);
     expect(s.applies).toBe(true);
+    expect(s.physical).toBe(false);
+    expect(s.physicalUnavailableReason).toMatch(/WebRTC/);
   });
 
   it('VNC: the mode does not apply at all (no code, no typeText)', () => {

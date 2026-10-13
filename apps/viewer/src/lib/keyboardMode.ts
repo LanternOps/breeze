@@ -49,13 +49,22 @@ export function keyboardModeSupport(input: {
       composition: false,
     };
   }
+  if (transport === 'websocket') {
+    // The capabilities handshake (keyCodes, typeText) rides the WebRTC control channel.
+    return {
+      applies: true,
+      physical: false,
+      physicalUnavailableReason: 'Physical keys needs a WebRTC session.',
+      composition: false,
+    };
+  }
   return {
     applies: true,
     physical: keyCodes,
     physicalUnavailableReason: keyCodes
       ? null
       : 'The remote agent does not support physical key codes yet. Update the agent to use this mode.',
-    composition: transport === 'webrtc' && typeText,
+    composition: typeText,
   };
 }
 

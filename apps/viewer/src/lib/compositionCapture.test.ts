@@ -117,6 +117,17 @@ describe('CompositionCapture: dead keys', () => {
     expect(capture.keyDown(key({ key: 'x', code: 'KeyX', keyCode: 88 }))).toBe('forward');
   });
 
+  it('a modifier between the dead key and the letter keeps the dead state (´ then Shift+E = É)', () => {
+    const { capture, sent } = setup();
+    expect(capture.keyDown(key({ key: 'Dead', code: 'Quote' }))).toBe('capture');
+    expect(capture.keyDown(key({ key: 'Shift', code: 'ShiftLeft' }))).toBe('forward');
+    expect(capture.keyDown(key({ key: 'É', code: 'KeyE', keyCode: 69 }))).toBe('capture');
+    capture.beforeInput('insertText', 'É', false);
+    expect(capture.keyUp(key({ key: 'E', code: 'KeyE' }))).toBe('suppress');
+    expect(capture.keyUp(key({ key: 'Shift', code: 'ShiftLeft' }))).toBe('forward');
+    expect(sent).toEqual(['É']);
+  });
+
   it('dead key followed by a non-printable: the non-printable goes as a key', () => {
     const { capture, sent } = setup();
     capture.keyDown(key({ key: 'Dead', code: 'Quote' }));
