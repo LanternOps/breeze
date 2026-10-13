@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - Migrations: first slot `apps/api/migrations/2026-12-25-210000-…`, then `-210100-`, `-210200-`. Newest known on `origin/main` when written: `2026-12-25-110000-caller-verification-link-tier.sql`; another plan holds `2026-12-25-2000NN`, so stay at 210000+. Re-run `git ls-tree --name-only origin/main apps/api/migrations/ | tail` before creating each file and rename upward if something newer exists. Idempotent, no inner `BEGIN;`/`COMMIT;`, `SELECT set_config('breeze.scope','system',true);` before any write, never edit a shipped migration.
-- Tenancy: unprivileged `breeze_app`; RLS enabled + forced + policies in the creating migration; every composite FK touching `org_id` is `DEFERRABLE INITIALLY IMMEDIATE`; request path uses `withDbAccessContext`, workers use `withSystemDbAccessContext` (call `runOutsideDbContext` first from inside a request). Read `docs/agents/tenancy-rls.md` and `apps/api/migrations/README.md` before Task 2.1.
+- Tenancy: unprivileged `breeze_app`; RLS enabled + forced + policies in the creating migration; every composite FK touching `org_id` is `DEFERRABLE INITIALLY IMMEDIATE`; request path uses `withDbAccessContext`, workers use `withSystemDbAccessContext` (call `runOutsideDbContext` first from inside a request). Read `apps/api/migrations/README.md` before Task 1.9 (the first migration) and `docs/agents/tenancy-rls.md` before Task 2.1.
 - Tests: `cd apps/api && npx vitest run <file>` (never `--` before flags; paths are substring matches). Go: `cd agent && go test -race ./internal/<pkg>/...`. Web: `cd apps/web && npx vitest run <file>`.
 - Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p . ; echo exit=$?` (same for `apps/web`). Read the exit code; never pipe tsc to `tail`.
 - Web: every POST/PUT/PATCH/DELETE goes through `runAction` (`apps/web/src/lib/runAction.ts`; guarded by `no-silent-mutations.test.ts`). Transient UI state in `window.location.hash`. Each new en locale key is added to all 7 locales under `apps/web/src/lib/i18n` (`localeParity.test.ts`).
@@ -32,8 +32,8 @@ Failure modes the spec implies but no obvious task test covers; each is pinned b
 1. Plain Assist start with nothing pending must never show a window (#8138 regression). Task 1.8.
 2. A `selected`-access partner user choosing devices across several orgs: per-org split, no row visible outside their access. Task 1.3.
 3. Old agent receiving the message type: must never queue (version gate) and must not silently report success after showing a transient toast. Tasks 1.2, 1.3.
-4. Sticky card replay after helper restart for already-acked or expired messages must NOT reappear. Tasks 1.6, 1.8.
-5. Body text lingering in `device_commands.payload` after retention/terminal status. Task 2.6.
+4. Sticky card replay after helper restart for already-acked or expired messages must NOT reappear. Tasks 1.4 (store and agent resend after helper auth, with a test) and 1.6.
+5. Body text lingering in `device_commands.payload` after terminal status. Task 1.1 step 6.
 6. Link label that looks like a different URL; `javascript:`/`http:` links; markdown image syntax. Task 1.7.
 7. Same technician/`messageId` retried (double click, network retry) must not create two cards. Tasks 1.3, 1.5.
 
@@ -74,7 +74,7 @@ it('registers notify_user as a standard queueable type and keeps it partner-trus
 - [ ] **Step 4: Run the registry/allowlist suites** — `npx vitest run src/services/commandOfflinePolicy.test.ts src/services/partnerTrust` → PASS. Confirm the "every `CommandTypes` value is explicitly classified" test is green.
 - [ ] **Step 5: Confirm the trust capability mapping** (the spec flags it unverified). Read `partnerTrust.ts` `device_execute` branch (~line 237) and the call site that passes `commandType`; add a test asserting a `probation` partner is denied `notify_user` and allowed `script_cancel`. If the mapping is a different capability, fix the test to match reality and record the finding in the PR body.
 - [ ] **Step 6: Central payload erasure (W1, not W2).** `services/sensitiveCommandPayload.ts` (`SENSITIVE_PAYLOAD_FIELDS` → `TERMINAL_PAYLOAD_STRIP_KEYS` → `terminalPayloadErasureSet()`) is spread by every terminal `device_commands` writer (REST result, WS ingest, stale reaper, cancellation routes, offboarding). Add `notify_user: ['title','body']` to the registry so the body stops living in the RLS-free, unbounded-retention table once the command is terminal. Failing test first in `sensitiveCommandPayload.test.ts`: `TERMINAL_PAYLOAD_STRIP_KEYS` contains `title` and `body`, and the erasure SQL for a `notify_user` row removes both. Caution: the key list is global across types, so check that stripping `title`/`body` from *other* command types' terminal rows is harmless (grep their handlers and forensic readers) or key the strip by type; record the finding in the PR.
-- [ ] **Step 7: Rollout flag storage (W1).** `services/helperSettings.ts` (`HelperSettings`, `HELPER_DEFAULTS`) gains `endpointMessaging?: { enabled: boolean }` (default off, partner default → org override via the existing resolver). Failing test first: resolved settings default `endpointMessaging.enabled === false`; the send route (Task 1.3) returns 403 `feature_disabled` when off, enforced server-side, not only hidden in the UI. Task 2.5 adds the remaining fields and the settings UI.
+- [ ] **Step 7: Rollout flag storage (W1).** `services/helperSettings.ts` (`HelperSettings`, `HELPER_DEFAULTS`) gains `endpointMessaging?: { enabled: boolean }` (camelCase in code; the settings UI label is "Endpoint messaging"; this is the single name used everywhere). Helper settings resolve per device from configuration-policy links (`resolveDeviceHelperSettings`, `helperSettingsFromRows`), and `helperSettingsFromRows` whitelists keys, so add the key to that mapper explicitly. The send route reads the flag **per device after target resolution**; devices whose resolved settings have it off get `failed:feature_disabled`. Failing test first: resolved settings default `endpointMessaging.enabled === false`; the send route (Task 1.3) returns 403 `feature_disabled` when off, enforced server-side, not only hidden in the UI. Task 2.5 adds the remaining fields and the settings UI.
 - [ ] **Step 8: Commit** — `feat(api): register notify_user as a queueable command type, erase payload body, add rollout flag (#8293)`.
 
 ## Task 1.2: Agent minimum-version gate for message payloads
@@ -98,7 +98,7 @@ it('rejects null, garbage and older versions; accepts the gate and above', () =>
 });
 ```
 
-- [ ] **Step 3: Run** `cd apps/api && npx vitest run src/services/commandMinVersion.test.ts` → FAIL. **Step 4: Implement** with the reused comparator; placeholder gate constant `'0.0.0-unreleased'` is replaced in Task 1.10. **Step 5: PASS. Step 6: Commit.**
+- [ ] **Step 3: Run** `cd apps/api && npx vitest run src/services/commandMinVersion.test.ts` → FAIL. **Step 4: Implement** with the reused comparator; the gate constant starts **fail-closed** at an unreachably high version (`'999.0.0'`) so nothing is queued until the release is cut; Task 1.10 sets the real value. Test: `agentSupportsMessaging('0.0.1')` is false and `agentSupportsMessaging('999.0.0')` is true while the placeholder is in place. **Step 5: PASS. Step 6: Commit.**
 
 ## Task 1.3: `POST /endpoint-messages` send route (stateless, W1)
 
@@ -153,7 +153,7 @@ it('rejects http: links, images and html via the shared validator', () => { /* �
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/endpointMessages` and `cd packages/shared && npx vitest run src/validators/endpointMessage.test.ts` → FAIL (modules missing).
 - [ ] **Step 3: Implement** validator, `resolveTargets`, `send.ts` per behaviours 1–8; mount `endpointMessageRoutes` in `index.ts`.
 - [ ] **Step 4: Run both suites** → PASS. **Step 5:** typecheck API with the 12 GB command in Global Constraints; exit code must be 0.
-- [ ] **Step 6: Contract greps** — `grep -rn "endpointMessageRoutes" apps/api/src/index.ts`; run `npx vitest run src/routes/routeParity src/__tests__` style contract suites that enumerate routes (find with `grep -rln "routeParity\|route-coverage" apps/api/src | head`) and fix any registration they demand.
+- [ ] **Step 6: Contract greps** — `grep -rn "endpointMessageRoutes" apps/api/src/index.ts`; run the route contract suites `aiGuardrails.routeBinding.contract.test.ts` and `resilienceRouteCoverage.integration.test.ts` (plus any `grep -rln "routeParity" apps/api/src` hit) and fix any registration they demand.
 - [ ] **Step 7: Commit** — `feat(api): send endpoint messages via notify_user with version gate, caps and audit (#8293)`.
 
 ## Task 1.4: Agent — `ScopeMessaging` and the `notify_user` handler
@@ -176,6 +176,7 @@ func TestMessagingScopeNotGrantedWithoutAdvertisement(t *testing.T) { /* AuthReq
 func TestNotifyUserMessageUsesAssistWhenAdvertised(t *testing.T)    { /* TypeMessageShow sent, surface=="assist" */ }
 func TestNotifyUserMessageFallsBackToNativeAndNeverClaimsAssist(t *testing.T) { /* no assist session → TypeNotify, surface=="native", FallbackDialog for critical */ }
 func TestStoreDropsExpiredAndTerminalOnPending(t *testing.T)         { /* Review Focus 4 */ }
+func TestAgentResendsOnlyStickyUnackedAfterHelperAuth(t *testing.T) { /* helper reconnect → only unexpired, unacked, sticky messages sent */ }
 func TestNotifyUserMessageConsoleAssistAndRdsNativeBothDelivered(t *testing.T) { /* console Assist gets card, RDS session gets toast */ }
 func TestBrokerForwardsMessageEventsOnlyWithMessagingScope(t *testing.T) { /* ack from scoped session reaches onMessage; from unscoped session dropped */ }
 func TestNotifyUserWithoutMessageSourceIsUnchanged(t *testing.T)     { /* legacy payload path byte-identical */ }
@@ -196,7 +197,7 @@ func TestNotifyUserWithoutMessageSourceIsUnchanged(t *testing.T)     { /* legacy
 **Interfaces:**
 - Produces: `POST …/message-events` body `{ messageId, batchId, eventType: 'displayed'|'acknowledged'|'dismissed'|'expired', session: { username, sid?, winSessionId? }, at }`; agent-authenticated (device token), identity of the acting user is agent-attested, so the helper token (`helperAuth`) is deliberately not used. W1 sink: an `audit_logs` row (device-scoped, org resolved from the device); idempotent via Redis `SET NX` on `(deviceId, messageId, sessionKey, eventType)` 7 days (device id is part of the key: two devices can share a username or session id). W2 (Task 2.4) replaces the sink with `endpoint_message_receipts` and a DB unique constraint.
 
-- [ ] **Step 1: Failing test** — duplicate event with same key returns 200 and writes one audit row; the same messageId/session/event from two different devices writes two rows; an event whose `messageId` was never sent to that device is rejected 404 (cross-device forge); event from device A cannot name device B's org.
+- [ ] **Step 1: Failing test** — duplicate event with same key returns 200 and writes one audit row; the same messageId/session/event from two different devices writes two rows; an event whose `messageId` was never sent to that device is rejected 404 (cross-device forge; W1 source of truth is the device's `device_commands` row of type `notify_user` whose payload `messageId` matches, which still exists after terminal erasure because only `title`/`body` are stripped); event from device A cannot name device B's org.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/agents/messageEvents.test.ts` → FAIL. **Step 3: Implement. Step 4: PASS** + agent test with `go test -race ./internal/heartbeat/...`.
 - [ ] **Step 5:** run the agent-route contract tests (`agentRoleCoverage.test.ts`, `agentAuthSkip.test.ts` in `routes/agents/`) and register the route as they require.
 - [ ] **Step 6: Commit** — `feat(api,agent): agent-attested message event upstream route (#8293)`.
@@ -233,7 +234,7 @@ The existing `isSafeHttpUrl`/`SafeMarkdownLink`/`SafeMarkdownImage` accept `http
 - No new files; the lab checklist below goes in the W1 PR description.
 
 - [ ] **Step 1: Failing test** — helper started with `--config` and zero pending messages: no window is built or shown; helper started and then sent `message_show`: only the `message` card label exists, `main` stays hidden.
-- [ ] **Step 2: Run** `cd apps/helper/src-tauri && cargo test lib::` → FAIL → **Step 3** wire any missing guard → **Step 4** PASS.
+- [ ] **Step 2: Run** `cd apps/helper/src-tauri && cargo test launch_requests` (the tests live in `mod tests` in `lib.rs`; use a name filter, adding a named test `message_show_never_shows_main_window`) → FAIL → **Step 3** wire any missing guard → **Step 4** PASS.
 - [ ] **Step 5: PR-body lab checklist (owed before release, record results in the PR):** Windows console session shows card and ack; a second RDS session gets only the native fallback; macOS and Linux native fallback; helper restart replays only a sticky unacked card; plain helper start shows nothing; device with no helper returns `no user helper connected` (delivery shown failed); offline device reconnects before and after expiry (after expiry: never shown).
 - [ ] **Step 6: Commit** — `test(helper): guard Assist start-hidden against message surfacing (#8138, #8293)`.
 
@@ -243,7 +244,7 @@ The existing `isSafeHttpUrl`/`SafeMarkdownLink`/`SafeMarkdownImage` accept `http
 - Create: `apps/api/migrations/2026-12-25-210000-endpoint-messages-permissions.sql` (re-check slot first, Global Constraints)
 - Test: existing `migrationRlsScope.test.ts`, `pnpm db:check-drift`
 
-Copy the grant predicate from `apps/api/migrations/2026-12-20-220100-sites-set-location-permission.sql` (match `r.name`, `r.scope`, `r.is_system = TRUE`, no `partner_id IS NULL` clause; existence-check insert into `permissions`; `ON CONFLICT DO NOTHING` into `role_permissions`). Permissions `endpoint_messages:send` and `endpoint_messages:read` granted to every system role that already holds `devices:execute`; Partner Admin holds `*:*`. `SELECT set_config('breeze.scope','system',true);` first.
+Copy the grant predicate from `apps/api/migrations/2026-12-20-220100-sites-set-location-permission.sql` (match `r.name`, `r.scope`, `r.is_system = TRUE`, no `partner_id IS NULL` clause; existence-check insert into `permissions`; `ON CONFLICT DO NOTHING` into `role_permissions`). Permissions `endpoint_messages:send` and `endpoint_messages:read` granted by explicit role-name list as in the template, mirroring the roles that hold `devices:execute` today (Partner Technician, Org Technician, Org Admin; verify with a query against the seed before writing the list); Partner Admin holds `*:*`. `SELECT set_config('breeze.scope','system',true);` first.
 
 - [ ] **Step 1: Failing test** — add to the permission-seed contract test (find: `grep -rln "sites.*set_location" apps/api/src | head`) assertions that both permissions exist and `Org Viewer` does not hold `send`.
 - [ ] **Step 2: Run** that test → FAIL. **Step 3:** write the migration. **Step 4:** `cd apps/api && npx vitest run src/db/migrationRlsScope.test.ts <permission test path>` → PASS; `pnpm db:migrate && pnpm db:check-drift` against the local DB.
@@ -290,7 +291,7 @@ Read `docs/agents/tenancy-rls.md` and `apps/api/migrations/README.md` first. DDL
 - `endpoint_message_deliveries(id, message_id → endpoint_messages ON DELETE CASCADE, org_id NOT NULL, device_id → devices, command_id, status text CHECK in ('queued','delivered','displayed','acknowledged','dismissed','expired','retracted','failed','superseded'), surface text, error_code, delivered_at, displayed_at, acked_at, dismissed_at, expires_at, created_at)`; indexes `(message_id, status)`, `(device_id, created_at)`; unique `(message_id, device_id)`.
 - `endpoint_message_receipts(id, delivery_id → deliveries ON DELETE CASCADE, org_id NOT NULL, device_id, session_key, event_type, at)`; unique `(delivery_id, session_key, event_type)`; insert-only by app convention (no DB append-only, OD-1).
 - **Tenant consistency is mandatory, not optional.** RLS alone only proves the caller may write the stated `org_id`; it does not prove the referenced device/delivery belongs to that org. Required: deliveries `(device_id, org_id)` → `devices(id, org_id)`; receipts `(delivery_id, org_id)` → `deliveries(id, org_id)` and `(device_id, org_id)` → `devices(id, org_id)`; deliveries `(message_id, org_id)` → `endpoint_messages(id, org_id)`. Each is `DEFERRABLE INITIALLY IMMEDIATE` (org merge/move defers constraints). Add the supporting `UNIQUE (id, org_id)` constraints (check whether `devices` already has one; if not, a trigger asserting `NEW.org_id = (SELECT org_id FROM devices WHERE id = NEW.device_id)` is the fallback, following the shape-5 Phase 1-4 precedent).
-- **Move/erasure semantics:** because the `(message_id, org_id)` FK would pin a moved delivery to the source org, `message_id` is nullable on deliveries and the org-move path **detaches** it (sets `message_id = NULL`, as `moveOrg` already detaches cross-tenant pointers, `routes/devices/core.ts` ~295-306); delivery/receipt rows then follow the device into the destination org carrying status and timestamps but no body. Source-org erasure never deletes destination history and the destination never reads a source-owned body.
+- **Move/erasure semantics:** because the `(message_id, org_id)` FK would pin a moved delivery to the source org, `message_id` is nullable on deliveries and the org-move path **detaches** it (sets `message_id = NULL`, as `moveOrg` already detaches cross-tenant pointers, `routes/devices/core.ts` ~295-306); delivery/receipt rows then follow the device into the destination org carrying status and timestamps but no body. The move transaction defers the `DEFERRABLE` org FKs, the detach lives in `routes/devices/moveOrg.ts`, and `breeze_device_child_orgid_tables()` (migration-defined SQL function; grep recent migrations that touch it) must list the two tables, which Task 2.1 does in its migration if not already derived. Source-org erasure never deletes destination history and the destination never reads a source-owned body.
 - Per table: `ENABLE` + `FORCE ROW LEVEL SECURITY`; policies using `breeze_has_org_access(org_id)` for USING and WITH CHECK; `GRANT` to `breeze_app`. All idempotent (`CREATE TABLE IF NOT EXISTS`, `DROP POLICY IF EXISTS` then create).
 - `SELECT set_config('breeze.scope','system',true);` at top (backfill of nothing, but required if any row is written).
 
@@ -329,7 +330,7 @@ For **each** of `endpoint_messages`, `endpoint_message_deliveries`, `endpoint_me
 | Org-move handling | deliveries/receipts follow the device (denormalized `org_id` rewrite) and **detach** `message_id` (set NULL) so history never points across tenants; `endpoint_messages` stays in the source org. Test: move a device, assert destination read with no body, source erasure leaves it (Open Decision N5) | `moveOrg.coverage.test.ts` |
 
 - [ ] **Step 1: Grep, don't judge:** `grep -rn "endpoint_message" apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts` → must show nothing (red).
-- [ ] **Step 2: Run the contract suites to see them red** on the test stack: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/tenantCascade.integration.test.ts src/services/tenantExportPolicyRegistry src/routes/devices/moveOrg.coverage.test.ts src/__tests__/integration/rls-coverage.integration.test.ts` (use the exact paths from `docs/agents/testing.md`; substring matches).
+- [ ] **Step 2: Run the contract suites to see them red** on the test stack: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/tenantCascade.integration.test.ts src/services/tenantExportPolicyRegistry src/routes/devices/moveOrg.coverage.test.ts src/__tests__/integration/rls-coverage.integration.test.ts` (use the exact paths from `docs/agents/testing.md`; substring matches).
 - [ ] **Step 3: Edit the registries above. Step 4: Re-run → green.** Then run the full integration shard set per `docs/agents/testing.md` (always required when tenancy/cascade code is touched). Tear down `pnpm test-stack down`.
 - [ ] **Step 5: Commit** — `feat(api): register endpoint message tables in cascade, merge, export and move contracts (#8293)`.
 
@@ -337,7 +338,7 @@ For **each** of `endpoint_messages`, `endpoint_message_deliveries`, `endpoint_me
 
 **Files:**
 - Modify: `routes/endpointMessages/send.ts` (insert batch + delivery rows in a system-context chunked worker for > 200 devices; otherwise in-request), create `routes/endpointMessages/list.ts`, `detail.ts`, `retract.ts`, `resend.ts`; `services/endpointMessaging/deliveryState.ts` (legal transitions only; terminal states are final)
-- Register `retract_message` in `CommandTypes`, offline registry (short TTL) and **`LIFECYCLE_COMMAND_TYPES`** (carries no operator content, so a restricted partner can still retract); add agent handler (extends Task 1.4 store: `MarkTerminal(retracted)` and `TypeMessageRetract` to helper)
+- Add `COMMAND_MIN_AGENT_VERSION.retract_message` and gate retract/resend on it. **W2 ships an agent release** (retract handler), not only API and web, so retract is refused (`failed:agent_unsupported`) for W1-era agents, which have the IPC type but no command handler. Register `retract_message` in `CommandTypes`, offline registry (short TTL) and **`LIFECYCLE_COMMAND_TYPES`** (carries no operator content, so a restricted partner can still retract); add agent handler (extends Task 1.4 store: `MarkTerminal(retracted)` and `TypeMessageRetract` to helper)
 - Test: `deliveryState.test.ts`, `list.test.ts`, `retract.test.ts`
 
 Rules: command result updates delivery to `delivered`/`failed`; events route (Task 2.4) drives `displayed/acknowledged/dismissed`; reaper/expiry marks `expired`; retract of a still-queued command cancels it; states never regress (e.g. `acknowledged` never returns to `delivered`).
@@ -354,27 +355,27 @@ Rules: command result updates delivery to `delivered`/`failed`; events route (Ta
 
 ## Task 2.5: Settings + batch status UI
 
-**Files:** `services/helperSettings` (add `endpoint_messaging { enabled, allowUserReply, defaultExpiryMinutes }`, partner default → org override; read `docs/agents/settings.md` first and register in the settings page registry per `settingsPageRegistry.test.ts`); web `EndpointMessagesPage` (batch list, detail with per-device status, retry/resend/retract buttons), locale keys in all 7 locales, hash-based selected batch.
+**Files:** `services/helperSettings` (add `endpointMessaging { enabled, allowUserReply, defaultExpiryMinutes }`, partner default → org override; read `docs/agents/settings.md` first and register in the settings page registry per `settingsPageRegistry.test.ts`); web `EndpointMessagesPage` (batch list, detail with per-device status, retry/resend/retract buttons), locale keys in all 7 locales, hash-based selected batch.
 
 - [ ] **Step 1: Failing tests** — `settingsPageRegistry.test.ts` fails until registered; resend/retract buttons use `runAction`; `localeParity.test.ts`.
 - [ ] **Step 2: Run** `cd apps/web && npx vitest run src/components/endpointMessages src/lib/i18n/localeParity.test.ts src/lib/__tests__/no-silent-mutations.test.ts settingsPageRegistry` → FAIL → implement → PASS. **Step 3:** typecheck web + API (exit codes). **Step 4: Commit.**
 
 ## Task 2.6: Retention worker and `device_commands.payload` redaction
 
-**Files:** Create `apps/api/src/jobs/endpointMessageRetentionWorker.ts` (BullMQ, `withSystemDbAccessContext`); test beside it.
+**Files:** Create `apps/api/src/jobs/endpointMessageRetention.ts` (BullMQ, `withSystemDbAccessContext`); test beside it.
 
 - 90-day retention: null `title`/`body` on batches (set `body_purged_at`), delete deliveries/receipts older than 13 months.
 - Payload redaction is already done centrally in W1 (Task 1.1 step 6). Here add only a regression test that a *queued, non-terminal* message keeps its body until delivery.
 - **Register the worker:** add an entry to `apps/api/src/services/workerRegistry.ts` (pattern at ~217-223, `helperScreenshotRetentionWorker`) with `init`/`shutdown` exports and a schedule; a unit test asserts the registry lists it (a worker that is never started is the failure mode).
 
 - [ ] **Step 1: Failing tests** (Review Focus 5) — retention nulls only batches older than 90 days; worker present in `workerRegistry`; a queued message keeps its body.
-- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/jobs/endpointMessageRetentionWorker.test.ts src/routes/agents/commands.test.ts` → FAIL → implement → PASS. **Step 3: Commit.**
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/jobs/endpointMessageRetention.test.ts src/routes/agents/commands.test.ts` → FAIL → implement → PASS. **Step 3: Commit.**
 
 ## Task 2.7: AI tool `send_endpoint_message` (approval-gated)
 
 **Files (check each registry, don't judge):**
 - Create: `apps/api/src/services/aiToolsMessaging.ts` (thin hub pattern, follow `aiToolsTicketing.ts` action style: `send`, `list`, `get`)
-- Modify: `aiToolSchemas*.ts` (input schema), `aiGuardrails.ts` (tier tables: `send` is customer-visible and impersonation-adjacent → **always human approval**, same class as `manage_tickets:comment` at ~line 686; `list`/`get` read-only tier), `aiToolRateLimits.ts` (5 sends/hour/user; the tier multiplier at `aiGuardrails.ts` ~2844 means this alone is not enough, so the route's `services/rate-limit` enforcement from Task 1.3 stays authoritative), `aiAgentSdkTools.ts`, `services/aiAgents/agentToolCatalog.ts`, `mcpCoverage.ts`
+- Modify: `aiToolSchemas*.ts` (input schema), `aiGuardrails.ts` (tier tables: `send` is customer-visible and impersonation-adjacent → **always human approval**, same class as `manage_tickets:comment` at ~line 686; `list`/`get` read-only tier), `aiToolRateLimits.ts` (5 sends/hour/user; the tier multiplier at `aiGuardrails.ts` `scaleToolRateLimit` (~2870) means this alone is not enough, so the route's `services/rate-limit` enforcement from Task 1.3 stays authoritative), `aiAgentSdkTools.ts`, `services/aiAgents/agentToolCatalog.ts`, `mcpCoverage.ts`
 - Modify: `apps/api/src/services/aiTools.ts` (~line 345): add `registerMessagingTools(aiTools)` next to `registerTicketingTools`; without it the tool exists only in metadata and never executes. Test: the `aiTools` registry contains `send_endpoint_message`.
 - Thread `aiOrigin` through the send service into `queueCommandForExecution`
 - Tests: the contract suites `aiGuardrails.tier1WriteActions.contract.test.ts`, `aiGuardrails.readonly.contract.test.ts`, `aiGuardrailsTierParity`, `aiToolRateLimits.test.ts`, `aiAgentSdkTools.mcpCoverage.test.ts`, `aiTools.descriptionBudget.contract.test.ts`, plus new `aiToolsMessaging.test.ts`
@@ -408,14 +409,14 @@ Traps (both repo-documented): AI-tool contract tests key `SAFE_WRITE_SITES` by *
 
 ## Task 3.2: Chat command types and agent/IPC
 
-**Files:** `commandTypes.ts`, `commandOfflinePolicy.ts` (`chat_open`, `chat_message` → `LIVE` class: rejected when offline; `chat_close` → live and in `LIFECYCLE_COMMAND_TYPES`; `chat_open`/`chat_message` in `GATED_COMMAND_TYPES`), `COMMAND_MIN_AGENT_VERSION.chat`; agent `ipc/message.go` (`TypeChatOpen`, `TypeChatMessage`, `TypeChatClose`, `TypeChatReply`; chat requires the Assist session with `ScopeMessaging`, **no native fallback**), `heartbeat/handlers_chat.go` (+ test), registered in `handlerRegistry`.
+**Files:** `commandTypes.ts`, `commandOfflinePolicy.ts` (`chat_open`, `chat_message` → `live_only` class: rejected when offline, never queued; `chat_close` → live and in `LIFECYCLE_COMMAND_TYPES`; `chat_open`/`chat_message` in `GATED_COMMAND_TYPES`), `COMMAND_MIN_AGENT_VERSION.chat` (keys used: `notify_user_messaging`, `retract_message`, `chat`); agent `ipc/message.go` (`TypeChatOpen`, `TypeChatMessage`, `TypeChatClose`, `TypeChatReply`; chat requires the Assist session with `ScopeMessaging`, **no native fallback**), `heartbeat/handlers_chat.go` (+ test), registered in `handlerRegistry`.
 
 - [ ] **Step 1: Failing tests** — API: new types in all three registries; offline device rejects `chat_open`. Go: no Assist session → result `failed: chat_requires_assist`; reply with repeated nonce forwarded once.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/commandOfflinePolicy.test.ts src/services/partnerTrust` and `cd agent && go test -race ./internal/heartbeat/... ./internal/ipc/...` → FAIL → implement → PASS. **Step 3: Commit.**
 
 ## Task 3.3: Chat routes, rate limits, audit
 
-**Files:** `routes/endpointMessages/conversations.ts` (+ test). Permission `endpoint_messages:send` reused (Open Decision N6); open requires a device that has an Assist session with messaging scope. Endpoints: `POST /endpoint-conversations` (open, technician picks session), `POST …/:id/messages`, `POST …/:id/close`, `GET …/:id` (poll), `GET /devices/:id/endpoint-conversations`. Technician-initiated only. A user reply when `allowUserReply=false` is dropped at the agent and 403'd at the API. Idle auto-close (30 min, worker). Rate limit 60 chat messages/hour/conversation. Audit rows for open/close with counts; message bodies never audited (hash only). The chat "may I connect?" line never counts as consent; the optional convenience button triggers the **existing** `consent_request` flow only (Test: no code path writes a consent record from a chat message).
+**Files:** `routes/endpointMessages/conversations.ts` (+ test). Permission `endpoint_messages:send` reused (Open Decision N6); open requires a device that has an Assist session with messaging scope. Endpoints: `POST /endpoint-conversations` (open, technician picks session), `POST …/:id/messages`, `POST …/:id/close`, `GET …/:id` (poll), `GET /devices/:id/endpoint-conversations`. Technician-initiated only. A user reply when `allowUserReply=false` is dropped at the agent and 403'd at the API. Idle auto-close (30 min) is a job in `jobs/endpointMessageRetention.ts` registered in `workerRegistry.ts`. Rate limit 60 chat messages/hour/conversation. Audit rows for open/close with counts; message bodies never audited (hash only). The chat "may I connect?" line never counts as consent; the optional convenience button triggers the **existing** `consent_request` flow only (Test: no code path writes a consent record from a chat message).
 - Agent→API reply route: extend `routes/agents/messageEvents.ts` with `eventType: 'chat_reply'` carrying `client_nonce`; agent-attested session stored in `sender_session`.
 
 - [ ] **Step 1: Failing tests** — tech cannot open a conversation on another org's device (RLS + permission); duplicate nonce inserts once; closed conversation rejects messages; reply not accepted when `allow_user_reply` false; no consent record produced.
@@ -483,7 +484,7 @@ N3. **Ticket binding / `chat_ticket_policy` (spec W3) is out of this plan.** Cho
 
 N4. **Partner-wide scope timing.** Chosen: follow-up epic (see decision 8).
 
-N5. **Org-move behaviour for deliveries.** Conservative default: deliveries/receipts follow the device (denormalized `org_id` rewrite), messages stay in the source org; exact FK handling is confirmed against `moveOrg.coverage.test.ts` in Task 2.2 and documented in the PR. Alternative: block moves with non-terminal deliveries (rejected: operational friction).
+N5. **Org-move behaviour for deliveries.** Conservative default: deliveries/receipts follow the device (denormalized `org_id` rewrite), messages stay in the source org; exact FK handling is decided in Task 2.1 and verified against `moveOrg.coverage.test.ts` in Task 2.2. Alternative: block moves with non-terminal deliveries (rejected: operational friction).
 
 N6. **Permission for chat.** Chosen: reuse `endpoint_messages:send` (no separate `chat` permission). Alternative: split later if orgs want "may broadcast but not chat". Why: fewer roles to migrate; reversible.
 
