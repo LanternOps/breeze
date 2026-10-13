@@ -27,6 +27,7 @@ import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth
 import { createAuditLog, createAuditLogAsync } from '../auditService';
 import { getRedis } from '../redis';
 import { edrActionsEnabled } from '../../config/env';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { checkEdrActionRateLimit, edrActorKey } from './actionGates';
 import { classifyVendorActionError, EdrActionError } from './actionErrors';
 import { EDR_ACTION_COOLDOWN_MS, resolveEdrActionTarget, type ResolvedEdrActionTarget } from './actionTargets';
@@ -196,15 +197,6 @@ function toVendorRequest(t: ResolvedEdrActionTarget, action: EdrActionKey, pid: 
     default:
       return null;
   }
-}
-
-/** The Postgres error code of a caught driver error, however postgres.js wrapped it. */
-function pgErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== 'object') return null;
-  const direct = (error as { code?: unknown }).code;
-  if (typeof direct === 'string') return direct;
-  const cause = (error as { cause?: { code?: unknown } }).cause;
-  return typeof cause?.code === 'string' ? cause.code : null;
 }
 
 function secretsOf(creds: unknown): string[] {
