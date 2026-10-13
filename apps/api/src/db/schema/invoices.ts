@@ -184,6 +184,10 @@ export const invoiceLines = pgTable('invoice_lines', {
   // worked-vs-billed disclosure note only — never for money. NULL for
   // non-time-entry lines and for legacy rows predating this column.
   workedMinutes: integer('worked_minutes'),
+  // #8603: the day a time_entry line was worked, from the entry's started_at
+  // in the partner timezone, captured at assembly and copied on reissue. NULL
+  // for non-time-entry lines (incl. block-hours overage) and pre-column rows.
+  workDate: date('work_date'),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [

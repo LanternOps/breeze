@@ -65,6 +65,8 @@ describe('closeHourBlockPeriods (real DB) #8181', () => {
       quantity: '2.33', unitPrice: '150.00', lineTotal: '349.50',
       sourceType: 'contract', sourceId: f.blockLineId, sourceContractId: f.contractId,
       parentLineId: null, catalogItemId: null, taxable: true,
+      // #8603: the aggregated overage line spans many days; it is never dated.
+      workDate: null,
     });
     const [row] = await ledger(f);
     expect(row).toMatchObject({ overageHours: '2.33', overageUnitPrice: '150.00', currencyCode: 'USD', closeSource: 'billing_run' });

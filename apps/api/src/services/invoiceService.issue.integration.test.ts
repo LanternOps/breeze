@@ -75,7 +75,9 @@ interface Fixture {
  * keeps each test's source rows independent (no cross-test billing bleed).
  */
 async function seedFixture(opts?: {
-  entries?: Array<{ durationMinutes: number; hourlyRate: string; isApproved?: boolean; billed?: boolean }>;
+  entries?: Array<{ durationMinutes: number; hourlyRate: string; isApproved?: boolean; billed?: boolean; startedAt?: Date }>;
+  /** Partner timezone (#8603); the column default (UTC) when omitted. */
+  timezone?: string;
 }): Promise<Fixture> {
   const suffix = Math.random().toString(36).slice(2, 10);
   const entries = opts?.entries ?? [
@@ -84,7 +86,8 @@ async function seedFixture(opts?: {
   ];
   return withSystemDbAccessContext(async () => {
     const [p] = await db.insert(partners).values({
-      name: `Inv ${suffix}`, slug: `inv-${suffix}`, type: 'msp', plan: 'pro', status: 'active'
+      name: `Inv ${suffix}`, slug: `inv-${suffix}`, type: 'msp', plan: 'pro', status: 'active',
+      ...(opts?.timezone ? { timezone: opts.timezone } : {})
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
@@ -100,7 +103,7 @@ async function seedFixture(opts?: {
     const timeEntryIds: string[] = [];
     for (const e of entries) {
       const [te] = await db.insert(timeEntries).values({
-        partnerId, orgId, userId, startedAt: now, endedAt: now,
+        partnerId, orgId, userId, startedAt: e.startedAt ?? now, endedAt: now,
         durationMinutes: e.durationMinutes, description: 'Work', isBillable: true,
         hourlyRate: e.hourlyRate, billingStatus: e.billed ? 'billed' : 'not_billed',
         isApproved: e.isApproved ?? true,
@@ -283,6 +286,35 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
       db.select({ s: timeEntries.billingStatus }).from(timeEntries).where(eq(timeEntries.orgId, f.orgId)));
     expect(te.length).toBe(2);
     expect(te.every((r) => r.s === 'not_billed')).toBe(true);
+  });
+
+  it('#8603: assembly stamps work_date from started_at in the partner timezone; reissue copies it; manual lines stay NULL', async () => {
+    // An entry that started 23:30 New York time the day before yesterday and
+    // ran past local midnight: UTC already reads the next day, the work date
+    // must be the local START day.
+    const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+    const startedAt = new Date(`${twoDaysAgo}T23:30:00-04:00`); // EDT offset; checked below against the zone itself
+    const expectedLocal = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(startedAt);
+    const utcDay = startedAt.toISOString().slice(0, 10);
+    expect(expectedLocal).not.toBe(utcDay); // the fixture really straddles the UTC date line
+    const f = await seedFixture({ timezone: 'America/New_York', entries: [{ durationMinutes: 90, hourlyRate: '100.00', startedAt }] });
+    const { invoice } = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
+    await withDbAccessContext(ctx(f), () =>
+      svc.addManualLine(invoice.id, { description: 'Travel', quantity: 1, unitPrice: 25, taxable: false }, actor(f)));
+    const drafted = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoice.id)));
+    const labor = drafted.find((l) => l.sourceType === 'time_entry');
+    const manual = drafted.find((l) => l.sourceType !== 'time_entry');
+    expect(labor!.workDate).toBe(expectedLocal);
+    expect(manual!.workDate).toBeNull();
+
+    const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    const result = await withDbAccessContext(ctx(f), () => svc.voidInvoice(issued.id, 'redo', { reissue: true }, actor(f)));
+    const cloned = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, result.invoice.id)));
+    expect(cloned.find((l) => l.sourceType === 'time_entry')!.workDate).toBe(expectedLocal);
+    expect(cloned.find((l) => l.sourceType !== 'time_entry')!.workDate).toBeNull();
   });
 
   it('void+reissue preserves bundle hierarchy: cloned child lines point at the cloned parent', async () => {
