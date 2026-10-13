@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { deriveProjectName, descriptorPath } from './project';
 import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
-import { writeEnvStack, readStackEnvValue, pinWebAuthnForStack } from './env';
+import { writeEnvStack, readStackEnvValue, pinWebAuthnForStack, caddyPortPin } from './env';
 import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown, recreateService } from './compose';
 import { upStack } from './up';
 
@@ -19,7 +19,7 @@ function up(shared: boolean, rebuild: boolean): void {
   const worktreePath = process.cwd();
   const project = deriveProjectName({ worktreePath, branch: currentBranch(), shared });
   console.log(`[wt-stack] project=${project} engine=${dockerContext()}`);
-  const descriptor = upStack({ worktreePath, project, rebuild, admin: ADMIN }, {
+  const descriptor = upStack({ worktreePath, project, rebuild, admin: ADMIN, pinnedCaddyPort: caddyPortPin() }, {
     writeEnvStack, composeUp, waitHealthy, seedDatabase, publishedPort,
     pinWebAuthnForStack, recreateService, containerName, writeDescriptor,
   });

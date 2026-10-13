@@ -52,6 +52,21 @@ describe('upStack (#6443)', () => {
   });
 });
 
+describe('upStack caddy pin (#8718)', () => {
+  it('marks the descriptor pinned when the published port equals the pin', () => {
+    const { deps } = recordingDeps(18080);
+    expect(upStack({ ...OPTS, pinnedCaddyPort: 18080 }, deps).caddyPortPinned).toBe(true);
+  });
+  it('is not pinned when no pin was requested', () => {
+    const { deps } = recordingDeps(55001);
+    expect(upStack(OPTS, deps).caddyPortPinned).toBe(false);
+  });
+  it('fails loudly if compose published a different port than the pin', () => {
+    const { deps } = recordingDeps(55001);
+    expect(() => upStack({ ...OPTS, pinnedCaddyPort: 18080 }, deps)).toThrow(/18080.*55001/);
+  });
+});
+
 describe('stackProcessEnv (#6443)', () => {
   it('drops exported WEBAUTHN_* so .env.stack wins over the shell', () => {
     const env = stackProcessEnv({ WEBAUTHN_ORIGIN: 'https://shell.invalid', WEBAUTHN_RP_ID: 'shell.invalid', PATH: '/bin' });

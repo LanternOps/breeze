@@ -41,6 +41,19 @@ STORM_CPUS="${STORM_CPUS:-0.5}"
 [ -n "$STORM_CADDY" ] || { echo "storm: no running caddy container for project $PROJECT" >&2; exit 1; }
 export STORM_API STORM_CADDY STORM_CPUS
 
+# #8718 — a scenario that restarts caddy moves its published host port unless
+# the stack was brought up with BREEZE_WT_CADDY_PORT, stranding every client
+# that read baseUrl. Name of the first event whose steps touch ${STORM_CADDY}:
+CADDY_EVENT="$(jq -r '[.events[]? | select([.. | strings] | any(test("STORM_CADDY"))) | .name][0] // empty' "$FILE")"
+if [ -n "$CADDY_EVENT" ]; then
+  DESC_PORT="$(jq -r '.webPort // empty' "$DESC")"
+  LIVE_PORT="$(docker port "$STORM_CADDY" 80 2>/dev/null | head -n1 | sed 's/.*://')"
+  if [ "$(jq -r '.caddyPortPinned // false' "$DESC")" != true ] || [ -z "$DESC_PORT" ] || [ "$DESC_PORT" != "$LIVE_PORT" ]; then
+    echo "storm: scenario '$SLUG' restarts caddy (event '$CADDY_EVENT'), which re-allocates the stack's random host port and strands the simulator (#8718). Re-run 'pnpm wt-stack up' with BREEZE_WT_CADDY_PORT=<free port> to pin it." >&2
+    if [ "$DRY" != 1 ]; then exit 2; fi
+  fi
+fi
+
 if [ "$DRY" = 1 ]; then
   exec "$HERE/run.sh" --storm "$FILE" --storm-dry-run "$@"
 fi
@@ -97,6 +110,15 @@ if [ ! -f "$REPORT" ]; then
   exit 1
 fi
 echo "storm: report $REPORT"
+# #8718 — diagnosis only: never changes .storm.pass or the exit code below.
+if [ -n "$CADDY_EVENT" ]; then
+  DEAD="$(jq -r --arg first "$CADDY_EVENT" '
+    (.storm.events // []) as $e | ($e | map(.name) | index($first)) as $i
+    | if $i == null then empty else [$e[$i:][] | select((.pool.okSamples // 0) == 0) | .name] | join(", ") end' "$REPORT" 2>/dev/null || true)"
+  if [ -n "$DEAD" ]; then
+    echo "storm: the stack's front door was unreachable after '$CADDY_EVENT' (no /metrics/scrape sample answered in: $DEAD) — caddy's published port likely moved on restart; pin it with BREEZE_WT_CADDY_PORT (#8718)." >&2
+  fi
+fi
 PASS="$(jq -r 'if (.storm.pass | type) == "boolean" then .storm.pass else "missing" end' "$REPORT" 2>/dev/null || echo unreadable)"
 case "$PASS" in
   true) exit "$rc" ;;

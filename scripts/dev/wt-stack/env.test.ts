@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack } from './env';
+import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack, caddyPortPin } from './env';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
@@ -42,6 +42,38 @@ describe('writeEnvStack', () => {
   it('disables the rate limiters that a parallel Playwright run trips', () => {
     const env = readFileSync(writeEnvStack(dir), 'utf8');
     expect(env).toContain('E2E_MODE=true');
+  });
+});
+
+// #8718 — `docker restart` re-allocates a random published port, so a storm run
+// that restarts caddy needs a fixed host port. Opt-in via BREEZE_WT_CADDY_PORT.
+describe('caddyPortPin (#8718)', () => {
+  it('is null when unset or empty (random port, unchanged behaviour)', () => {
+    expect(caddyPortPin({})).toBeNull();
+    expect(caddyPortPin({ BREEZE_WT_CADDY_PORT: '' })).toBeNull();
+  });
+  it('parses a valid port', () => {
+    expect(caddyPortPin({ BREEZE_WT_CADDY_PORT: '18080' })).toBe(18080);
+  });
+  it.each(['abc', '0', '70000', '80.5', '-1'])('rejects %s', (v) => {
+    expect(() => caddyPortPin({ BREEZE_WT_CADDY_PORT: v })).toThrow(/BREEZE_WT_CADDY_PORT/);
+  });
+});
+
+describe('writeEnvStack caddy pin (#8718)', () => {
+  const prev = process.env.BREEZE_WT_CADDY_PORT;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.BREEZE_WT_CADDY_PORT; else process.env.BREEZE_WT_CADDY_PORT = prev;
+  });
+  it('writes BREEZE_WT_CADDY_PORT when pinned', () => {
+    process.env.BREEZE_WT_CADDY_PORT = '18080';
+    expect(readFileSync(writeEnvStack(dir), 'utf8')).toMatch(/^BREEZE_WT_CADDY_PORT=18080$/m);
+  });
+  it('omits it when unset, and drops a stale pin on re-up', () => {
+    process.env.BREEZE_WT_CADDY_PORT = '18080';
+    writeEnvStack(dir);
+    delete process.env.BREEZE_WT_CADDY_PORT;
+    expect(readFileSync(writeEnvStack(dir), 'utf8')).not.toContain('BREEZE_WT_CADDY_PORT');
   });
 });
 
