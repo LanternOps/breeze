@@ -501,6 +501,7 @@ describe('invoiceService guards', () => {
       'id',
       'invoiceNumber',
       'issueDate',
+      'lineGrouping',
       'notes',
       'sellerSnapshot',
       'status',
@@ -553,6 +554,36 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '100',
       workedMinutes: null,
+      workDate: null,
+    });
+  });
+
+  // #8604: the customer payload applies the frozen line-detail toggles itself,
+  // so a withheld note / worked time / date never leaves the server.
+  describe('toCustomerInvoiceLine — #8604 line detail', () => {
+    const te = {
+      ticketNumber: null, name: null, description: 'Diagnosed paper jam', quantity: '1.50', unitPrice: '100.00',
+      taxable: false, lineTotal: '150.00', workedMinutes: 110, sourceType: 'time_entry', workDate: '2026-09-16',
+    };
+    const D = { grouping: 'entry' as const, showDate: false, showNote: true, showWorkedTime: true };
+
+    it('defaults: note and worked minutes travel, the date does not', () => {
+      expect(svc.toCustomerInvoiceLine(te)).toMatchObject({ name: null, description: 'Diagnosed paper jam', workedMinutes: 110, workDate: null });
+    });
+    it('date ON carries the work date', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showDate: true }).workDate).toBe('2026-09-16');
+    });
+    it('note OFF withholds a time-entry note and titles the line with the localised labor label', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false })).toMatchObject({ name: 'Labor', description: '' });
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false }, 'pt-BR')).toMatchObject({ name: 'Mão de obra', description: '' });
+      expect(svc.toCustomerInvoiceLine({ ...te, name: 'Remote support' }, { ...D, showNote: false })).toMatchObject({ name: 'Remote support', description: '' });
+    });
+    it('note OFF leaves non-time lines alone', () => {
+      expect(svc.toCustomerInvoiceLine({ ...te, sourceType: 'part', description: 'Fuser unit', workedMinutes: null }, { ...D, showNote: false }))
+        .toMatchObject({ name: null, description: 'Fuser unit' });
+    });
+    it('worked time OFF withholds workedMinutes', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showWorkedTime: false }).workedMinutes).toBeNull();
     });
   });
 
@@ -623,7 +654,7 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
     expect(result.lines[0]).toEqual({
       ticketNumber: null,
@@ -636,6 +667,7 @@ describe('invoiceService guards', () => {
       taxable: true,
       lineTotal: '150.00',
       workedMinutes: null,
+      workDate: null,
     });
   });
 
@@ -668,7 +700,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
   });
 
