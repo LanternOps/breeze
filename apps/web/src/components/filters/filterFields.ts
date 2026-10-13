@@ -51,6 +51,10 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'patches.pending', label: 'Needs Patches', category: 'core', type: 'boolean', operators: B },
   { key: 'alerts.critical', label: 'Critical Alert Active', category: 'core', type: 'boolean', operators: B },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: B },
+  // Log-shipping health (#8611): online device whose log shipping has been
+  // failing for >= 30 min. Refused as an execution-target field (see
+  // lib/executionRefusedFields.ts).
+  { key: 'logShippingFailing', label: 'Log Shipping Failing', category: 'core', type: 'boolean', operators: B },
 
   // OS
   { key: 'osType', label: 'OS Type', category: 'os', type: 'enum', operators: E, enumValues: ['windows', 'macos', 'linux'] },

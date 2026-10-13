@@ -2663,7 +2663,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterChipBar": {
@@ -2732,7 +2733,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterHelpPopover": {
@@ -2818,7 +2820,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterValueEditor": {
@@ -3434,6 +3437,7 @@
     "ariaLabel": "Filtri di aggiunta rapida",
     "chips": {
       "critical": "Critici",
+      "logShippingFailing": "Invio dei log non riuscito",
       "lowDisk": "Spazio disco basso",
       "needsPatches": "Patch necessarie",
       "notSeen7d": "Non visti da 7 giorni",

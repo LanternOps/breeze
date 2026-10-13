@@ -9,6 +9,8 @@ export interface DeviceStats {
   offline: number;
   byStatus: Record<string, number>;
   migrationRequiredCount: number;
+  /** Online devices with a sustained (>= 30 min) log-shipping failure (#8611). */
+  logShippingFailingCount: number;
 }
 
 /** GET /alerts/summary — apps/api/src/routes/alerts/alerts.ts */

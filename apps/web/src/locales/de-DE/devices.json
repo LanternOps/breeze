@@ -2663,7 +2663,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterChipBar": {
@@ -2732,7 +2733,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterHelpPopover": {
@@ -2818,7 +2820,8 @@
       "software": {
         "installed": "Software installiert ist",
         "notInstalled": "Fehlende Software"
-      }
+      },
+      "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
   },
   "filterValueEditor": {
@@ -3434,6 +3437,7 @@
     "ariaLabel": "Filter schnell hinzufügen",
     "chips": {
       "critical": "Kritisch",
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
       "lowDisk": "Wenig Festplattenspeicher",
       "needsPatches": "Benötigt Patches",
       "notSeen7d": "Nicht gesehen 7 T.",

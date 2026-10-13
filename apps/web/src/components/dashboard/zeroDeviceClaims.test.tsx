@@ -29,7 +29,7 @@ function unavailable<T>(): DashboardQueryState<T> {
 }
 
 function stats(total: number): DeviceStats {
-  return { total, online: total, offline: 0, byStatus: { online: total }, migrationRequiredCount: 0 };
+  return { total, online: total, offline: 0, byStatus: { online: total }, migrationRequiredCount: 0, logShippingFailingCount: 0 };
 }
 
 const alertsSummary: AlertsSummary = {

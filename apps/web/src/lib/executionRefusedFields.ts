@@ -21,6 +21,7 @@ export const EXECUTION_REFUSED_FIELDS: readonly string[] = [
   'software.notInstalled',
   'hostsWorkloads',
   'workloadRuntimes',
+  'logShippingFailing',
 ];
 
 const REFUSED = new Set(EXECUTION_REFUSED_FIELDS);

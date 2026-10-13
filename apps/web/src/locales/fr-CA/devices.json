@@ -2663,7 +2663,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterChipBar": {
@@ -2732,7 +2733,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterHelpPopover": {
@@ -2818,7 +2820,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterValueEditor": {
@@ -3434,6 +3437,7 @@
     "ariaLabel": "Filtres à ajout rapide",
     "chips": {
       "critical": "Critique",
+      "logShippingFailing": "Échec de l'envoi des journaux",
       "lowDisk": "Disque bas",
       "needsPatches": "Nécessite des correctifs",
       "notSeen7d": "Non vu depuis 7 j",
