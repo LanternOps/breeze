@@ -244,7 +244,9 @@
     "expectedValue": "Valeur attendue",
     "nameserver": "Serveur de noms",
     "degradedIsFailure": "Considérer « dégradé » comme un échec",
-    "maxResponseMs": "Échec au-delà de (ms)"
+    "maxResponseMs": "Échec au-delà de (ms)",
+    "eventLogCollectionNoSource": "Les événements Application de niveau Information et Avertissement ne sont collectés que depuis {{providers}}. Les événements d'autres sources ne déclenchent cette règle qu'aux niveaux Erreur ou Critique.",
+    "eventLogCollectionSourceNotCollected": "L'agent ne collecte pas les événements Application de niveau Information ou Avertissement de « {{source}} » ; cette règle ne correspondra donc qu'à ses événements Erreur ou Critique. Fournisseurs collectés : {{providers}}."
   },
   "operators": {
     "gt": "supérieur à",
@@ -268,6 +270,7 @@
     "system": "Système"
   },
   "eventLevels": {
+    "info": "Informations",
     "warning": "Avertissement",
     "error": "Erreur",
     "critical": "Critique"
@@ -359,7 +362,7 @@
   "legacy": {
     "title": "Règles d’alerte héritées",
     "description": "Règles d’alerte autonomes qui ne sont pas gérées par un moniteur. Convertissez-les pour regrouper réponses, diffusion et escalade en un seul endroit.",
-    "empty": "Aucune règle héritée.",
+    "empty": "Aucune règle d’alerte autonome n’a besoin d’être convertie.",
     "columns": {
       "name": "Nom",
       "template": "Modèle",
@@ -535,6 +538,7 @@
       "more": "Charger plus",
       "empty": "Aucun historique de conversion.",
       "system": "Système",
+      "unknownUser": "Utilisateur inconnu",
       "reverted": "Annulée",
       "deadline": "L'annulation est indisponible après la suppression du moteur source par le retrait des alertes héritées."
     },

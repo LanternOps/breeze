@@ -267,7 +267,7 @@ describe('manage_invoices', () => {
       periodTotal: '37.50',
       lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true, counted: 3, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
       uncoveredDevices: null,
-      overages: [],
+      overages: [], hourBlock: null,
       };
     });
 
@@ -288,7 +288,7 @@ describe('manage_invoices', () => {
     );
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', contractActor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map));
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map), { includeHourBlock: false });
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
@@ -309,7 +309,7 @@ describe('manage_invoices', () => {
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '12.50',
       lines: [{ lineId: line.id, lineType: 'flat', quantity: 1, value: '12.50', live: false, counted: 1, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlock: null,
     });
 
     const out = JSON.parse(await getTool().handler({
@@ -372,7 +372,7 @@ describe('manage_invoices', () => {
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '390.00',
       lines: [{ lineId: rereadLine.id, lineType: 'per_device', quantity: 30, value: '375.00', live: true, counted: 31, included: 30, overage: 1, overageMode: 'bill', overageValue: '15.00' }],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlock: null,
     });
 
     await getTool().handler({
@@ -396,7 +396,7 @@ describe('manage_invoices', () => {
       currencyCode: 'USD', periodTotal: '262.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'bill', overageValue: '12.00' }],
       uncoveredDevices: null,
-      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }],
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }], hourBlock: null,
     });
     vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
       baseLine: { id: 'base-line' }, overageLine: { id: 'overage-line' }, pricedFrom: 'contract_snapshot',
@@ -421,7 +421,7 @@ describe('manage_invoices', () => {
       currencyCode: 'USD', periodTotal: '250.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00' }],
       uncoveredDevices: null,
-      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' }],
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' }], hourBlock: null,
     });
     vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
       baseLine: { id: 'base-line' }, overageLine: null, pricedFrom: 'contract_snapshot',

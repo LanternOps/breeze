@@ -30,6 +30,11 @@ const NORMALIZED_PATCH_FACTS = {
   rebootAllowDeferral: false,
   rebootMaxDeferrals: 3,
   rebootDeferralMinutes: 60,
+  // #8030. Unset prompt text exports as null (the SQL projection does not
+  // strip nulls), and null must count as present for the exact-key check.
+  rebootPromptTitle: null,
+  rebootPromptBody: null,
+  rebootPromptButton: null,
   exclusiveWindowsUpdate: false,
 };
 

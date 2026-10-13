@@ -106,6 +106,7 @@ async function applyRuntimePlan(args: IngestWorkloadsArgs, plan: WorkloadRuntime
       });
   }
   const upserts = [...plan.workloads.updates.map((update) => update.row), ...plan.workloads.inserts];
+  const upstream = upstreamUpsertSet(plan.incompleteSnapshot);
   for (let offset = 0; offset < upserts.length; offset += UPSERT_CHUNK) {
     await db
       .insert(deviceWorkloads)
@@ -121,7 +122,6 @@ async function applyRuntimePlan(args: IngestWorkloadsArgs, plan: WorkloadRuntime
           imageRef: sql`excluded.image_ref`,
           imageRepository: sql`excluded.image_repository`,
           imageTag: sql`excluded.image_tag`,
-          imageDigest: sql`excluded.image_digest`,
           imageId: sql`excluded.image_id`,
           guestOs: sql`excluded.guest_os`,
           composeProject: sql`excluded.compose_project`,
@@ -134,9 +134,41 @@ async function applyRuntimePlan(args: IngestWorkloadsArgs, plan: WorkloadRuntime
           runtimeCreatedAt: sql`excluded.runtime_created_at`,
           lastSeenAt: sql`excluded.last_seen_at`,
           updatedAt: sql`excluded.updated_at`,
+          ...upstream,
         },
       });
   }
+}
+
+/**
+ * Image currency (W05, spec §9.3) on the upsert path. SET expressions read the
+ * row as it was BEFORE this statement, so `t.*` below is the stored value.
+ *
+ * - Incomplete snapshot: a null reported digest is digest-UNKNOWN (the agent's
+ *   image list failed), so the stored digest is kept — but only while the
+ *   image is provably the same one (same image id and reference).
+ * - The upstream comparison describes one specific local image: it is reset
+ *   to `pending` (digest/checked-at cleared) when the effective digest or the
+ *   image reference changes, and preserved otherwise. A brand-new row takes
+ *   the column defaults (`pending`).
+ */
+function upstreamUpsertSet(incompleteSnapshot: boolean) {
+  const t = deviceWorkloads;
+  const sameImage = sql`excluded.image_ref IS NOT DISTINCT FROM ${t.imageRef}
+    AND excluded.image_repository IS NOT DISTINCT FROM ${t.imageRepository}
+    AND excluded.image_tag IS NOT DISTINCT FROM ${t.imageTag}`;
+  const keepStoredDigest = incompleteSnapshot
+    ? sql`(excluded.image_digest IS NULL AND excluded.image_id IS NOT NULL
+        AND excluded.image_id IS NOT DISTINCT FROM ${t.imageId} AND ${sameImage})`
+    : sql`false`;
+  const nextDigest = sql`CASE WHEN ${keepStoredDigest} THEN ${t.imageDigest} ELSE excluded.image_digest END`;
+  const unchanged = sql`(${nextDigest} IS NOT DISTINCT FROM ${t.imageDigest} AND ${sameImage})`;
+  return {
+    imageDigest: nextDigest,
+    upstreamStatus: sql`CASE WHEN ${unchanged} THEN ${t.upstreamStatus} ELSE 'pending' END`,
+    upstreamDigest: sql`CASE WHEN ${unchanged} THEN ${t.upstreamDigest} ELSE NULL END`,
+    upstreamCheckedAt: sql`CASE WHEN ${unchanged} THEN ${t.upstreamCheckedAt} ELSE NULL END`,
+  };
 }
 
 /**

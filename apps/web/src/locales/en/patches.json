@@ -83,6 +83,8 @@
       "pendingDevices": "{{count}} have pending patches",
       "approved": "{{count}} approved",
       "pendingApproval": "{{count}} pending approval",
+      "failedInstalls_one": "{{count}} failed install",
+      "failedInstalls_other": "{{count}} failed installs",
       "critical": "{{count}} critical",
       "reboot": "{{count}} reboot"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Outstanding patches approved for installation",
       "pendingApproval": "Pending Approval",
       "pendingApprovalTitle": "Outstanding patches still awaiting approval",
+      "failed": "Failed",
+      "failedTitle": "Outstanding patches whose last install attempt failed",
       "osPatches": "OS Patches",
       "osPatchesTitle": "Outstanding updates from Windows Update, Apple, or Linux package managers",
       "thirdParty": "3rd-Party",

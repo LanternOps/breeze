@@ -213,6 +213,8 @@ export type DevicePatchRow = {
   pendingPatches: number;
   approvedMissing: number;
   unapprovedMissing: number;
+  /** Outstanding patches whose latest install attempt failed (#7214). Disjoint from approved/unapprovedMissing. */
+  failedMissing: number;
   criticalMissing: number;
   importantMissing: number;
   osMissing: number;

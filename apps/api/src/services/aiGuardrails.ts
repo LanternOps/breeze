@@ -522,6 +522,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
   'm365_disable_user', 'm365_reset_password',
+  // AI Operator plan approval — ONE four-eyes decision over an ordered,
+  // digest-pinned set of provider effects (Recipe Library spec §6.4). Four-eyes
+  // for the same reason every effect inside it is: the set can destroy a
+  // person's access across two providers.
+  'operator_plan',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -864,10 +869,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_time_entries: { resource: 'time_entries', action: 'read' },
   get_running_timer: { resource: 'time_entries', action: 'read' },
   get_timesheet: { resource: 'time_entries', action: 'read' },
+  get_ticket_approval_status: { resource: 'tickets', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_device_time_status: { resource: 'devices', action: 'read' },
+  query_device_workloads: { resource: 'devices', action: 'read' },
   list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
@@ -1351,6 +1358,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  get_fleet_device_stats: { resource: 'devices', action: 'read' },
   get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.
@@ -1546,6 +1554,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   m365_recent_signins: { resource: 'organizations', action: 'read' },
   m365_list_group_memberships: { resource: 'organizations', action: 'read' },
   m365_disable_user: { resource: 'organizations', action: 'write' },
+  // Org-wide identity governance, provider-neutral: a plan may hold M365,
+  // Google and device effects at once, so it takes the identity-tenant ceiling.
+  operator_plan: { resource: 'organizations', action: 'write' },
   m365_reset_password: { resource: 'organizations', action: 'write' },
   // Google Workspace helpdesk tools (DWD service-account-backed). Same
   // reasoning as the M365 block above; routes/google.ts:29-30 gates the
@@ -2978,6 +2989,11 @@ function buildApprovalDescription(
   const parts: string[] = [];
 
   switch (toolName) {
+    case 'operator_plan': {
+      const n = Array.isArray(input.effects) ? input.effects.length : 0;
+      parts.push(`Approve a ${n}-effect plan for AI Operator task ${String(input.taskId ?? '')}`);
+      break;
+    }
     case 'execute_command': {
       const commandType = nonEmptyText(input.commandType);
       const payload = (input.payload && typeof input.payload === 'object'

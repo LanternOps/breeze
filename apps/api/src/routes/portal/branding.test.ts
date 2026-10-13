@@ -81,6 +81,9 @@ describe('GET /branding (authenticated)', () => {
       enablePerformanceMetrics: true,
       enableSoftwareInventory: true,
       enableNetworkVisibility: true,
+      enableHourBlock: true,
+      enablePatchDetail: true,
+      enableVulnerabilityDetail: true,
     }];
 
     const response = await authenticatedApp.request('/branding');
@@ -100,6 +103,9 @@ describe('GET /branding (authenticated)', () => {
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
         enableSoftwareInventory: true,
+        enableHourBlock: true,
+        enablePatchDetail: true,
+        enableVulnerabilityDetail: true,
       },
     });
 
@@ -127,6 +133,9 @@ describe('GET /branding (authenticated)', () => {
         'enablePerformanceMetrics',
         'enableSoftwareInventory',
         'enableNetworkVisibility',
+        'enableHourBlock',
+        'enablePatchDetail',
+        'enableVulnerabilityDetail',
       ]),
     );
   });
@@ -162,6 +171,9 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enablePerformanceMetrics');
     expect(body).not.toHaveProperty('enableSoftwareInventory');
     expect(body).not.toHaveProperty('enableNetworkVisibility');
+    expect(body).not.toHaveProperty('enableHourBlock');
+    expect(body).not.toHaveProperty('enablePatchDetail');
+    expect(body).not.toHaveProperty('enableVulnerabilityDetail');
   });
 
   it('applies private cache headers scoped to the authenticated viewer', async () => {
@@ -231,6 +243,9 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enablePerformanceMetrics');
     expect(body.branding).not.toHaveProperty('enableSoftwareInventory');
     expect(body.branding).not.toHaveProperty('enableNetworkVisibility');
+    expect(body.branding).not.toHaveProperty('enableHourBlock');
+    expect(body.branding).not.toHaveProperty('enablePatchDetail');
+    expect(body.branding).not.toHaveProperty('enableVulnerabilityDetail');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
     // Same reasoning as the authenticated case: the mock ignores the
@@ -252,6 +267,9 @@ describe('GET /branding/:domain (public)', () => {
       'enablePerformanceMetrics',
       'enableSoftwareInventory',
       'enableNetworkVisibility',
+      'enableHourBlock',
+      'enablePatchDetail',
+      'enableVulnerabilityDetail',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
     }

@@ -24,8 +24,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 2,
     'alerts.json': 43,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in pt-BR IT contexts, matching how other backup.json
@@ -58,6 +60,8 @@ const namespaceDuplicateBaselines = {
     // identically in pt-BR.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 61, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.manual "Manual" are
     // identical cognates in pt-BR.
@@ -83,7 +87,7 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 178,
+    'devices.json': 183,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -123,6 +127,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 40, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
@@ -191,8 +196,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 39,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
@@ -220,6 +227,8 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 47, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; source.manual "Manual" is an identical cognate in es-419.
     'checklists.json': 2,
@@ -246,7 +255,7 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 129,
+    'devices.json': 133,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -290,6 +299,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 33, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
@@ -350,8 +360,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 58,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
@@ -381,6 +393,8 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -413,7 +427,7 @@ const namespaceDuplicateBaselines = {
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-FR.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 158,
+    'devices.json': 164,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -459,6 +473,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 18,
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
@@ -542,8 +557,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 3,
     'alerts.json': 59,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
@@ -567,6 +584,8 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -599,7 +618,7 @@ const namespaceDuplicateBaselines = {
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-CA.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 158,
+    'devices.json': 164,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -645,6 +664,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 17,
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
@@ -729,8 +749,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 4,
     'alerts.json': 46,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 15,
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in German IT contexts, matching how other backup.json
@@ -762,6 +784,8 @@ const namespaceDuplicateBaselines = {
     // identically in de-DE.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
     'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.name — "Name" is also the German word.
     'checklists.json': 2,
@@ -799,7 +823,7 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 5,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 167,
+    'devices.json': 174,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -845,6 +869,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 53,
+    'restorePoints.json': 0,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the standard
@@ -884,7 +909,8 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
-    'settings.json': 200,
+    // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical German term.
+    'settings.json': 201,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -912,8 +938,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 2,
     'alerts.json': 57,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 21,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
@@ -934,6 +962,8 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     'billing.json': 38, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
     // are the same loanwords deliverables.json already keeps untranslated in it-IT.
@@ -953,7 +983,7 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 3,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 147,
+    'devices.json': 150,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -998,6 +1028,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 51,
+    'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
@@ -1027,7 +1058,8 @@ const namespaceDuplicateBaselines = {
     // already used for inboundEmail elsewhere in this file).
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
-    'settings.json': 178,
+    // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical Italian term.
+    'settings.json': 179,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1050,8 +1082,10 @@ const namespaceDuplicateBaselines = {
     'aiOperator.json': 0,
     'alerts.json': 25,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
-    // slash — no wording to translate.
-    'approvals.json': 1,
+    // slash — no wording to translate. +3: operatorPlan groupM365/groupGoogle are
+    // vendor proper nouns ("Microsoft 365", "Google Workspace") and targetLine is a
+    // pure-interpolation literal.
+    'approvals.json': 4,
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
@@ -1072,6 +1106,8 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     'billing.json': 24, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
+    'callerVerification.json': 0,
+    'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
@@ -1085,7 +1121,7 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 91,
+    'devices.json': 96,
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1127,6 +1163,7 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 4,
     'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'restorePoints.json': 0,
     'scripts.json': 38,
     'security.json': 86,
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4

@@ -680,10 +680,14 @@ func collectEncryptionDetailsLinux() (map[string]any, error) {
 }
 
 func linuxEncryptionDetails(report linuxEncryptionReport) map[string]any {
-	return map[string]any{
+	details := map[string]any{
 		"source":  "lsblk",
 		"volumes": report.Volumes,
 	}
+	if len(report.Warnings) > 0 {
+		details["warnings"] = report.Warnings
+	}
+	return details
 }
 
 func collectEncryptionDetails() (map[string]any, error) {

@@ -169,6 +169,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
+  get_ticket_approval_status: 'tickets',
 
 
   // ---- patching_software ----
@@ -316,6 +317,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_device_details: 'automations_reports',
   get_device_hardware_health: 'automations_reports',
   get_device_time_status: 'automations_reports',
+  query_device_workloads: 'automations_reports',
   list_time_sync_issues: 'automations_reports',
   get_device_context: 'automations_reports',
   set_device_context: 'automations_reports',
@@ -326,6 +328,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',
   get_invite_funnel: 'automations_reports', // deployment/enrollment funnel report
+  get_fleet_device_stats: 'automations_reports', // exact fleet device counts by status
   get_fleet_health: 'automations_reports', // device reliability scoring/reporting
   analyze_metrics: 'automations_reports',
   analyze_fleet_metrics: 'automations_reports',
@@ -373,6 +376,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_webhooks: 'tenancy',
   query_psa_status: 'tenancy',
   manage_ai_agents: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS; mapped for completeness, never reachable
+  operator_plan: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS (plan approval carrier); mapped for completeness, never reachable
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

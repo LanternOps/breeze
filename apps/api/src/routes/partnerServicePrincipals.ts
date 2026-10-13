@@ -1,8 +1,8 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { db, type Database } from '../db';
-import { partnerServicePrincipalKeys, partnerServicePrincipals } from '../db/schema';
+import { partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -297,6 +297,7 @@ partnerServicePrincipalRoutes.get(
         scopes: partnerServicePrincipals.scopes,
         expiresAt: partnerServicePrincipals.expiresAt,
         sourceCidrs: partnerServicePrincipals.sourceCidrs,
+        createdBy: partnerServicePrincipals.createdBy,
         createdAt: partnerServicePrincipals.createdAt,
         updatedAt: partnerServicePrincipals.updatedAt,
       })
@@ -328,8 +329,19 @@ partnerServicePrincipalRoutes.get(
       list.push(key);
       keysByPrincipal.set(key.partnerServicePrincipalId, list);
     }
-    return c.json({ data: principals.map((principal) => ({
+    // The owner (created_by) is the only user who may issue or rotate keys or
+    // widen the principal, so the page names them and gates those actions.
+    // name is null when RLS hides the owner's user row (e.g. a system-scope
+    // creator); the id is still enough to tell the caller they are not it.
+    const ownerIds = [...new Set(principals.map((principal) => principal.createdBy))];
+    const owners = ownerIds.length === 0
+      ? []
+      : await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ownerIds));
+    const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]));
+
+    return c.json({ data: principals.map(({ createdBy, ...principal }) => ({
       ...principal,
+      owner: { id: createdBy, name: ownerNames.get(createdBy) ?? null },
       keys: keysByPrincipal.get(principal.id) ?? [],
     })) });
   },

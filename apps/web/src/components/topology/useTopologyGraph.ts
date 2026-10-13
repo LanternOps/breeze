@@ -67,8 +67,9 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
       if (document.hidden || !current || current.siteId !== scope.siteId || healthBusy) return;
       healthBusy = true;
       try {
-        const params = new URLSearchParams({ nodeIds: current.nodes.map((n) => n.id).join(','), relationshipIds: current.relationships.map((r) => r.id).join(','), graphRevision: current.revisions.graph });
-        const next = await topologyRead(`/topology/sites/${scope.siteId}/health?${params}`, topologyHealthSchema, controller.signal);
+        // Ids go in the body: every node/relationship id in the query was ~10 KB for 171 nodes and would hit proxy URL limits (#8307).
+        const next = await topologyRead(`/topology/sites/${scope.siteId}/health`, topologyHealthSchema, controller.signal,
+          { nodeIds: current.nodes.map((n) => n.id), relationshipIds: current.relationships.map((r) => r.id), graphRevision: current.revisions.graph });
         if (valid()) setGraph((latest) => {
           if (!latest || latest.revisions.graph !== next.graphRevision) return latest;
           const nodes = new Map(next.nodes.map((n) => [n.id, n.health])), edges = new Map(next.relationships.map((r) => [r.id, r.health]));

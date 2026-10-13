@@ -204,7 +204,9 @@ describe('software inventory observation storage', () => {
     `) as unknown as Array<{ observation_org: string; state_org: string; inventory_org: string }>;
     expect(moved[0]).toEqual({ observation_org: orgB.id, state_org: orgB.id, inventory_org: orgB.id });
 
-    await getTestDb().transaction((tx) => deleteDeviceCascade(tx, deviceA.id));
+    // System scope, as every production caller runs the cascade (its fix-memory
+    // step refuses any other scope, #7278).
+    await withSystemDbAccessContext(() => db.transaction((tx) => deleteDeviceCascade(tx as never, deviceA.id)));
     const remaining = await getTestDb().execute(sql`
       SELECT id FROM software_inventory_observations WHERE device_id = ${deviceA.id}::uuid
       UNION ALL SELECT device_id AS id FROM device_software_inventory_state WHERE device_id = ${deviceA.id}::uuid

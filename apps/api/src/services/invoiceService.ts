@@ -1474,6 +1474,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       if (missing.length) {
         throw new InvoiceServiceError(`${label} no longer exist for this organization: ${missing.join(', ')}`, 409, 'SOURCE_NOT_FOUND');
       }
+      // #4617: held time is unbilled but not invoiceable — its own refusal, not "already billed".
+      const held = ids.filter((id) => byId.get(id)!.billingStatus === 'awaiting_approval');
+      if (held.length) {
+        throw new InvoiceServiceError(
+          `${label} are awaiting customer approval and cannot be invoiced yet: ${held.join(', ')}`, 409, 'SOURCE_AWAITING_APPROVAL');
+      }
       const billed = ids.filter((id) => byId.get(id)!.billingStatus !== 'not_billed');
       if (billed.length) {
         throw new InvoiceServiceError(`${label} already billed: ${billed.join(', ')}`, 409, 'SOURCE_ALREADY_BILLED');

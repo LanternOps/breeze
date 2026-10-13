@@ -335,7 +335,7 @@ export async function securityDevicesPage(
     when ${hasS1Agent} or ${hasHuntressAgent} then 'protected'
     when ${securityStatus.id} is null then 'unknown'
     when ${securityStatus.realTimeProtection} is null then 'unknown'
-    when ${securityStatus.provider} <> 'other'
+    when ${securityStatus.provider} not in ('other', 'unknown')
       and ${securityStatus.realTimeProtection} = true then 'protected'
     else 'unprotected'
   end`;
@@ -407,7 +407,7 @@ export async function securityDevicesPage(
       ...(row.hasS1Agent ? ['SentinelOne'] : []),
       ...(row.hasHuntressAgent ? ['Huntress'] : []),
       ...avProductNames(row.avProducts),
-      ...(row.provider && row.provider !== 'other'
+      ...(row.provider && row.provider !== 'other' && row.provider !== 'unknown'
         ? [prettySecurityProvider(row.provider)]
         : []),
     ])],

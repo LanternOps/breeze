@@ -12,13 +12,18 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketApprovalRail from './TicketApprovalRail';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
+import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
+import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -33,7 +38,7 @@ interface MissingRateEntry { timeEntryId: string; ticketId: string | null; descr
  *  are non-empty on a PARTIAL success: the draft exists but those rows were
  *  left out of it (review #3). */
 interface AssembleInvoiceResponse {
-  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] };
+  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[]; heldForHourBlock?: { count: number; hours: number } };
 }
 /** Mirrors MoveCurrencyGuardDetails (ticketMoveCurrencyGuard.ts, #3776). */
 interface MoveBlockedDetails {
@@ -160,6 +165,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
+  // Bumped when the caller-verification modal reports a change so the header
+  // badge re-reads the server's ticket freshness projection.
+  const [callerRevision, setCallerRevision] = useState(0);
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
@@ -640,6 +648,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       const newId = result?.data?.invoice?.id;
       const blocked = result?.data?.blockedByCurrency ?? [];
       const missing = result?.data?.missingRate ?? [];
+      // Entries inside a block-hours window are held until the block period closes (#4547).
+      const held = result?.data?.heldForHourBlock;
+      if (held && held.count > 0) {
+        showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
+      }
       if (blocked.length === 0 && missing.length === 0) {
         if (newId) void navigateTo(`/billing/invoices/${newId}`);
         return;
@@ -661,6 +674,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         setInvoiceBlocked(details?.blockedByCurrency ?? []);
         setInvoiceMissingRate(details?.missingRate ?? []);
       }
+      if (err.code === 'NOTHING_TO_INVOICE') {
+        // runAction already toasted the server's message; add WHY when the work is merely held for a block.
+        const held = (err.body as { details?: { heldForHourBlock?: { count: number; hours: number } } } | undefined)?.details?.heldForHourBlock;
+        if (held && held.count > 0) {
+          showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
+        }
+      }
     } finally {
       setCreatingInvoice(false);
     }
@@ -681,6 +701,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
         }),
         errorFallback: t('ticketWorkbench.move.failed'),
+        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
+        friendly: approvalFriendly(t),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setMoveBlocked(null);
@@ -1126,6 +1148,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <>
               <span>·</span>
               <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
+            </>
+          )}
+          {ticket.requesterContactId && (
+            // Both render nothing (and fetch nothing) unless the server's
+            // caller-verification flag is on.
+            <>
+              <TicketVerificationBadge orgId={ticket.orgId} ticketId={ticket.id} revision={callerRevision} />
+              <CallerVerificationEntry
+                orgId={ticket.orgId}
+                initialContactId={ticket.requesterContactId}
+                lockContact
+                ticketId={ticket.id}
+                hash="caller-verification"
+                onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
+              />
             </>
           )}
           {slaState(ticket).kind !== 'none' && (
@@ -1667,6 +1704,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketApprovalRail ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>

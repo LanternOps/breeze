@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AI_SURFACES, AI_SURFACE_ROLES, MODEL_LIFECYCLES } from '@breeze/shared';
+import { AI_CONNECTION_ROW_KINDS, AI_SURFACES, AI_SURFACE_ROLES, MODEL_LIFECYCLES } from '@breeze/shared';
 import { describe, expect, it } from 'vitest';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getOrgCascadeDeleteOrder, __testOnly as tenantCascadeTestOnly } from '../../services/tenantCascade';
@@ -24,6 +24,16 @@ describe('partner_ai_connections contract (#7600 W02)', () => {
 
   it('the kind CHECK lists exactly the Drizzle kinds', () => {
     expect(checkLiterals(sqlText, 'kind')).toEqual([...PARTNER_AI_CONNECTION_KINDS]);
+  });
+
+  it('the Drizzle kinds ARE the shared row kinds (one source, #7779)', () => {
+    expect(PARTNER_AI_CONNECTION_KINDS).toBe(AI_CONNECTION_ROW_KINDS);
+    expect(checkLiterals(sqlText, 'kind')).toEqual([...AI_CONNECTION_ROW_KINDS]);
+  });
+
+  it('the Drizzle kind CHECK is generated from the shared kinds', () => {
+    const src = readFileSync(join(__dirname, 'aiModelRegistry.ts'), 'utf8');
+    expect(src).not.toMatch(/IN \('(anthropic_byok|catalog|openai_compatible)'/);
   });
 
   it('copies legacy rows with the same id and elects system scope first', () => {

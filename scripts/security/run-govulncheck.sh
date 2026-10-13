@@ -16,6 +16,19 @@ cd "$repo_root/agent"
 # operational failure (build error, network), which set -e propagates.
 CGO_ENABLED=0 govulncheck -format json ./... > "$out_file"
 
+# Fail closed on a scan that evaluated nothing (#8283). govulncheck emits one
+# `config` record per run before any finding, so an empty file, a non-JSON
+# file, or output with no config record means the scanner (or a wrapper, an
+# install problem, a format change) produced no result — NOT a clean scan.
+[ -s "$out_file" ] || {
+  echo "FAIL govulncheck produced no output; refusing to report a clean scan" >&2
+  exit 1
+}
+if ! jq -e -s 'any(.[]; type == "object" and .config != null)' "$out_file" >/dev/null 2>&1; then
+  echo "FAIL govulncheck output has no config record (empty or unrecognised format); refusing to report a clean scan" >&2
+  exit 1
+fi
+
 # Symbol-level findings only (a trace entry with a function) — the same set
 # plain `govulncheck ./...` fails on ("Your code is affected by ...").
 found="$(jq -r 'select(.finding != null) | .finding | select(.trace[0].function != null) | .osv' "$out_file" | sort -u)"

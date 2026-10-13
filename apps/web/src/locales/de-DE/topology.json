@@ -657,6 +657,8 @@
     "diagnoseHint": "Diagnosen laufen auf dem ausgewählten Gerät, über dessen eigene Route.",
     "stale": "veraltet",
     "unverified": "nicht verifiziert",
+    "decommissioned": "Außer Betrieb genommen",
+    "reportedByDevices": "Gemeldet von {{reporters}}",
     "sharedAddress_one": "Gleiche IP wie {{count}} weiteres Gerät",
     "sharedAddress_other": "Gleiche IP wie {{count}} weitere Geräte",
     "networkExplanation_one": "{{count}} Gerät meldet eine Schnittstelle in {{prefix}}. Die Gruppierung nach Adressbereich ist abgeleitet: Sie belegt nicht, dass die Geräte einen Switch teilen.",
@@ -728,6 +730,22 @@
     "linkVia": "über {{name}}",
     "siteNetworks_one": "{{count}} Netzwerk",
     "siteNetworks_other": "{{count}} Netzwerke",
-    "noObservedLink": "Keine beobachtete Verbindung zwischen {{network}} und {{primary}}"
+    "noObservedLink": "Keine beobachtete Verbindung zwischen {{network}} und {{primary}}",
+    "rosterHeading": "Andere / nicht identifizierte Netzwerke ({{count}})",
+    "rosterNetworkVia": "{{prefix}} über {{gateways}}",
+    "rosterUnidentified": "Netzwerk nicht identifiziert",
+    "notDeclared": "Nicht für {{site}} deklariert",
+    "showOtherNetworks": "Andere Netzwerke auf der Karte anzeigen",
+    "declareHint": "Für {{site}} sind keine Netzwerke deklariert. Geräte werden nach den Netzwerken gruppiert, die sie melden. Deklarieren Sie die Netzwerke dieses Standorts in einem Discovery-Profil, damit Breeze Besucher und falsch zugeordnete Geräte unterscheiden kann.",
+    "declareHintLink": "Discovery-Profile öffnen",
+    "siteIntro": "Geräte, die {{site}} zugewiesen sind, gruppiert nach dem Netzwerk, das jedes Gerät meldet",
+    "thisSite": "dieser Standort",
+    "declaredDiscovery": "Für diesen Standort deklariert (Discovery-Profil)",
+    "declaredBaseline": "Für diesen Standort deklariert (Netzwerk-Baseline)",
+    "declaredBoth": "Für diesen Standort deklariert (Discovery-Profil und Netzwerk-Baseline)",
+    "declaredEmpty": "Für {{site}} deklariert — kein Gerät meldet dieses Netzwerk",
+    "declaredColumn": "Deklariert",
+    "declaredYes": "Ja",
+    "declaredNo": "Nein"
   }
 }

@@ -11,7 +11,7 @@ export function makeDbMock() {
   const results: unknown[][] = [];
   const calls: Array<{ name: string; args: unknown[] }> = [];
   const chain: any = {};
-  for (const name of ['select', 'from', 'where', 'limit', 'orderBy', 'for', 'insert', 'values', 'update', 'set', 'returning', 'onConflictDoNothing', 'delete']) {
+  for (const name of ['select', 'from', 'leftJoin', 'innerJoin', 'where', 'limit', 'orderBy', 'for', 'insert', 'values', 'update', 'set', 'returning', 'onConflictDoNothing', 'delete']) {
     chain[name] = (...args: unknown[]) => { calls.push({ name, args }); return chain; };
   }
   chain.then = (yes: (v: unknown) => unknown, no: (e: unknown) => unknown) =>

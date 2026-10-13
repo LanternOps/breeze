@@ -5,7 +5,7 @@ import { describe, it, expect, vi, type Mock } from 'vitest';
 vi.mock('../../services/api', () => ({ coreRequest: vi.fn() }));
 vi.mock('@sentry/react-native', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
-import { startForTicket, stopRunningTimer, type Stamp } from './timerActions';
+import { startForSite, startForTicket, stopRunningTimer, type Stamp } from './timerActions';
 import { TimeEntryError, type RunningTimer } from '../../services/timeEntries';
 import type { LocalTimer } from '../../services/localTimer';
 
@@ -191,6 +191,85 @@ describe('startForTicket', () => {
     const outcome = await startForTicket('k1', deps);
     expect(outcome).toMatchObject({ ok: false, reason: 'denied' });
     expect((outcome as { denial?: { reason: string } }).denial?.reason).toBe('permission');
+  });
+});
+
+describe('startForSite (#8211)', () => {
+  const target = { orgId: 'o1', siteId: 's1', ticketId: null as string | null };
+  const withInvalidate = (over: Record<string, unknown> = {}) => {
+    const invalidateLocationSites = vi.fn().mockResolvedValue(undefined);
+    return { deps: startDeps({ invalidateLocationSites, ...over }), invalidateLocationSites };
+  };
+
+  it('sends orgId / siteId / source:location (and the ticket when there is one)', async () => {
+    const { deps } = withInvalidate();
+    await startForSite(target, deps);
+    expect(deps.startTimer).toHaveBeenCalledWith({ orgId: 'o1', siteId: 's1', source: 'location' });
+    const { deps: d2 } = withInvalidate();
+    await startForSite({ ...target, ticketId: 'k1' }, d2);
+    expect(d2.startTimer).toHaveBeenCalledWith({
+      ticketId: 'k1',
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+  });
+
+  it('persists the local timer before the network and carries the provenance on it', async () => {
+    const { deps } = withInvalidate();
+    await startForSite(target, deps);
+    expect(deps.writeLocalTimer.mock.calls[0][0]).toMatchObject({
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+      ticketId: null,
+    });
+  });
+
+  it('offline: ticks locally with orgId / siteId / source on the timer', async () => {
+    const { deps } = withInvalidate({ isConnected: () => false, startTimer: vi.fn() });
+    const outcome = await startForSite(target, deps);
+    expect(deps.startTimer).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      ok: 'local',
+      timer: { orgId: 'o1', siteId: 's1', source: 'location' },
+    });
+  });
+
+  it('ENTRY_RUNNING keeps the existing already-running outcome', async () => {
+    const { deps } = withInvalidate({
+      startTimer: vi.fn().mockRejectedValue(new TimeEntryError('conflict', 'ENTRY_RUNNING', 409)),
+    });
+    expect(await startForSite(target, deps)).toMatchObject({ ok: false, reason: 'already-running' });
+  });
+
+  it.each([
+    ['ORG_DENIED', 403],
+    ['SITE_DENIED', 403],
+    ['SITE_ORG_MISMATCH', 422],
+  ])('%s → forbidden, clears the local timer and drops the cached site list', async (code, status) => {
+    const { deps, invalidateLocationSites } = withInvalidate({
+      startTimer: vi.fn().mockRejectedValue(new TimeEntryError('nope', code, status)),
+    });
+    expect(await startForSite(target, deps)).toMatchObject({ ok: false, reason: 'forbidden' });
+    expect(invalidateLocationSites).toHaveBeenCalledTimes(1);
+    expect(deps.clearLocalTimer).toHaveBeenCalled();
+  });
+
+  it('a plain permission 403 is still the classified denial, not forbidden', async () => {
+    const { deps, invalidateLocationSites } = withInvalidate({
+      startTimer: vi
+        .fn()
+        .mockRejectedValue(new TimeEntryError('Permission denied: time_entries:write', undefined, 403)),
+    });
+    expect(await startForSite(target, deps)).toMatchObject({ ok: false, reason: 'denied' });
+    expect(invalidateLocationSites).not.toHaveBeenCalled();
+  });
+
+  it('startForTicket still sends no provenance', async () => {
+    const deps = startDeps();
+    await startForTicket('k1', deps);
+    expect(deps.startTimer).toHaveBeenCalledWith({ ticketId: 'k1' });
   });
 });
 
@@ -393,6 +472,37 @@ describe('stopRunningTimer — a timer the server owns', () => {
     expect(await stopRunningTimer({ running: serverRunning }, deps)).toMatchObject({
       ok: false,
       reason: 'denied',
+    });
+  });
+
+  it('queues the create with orgId / siteId / source:location for a location timer (#8211)', async () => {
+    const deps = stopDeps({
+      readLocalTimer: vi
+        .fn()
+        .mockResolvedValue(
+          localTimer({ ticketId: null, orgId: 'o1', siteId: 's1', source: 'location' })
+        ),
+    });
+    await stopRunningTimer({ running: null }, deps);
+    expect(deps.enqueue).toHaveBeenCalledWith({
+      kind: 'create',
+      payload: {
+        startedAt: '2026-08-30T09:00:00.000Z',
+        endedAt: '2026-08-30T09:40:00.000Z',
+        orgId: 'o1',
+        siteId: 's1',
+        source: 'location',
+      },
+    });
+  });
+
+  it('a legacy local timer with none of the three keys queues the same create as before (#8211)', async () => {
+    const deps = stopDeps({ readLocalTimer: vi.fn().mockResolvedValue(localTimer()) });
+    await stopRunningTimer({ running: null }, deps);
+    expect(deps.enqueue.mock.calls[0][0].payload).toEqual({
+      startedAt: '2026-08-30T09:00:00.000Z',
+      endedAt: '2026-08-30T09:40:00.000Z',
+      ticketId: 'k1',
     });
   });
 

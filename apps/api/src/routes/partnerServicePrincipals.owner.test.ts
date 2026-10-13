@@ -50,6 +50,7 @@ vi.mock('../db/schema', () => ({
     rateLimit: 'rateLimit', lastUsedAt: 'lastUsedAt', revokedAt: 'revokedAt',
     rotatedFromId: 'rotatedFromId', createdBy: 'createdBy', createdAt: 'createdAt',
   },
+  users: { id: 'id', name: 'name' },
 }));
 
 vi.mock('../services/partnerServicePrincipalKeys', () => ({
@@ -126,6 +127,34 @@ beforeEach(() => {
   mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
   mocks.rotate.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
   as(CALLER_ID);
+});
+
+describe('the principal list names each principal\'s owner', () => {
+  it('returns the owner id and display name on every principal', async () => {
+    const OTHER_PRINCIPAL_ID = '77777777-7777-4777-8777-777777777777';
+    mocks.selectRows.push(
+      [
+        { id: PRINCIPAL_ID, name: 'Weavestream', createdBy: OWNER_ID },
+        { id: OTHER_PRINCIPAL_ID, name: 'Zapier', createdBy: CALLER_ID },
+      ],
+      [],
+      [{ id: OWNER_ID, name: 'Pat Owner' }, { id: CALLER_ID, name: 'Casey Caller' }],
+    );
+    const res = await json('GET', '');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((p: any) => p.owner)).toEqual([
+      { id: OWNER_ID, name: 'Pat Owner' },
+      { id: CALLER_ID, name: 'Casey Caller' },
+    ]);
+    expect(body.data[0]).not.toHaveProperty('createdBy');
+  });
+
+  it('keeps the owner id with a null name when the owner row is not visible', async () => {
+    mocks.selectRows.push([{ id: PRINCIPAL_ID, name: 'Weavestream', createdBy: OWNER_ID }], [], []);
+    const res = await json('GET', '');
+    expect((await res.json()).data[0].owner).toEqual({ id: OWNER_ID, name: null });
+  });
 });
 
 describe('issuing and rotating keys is the owner\'s action', () => {

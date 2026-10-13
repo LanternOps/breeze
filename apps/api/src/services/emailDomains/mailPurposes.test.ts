@@ -62,6 +62,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
       'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
       'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+      'security.caller_verification_link': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
       'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
@@ -82,6 +83,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'quote.acceptance_recorded',
       'quote.sent',
       'report.delivery',
+      'security.caller_verification_link',
       'ticket.customer_notification',
     ]);
   });

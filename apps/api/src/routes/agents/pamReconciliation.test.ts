@@ -23,7 +23,11 @@ vi.mock('../../db', () => ({
 }));
 
 import { withDbAccessContext } from '../../db';
-import { pamReconciliationRoutes } from './pamReconciliation';
+import {
+  pamReconciliationBindingResponseSchemas,
+  pamReconciliationRoutes,
+  serializePamReconciliationBindingResponse,
+} from './pamReconciliation';
 
 const candidate = {
   observationId: '10000000-0000-4000-8000-000000000001',
@@ -92,9 +96,28 @@ describe('PAM reconciliation binding route', () => {
     expect(mocks.resolve).toHaveBeenCalledWith({
       agentId: 'agent-primary',
       deviceId: '30000000-0000-4000-8000-000000000001',
-      orgId: '40000000-0000-4000-8000-000000000001',
+      protocolVersion: 1,
       candidates: [candidate],
     });
+  });
+
+  // PAM ownership epochs W3 (#8205): v2 negotiates the `retired` disposition.
+  it('accepts protocol v2 and returns retired dispositions', async () => {
+    mocks.resolve.mockResolvedValue([{ status: 'retired', observationId: candidate.observationId }]);
+    const response = await request(buildApp(), { protocolVersion: 2, candidates: [candidate] });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      protocolVersion: 2,
+      dispositions: [{ status: 'retired', observationId: candidate.observationId }],
+    });
+    expect(mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ protocolVersion: 2 }));
+  });
+
+  it('fails the v1 request rather than serialize a retired disposition to a v1 agent', async () => {
+    mocks.resolve.mockResolvedValue([{ status: 'retired', observationId: candidate.observationId }]);
+    const response = await request(buildApp(), { protocolVersion: 1, candidates: [candidate] });
+    expect(response.status).toBe(500);
   });
 
   // #6260 / #1105 — the DB work (resolvePamReconciliationBindings, raw
@@ -155,7 +178,9 @@ describe('PAM reconciliation binding route', () => {
   });
 
   it.each([
-    ['wrong protocol', { protocolVersion: 2, candidates: [candidate] }],
+    ['protocol 3', { protocolVersion: 3, candidates: [candidate] }],
+    ['protocol 0', { protocolVersion: 0, candidates: [candidate] }],
+    ['string protocol', { protocolVersion: '2', candidates: [candidate] }],
     ['invalid observation UUID', { protocolVersion: 1, candidates: [{ ...candidate, observationId: 'bad' }] }],
     ['invalid actuation UUID', { protocolVersion: 1, candidates: [{ ...candidate, actuationId: 'bad' }] }],
     ['zero generation', { protocolVersion: 1, candidates: [{ ...candidate, generation: 0 }] }],
@@ -192,5 +217,31 @@ describe('PAM reconciliation binding route', () => {
     const response = await request(buildApp(), { protocolVersion: 1, candidates: [candidate] });
     expect(response.status).toBe(429);
     expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('PAM reconciliation binding response serializer', () => {
+  const observationId = '10000000-0000-4000-8000-000000000001';
+
+  it('v1 never emits retired', () => {
+    expect(() => serializePamReconciliationBindingResponse(1, [{ status: 'retired', observationId }]))
+      .toThrow();
+    expect(pamReconciliationBindingResponseSchemas[1].safeParse({
+      protocolVersion: 1,
+      dispositions: [{ status: 'retired', observationId }],
+    }).success).toBe(false);
+  });
+
+  it('v2 carries retired and every v1 disposition', () => {
+    const dispositions = [
+      { status: 'bound' as const, observationId, commandId: '60000000-0000-4000-8000-000000000001' },
+      { status: 'duplicate' as const, observationId },
+      { status: 'stale' as const, observationId },
+      { status: 'unresolved' as const, observationId },
+      { status: 'retired' as const, observationId },
+    ];
+    expect(serializePamReconciliationBindingResponse(2, dispositions)).toEqual({ protocolVersion: 2, dispositions });
+    expect(serializePamReconciliationBindingResponse(1, dispositions.slice(0, 4)))
+      .toEqual({ protocolVersion: 1, dispositions: dispositions.slice(0, 4) });
   });
 });

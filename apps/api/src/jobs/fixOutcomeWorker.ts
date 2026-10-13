@@ -22,6 +22,7 @@ import { inSystemDbContext } from '../services/outcomeProbes';
 import { advanceOutcome } from '../services/fixMemory/outcomeWatcher';
 import {
   markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome, recountRequestedOutcomeIds, stalePartnerIds,
+  stampRebuildAttempt,
 } from '../services/fixMemory/store';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -78,6 +79,14 @@ export async function runFixOutcomeSweep(now: Date = new Date()): Promise<FixOut
   let rebuilt = 0;
   const partners = await inSystemDbContext(() => stalePartnerIds(MAX_REBUILDS_PER_RUN), 'fixOutcomeSweep.staleSelect');
   for (const partnerId of partners) {
+    // Stamp the attempt in its own transaction first, so a rebuild that throws
+    // (and rolls back) still moves this partner behind the others next sweep.
+    // Best-effort: a failed stamp must not skip the rebuild.
+    try {
+      await inSystemDbContext(() => stampRebuildAttempt(partnerId, now), 'fixOutcomeSweep.rebuildStamp');
+    } catch (err) {
+      report('rebuild-attempt stamp', partnerId, err);
+    }
     try { await inSystemDbContext(() => rebuildFixMemory({ partnerId }, now), 'fixOutcomeSweep.rebuild'); rebuilt += 1; } catch (err) { report('rebuild', partnerId, err); }
   }
 

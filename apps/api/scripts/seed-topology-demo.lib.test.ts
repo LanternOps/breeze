@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { assertLocalDevDatabase, demoAssets, demoDevices, demoLegacyPins } from './seed-topology-demo.lib';
+import {
+  DEMO_LAKESIDE_SITE_ID, DEMO_SITE_ID, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins,
+} from './seed-topology-demo.lib';
 
 const env = (DATABASE_URL: string | undefined, NODE_ENV: string | undefined = 'development') => ({ DATABASE_URL, NODE_ENV });
 
@@ -41,10 +43,10 @@ describe('seed-topology-demo fixture shape', () => {
   const assets = demoAssets(devices);
 
   it('mirrors the measured site: 24 managed+discovered, 8 managed-only, 56 discovered-only', () => {
-    expect(devices).toHaveLength(32);
+    expect(devices).toHaveLength(37);
     expect(devices.filter(d => d.linked)).toHaveLength(24);
     expect(assets.filter(a => !a.linkedDeviceKey)).toHaveLength(56);
-    expect(devices.filter(d => d.status === 'online')).toHaveLength(12);
+    expect(devices.filter(d => d.status === 'online')).toHaveLength(17);
     expect(devices.filter(d => d.status === 'decommissioned').map(d => d.hostname)).toEqual(
       expect.arrayContaining([expect.stringMatching(/^CHECKOUT-02\.decom-[0-9a-f]{8}$/)]));
     expect(devices.filter(d => d.status === 'decommissioned')).toHaveLength(4);
@@ -63,7 +65,7 @@ describe('seed-topology-demo fixture shape', () => {
   it('uses only unique private addresses and locally administered MACs', () => {
     expect(new Set(assets.map(a => a.ip)).size).toBe(assets.length);
     for (const value of [...devices, ...assets]) {
-      expect(value.ip).toMatch(/^10\.1\.[25]\./);
+      expect(value.ip).toMatch(/^(10\.1\.[25]\.|192\.168\.1\.)/);
       expect(parseInt(value.mac.slice(0, 2), 16) & 0b11).toBe(0b10);
     }
   });
@@ -73,5 +75,24 @@ describe('seed-topology-demo fixture shape', () => {
     expect(pins).toHaveLength(37);
     expect(pins.every(p => p.x >= 0 && p.x <= 1400 && p.y >= 0 && p.y <= 900)).toBe(true);
     expect(new Set(pins.map(p => p.assetKey)).size).toBe(37);
+  });
+
+  it('seeds a Lakeside sister site owning 10.1.5.0/24 with misassigned, travelling and home-network devices', () => {
+    const on = (site: string, lan: string) => devices.filter((d) => d.siteId === site && d.lan === lan).map((d) => d.hostname).sort();
+    expect(on('main', 'second')).toEqual(['DESKTOP-HD7K2QF', 'WIN-HD4M8T2C9']); // the 2 misassigned desktops
+    expect(on('lakeside', 'second').length).toBeGreaterThanOrEqual(3); // Lakeside's own observers: >=2 fresh for MAC corroboration
+    const lakesideFresh = devices.filter((d) => d.siteId === 'lakeside' && d.lan === 'second' && d.capture?.mode === 'fresh' && d.extras.includes('neighbors'));
+    expect(lakesideFresh.length).toBeGreaterThanOrEqual(2);
+    expect(on('lakeside', 'main')).toEqual(['LAPTOP-LOV-01']); // travelling laptop visiting Main Office
+    expect(on('main', 'home')).toEqual(['LAPTOP-HOME-01']); // home network laptop on 192.168.1.0/24
+    for (const d of devices.filter((x) => x.hostname === 'DESKTOP-HD7K2QF' || x.hostname === 'WIN-HD4M8T2C9' || x.lan === 'home' || x.hostname === 'LAPTOP-LOV-01')) {
+      expect(d.status).toBe('online');
+      expect(d.capture?.mode).toBe('fresh');
+      expect(d.extras).toContain('neighbors');
+    }
+    expect(demoDiscoveryProfiles()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ siteId: DEMO_SITE_ID, subnets: ['10.1.2.0/24'] }),
+      expect.objectContaining({ siteId: DEMO_LAKESIDE_SITE_ID, subnets: ['10.1.5.0/24'] }),
+    ]));
   });
 });

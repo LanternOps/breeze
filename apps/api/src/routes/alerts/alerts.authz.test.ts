@@ -599,6 +599,21 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
     expect(state.alerts.find((a) => a.id === ALERT_B)?.status).toBe('active');
   });
 
+  it("bulk resolve stamps resolution_reason 'manual'; acknowledge does not (#7281)", async () => {
+    const post = (alertId: string, action: string) =>
+      makeApp().request('/alerts/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alertIds: [alertId], action }),
+      });
+
+    expect((await post(ALERT_A, 'resolve')).status).toBe(200);
+    expect((await post(ALERT_B, 'acknowledge')).status).toBe(200);
+
+    expect(state.alerts.find((a) => a.id === ALERT_A)).toMatchObject({ status: 'resolved', resolutionReason: 'manual' });
+    expect(state.alerts.find((a) => a.id === ALERT_B)).not.toHaveProperty('resolutionReason');
+  });
+
   it('acknowledges alerts across all sites for an unrestricted user (no regression)', async () => {
     const res = await makeApp().request('/alerts/bulk', {
       method: 'POST',

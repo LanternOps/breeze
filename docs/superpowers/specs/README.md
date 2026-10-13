@@ -2,7 +2,7 @@
 
 Design/brainstorm documents that precede the implementation plans in `../plans/`.
 They're sorted into the **same domain folders** as the plans (`agent/`,
-`ai-mcp/`, `backup/`, `billing/`, `installer-enrollment/`, `integrations/`,
+`ai-mcp/`, `backup/`, `billing/`, `helper/`, `installer-enrollment/`, `integrations/`,
 `misc/`, `monitoring/`, `onboarding-signup/`, `pam/`, `platform-ci/`,
 `remote-desktop/`, `reports/`, `security-auth/`, `tenancy-rls/`, `ticketing/`,
 `vuln-patch/`, `web-ui/`).

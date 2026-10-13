@@ -657,6 +657,8 @@
     "diagnoseHint": "La diagnostica viene eseguita dal dispositivo che scegli, lungo la sua route.",
     "stale": "obsoleto",
     "unverified": "non verificato",
+    "decommissioned": "Dismesso",
+    "reportedByDevices": "Segnalato da {{reporters}}",
     "sharedAddress_one": "Stesso IP di {{count}} altro dispositivo",
     "sharedAddress_other": "Stesso IP di altri {{count}} dispositivi",
     "networkExplanation_one": "{{count}} dispositivo segnala un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",
@@ -728,6 +730,22 @@
     "linkVia": "tramite {{name}}",
     "siteNetworks_one": "{{count}} rete",
     "siteNetworks_other": "{{count}} reti",
-    "noObservedLink": "Nessun collegamento osservato tra {{network}} e {{primary}}"
+    "noObservedLink": "Nessun collegamento osservato tra {{network}} e {{primary}}",
+    "rosterHeading": "Altre reti / reti non identificate ({{count}})",
+    "rosterNetworkVia": "{{prefix}} tramite {{gateways}}",
+    "rosterUnidentified": "Rete non identificata",
+    "notDeclared": "Non dichiarata per {{site}}",
+    "showOtherNetworks": "Mostra le altre reti sulla mappa",
+    "declareHint": "Nessuna rete è dichiarata per {{site}}. I dispositivi sono raggruppati in base alle reti che segnalano. Dichiara le reti di questa sede in un profilo di discovery, così Breeze può distinguere i visitatori e i dispositivi assegnati male.",
+    "declareHintLink": "Apri i profili di discovery",
+    "siteIntro": "Dispositivi assegnati a {{site}}, raggruppati per la rete segnalata da ciascuno",
+    "thisSite": "questa sede",
+    "declaredDiscovery": "Dichiarata per questa sede (profilo di discovery)",
+    "declaredBaseline": "Dichiarata per questa sede (baseline di rete)",
+    "declaredBoth": "Dichiarata per questa sede (profilo di discovery e baseline di rete)",
+    "declaredEmpty": "Dichiarata per {{site}} — nessun dispositivo segnala questa rete",
+    "declaredColumn": "Dichiarata",
+    "declaredYes": "Sì",
+    "declaredNo": "Non dichiarata"
   }
 }

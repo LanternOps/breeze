@@ -11,7 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, ne } from 'drizzle-orm';
-import type { GatewayConnectionKind } from '@breeze/shared';
+import type { AnthropicApiConnectionKind, GatewayConnectionKind } from '@breeze/shared';
 import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
 import { hmacFingerprint } from '../secretCrypto';
@@ -30,7 +30,7 @@ export type PartnerAiConnection = Omit<PartnerAiConnectionRow, 'apiKeyEncrypted'
 export interface CreateConnectionInput {
   id?: string;
   partnerId: string;
-  kind: 'anthropic_byok' | 'catalog';
+  kind: AnthropicApiConnectionKind;
   name: string;
   apiKey: string;
   catalogEntryId?: string | null;

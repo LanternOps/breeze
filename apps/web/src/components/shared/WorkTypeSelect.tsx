@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { subscribePartnerCurrencyCache } from '../../lib/partnerCurrencyCache';
 
-export interface WorkTypeOption { id: string; name: string; isActive: boolean }
+export interface WorkTypeOption { id: string; name: string; isActive: boolean; isAfterHours?: boolean }
 
 const LOG_TAG = '[WorkTypeSelect]';
 

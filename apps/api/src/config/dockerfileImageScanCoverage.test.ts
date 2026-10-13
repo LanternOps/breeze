@@ -496,6 +496,11 @@ describe('Trivy image scan covers the images we publish', () => {
     );
 
     expect(classification).toEqual({
+      // Build image for Anthropic's OSS Scanner (enrolled via anthropics/oss-scanner).
+      // Built by the scanner from a clone of main, never published or run by us;
+      // the .dockerignore sibling matches the basename filter and is not an image.
+      '.oss-scanner/Dockerfile': 'not published, not scanned',
+      '.oss-scanner/Dockerfile.dockerignore': 'not published, not scanned',
       'apps/api/Dockerfile': 'published + scanned',
       'apps/m365-communications-executor/Dockerfile': 'published + scanned',
       'apps/m365-graph-actions-executor/Dockerfile': 'published + scanned',

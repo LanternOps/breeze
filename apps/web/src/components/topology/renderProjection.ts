@@ -33,7 +33,14 @@ export type RenderEdge = { id: string; source: string; target: string; style: Re
  * link to any other card (shown as a note, never as an invented edge; spec C:14).
  */
 export type SiteSummary = { networks: number; devices: number; primary: string | null; unlinked: string[] };
-export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number; hiddenDeviceCount: number; site: SiteSummary };
+/**
+ * A network listed in the site roster instead of (or as well as) the canvas (site location W1): `undeclared` lan cards the site
+ * does not declare (off the canvas while the site declares anything and "show other networks" is off), and the `unidentified` group
+ * (always on the canvas too). `memberNodeIds` are the devices a visitor can open from the roster.
+ */
+export type RosterNetwork = { groupId: string; prefix: string | null; gatewayAddresses: string[]; kind: 'undeclared' | 'unidentified'; memberNodeIds: string[] };
+export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number; hiddenDeviceCount: number; site: SiteSummary;
+  roster: RosterNetwork[]; siteHasDeclarations: boolean };
 
 /**
  * Tile title + second line. A nameless device whose server label is only its address reads as
@@ -91,16 +98,23 @@ export const ENGLISH_RENDER_TEXT: RenderText = {
 
 export type RenderOptions = {
   showAllNetworks: boolean;
+  /** Keep undeclared lan cards on the canvas although the site declares networks (default: they move to the roster). */
+  showOtherNetworks?: boolean;
   text?: RenderText;
   /** Translated "IP shared with N other devices" (`count` = the other tiles). Omitted: no note, never English in a localized UI. */
   sharedAddress?: (count: number) => string;
 };
 
-export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions): TopologyRender {
+export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, showOtherNetworks = false, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions): TopologyRender {
   const allGroups = graph.presentation.nodes.filter((node) => node.group);
   // A hidden group (#7879) is never drawn: it only folds away the nodes the overview leaves out.
   const groups = allGroups.filter((group) => group.group!.kind !== 'hidden');
-  const shownGroup = (group: PresentationNode) => group.group!.kind !== 'network' || showAllNetworks || group.group!.networkClass === 'lan';
+  // A site that declares at least one network (an empty declared card counts) can tell a stray network from an expected one.
+  const siteHasDeclarations = graph.presentation.nodes.some((node) => node.group?.declaration?.state === 'declared');
+  const undeclaredCards = siteHasDeclarations && !showOtherNetworks
+    ? groups.filter((group) => group.group!.kind === 'network' && group.group!.networkClass === 'lan' && group.group!.declaration?.state === 'undeclared') : [];
+  const undeclaredIds = new Set(undeclaredCards.map((group) => group.id));
+  const shownGroup = (group: PresentationNode) => !undeclaredIds.has(group.id) && (group.group!.kind !== 'network' || showAllNetworks || group.group!.networkClass === 'lan');
   const folded = new Set(allGroups.flatMap((group) => group.group!.canonicalNodeIds));
   const visibleGroups = groups.filter(shownGroup);
   // Each member has exactly one visual home: its primary card when shown, otherwise the first shown card listing it.
@@ -132,8 +146,10 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
   const nodes: RenderNode[] = [];
   for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group, text) : groupNode(group, text));
+  // A device that belongs only to roster networks leaves the canvas with them; one also drawn in a kept card stays.
+  const rosterOnly = new Set(undeclaredCards.flatMap((group) => group.group!.members.map((member) => member.nodeId)).filter((nodeId) => !home.has(nodeId)));
   for (const node of graph.nodes) {
-    if (folded.has(node.id)) continue;
+    if (folded.has(node.id) || rosterOnly.has(node.id)) continue;
     const member = home.get(node.id);
     nodes.push(canonicalNode(node, text, member?.group, member));
   }
@@ -169,10 +185,16 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
       edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'inferred', label: null, layoutSource: edge.sourceNodeId, layoutTarget: edge.targetNodeId });
     }
   }
-  const hiddenNetworkCount = [...groups.filter((group) => group.group!.kind === 'network'), ...unroutedOverlay].filter((group) => !renderedGroupIds.has(group.id)).length;
+  const hiddenNetworkCount = [...groups.filter((group) => group.group!.kind === 'network' && !undeclaredIds.has(group.id)), ...unroutedOverlay].filter((group) => !renderedGroupIds.has(group.id)).length;
   const hiddenDeviceCount = allGroups.filter((group) => group.group!.kind === 'hidden' && group.group!.basis === 'decommissioned').reduce((sum, group) => sum + group.memberCount, 0);
   const site = linkNetworks(graph, [...drawnCards].map((cardId) => groups.find((group) => group.id === cardId)!), nodes, edges, text);
-  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount, site };
+  const roster: RosterNetwork[] = [
+    ...undeclaredCards.map((group): RosterNetwork => ({ groupId: group.id, prefix: group.group!.prefix, gatewayAddresses: group.group!.gatewayAddresses, kind: 'undeclared',
+      memberNodeIds: group.group!.members.map((member) => member.nodeId).filter((nodeId) => !home.has(nodeId)) })),
+    ...groups.filter((group) => group.group!.kind === 'unidentified').map((group): RosterNetwork => ({ groupId: group.id, prefix: null, gatewayAddresses: [], kind: 'unidentified',
+      memberNodeIds: group.group!.members.map((member) => member.nodeId) })),
+  ];
+  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount, site, roster, siteHasDeclarations };
 }
 
 /**

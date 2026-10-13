@@ -1,5 +1,14 @@
-import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit, type DbAccessContext } from '../db';
+import {
+  getCurrentDbAccessContext,
+  hasDbAccessContext,
+  runAfterDbContextCommit,
+  runAfterDbContextExit,
+  type DbAccessContext,
+} from '../db';
 import { registerHotPathCache } from './hotPathCacheRegistry';
+import { getClusterCacheBus, type ClusterCacheBus } from './clusterCacheBus';
+import { registerClusterCache } from './clusterCacheRegistry';
+import { recordCacheLookup, registerCacheSizeSource } from './clusterCacheMetrics';
 
 export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
 
@@ -20,9 +29,19 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   by org id; a per-device value by org id AND device id. Never key tenant
  *   data by anything a different tenant could share.
  * - **Never cache secrets.** Values live in process memory for the TTL.
- * - **Staleness is bounded by the TTL, and by `invalidate()` on this process.**
- *   Invalidation is process-local: another API instance keeps its entry until
- *   the TTL expires. Pick the TTL with that in mind.
+ * - **Staleness is bounded by the TTL, and by invalidation.** `invalidate()` is
+ *   local to this process. A `cluster` cache (W05, #8144) also drops the entry
+ *   on every other API instance, within about 1 s, when a writer calls
+ *   `invalidateAroundCommit`; a non-cluster cache, or a cluster cache while
+ *   Redis is down, leaves other instances on their entry until the TTL
+ *   expires. Pick the TTL with that in mind.
+ * - **Inside the API, a cluster cache publishes only from
+ *   `invalidateAroundCommit`, and only after the outermost transaction
+ *   commits** (`runAfterDbContextCommit`). A receiver that dropped its entry
+ *   before COMMIT would reload the pre-commit rows and keep them for a full
+ *   TTL. An out-of-process writer (the manifest key rotation CLI) calls the
+ *   bus itself, after its own commit (`notifyTrustCachesChanged`). Messages
+ *   carry ids only, never values.
  * - **A load that races an invalidation is not stored.** Every `invalidate()`
  *   bumps a generation; a load that started before the bump returns its value
  *   to its own caller but does not populate the cache, so a writer that
@@ -48,13 +67,24 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  * - Callers must treat returned values as read-only: they are shared.
  */
 export interface HotPathTtlCacheOptions {
-  /** Low-cardinality name, used in the test reset registry. */
+  /** Low-cardinality name, used in the test reset registry, metrics labels and cluster messages. */
   name: string;
   ttlMs: number;
   /** Upper bound on entries; the oldest entry is evicted past it. */
   maxEntries: number;
+  /**
+   * W05 (#8144): also drop this cache's entries on every other API instance.
+   * `true` registers in clusterCacheRegistry and publishes through
+   * getClusterCacheBus() resolved at publish time (D12); `{ bus }` attaches to
+   * that bus (integration tests). Keys must be strings (ids only).
+   */
+  cluster?: true | { bus: ClusterCacheBus };
 }
 
+/** Cluster caches must have string keys: the key goes on the wire. */
+type OptionsFor<K> = [K] extends [string]
+  ? HotPathTtlCacheOptions
+  : Omit<HotPathTtlCacheOptions, 'cluster'> & { cluster?: never };
 
 export class HotPathTtlCache<K, V> {
   readonly name: string;
@@ -62,14 +92,27 @@ export class HotPathTtlCache<K, V> {
   private readonly maxEntries: number;
   private readonly entries = new Map<K, { value: V; expiresAt: number }>();
   private generation = 0;
+  private readonly cluster: HotPathTtlCacheOptions['cluster'];
 
-  constructor(options: HotPathTtlCacheOptions) {
+  constructor(options: OptionsFor<K>) {
     if (!(options.ttlMs > 0)) throw new Error(`HotPathTtlCache ${options.name}: ttlMs must be positive`);
     if (!(options.maxEntries > 0)) throw new Error(`HotPathTtlCache ${options.name}: maxEntries must be positive`);
     this.name = options.name;
     this.ttlMs = options.ttlMs;
     this.maxEntries = options.maxEntries;
+    this.cluster = options.cluster;
     registerHotPathCache(this);
+    registerCacheSizeSource(this.name, () => this.size);
+    if (this.cluster === true) {
+      registerClusterCache(this as unknown as HotPathTtlCache<string, V>);
+    } else if (this.cluster) {
+      this.cluster.bus.attach(this as unknown as HotPathTtlCache<string, V>);
+    }
+  }
+
+  /** Whether invalidations of this cache are announced to the other API instances. */
+  get isCluster(): boolean {
+    return this.cluster !== undefined;
   }
 
   /**
@@ -82,15 +125,22 @@ export class HotPathTtlCache<K, V> {
     load: () => Promise<V>,
     options: { shouldCache?: (value: V) => boolean } = {},
   ): Promise<V> {
-    if (hasDbAccessContext()) return load();
+    if (hasDbAccessContext()) {
+      recordCacheLookup(this.name, 'bypass');
+      return load();
+    }
 
     const now = Date.now();
     const hit = this.entries.get(key);
     if (hit) {
-      if (hit.expiresAt > now) return hit.value;
+      if (hit.expiresAt > now) {
+        recordCacheLookup(this.name, 'hit');
+        return hit.value;
+      }
       this.entries.delete(key);
     }
 
+    recordCacheLookup(this.name, 'miss');
     const generationAtStart = this.generation;
     const value = await load();
     if (generationAtStart === this.generation && (options.shouldCache?.(value) ?? true)) {
@@ -111,10 +161,30 @@ export class HotPathTtlCache<K, V> {
    * and drop again once the outermost DB context has settled. Between the two,
    * a concurrent reader can still load the pre-commit rows; the second drop
    * (with its generation bump) is what keeps that read out of the cache.
+   *
+   * A `cluster` cache also announces the drop to every other API instance,
+   * ONLY after the outermost transaction commits (a rollback announces
+   * nothing), fire-and-forget: Redis being down or slow never fails or delays
+   * the writer.
    */
   invalidateAroundCommit(key?: K): void {
+    if (this.cluster && key !== undefined && typeof key !== 'string') {
+      // D10: a cache bug must not fail a settings write. Widen to the whole cache.
+      console.error(`[clusterCache] non-string key for "${this.name}"; invalidating the whole cache instead`);
+      key = undefined;
+    }
     this.invalidate(key);
     runAfterDbContextExit(`hotPathCache.${this.name}.invalidate`, () => this.invalidate(key));
+    if (this.cluster) {
+      const name = this.name;
+      const cluster = this.cluster;
+      const wireKey = (key as string | undefined) ?? null;
+      runAfterDbContextCommit(`hotPathCache.${name}.publish`, () => {
+        const bus = cluster === true ? getClusterCacheBus() : cluster.bus;
+        // Returned so the after-commit runner reports a (never expected) rejection.
+        return bus.publish(name, wireKey);
+      });
+    }
   }
 
   /** The cached value, or undefined on a miss. Never loads and never touches the DB. */
@@ -204,18 +274,43 @@ export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope
  * Caller contract: the context must have made no writes the loaded rows could
  * observe, and the value must be a function of `key` alone.
  */
+export interface DeferredFillOptions<V> {
+  /**
+   * The org a NON-org key belongs to (#7970: `${orgId}:${deviceId}`). Without
+   * it the key itself must equal the fill scope's org id. The caller vouches
+   * that the value is a function of rows inside this one org, so the org-scoped
+   * context sees exactly what a system read would.
+   */
+  keyOrgId?: string;
+  /** Decline to store a particular value (e.g. a negative-only cache). */
+  shouldCache?: (value: V) => boolean;
+}
+
 export class DeferredCacheFills {
   private readonly pending: Array<() => void> = [];
 
-  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>, fillScope?: DeferredFillScope): Promise<V> {
+  async through<K, V>(
+    cache: HotPathTtlCache<K, V>,
+    key: K,
+    load: () => Promise<V>,
+    fillScope?: DeferredFillScope,
+    options: DeferredFillOptions<V> = {},
+  ): Promise<V> {
     const hit = cache.peek(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+      recordCacheLookup(cache.name, 'hit');
+      return hit;
+    }
     // A fill scope binds the key: another org's key under this scope would cache an RLS-narrowed value.
+    const keyOrg: unknown = options.keyOrgId ?? key;
     const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope)
-      && !(fillScope && key !== fillScope.orgId);
+      && !(fillScope && keyOrg !== fillScope.orgId);
+    recordCacheLookup(cache.name, cacheable ? 'miss' : 'bypass');
     const ticket = cache.ticket();
     const value = await load();
-    if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
+    if (cacheable && (options.shouldCache?.(value) ?? true)) {
+      this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
+    }
     return value;
   }
 

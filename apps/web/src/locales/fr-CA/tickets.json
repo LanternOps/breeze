@@ -451,7 +451,9 @@
       "allMissingRate": "Rien n’a pu être facturé : chaque entrée de temps facturable de ce billet n’a pas de taux horaire.",
       "missingRateHeading": "Entrées de temps sans taux horaire (non facturées — définissez un taux puis recréez la facture) :",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Définir un taux dans la feuille de temps"
+      "setRate": "Définir un taux dans la feuille de temps",
+      "heldForHourBlock_one": "{{count}} saisie de temps ({{hours}} heures) est retenue pour la banque d'heures de cette organisation et sera facturée à la clôture de la période de la banque.",
+      "heldForHourBlock_other": "{{count}} saisies de temps ({{hours}} heures) sont retenues pour la banque d'heures de cette organisation et seront facturées à la clôture de la période de la banque."
     },
     "move": {
       "open": "Passer à une autre organisation...",
@@ -551,5 +553,123 @@
     "missingRate": "Facturable · tarif non configuré",
     "recalculated": "La facturation est recalculée pour ce type de travail à l’enregistrement.",
     "unavailable": "Résultat de facturation indisponible"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Cette demande d'approbation n'est plus en attente.",
+      "requestChanged": "La demande a changé pendant que vous la consultiez. La dernière version a été rechargée ; vérifiez-la puis réessayez.",
+      "requestExpired": "Cette demande d'approbation a expiré. Relancez-la pour en envoyer une nouvelle.",
+      "requestAlreadyPending": "Une demande d'approbation pour le même motif est déjà en attente sur ce billet.",
+      "requestNotReaskable": "Seule une demande refusée, expirée ou annulée qui a encore du temps en suspens peut être relancée.",
+      "nothingHeld": "Ce billet n'a aucun temps en suspens pour lequel demander une approbation.",
+      "approvalsDisabled": "L'approbation client n'est pas activée pour ce client.",
+      "entryNotResolvable": "Ce temps ne peut être passé en perte qu'une fois sa demande d'approbation refusée, expirée ou annulée.",
+      "approvalRequestPending": "Ce billet a une demande d'approbation en attente de réponse du client ; il ne peut donc pas être déplacé. Annulez ou résolvez d'abord la demande.",
+      "sourceAwaitingApproval": "Une partie du temps de cette facture attend l'approbation du client. Faites-la approuver ou passez-la en perte avant d'émettre la facture.",
+      "approvalRequired": "L'approbation du client est nécessaire avant de comptabiliser du temps facturable sur ce billet. Demandez l'approbation depuis le panneau d'approbations du billet."
+    },
+    "budget": {
+      "title": "Budget et approbation",
+      "hours": "Budget (heures)",
+      "amount": "Montant du budget",
+      "save": "Enregistrer le budget",
+      "saved": "Budget enregistré",
+      "saveFailed": "Impossible d'enregistrer le budget",
+      "invalidHours": "Saisissez un nombre d'heures supérieur à 0, ou laissez vide pour aucune limite.",
+      "invalidAmount": "Saisissez un montant supérieur à 0 avec au plus 2 décimales, ou laissez vide.",
+      "ceiling": "Plafond {{ceiling}}",
+      "ceilingWithExtensions": "Plafond {{ceiling}} (budget {{budget}} + {{extra}} approuvées)",
+      "noBudget": "Aucun budget défini",
+      "usedLegend": "Utilisé {{value}}",
+      "heldLegend": "En attente d'approbation {{value}}",
+      "unpriced_one": "{{count}} entrée en suspens n'a pas encore de prix.",
+      "unpriced_other": "{{count}} entrées en suspens n'ont pas encore de prix.",
+      "barLabel": "Consommation du budget",
+      "requestApproval": "Demander l'approbation"
+    },
+    "request": {
+      "trigger": "Motif",
+      "triggerBudget": "Budget dépassé",
+      "triggerAfterHours": "Travail hors heures ouvrées",
+      "extensionMinutes": "Minutes supplémentaires",
+      "extensionAmount": "Montant supplémentaire",
+      "windowStart": "Couvre à partir du",
+      "windowEnd": "Couvre jusqu'au",
+      "message": "Message au client (facultatif)",
+      "submit": "Envoyer la demande",
+      "sent": "Demande d'approbation envoyée",
+      "failed": "Impossible d'envoyer la demande d'approbation",
+      "invalidExtension": "Saisissez des minutes supplémentaires ou un montant supplémentaire supérieur à 0.",
+      "invalidWindow": "Choisissez un début et une fin, la fin étant postérieure au début et distante d'au plus 14 jours."
+    },
+    "panel": {
+      "title": "Approbations client",
+      "status": {
+        "pending": "En attente",
+        "approved": "Approuvée",
+        "denied": "Refusée",
+        "expired": "Expirée",
+        "cancelled": "Annulée"
+      },
+      "revision": "Révision {{n}}",
+      "ask": "Demande {{ask}}",
+      "window": "Couvre du {{from}} au {{to}}",
+      "expires": "Expire {{when}}",
+      "heldEntries_one": "{{count}} entrée en suspens",
+      "heldEntries_other": "{{count}} entrées en suspens",
+      "approvers": "Approbateurs",
+      "notified": "Personnes informées",
+      "noneListed": "Aucun",
+      "noApprover": "Aucun approbateur enregistré : ajoutez un contact de facturation ou enregistrez la décision au nom du client.",
+      "decidedByCustomer": "Décidé par {{who}}",
+      "customerFallback": "le client",
+      "decidedOnBehalf": "Enregistré par {{user}} au nom de {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Oral",
+        "email": "Courriel",
+        "signedDocument": "Document signé",
+        "other": "Autre"
+      },
+      "cancel": "Annuler la demande",
+      "cancelConfirmTitle": "Annuler cette demande d'approbation ?",
+      "cancelConfirmMessage": "Le client ne pourra plus répondre. Le temps déjà en suspens le reste jusqu'à ce que vous relanciez la demande ou le passiez en perte.",
+      "cancelled": "Demande d'approbation annulée",
+      "cancelFailed": "Impossible d'annuler la demande",
+      "reask": "Relancer",
+      "reaskSubmit": "Renvoyer",
+      "reasked": "Demande d'approbation renvoyée",
+      "reaskFailed": "Impossible de relancer la demande",
+      "record": "Enregistrer la décision"
+    },
+    "record": {
+      "title": "Enregistrer la décision du client",
+      "intro": "À utiliser lorsque le client vous a communiqué sa décision en dehors de Breeze. Elle est consignée sous votre nom.",
+      "target": "Révision {{revision}} · {{ask}}",
+      "decision": "Décision",
+      "approve": "Approuvée",
+      "deny": "Refusée",
+      "method": "Comment a-t-elle été donnée ?",
+      "reference": "Référence",
+      "referencePlaceholder": "p. ex. appel du 12 oct., objet du courriel, numéro de document",
+      "signerName": "Nom du client",
+      "signerEmail": "Courriel du client (facultatif)",
+      "note": "Note (facultatif)",
+      "submit": "Enregistrer la décision",
+      "recorded": "Décision enregistrée",
+      "failed": "Impossible d'enregistrer la décision"
+    },
+    "held": {
+      "chip": "En attente d'approbation du client",
+      "writeOff": "Passer en perte",
+      "writeOffTitle": "Passer en perte le temps en suspens ?",
+      "writeOffMessage": "Ce temps est en suspens car le client ne l'a pas approuvé. Le passer en perte le marque sans frais : il ne sera pas facturé.",
+      "writtenOff": "Temps passé en perte",
+      "writeOffFailed": "Impossible de passer le temps en perte"
+    },
+    "timer": {
+      "startNonBillable": "Démarrer comme non facturable"
+    },
+    "loadError": "Impossible de charger les approbations du client",
+    "retry": "Réessayer"
   }
 }

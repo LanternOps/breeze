@@ -25,6 +25,7 @@ import { diagnosticLogsRoutes } from './diagnosticLogs';
 import { tabCountsRoutes } from './tabCounts';
 import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
+import { deviceRestorePointAttemptsRoutes } from './restorePoints';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
 import { billingRoutes } from './billing';
@@ -177,6 +178,9 @@ deviceRoutes.route('/', warrantyRoutes);
 // index.test.ts so a later static sibling cannot silently reorder it.
 deviceRoutes.route('/', billingRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
+// #4759 W08: GET /:id/restore-point-attempts (System Restore request ledger, read-only).
+// :id-prefixed, so it cannot be shadowed by core's /:id matcher.
+deviceRoutes.route('/', deviceRestorePointAttemptsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);
 

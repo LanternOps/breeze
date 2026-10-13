@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { showToast } from '@/components/shared/Toast';
+import { replaceUrl } from '../lib/replaceUrl';
 
 /**
  * Pages that used to carry a page-local `#orgId=…` filter now defer org scoping
@@ -24,7 +25,7 @@ export function useLegacyOrgIdHashNotice(message: string, enabled = true): void 
     params.delete('orgId');
     const rest = params.toString();
     const url = window.location.pathname + window.location.search + (rest ? `#${rest}` : '');
-    window.history.replaceState(null, '', url);
+    replaceUrl(url);
     showToast({ type: 'warning', message });
   }, [message, enabled]);
 }

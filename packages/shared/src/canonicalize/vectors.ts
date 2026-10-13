@@ -181,3 +181,120 @@ export const CANONICALIZATION_VECTORS: readonly CanonicalizationVector[] = [
     digest: 'c139cba98de004ba20a424501a58ec4b89460b3b02503907968d6994fd294c0d',
   },
 ] as const;
+
+/**
+ * Frozen conformance vectors for the EFFECT-SET envelope (Recipe Library spec
+ * §6.4), the second consumer of this canonicalizer.
+ *
+ * Same rule as the corpus above, and for the same reason: every `digest` was
+ * computed once and pasted in. NEVER derive one at test time by calling
+ * `computeEffectSetDigest` — a test that computes its own expectation passes
+ * against any implementation, including a wrong one. CHANGING A DIGEST HERE IS
+ * A BREAKING CHANGE: a stored `ai_operator_plan_approvals.effect_set_digest`
+ * was computed under these bytes, and altering them invalidates every approved
+ * plan that has not finished dispatching.
+ */
+export interface EffectSetVector {
+  name: string;
+  why: string;
+  input: {
+    taskId: string;
+    planRevision: number;
+    effects: readonly {
+      ordinal: number;
+      toolName: string;
+      provider: 'breeze' | 'm365' | 'google';
+      targetId: string | null;
+      accountExternalId: string | null;
+      argumentDigest: string;
+    }[];
+  };
+  /** Frozen canonical JSON of the envelope. */
+  canonical: string;
+  /** Frozen SHA-256 hex. Never recompute. */
+  digest: string;
+}
+
+export const EFFECT_SET_VECTORS: readonly EffectSetVector[] = [
+  {
+    name: 'single-breeze-effect',
+    why: 'The degenerate one-effect plan, and the only vector with a null accountExternalId — a device command names a target row, not a provider account (spec §6.4).',
+    input: {
+      taskId: '00000000-0000-4000-8000-0000000000a1',
+      planRevision: 1,
+      effects: [{
+        ordinal: 0, toolName: 'manage_services', provider: 'breeze',
+        targetId: '00000000-0000-4000-8000-0000000000d1',
+        accountExternalId: null,
+        argumentDigest: '7c044ad146cc63e339066911c6547410c1f0f5a574ddd0f538c98cbf0fbe3873',
+      }],
+    },
+    canonical: '{"effects":[{"accountExternalId":null,"argumentDigest":"7c044ad146cc63e339066911c6547410c1f0f5a574ddd0f538c98cbf0fbe3873","ordinal":0,"provider":"breeze","targetId":"00000000-0000-4000-8000-0000000000d1","toolName":"manage_services"}],"planRevision":1,"taskId":"00000000-0000-4000-8000-0000000000a1","v":1}',
+    digest: 'b198a2963722363eb6ce25f5acd71056dc6b7cf5f186dd859cf8f841a6cd726c',
+  },
+  {
+    name: 'two-provider-ordered-plan',
+    why: 'Order is the §6.3 safety contract (mailbox effects while the account is live, suspend last). This vector and the next differ ONLY in order, so a hasher that sorted the array would produce one digest for both and fail here.',
+    input: {
+      taskId: '00000000-0000-4000-8000-0000000000a1',
+      planRevision: 3,
+      effects: [
+        {
+          ordinal: 0, toolName: 'google_set_forwarding', provider: 'google',
+          targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890',
+          argumentDigest: 'ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e',
+        },
+        {
+          ordinal: 1, toolName: 'google_suspend_user', provider: 'google',
+          targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890',
+          argumentDigest: 'e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03',
+        },
+      ],
+    },
+    canonical: '{"effects":[{"accountExternalId":"101234567890","argumentDigest":"ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e","ordinal":0,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_set_forwarding"},{"accountExternalId":"101234567890","argumentDigest":"e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03","ordinal":1,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_suspend_user"}],"planRevision":3,"taskId":"00000000-0000-4000-8000-0000000000a1","v":1}',
+    digest: 'a8278b73b311e19d9cc70df5f3418c3403d095d8a15801f846a13523321adf81',
+  },
+  {
+    name: 'two-provider-plan-reordered',
+    why: 'Identical members to the previous vector, swapped. Pins that the two digests differ — the single property that makes "disable last" enforceable by a hash.',
+    input: {
+      taskId: '00000000-0000-4000-8000-0000000000a1',
+      planRevision: 3,
+      effects: [
+        {
+          ordinal: 0, toolName: 'google_suspend_user', provider: 'google',
+          targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890',
+          argumentDigest: 'e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03',
+        },
+        {
+          ordinal: 1, toolName: 'google_set_forwarding', provider: 'google',
+          targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890',
+          argumentDigest: 'ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e',
+        },
+      ],
+    },
+    canonical: '{"effects":[{"accountExternalId":"101234567890","argumentDigest":"e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03","ordinal":0,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_suspend_user"},{"accountExternalId":"101234567890","argumentDigest":"ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e","ordinal":1,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_set_forwarding"}],"planRevision":3,"taskId":"00000000-0000-4000-8000-0000000000a1","v":1}',
+    digest: 'c2b1cd4e8647634ec6c3bf6d9cd75250cae3edf4cf635b2b8249a107c31a66af',
+  },
+  {
+    name: 'cross-provider-nine-effect-offboarding',
+    why: 'The realistic shape §6.3 describes: both providers in one plan, so the corpus is not purely synthetic and a provider-field regression is caught.',
+    input: {
+      taskId: '00000000-0000-4000-8000-0000000000a1',
+      planRevision: 2,
+      effects: [
+        { ordinal: 0, toolName: 'm365_set_auto_reply', provider: 'm365', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: 'aaaaaaaa-1111-4000-8000-000000000001', argumentDigest: 'f96765ad1f5b67b7963269d3fe1b9bbbaa317d422b1c00819261ab5437ef2ee8' },
+        { ordinal: 1, toolName: 'google_set_vacation', provider: 'google', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890', argumentDigest: 'f464b7e0c5630a47a2013f6d6975211342a74e55710eb6db6f4491c41662dec8' },
+        { ordinal: 2, toolName: 'google_set_forwarding', provider: 'google', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890', argumentDigest: 'ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e' },
+        { ordinal: 3, toolName: 'google_add_mail_delegate', provider: 'google', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890', argumentDigest: 'dfc9b1a088570d96f0f01cffdb147f61e392b4cfa3372a89dc9975f4bc97a817' },
+        { ordinal: 4, toolName: 'm365_remove_from_group', provider: 'm365', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: 'aaaaaaaa-1111-4000-8000-000000000001', argumentDigest: '3466e8f27356e74e07817aa6e9165638bbf0d7ce8ee704f712c1db69f545ea4c' },
+        { ordinal: 5, toolName: 'm365_remove_license', provider: 'm365', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: 'aaaaaaaa-1111-4000-8000-000000000001', argumentDigest: '9728badb9c0db0519174d4c9305f82eadd635c0f2cef168f6ecdf3def64aea18' },
+        { ordinal: 6, toolName: 'm365_retire_intune_device', provider: 'm365', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: 'aaaaaaaa-1111-4000-8000-000000000001', argumentDigest: 'dd189424d1e94bab8b0391e6a35db9545ca049ed72e495460e3230651cc231e5' },
+        { ordinal: 7, toolName: 'm365_revoke_sessions', provider: 'm365', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: 'aaaaaaaa-1111-4000-8000-000000000001', argumentDigest: 'a5cfb1468964c8cff2b9023294688cdb1408e6eaa13c8614a9a21a5c761b2fc7' },
+        { ordinal: 8, toolName: 'google_suspend_user', provider: 'google', targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: '101234567890', argumentDigest: 'e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03' },
+      ],
+    },
+    canonical: '{"effects":[{"accountExternalId":"aaaaaaaa-1111-4000-8000-000000000001","argumentDigest":"f96765ad1f5b67b7963269d3fe1b9bbbaa317d422b1c00819261ab5437ef2ee8","ordinal":0,"provider":"m365","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"m365_set_auto_reply"},{"accountExternalId":"101234567890","argumentDigest":"f464b7e0c5630a47a2013f6d6975211342a74e55710eb6db6f4491c41662dec8","ordinal":1,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_set_vacation"},{"accountExternalId":"101234567890","argumentDigest":"ed494649a3386b6651086803aa17d4a798b4fa971d6bde76cf033f980cb65f0e","ordinal":2,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_set_forwarding"},{"accountExternalId":"101234567890","argumentDigest":"dfc9b1a088570d96f0f01cffdb147f61e392b4cfa3372a89dc9975f4bc97a817","ordinal":3,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_add_mail_delegate"},{"accountExternalId":"aaaaaaaa-1111-4000-8000-000000000001","argumentDigest":"3466e8f27356e74e07817aa6e9165638bbf0d7ce8ee704f712c1db69f545ea4c","ordinal":4,"provider":"m365","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"m365_remove_from_group"},{"accountExternalId":"aaaaaaaa-1111-4000-8000-000000000001","argumentDigest":"9728badb9c0db0519174d4c9305f82eadd635c0f2cef168f6ecdf3def64aea18","ordinal":5,"provider":"m365","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"m365_remove_license"},{"accountExternalId":"aaaaaaaa-1111-4000-8000-000000000001","argumentDigest":"dd189424d1e94bab8b0391e6a35db9545ca049ed72e495460e3230651cc231e5","ordinal":6,"provider":"m365","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"m365_retire_intune_device"},{"accountExternalId":"aaaaaaaa-1111-4000-8000-000000000001","argumentDigest":"a5cfb1468964c8cff2b9023294688cdb1408e6eaa13c8614a9a21a5c761b2fc7","ordinal":7,"provider":"m365","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"m365_revoke_sessions"},{"accountExternalId":"101234567890","argumentDigest":"e891df249108b76dd72d21b6441550c1cdc87aa1ab6d06611e94ed2d18734b03","ordinal":8,"provider":"google","targetId":"00000000-0000-4000-8000-0000000000c1","toolName":"google_suspend_user"}],"planRevision":2,"taskId":"00000000-0000-4000-8000-0000000000a1","v":1}',
+    digest: '98e91bc30c8a1ef4ff0b7bb5f0a7a835a8f6d855044ae7d8e0cc6c492a1bf5e4',
+  },
+] as const;

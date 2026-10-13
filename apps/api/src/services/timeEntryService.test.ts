@@ -41,6 +41,24 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks, sentryMocks } = vi.hoisted(
 
 vi.mock('./billingProfileService', () => ({ loadCardsForOrg: cardMocks.loadCardsForOrg }));
 
+// #4617: the customer-approval gate is stubbed to "not applicable" here — its
+// reads would consume this file's ordered select queue. The gate and the
+// writers' lock order are proven against real Postgres in
+// __tests__/integration/ticketApproval.{requests,writers,decisions}.integration.test.ts
+// and ticketApprovalGate.concurrency.integration.test.ts; the wiring (hold /
+// refuse / release reaching the row) is pinned in timeEntryService.approvalGate.test.ts.
+vi.mock('./ticketApproval/writerGate', () => ({
+  peekEntry: vi.fn(async () => null),  // { id, orgId, ticketId, endedAt, approvalRequestId } in production
+  peekRunningEntry: vi.fn(async () => null),
+  planGatedWrite: vi.fn(async (i: { after: { billingStatus: string } }) => ({
+    kind: 'write', billingStatus: i.after.billingStatus === 'awaiting_approval' ? 'not_billed' : i.after.billingStatus,
+    approvalRequestId: undefined, hold: null, leftRequestId: null, ttlHours: 72,
+  })),
+  settleGatedWrite: vi.fn(async () => []),
+  settleRemovedEntry: vi.fn(async () => []),
+}));
+vi.mock('./ticketEvents', () => ({ emitTicketEvent: vi.fn() }));
+
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
 
 // #6463: the drift guard REPORTS through captureException (handleServiceError
@@ -1361,6 +1379,18 @@ describe('query helpers', () => {
 
     expect(result.rows[0]).toMatchObject({ quantity: '0.33', amount: '330.00', currencyCode: 'JPY' });
     expect(result.totalsByCurrency).toEqual([{ currencyCode: 'JPY', amount: '330.00' }]);
+  });
+
+  it('#4617: listBillables exports held time with its status and amount, but never in the billable totals', async () => {
+    const row = (billingStatus: string, minutes: number) => ({
+      date: new Date('2026-06-10T12:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1', description: 'labor', technician: 'Tess',
+      minutes, rate: '100.00', currencyCode: 'USD', billingStatus, isApproved: true,
+    });
+    dbMocks.selectResults.push([row('not_billed', 60), row('awaiting_approval', 30)]);
+    dbMocks.selectResults.push([]);
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result.rows.map((r) => [r.billingStatus, r.amount])).toEqual([['not_billed', '100.00'], ['awaiting_approval', '50.00']]);
+    expect(result.totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
   });
 
   it('listBillables excludes running timers from billable time rows', async () => {

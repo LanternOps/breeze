@@ -392,6 +392,13 @@ export interface RunRow {
   servedFundingSource?: 'platform' | 'partner_key' | null;
   servedFailoverHop?: number | null;
   servedFailoverCause?: string | null;
+  /**
+   * #7787 — the offering the run was routed to before its failover. When
+   * `servedOfferingId` equals `admittedOfferingId` the served_* columns are
+   * ADMISSION's provenance (the primary was cooling or ineligible at
+   * admission), not a hop: the run stays on hop 0's key (`startHopFor`).
+   */
+  servedFailoverFromOfferingId?: string | null;
 }
 
 export interface AgentRow {

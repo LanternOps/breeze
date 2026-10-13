@@ -11,12 +11,15 @@ import { captureException } from './sentry';
 export const CONTRACT_EVENTS_QUEUE = 'contract-events';
 
 export type ContractEvent = {
-  type: 'contract.activated' | 'contract.invoiced' | 'contract.paused' | 'contract.cancelled' | 'contract.expired' | 'contract.auto_renewed' | 'contract.renewal_notice';
+  type: 'contract.activated' | 'contract.invoiced' | 'contract.paused' | 'contract.cancelled' | 'contract.expired' | 'contract.auto_renewed' | 'contract.renewal_notice' | 'contract.hour_block_threshold';
   contractId: string;
   orgId: string;
   partnerId: string;
   invoiceId?: string;    // set on contract.invoiced
   actorUserId?: string;
+  contractLineId?: string; // set on contract.hour_block_threshold
+  periodStart?: string;    // set on contract.hour_block_threshold: the OPEN period's start (YYYY-MM-DD)
+  alertPct?: number;       // set on contract.hour_block_threshold: the configured threshold that was crossed
 };
 
 let queue: Queue | null = null;

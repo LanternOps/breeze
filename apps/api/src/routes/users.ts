@@ -39,6 +39,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
+import { partnerEmailCustomFromSettings, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
 import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
@@ -386,6 +387,53 @@ async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string 
   return org?.name || undefined;
 }
 
+/**
+ * The partner that owns the invite's scope: its name brands the email footer and
+ * its saved `staff_invite` override (if any) replaces the default copy (#7468).
+ * Best-effort: a lookup failure sends the default Breeze-branded email rather
+ * than blocking the invite.
+ */
+async function resolveInvitePartnerBranding(
+  scopeContext: ScopeContext,
+): Promise<{ partnerName?: string; custom: PartnerEmailCustom | null }> {
+  try {
+    let partnerId: string | null = null;
+    if (scopeContext.scope === 'partner') {
+      partnerId = scopeContext.partnerId;
+    } else {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, scopeContext.orgId))
+        .limit(1);
+      partnerId = org?.partnerId ?? null;
+    }
+    if (!partnerId) return { custom: null };
+    // `partners` is forced-RLS and an org-scoped session has no accessible
+    // partners, so read it in system context. Safe: the id is derived from the
+    // verified auth scope above, never from request input.
+    const [partner] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ name: partners.name, settings: partners.settings })
+          .from(partners)
+          .where(eq(partners.id, partnerId))
+          .limit(1),
+      ),
+    );
+    return {
+      partnerName: partner?.name || undefined,
+      custom: partnerEmailCustomFromSettings(partner?.settings, 'staff_invite'),
+    };
+  } catch (error) {
+    console.error(
+      `[UsersRoute] Failed to resolve partner branding for the staff invite email (scope=${scopeContext.scope}); sending the default Breeze template:`,
+      error,
+    );
+    return { custom: null };
+  }
+}
+
 async function sendInviteEmail(
   scopeContext: ScopeContext,
   invitee: { email: string; name: string },
@@ -399,6 +447,7 @@ async function sendInviteEmail(
   }
 
   const orgName = await resolveInviteOrgName(scopeContext);
+  const { partnerName, custom } = await resolveInvitePartnerBranding(scopeContext);
   const inviterName = inviter.name || inviter.email;
 
   try {
@@ -407,7 +456,10 @@ async function sendInviteEmail(
       name: invitee.name,
       inviterName,
       orgName,
-      inviteUrl: buildInviteUrl(inviteToken)
+      inviteUrl: buildInviteUrl(inviteToken),
+      partnerName,
+      expiresDays: Math.round(INVITE_TOKEN_TTL_SECONDS / 86400),
+      custom,
     });
     return true;
   } catch (error) {

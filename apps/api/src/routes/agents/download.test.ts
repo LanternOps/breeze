@@ -1178,6 +1178,16 @@ describe('GET /install.sh — generated installer script', () => {
     expect(backupStepIdx).toBeGreaterThan(agentInstalledIdx);
   });
 
+  it('never appends the deprecated --site-id to the enroll command (#8474)', async () => {
+    const script = await fetchScript();
+    // Positive anchor: both the darwin and linux enroll blocks still exist.
+    expect(script.match(/ENROLL_ARGS=\(enroll --server "\$BREEZE_SERVER"\)/g)).toHaveLength(2);
+    // The arg parser keeps a `--site-id)` case (accept and ignore); no other
+    // `--site-id` may remain on any ENROLL_ARGS or enroll line.
+    expect(script).not.toMatch(/ENROLL_ARGS[^\n]*--site-id/);
+    expect(script).not.toMatch(/enroll[^\n]*--site-id/);
+  });
+
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
     // Argument parser handles --token; the script's own $BREEZE_ENROLL_TOKEN

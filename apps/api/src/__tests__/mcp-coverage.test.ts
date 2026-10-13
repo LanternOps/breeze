@@ -63,7 +63,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'devices/processSamples.ts',
   'devices/software.ts',
   'devices/softwareActions.ts',
-  'devices/stats.ts',
   'devices/warranty.ts',
   'devices/watchdogLogs.ts',
   'discoveryAssetProbe.ts',

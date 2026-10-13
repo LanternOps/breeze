@@ -30,6 +30,7 @@ import {
 import { autoMapEdrTenants } from '../services/edrProviders/mapping';
 import { matchEdrEndpoints } from '../services/edrProviders/deviceMatching';
 import { attachWorkerObservability } from './workerObservability';
+import { isFinalSyncAttempt } from './syncAttempt';
 
 /**
  * External EDR provider sync (#8164 W01b). Two independent streams per
@@ -777,14 +778,8 @@ export async function syncEdrDetections(
 // Worker
 // ---------------------------------------------------------------------------
 
-/**
- * True on the job's last configured attempt. BullMQ 5 increments `attemptsMade` only when an
- * attempt finishes or is retried (move-to-active bumps `attemptsStarted`), so inside the
- * processor it is 0-based: the 3rd of 3 attempts runs with attemptsMade === 2.
- */
-export function isFinalSyncAttempt(job: Pick<Job, 'attemptsMade'> & { opts: { attempts?: number } }): boolean {
-  return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-}
+// Moved to ./syncAttempt (shared with the backup/M365/Huntress workers, #8351).
+export { isFinalSyncAttempt };
 
 function createEdrProviderSyncWorker(): Worker<EdrSyncJobData> {
   return new Worker<EdrSyncJobData>(

@@ -25,6 +25,24 @@ export function deviceScriptsHash(executionId?: string): string {
   return executionId ? `scripts/${encodeURIComponent(executionId)}` : 'scripts';
 }
 
+/** #7413 — Scripts tab views: per-script latest result, or the chronological list. */
+export type ScriptsView = 'latest' | 'all';
+
+const VIEW_SEGMENT_PREFIX = 'view=';
+
+/** `#scripts/view=latest|all`. Execution ids are UUIDs, so `view=` cannot collide. */
+export function deviceScriptsViewHash(view: ScriptsView): string {
+  return `scripts/${VIEW_SEGMENT_PREFIX}${view}`;
+}
+
+/** Parses the view out of a hash (leading `#` stripped); undefined when absent/unknown. */
+export function scriptsViewFromHash(hash: string): ScriptsView | undefined {
+  const [tab, segment] = hash.split('/');
+  if (tab !== 'scripts' || !segment?.startsWith(VIEW_SEGMENT_PREFIX)) return undefined;
+  const value = segment.slice(VIEW_SEGMENT_PREFIX.length);
+  return value === 'latest' || value === 'all' ? value : undefined;
+}
+
 /** Href to a script's execution-history page. */
 export function scriptExecutionsHref(scriptId: string): string {
   return `/scripts/${encodeURIComponent(scriptId)}/executions`;
@@ -39,6 +57,8 @@ export function scriptExecutionsHref(scriptId: string): string {
  */
 export function decodeScriptExecutionId(rawSegment: string | undefined): string | undefined {
   if (!rawSegment) return undefined;
+  // #7413 — `view=…` is the Scripts-tab view toggle, never an execution id.
+  if (rawSegment.startsWith(VIEW_SEGMENT_PREFIX)) return undefined;
   try {
     return decodeURIComponent(rawSegment);
   } catch {

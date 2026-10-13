@@ -185,6 +185,7 @@ export const TOOL_TIERS = {
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
+  get_ticket_approval_status: 1,
   // #6930. Base tier; the mutating actions are Tier 2 in aiGuardrails.
   manage_ticket_checklist: 1,
 
@@ -193,6 +194,7 @@ export const TOOL_TIERS = {
   get_device_details: 1,
   get_device_hardware_health: 1,
   get_device_time_status: 1,
+  query_device_workloads: 1,
   list_time_sync_issues: 1,
   analyze_metrics: 1,
   get_active_users: 1,
@@ -237,6 +239,7 @@ export const TOOL_TIERS = {
   get_cis_device_report: 1,
   apply_cis_remediation: 3,
   get_fleet_health: 1,
+  get_fleet_device_stats: 1,
   // Fleet hygiene (Task 8) — read-only fleet-wide aggregation.
   get_fleet_findings: 1,
   analyze_fleet_metrics: 1,
@@ -1544,7 +1547,7 @@ export function buildBreezeSdkTools(
         from: z.string().optional(),
         to: z.string().optional(),
         running: z.boolean().optional(),
-        billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+        billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']).optional(),
         approved: z.boolean().optional(),
         limit: z.number().int().min(1).max(200).optional(),
         offset: z.number().int().min(0).optional(),
@@ -1562,6 +1565,12 @@ export function buildBreezeSdkTools(
       registryDescription('get_timesheet'),
       { weekStart: z.string(), userId: uuid.optional() },
       makeHandler('get_timesheet', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_ticket_approval_status',
+      registryDescription('get_ticket_approval_status'),
+      { ticketId: uuid },
+      makeHandler('get_ticket_approval_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -1600,6 +1609,13 @@ export function buildBreezeSdkTools(
       registryDescription('get_device_time_status'),
       { deviceId: uuid },
       makeHandler('get_device_time_status', getAuth, onPreToolUse, onPostToolUse),
+    ),
+
+    tool(
+      'query_device_workloads',
+      registryDescription('query_device_workloads'),
+      inputShape('query_device_workloads'),
+      makeHandler('query_device_workloads', getAuth, onPreToolUse, onPostToolUse),
     ),
 
     tool(
@@ -2001,6 +2017,13 @@ export function buildBreezeSdkTools(
         reason: z.string().max(1000).optional(),
       },
       makeHandler('apply_cis_remediation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_device_stats',
+      registryDescription('get_fleet_device_stats'),
+      { orgId: uuid.optional() },
+      makeHandler('get_fleet_device_stats', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

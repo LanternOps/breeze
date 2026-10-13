@@ -96,7 +96,7 @@ Delegate exploration, large reads, log/test-output inspection, and reviews; keep
 Multi-wave features are tracked on GitHub (parent issue labeled `feature`, `wave` sub-issues) via the `feature-lifecycle` MCP server and skill; GitHub state is the source of truth, not the plan doc. After `writing-plans` finishes a multi-wave plan: `register_feature` and add `tracking_issue:` to its frontmatter. Starting a wave: `get_feature_status`, branch `feature/<parent#>-<slug>/wave-<subissue#>`, `start_wave`. PR bodies carry `Closes #<sub-issue>`.
 
 ## Testing
-Vitest (API, web, shared), Go `testing` (`go test -race ./...`), Playwright E2E (`data-testid` only). Tests sit alongside source. CI jobs `test-api`, `test-web`, `test-agent` and the 8-shard `integration-test` all block PRs. `pnpm test` does **not** run the RLS/integration contract suites. Scoped-run traps (never `pnpm --filter <pkg> test -- --run <path>`; vitest path filters are substring matches), contract-suite commands and CI job map: **`docs/agents/testing.md`**.
+Vitest (API, web, shared), Go `testing` (`go test -race ./...`), Playwright E2E (`data-testid` only). Tests sit alongside source. CI jobs `test-api`, `test-web`, `test-agent` and the 16-shard `integration-test` all block PRs. `pnpm test` does **not** run the RLS/integration contract suites. Scoped-run traps (never `pnpm --filter <pkg> test -- --run <path>`; vitest path filters are substring matches), contract-suite commands and CI job map: **`docs/agents/testing.md`**.
 
 ## Development Commands
 ```bash

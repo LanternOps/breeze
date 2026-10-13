@@ -119,6 +119,16 @@ export const discoveryProfiles = pgTable('discovery_profiles', {
   timeout: integer('timeout'),
   concurrency: integer('concurrency'),
   alertSettings: jsonb('alert_settings').$type<DiscoveryProfileAlertSettings>(),
+  /**
+   * #7969: optional pinned scan agent (devices.id). NULL = automatic selection
+   * (online agent in the site, subnet-overlapping first). Set = only this device
+   * runs the profile's scans; offline fails the job, never falls back.
+   * Composite FK (pinned_device_id, org_id) -> devices(id, org_id)
+   * ON DELETE SET NULL (pinned_device_id) lives in
+   * migrations/2026-12-22-130000-discovery-profile-pinned-device.sql. Not named
+   * `device_id` on purpose — see that migration.
+   */
+  pinnedDeviceId: uuid('pinned_device_id'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()

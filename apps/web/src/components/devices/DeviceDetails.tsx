@@ -5,6 +5,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { asList } from "@/lib/asList";
 import {
   Monitor,
+  Container,
   Cpu,
   Database,
   MemoryStick,
@@ -66,6 +67,8 @@ import DeviceChangeHistoryTab from "./DeviceChangeHistoryTab";
 import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
+import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
+import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
@@ -119,6 +122,8 @@ type CoreTab =
   | "boot-performance"
   | "playbooks"
   | "peripherals"
+  | "workloads"
+  | "system-restore"
   | "backup"
   | "linked-profiles"
   | "tickets"
@@ -218,6 +223,8 @@ const VALID_TABS: CoreTab[] = [
   "boot-performance",
   "playbooks",
   "peripherals",
+  "workloads",
+  "system-restore",
   "backup",
   "linked-profiles",
   "tickets",
@@ -611,6 +618,35 @@ export default function DeviceDetails({
       icon: <Usb className="h-4 w-4" />,
       title: t("deviceDetails.usbBluetoothAndConnectedDevices"),
     },
+    // Workload hosts only (#8193): hostsWorkloads is true once any container
+    // or VM runtime is detected. A `#workloads` deep link still mounts the
+    // panel on other devices — it explains "no runtime" / "agent too old"
+    // rather than leaving a blank content area.
+    ...(device.hostsWorkloads
+      ? [
+          {
+            id: "workloads" as Tab,
+            group: groups.inventory,
+            label: t("deviceDetails.workloads"),
+            icon: <Container className="h-4 w-4" />,
+            title: t("deviceDetails.workloadsTitle"),
+          },
+        ]
+      : []),
+    // Windows only (#4759): System Restore request ledger. A `#system-restore`
+    // deep link still mounts the panel on other devices, where the explicit
+    // empty state explains there is nothing recorded.
+    ...(device.os === "windows"
+      ? [
+          {
+            id: "system-restore" as Tab,
+            group: groups.management,
+            label: t("deviceDetails.systemRestore"),
+            icon: <History className="h-4 w-4" />,
+            title: t("deviceDetails.systemRestore"),
+          },
+        ]
+      : []),
     // --- Management ---
     {
       id: "scripts",
@@ -984,6 +1020,17 @@ export default function DeviceDetails({
           orgId={device.orgId}
           timezone={effectiveTimezone}
         />
+      )}
+
+      {activeTab === "workloads" && (
+        <DeviceWorkloadsTab
+          deviceId={device.id}
+          timezone={effectiveTimezone}
+        />
+      )}
+
+      {activeTab === "system-restore" && (
+        <DeviceRestorePointAttempts deviceId={device.id} />
       )}
 
       {activeTab === "peripherals" && (

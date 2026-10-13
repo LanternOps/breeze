@@ -103,7 +103,7 @@ export default defineConfig({
             },
             {
               label: 'Service Desk',
-              items: [{ slug: 'features/ticketing' }],
+              items: [{ slug: 'features/ticketing' }, { slug: 'features/ticket-customer-approval' }],
             },
             {
               label: 'Billing & Invoicing',
@@ -128,6 +128,7 @@ export default defineConfig({
                 { slug: 'features/monitors' },
                 { slug: 'features/network-monitors' },
                 { slug: 'features/hardware-monitoring' },
+                { slug: 'features/workload-inventory' },
                 { slug: 'features/time-sync' },
                 { slug: 'features/performance-metrics' },
                 { slug: 'features/network-connections' },

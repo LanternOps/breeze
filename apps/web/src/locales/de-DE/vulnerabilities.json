@@ -200,6 +200,10 @@
       "ready_one": "Bereit · {{ready}}/{{total}} Gerät",
       "ready_other": "Bereit · {{ready}}/{{total}} Geräte"
     },
+    "target": {
+      "version": "Auf {{version}} aktualisieren",
+      "latest": "Auf die neueste Version aktualisieren"
+    },
     "hasMore": "Die 500 Softwaregruppen mit dem höchsten Risiko werden angezeigt. Filter eingrenzen, um die übrigen Gruppen anzuzeigen.",
     "devices_one": "{{count}} Gerät",
     "devices_other": "{{count}} Geräte",

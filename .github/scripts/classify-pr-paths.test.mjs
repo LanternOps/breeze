@@ -558,7 +558,7 @@ const heavyResultVars = [
   'TYPECHECK_RESULT', 'TEST_API_RESULT', 'TEST_M365_GRAPH_READ_EXECUTOR_RESULT',
   'TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT', 'TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT',
   'TEST_WEB_RESULT', 'TEST_MOBILE_RESULT', 'MOBILE_NATIVE_CHANGES_RESULT',
-  'TEST_PORTAL_RESULT', 'TEST_VIEWER_RESULT', 'TEST_OFFICE_ADDIN_CORE_RESULT',
+  'TEST_PORTAL_RESULT', 'TEST_VIEWER_RESULT', 'TEST_SHARED_RESULT', 'TEST_OFFICE_ADDIN_CORE_RESULT',
   'TEST_EXCEL_ADDIN_RESULT', 'TEST_WORD_ADDIN_RESULT', 'TEST_POWERPOINT_ADDIN_RESULT',
   'TEST_OUTLOOK_ADDIN_RESULT', 'BUILD_API_RESULT', 'BUILD_M365_GRAPH_READ_EXECUTOR_RESULT',
   'BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT', 'BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT',
@@ -611,7 +611,7 @@ for (const [label, env, passes] of [
 
 // A tooling-only PR where a single heavy job unexpectedly ran (success) or
 // failed must still fail closed — its `if:` should have skipped it.
-for (const resultVar of ['TEST_WEB_RESULT', 'BUILD_AGENT_RESULT', 'INTEGRATION_TEST_RESULT']) {
+for (const resultVar of ['TEST_WEB_RESULT', 'BUILD_AGENT_RESULT', 'INTEGRATION_TEST_RESULT', 'TEST_SHARED_RESULT']) {
   test(`CI Success (app-gate): tooling-only PR, ${resultVar} unexpectedly ran (success)`, () => {
     const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
       encoding: 'utf8',
@@ -627,6 +627,15 @@ for (const resultVar of ['TEST_WEB_RESULT', 'BUILD_AGENT_RESULT', 'INTEGRATION_T
     assert.equal(execution.status, 1, execution.stdout + execution.stderr);
   });
 }
+
+// #8373: a red packages/shared suite must block CI Success on an app change.
+test('CI Success (app-gate): app change, TEST_SHARED_RESULT red', () => {
+  const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
+    encoding: 'utf8',
+    env: { ...process.env, IS_PR: 'true', ...appPassing, TEST_SHARED_RESULT: 'failure' },
+  });
+  assert.equal(execution.status, 1, execution.stdout + execution.stderr);
+});
 
 // app=true with one heavy job unexpectedly skipped must fail closed.
 for (const resultVar of heavyResultVars) {

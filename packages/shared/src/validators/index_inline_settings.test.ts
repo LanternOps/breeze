@@ -372,6 +372,69 @@ describe('patchInlineSettingsSchema reboot deferral (#3207)', () => {
   });
 });
 
+describe('patchInlineSettingsSchema restart-prompt text (#8030)', () => {
+  it('defaults every prompt field to null so existing policies keep the built-in text', () => {
+    const parsed = patchInlineSettingsSchema.parse({});
+    expect(parsed.rebootPromptTitle).toBeNull();
+    expect(parsed.rebootPromptBody).toBeNull();
+    expect(parsed.rebootPromptButton).toBeNull();
+  });
+
+  it('canonicalizes blank, whitespace-only, null and absent to the same null', () => {
+    for (const value of ['', '   ', null, undefined]) {
+      const parsed = patchInlineSettingsSchema.parse({
+        rebootPromptTitle: value,
+        rebootPromptBody: value,
+        rebootPromptButton: value,
+      });
+      expect(parsed.rebootPromptTitle).toBeNull();
+      expect(parsed.rebootPromptBody).toBeNull();
+      expect(parsed.rebootPromptButton).toBeNull();
+    }
+  });
+
+  it('trims and keeps custom text, including the countdown placeholder and newlines in the body', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootPromptTitle: '  Neustart geplant ',
+      rebootPromptBody: 'Neustart in {{countdown}}.\nBitte speichern Sie Ihre Arbeit.',
+      rebootPromptButton: 'Jetzt neu starten',
+    });
+    expect(parsed.rebootPromptTitle).toBe('Neustart geplant');
+    expect(parsed.rebootPromptBody).toBe('Neustart in {{countdown}}.\nBitte speichern Sie Ihre Arbeit.');
+    expect(parsed.rebootPromptButton).toBe('Jetzt neu starten');
+  });
+
+  it('enforces the length limits', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptTitle: 'a'.repeat(100) })).not.toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptTitle: 'a'.repeat(101) })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'a'.repeat(500) })).not.toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'a'.repeat(501) })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptButton: 'a'.repeat(40) })).not.toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptButton: 'a'.repeat(41) })).toThrow();
+  });
+
+  it('rejects markup characters in every field', () => {
+    for (const field of ['rebootPromptTitle', 'rebootPromptBody', 'rebootPromptButton']) {
+      expect(() => patchInlineSettingsSchema.parse({ [field]: '<b>Restart</b>' })).toThrow();
+      expect(() => patchInlineSettingsSchema.parse({ [field]: 'a > b' })).toThrow();
+    }
+  });
+
+  it('rejects control characters, allowing newline and tab only in the body', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptTitle: 'a\nb' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptButton: 'a\tb' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'a\u0000b' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'a\u001b[31mb' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'a\tb\nc' })).not.toThrow();
+  });
+
+  it('rejects placeholders other than {{countdown}} so a typo cannot reach a user verbatim', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptBody: 'in {{countdwon}}' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptTitle: 'in {{ countdown }}' })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootPromptButton: 'Now {{countdown}}' })).not.toThrow();
+  });
+});
+
 describe('policyAppRuleSchema source enum', () => {
   it('accepts third_party and custom sources', () => {
     expect(policyAppRuleSchema.safeParse({ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(true);

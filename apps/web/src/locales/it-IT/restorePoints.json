@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "In attesa del dispositivo",
+    "created": "Creazione del punto di ripristino confermata {{time}}",
+    "createdNoTime": "Creazione del punto di ripristino confermata",
+    "existingAccepted": "Punto esistente riutilizzato — creato {{age}} fa (limite di Windows: ogni {{limit}})",
+    "existingAcceptedAgeOnly": "Punto esistente riutilizzato — creato {{age}} fa",
+    "existingAcceptedNoDetail": "Punto esistente riutilizzato",
+    "skippedDisabled": "Saltato — Ripristino configurazione di sistema è disattivato su questo dispositivo",
+    "skippedDefinitionOnly": "Saltato — solo aggiornamento delle definizioni",
+    "unsupported": "Non disponibile su questo dispositivo",
+    "busy": "Saltato — il servizio Copia shadow del volume era in uso",
+    "insufficientPrivileges": "Saltato — privilegi insufficienti",
+    "verificationFailed": "Impossibile verificare",
+    "failed": "Non riuscito — {{message}}",
+    "failedNoMessage": "Non riuscito",
+    "unknown": "Esito non riconosciuto da questa versione della console"
+  },
+  "list": {
+    "title": "Ripristino configurazione di sistema",
+    "disclaimer": "Il Ripristino configurazione di sistema non è un backup. Questo elenco registra quando Breeze ha chiesto a Windows di creare un punto di ripristino e cosa ha riferito il dispositivo; non garantisce che un punto di ripristino esista o possa essere ripristinato.",
+    "loading": "Caricamento della cronologia del Ripristino configurazione di sistema…",
+    "loadError": "Impossibile caricare la cronologia del Ripristino configurazione di sistema.",
+    "retry": "Riprova",
+    "empty": "Nessuna richiesta di Ripristino configurazione di sistema registrata per questo dispositivo.",
+    "loadMore": "Carica altro",
+    "loadingMore": "Caricamento…",
+    "loadMoreError": "Impossibile caricare altre voci.",
+    "columns": {
+      "requested": "Richiesto",
+      "trigger": "Attivato da",
+      "outcome": "Esito"
+    },
+    "trigger": {
+      "patch": "Installazione patch",
+      "script": "Esecuzione script",
+      "software_install": "Installazione software"
+    },
+    "viewScriptRun": "Visualizza esecuzione script"
+  }
+}

@@ -114,6 +114,20 @@ vi.mock('../routes/agents/helpers', async (orig) => ({
 
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+// The proxy DB answers every select with the device row, which the #8509
+// in-flight lookup would read as a running scan. Run the real query (so its DB
+// context is still checked) but report no scan in flight.
+vi.mock('./filesystemAnalysis', async (orig) => {
+  const actual = await orig<typeof import('./filesystemAnalysis')>();
+  return {
+    ...actual,
+    findInFlightFilesystemScan: vi.fn(async (deviceId: string) => {
+      await actual.findInFlightFilesystemScan(deviceId);
+      return null;
+    }),
+  };
+});
+
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { toolManagesDbContext } from './aiTools';

@@ -14,6 +14,9 @@ import (
 // It must carry the run's junctions like the end-of-run publish does
 // (finalizeManifest runs before both).
 func TestCreateSnapshot_SourceGoneWithoutJournal_PartialManifestCarriesJunctions(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 

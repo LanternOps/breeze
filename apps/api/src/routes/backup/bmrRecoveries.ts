@@ -17,6 +17,7 @@ import {
 } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { authorizeRouteResilienceResources, resolveRouteAuthorizedDeviceIds } from './resilienceAuthorization';
@@ -829,6 +830,9 @@ bmrRecoveryPublicRoutes.post(
       }
 
       await db.update(bareMetalRecoveries).set(set).where(eq(bareMetalRecoveries.id, rec.id));
+      if (targetStatus === 'completed' || targetStatus === 'failed') {
+        refreshReadinessAfterRecovery(rec.orgId, rec.deviceId);
+      }
 
       writeAuditEvent(c, {
         orgId: rec.orgId,

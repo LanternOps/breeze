@@ -20,6 +20,7 @@ import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 // Aggregate outcome of a POST /tickets/bulk call.
 interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
@@ -343,7 +344,7 @@ export default function TicketsPage() {
 
   // Single writer for the hash so selection and sort never clobber each other.
   const writeHash = useCallback((selection: string | null, sortValue: TicketSort) => {
-    history.replaceState(null, '', hashFor(selection, sortValue) || window.location.pathname + window.location.search);
+    replaceUrl(hashFor(selection, sortValue) || window.location.pathname + window.location.search);
   }, []);
 
   const selected = useMemo(

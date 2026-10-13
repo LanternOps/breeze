@@ -109,6 +109,11 @@ export function makeReplaySender(senders: ReplaySenders): (write: QueuedWrite) =
             // #4628 W04: tri-state. Absent stays absent (server applies the
             // category default); an explicit null is replayed as null.
             workTypeId: optionalWorkTypeId(write.payload),
+            // #8211: an offline arrival-prompt visit keeps its org + site.
+            // Only 'location' is ever replayed; any other stored value is dropped.
+            orgId: optionalString(write.payload, 'orgId'),
+            siteId: optionalString(write.payload, 'siteId'),
+            source: write.payload.source === 'location' ? 'location' : undefined,
           }) as CreateTimeEntryInput
         );
         return;

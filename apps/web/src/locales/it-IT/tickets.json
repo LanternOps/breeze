@@ -451,7 +451,9 @@
       "allMissingRate": "Non è stato possibile fatturare nulla: a ogni voce di tempo fatturabile di questo ticket manca la tariffa oraria.",
       "missingRateHeading": "Voci di tempo senza tariffa oraria (non fatturate — imposta una tariffa e crea di nuovo la fattura):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Imposta una tariffa nel foglio ore"
+      "setRate": "Imposta una tariffa nel foglio ore",
+      "heldForHourBlock_one": "{{count}} registrazione di tempo ({{hours}} ore) è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore.",
+      "heldForHourBlock_other": "{{count}} registrazioni di tempo ({{hours}} ore) sono trattenute per il monte ore di questa organizzazione e verranno fatturate alla chiusura del periodo del monte ore."
     },
     "move": {
       "open": "Sposta in un'altra org...",
@@ -551,5 +553,123 @@
     "missingRate": "Fatturabile · tariffa non configurata",
     "recalculated": "La fatturazione viene ricalcolata per questo tipo di lavoro al salvataggio.",
     "unavailable": "Esito della fatturazione non disponibile"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Questa richiesta di approvazione non è più in sospeso.",
+      "requestChanged": "La richiesta è cambiata mentre la consultavi. L'ultima versione è stata ricaricata: controllala e riprova.",
+      "requestExpired": "Questa richiesta di approvazione è scaduta. Richiedila di nuovo per inviarne una nuova.",
+      "requestAlreadyPending": "Su questo ticket è già in sospeso una richiesta di approvazione per lo stesso motivo.",
+      "requestNotReaskable": "Si può richiedere di nuovo solo una richiesta rifiutata, scaduta o annullata che ha ancora tempo trattenuto.",
+      "nothingHeld": "Questo ticket non ha tempo trattenuto per cui chiedere l'approvazione.",
+      "approvalsDisabled": "L'approvazione del cliente non è abilitata per questo cliente.",
+      "entryNotResolvable": "Questo tempo può essere stornato solo dopo che la sua richiesta di approvazione è stata rifiutata, è scaduta o è stata annullata.",
+      "approvalRequestPending": "Questo ticket ha una richiesta di approvazione in attesa del cliente, quindi non può essere spostato. Annulla o risolvi prima la richiesta.",
+      "sourceAwaitingApproval": "Parte del tempo di questa fattura è in attesa dell'approvazione del cliente. Fallo approvare o storna il tempo prima di emetterla.",
+      "approvalRequired": "Serve l'approvazione del cliente prima di poter registrare tempo fatturabile su questo ticket. Richiedi l'approvazione dal pannello Approvazioni del ticket."
+    },
+    "budget": {
+      "title": "Budget e approvazione",
+      "hours": "Budget (ore)",
+      "amount": "Importo del budget",
+      "save": "Salva budget",
+      "saved": "Budget salvato",
+      "saveFailed": "Impossibile salvare il budget",
+      "invalidHours": "Inserisci ore maggiori di 0 oppure lascia vuoto per nessun limite.",
+      "invalidAmount": "Inserisci un importo maggiore di 0 con al massimo 2 decimali oppure lascia vuoto.",
+      "ceiling": "Massimale {{ceiling}}",
+      "ceilingWithExtensions": "Massimale {{ceiling}} (budget {{budget}} + {{extra}} approvate)",
+      "noBudget": "Nessun budget impostato",
+      "usedLegend": "Usato {{value}}",
+      "heldLegend": "In attesa di approvazione {{value}}",
+      "unpriced_one": "{{count}} voce trattenuta non ha ancora un prezzo.",
+      "unpriced_other": "{{count}} voci trattenute non hanno ancora un prezzo.",
+      "barLabel": "Utilizzo del budget",
+      "requestApproval": "Richiedi approvazione"
+    },
+    "request": {
+      "trigger": "Motivo",
+      "triggerBudget": "Budget superato",
+      "triggerAfterHours": "Lavoro fuori orario",
+      "extensionMinutes": "Minuti aggiuntivi",
+      "extensionAmount": "Importo aggiuntivo",
+      "windowStart": "Copre da",
+      "windowEnd": "Copre fino a",
+      "message": "Messaggio per il cliente (facoltativo)",
+      "submit": "Invia richiesta",
+      "sent": "Richiesta di approvazione inviata",
+      "failed": "Impossibile inviare la richiesta di approvazione",
+      "invalidExtension": "Inserisci minuti aggiuntivi o un importo aggiuntivo maggiore di 0.",
+      "invalidWindow": "Scegli un inizio e una fine, con la fine successiva all'inizio e a non più di 14 giorni di distanza."
+    },
+    "panel": {
+      "title": "Approvazioni del cliente",
+      "status": {
+        "pending": "In sospeso",
+        "approved": "Approvata",
+        "denied": "Rifiutata",
+        "expired": "Scaduta",
+        "cancelled": "Annullata"
+      },
+      "revision": "Revisione {{n}}",
+      "ask": "Richiede {{ask}}",
+      "window": "Copre dal {{from}} al {{to}}",
+      "expires": "Scade {{when}}",
+      "heldEntries_one": "{{count}} voce trattenuta",
+      "heldEntries_other": "{{count}} voci trattenute",
+      "approvers": "Approvatori",
+      "notified": "Notificati",
+      "noneListed": "Nessuno",
+      "noApprover": "Nessun approvatore registrato: aggiungi un contatto di fatturazione o registra la decisione per conto del cliente.",
+      "decidedByCustomer": "Deciso da {{who}}",
+      "customerFallback": "il cliente",
+      "decidedOnBehalf": "Registrato da {{user}} per conto di {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Verbale",
+        "email": "E-mail",
+        "signedDocument": "Documento firmato",
+        "other": "Altro"
+      },
+      "cancel": "Annulla richiesta",
+      "cancelConfirmTitle": "Annullare questa richiesta di approvazione?",
+      "cancelConfirmMessage": "Il cliente non potrà più rispondere. Il tempo già trattenuto resta trattenuto finché non la richiedi di nuovo o lo storni.",
+      "cancelled": "Richiesta di approvazione annullata",
+      "cancelFailed": "Impossibile annullare la richiesta",
+      "reask": "Richiedi di nuovo",
+      "reaskSubmit": "Invia di nuovo",
+      "reasked": "Richiesta di approvazione inviata di nuovo",
+      "reaskFailed": "Impossibile richiedere di nuovo",
+      "record": "Registra decisione"
+    },
+    "record": {
+      "title": "Registra la decisione del cliente",
+      "intro": "Usalo quando il cliente ti ha comunicato la sua decisione al di fuori di Breeze. Viene registrata a tuo nome.",
+      "target": "Revisione {{revision}} · {{ask}}",
+      "decision": "Decisione",
+      "approve": "Approvata",
+      "deny": "Rifiutata",
+      "method": "Come è stata comunicata?",
+      "reference": "Riferimento",
+      "referencePlaceholder": "ad es. telefonata del 12 ott., oggetto dell'email, numero del documento",
+      "signerName": "Nome del cliente",
+      "signerEmail": "Email del cliente (facoltativa)",
+      "note": "Nota (facoltativa)",
+      "submit": "Registra decisione",
+      "recorded": "Decisione registrata",
+      "failed": "Impossibile registrare la decisione"
+    },
+    "held": {
+      "chip": "In attesa di approvazione del cliente",
+      "writeOff": "Storna",
+      "writeOffTitle": "Stornare il tempo trattenuto?",
+      "writeOffMessage": "Questo tempo è trattenuto perché il cliente non lo ha approvato. Stornandolo viene contrassegnato come senza addebito e non verrà fatturato.",
+      "writtenOff": "Tempo stornato",
+      "writeOffFailed": "Impossibile stornare il tempo"
+    },
+    "timer": {
+      "startNonBillable": "Avvia come non fatturabile"
+    },
+    "loadError": "Impossibile caricare le approvazioni del cliente",
+    "retry": "Riprova"
   }
 }

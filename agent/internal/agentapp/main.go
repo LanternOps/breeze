@@ -320,7 +320,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
-	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
+	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Deprecated and ignored; the site comes from the enrollment key")
+	if err := enrollCmd.Flags().MarkDeprecated("site-id", siteIDDeprecationNotice); err != nil {
+		panic(err) // only fails if the flag above is not registered
+	}
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
@@ -1042,7 +1045,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		// on self-update/config-reload the orphaned loop keeps polling with a
 		// zeroed token and spins auth-failure logs (same class as ETW PR #959).
 		unifiCtx, unifiCancel = context.WithCancel(context.Background())
+		// #7970: the loop backs off to a long idle interval while this device
+		// has no collectors; the heartbeat's unifi_collectors_assigned hint
+		// wakes it so a new assignment is picked up within about one beat.
+		unifiWaker := unifi.NewWaker()
+		hb.SetUnifiCollectorWake(unifiWaker.Wake)
 		unifiDone = unifi.StartCollectorLoop(unifiCtx, unifi.CollectorDeps{
+			Wake: unifiWaker,
 			// URL provider, not a copied string: after backup-server-URL
 			// promotion (#2323) uploads must follow the promoted primary
 			// instead of POSTing to the dead one forever (#2423).
@@ -1555,6 +1564,7 @@ func enrollDevice(enrollmentKey string) {
 	initEnrollLogging(cfg, quietEnroll)
 
 	enrollLog := logging.L("enroll")
+	warnIgnoredSiteID(enrollLog, enrollSiteID)
 
 	// Clear any stale enroll-last-error.txt from a previous failed
 	// attempt BEFORE any validation or early return. Every attempt

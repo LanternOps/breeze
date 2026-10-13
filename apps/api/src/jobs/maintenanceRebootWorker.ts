@@ -37,8 +37,10 @@ import {
 import { queueCommandForExecution } from '../services/commandQueue';
 import {
   computeRebootDeadline,
+  rebootPromptPayload,
   resolveRebootPlan,
   type RebootDeferralSettings,
+  type RebootPromptText,
 } from '../services/patchRebootHandler';
 import {
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS,
@@ -88,6 +90,10 @@ type WindowsRebootPayload = {
   allowDeferral: boolean;
   maxDeferrals: number;
   deferralMinutes: number;
+  /** #8030. Present only when the patch policy sets them; see rebootPromptPayload. */
+  promptTitle?: string;
+  promptBody?: string;
+  promptButton?: string;
 };
 // `delay` is the on-the-wire payload key the agent reads
 // (tools.ShutdownDelayMinutes parses payload["delay"]), and its unit is MINUTES
@@ -142,12 +148,18 @@ export function decideRebootCommand(params: {
    */
   deferral: RebootDeferralSettings;
   /**
+   * Restart-prompt text resolved from the same patch policy (#8030). Required
+   * for the same reason `deferral` is: a forgotten argument would silently
+   * ship the built-in English prompt on a policy that had set its own text.
+   */
+  promptText: RebootPromptText;
+  /**
    * Close of the maintenance window this reboot is firing inside. Caps the
    * deadline so a postponement cannot run past the end of the window.
    */
   windowEndsAt?: Date | null;
 }): RebootDecision {
-  const { rebootIfPending, windowActive, osType, delayMinutes, deferral, windowEndsAt } = params;
+  const { rebootIfPending, windowActive, osType, delayMinutes, deferral, promptText, windowEndsAt } = params;
   if (!rebootWarranted({ rebootIfPending, windowActive, osType })) return null;
   if (osType === 'windows') {
     return {
@@ -160,6 +172,7 @@ export function decideRebootCommand(params: {
         allowDeferral: deferral.allowDeferral,
         maxDeferrals: deferral.maxDeferrals,
         deferralMinutes: deferral.deferralMinutes,
+        ...rebootPromptPayload(promptText),
       },
     };
   }
@@ -257,6 +270,7 @@ export async function processRebootCandidate(
     ...gate,
     delayMinutes: plan.delayMinutes,
     deferral: plan.deferral,
+    promptText: plan.promptText,
     windowEndsAt: windowStatus.windowEndsAt,
   });
   if (!decision) return { issued: false, reason: 'no-action' };

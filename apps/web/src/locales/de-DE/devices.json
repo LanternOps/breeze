@@ -358,7 +358,9 @@
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
-    "toADifferentSite": "an einen anderen Standort."
+    "toADifferentSite": "an einen anderen Standort.",
+    "deviceMovedByOther": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen",
+    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -912,6 +914,7 @@
     "diskCleanup": "Datenträgerbereinigung",
     "diskUsageAnalysisAndCleanup": "Analyse und Bereinigung der Festplattennutzung",
     "bootPerf": "Boot-Perf",
+    "systemRestore": "Systemwiederherstellung",
     "startupTimeAndBootProcessAnalysis": "Analyse der Startzeit und des Bootvorgangs",
     "backup": "Sicherung",
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",
@@ -945,7 +948,9 @@
       "management": "Verwaltung",
       "history": "Verlauf & Netzwerk",
       "extensions": "Erweiterungen"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -2169,20 +2174,29 @@
     "noOutput": "Keine Ausgabe",
     "output": "Ausgabe",
     "refreshing": "Wird aktualisiert...",
-    "running": "Wird ausgeführt...",
     "runAgain": "Erneut ausführen",
+    "runCount_one": "{{count}} Ausführung",
+    "runCount_other": "{{count}} Ausführungen",
+    "running": "Wird ausgeführt...",
     "scriptFallback": "Skript",
     "stderr": "Standardfehler (stderr)",
     "stdout": "Standardausgabe (stdout)",
     "table": {
       "completed": "Abgeschlossen",
       "duration": "Dauer",
+      "lastOutput": "Letzte Ausgabe",
+      "lastRun": "Letzte Ausführung",
       "script": "Skript",
       "started": "Begonnen",
       "status": "Status"
     },
     "title": "Skriptausführungsverlauf",
-    "unnamedScript": "Unbenanntes Skript"
+    "unnamedScript": "Unbenanntes Skript",
+    "view": {
+      "all": "Alle Ausführungen",
+      "label": "Skriptansicht",
+      "latest": "Letztes pro Skript"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Erkannt: {{date}}",
@@ -2234,7 +2248,8 @@
     "displayName": "Anzeigename",
     "errors": {
       "loadSites": "Die Standorte konnten nicht geladen werden",
-      "saveSettings": "Einstellungen konnten nicht gespeichert werden"
+      "saveSettings": "Einstellungen konnten nicht gespeichert werden",
+      "siteChanged": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Geräteeinstellungen gespeichert",
@@ -3687,7 +3702,15 @@
     "cancelled": "Aktion in der Warteschlange abgebrochen",
     "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
     "loadFailed": "Warteschlangenaktionen konnten nicht geladen werden.",
-    "empty": "Keine ausstehenden Aktionen"
+    "empty": "Keine ausstehenden Aktionen",
+    "powerHold": {
+      "title": "{{action}} wartet auf einen laufenden Befehl",
+      "body": "{{action}} wird gesendet, sobald das Gerät seine laufenden Befehle abgeschlossen hat. {{command}} läuft seit {{minutes}} Min. ohne Ergebnis.",
+      "markFailed": "Als fehlgeschlagen markieren",
+      "markFailedIn": "Sie können ihn in {{minutes}} Min. als fehlgeschlagen markieren.",
+      "markedFailed": "Befehl als fehlgeschlagen markiert",
+      "markFailedFailed": "Befehl konnte nicht als fehlgeschlagen markiert werden"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Manuellen Asset hinzufügen",
@@ -3949,6 +3972,64 @@
       "pdc_emulator": "PDC-Emulator der Domäne",
       "forest_root_pdc_emulator": "PDC-Emulator der Gesamtstruktur-Stammdomäne",
       "unknown": "Unbekannt"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Workloads für dieses Gerät konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "agentTooOld": "Agent zu alt – aktualisieren Sie den Agent, damit Workloads gemeldet werden.",
+    "noRuntimes": "Auf diesem Gerät wurde keine Container- oder VM-Runtime erkannt.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unbekannt",
+    "detection": {
+      "absent": "Nicht installiert",
+      "unknown": "Erkennung nicht eindeutig"
+    },
+    "status": {
+      "ok": "Wird erfasst",
+      "disabled": "Erfassung ist aus – aktivieren Sie Workload-Inventar in einer Konfigurationsrichtlinie",
+      "unavailable": "Runtime läuft nicht",
+      "permission_denied": "Zugriff verweigert",
+      "error": "Erfassung fehlgeschlagen",
+      "unsupported": "Auf diesem Gerät nicht unterstützt"
+    },
+    "detectOnly": "Nur erkannt – Workloads für diese Runtime werden nicht aufgelistet.",
+    "counts": "{{total}} Workloads · {{running}} laufend · {{stopped}} gestoppt",
+    "partial": "Teilweiser Snapshot – einige Details konnten nicht gelesen werden, daher werden die erfassten Daten angezeigt.",
+    "truncated": "Angezeigt werden {{reported}} von {{observed}} Workloads, die die Runtime gemeldet hat.",
+    "lastError": "Letzter Fehler: {{error}}",
+    "lastCollected": "Zuletzt erfasst {{time}}",
+    "empty": "Keine Workloads gemeldet.",
+    "columns": {
+      "name": "Name",
+      "state": "Status",
+      "image": "Image / Gast-OS",
+      "compose": "Compose-Projekt",
+      "started": "Gestartet"
+    },
+    "states": {
+      "running": "Läuft",
+      "stopped": "Gestoppt",
+      "paused": "Pausiert",
+      "restarting": "Wird neu gestartet",
+      "other": "Sonstige"
+    },
+    "policy": {
+      "title": "Workload-Inventar",
+      "description": "Container und virtuelle Maschinen auf Container- und VM-Hosts auflisten",
+      "offNote": "Runtimes werden immer erkannt, aber die Workload-Auflistung bleibt aus, bis eine Richtlinie sie aktiviert.",
+      "enabled": "Workloads auflisten",
+      "runtimesHeading": "Aufzulistende Runtimes",
+      "laterRelease": "Die Auflistung für Hyper-V und Proxmox VE folgt mit einer späteren Agent-Version; diese Schalter werden dann wirksam.",
+      "interval": "Erfassungsintervall (Minuten)",
+      "invalidInterval": "Das Intervall muss eine ganze Zahl von Minuten zwischen {{min}} und {{max}} sein."
     }
   }
 }

@@ -308,3 +308,22 @@ describe('bodyLimitOnError (route-level limits tighter than the global gate)', (
     expect(await response.json()).toEqual({ error: 'Log batch too large (max 256KB gzipped)' });
   });
 });
+
+describe('global body limit on tunnel surfaces', () => {
+  function tunnelApp() {
+    const app = new Hono();
+    app.use('*', async (c, next) => { c.set('tunnelSurface', true); return next(); });
+    app.use('*', createGlobalBodyLimitMiddleware({ warn: () => undefined, capture: () => undefined }));
+    app.post('*', (c) => c.json({ reached: true }));
+    return app;
+  }
+  const big = 'x'.repeat(2 * MB);
+  it.each(['/oauth/x', '/api/v1/dev/push', '/api/v1/quotes/t/images'])('applies the path-mode tunnel policy regardless of path %s', async (p) => {
+    const res = await tunnelApp().request(p, { method: 'POST', body: big, headers: { 'content-length': String(big.length) } });
+    expect(res.status).toBe(413);
+  });
+  it('still lets small bodies through', async () => {
+    const res = await tunnelApp().request('/anything', { method: 'POST', body: 'a=1', headers: { 'content-length': '3' } });
+    expect(res.status).toBe(200);
+  });
+});

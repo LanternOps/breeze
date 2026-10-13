@@ -273,6 +273,10 @@ scheduled → running → completed / failed / cancelled
 
 ---
 
+## System Restore checkpoints
+
+Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the new **System Protection** policy setting makes it configurable, and each patch install records the outcome (or **Awaiting the device**) as a badge in the patch history. Agent-side checkpoint creation and reporting roll out with a future agent release. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the status reference and the support matrix. System Restore is not a backup, and this is separate from the patch rollback described below.
+
 ## Rollback
 
 To roll back an installed patch, post to the rollback endpoint:
@@ -436,6 +440,9 @@ Content-Type: application/json
 | `rebootAllowDeferral` | boolean | Let the signed-in user postpone a Breeze-scheduled restart. **Default: `false`** — with it off, the reboot behaves exactly as it always has (warn, then restart). There is no switch to suppress the warning itself; at least one warning always fires. Supported on Windows, macOS and Linux; on Linux the dialog is drawn by the agent itself and needs `zenity` installed plus a signed-in graphical session (see [What the end user sees](#what-the-end-user-sees)) |
 | `rebootMaxDeferrals` | integer | How many times one user may postpone a single restart before it proceeds (0–10). Must be at least `1` when `rebootAllowDeferral` is on. Default: `3` |
 | `rebootDeferralMinutes` | integer | How far each postponement pushes the restart out (5–1440 minutes). Default: `60`. `rebootDelayMinutes + rebootMaxDeferrals × rebootDeferralMinutes` may not exceed `10080` (7 days) — that sum is the hard deadline the restart is measured against, and the agent refuses a restart scheduled further out than that |
+| `rebootPromptTitle` | string \| null | Replaces the title of every restart warning (up to 100 characters). `null` or blank keeps the built-in English title. See [Custom restart-prompt text](#custom-restart-prompt-text). Default: `null` |
+| `rebootPromptBody` | string \| null | Replaces the message of every restart warning (up to 500 characters, line breaks allowed). `{{countdown}}` is replaced with the time left until the restart. `null` or blank keeps the built-in English message. Default: `null` |
+| `rebootPromptButton` | string \| null | Replaces the **Restart now** button label (up to 40 characters). `null` or blank keeps the built-in label. Default: `null` |
 | `exclusiveWindowsUpdate` | boolean | **Manage Windows Update exclusively through Breeze.** When enabled, Breeze disables the device's native Windows Update automatic-install channel, so updates on that device only arrive through Breeze's approval rings and schedule — no unexpected OS-initiated installs or reboots outside your policy. Turning it back off restores Windows' native update behavior. **Windows-only** — has no effect on macOS or Linux devices. Default: `false` |
 | `offlineBehavior` | string | What happens when a patch job targets a device that's offline: `queue` (default) holds the install and delivers it the moment the device reconnects, up to a 7-day deadline; `skip` leaves the device out of the job entirely rather than waiting for it. See [Offline devices](#offline-devices) below. |
 
@@ -470,6 +477,17 @@ Note that this covers restarts that Breeze **schedules** — post-patch restarts
 **What a technician sees.** The device page shows a **Restart scheduled** badge (or **Restarting**, once the scheduled time has passed) whenever a restart is booked; hovering it shows what requested the restart — a patch installation, a maintenance window, or a technician — along with the scheduled time and deadline. When the resolved deferral budget for that restart is greater than zero, a second badge shows **Postponed N of M**, present from the moment the restart is scheduled (starting at `Postponed 0 of M`) rather than only after the first postponement; a restart with deferral off instead shows a **Cannot be postponed** badge. Neither deferral badge appears for a device running an agent built before this reporting existed, since that agent never sends a deferral budget at all.
 
 The settings that control all of this — `rebootAllowDeferral`, `rebootMaxDeferrals`, `rebootDeferralMinutes` — live on the Patch feature of a [Configuration Policy](#patch-scheduling-via-configuration-policies) (see [Patch settings fields](#patch-settings-fields) above) and default to **off**.
+
+#### Custom restart-prompt text
+
+By default the restart warnings are in English. To show them in your users' language, or to use your own wording, set any of **Title**, **Message** and **Restart button label** under **Restart prompt text** on the Patch feature (`rebootPromptTitle`, `rebootPromptBody`, `rebootPromptButton`). Each field is independent. A blank field keeps the built-in text for that part. Because the text lives on the patch policy, a site or organization policy can carry its own language and override a partner-wide one.
+
+- The custom title and message replace the text of **every** warning in the sequence: the first notice, the reminders and the final notice. Write `{{countdown}}` where the remaining time should appear. The agent fills it in for each warning (for example "15 minutes" or "1 minute"). No other placeholder is accepted.
+- The text is plain text. `<` and `>` are rejected, and so are line breaks in the title and button label. Text that fails these checks can't be saved. If an invalid value still reaches a device, the agent ignores that field and shows the built-in text. The restart and its warnings still go ahead.
+- The duration that replaces `{{countdown}}`, the **Postpone N minutes/hours** button and the "You can postpone this restart N more times" line stay in English.
+- On Windows the dialog uses fixed **Yes**/**No** buttons, so the custom button label is named in the dialog text rather than on a button.
+- The text is fixed when the restart is scheduled. An edit to the policy applies to the next restart, not to one that is already counting down.
+- Agents older than this release ignore these fields and keep the built-in text.
 
 #### Patch Sources
 

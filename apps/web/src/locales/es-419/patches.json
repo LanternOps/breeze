@@ -83,6 +83,8 @@
       "pendingDevices": "{{count}} tiene parches pendientes",
       "approved": "{{count}} aprobado",
       "pendingApproval": "{{count}} pendiente de aprobación",
+      "failedInstalls_one": "{{count}} instalación fallida",
+      "failedInstalls_other": "{{count}} instalaciones fallidas",
       "critical": "{{count}} crítico",
       "reboot": "reiniciar {{count}}"
     },
@@ -109,6 +111,8 @@
       "approvedTitle": "Parches excepcionales aprobados para su instalación",
       "pendingApproval": "Pendiente de aprobación",
       "pendingApprovalTitle": "Parches destacados aún pendientes de aprobación",
+      "failed": "Fallidos",
+      "failedTitle": "Parches pendientes cuyo último intento de instalación falló",
       "osPatches": "Parches OS",
       "osPatchesTitle": "Actualizaciones destacadas de los administradores de paquetes Windows Update, Apple o Linux",
       "thirdParty": "Tercero",

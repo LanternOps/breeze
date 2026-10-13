@@ -56,6 +56,7 @@ import {
   claimAutomationActionDispatch,
   claimAutomationActionDispatches,
   readAutomationActionState,
+  claimAutomationFailureNotification,
   recordAutomationActionDispatch,
   reconcileAutomationRun,
   seedAutomationActionResults,
@@ -3246,26 +3247,52 @@ async function executeAutomationActionsInOrder(args: {
     device: OrderedAutomationDevice,
     actionIndex: number,
     message: string,
-    options: { replayed?: boolean } = {},
+    options: { notify?: boolean } = {},
   ): Promise<void> => {
     failedDeviceIds.add(device.id);
-    // #3189 — a failure an earlier attempt of this run already recorded had its
-    // on-failure notification sent by that attempt. Re-sending it on every
-    // replay would page the MSP twice for one failure, so a replayed failure
-    // is at-most-once: if the first attempt died before sending, it is lost.
-    if (args.onFailure === 'notify' && !options.replayed) {
+    if (args.onFailure === 'notify' && options.notify !== false) {
       try {
-        logs.push(...await sendOnFailureNotifications(
-          args.automation,
-          args.channelsById,
-          args.notificationTargets,
-          {
+        // #7188 — whether to send is decided by a CAS on the failed action's
+        // failure_notified_at, not by whether this attempt is a replay. A
+        // first attempt and a stalled-job replay both go through the claim:
+        // the one that wins sends, every other attempt sends nothing. A
+        // replay therefore still sends an alert the first attempt recorded
+        // the failure for but died before claiming.
+        const claimed = await claimAutomationFailureNotification({
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex,
+        });
+        if (claimed === 'claimed') {
+          logs.push(...await sendOnFailureNotifications(
+            args.automation,
+            args.channelsById,
+            args.notificationTargets,
+            {
+              runId: args.runId,
+              deviceId: device.id,
+              deviceOrgId: device.orgId,
+              message,
+            },
+          ));
+        } else if (claimed === 'already_claimed') {
+          logs.push(logEntry('On-failure notification already claimed by an earlier attempt of this run', 'info', {
+            actionIndex,
+            deviceId: device.id,
+          }));
+        } else {
+          // Unreachable by construction: every dispatched action is seeded
+          // first. Without a row nothing can deduplicate the send, so refuse.
+          captureException(new Error('automation on-failure notification has no action result row to claim'), undefined, {
             runId: args.runId,
             deviceId: device.id,
-            deviceOrgId: device.orgId,
-            message,
-          },
-        ));
+            actionIndex: String(actionIndex),
+          });
+          logs.push(logEntry('On-failure notification not sent: no action result row to claim', 'error', {
+            actionIndex,
+            deviceId: device.id,
+          }));
+        }
       } catch (err) {
         // A best-effort failure notification must not strand later action rows
         // in pending or abort dispatch for unrelated devices.
@@ -3326,7 +3353,15 @@ async function executeAutomationActionsInOrder(args: {
     logs.push(replayedActionLog(state, actionIndex, device.id));
     const replayed = classifyReplayedAction(state);
     if (replayed.kind === 'terminal_failed') {
-      await handleFailure(device, actionIndex, replayed.message, { replayed: true });
+      // #7188 — a replay notifies only for a failure the first attempt would
+      // have notified for: one its own dispatch path recorded. An agent-reported
+      // failure, a timeout, a cancellation or an authority loss never paged on
+      // a first attempt, so it must not start paging because a worker stalled.
+      await handleFailure(device, actionIndex, replayed.message, {
+        notify: state.status === 'failed'
+          && state.terminalSource === 'dispatch'
+          && state.message !== AUTOMATION_TARGET_AUTHORITY_LOST,
+      });
       return;
     }
     if (replayed.kind === 'in_flight') {

@@ -26,7 +26,7 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
       'AI suggested fixes can research a problem, propose fixes for you to review and remember the fixes that worked, so later triage checks them first.',
       'The AI assistant can ask to read files in chosen folders on one device, read-only and only after an administrator approves. Passwords, keys and other credentials are never shared.',
       'The network topology page opens on summary cards and role sections, and each device page shows who is already connected to it remotely.',
-      'The customer portal can show hardware health, hardware inventory and performance metrics. Each is off until you switch it on in the portal settings.',
+      'Groundwork for customer-portal hardware and performance views: per-client toggles open read-only portal APIs for hardware health, hardware inventory and performance metrics. Portal pages come in a later release.',
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
   },

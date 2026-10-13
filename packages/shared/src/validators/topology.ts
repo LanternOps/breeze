@@ -274,10 +274,12 @@ export const presentationNodeSchema = z.object({
    * A `hidden` group is never drawn (#7879): it names canonical nodes the overview leaves
    * out — `decommissioned` devices, and orphan network/gateway nodes with
    * `no_current_evidence` — so clients fold them away and can say how many.
+   * A `declared_site_network` card (site location W1) is the exception to "inferred": an
+   * administrator-declared prefix that no observer reports, drawn memberless.
    */
   group: z.object({
     kind: z.enum(['network', 'gateway', 'unidentified', 'hidden']),
-    basis: z.enum(['inferred_site_prefix', 'reported_gateway', 'unidentified', 'decommissioned', 'no_current_evidence']),
+    basis: z.enum(['inferred_site_prefix', 'reported_gateway', 'unidentified', 'decommissioned', 'no_current_evidence', 'declared_site_network']),
     networkClass: z.enum(TOPOLOGY_NETWORK_CLASSES).nullable(),
     prefix: z.string().max(64).nullable(),
     address: z.string().max(64).nullable(),
@@ -305,6 +307,16 @@ export const presentationNodeSchema = z.object({
       confirmedAt: utcTimestampSchema,
       expiresAt: utcTimestampSchema,
     }).strict()).max(16).optional(),
+    /**
+     * Site location W1 (site-location spec S§9): whether this IPv4 `lan` card's prefix is declared for
+     * the viewed site by an enabled discovery profile or a network baseline (exact prefix equality,
+     * never containment). Absent on non-lan cards and IPv6 cards. A `declared_site_network` card is a
+     * declared prefix no observer reports: memberless, presentation only.
+     */
+    declaration: z.object({
+      state: z.enum(['declared', 'undeclared']),
+      sources: z.array(z.enum(['discovery_profile', 'network_baseline'])).max(2),
+    }).strict().optional(),
   }).strict().optional(),
 }).strict();
 

@@ -174,6 +174,17 @@ describe('OrganizationsBoardPage — archive and merge dialogs', () => {
     expect(screen.queryByTestId('org-archive-modal')).not.toBeInTheDocument();
   });
 
+  it('archiving refreshes the global org store so the header switcher drops the org (#8371)', async () => {
+    mockBoardApi(fetchMock);
+    render(<OrganizationsBoardPage />);
+    await flush();
+    store.fetchOrganizations.mockClear();
+    fireEvent.click(openMenu(ALPHA.id).getByTestId('org-board-menu-archive'));
+    fireEvent.click(screen.getByTestId('org-archive-submit'));
+    await flush();
+    expect(store.fetchOrganizations).toHaveBeenCalledTimes(1);
+  });
+
   it('Merge opens MergeOrgModal; completion drops the loser and the summary stays until Close', async () => {
     mockBoardApi(fetchMock);
     render(<OrganizationsBoardPage />);

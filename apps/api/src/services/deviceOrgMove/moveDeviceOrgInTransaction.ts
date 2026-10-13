@@ -23,7 +23,7 @@ import {
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
   DEVICE_ORG_FK_CASCADE_TABLES,
-  DEVICE_SITE_DENORMALIZED_TABLES,
+  rewriteDeviceSiteDenormalizedTables,
 } from '../../routes/devices/core';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { propagateCancelledDeviceCommands } from '../commandCancelPropagation';
@@ -36,6 +36,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../ticketMoveCurrencyGuard';
 import { assertNoHourBlockDrawnTime } from '../ticketMoveHourBlockGuard';
+import { assertNoPendingApprovalRequest } from '../ticketMoveApprovalGuard';
 import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
 import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
@@ -394,6 +395,26 @@ export async function moveDeviceOrgInTransaction(
     sql`UPDATE edr_actions
         SET breeze_device_id = NULL
         WHERE breeze_device_id = ${deviceId}::uuid
+          AND org_id = ${sourceOrgId}::uuid`,
+  );
+
+  // #7969 — a discovery profile in the SOURCE org may pin this device as its
+  // scan agent via the composite FK (pinned_device_id, org_id) ->
+  // devices(id, org_id). Once the device leaves the org the pin is
+  // unrepresentable, so clear it; the profile reverts to automatic agent
+  // selection on its next run. The PROFILE stays in the source org.
+  //
+  // Placement is load-bearing, exactly as for manual_assets above: the FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, so its check fires at the end of the
+  // `UPDATE devices SET org_id` statement below, and nothing trigger-side
+  // mirrors a `pinned_device_id` column (breeze_device_child_orgid_tables()
+  // requires a column literally named `device_id`). This statement is the
+  // only detach on any path. An org MERGE never reaches this route: it
+  // re-points discovery_profiles and devices together under SET CONSTRAINTS
+  // ALL DEFERRED, keeping the pin valid inside the survivor org.
+  await tx.execute(
+    sql`UPDATE discovery_profiles SET pinned_device_id = NULL
+        WHERE pinned_device_id = ${deviceId}::uuid
           AND org_id = ${sourceOrgId}::uuid`,
   );
 
@@ -923,6 +944,9 @@ export async function moveDeviceOrgInTransaction(
   const ticketIds = (
     await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))
   ).map((r) => r.id);
+  // #4617: a pending customer approval request blocks the move (409
+  // APPROVAL_REQUEST_PENDING); lock-free, see ticketMoveApprovalGuard.ts.
+  await assertNoPendingApprovalRequest(tx, { ticketIds });
   // #8181: block-drawn time stays in its org (409 HOUR_BLOCK_DRAWN_TIME).
   await assertNoHourBlockDrawnTime(tx, { ticketIds });
   currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
@@ -932,8 +956,15 @@ export async function moveDeviceOrgInTransaction(
     targetOrgName: input.targetOrgName,
     acceptCurrencyMismatch: acceptCurrencyMismatch === true,
   });
+  // #8356: time_entries.site_id is a plain FK to sites (no tenant FK), so an
+  // org_id-only rewrite left the moved entry pointing at a SOURCE-org site.
+  // It follows the device to its target site in the SAME statement — one
+  // UPDATE, so the shared lock order (services/ticketOrgMoveLockOrder.ts) and the
+  // statement sequence moveOrg.test.ts pins are unchanged. An entry with no
+  // site link keeps none (CASE without ELSE → NULL); the ticket axis
+  // (moveTicketOrg) has no site to follow and nulls it instead.
   await tx.execute(
-    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+    sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid, site_id = CASE WHEN site_id IS NOT NULL THEN ${targetSiteId}::uuid END WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
@@ -1284,16 +1315,11 @@ export async function moveDeviceOrgInTransaction(
     ? alertChildCounts
     : null;
 
-  // Rewrite denormalized site_id on every device-scoped table that has
-  // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
-  // in core.ts). Skipping any of these strands rows under the OLD
-  // site_id. PATCH /devices/:id (core.ts) performs the same propagation
-  // for same-org site changes; keep both loops in lockstep.
-  for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
-    await tx.execute(
-      sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,
-    );
-  }
+  // Rewrite denormalized site_id through rewriteDeviceSiteDenormalizedTables
+  // (core.ts), the helper PATCH /devices/:id uses too, so the two paths
+  // cannot drift. Only the device's current-epoch rows follow the site;
+  // earlier epochs keep their event-time site (W2, #8204).
+  await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
   return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome };
 }

@@ -155,9 +155,8 @@ Search queries are matched using SQL `ILIKE` against the following fields:
 | **Devices** | `hostname`, `displayName`, `lastUser` |
 | **Scripts** | `name`, `description` |
 | **Alerts** | `title`, `message` |
-| **Settings** | `title`, `description` (static entries) |
 
-Results are returned in a flat array, each item tagged with its `type` (`devices`, `scripts`, `alerts`, or `settings`).
+Results are returned in a flat array, each item tagged with its `type` (`devices`, `scripts`, or `alerts`).
 
 ```bash
 curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
@@ -178,13 +177,6 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
       "type": "scripts",
       "title": "Workstation Setup",
       "description": "Initial workstation provisioning script"
-    },
-    {
-      "id": "settings-users",
-      "type": "settings",
-      "title": "User management",
-      "description": "Manage users and roles",
-      "href": "/settings/users"
     }
   ]
 }
@@ -196,7 +188,7 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
 
 ### Command Palette and Keyboard Shortcuts
 
-In the web app the same search backs the command palette. Open it with **Cmd+K** (macOS) or **Ctrl+K**, or press **/** on any page that does not claim that key for its own filter bar. Before you type, the palette lists your **recent devices** (the last five device pages you opened), **recently visited** pages, and quick actions — so `Cmd+K`, `Enter` returns you to the last device you were working on. As you type, matching recents appear instantly while the server search runs.
+In the web app the same search backs the command palette. Open it with **Cmd+K** (macOS) or **Ctrl+K**, or press **/** on any page that does not claim that key for its own filter bar. Before you type, the palette lists your **recent devices** (the last five device pages you opened), **recently visited** pages, and quick actions — so `Cmd+K`, `Enter` returns you to the last device you were working on. As you type, matching recents and **settings pages** appear instantly while the server search runs. Settings results come from the same catalogue as the **Settings** page and sidebar, in your language, and only include screens you have access to.
 
 Recent devices also appear in the sidebar under **Devices & Assets**; the chevron beside the row hides or shows them, and the choice is remembered. Recents are stored per user in the browser, never on the server.
 
@@ -221,7 +213,7 @@ The two systems complement each other:
 
 | Capability | Search (`/search`) | Filters (`/filters`) |
 |---|---|---|
-| Multi-category results | Yes (devices, scripts, alerts, settings) | No (devices only) |
+| Multi-category results | Yes (devices, scripts, alerts) | No (devices only) |
 | Substring matching | Yes | Yes (via `contains` operator) |
 | Typed field operators | No | Yes (24 operators) |
 | Nested AND/OR logic | No | Yes |

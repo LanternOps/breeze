@@ -4,16 +4,19 @@ See also: `docs/signing/ARTIFACT_SIGNING_OPERATIONS.md` for official Breeze sign
 
 ## Current State
 
-Fully implemented in `.github/workflows/release.yml`: resource-stamped exes
-(go-winres) signed via `azure/artifact-signing-action` (Azure Artifact
-Signing, formerly Trusted Signing) with OIDC auth, a WiX-built MSI made from
-the signed exes and then itself signed, and a `Get-AuthenticodeSignature`
-verification sweep. Official releases additionally publish the pre-signing
-unsigned outputs (`*-unsigned.exe`) as manifest-tracked signing inputs so
-self-hosters can sign with their own certificates — see the
+The release workflow (`.github/workflows/release.yml`) builds
+resource-stamped exes (go-winres) and a WiX-built MSI. **The public release
+publishes the Windows agent exes and `breeze-agent.msi` unsigned** (manifest
+`platformTrust: "none"`, edition `self-host`) since v0.105.0, plus the
+pre-signing `*-unsigned.exe` build outputs as manifest-tracked signing inputs,
+so self-hosters can sign with their own certificates — see the
 `breeze-selfhost-signing` template and the "Sign Your Own Agent Packages"
-docs page. The rest of this document is the original design/evaluation
-record.
+docs page. Only the Windows Viewer and Helper installers are Authenticode-signed
+by LanternOps (Azure Artifact Signing or SSL.com eSigner), with a
+`Get-AuthenticodeSignature` verification sweep. To check a downloaded
+installer, see the "Verify a Breeze Installer" docs page.
+The signing pipeline described below is the original design/evaluation
+record for the signed flow; it is not what the public agent release does.
 
 ## What We Need
 

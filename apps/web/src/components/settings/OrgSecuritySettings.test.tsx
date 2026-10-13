@@ -23,6 +23,29 @@ vi.mock('../../stores/orgStore', () => ({
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
+describe('OrgSecuritySettings: session timeout ceiling (#6111)', () => {
+  it('allows up to 720 and clamps a legacy over-ceiling stored value before saving', () => {
+    const onSave = vi.fn();
+    const { container } = render(
+      <OrgSecuritySettings orgId={PAGE_ORG} security={{ sessionTimeout: 1440 }} onSave={onSave} />,
+    );
+    const input = container.querySelector('input[type="number"][max="720"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe('720');
+    fireEvent.click(screen.getByRole('button', { name: /^save security$/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ sessionTimeout: 720 }));
+  });
+
+  it('never submits 0 when the timeout input is cleared', () => {
+    const onSave = vi.fn();
+    const { container } = render(<OrgSecuritySettings orgId={PAGE_ORG} onSave={onSave} />);
+    const input = container.querySelector('input[type="number"][max="720"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save security$/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ sessionTimeout: 60 }));
+  });
+});
+
 describe('OrgSecuritySettings: mTLS policy org scoping', () => {
   beforeEach(() => {
     fetchMock.mockReset();

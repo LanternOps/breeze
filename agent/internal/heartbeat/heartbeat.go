@@ -29,6 +29,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/collectors/hwhealth"
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
+	"github.com/breeze-rmm/agent/internal/collectors/workloads"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -196,6 +197,10 @@ type HeartbeatPayload struct {
 	// agent.yaml. A server that sees it disagree with the row answers with a
 	// signed IdentityAssertion; see identity_sync.go.
 	ReportedIdentity *ReportedIdentity `json:"reportedIdentity,omitempty"`
+	// IdentityAssertionRejection (#8382) says why this agent refused the
+	// last identity assertion, so the server stops signing one every beat
+	// for a target this agent will not adopt. Sent on one beat per refusal.
+	IdentityAssertionRejection *IdentityAssertionRejection `json:"identityAssertionRejection,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -285,8 +290,13 @@ type SecurityCapabilities struct {
 	// IdentitySyncProtocolVersion (#8317) declares that this build verifies a
 	// signed identity assertion and adopts the row's org/site. The API sends
 	// none to an agent reporting 0.
-	IdentitySyncProtocolVersion int                      `json:"identitySyncProtocolVersion,omitempty"`
-	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	IdentitySyncProtocolVersion int `json:"identitySyncProtocolVersion,omitempty"`
+	// WorkloadInventoryProtocolVersion declares that this build speaks
+	// protocol 1 of PUT /agents/{id}/workloads (container and VM inventory).
+	// The API stores it non-sticky like the others so the device page can say
+	// "agent too old" instead of "no data".
+	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
+	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -385,6 +395,9 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// unifiCollectorWake is signalled when configUpdate says this device has
+	// UniFi collectors (#7970); see unifi_collector_hint.go.
+	unifiCollectorWake        atomic.Pointer[func()]
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
@@ -473,6 +486,7 @@ type Heartbeat struct {
 	hwDisabledQueued   bool
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
+	workloads          *workloadsRuntime
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -1073,6 +1087,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.commandJournal.Recover(h.backupOutbox)
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
+	h.initWorkloads()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1972,6 +1987,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
 	h.startTimeSync()
+	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
@@ -2283,6 +2299,7 @@ func (h *Heartbeat) StopAcceptingCommands() {
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
+	h.stopWorkloads()
 	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
@@ -2305,6 +2322,7 @@ func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
+		h.stopWorkloads()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2479,6 +2497,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 			parent = upload.ctx
 		}
 	}
+	if endpoint == "workloads" {
+		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
@@ -2505,6 +2528,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "time-status" {
 		return &timeSyncSubmissionError{status: resp.StatusCode}
+	}
+	if endpoint == "workloads" {
+		return &workloadsSubmissionError{status: resp.StatusCode}
 	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
@@ -3250,6 +3276,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyNetworkContextConfig(raw)
 	}
 
+	// UniFi collector presence hint (#7970). Above the policy-probe early
+	// return below, like every key that must run on an ordinary beat.
+	ucRaw, hasUC := update["unifi_collectors_assigned"]
+	if !hasUC {
+		ucRaw, hasUC = update["unifiCollectorsAssigned"]
+	}
+	if hasUC {
+		h.applyUnifiCollectorHint(ucRaw)
+	}
+
 	hwRaw, hasHW := update["hardware_monitoring_settings"]
 	if !hasHW {
 		hwRaw, hasHW = update["hardwareMonitoringSettings"]
@@ -3344,6 +3380,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasTS {
 		h.applyTimeSyncSettings(tsRaw)
+	}
+
+	// Apply workload_inventory_settings. Same rule as warranty and time sync:
+	// this must stay above the policy-probe early return or it never runs.
+	wiRaw, hasWI := update["workload_inventory_settings"]
+	if !hasWI {
+		wiRaw, hasWI = update["workloadInventorySettings"]
+	}
+	if hasWI {
+		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -4736,11 +4782,26 @@ func (h *Heartbeat) currentHeadless() bool {
 	return headless
 }
 
-func (h *Heartbeat) sendHeartbeat() {
+// beatSkipReason reports why this process must not heartbeat now, or "" when
+// it should. A beat is also what delivers queued commands, so a process that
+// is about to be replaced skips it and leaves them queued for its successor.
+func (h *Heartbeat) beatSkipReason() string {
 	// After a successful self-update, the old process continues running until
 	// the service manager kills it. Don't send heartbeats with stale version info.
 	if h.upgradeInProgress.Load() {
-		log.Debug("skipping heartbeat, upgrade in progress")
+		return "upgrade in progress"
+	}
+	// #8382 — a restart for a new identity waits only for what is already
+	// running; see identityIntakePauseMax.
+	if h.identityIntakePaused() {
+		return "restarting to apply a server-assigned identity"
+	}
+	return ""
+}
+
+func (h *Heartbeat) sendHeartbeat() {
+	if reason := h.beatSkipReason(); reason != "" {
+		log.Debug("skipping heartbeat", "reason", reason)
 		return
 	}
 
@@ -4801,6 +4862,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
+		// #8382 — why the last identity assertion was refused, once.
+		IdentityAssertionRejection: h.identityRejectionForBeat(),
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache); unknown while the probe gets
@@ -5287,20 +5350,36 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
+	// A rollback delivered in this response becomes active only once its
+	// command runs, so look for it before anything is scheduled against it.
+	rollbackInResponse := false
+	for _, cmd := range response.Commands {
+		if cmd.Type == tools.CmdAgentRollbackV1 {
+			rollbackInResponse = true
+			break
+		}
+	}
+
 	// #8317 — after the pin above, so a deployment key first delivered in this
 	// same response already verifies the assertion that relies on it. While a
 	// restart for a new identity is pending, this process starts no binary
 	// swap or credential write: those would persist the old org/site again
-	// and race the restart. Commands still run; the restart waits for them.
-	// The server re-signals everything skipped here on the next beat.
-	identityRestarting := h.applyIdentityAssertion(response.IdentityAssertion)
+	// and race the restart. Commands from this response still run (the server
+	// already claimed them); the restart waits for them, and no later beat is
+	// sent until it lands. The server re-signals everything skipped here on
+	// the next beat.
+	//
+	// #8382 — the rollback this response starts owns the next restart; the
+	// assertion waits for a later beat (the server re-signs every beat).
+	identityAssertion := response.IdentityAssertion
+	if rollbackInResponse {
+		identityAssertion = nil
+	}
+	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
-	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
+	rollbackActive := rollbackInResponse || h.rollbackInProgress()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
-		if cmd.Type == tools.CmdAgentRollbackV1 {
-			rollbackActive = true
-		}
 		if !h.accepting.Load() {
 			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
 			break
@@ -6673,6 +6752,9 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #4026: the typed refusal code must survive too, or the server only
+		// ever sees it on the HTTP fallback and keeps classifying by prose.
+		ErrorCode: result.ErrorCode,
 		// #3525: the cancellation marker must survive this conversion — the
 		// WebSocket leg is the primary result channel, and the marker is the
 		// only proof that closes a `cancelling` execution as `cancelled`.
@@ -6709,6 +6791,19 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 			// so leaving it zero would persist a false "exited 0".
 			ExitCode: 1,
 			Error:    "agent is shutting down",
+		}
+	}
+	// #8382 — about to restart for a new identity: refuse new work the
+	// restart would cut off, as a shutting-down agent does. Commands that
+	// stop work or feed a session already open still run.
+	if h.identityIntakePaused() && !admittedDuringIdentityRestart(wsCmd.Type) {
+		log.Debug("refusing command, restarting to apply a server-assigned identity",
+			logging.KeyCommandID, wsCmd.ID, "type", wsCmd.Type)
+		return websocket.CommandResult{
+			CommandID: wsCmd.ID,
+			Status:    "failed",
+			ExitCode:  1, // synthetic: no process ran
+			Error:     identityRestartRefusal,
 		}
 	}
 
@@ -8106,14 +8201,15 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 // a fleet-wide outage rather than a degraded feature.
 func compiledSecurityCapabilities() SecurityCapabilities {
 	return SecurityCapabilities{
-		OutboundNetworkPolicyVersion:    1,
-		ScriptSecretEnvVersion:          1,
-		PeripheralPolicyProtocolVersion: 2,
-		RollbackProtocolVersion:         1,
-		RevocationLeaseProtocolVersion:  1,
-		DesktopFenceProtocolVersion:     1,
-		DesktopWsFenceProtocolVersion:   1,
-		ConsentPromptProtocolVersion:    2,
-		IdentitySyncProtocolVersion:     identitySyncProtocolVersion,
+		OutboundNetworkPolicyVersion:     1,
+		ScriptSecretEnvVersion:           1,
+		PeripheralPolicyProtocolVersion:  2,
+		RollbackProtocolVersion:          1,
+		RevocationLeaseProtocolVersion:   1,
+		DesktopFenceProtocolVersion:      1,
+		DesktopWsFenceProtocolVersion:    1,
+		ConsentPromptProtocolVersion:     2,
+		IdentitySyncProtocolVersion:      identitySyncProtocolVersion,
+		WorkloadInventoryProtocolVersion: workloads.ProtocolVersion,
 	}
 }

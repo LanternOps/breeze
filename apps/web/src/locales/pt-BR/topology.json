@@ -657,6 +657,8 @@
     "diagnoseHint": "Os diagnósticos são executados a partir do dispositivo escolhido, pela rota dele.",
     "stale": "desatualizado",
     "unverified": "não verificado",
+    "decommissioned": "Desativado",
+    "reportedByDevices": "Informado por {{reporters}}",
     "sharedAddress_one": "Mesmo IP de mais {{count}} dispositivo",
     "sharedAddress_other": "Mesmo IP de mais {{count}} dispositivos",
     "networkExplanation_one": "{{count}} dispositivo reporta uma interface em {{prefix}}. O agrupamento por faixa de endereços é inferido: ele não prova que os dispositivos compartilham um switch.",
@@ -728,6 +730,22 @@
     "linkVia": "por meio de {{name}}",
     "siteNetworks_one": "{{count}} rede",
     "siteNetworks_other": "{{count}} redes",
-    "noObservedLink": "Nenhum vínculo observado entre {{network}} e {{primary}}"
+    "noObservedLink": "Nenhum vínculo observado entre {{network}} e {{primary}}",
+    "rosterHeading": "Outras redes / redes não identificadas ({{count}})",
+    "rosterNetworkVia": "{{prefix}} por meio de {{gateways}}",
+    "rosterUnidentified": "Rede não identificada",
+    "notDeclared": "Não declarada para {{site}}",
+    "showOtherNetworks": "Mostrar outras redes no mapa",
+    "declareHint": "Nenhuma rede está declarada para {{site}}. Os dispositivos são agrupados pelas redes que informam. Declare as redes deste site em um perfil de descoberta para que o Breeze possa distinguir visitantes e dispositivos atribuídos incorretamente.",
+    "declareHintLink": "Abrir perfis de descoberta",
+    "siteIntro": "Dispositivos atribuídos a {{site}}, agrupados pela rede que cada um informa",
+    "thisSite": "este site",
+    "declaredDiscovery": "Declarada para este site (perfil de descoberta)",
+    "declaredBaseline": "Declarada para este site (linha de base de rede)",
+    "declaredBoth": "Declarada para este site (perfil de descoberta e linha de base de rede)",
+    "declaredEmpty": "Declarada para {{site}} — nenhum dispositivo informa esta rede",
+    "declaredColumn": "Declarada",
+    "declaredYes": "Sim",
+    "declaredNo": "Não"
   }
 }

@@ -134,6 +134,13 @@ vi.mock('../middleware/auth', () => ({
 
 let dbContextDepth = 0;
 
+// #8287: these suites don't exercise the active-watch filter; stub it so the
+// route doesn't load the agents/helpers import graph (unfiltered = fail-open path).
+vi.mock('../services/monitoringActiveWatches', () => ({
+  watchKey: (t: string, n: string) => `${t}:${n.toLowerCase()}`,
+  loadActiveWatchKeys: vi.fn(async () => null),
+  filterToActiveWatches: <T,>(rows: T[]) => rows,
+}));
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));

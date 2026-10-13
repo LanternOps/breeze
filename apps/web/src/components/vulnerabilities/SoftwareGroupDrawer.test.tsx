@@ -69,6 +69,7 @@ const DETAIL: SoftwareGroupDetail = {
     patchReadyFindingCount: 2,
     patchReadyDeviceCount: 1,
     tickets: [],
+    targetVersion: null,
   },
   cves: [
     {

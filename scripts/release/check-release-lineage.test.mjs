@@ -605,6 +605,46 @@ test('registry SHA must equal the peeled tag commit', () => {
   assertFailure(run(repo, standardArgs(tag)), /does not match|mismatch/i);
 });
 
+// #8132: a candidate's row lands on main before its tag is pushed, so another
+// candidate's build must not fail on that not-yet-tagged row.
+test('a registry row whose tag is not pushed yet does not block another candidate', () => {
+  const repo = initRepo();
+  const { sha, tag } = makeCandidate(repo);
+  const pendingSha = git(repo, 'rev-parse', 'candidate');
+  setRegistry(repo, registryRow(tag, sha) + registryRow('v1.1.0-rc.2', pendingSha));
+
+  const result = run(repo, standardArgs(tag));
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /release-lineage: channel=candidate/);
+});
+
+test('a pending registry row is still validated and enforced once its tag exists', async (t) => {
+  await t.test('malformed SHA on a pending row', () => {
+    const repo = initRepo();
+    const { sha, tag } = makeCandidate(repo);
+    setRegistry(repo, registryRow(tag, sha) + registryRow('v1.1.0-rc.2', 'ABC123'));
+    assertFailure(run(repo, standardArgs(tag)), /invalid candidate SHA/);
+  });
+
+  await t.test('pushed tag peels to a different commit than its row', () => {
+    const repo = initRepo();
+    const { sha, tag } = makeCandidate(repo);
+    const recordedSha = git(repo, 'rev-parse', 'main');
+    git(repo, 'tag', 'v1.1.0-rc.2', 'candidate');
+    setRegistry(repo, registryRow(tag, sha) + registryRow('v1.1.0-rc.2', recordedSha));
+    assertFailure(run(repo, standardArgs(tag)), /SHA mismatch for 'v1\.1\.0-rc\.2'/);
+  });
+
+  await t.test('existing tag that does not peel to a commit', () => {
+    const repo = initRepo();
+    const { sha, tag } = makeCandidate(repo);
+    git(repo, 'tag', 'v1.1.0-rc.2', git(repo, 'rev-parse', 'main^{tree}'));
+    setRegistry(repo, registryRow(tag, sha) + registryRow('v1.1.0-rc.2', sha));
+    assertFailure(run(repo, standardArgs(tag)), /'v1\.1\.0-rc\.2' cannot be resolved/);
+  });
+});
+
 test('candidate branch cannot authorize itself through a branch-only ledger', () => {
   const repo = initRepo();
   const { sha, tag } = makeCandidate(repo);

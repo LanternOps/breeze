@@ -88,6 +88,10 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
     enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean },
+  // Workload host inventory (#8193): denormalised from device_workload_runtimes
+  // by the agent-report ingest; devices.hosts_workloads / devices.workload_runtimes.
+  { key: 'hostsWorkloads', label: 'Hosts Workloads', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean, description: 'Device is a container/VM host (Docker, Podman, Hyper-V, Proxmox, containerd)' },
+  { key: 'workloadRuntimes', label: 'Workload Runtimes', category: 'core', type: 'array', operators: OPERATORS_BY_TYPE.array, description: 'Workload runtimes detected on the device (docker, podman, hyperv, proxmox, containerd)' },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'watchdogStatus', label: 'Watchdog Status', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['connected', 'failover', 'offline'] },
   { key: 'quarantinedAt', label: 'Quarantined At', category: 'core', type: 'datetime', operators: OPERATORS_BY_TYPE.datetime },
@@ -211,6 +215,7 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 // | hardware.*/network.*           | agent-reported inventory/network facts                          | allowed           |
 // | metrics.*                      | agent-reported metrics                                          | allowed           |
 // | software.installed/notInstalled | agent inventory scan (`software_inventory`) — self-reported; the agent supplies every entry (same shape as custom.*), unlike an OS/hardware fact the device cannot simply choose to misreport | refused |
+// | hostsWorkloads/workloadRuntimes | agent-reported workload runtime detection (`devices.hosts_workloads` / `workload_runtimes`, denormalised from the agent's workload inventory report); the device supplies every value, so a fabricated "docker host" claim must not decide execution targeting | refused |
 // | status/watchdogStatus/isHeadless/uptimeSeconds/lastSeenIp | agent-reported device state         | allowed           |
 // | patches.pending/alerts.critical/system.rebootRequired | derived server-side signals, not a raw agent string | allowed |
 //
@@ -248,6 +253,9 @@ const EXECUTION_REFUSED_AGENT_FIELDS: ReadonlySet<string> = new Set([
   // custom.* value does).
   'software.installed',
   'software.notInstalled',
+  // agent-reported workload runtime detection (#8193) — fabricable by the device.
+  'hostsWorkloads',
+  'workloadRuntimes',
 ]);
 
 export function isAgentReportedFilterField(fieldKey: string): boolean {
@@ -494,6 +502,25 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   // filters previously errored (unjoined table / unsupported).
   if (fieldInfo.computed) {
     return applyOperator(fieldInfo.computed, operator, value);
+  }
+  // Array semantics for the workload runtime array: the scalar fallback for
+  // `contains` is ILIKE (errors on varchar[]), and a bare JS array interpolated
+  // into sql`` becomes a row tuple, not an array, so build ARRAY[...] explicitly.
+  if (field === 'workloadRuntimes' && (operator === 'contains' || operator === 'hasAny' || operator === 'hasAll')) {
+    const items = (Array.isArray(value) ? value : [value]).map((v) => sql`${String(v)}`);
+    // An empty selection (a just-added chip) is no constraint, as for software.installed.
+    if (items.length === 0) return sql`TRUE`;
+    const arr = sql`ARRAY[${sql.join(items, sql`, `)}]::varchar[]`;
+    return operator === 'hasAny'
+      ? sql`${devices.workloadRuntimes} && ${arr}`
+      : sql`${devices.workloadRuntimes} @> ${arr}`;
+  }
+  // The generic isEmpty/isNotEmpty compare against '{}'::text[], which has no
+  // operator for a varchar[] column (Postgres 42883).
+  if (field === 'workloadRuntimes' && (operator === 'isEmpty' || operator === 'isNotEmpty')) {
+    return operator === 'isEmpty'
+      ? sql`cardinality(${devices.workloadRuntimes}) = 0`
+      : sql`cardinality(${devices.workloadRuntimes}) > 0`;
   }
   if (fieldInfo.table === 'devices') {
     const col = devices[fieldInfo.column as keyof typeof devices];

@@ -156,6 +156,11 @@ vi.mock('../../middleware/auth', () => ({
 
 const writeRouteAuditMock = vi.fn();
 const writeAuditEventMock = vi.fn();
+const refreshReadinessMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/bareMetalReadinessRefresh', () => ({
+  refreshReadinessAfterRecovery: refreshReadinessMock,
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
   writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...(args as [])),
@@ -1067,6 +1072,21 @@ describe('bare-metal recoveries routes', () => {
       const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
       expect(set.status).toBe('completed');
       expect(set.completedAt).toBeInstanceOf(Date);
+      expect(refreshReadinessMock).toHaveBeenCalledWith(ORG_ID, DEVICE_ID);
+    });
+
+    it('a non-terminal progress post does not refresh readiness (W08)', async () => {
+      refreshReadinessMock.mockClear();
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, status: 'authenticated', expiresAt: new Date(Date.now() + 60_000) }]))
+        .mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, identity: 'new', status: 'planned', rebootedAt: null, validatedAt: null }]));
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'restoring' }),
+      });
+      expect(res.status).toBe(200);
+      expect(refreshReadinessMock).not.toHaveBeenCalled();
     });
 
     it('validated on a new-identity recovery stores the Hyper-V VM outcome with the result (W06d)', async () => {

@@ -92,6 +92,23 @@ describe('reducers', () => {
   });
 });
 
+describe('location provenance on the running timer (#8211)', () => {
+  it('timerStarted carries orgId / siteId / source from the entry', () => {
+    const next = timerStarted(initialTimeState, {
+      ...ENTRY,
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+    expect(next.running).toMatchObject({ orgId: 'o1', siteId: 's1', source: 'location' });
+  });
+
+  it('timerStarted adds nothing when the entry has no provenance', () => {
+    const next = timerStarted(initialTimeState, ENTRY);
+    expect(next.running).not.toHaveProperty('siteId');
+  });
+});
+
 describe('time reducer (redux binding)', () => {
   it('starts from the pure initial state with no recorded denial', () => {
     const state = timeReducer(undefined, { type: '@@INIT' });

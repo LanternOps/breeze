@@ -39,6 +39,7 @@ import {
   parseFilesystemAnalysisStdout,
   setFilesystemScanGeneration,
   clearFilesystemScanGeneration,
+  findInFlightFilesystemScan,
   safeCleanupCategories,
   readPlanPreviewCandidates,
 } from './filesystemAnalysis';
@@ -269,6 +270,22 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // No stored scan is NOT a reason to scan: that would reach the device
       // on a call classified (and permission-checked) as a stored read.
       if (refresh) {
+        // #8509: one scan at a time per device. Report the scan already in
+        // flight (any volume — the agent runs one walker) rather than starting
+        // a second, and BEFORE registering a generation, which would make the
+        // running scan's result look superseded.
+        const inFlight = await inToolDbPhase(auth, () => findInFlightFilesystemScan(deviceId));
+        if (inFlight) {
+          return JSON.stringify({
+            inFlight: true,
+            commandId: inFlight.id,
+            status: inFlight.status,
+            createdAt: inFlight.createdAt,
+            scanPath: inFlight.scanPath ?? scanPath,
+            requestedScanPath: scanPath,
+            message: `A filesystem scan is already running on this device (command ${inFlight.id}, queued ${inFlight.createdAt.toISOString()}); a second one was not started. Call again without refresh once it finishes to read the stored result.`,
+          });
+        }
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
         const commandId = randomUUID();
         // Commit registration before the command can be delivered. Escaping the

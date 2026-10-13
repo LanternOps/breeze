@@ -19,6 +19,7 @@ import {
   updateContractLineSchema,
 } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
+import { hourBlockStampedKeyHook } from '../../services/contractHourBlockLocked';
 import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
@@ -196,7 +197,7 @@ partnerContractRoutes.patch(
   '/contracts/:id/lines/:lineId',
   writeScope,
   zValidator('param', lineParam),
-  zValidator('json', updateContractLineSchema),
+  zValidator('json', updateContractLineSchema, hourBlockStampedKeyHook),
   async (c) => {
     const principal = c.get('partnerApiPrincipal');
     const p = c.req.valid('param');
@@ -224,7 +225,7 @@ partnerContractRoutes.delete(
         removeContractLine(p.id, p.lineId, actorFrom(principal)),
       );
       auditLine(c, principal, 'contract.line.removed', audit);
-      return c.json({ data: { ok: true } });
+      return c.json({ data: { ok: true, retired: audit.retired === true } });
     } catch (err) {
       return handleContractError(c, err);
     }

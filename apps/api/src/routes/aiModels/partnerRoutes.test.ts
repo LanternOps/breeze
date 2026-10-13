@@ -75,6 +75,7 @@ vi.mock('../../services/aiModels/offeringWrites', () => ({
   setOfferingEnabled: vi.fn(),
   updateOfferingDetails: vi.fn(),
   listOfferingDefaultUses: vi.fn(),
+  removeOffering: vi.fn(),
 }));
 vi.mock('../../services/aiModels/assignmentWrites', () => ({
   putPartnerAssignments: vi.fn(),
@@ -114,7 +115,7 @@ import { createGatewayConnection, createManualOffering, deleteGatewayConnection,
 import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpointPolicy';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth';
-import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
+import { ensurePlatformOffering, listOfferingDefaultUses, removeOffering, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
 import { previewResidencyImpact, setResidencyRequired } from '../../services/aiModels/residency';
 import {
@@ -151,6 +152,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', `/offerings/${A}/enabled`, { enabled: true }],
   ['PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
   ['POST', `/offerings/${A}/verify`],
+  ['DELETE', `/offerings/${A}`],
   ['PUT', '/assignments', { assignments: [chatRow] }],
   ['PUT', '/residency', { required: false }],
   // W06 (#7604) gateway arms.
@@ -165,7 +167,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
 
 const ALL_WRITE_SERVICE_MOCKS = [
   createAnthropicKeyConnection, rotateAnthropicKey, changeAnthropicEndpoint, deleteAnthropicConnection, updateConnectionSettings,
-  ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, putPartnerAssignments, setResidencyRequired,
+  ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, removeOffering, putPartnerAssignments, setResidencyRequired,
   enqueueConnectionSync, enqueueOfferingVerification,
   createGatewayConnection, updateGatewayConnection, deleteGatewayConnection, createManualOffering,
 ].map((m) => vi.mocked(m));
@@ -200,6 +202,7 @@ beforeEach(() => {
   vi.mocked(ensurePlatformOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
+  vi.mocked(removeOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
   vi.mocked(getOffering).mockImplementation(async (id: string) => (id === GO
     ? { id: GO, partnerId: P, connectionId: G, modelId: 'qwen2.5-coder:7b', source: 'discovered' }
@@ -376,6 +379,30 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'in use', code: 'offering_in_use', details: { inUse: [{ surface: 'chat', level: 'partner', orgId: null }] } });
     expect(captureException).not.toHaveBeenCalled();
+  });
+  it('DELETE /offerings/:id removes the model, audits it, and returns deleted:true', async () => {
+    vi.mocked(removeOffering).mockResolvedValue({ ...offeringRow, source: 'manual', connectionId: G, modelId: 'qwen' } as any);
+    const res = await call('DELETE', `/offerings/${A}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true, id: A });
+    expect(removeOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: A });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ai_models.offering.removed',
+      details: expect.objectContaining({ offeringId: A, connectionId: G, modelId: 'qwen' }),
+    }));
+  });
+  it('DELETE /offerings/:id surfaces not_removable / offering_in_use / not_found from the service', async () => {
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'not_removable', 409));
+    const nr = await call('DELETE', `/offerings/${A}`);
+    expect(nr.status).toBe(409);
+    expect(await nr.json()).toMatchObject({ code: 'not_removable' });
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'offering_in_use', 409, { inUse: [] }));
+    const res = await call('DELETE', `/offerings/${A}`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'offering_in_use' });
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'not_found', 404));
+    expect((await call('DELETE', `/offerings/${A}`)).status).toBe(404);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
   it('a busy partner registry lock is a 503 registry_busy, not reported to Sentry (expected contention)', async () => {
     vi.mocked(putPartnerAssignments).mockRejectedValue(

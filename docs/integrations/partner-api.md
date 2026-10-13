@@ -5,6 +5,10 @@ The partner API is a partner-wide API for durable reconstruction facts
 principals; human JWTs and ordinary organization API keys are not accepted at
 `/api/v1/partner-api`.
 
+> The endpoint table and scopes are also summarised in the published
+> [API reference](https://docs.breezermm.com/reference/api/#partner-api-service-principals).
+> This page is the full contract (envelope, cursors, enrollment keys).
+
 ## Provision a service principal
 
 An authenticated partner or system operator with organization-write permission
@@ -384,12 +388,18 @@ Content-Type: application/json
 
 {
   "orgId": "<organization-uuid>",
-  "siteId": "<optional-site-uuid>",
+  "siteId": "<site-uuid>",
   "name": "Automated device enrollment",
   "maxUsage": 1,
   "ttlMinutes": 60
 }
 ```
+
+`siteId` is required in practice. The mint endpoint accepts a request without
+it and stores a key with `siteId: null`, but agents cannot enroll with such a
+key: enrollment is rejected with `400 Enrollment key must be associated with a
+site`. Always pass the `siteId` the devices should land in (it must belong to
+`orgId`).
 
 Pass either `ttlMinutes` or `expiresAt`, never both. `X-Idempotency-Key` is
 optional; supplying it is strongly recommended for automated callers.
@@ -403,7 +413,7 @@ no-secret allowlist:
   "data": {
     "id": "<enrollment-key-uuid>",
     "orgId": "<organization-uuid>",
-    "siteId": null,
+    "siteId": "<site-uuid>",
     "name": "Automated device enrollment",
     "usageCount": 0,
     "maxUsage": 1,

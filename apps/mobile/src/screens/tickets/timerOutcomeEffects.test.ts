@@ -107,6 +107,26 @@ describe('startOutcomeEffects', () => {
     expect(effects.toast).toEqual({ kind: 'success', text: 'Timer started' });
   });
 
+  it('carries location provenance so the stop prompt works right after a start (#8211)', () => {
+    const online = startOutcomeEffects({
+      ok: true,
+      entry: { ...entry, orgId: 'o1', siteId: 's1', source: 'location' },
+    });
+    expect(online.startRunning).toMatchObject({ orgId: 'o1', siteId: 's1', source: 'location' });
+    const offline = startOutcomeEffects({
+      ok: 'local',
+      timer: { ...timer, orgId: 'o1', siteId: 's1', source: 'location' },
+    });
+    expect(offline.startRunning).toMatchObject({ orgId: 'o1', siteId: 's1', source: 'location' });
+  });
+
+  it('a forbidden site start is an error toast that does not wall off time tracking (#8211)', () => {
+    const effects = startOutcomeEffects({ ok: false, reason: 'forbidden', message: 'gone' });
+    expect(effects.toast).toEqual({ kind: 'error', text: 'gone' });
+    expect(effects.accountDenial).toBeNull();
+    expect(effects.startRunning).toBeNull();
+  });
+
   it('carries the joined ticket label fields so the bar never shows a placeholder first', () => {
     // TimerBar's label falls back to the literal "Ticket" until `running`
     // carries a resolved ticketNumber/ticketSubject. Dropping these here (as

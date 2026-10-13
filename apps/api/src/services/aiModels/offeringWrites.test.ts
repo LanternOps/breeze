@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   dbSelectRows: [] as unknown[][],
   dbUpdateReturning: vi.fn(),
   dbInsertReturning: vi.fn(),
+  dbDeleteReturning: vi.fn(),
   lastSet: undefined as Record<string, unknown> | undefined,
   insertedValues: undefined as Record<string, unknown> | undefined,
   systemContexts: 0,
@@ -56,6 +57,9 @@ vi.mock('../../db', () => {
           return { where: () => ({ returning: (...a: unknown[]) => { h.calls.push('update'); return h.dbUpdateReturning(...a); } }) };
         },
       }),
+      delete: () => ({
+        where: () => ({ returning: (...a: unknown[]) => { h.calls.push('delete'); return h.dbDeleteReturning(...a); } }),
+      }),
       insert: () => ({
         values: (v: Record<string, unknown>) => {
           h.insertedValues = v;
@@ -71,7 +75,7 @@ vi.mock('../../db', () => {
   };
 });
 
-import { ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
+import { ensurePlatformOffering, removeOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
 import { RegistryWriteError } from './registryWriteErrors';
 
 const P = '22222222-2222-4222-8222-222222222222';
@@ -560,5 +564,92 @@ describe('updateOfferingDetails', () => {
       await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: false });
       expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
     });
+  });
+});
+
+describe('removeOffering (#8510)', () => {
+  const manual = (over: Record<string, unknown> = {}) =>
+    row({ source: 'manual', connectionId: 'conn-1', platformModelId: null, modelId: 'qwen', ...over });
+
+  it('deletes an unreferenced manual offering under the registry lock and returns it', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    // select order: env-managed connection check, assignment refs, refusal-fallback refs, agent refs
+    h.dbSelectRows = [[{ providerConfig: null }], [], [], []];
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    const r = await removeOffering({ partnerId: P, offeringId: OFF });
+    expect(r.id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete']);
+    expect(h.systemContexts).toBe(1);
+  });
+
+  it('404s an offering of another partner and deletes nothing', async () => {
+    h.getOffering.mockResolvedValue(manual({ partnerId: 'other-partner' }));
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({ code: 'not_found', status: 404 });
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown offering', async () => {
+    h.getOffering.mockResolvedValue(null);
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({ code: 'not_found', status: 404 });
+  });
+
+  it.each(['discovered', 'platform', 'catalog'])('409 not_removable for a %s offering (it would reappear on refresh)', async (source) => {
+    h.getOffering.mockResolvedValue(manual({ source }));
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({ code: 'not_removable', status: 409 });
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('409 offering_in_use listing the assignments that default, fall back to or permit it', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [
+        { surface: 'chat', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null },
+        { surface: 'script_reviewer', orgId: 'org-1', defaultOfferingId: null, fallbackOfferingIds: [OFF], permittedOfferingIds: null },
+        { surface: 'chat', orgId: 'org-2', defaultOfferingId: null, fallbackOfferingIds: null, permittedOfferingIds: [OFF] },
+      ],
+      [], [],
+    ];
+    const err = await removeOffering({ partnerId: P, offeringId: OFF }).catch((e) => e);
+    expect(err).toBeInstanceOf(RegistryWriteError);
+    expect(err).toMatchObject({ code: 'offering_in_use', status: 409 });
+    expect(err.details.inUse).toEqual([
+      { surface: 'chat', level: 'partner', orgId: null, via: 'default' },
+      { surface: 'script_reviewer', level: 'org', orgId: 'org-1', via: 'fallback' },
+      { surface: 'chat', level: 'org', orgId: 'org-2', via: 'permitted' },
+    ]);
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('409 offering_in_use when another offering uses it as its refusal fallback', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [[{ providerConfig: null }], [], [{ id: FB }], []];
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({
+      code: 'offering_in_use', details: { refusalFallbackFor: [FB] },
+    });
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('409 offering_in_use when an AI agent policy is bound to it (never silently unbound)', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [[{ providerConfig: null }], [], [], [{ kind: 'script_reviewer' }]];
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({
+      code: 'offering_in_use', details: { agentKinds: ['script_reviewer'] },
+    });
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('409 managed_by_env for a model on an env-managed connection', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [[{ providerConfig: { managedBy: 'env' } }]];
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({ code: 'managed_by_env', status: 409 });
+    expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  it('404s when the guarded DELETE matches no row (removed concurrently)', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [[{ providerConfig: null }], [], [], []];
+    h.dbDeleteReturning.mockResolvedValue([]);
+    await expect(removeOffering({ partnerId: P, offeringId: OFF })).rejects.toMatchObject({ code: 'not_found', status: 404 });
   });
 });

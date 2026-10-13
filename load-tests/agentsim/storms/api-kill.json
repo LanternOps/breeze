@@ -1,0 +1,14 @@
+{
+  "name": "api-kill",
+  "description": "Kill the API: SIGKILL the api container (no shutdown phases, in-flight requests reset), hold 5 s, start it again. If the compose restart policy restarts the container first, the end action is a no-op and the outage is shorter than the hold.",
+  "events": [
+    {
+      "name": "api-kill",
+      "at": "3m",
+      "hold": "5s",
+      "recovery": "5m",
+      "start": [{ "exec": ["docker", "kill", "--signal", "KILL", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "start", "${STORM_API}"] }]
+    }
+  ]
+}

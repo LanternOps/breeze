@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/psscript"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -285,16 +286,10 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 		Backup:     backup,
 	})
 
-	scriptFile, err := os.CreateTemp("", "breeze-update-*.ps1")
+	scriptPath, err := psscript.CreateTemp("breeze-update-*.ps1", script)
 	if err != nil {
-		return fmt.Errorf("failed to create update script: %w", err)
-	}
-	if _, err := scriptFile.WriteString(script); err != nil {
-		scriptFile.Close()
-		os.Remove(scriptFile.Name())
 		return fmt.Errorf("failed to write update script: %w", err)
 	}
-	scriptFile.Close()
 
 	userHelperTemp := ""
 	userHelperTarget := ""
@@ -309,7 +304,7 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 		backupTarget = backup.Target
 	}
 	log.Info("spawning update helper script",
-		"script", scriptFile.Name(),
+		"script", scriptPath,
 		"newBinary", agent.Temp,
 		"target", agent.Target,
 		"userHelperTemp", userHelperTemp,
@@ -320,12 +315,12 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 
 	cmd := exec.Command("powershell.exe",
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
-		"-File", scriptFile.Name(),
+		"-File", scriptPath,
 	)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 
 	if err := cmd.Start(); err != nil {
-		os.Remove(scriptFile.Name())
+		os.Remove(scriptPath)
 		return fmt.Errorf("failed to start update helper: %w", err)
 	}
 
@@ -345,23 +340,14 @@ func startWindowsRollbackHelper(journalPath string, operation windowsRollbackOpe
 	if err != nil {
 		return err
 	}
-	scriptFile, err := os.CreateTemp("", "breeze-rollback-restart-*.ps1")
+	scriptPath, err := psscript.CreateTemp("breeze-rollback-restart-*.ps1", script)
 	if err != nil {
 		return err
 	}
-	if _, err := scriptFile.WriteString(script); err != nil {
-		_ = scriptFile.Close()
-		_ = os.Remove(scriptFile.Name())
-		return err
-	}
-	if err := scriptFile.Close(); err != nil {
-		_ = os.Remove(scriptFile.Name())
-		return err
-	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		_ = os.Remove(scriptFile.Name())
+		_ = os.Remove(scriptPath)
 		return err
 	}
 	return cmd.Process.Release()
@@ -395,24 +381,15 @@ func RestartSelf() error {
 }
 
 func startDetachedServiceRestart(tempPattern string) error {
-	scriptFile, err := os.CreateTemp("", tempPattern)
+	script := "Start-Sleep -Seconds 2\r\nRestart-Service -Name '" + serviceName + "' -Force\r\nRemove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue"
+	scriptPath, err := psscript.CreateTemp(tempPattern, script)
 	if err != nil {
 		return err
 	}
-	script := "Start-Sleep -Seconds 2\r\nRestart-Service -Name '" + serviceName + "' -Force\r\nRemove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue"
-	if _, err := scriptFile.WriteString(script); err != nil {
-		_ = scriptFile.Close()
-		_ = os.Remove(scriptFile.Name())
-		return err
-	}
-	if err := scriptFile.Close(); err != nil {
-		_ = os.Remove(scriptFile.Name())
-		return err
-	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		_ = os.Remove(scriptFile.Name())
+		_ = os.Remove(scriptPath)
 		return err
 	}
 	return cmd.Process.Release()

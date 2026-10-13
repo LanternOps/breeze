@@ -32,6 +32,7 @@ export function classifyDeviceProtection(input: {
   }
 
   return input.securityStatus.provider !== 'other' &&
+    input.securityStatus.provider !== 'unknown' &&
     input.securityStatus.realTimeProtection === true
     ? 'protected'
     : 'unprotected';

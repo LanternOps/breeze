@@ -68,7 +68,7 @@ import {
   MAX_RESULT_BYTES,
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
-import { attachWorkerObservability } from './workerObservability';
+import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
 
 /**
  * Durable release worker (spec
@@ -1985,10 +1985,11 @@ async function notifyRequesterOfOutcome(
  * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
  * `attemptPolicyDecision` (it returns normally either way) always acks, but
  * a TRANSIENT failure (it throws `PolicyDecisionTransientError`, review fix
- * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
- * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
- * consumer's retry policy, but this IS the branch that relies on BullMQ's
- * own per-job retry policy to make that redelivery real.
+ * #3827) is rethrown so BullMQ redelivers the job. The retry policy lives on
+ * the job itself, set at enqueue time by the outbox publisher
+ * (intentOutboxPublisher.ts: `ACTION_INTENT_JOB_ATTEMPTS` + exponential
+ * backoff, #4156). It applies to ANY throw from EVERY branch here, so each
+ * one must stay idempotent under redelivery.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (
@@ -2126,6 +2127,31 @@ async function releaseAndNotify(intentId: string): Promise<{ released: boolean }
   return { released: true };
 }
 
+/**
+ * #4156 — `PolicyDecisionTransientError` is rethrown from the `intent_created`
+ * branch precisely so BullMQ redelivers it (ACTION_INTENT_JOB_ATTEMPTS with
+ * exponential backoff, set by the publisher). Its intermediate attempts are an
+ * expected, self-healing condition and add volume, not information; a job
+ * that EXHAUSTS its attempts on it leaves the intent `unattempted` with no
+ * approval rows until the expiry reaper cancels it, so that single report is
+ * error level.
+ *
+ * Every other failure keeps the default every-attempt report on purpose: a
+ * throw AFTER the release claim (e.g. a DB fault writing the outcome) is
+ * retried too, but the retry loses the `approved -> executing` CAS and
+ * completes as a no-op — holding that report until exhaustion would drop it
+ * entirely.
+ */
+export function classifyIntentReleaseFailure(
+  _job: Job | undefined,
+  err: Error,
+): WorkerFailureClassification | null {
+  if (err instanceof PolicyDecisionTransientError) {
+    return { reason: 'action_intent_policy_decide_transient', level: 'error', reportOnlyWhenExhausted: true };
+  }
+  return null;
+}
+
 function createWorker(): Worker<IntentReleaseJobData> {
   return new Worker<IntentReleaseJobData>(
     ACTION_INTENTS_QUEUE_NAME,
@@ -2133,8 +2159,16 @@ function createWorker(): Worker<IntentReleaseJobData> {
       try {
         return await processIntentReleaseJob(job.data);
       } catch (err) {
-        console.error(`[IntentReleaseWorker] Job ${job.id} (intent ${job.data.intentId}) failed:`, err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
+        // Logged here, REPORTED by attachWorkerObservability's `failed`
+        // listener (#4156): BullMQ emits `failed` on every attempt, so a
+        // capture here as well double-reported each one, and the listener is
+        // where classifyIntentReleaseFailure holds an expected transient back
+        // until the job actually gives up.
+        console.error(
+          `[IntentReleaseWorker] Job ${job.id} (intent ${job.data.intentId}) attempt `
+          + `${job.attemptsMade + 1}/${job.opts.attempts ?? 1} failed:`,
+          err,
+        );
         throw err;
       }
     },
@@ -2154,13 +2188,14 @@ export async function initializeIntentReleaseWorker(): Promise<void> {
   if (releaseWorker) return;
 
   releaseWorker = createWorker();
-  attachWorkerObservability(releaseWorker, 'intentReleaseWorker');
+  // The observability `failed` listener is the ONLY failure reporter for this
+  // worker (#4156) — a second local listener used to capture every attempt
+  // again.
+  attachWorkerObservability(releaseWorker, 'intentReleaseWorker', {
+    classifyFailure: classifyIntentReleaseFailure,
+  });
   releaseWorker.on('error', (error) => {
     console.error('[IntentReleaseWorker] Worker error:', error);
-    captureException(error);
-  });
-  releaseWorker.on('failed', (job, error) => {
-    console.error(`[IntentReleaseWorker] Job ${job?.id} failed:`, error);
     captureException(error);
   });
 

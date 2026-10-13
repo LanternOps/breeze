@@ -193,6 +193,76 @@ test('rejects a candidate registry SHA mismatch', () => {
   expectFailure(runGuard(repo), /candidate registry SHA mismatch.*v1\.1\.0-rc\.1/);
 });
 
+// #8132: the Release workflow's lineage gate requires a candidate's registry
+// row on main BEFORE the tag build runs, so a registry row for a tag that has
+// not been pushed yet must not fail this guard. The registry is only read once
+// a higher tag needs classifying, so each fixture keeps an already-shipped,
+// registered candidate (v1.1.0-rc.1) alongside the pending row (v1.1.0-rc.2).
+const PENDING_TAG = 'v1.1.0-rc.2';
+
+function setupPendingCandidate() {
+  const repo = initRepo();
+  tag(repo, 'v1.0.0');
+  const shippedSha = addRegisteredCandidate(repo);
+  git(repo, 'switch', '-c', 'candidate-2');
+  write(repo, 'apps/api/migrations/2026-01-03-candidate-2.sql', 'SELECT 3;\n');
+  const pendingSha = commit(repo, 'second candidate (not tagged yet)');
+  git(repo, 'switch', 'main');
+  const rows = (pending = pendingSha) => [
+    `v1.1.0-rc.1\t${shippedSha}\tissue/test\tshipped candidate`,
+    `${PENDING_TAG}\t${pending}\tissue/test\tpending candidate`,
+  ];
+  candidateLedger(repo, rows());
+  commit(repo, 'register pending candidate');
+  return { repo, pendingSha, rows };
+}
+
+test('tolerates a registry row whose tag does not exist yet', () => {
+  const { repo } = setupPendingCandidate();
+
+  const result = runGuard(repo);
+
+  expectOk(result);
+  assert.match(result.output, /selected primary baseline v1\.0\.0/);
+  assert.match(result.output, /classified higher candidate v1\.1\.0-rc\.1/);
+});
+
+test('a pending registry row does not mask a mutated migration from an existing tag', () => {
+  const { repo } = setupPendingCandidate();
+  write(repo, 'apps/api/migrations/2026-01-01-base.sql', 'SELECT 100;\n');
+
+  expectFailure(runGuard(repo), /VIOLATION {2}M 2026-01-01-base\.sql/);
+});
+
+test('a pending registry row still enforces its SHA once the tag is pushed', () => {
+  const { repo, pendingSha } = setupPendingCandidate();
+  git(repo, 'switch', 'candidate-2');
+  write(repo, 'apps/api/migrations/2026-01-03-candidate-2.sql', 'SELECT 30;\n');
+  commit(repo, 'candidate drifted after registration');
+  const taggedSha = tag(repo, PENDING_TAG);
+  git(repo, 'switch', 'main');
+  assert.notEqual(taggedSha, pendingSha);
+
+  expectFailure(runGuard(repo), /candidate registry SHA mismatch for 'v1\.1\.0-rc\.2'/);
+});
+
+test('a pending registry row is still validated for shape and duplicates', () => {
+  const { repo, pendingSha, rows } = setupPendingCandidate();
+
+  candidateLedger(repo, rows(pendingSha.slice(0, 39)));
+  expectFailure(runGuard(repo), /invalid candidate SHA/);
+
+  candidateLedger(repo, [...rows(), `${PENDING_TAG}\t${pendingSha}\tissue/test\tsecond`]);
+  expectFailure(runGuard(repo), /duplicate candidate tag 'v1\.1\.0-rc\.2'/);
+});
+
+test('an existing tag that cannot be peeled to a commit still fails', () => {
+  const { repo } = setupPendingCandidate();
+  git(repo, 'tag', PENDING_TAG, git(repo, 'rev-parse', 'HEAD^{tree}'));
+
+  expectFailure(runGuard(repo), /release tag 'v1\.1\.0-rc\.2' cannot be peeled to a commit/);
+});
+
 function setupSideBranchBaseline() {
   const repo = initRepo();
   tag(repo, 'v1.0.0');

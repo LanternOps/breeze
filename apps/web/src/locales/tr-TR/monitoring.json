@@ -244,7 +244,9 @@
     "expectedValue": "Beklenen değer",
     "nameserver": "Ad sunucusu",
     "degradedIsFailure": "Bozulmuşu hata say",
-    "maxResponseMs": "Şundan yavaşsa başarısız (ms)"
+    "maxResponseMs": "Şundan yavaşsa başarısız (ms)",
+    "eventLogCollectionNoSource": "Bilgi ve Uyarı düzeyindeki Uygulama olayları yalnızca {{providers}} kaynağından toplanır. Diğer kaynakların olayları bu kuralı yalnızca Hata veya Kritik düzeyinde tetikler.",
+    "eventLogCollectionSourceNotCollected": "Aracı, \"{{source}}\" kaynağından Bilgi veya Uyarı düzeyindeki Uygulama olaylarını toplamaz; bu nedenle bu kural yalnızca Hata veya Kritik olaylarıyla eşleşir. Toplanan sağlayıcılar: {{providers}}."
   },
   "operators": {
     "gt": "büyüktür",
@@ -268,6 +270,7 @@
     "system": "Sistem"
   },
   "eventLevels": {
+    "info": "Bilgi",
     "warning": "Uyarı",
     "error": "Hata",
     "critical": "Kritik"
@@ -359,7 +362,7 @@
   "legacy": {
     "title": "Eski uyarı kuralları",
     "description": "Bir monitör tarafından yönetilmeyen bağımsız uyarı kuralları. Yanıtları, teslimatı ve yükseltmeyi bir arada almak için bunları dönüştürün.",
-    "empty": "Eski kural yok.",
+    "empty": "Dönüştürülmesi gereken bağımsız uyarı kuralı yok.",
     "columns": {
       "name": "Ad",
       "template": "Şablon",
@@ -535,6 +538,7 @@
       "more": "Daha fazla yükle",
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
+      "unknownUser": "Bilinmeyen kullanıcı",
       "reverted": "Geri alındı",
       "deadline": "Eski uyarıların emekliye ayrılması kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     },

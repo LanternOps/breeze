@@ -27,7 +27,7 @@ it.each([{live:true,statusCode:200},{live:false,statusCode:404}])('disabled-part
   expect(page).toContain("apiGet('/portal/payment-methods'");
   // FP-9: a client without automatic payments sees the page's own styled explanation, never a bare 404.
   expect(page).not.toContain("new Response('Not Found'");
-  expect(layout).toContain('buildPortalNavItems(branding, paymentMethods.statusCode === 200)');
+  expect(layout).toContain('buildPortalNavItems(branding, paymentMethods.statusCode === 200, approvalsPendingCount)');
   expect(buildPortalNavItems({},statusCode===200).some(item=>item.href==='/payment-methods')).toBe(live);
   vi.mocked(apiGet).mockResolvedValueOnce(live
     ?{statusCode,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status:'active'},method:null}}

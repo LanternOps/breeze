@@ -85,7 +85,15 @@ vi.mock('./ticketMoveCurrencyGuard', async () => {
 });
 // #8181: the block-drawn guard runs real Postgres in hourBlockOrgMove.integration.test.ts;
 // here it is a mock so its placement relative to the currency guard can be pinned.
-const { hourBlockGuardMock } = vi.hoisted(() => ({ hourBlockGuardMock: vi.fn().mockResolvedValue(undefined) }));
+const { hourBlockGuardMock, approvalGuardMock } = vi.hoisted(() => ({
+  hourBlockGuardMock: vi.fn().mockResolvedValue(undefined),
+  approvalGuardMock: vi.fn().mockResolvedValue(undefined),
+}));
+// #4617: the pending-approval move guard (real-DB behaviour in ticketApprovalRequests.integration.test.ts).
+vi.mock('./ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
 vi.mock('./ticketMoveHourBlockGuard', async () => {
   const actual = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
   return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
@@ -1761,8 +1769,9 @@ describe('assignTicket', () => {
 
     await assignTicket('t-1', 'u-2', actor);
 
-    // call 0 is the assignment feed comment; call 1 is the outbox row.
-    expect(valuesMock).toHaveBeenCalledTimes(2);
+    // call 0 is the assignment feed comment; call 1 is the assigned outbox row;
+    // call 2 is the implicit new->open ticket.status_changed row (#8367).
+    expect(valuesMock).toHaveBeenCalledTimes(3);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.assigned' });
     expect(outboxPayload.payload).toEqual({
@@ -2193,6 +2202,68 @@ describe('assignTicket — additional status cases', () => {
     const updatePayload = setMock.mock.calls[0]![0];
     expect(updatePayload).toMatchObject({ assignedTo: 'u-2' });
     expect(updatePayload).not.toHaveProperty('status');
+  });
+
+  // #8367: the implicit new -> open move must reach webhook / Partner API
+  // consumers as ticket.status_changed, in the same transaction as
+  // ticket.assigned.
+  const outboxRows = () =>
+    valuesMock.mock.calls
+      .map((c) => c[0])
+      .filter((v) => v && typeof v.eventType === 'string');
+
+  it('assigns on new ticket: writes ticket.assigned AND ticket.status_changed (new->open) outbox rows (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    const rows = outboxRows();
+    expect(rows.map((r) => r.eventType)).toEqual(['ticket.assigned', 'ticket.status_changed']);
+    expect(rows[1]).toMatchObject({ orgId: 'o-1', ticketId: 't-1' });
+    expect(rows[1].payload).toEqual({ from: 'new', to: 'open', statusId: null });
+  });
+
+  it('stamps the open system statusId on the ticket and carries it in the status_changed row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', statusId: 's-new', assignedTo: null
+    }]);
+    configMocks.getSystemStatusId.mockResolvedValueOnce('s-open');
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: 's-open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(configMocks.getSystemStatusId).toHaveBeenCalledWith('p-1', 'open');
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ status: 'open', statusId: 's-open' });
+    expect(outboxRows()[1].payload).toEqual({ from: 'new', to: 'open', statusId: 's-open' });
+  });
+
+  it('assigns on open ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
+  });
+
+  it('unassigning a new ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: null, status: 'new' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', null, actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
   });
 });
 
@@ -4208,6 +4279,17 @@ describe('moveTicketOrg', () => {
     // Compared against the shared constant so the two stay coupled.
     expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
 
+    // #8356: time_entries.site_id is a plain FK to sites and tickets carry no
+    // site, so the moved entries must drop their source-org site link in the
+    // SAME statement that re-stamps org_id (one UPDATE keeps the shared lock
+    // order unchanged). Every other child table keeps the org_id-only rewrite.
+    const rewrites = executedSqlTexts().filter((t) => t.startsWith('UPDATE '));
+    const timeEntryRewrites = rewrites.filter((t) => t.startsWith('UPDATE time_entries '));
+    expect(timeEntryRewrites).toEqual(['UPDATE time_entries SET org_id = ::uuid, site_id = NULL WHERE ticket_id = ::uuid']);
+    for (const t of rewrites.filter((r) => !r.startsWith('UPDATE time_entries '))) {
+      expect(t, 'only time_entries carries a site_id to re-point').not.toContain('site_id');
+    }
+
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       ticketId: 't1',
@@ -4487,6 +4569,27 @@ describe('moveTicketOrg', () => {
     const guardOrder = guardMock.mock.invocationCallOrder[0]!;
     expect(updateOrder).toBeLessThan(blockOrder);
     expect(blockOrder).toBeLessThan(guardOrder);
+  });
+
+  it('(g) #4617: the pending-approval guard runs on the moving ticket after tx.update(tickets), before the other guards', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+    await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
+    expect(approvalGuardMock).toHaveBeenCalledWith(expect.anything(), { ticketIds: ['t1'] });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const approvalOrder = approvalGuardMock.mock.invocationCallOrder.at(-1)!;
+    expect(updateOrder).toBeLessThan(approvalOrder);
+    expect(approvalOrder).toBeLessThan(hourBlockGuardMock.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('(h) #4617: a pending-approval refusal is a 409 that aborts before any child rewrite', async () => {
+    const { TicketMoveApprovalPendingError } = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+    seedCrossCurrencyMove();
+    approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }));
+    await expect(moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 1 } });
+    expect(guardMock).not.toHaveBeenCalled();
+    expect(hourBlockGuardMock).not.toHaveBeenCalled();
   });
 
   it('(f) #8181: a block-drawn refusal aborts before the currency guard and any child rewrite', async () => {

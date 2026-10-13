@@ -29,7 +29,7 @@ export interface OfflineCondition {
 export interface EventLogCondition {
   type: 'event_log';
   category: 'security' | 'hardware' | 'application' | 'system';
-  level: 'warning' | 'error' | 'critical';
+  level: 'info' | 'warning' | 'error' | 'critical';
   sourcePattern?: string;
   messagePattern?: string;
   countThreshold: number;

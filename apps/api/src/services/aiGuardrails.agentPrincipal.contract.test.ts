@@ -219,6 +219,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
   'get_huntress_incidents',
@@ -265,6 +266,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_sla_breaches',
   'get_sla_compliance_report',
   'get_software_compliance',
+  'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read
   'get_topology', // M4 Task 1 (#6000) bounded topology graph, Tier 1 read
   'get_topology_impact', // M3 Task 10 topology read
@@ -342,6 +344,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_compliance_policies',
   // W01 (#6755) follow-up
   'query_custom_fields',
+  'query_device_workloads',
   'query_devices',
   // W01 (#6755) follow-up
   'query_dr_plans',

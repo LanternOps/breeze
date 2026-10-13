@@ -810,6 +810,30 @@ describe('RemediationSuggestionsPanel', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
+  it('a code-less HTTP error on Research deeper renders an explicit retryable state (#7941)', async () => {
+    let posts = 0;
+    const depths: string[] = [];
+    serveW2({ extra: (url, method, init) => {
+      if (url === '/remediation-suggestions/research' && method === 'POST') {
+        posts += 1;
+        depths.push(JSON.parse(String(init?.body)).depth);
+        return posts === 1
+          ? makeJsonResponse({ error: 'Select an organization.' }, false, 400)
+          : makeJsonResponse({ data: { status: 'started', runId: 'run-1', depth: 'deep' } }, true, 202);
+      }
+      return undefined;
+    } });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    const state = await screen.findByTestId('research-state-request-error');
+    expect(state.textContent).toContain('Could not start research');
+    expect(screen.queryByTestId('research-state-denied')).toBeNull();
+    fireEvent.click(screen.getByTestId('research-retry'));
+    await waitFor(() => expect(posts).toBe(2));
+    expect(depths).toEqual(['deep', 'deep']); // retry keeps the depth that failed
+    await waitFor(() => expect(screen.queryByTestId('research-state-request-error')).toBeNull());
+  });
+
   describe('Draft a script hand-off', () => {
     const draftRow = { ...suggestion, id: 'd', origin: 'ai_research', targetType: 'script_draft', scriptId: null, parameters: { brief: 'Clear queue', language: 'powershell' }, outcome: null };
     const briefUrl = '/remediation-suggestions/d/draft-brief';

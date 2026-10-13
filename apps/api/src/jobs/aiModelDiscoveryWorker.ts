@@ -11,7 +11,7 @@
  */
 import { Queue, Worker, type Job } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
-import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
+import { AI_CONNECTION_ROW_KINDS } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../db';
 import { partnerAiConnections } from '../db/schema';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -135,8 +135,8 @@ async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
     .select({ id: partnerAiConnections.id })
     .from(partnerAiConnections)
     .where(and(
-      // W06: gateway kinds too; a kind without a discoverer is skipped by the sync itself.
-      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
+      // Every row kind; a kind without a discoverer is skipped by the sync itself.
+      inArray(partnerAiConnections.kind, [...AI_CONNECTION_ROW_KINDS]),
       eq(partnerAiConnections.status, 'active'),
     ))).map((row) => row.id), 'aiModelDiscovery.listConnections');
   for (const id of ids) await enqueueConnectionSync(id);

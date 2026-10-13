@@ -24,7 +24,8 @@
         "perDeviceRole": "Per ruolo dispositivo",
         "perDeviceGroup": "Per gruppo di dispositivi",
         "perSeat": "Per postazione",
-        "manual": "Quantità manuale"
+        "manual": "Quantità manuale",
+        "hourBlock": "Monte ore"
       },
       "dynamicGroup": "dinamico",
       "deletedGroup": "{{name}} (gruppo eliminato)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Versione pubblicata",
       "warnings": {
         "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il corpo degli accordi supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Ore incluse per periodo",
+        "extraRate": "Prezzo per ora aggiuntiva",
+        "rolloverMode": "Ore non utilizzate a fine periodo",
+        "rolloverExpire": "Scadono",
+        "rolloverCarry": "Riportate",
+        "carryCap": "Limite di ore riportabili (vuoto per nessun limite)",
+        "alertPct": "Avvisa al % del monte ore utilizzato (facoltativo)",
+        "required": "Inserisci le ore incluse e il prezzo per ora aggiuntiva.",
+        "firstPeriod": "Le ore contano dal primo periodo di fatturazione ancora da fatturare; in un contratto in bozza viene stabilito all'attivazione. Il tempo precedente viene fatturato come di consueto.",
+        "midPeriodEdit": "Le modifiche si applicano al periodo aperto corrente ({{start}} – {{end}}) alla sua chiusura.",
+        "midPeriodEditNoDates": "Le modifiche si applicano al periodo aperto corrente alla sua chiusura.",
+        "onlyOne": "Questa organizzazione ha già un monte ore attivo. Ritiralo prima di aggiungerne un altro."
+      },
+      "row": {
+        "perPeriod": "{{hours}} ore per periodo",
+        "retiredBadge": "Ritirato",
+        "startsOn": "Conta dal {{date}}"
+      },
+      "errors": {
+        "exists": "Questa organizzazione ha già una riga di monte ore attiva. Ritirala prima, poi aggiungi quella nuova.",
+        "locked": "Questo campo non può essere modificato su una riga di monte ore."
+      },
+      "retire": {
+        "title": "Ritira il monte ore",
+        "message": "«{{description}}» ha uno storico di fatturazione, quindi viene ritirato anziché eliminato. Nessun nuovo periodo; i periodi già fatturati vengono comunque regolati. I periodi chiusi restano nel contratto.",
+        "confirm": "Ritira monte ore",
+        "toast": "Monte ore ritirato"
+      },
+      "detail": {
+        "title": "Monte ore",
+        "usage": "{{used}} di {{included}} ore usate · {{remaining}} rimanenti · il periodo termina il {{end}}",
+        "carried": "Include {{hours}} ore riportate.",
+        "unapproved": "{{hours}} ore di questo tempo non sono ancora approvate.",
+        "foreign": "{{hours}} ore sono state registrate in un'altra valuta; consumano comunque il monte ore.",
+        "over": "{{hours}} ore oltre il monte ore → {{amount}} alla chiusura del periodo",
+        "advanceNote": "L'eccedenza viene fatturata nella fattura successiva.",
+        "arrearsNote": "L'eccedenza viene fatturata nella fattura di questo periodo.",
+        "lateEntry": "{{hours}} ore sono state inserite dopo la chiusura del loro periodo e vengono fatturate separatamente.",
+        "startsLater": "Il monte ore inizia il {{date}}.",
+        "extraRate": "Ore aggiuntive: {{rate}} ciascuna",
+        "loadFailed": "Impossibile caricare l'utilizzo del monte ore."
+      },
+      "history": {
+        "title": "Periodi di monte ore chiusi",
+        "empty": "Nessun periodo di monte ore è ancora stato chiuso.",
+        "included": "Incluse",
+        "carriedIn": "Riportate in ingresso",
+        "used": "Usate",
+        "over": "Eccedenza",
+        "carriedOut": "Riportate in uscita",
+        "loadMore": "Carica altro",
+        "invoiceRemoved": "Fattura dell'eccedenza rimossa — ore non fatturate"
       }
     }
   },
@@ -2124,7 +2181,9 @@
       "sourceAria": "Origine fattura",
       "title": "Nuova fattura",
       "to": "A",
-      "working": "Elaborazione…"
+      "working": "Elaborazione…",
+      "heldForHourBlock_one": "{{count}} registrazione di tempo ({{hours}} ore) è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore.",
+      "heldForHourBlock_other": "{{count}} registrazioni di tempo ({{hours}} ore) sono trattenute per il monte ore di questa organizzazione e verranno fatturate alla chiusura del periodo del monte ore."
     },
     "empty": {
       "description": "Componi tempo e parti non fatturati in una bozza oppure parti da una fattura vuota.",

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -47,6 +47,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   claimFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -82,6 +83,8 @@ import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type G
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
+import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
@@ -282,6 +285,8 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    case 'unknown':
+      return 'unknown';
     default:
       return 'other';
   }
@@ -537,9 +542,18 @@ export async function upsertSecurityStatusForDevice(
   // it is the evidence behind the derived `realTimeProtection` boolean. See
   // #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
-  const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
   const realTimeProtection = payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? null;
+  // #8538: the agent marshals provider:"other" as its default even when every
+  // applicable AV source failed — the failure is signalled only by omitting
+  // realTimeProtection (#7965). "other" with an unknown protection reading is
+  // therefore "not collected", not an unmapped product (those carry a real
+  // true/false reading). Stored as 'unknown'.
+  const normalizedProvider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+  const provider: SecurityProviderValue =
+    normalizedProvider === 'other' && typeof payload.provider === 'string' && realTimeProtection === null
+      ? 'unknown'
+      : normalizedProvider;
   const threatCount = payload.threatCount ?? 0;
 
   await db
@@ -1595,11 +1609,47 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
   return osRootScanPath(osType);
 }
 
+const FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const filesystemPolicySkipLoggedAt = new Map<string, number>();
+// A refused threshold scan writes no snapshot/command row, so the DB cooldown
+// never engages for that device. Remember the refusal briefly so a locked-down
+// device at >= threshold does not repeat the cooldown selects and policy lookup
+// on every heartbeat.
+const FILESYSTEM_POLICY_DENY_TTL_MS = 5 * 60 * 1000;
+const filesystemThresholdDeniedUntil = new Map<string, number>();
+
+/**
+ * The automatic triggers (disk-threshold scan, auto-resume continuation) must
+ * honour the same per-device remote-tools policy the REST route and AI tools
+ * enforce (#8509). Fail-closed via `checkDeviceRemoteToolsPolicy`. A refusal
+ * is counted and logged at most once an hour per device+trigger; not Sentry.
+ */
+async function automaticFilesystemScanAllowed(
+  deviceId: string,
+  trigger: FilesystemAutoTrigger,
+): Promise<boolean> {
+  const decision = await checkDeviceRemoteToolsPolicy(deviceId);
+  if (decision.allowed) return true;
+  recordFilesystemAutoTriggerSkipped(trigger);
+  const key = `${deviceId}:${trigger}`;
+  const now = Date.now();
+  if (now - (filesystemPolicySkipLoggedAt.get(key) ?? 0) >= FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS) {
+    filesystemPolicySkipLoggedAt.set(key, now);
+    console.warn(
+      `[agents/helpers] skipping automatic filesystem_analysis (${trigger}) for device ${deviceId}: ${decision.reason}`
+    );
+  }
+  return false;
+}
+
 export async function maybeQueueThresholdFilesystemAnalysis(
   device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
+    return { queued: false };
+  }
+  if ((filesystemThresholdDeniedUntil.get(device.id) ?? 0) > Date.now()) {
     return { queued: false };
   }
   // A device parked in a holding org receives lifecycle removal only.
@@ -1641,6 +1691,14 @@ export async function maybeQueueThresholdFilesystemAnalysis(
     return { queued: false };
   }
 
+  // Last, so an allowed device looks the policy up at most once per cooldown;
+  // a refused one is remembered for FILESYSTEM_POLICY_DENY_TTL_MS.
+  if (!(await automaticFilesystemScanAllowed(device.id, 'threshold'))) {
+    filesystemThresholdDeniedUntil.set(device.id, Date.now() + FILESYSTEM_POLICY_DENY_TTL_MS);
+    return { queued: false };
+  }
+  filesystemThresholdDeniedUntil.delete(device.id);
+
   const path = getFilesystemThresholdScanPath(device.osType);
   const [thresholdCommand] = await db.insert(deviceCommands).values({
     deviceId: device.id,
@@ -1674,12 +1732,42 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   };
 }
 
+/**
+ * #8509: the agent refused this scan because another was already running.
+ * Producers register a command as its volume's scan generation when they queue
+ * it, so a refused command left as the generation would make the RUNNING
+ * scan's result look superseded and be dropped. Release it — conditionally, so
+ * a newer producer's registration is never cleared. The running scan then
+ * claims through the NULL-generation branch of claimFilesystemScanGeneration.
+ */
+async function releaseRefusedFilesystemScanGeneration(
+  command: typeof deviceCommands.$inferSelect,
+): Promise<void> {
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+  if (!deviceRow) {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} refused as scan_in_progress but device ${command.deviceId} has no devices row; scan generation not released`
+    );
+    return;
+  }
+  const payload = isObject(command.payload) ? command.payload : {};
+  const scanPath = normalizeScanPath(deviceRow.osType, asString(payload.path) ?? osRootScanPath(deviceRow.osType));
+  await clearFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+}
+
 export async function handleFilesystemAnalysisCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>,
   orgId: string
 ): Promise<void> {
   if (resultData.status !== 'completed') {
+    if (resultData.status === 'failed' && resultData.errorCode === 'scan_in_progress') {
+      await releaseRefusedFilesystemScanGeneration(command);
+    }
     return;
   }
 
@@ -1839,6 +1927,12 @@ export async function handleFilesystemAnalysisCommandResult(
     .limit(1);
 
   if (inFlightScan) {
+    return;
+  }
+
+  // An operator who turned remote tools off stops the chain at its next step
+  // (no retroactive cancel of a scan already running on the device).
+  if (!(await automaticFilesystemScanAllowed(command.deviceId, 'auto_resume'))) {
     return;
   }
 
@@ -2765,11 +2859,51 @@ async function resolvePolicyCheckInterval(deviceId: string, opts?: DevicePolicyS
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
+const monitoringSettingsCacheKey = (deviceId: string) => `monitoring:settings:device:${deviceId}`;
+
+/**
+ * #8287: the device's CURRENT watch set for DISPLAY filtering from a user
+ * request (summary, status, tab-counts). Same resolver the agent heartbeat
+ * uses, but:
+ *  - runs in the CALLER'S OWN DB context — no system escalation (#2417) and no
+ *    second pooled connection under the request transaction (#1105). Partner-
+ *    wide policies/monitors are legible because their tables carry the
+ *    SELECT-only `org_id IS NULL AND partner_id = breeze_current_partner_id()`
+ *    branch, fed by `currentPartnerId` from `buildDbAccessContext`;
+ *  - never writes `monitoring:settings:device:*` (only reads it), so a
+ *    user-scoped answer can never poison the cache the agent heartbeat reads.
+ *
+ * Returns null — "unknown, do not filter" — when:
+ *  - the device vanished mid-resolution;
+ *  - there is no ambient context, or a non-system context has no
+ *    `currentPartnerId` (e.g. organization-scope SSO sessions mint
+ *    `partnerId: null`). There, partner-wide rows are invisible and the
+ *    resolver would answer a TRUNCATED set (often `watches: []`), which would
+ *    hide live alerts. Failing open shows possibly-stale rows instead.
+ */
+export async function resolveMonitoringConfigForDisplay(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const cached = await redis.get(monitoringSettingsCacheKey(deviceId));
+      if (cached) return JSON.parse(cached) as MonitoringConfigUpdate;
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) return null;
+  // Savepoint: a SQL error here is caught upstream (fail open), but on the bare
+  // request transaction it would abort/poison the caller's commit (25P02).
+  const resolution = await withDbTransaction(() => resolveDeviceMonitoringSettings(deviceId));
+  return resolution.kind === 'unresolved' ? null : resolution.settings;
+}
+
 export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitoringConfigUpdate | null> {
   hierarchyFor(deviceId, opts);
   policySetFor(deviceId, opts);
   const redis = getRedis();
-  const cacheKey = `monitoring:settings:device:${deviceId}`;
+  const cacheKey = monitoringSettingsCacheKey(deviceId);
 
   // Try cache first
   if (redis) {

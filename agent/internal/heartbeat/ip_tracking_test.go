@@ -81,3 +81,27 @@ func TestIsVPNInterface(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectIPChanges_DNSServers(t *testing.T) {
+	base := IPHistoryEntry{InterfaceName: "Ethernet", IPAddress: "10.0.0.10", IPType: "ipv4", AssignmentType: "static", Gateway: "10.0.0.1"}
+	with := func(dns ...string) IPHistoryEntry { e := base; e.DNSServers = dns; return e }
+	tests := []struct {
+		name     string
+		previous IPHistoryEntry
+		current  IPHistoryEntry
+		changed  bool
+	}{
+		{name: "unchanged", previous: with("10.0.0.53"), current: with("10.0.0.53"), changed: false},
+		{name: "all resolvers removed", previous: with("10.0.0.53"), current: with(), changed: true},
+		{name: "resolver added", previous: with(), current: with("10.0.0.53"), changed: true},
+		{name: "resolver order changed", previous: with("10.0.0.53", "10.0.0.54"), current: with("10.0.0.54", "10.0.0.53"), changed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changed, removed := detectIPChanges([]IPHistoryEntry{tt.current}, []IPHistoryEntry{tt.previous})
+			if (len(changed) == 1) != tt.changed || len(removed) != 0 {
+				t.Fatalf("changed=%v removed=%v, want changed=%v", changed, removed, tt.changed)
+			}
+		})
+	}
+}

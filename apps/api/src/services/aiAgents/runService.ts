@@ -44,6 +44,7 @@ import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import type { ResolvedModel } from '../aiModels/resolveModel';
+import { admissionServedColumns } from './admissionFailover';
 import { notifyModelBlocked } from './modelBlocked';
 import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
 import {
@@ -1376,6 +1377,10 @@ export async function createAndEnqueueAgentRun(
   const billingSource = agentModel.resolved.funding;
   options.onFundingResolved?.(billingSource);
   const admittedOfferingId = agentModel.resolved.offering.id;
+  // #7787: admission that resolved straight to a fallback (primary cooling or
+  // ineligible) records that failover on the run, as chat does on its ledger.
+  // Provenance only: the run's reservation key stays hop 0's.
+  const admissionServed = admissionServedColumns(agentModel.resolved);
 
   // 4. Maintenance windows. Reads partner-wide (org_id NULL) windows, so it has
   //    to run inside the system context below — an org-scoped RLS context sees
@@ -1808,6 +1813,7 @@ export async function createAndEnqueueAgentRun(
         // AI model registry W03 (step 3d): what admission checked credits for.
         fundingSource: billingSource,
         admittedOfferingId,
+        ...admissionServed,
       })
       .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
       .returning();
@@ -1888,6 +1894,7 @@ export async function createAndEnqueueAgentRun(
         // AI model registry W03: this attempt's own admission decision.
         fundingSource: billingSource,
         admittedOfferingId,
+        ...admissionServed,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),

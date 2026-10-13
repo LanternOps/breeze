@@ -71,6 +71,9 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableHardwareInventory', 'PORTAL_HARDWARE_INVENTORY_DISABLED'],
     ['enablePerformanceMetrics', 'PORTAL_PERFORMANCE_METRICS_DISABLED'],
     ['enableSoftwareInventory', 'PORTAL_SOFTWARE_INVENTORY_DISABLED'],
+    ['enableHourBlock', 'PORTAL_HOUR_BLOCK_DISABLED'],
+    ['enablePatchDetail', 'PORTAL_PATCH_DETAIL_DISABLED'],
+    ['enableVulnerabilityDetail', 'PORTAL_VULNERABILITY_DETAIL_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -104,6 +107,51 @@ describe('createPortalFeatureGateStrict', () => {
   it('continues when enablePerformanceMetrics is explicitly true', async () => {
     dbState.rows = [{ enablePerformanceMetrics: true }];
     expect((await createTestApp('enablePerformanceMetrics').request('/protected')).status).toBe(200);
+  });
+
+  it('enablePatchDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enablePatchDetail: true }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enablePatchDetail: 'true' }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enablePatchDetail: null }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+  });
+
+  it('enableVulnerabilityDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enableVulnerabilityDetail: true }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enableVulnerabilityDetail: 'true' }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enableVulnerabilityDetail: null }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
+  });
+
+  it('enableHourBlock: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enableHourBlock: true }];
+    const ok = await createTestApp('enableHourBlock').request('/protected');
+    expect(ok.status).toBe(200);
+
+    dbState.rows = [{ enableHourBlock: false }];
+    const off = await createTestApp('enableHourBlock').request('/protected');
+    expect(off.status).toBe(403);
+    expect(await off.json()).toEqual({
+      error: 'Support hours are not enabled for this portal',
+      code: 'PORTAL_HOUR_BLOCK_DISABLED',
+    });
+  });
+
+  it('enableHourBlock: a truthy non-boolean is not enabled', async () => {
+    dbState.rows = [{ enableHourBlock: 'true' }];
+    const response = await createTestApp('enableHourBlock').request('/protected');
+    expect(response.status).toBe(403);
+  });
+
+  it('enableHourBlock: rejects an unauthenticated request before reading the row', async () => {
+    dbState.rows = [{ enableHourBlock: true }];
+    const response = await createTestApp('enableHourBlock', false).request('/protected');
+    expect(response.status).toBe(401);
+    expect(dbState.where).toBeUndefined();
   });
 
   it.each([

@@ -51,6 +51,7 @@ import {
 import { scriptBundleRoutes } from './scriptBundle';
 import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 import { cutScriptVersion } from '../services/scriptVersions';
+import { scriptExecutionRestorePointSql } from '../services/restorePointInline';
 
 import {
   MAX_GRACE_SECONDS,
@@ -1472,6 +1473,9 @@ scriptRoutes.get(
         // NULL for every run that emitted no marker. Wave 2 renders it; without
         // it here the summary would be stored but unreachable by any caller.
         customFieldResult: scriptExecutions.customFieldResult,
+        // #4759 — newest System Restore ledger row for this execution (NULL
+        // when Breeze never asked). Drives the inline badge in ExecutionDetails.
+        restorePoint: scriptExecutionRestorePointSql(scriptExecutions.id),
         createdAt: scriptExecutions.createdAt,
         // #4888 — see the list endpoint above.
         runAs: scriptExecutions.runAs,

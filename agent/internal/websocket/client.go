@@ -82,6 +82,9 @@ type CommandResult struct {
 	Stderr    string `json:"stderr,omitempty"`
 	Result    any    `json:"result,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// #4026 typed refusal code, mirrored from tools.CommandResult so the
+	// server can classify a failure without matching Error's prose.
+	ErrorCode wire.CommandErrorCode `json:"errorCode,omitempty"`
 	// #3525 cancellation marker, mirrored from tools.CommandResult. The
 	// WebSocket leg is the primary result channel, so dropping these here would
 	// mean the server only ever saw the marker on the HTTP fallback.

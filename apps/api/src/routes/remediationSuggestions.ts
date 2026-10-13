@@ -20,6 +20,7 @@ import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatur
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
 import { captureException } from '../services/sentry';
 import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
+import { currentOwnershipEpochSql } from '../services/deviceOwnershipEpoch';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -59,6 +60,7 @@ const researchBodySchema = z.object({
   depth: z.enum(['quick', 'deep']),
   orgId: z.string().uuid().optional(),
 });
+const researchQuerySchema = z.object({ orgId: z.string().uuid().optional() });
 const sourceQuerySchema = z.object({
   sourceType: researchSourceTypeSchema,
   sourceId: z.string().uuid(),
@@ -783,13 +785,17 @@ remediationSuggestionRoutes.post(
   '/research',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+  zValidator('query', researchQuerySchema),
   zValidator('json', researchBodySchema),
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgId = resolveOrgForSource(auth, body.orgId);
+    // Body, then ?orgId= (partner-scope UIs carry the org in the URL), then the caller's own
+    // org. Whichever is requested must pass canAccessOrg — an org-scope caller can't switch.
+    const requestedOrgId = body.orgId ?? c.req.valid('query').orgId;
+    const orgId = resolveOrgForSource(auth, requestedOrgId);
     if (!orgId) {
-      return c.json({ error: body.orgId ? 'Organization not found or access denied' : 'Select an organization.' }, body.orgId ? 403 : 400);
+      return c.json({ error: requestedOrgId ? 'Organization not found or access denied' : 'Select an organization.' }, requestedOrgId ? 403 : 400);
     }
     // Self-managed DB-context route: no request transaction is held. The site
     // gate runs in one short caller-scoped context; requestResearch then runs
@@ -961,6 +967,7 @@ remediationSuggestionRoutes.post(
         siteId: device.siteId,
         partnerId: null,
         deviceId,
+        deviceEpoch: currentOwnershipEpochSql(deviceId),
         flowType: 'tech_jit_admin',
         subjectUserId: auth.user.id,
         subjectUsername: auth.user.email ?? auth.user.name ?? auth.user.id,

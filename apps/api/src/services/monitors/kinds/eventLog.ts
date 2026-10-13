@@ -3,7 +3,7 @@ import type { MonitorKindSpec } from './types';
 
 type C = {
   category: 'security' | 'hardware' | 'application' | 'system';
-  level: 'warning' | 'error' | 'critical';
+  level: 'info' | 'warning' | 'error' | 'critical';
   sourcePattern?: string;
   messagePattern?: string;
   countThreshold: number;

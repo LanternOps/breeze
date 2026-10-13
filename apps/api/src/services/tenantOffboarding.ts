@@ -33,6 +33,7 @@ import { envInt } from '../utils/envInt';
 import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
+import { EVIDENCE_HOLD_RELEASED_ACTION, findEvidenceHold, releaseEmptyEvidenceHolds } from './orgEvidenceHold';
 import { getEmailService } from './email';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { escapeHtml, renderLayout } from './emailLayout';
@@ -1428,6 +1429,7 @@ export async function sweepOffboardingTenants(
   mergeErasureReenqueued: number;
   mergeUnfenced: number;
   mergeShellsStamped: number;
+  evidenceHoldsReleased: number;
   archivePurgesEnqueued: number;
   purgingRecoveryReenqueued: number;
   purgingRecoveryExhausted: number;
@@ -1439,6 +1441,7 @@ export async function sweepOffboardingTenants(
   let mergeErasureReenqueued = 0;
   let mergeUnfenced = 0;
   let mergeShellsStamped = 0;
+  let evidenceHoldsReleased = 0;
   let archivePurgesEnqueued = 0;
   let purgingRecoveryReenqueued = 0;
   let purgingRecoveryExhausted = 0;
@@ -1470,6 +1473,14 @@ export async function sweepOffboardingTenants(
         // stamps `deleted_at`), so the 1h grace window is purely "give the
         // job a chance to finish" — this never fires for a merge whose job is
         // simply still running.
+        //
+        // Held shells (PAM ownership epochs W5, org_evidence_holds) are
+        // filtered out here, in SQL, not skipped per row: a hold can stand for
+        // the whole audit-retention period, and a per-pass skip would write an
+        // audit every hour for every held shell. The hold's deferral is
+        // audited once, by the merge job's Phase C; release is handled by the
+        // evidence-hold pass below; and cascadeDeleteOrg refuses a held shell
+        // no matter how it is reached.
         const mergeErasurePending = await db
           .select({ id: organizations.id })
           .from(organizations)
@@ -1477,7 +1488,8 @@ export async function sweepOffboardingTenants(
             and(
               eq(organizations.status, 'merging'),
               isNotNull(organizations.deletedAt),
-              sql`${organizations.updatedAt} < now() - interval '1 hour'`
+              sql`${organizations.updatedAt} < now() - interval '1 hour'`,
+              sql`NOT EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.loser_org_id = ${organizations.id})`
             )
           );
         // Task 4, case 2: Phase A fenced the loser (`status='merging'`,
@@ -1808,10 +1820,16 @@ export async function sweepOffboardingTenants(
       )) as unknown as Array<{ id: string }>;
       if (stamped.length === 0) continue;
 
+      // A held shell (W5) is stamped like any other — it must stop looking
+      // like a live org — but is NOT handed to erasure.
+      const hold = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => findEvidenceHold(org.id))
+      );
+
       // Same idempotent handoff case 1 uses: jobId `tenant-erasure-<orgId>`
       // collapses a duplicate, and ANONYMOUS_ACTOR_ID is a real uuid because
       // it lands in the erasure worker's own `actor_id` column.
-      await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
+      if (!hold) await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
       mergeShellsStamped++;
       writeAuditEvent(requestLikeFromSnapshot({}), {
         orgId: null,
@@ -1823,7 +1841,10 @@ export async function sweepOffboardingTenants(
         result: 'success',
         details: {
           partnerId: org.partnerId,
-          note: 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
+          note: hold
+            ? 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and kept under its evidence hold (not erased)'
+            : 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
+          ...(hold ? { evidenceHold: { survivorOrgId: hold.survivorOrgId, reason: hold.reason } } : {}),
         },
       });
     } catch (err) {
@@ -1831,6 +1852,48 @@ export async function sweepOffboardingTenants(
       console.error(`[tenantOffboarding] Failed to stamp merged-away org ${org.id}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
+  }
+
+  // --- Evidence-hold release (PAM ownership epochs W5, spec §7.2) ----------
+  // Retention expiry: once audit-admin retention has deleted every PAM-chain
+  // row a held shell owned, nothing is left to protect. The release (one
+  // DELETE that re-checks emptiness and that no hold names the shell as its
+  // survivor) and the erasure handoff are separate steps on purpose: if the
+  // enqueue fails, the now-unheld shell is a plain case-1 shell and the next
+  // pass re-enqueues it.
+  try {
+    const released = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => releaseEmptyEvidenceHolds())
+    );
+    for (const hold of released) {
+      evidenceHoldsReleased++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: EVIDENCE_HOLD_RELEASED_ACTION,
+        resourceType: 'organization',
+        resourceId: hold.loserOrgId,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          trigger: 'chain_empty',
+          survivorOrgId: hold.survivorOrgId,
+          mergeEventId: hold.mergeEventId,
+          holdReason: hold.reason,
+        },
+      });
+      try {
+        await enqueueTenantErasure({ orgId: hold.loserOrgId, performedBy: ANONYMOUS_ACTOR_ID });
+      } catch (err) {
+        failures++;
+        console.error(`[tenantOffboarding] Failed to enqueue erasure for released evidence-hold shell ${hold.loserOrgId}:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  } catch (err) {
+    failures++;
+    console.error('[tenantOffboarding] Failed to release emptied evidence holds:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   // --- Archive purge: claim archived -> purging, then hand off to erasure --
@@ -2102,6 +2165,7 @@ export async function sweepOffboardingTenants(
     mergeErasureReenqueued,
     mergeUnfenced,
     mergeShellsStamped,
+    evidenceHoldsReleased,
     archivePurgesEnqueued,
     purgingRecoveryReenqueued,
     purgingRecoveryExhausted,

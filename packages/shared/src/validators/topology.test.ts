@@ -449,6 +449,16 @@ describe('grouped overview contract (2026-10-02)', () => {
     expect(presentationNodeSchema.safeParse({ ...groupNode, authority: true }).success).toBe(false);
   });
 
+  it('accepts a declared lan group and an empty declared card; rejects an unknown declaration state (site location W1)', () => {
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: ['discovery_profile'] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'undeclared', sources: [] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, memberCount: 0, group: { ...group, basis: 'declared_site_network', members: [], canonicalNodeIds: [],
+      gatewayAddresses: [], observerCount: 0, declaration: { state: 'declared', sources: ['network_baseline'] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'maybe', sources: [] } } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: ['dhcp_scope'] } } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: [], extra: 1 } } }).success).toBe(false);
+  });
+
   it('labels aggregate edges with a presentation role without inventing authority', () => {
     const edge = { ...graphResponse.presentation.edges[0], role: 'routes_via' };
     expect(presentationEdgeSchema.safeParse(edge).success).toBe(true);

@@ -101,7 +101,7 @@ callerVerificationRoutes.onError((e, c) => {
 // --- Verifications -----------------------------------------------------------
 
 callerVerificationRoutes.post(cv, ...base, write, requireMfa(), zValidator('json', startCallerVerificationSchema), async (c) => {
-  const limit = await rateLimiter(getRedis(), `caller-start:${actor(c).userId}`, 10, 600);
+  const limit = await rateLimiter(getRedis(), `caller-verification:start:${actor(c).userId}`, 10, 600);
   if (!limit.allowed) return c.json({ error: 'Rate limited' }, 429);
   return c.json({ data: await service.start(actor(c), { ...c.req.valid('json'), orgId: oid(c) }) }, 202);
 });

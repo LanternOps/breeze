@@ -127,6 +127,10 @@ BEGIN
   END IF;
 END $$;
 
+-- Fire the deferred parity trigger events the UPDATE above queued, so the
+-- ALTER TABLEs below don't fail with "pending trigger events".
+SET CONSTRAINTS ALL IMMEDIATE;
+
 ALTER TABLE config_policy_feature_links
   DROP CONSTRAINT IF EXISTS config_policy_feature_links_execution_authority_legacy_chk;
 

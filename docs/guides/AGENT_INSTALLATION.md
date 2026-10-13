@@ -208,7 +208,7 @@ Get-Service -Name "BreezeAgent"
 | Type | Location |
 |------|----------|
 | Binary | `C:\Program Files\Breeze\breeze-agent.exe` |
-| Configuration | `C:\ProgramData\Breeze\config.yaml` |
+| Configuration | `C:\ProgramData\Breeze\agent.yaml` |
 | Logs | `C:\ProgramData\Breeze\logs\` |
 | Data | `C:\ProgramData\Breeze\data\` |
 
@@ -257,7 +257,7 @@ sudo tee /Library/LaunchDaemons/com.breeze.agent.plist > /dev/null << 'EOF'
         <string>/usr/local/bin/breeze-agent</string>
         <string>run</string>
         <string>--config</string>
-        <string>/etc/breeze/config.yaml</string>
+        <string>/etc/breeze/agent.yaml</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -289,7 +289,7 @@ sudo launchctl list | grep breeze
 | Type | Location |
 |------|----------|
 | Binary | `/usr/local/bin/breeze-agent` |
-| Configuration | `/etc/breeze/config.yaml` |
+| Configuration | `/Library/Application Support/Breeze/agent.yaml` |
 | Logs | `/var/log/breeze/` |
 | Data | `/var/lib/breeze/` |
 | LaunchDaemon | `/Library/LaunchDaemons/com.breeze.agent.plist` |
@@ -335,7 +335,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/breeze-agent run --config /etc/breeze/config.yaml
+ExecStart=/usr/local/bin/breeze-agent run --config /etc/breeze/agent.yaml
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/breeze/agent.log
@@ -375,7 +375,7 @@ sudo systemctl status breeze-agent
 | Type | Location |
 |------|----------|
 | Binary | `/usr/local/bin/breeze-agent` |
-| Configuration | `/etc/breeze/config.yaml` |
+| Configuration | `/etc/breeze/agent.yaml` |
 | Logs | `/var/log/breeze/` or `journalctl -u breeze-agent` |
 | Data | `/var/lib/breeze/` |
 | Systemd Unit | `/etc/systemd/system/breeze-agent.service` |
@@ -405,14 +405,14 @@ Before the agent can communicate with your Breeze server, it must be enrolled. E
 **Windows (PowerShell as Administrator):**
 ```powershell
 & "C:\Program Files\Breeze\breeze-agent.exe" enroll `
-    --key "YOUR_ENROLLMENT_KEY" `
+    "YOUR_ENROLLMENT_KEY" `
     --server "https://your-server.com"
 ```
 
 **macOS / Linux:**
 ```bash
 sudo /usr/local/bin/breeze-agent enroll \
-    --key "YOUR_ENROLLMENT_KEY" \
+    "YOUR_ENROLLMENT_KEY" \
     --server "https://your-server.com"
 ```
 
@@ -443,21 +443,23 @@ Version:        1.0.0
 
 ### Enrollment Options
 
+The enrollment key is an optional positional argument (`breeze-agent enroll [enrollment-key]`). Prefer the `BREEZE_AGENT_ENROLLMENT_KEY` environment variable for unattended installs: a positional key is visible to any local user who can list processes.
+
 | Option | Description |
 |--------|-------------|
-| `--key` | Enrollment key from the web console |
+| `[enrollment-key]` | Enrollment key from the web console (positional), or set `BREEZE_AGENT_ENROLLMENT_KEY` |
 | `--server` | Breeze server URL |
-| `--tags` | Comma-separated tags for the device |
-| `--hostname` | Override detected hostname |
-| `--site-id` | Override site assignment |
+| `--enrollment-secret` | Enrollment secret, when the server requires one (`AGENT_ENROLLMENT_SECRET`) |
+| `--site-id` | Deprecated and ignored; the device joins the site the enrollment key is bound to. Passing it prints a deprecation warning; the flag will be removed in a future release |
+| `--device-role` | Device role override (e.g. `workstation`, `server`) |
+| `--force` | Re-enroll even if already enrolled; replaces the agent ID and auth token on success |
+| `--quiet` | Suppress progress output (errors still go to stderr) |
 
 Example with additional options:
 ```bash
-sudo breeze-agent enroll \
-    --key "YOUR_KEY" \
+sudo BREEZE_AGENT_ENROLLMENT_KEY="YOUR_KEY" breeze-agent enroll \
     --server "https://your-server.com" \
-    --tags "production,web-server,nginx" \
-    --hostname "web-prod-01"
+    --device-role server
 ```
 
 ---
@@ -470,9 +472,9 @@ The agent is configured via a YAML file. After enrollment, the configuration fil
 
 | Platform | Path |
 |----------|------|
-| Windows | `C:\ProgramData\Breeze\config.yaml` |
-| macOS | `/etc/breeze/config.yaml` |
-| Linux | `/etc/breeze/config.yaml` |
+| Windows | `C:\ProgramData\Breeze\agent.yaml` |
+| macOS | `/Library/Application Support/Breeze/agent.yaml` |
+| Linux | `/etc/breeze/agent.yaml` |
 
 ### Full Configuration Reference
 
@@ -775,16 +777,16 @@ tail -f /var/log/breeze/agent.log
 1. Check the configuration file for syntax errors:
    ```bash
    # Linux/macOS
-   sudo /usr/local/bin/breeze-agent validate --config /etc/breeze/config.yaml
+   sudo /usr/local/bin/breeze-agent validate --config /etc/breeze/agent.yaml
 
    # Windows
-   & "C:\Program Files\Breeze\breeze-agent.exe" validate --config "C:\ProgramData\Breeze\config.yaml"
+   & "C:\Program Files\Breeze\breeze-agent.exe" validate --config "C:\ProgramData\Breeze\agent.yaml"
    ```
 
 2. Check file permissions:
    ```bash
    # Linux/macOS
-   ls -la /etc/breeze/config.yaml
+   ls -la /etc/breeze/agent.yaml
    # Should be readable by root
    ```
 
@@ -810,7 +812,7 @@ tail -f /var/log/breeze/agent.log
 
 3. Verify firewall rules allow outbound HTTPS (443)
 
-4. If using a proxy, verify proxy settings in config.yaml
+4. If using a proxy, verify proxy settings in agent.yaml
 
 5. Check TLS certificate validity:
    ```bash
@@ -886,10 +888,10 @@ sudo /usr/local/bin/breeze-agent test-connection
 **View real-time debug logs:**
 ```bash
 # Linux/macOS
-sudo /usr/local/bin/breeze-agent run --config /etc/breeze/config.yaml --log-level debug
+sudo /usr/local/bin/breeze-agent run --config /etc/breeze/agent.yaml --log-level debug
 
 # Windows (stop service first)
-& "C:\Program Files\Breeze\breeze-agent.exe" run --config "C:\ProgramData\Breeze\config.yaml" --log-level debug
+& "C:\Program Files\Breeze\breeze-agent.exe" run --config "C:\ProgramData\Breeze\agent.yaml" --log-level debug
 ```
 
 ### Log Locations

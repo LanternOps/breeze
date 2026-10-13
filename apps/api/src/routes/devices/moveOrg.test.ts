@@ -141,6 +141,14 @@ vi.mock('../../services/ticketMoveHourBlockGuard', async () => {
   );
   return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
 });
+// #4617: the pending-approval guard runs real Postgres in ticketApprovalRequests.integration.test.ts.
+const { approvalGuardMock } = vi.hoisted(() => ({ approvalGuardMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../services/ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveApprovalGuard')>(
+    '../../services/ticketMoveApprovalGuard',
+  );
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
 
 vi.mock('../../services/pamDeviceMoveGuard', async () => {
   const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
@@ -165,6 +173,7 @@ import { propagateCancelledDeviceCommands } from '../../services/commandCancelPr
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
@@ -672,7 +681,14 @@ describe('POST /devices/:id/move-org', () => {
         'software_inventory_observations',
         'agent_rollback_events',
         'peripheral_policy_delivery_events',
+        'device_restore_point_attempts',
       ]);
+      // ...and the loop must actually skip it: no app-role UPDATE (its
+      // composite FK's ON UPDATE CASCADE restamps it). Positive control: an
+      // ordinary sibling in the same list IS restamped by the loop.
+      const collapsed = statements.map(collapseStmt);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_registry_state SET org_id'))).toBe(true);
+      expect(collapsed.some((s) => s.startsWith('UPDATE device_restore_point_attempts SET'))).toBe(false);
 
       expect(statements).toContain(
         `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,
@@ -1084,7 +1100,12 @@ describe('POST /devices/:id/move-org', () => {
         timeEntryRewrites,
         `Expected exactly one time_entries org_id rewrite.\nStatements:\n${statements.join('\n')}`,
       ).toEqual([
-        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid ` +
+        // #8356: site_id follows the device to its target site in the SAME
+        // statement (an entry with no site link keeps none) — a second
+        // UPDATE would change the statement sequence the lock-order contract
+        // pins. Without it the moved entry kept a site in the source org.
+        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid, ` +
+          `site_id = CASE WHEN site_id IS NOT NULL THEN ${TARGET_SITE}::uuid END ` +
           `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
     });
@@ -1541,16 +1562,24 @@ describe('POST /devices/:id/move-org', () => {
       // workstation-grant revocation sit immediately before the org flip: the
       // FOR UPDATE is the only device-row lock on this path, and the hook must
       // observe the SOURCE org's grants before the row leaves it.
-      expect(statements[12]).toBe('SELECT devices FOR update');
-      expect(collapseStmt(statements[13]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
-      expect(collapseStmt(statements[14]!)).toContain('UPDATE caller_verifications');
+      // #7969 — a discovery profile's pinned scan agent detaches before the
+      // org flip for the same reason as the link detaches above:
+      // discovery_profiles_pinned_device_org_fk ((pinned_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE and nothing
+      // trigger-side mirrors a pinned_device_id column.
+      const discoveryPinDetach = collapseStmt(statements[12]!);
+      expect(discoveryPinDetach).toContain('UPDATE discovery_profiles SET pinned_device_id = NULL');
+      expect(discoveryPinDetach).toMatch(/AND org_id =/);
+      expect(statements[13]).toBe('SELECT devices FOR update');
+      expect(collapseStmt(statements[14]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
+      expect(collapseStmt(statements[15]!)).toContain('UPDATE caller_verifications');
       // Diagnostic access grants approved in the SOURCE org die before the flip
       // (its trigger restamps them into the target org): pending requests
       // expire, active grants are revoked. Other approvers' approval rows are
       // expired post-commit in system scope (they are per-approver under RLS).
-      expect(collapseStmt(statements[15]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
-      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[17]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[18]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
@@ -1764,6 +1793,20 @@ describe('POST /devices/:id/move-org', () => {
       expect(captureExceptionMock).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('409s with code + details when a ticket has a pending customer approval request (#4617) — no Sentry, no failed-move audit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 2 }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 2 } });
+      expect(hourBlockGuardMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('409s with code + details when block-drawn time blocks the move (#8181) — no Sentry, no failed-move audit', async () => {

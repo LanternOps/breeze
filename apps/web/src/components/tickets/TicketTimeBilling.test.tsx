@@ -708,3 +708,67 @@ describe('TicketTimeBilling — delete entry (#8133)', () => {
     }
   });
 });
+
+// Customer work approval (#8196).
+describe('TicketTimeBilling customer approval', () => {
+  const held = { ...entries[0], id: 'held-1', billingStatus: 'awaiting_approval' };
+  const rows = (list: unknown[]) => fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/time-entries/start' && init?.method === 'POST') {
+      return { ok: false, status: 409, json: async () => ({ error: 'Approval required', code: 'APPROVAL_REQUIRED' }) } as Response;
+    }
+    if (url.startsWith('/tickets/tk-1/time-entries')) {
+      return { ok: true, status: 200, json: async () => ({ data: list, total: list.length }) } as Response;
+    }
+    return route(url);
+  });
+
+  it('marks a held entry with the awaiting-approval chip and offers Write off to billing managers', async () => {
+    rows([held, { ...entries[0], id: 'plain-1', billingStatus: 'not_billed' }]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect(await screen.findByTestId('time-entry-awaiting-approval-held-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('time-entry-awaiting-approval-plain-1')).toBeNull();
+    expect(screen.getByTestId('time-entry-write-off-held-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('time-entry-write-off-plain-1')).toBeNull();
+  });
+
+  it('hides Write off without time_entries:manage_billing', async () => {
+    canManageBilling = false;
+    rows([held]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('time-entry-awaiting-approval-held-1');
+    expect(screen.queryByTestId('time-entry-write-off-held-1')).toBeNull();
+  });
+
+  it('writes off after a confirm step and then refreshes', async () => {
+    rows([held]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('time-entry-write-off-held-1'));
+    expect(fetchWithAuth.mock.calls.some((c) => String(c[0]).endsWith('/write-off-held'))).toBe(false);
+    fireEvent.click(await screen.findByTestId('time-entry-write-off-confirm-held-1'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/time-entries/held-1/write-off-held', expect.objectContaining({ method: 'POST' })));
+  });
+
+  // DECISION: the server demands manage_billing to start non-billable, so a tech
+  // without it is shown guidance only, never an escape button that would 403.
+  it('on APPROVAL_REQUIRED offers "Start as non-billable" to billing managers and retries with isBillable:false', async () => {
+    rows([]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-start-timer'));
+    const notice = await screen.findByTestId('ticket-billing-approval-required');
+    expect(notice.textContent).toMatch(/Approvals panel/);
+    fetchWithAuth.mockClear();
+    fireEvent.click(screen.getByTestId('ticket-billing-start-non-billable'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/time-entries/start', expect.anything()));
+    const call = fetchWithAuth.mock.calls.find((c) => c[0] === '/time-entries/start')!;
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toMatchObject({ ticketId: 'tk-1', isBillable: false });
+  });
+
+  it('on APPROVAL_REQUIRED offers NO non-billable retry without time_entries:manage_billing', async () => {
+    canManageBilling = false;
+    rows([]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-start-timer'));
+    expect((await screen.findByTestId('ticket-billing-approval-required')).textContent).toMatch(/Approvals panel/);
+    expect(screen.queryByTestId('ticket-billing-start-non-billable')).toBeNull();
+  });
+});

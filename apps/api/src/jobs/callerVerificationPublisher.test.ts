@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   rows: [] as unknown[], updates: [] as Array<Record<string, unknown>>, applyDecision: vi.fn(), deliver: vi.fn(),
-  recipients: vi.fn(), notify: vi.fn(), sendEmail: vi.fn(), emailService: null as null | { sendEmail: unknown },
+  recipients: vi.fn(), capture: vi.fn(), notify: vi.fn(), sendEmail: vi.fn(), emailService: null as null | { sendEmail: unknown },
 }));
 vi.mock('../db', () => ({
   runOutsideDbContext: (f: () => unknown) => f(),
@@ -15,7 +15,7 @@ vi.mock('../db', () => ({
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/userNotifications', () => ({ createNotification: m.notify }));
 vi.mock('../services/email', () => ({ getEmailService: () => m.emailService }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: m.capture }));
 vi.mock('../services/callerVerification/effects', () => ({ securityRecipients: m.recipients }));
 vi.mock('../services/callerVerification/ports', () => ({ callerVerificationPorts: { deliver: m.deliver } }));
 vi.mock('../services/callerVerification/service', () => ({ applyDecision: m.applyDecision }));
@@ -54,8 +54,27 @@ it('delivers a live non-callback challenge through the port, then marks it; call
 it('does not mark delivery when the port fails, so the row is retried', async () => {
   m.rows = [row({})];
   m.deliver.mockRejectedValue(new Error('adapter down'));
-  await expect(publishCallerVerificationEffects()).rejects.toThrow('adapter down');
+  await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
   expect(m.updates).toEqual([]);
+  expect(m.capture).toHaveBeenCalled();
+});
+
+it('a throwing row never stops the loop: the next row is still delivered and marked', async () => {
+  m.rows = [row({ id: 'bad' }), row({ id: 'good' })];
+  m.deliver.mockImplementation(async (id: string) => { if (id === 'bad') throw new Error('boom'); });
+  await publishCallerVerificationEffects();
+  expect(m.deliver).toHaveBeenCalledWith('good');
+  expect(m.updates).toEqual([{ deliveryPublishedAt: expect.any(Date) }]);
+});
+
+it('marks a row undeliverable after 3 consecutive delivery failures', async () => {
+  m.rows = [row({ id: 'flaky' })];
+  m.deliver.mockRejectedValue(new Error('boom'));
+  await publishCallerVerificationEffects();
+  await publishCallerVerificationEffects();
+  expect(m.applyDecision).not.toHaveBeenCalled();
+  await publishCallerVerificationEffects();
+  expect(m.applyDecision).toHaveBeenCalledWith({ verificationId: 'flaky', decision: { kind: 'undeliverable', reason: 'sms_failed' } });
 });
 
 it('notifies every security recipient with a per-verification dedupe key, emails them, then marks the rejection', async () => {
@@ -74,7 +93,8 @@ it('notifies every security recipient with a per-verification dedupe key, emails
 it('refuses to mark a rejection notified when no email transport exists', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   m.emailService = null;
-  await expect(publishCallerVerificationEffects()).rejects.toThrow('email transport unavailable');
+  await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('email transport unavailable') }), undefined, { verificationId: 'v1' });
   expect(m.notify).not.toHaveBeenCalled();
   expect(m.updates).toEqual([]);
 });
@@ -82,6 +102,7 @@ it('refuses to mark a rejection notified when no email transport exists', async 
 it('leaves the rejection unmarked when one email send fails (at-least-once)', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   m.sendEmail.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('smtp'));
-  await expect(publishCallerVerificationEffects()).rejects.toThrow('smtp');
+  await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'smtp' }), undefined, { verificationId: 'v1' });
   expect(m.updates).toEqual([]);
 });

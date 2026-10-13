@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { GraphResponse } from '@breeze/shared';
 import type { TopologySelection } from './topologyPresentation';
-import { topologyHealthLabel } from './topologyPresentation';
+import { isDecommissioned, topologyHealthLabel } from './topologyPresentation';
 import type { HiddenConnection } from './topologyApi';
 const RELATIONSHIP_KINDS = new Set(['physical_link', 'attachment', 'network_member', 'default_route', 'egress_path']);
 export default function TopologyList({ graph, onSelect, search = '', hidden }: {
@@ -20,7 +20,19 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
   // Hidden groups (#7879) are a fold instruction for the map, not a row.
   const nodes = [...graph.nodes, ...graph.presentation.nodes.filter((node) => node.group?.kind !== 'hidden')].filter((node) => node.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
     .sort((a, b) => (networkOf.get(a.id) ?? '\uffff').localeCompare(networkOf.get(b.id) ?? '\uffff', 'en', { numeric: true }) || a.label.localeCompare(b.label, 'en', { numeric: true }));
+  // Only IPv4 lan network cards carry a declaration; devices and every other card have none.
+  const declaredText = (state: 'declared' | 'undeclared' | undefined) => state === 'declared' ? t('grouped.declaredYes') : state === 'undeclared' ? t('grouped.declaredNo') : '\u2014';
   const labels = new Map([...graph.nodes, ...graph.presentation.nodes].map((node) => [node.id, node.label]));
+  // Gateway nodes repeat once per reporter ("10.1.2.100 · gateway" ×N): name the reporter(s) so the rows can be told apart (#8307).
+  const reportersOf = new Map<string, string[]>();
+  for (const edge of graph.relationships) {
+    if (edge.kind !== 'default_route') continue;
+    const reporter = labels.get(edge.sourceNodeId);
+    const source = graph.nodes.find((candidate) => candidate.id === edge.sourceNodeId);
+    if (!reporter || (source && isDecommissioned(source))) continue; // same rule as the gateway inspector
+    const known = reportersOf.get(edge.targetNodeId) ?? [];
+    if (!known.includes(reporter)) reportersOf.set(edge.targetNodeId, [...known, reporter]);
+  }
   // Name a hidden connection by its two endpoints; fall back to the id prefix only when an endpoint is not in this graph.
   const hiddenConnectionLabel = (item: HiddenConnection) => {
     const from = labels.get(item.relationship.sourceNodeId), to = labels.get(item.relationship.targetNodeId);
@@ -29,8 +41,10 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
   return <div className="max-h-[34rem] overflow-auto" data-testid="topology-list">
     <table className="w-full text-left text-sm">
       <caption className="sr-only">{t('devicesAndNetworks')}</caption>
-      <thead className="sticky top-0 bg-muted"><tr><th className="p-3">{t('name')}</th><th className="p-3">{t('grouped.addresses')}</th><th className="p-3">{t('grouped.networks')}</th><th className="p-3">{t('role')}</th><th className="p-3">{t('health')}</th></tr></thead>
-      <tbody>{nodes.map((node) => <tr key={node.id} data-testid={`topology-node-kind-${'kind' in node ? node.kind : 'schematic'}`} className="border-t"><td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" data-testid={`topology-node-${node.id}`} onClick={() => onSelect({ kind: 'node', id: node.id })}>{node.label}</button></td><td className="p-3">{'inventory' in node ? node.inventory?.addresses.slice(0, 2).join(', ') : ''}</td><td className="p-3">{networkOf.get(node.id) ?? ''}</td><td className="p-3">{node.role ?? ('kind' in node ? node.kind : t('schematic'))}</td><td className="p-3">{'health' in node ? t(/* i18n-dynamic */ `healthStatus.${node.health.status}`, { defaultValue: topologyHealthLabel(node.health.status, node.health.reasons) }) : t('notIdentified')}</td></tr>)}</tbody>
+      <thead className="sticky top-0 bg-muted"><tr><th className="p-3">{t('name')}</th><th className="p-3">{t('grouped.addresses')}</th><th className="p-3">{t('grouped.networks')}</th><th className="p-3">{t('grouped.declaredColumn')}</th><th className="p-3">{t('role')}</th><th className="p-3">{t('health')}</th></tr></thead>
+      <tbody>{nodes.map((node) => <tr key={node.id} data-testid={`topology-node-kind-${'kind' in node ? node.kind : 'schematic'}`} className="border-t"><td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" data-testid={`topology-node-${node.id}`} onClick={() => onSelect({ kind: 'node', id: node.id })}>{node.label}</button>
+        {'inventory' in node && isDecommissioned(node) && <span data-testid={`topology-node-decommissioned-${node.id}`} className="ml-2 rounded border px-1.5 py-0.5 text-xs text-muted-foreground">{t('grouped.decommissioned')}</span>}
+        {reportersOf.has(node.id) && <span className="block text-xs text-muted-foreground">{t('grouped.reportedByDevices', { reporters: reportersOf.get(node.id)!.join(', ') })}</span>}</td><td className="p-3">{'inventory' in node ? node.inventory?.addresses.slice(0, 2).join(', ') : ''}</td><td className="p-3">{networkOf.get(node.id) ?? ''}</td><td className="p-3" data-testid={`topology-declared-${node.id}`}>{declaredText('group' in node ? node.group?.declaration?.state : undefined)}</td><td className="p-3">{node.role ?? ('kind' in node ? node.kind : t('schematic'))}</td><td className="p-3">{'health' in node ? t(/* i18n-dynamic */ `healthStatus.${node.health.status}`, { defaultValue: topologyHealthLabel(node.health.status, node.health.reasons) }) : t('notIdentified')}</td></tr>)}</tbody>
     </table>
     <table className="mt-6 w-full text-left text-sm">
       <caption className="p-3 text-left font-medium">{t('connections')}</caption>

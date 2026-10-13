@@ -358,7 +358,9 @@
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
-    "toADifferentSite": "to a different site."
+    "toADifferentSite": "to a different site.",
+    "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -912,6 +914,7 @@
     "diskCleanup": "Disk Cleanup",
     "diskUsageAnalysisAndCleanup": "Disk usage analysis and cleanup",
     "bootPerf": "Boot Perf",
+    "systemRestore": "System Restore",
     "startupTimeAndBootProcessAnalysis": "Startup time and boot process analysis",
     "backup": "Backup",
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
@@ -945,7 +948,9 @@
       "management": "Management",
       "history": "History & Network",
       "extensions": "Extensions"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Containers and virtual machines on this host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -2169,20 +2174,29 @@
     "noOutput": "No output",
     "output": "Output",
     "refreshing": "Refreshing...",
-    "running": "Running...",
     "runAgain": "Run again",
+    "runCount_one": "{{count}} run",
+    "runCount_other": "{{count}} runs",
+    "running": "Running...",
     "scriptFallback": "Script",
     "stderr": "Standard Error (stderr)",
     "stdout": "Standard Output (stdout)",
     "table": {
       "completed": "Completed",
       "duration": "Duration",
+      "lastOutput": "Last output",
+      "lastRun": "Last run",
       "script": "Script",
       "started": "Started",
       "status": "Status"
     },
     "title": "Script Execution History",
-    "unnamedScript": "Unnamed script"
+    "unnamedScript": "Unnamed script",
+    "view": {
+      "all": "All runs",
+      "label": "Scripts view",
+      "latest": "Latest per script"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Detected: {{date}}",
@@ -2234,7 +2248,8 @@
     "displayName": "Display Name",
     "errors": {
       "loadSites": "Failed to load sites",
-      "saveSettings": "Failed to save settings"
+      "saveSettings": "Failed to save settings",
+      "siteChanged": "This device was moved by someone else — reload to see its current site"
     },
     "hostname": "Hostname: {{hostname}}",
     "saved": "Device settings saved",
@@ -3411,7 +3426,15 @@
     "cancelled": "Queued action cancelled",
     "cancelFailed": "Failed to cancel queued action",
     "loadFailed": "Couldn't load queued actions.",
-    "empty": "No queued actions"
+    "empty": "No queued actions",
+    "powerHold": {
+      "title": "{{action}} is waiting for a running command",
+      "body": "{{action}} goes out once the device finishes the commands it is running. {{command}} has been running for {{minutes}} min with no result.",
+      "markFailed": "Mark failed",
+      "markFailedIn": "You can mark it failed in {{minutes}} min.",
+      "markedFailed": "Command marked failed",
+      "markFailedFailed": "Failed to mark the command failed"
+    }
   },
   "savedViewsMenu": {
     "applyTitle": "Apply \"{{name}}\"",
@@ -3949,6 +3972,64 @@
       "pdc_emulator": "Domain PDC emulator",
       "forest_root_pdc_emulator": "Forest-root PDC emulator",
       "unknown": "Unknown"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Couldn't load workloads for this device.",
+    "retry": "Retry",
+    "agentTooOld": "Agent too old — update the agent to report workloads.",
+    "noRuntimes": "No container or VM runtime detected on this device.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unknown",
+    "detection": {
+      "absent": "Not installed",
+      "unknown": "Detection inconclusive"
+    },
+    "status": {
+      "ok": "Collecting",
+      "disabled": "Collection is off — enable Workload inventory in a configuration policy",
+      "unavailable": "Runtime not running",
+      "permission_denied": "Permission denied",
+      "error": "Collection failed",
+      "unsupported": "Not supported on this device"
+    },
+    "detectOnly": "Detected only — workloads for this runtime are not listed.",
+    "counts": "{{total}} workloads · {{running}} running · {{stopped}} stopped",
+    "partial": "Partial snapshot — some details could not be read, so this shows what was collected.",
+    "truncated": "Showing {{reported}} of {{observed}} workloads the runtime reported.",
+    "lastError": "Last error: {{error}}",
+    "lastCollected": "Last collected {{time}}",
+    "empty": "No workloads reported.",
+    "columns": {
+      "name": "Name",
+      "state": "State",
+      "image": "Image / guest OS",
+      "compose": "Compose project",
+      "started": "Started"
+    },
+    "states": {
+      "running": "Running",
+      "stopped": "Stopped",
+      "paused": "Paused",
+      "restarting": "Restarting",
+      "other": "Other"
+    },
+    "policy": {
+      "title": "Workload inventory",
+      "description": "List the containers and virtual machines on container and VM hosts",
+      "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
+      "enabled": "List workloads",
+      "runtimesHeading": "Runtimes to list",
+      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "interval": "Collection interval (minutes)",
+      "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
     }
   }
 }

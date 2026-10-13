@@ -81,6 +81,12 @@ export interface WorkloadRuntimePlan {
   runtimeRow: WorkloadRuntimeWrite | null;
   /** deleteIds is final: age-out and the retained cap are already applied. */
   workloads: ChildRowPlan<WorkloadReportItem>;
+  /**
+   * The snapshot is incomplete (`complete: false`, e.g. the agent's image list
+   * failed): a null imageDigest then means digest-UNKNOWN, not a local image,
+   * so ingest keeps the stored digest for an unchanged image (W05 handoff).
+   */
+  incompleteSnapshot: boolean;
 }
 
 export interface WorkloadHostAxis {
@@ -189,6 +195,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
         collection: null,
         runtimeRow: null,
         workloads: emptyWorkloadPlan(),
+        incompleteSnapshot: false,
       };
     }
     const stored = input.storedWorkloads.filter((row) => row.runtime === report.runtime);
@@ -203,6 +210,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
         collection: report.collection,
         runtimeRow: toRuntimeWrite(report, report.collection, input),
         workloads: { updates: [], inserts: [], deleteIds: sortedIds(stored) },
+        incompleteSnapshot: false,
       };
     }
     if (report.detection === 'present') membership.add(report.runtime);
@@ -215,6 +223,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
       collection,
       runtimeRow: toRuntimeWrite(report, collection, input),
       workloads: planWorkloads(report, collection, stored, input.now),
+      incompleteSnapshot: collection === 'ok' && !report.complete,
     };
   });
 

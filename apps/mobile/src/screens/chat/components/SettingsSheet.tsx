@@ -56,6 +56,7 @@ import { ToastOutlet, useToast } from '../../../components/toast/ToastHost';
 import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
+import { LocationSuggestionsRow } from '../../settings/LocationSuggestionsRow';
 import type { PairedMobileDevice } from '../../../services/mobileDevices';
 import type { ConnectedApp } from '../../../services/connectedApps';
 
@@ -468,6 +469,9 @@ function SheetBody({
           onPress={onPressNotificationSettings}
           theme={theme}
         />
+
+        {/* #8211: hides itself unless the partner enabled location suggestions. */}
+        <LocationSuggestionsRow theme={theme} />
 
         {/* Only meaningful once a push token exists — otherwise the server has
             nowhere to send what these settings govern (#4336). */}

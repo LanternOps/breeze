@@ -1,0 +1,80 @@
+---
+title: Workload Inventory
+description: See the containers, VMs and LXC guests running on a host, and turn collection on with a configuration policy.
+sidebar:
+  label: Workload Inventory
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## What it is
+
+The Breeze agent detects container and virtual-machine runtimes on a device. When collection is enabled, it also lists the **workloads** running on that host: containers, VMs and LXC guests. Use it to answer "what is running on this server?" without logging in to it.
+
+| Runtime | Detected | Workloads listed |
+|---|---|---|
+| Docker | Linux, Windows | Linux, Windows |
+| Podman | Linux | Linux |
+| Hyper-V | Windows | Arrives with a later agent release |
+| Proxmox VE | Linux | Arrives with a later agent release |
+| containerd | Linux | Never. containerd is detected only; its workloads are not listed. |
+
+macOS devices report no runtimes, and Docker Desktop's per-user socket is not supported.
+
+For each workload Breeze shows the name, state, image (repository, tag and digest) or guest OS, compose project and service, restart policy, CPU and memory where the runtime reports them, and start time.
+
+<Aside type="note" title="Detection runs; listing is opt-in">
+  Detection (is Docker installed, which version) always runs and reveals nothing about what is running. Workloads are **not** listed until a configuration policy enables the **Workload inventory** feature, because names and images can identify customer systems.
+</Aside>
+
+## What the agent reads
+
+Collection is read-only. The agent only issues GET requests to the engine API and never starts, stops or changes a container or VM. Environment variables, command lines, mounts and labels are never collected.
+
+The agent only connects to a runtime that is already running. It does not start a stopped Docker daemon or a socket-activated Podman service; that host reports the runtime as unavailable. Podman hosts therefore need `podman system service` (or an enabled socket service that keeps it running) for workloads to appear.
+
+## Turn it on
+
+<Steps>
+
+1. Open **Fleet Management → Config Policies** and edit (or create) a policy. See [Configuration Policies](/features/configuration-policies/).
+2. Add the **Workload inventory** feature.
+3. Switch **Enabled** on and choose the runtimes to collect: **Docker**, **Podman**, **Hyper-V**, **Proxmox**.
+4. Set the **collection interval** in minutes (15 to 1440, default 60).
+5. Save and assign the policy as usual.
+
+</Steps>
+
+Partner-wide and organization policies both work, and the setting follows normal policy inheritance: the closest assignment wins. Devices pick up the change on their next policy refresh and collect on the interval you set.
+
+## The Workloads tab
+
+Open a device and select the **Workloads** tab (URL hash `#workloads`). It shows, for each detected runtime, the version and a plain-language collection status, then counts and a table of workloads.
+
+| Status you may see | What it means |
+|---|---|
+| Collection is off | Enable **Workload inventory** in a configuration policy that applies to the device. |
+| Permission denied | The agent could not read the runtime's socket or service. |
+| Unavailable | The runtime is installed but not running or not reachable. |
+| Agent too old | The device's agent predates workload inventory. Update the agent. |
+
+A **partial snapshot**, where some data could not be read, is shown with a note rather than as an error. Devices without any detected runtime show no Workloads section.
+
+## Fleet filters
+
+Two fields are available in the device filter bar, saved filters and dynamic groups:
+
+- **Hosts workloads**: yes or no.
+- **Workload runtimes**: contains a runtime, for example Docker.
+
+<Aside type="caution" title="Not usable for script targeting">
+  These values are reported by the agent, so they are not trusted for targeting. Filters and groups built on them are refused when selecting devices to run scripts or other commands on.
+</Aside>
+
+## Ask the assistant
+
+The AI assistant can answer questions such as "what containers are running on this host?" using the read-only `query_device_workloads` tool. It returns up to 200 workloads per answer.
+
+## Not yet available
+
+Image-currency reporting (how many images are behind) and compliance or alerting on workloads are planned. They are not part of this release.

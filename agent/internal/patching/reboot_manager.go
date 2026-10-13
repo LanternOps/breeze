@@ -71,6 +71,10 @@ type RebootState struct {
 // is what lets Schedule stay a thin wrapper and every old call site stay put.
 type RebootOptions struct {
 	Deferral DeferralPolicy
+	// Prompt is the operator's replacement copy for the warnings (#8030). The
+	// zero value keeps the built-in text. Callers pass it already sanitised
+	// (SanitizeRebootPromptText); the manager only renders it.
+	Prompt RebootPromptText
 }
 
 // NotifyFunc is called to send a notification to the logged-in user.
@@ -143,6 +147,12 @@ type RebootManager struct {
 	// every Schedule: an absent policy must never mean "enabled".
 	deferral      DeferralPolicy
 	deferralsUsed int
+
+	// promptText is the custom warning copy for the current schedule (#8030).
+	// Reset by every Schedule, like deferral, and carried across the
+	// re-schedules a user's own Postpone / Restart now trigger — otherwise the
+	// first click would switch the remaining warnings back to English.
+	promptText RebootPromptText
 
 	// Injectable seams for deterministic tests, following the repo's nowFn
 	// convention (sessionbroker.Broker, watchdog.Clock). afterFunc in
@@ -300,6 +310,7 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 	// one allowed.
 	r.deferral = opts.Deferral
 	r.deferralsUsed = 0
+	r.promptText = opts.Prompt
 	if opts.Deferral.Allowed {
 		// Resume a count from a previous process lifetime, but only for THIS
 		// campaign (same deadline). Best-effort: a missing ledger means zero,
@@ -434,6 +445,7 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	deadline, reason, source := r.state.Deadline, r.state.Reason, r.state.Source
 	used := r.deferralsUsed + 1
 	policy := r.deferral
+	promptText := r.promptText
 
 	// Re-schedule under the same options: it cancels the in-flight timers, bumps
 	// the generation and emits a fresh lead notification quoting the new time —
@@ -441,7 +453,7 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	// warns WITHOUT opening a dialog (#4941): it fires at offset zero, so a
 	// prompt there would hand back the question the user just answered.
 	if err := r.scheduleLockedAt(now, outcome.NewDelay, deadline, reason, source,
-		RebootOptions{Deferral: policy}, leadRungWarnsOnly); err != nil {
+		RebootOptions{Deferral: policy, Prompt: promptText}, leadRungWarnsOnly); err != nil {
 		return 0, err
 	}
 
@@ -507,6 +519,7 @@ func (r *RebootManager) Cancel() error {
 	// two from disagreeing if a prompt answer arrives after the cancellation.
 	r.deferral = DeferralPolicy{}
 	r.deferralsUsed = 0
+	r.promptText = RebootPromptText{}
 	r.state.DeferralAllowed = false
 	r.state.DeferralsUsed = 0
 	r.state.MaxDeferrals = 0
@@ -638,6 +651,7 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 	promptFn := r.promptFn
 	policy := r.deferral
 	used := r.deferralsUsed
+	promptText := r.promptText
 	// ComputeDeferral is the single authority on whether a postponement is
 	// available, so the button offered here can never be one Defer() would then
 	// refuse. It is pure, so calling it under the lock costs nothing.
@@ -647,21 +661,28 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 	r.state.NotificationSent = r.nowFn()
 	r.mu.Unlock()
 
-	body := rebootPromptBody(n.Body, rebootDeferralNote(policy, used, canPostpone))
+	title, text := applyRebootPromptText(n, promptText)
+	body := rebootPromptBody(text, rebootDeferralNote(policy, used, canPostpone))
 
 	offerPrompt := rung.deferrable && promptFn != nil && canPostpone
 	if !offerPrompt {
 		if notifyFn != nil {
-			notifyFn(n.Title, body, n.Urgency)
+			notifyFn(title, body, n.Urgency)
 		}
 		return
 	}
 
 	actions := []string{
-		RebootActionRestartNow,
+		rebootActionRestartNowLabel(n, promptText),
 		rebootActionPostpone(time.Duration(policy.DeferralMinutes) * time.Minute),
 	}
-	clicked, shown := promptFn(n.Title, body, n.Urgency, actions, rung.promptWindow)
+	if actions[0] == actions[1] {
+		// A custom label identical to the postponement label would make the two
+		// buttons indistinguishable, and the switch below would read a Postpone
+		// click as Restart now. Keep the built-in label instead.
+		actions[0] = RebootActionRestartNow
+	}
+	clicked, shown := promptFn(title, body, n.Urgency, actions, rung.promptWindow)
 	if !shown {
 		// The prompt reached nobody: no helper session, an IPC failure, or a
 		// helper that could put nothing on screen. The user must still be TOLD,
@@ -672,7 +693,7 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 		// only the closing notice and quietly reintroducing #3197 for exactly the
 		// machines the ladder was written for.
 		if notifyFn != nil {
-			notifyFn(n.Title, body, n.Urgency)
+			notifyFn(title, body, n.Urgency)
 		}
 		return
 	}
@@ -682,7 +703,8 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 		// No decision. Proceed exactly as scheduled — silence is never a
 		// postponement and never an acceleration. The prompt itself was the
 		// warning, so nothing more is emitted.
-	case RebootActionRestartNow:
+	case actions[0]:
+		// The label we sent, which is the operator's custom one when set.
 		if err := r.restartNow(gen); err != nil {
 			log.Warn("could not honour Restart now", "error", err.Error())
 			r.notifyUser("Restart Could Not Be Started", err.Error(), "critical")
@@ -735,7 +757,7 @@ func (r *RebootManager) restartNow(gen uint64) error {
 		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
 	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
-		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral}, leadRungPrompts)
+		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral, Prompt: r.promptText}, leadRungPrompts)
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
