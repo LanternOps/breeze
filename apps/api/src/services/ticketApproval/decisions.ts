@@ -9,7 +9,7 @@ import type { TimeEntryActor } from '../timeEntryService';
 import { evaluateApprovalGate } from './gate';
 import {
   acquirePendingRequest, approvalDecidedEvent, approvalRequestedEvent, billedMinutes, holdEntryOnRequest,
-  insertApprovalComment, loadGateContext, loadPlainApprovalSettings, refreshRequestAsk,
+  insertApprovalComment, loadGateContext, loadPlainApprovalSettings, normalizeApprovalEmail, refreshRequestAsk,
   type ApprovalCommentAuthor, type ApprovalEvent, type PlainApprovalSettings,
 } from './requests';
 
@@ -197,8 +197,8 @@ export async function decideApprovalRequest(db: Tx, args: {
     // The approver identity comes from the stored portal user, never from the caller.
     const [pu] = await db.select({ orgId: portalUsers.orgId, email: portalUsers.email, status: portalUsers.status })
       .from(portalUsers).where(eq(portalUsers.id, actor.portalUserId)).limit(1);
-    const email = pu?.email.trim().toLowerCase() ?? '';
-    if (!pu || pu.status !== 'active' || pu.orgId !== req.orgId || !req.approverEmails.includes(email)) {
+    const email = normalizeApprovalEmail(pu?.email);
+    if (!pu || !email || pu.status !== 'active' || pu.orgId !== req.orgId || !req.approverEmails.includes(email)) {
       throw new ApprovalDecisionError('You are not an approver for this request', 403, 'NOT_AN_APPROVER');
     }
     signerEmail = email;

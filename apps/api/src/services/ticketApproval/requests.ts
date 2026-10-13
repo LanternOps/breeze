@@ -201,10 +201,16 @@ export async function loadGateContext(db: Tx, args: GateContextArgs): Promise<Ga
 
 // ── Recipients (spec §6.1) ───────────────────────────────────────────────
 
-const normEmail = (e: string | null | undefined): string | null => {
+/**
+ * The one email normalisation for approval recipients: how `resolveRecipients`
+ * freezes `approver_emails` / `notify_emails`, and how the portal matches a
+ * session email against them. Exported so the two can never drift.
+ */
+export const normalizeApprovalEmail = (e: string | null | undefined): string | null => {
   const v = e?.trim().toLowerCase();
   return v ? v : null;
 };
+const normEmail = normalizeApprovalEmail;
 
 /**
  * Approvers: contacts holding an ORGANIZATION-scoped `billing` responsibility

@@ -27,6 +27,7 @@ import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
 import { portalNetworkRoutes } from './network';
 import { portalHourBlockRoutes } from './hourBlock';
+import { portalApprovalRoutes } from './approvals';
 
 export const portalRoutes = new Hono();
 
@@ -131,6 +132,13 @@ portalRoutes.use('/tickets/*', async (c, next) => {
   return portalTicketsEnabledMiddleware(c, next);
 });
 
+// Customer work approval (#4617 W04): a ticketing surface, so it carries the
+// same fail-open enable_tickets gate as `/tickets/*` (403
+// PORTAL_TICKETS_DISABLED) — no flag of its own. `/approvals/*` also matches
+// the bare `/approvals` list path (approvals.gate.test.ts pins both).
+portalRoutes.use('/approvals/*', portalAuthMiddleware);
+portalRoutes.use('/approvals/*', portalTicketsEnabledMiddleware);
+
 portalRoutes.route('/', deviceRoutes);
 portalRoutes.route('/', ticketRoutes);
 portalRoutes.route('/', assetRoutes);
@@ -151,3 +159,4 @@ portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
 portalRoutes.route('/', portalHourBlockRoutes);
+portalRoutes.route('/', portalApprovalRoutes);
