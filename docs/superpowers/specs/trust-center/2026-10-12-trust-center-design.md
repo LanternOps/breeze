@@ -70,6 +70,7 @@ Code-defined, `packages/shared/src/trustCenter/controlCatalog.ts`, versioned by 
   thresholds?: { met: 95, attention: 80 },     // coverage/pass_rate: ≥met → met, ≥attention → attention, else not_met
                                                // exposure (lower is better): ≤(100−met) → met, ≤(100−attention) → attention
   insurerRank: number,
+  frameworkRefs: Array<{ framework: 'cis_v8' | 'essential_eight' | 'cyber_essentials' | 'nist_csf_2'; ref: string }>,  // §5.5
 }
 ```
 
@@ -131,6 +132,34 @@ The report today divides by *assessed* devices, so one assessed device among 100
 - Each control carries `evidenceAsOf` = newest evidence timestamp among assessed devices. Snapshot time is not evidence time.
 - **Page-level staleness.** If `trust_pages.last_evaluated_at` is older than 24 h (worker failure), the public page shows "Verification paused since <time>" and every pill is rendered muted. The payload is still served; the condition is visible, not hidden.
 
+### 5.5 Framework crosswalk
+
+**Relationship to the existing CIS feature.** Breeze's CIS feature (`cis_baselines`, `cis_baseline_results`, `cis_check_catalog`; `apps/web/src/pages/cis-hardening/`) implements CIS *Benchmarks*: per-OS configuration checks (Windows 11, macOS 14, Ubuntu 22.04; L1/L2). That is one evidence source and feeds exactly one trust control, `hardening_baseline`. CIS *Controls* v8 is the 18-control / 153-safeguard framework that insurers and questionnaires reference. They share an acronym and nothing else; no framework identifiers exist anywhere in the codebase today.
+
+**What the crosswalk is.** A static, code-defined table `packages/shared/src/trustCenter/frameworkCrosswalk.ts` keyed by `(framework, ref)` → `{ ig?: 1 | 2 | 3; labelKey }`, plus `frameworkRefs` on every catalog entry (§5.1). Labels are Breeze's own short paraphrases, never the framework's verbatim text. Indicative mapping for the W1 controls (safeguard numbers verified against the current CIS v8.1, ACSC, NCSC and NIST publications at plan time, with the source document and version recorded in the crosswalk file header):
+
+| Control | CIS Controls v8 | Essential Eight | Cyber Essentials | NIST CSF 2.0 |
+|---|---|---|---|---|
+| `endpoint_protection`, `definitions_current` | 10.1, 10.2 (IG1) | — | Malware protection | PR.PS |
+| `edr_coverage` | 10.7, 13.2 (IG2) | — | Malware protection | DE.CM |
+| `host_firewall` | 4.5 (IG1) | — | Firewalls | PR.IR |
+| `os_patch_currency` | 7.3 (IG1) | Patch operating systems | Security update management | PR.PS-02 |
+| `hardening_baseline` | 4.1, 4.2 (IG1) | User application hardening (partial) | Secure configuration | PR.PS-01 |
+| `password_policy` | 5.2 (IG1) | — | Secure configuration | PR.AA |
+| `least_privilege`, `privileged_access` | 5.4 (IG1), 6.8 | Restrict administrative privileges | User access control | PR.AA-05 |
+| `identity_provider` | 5.6, 6.7 (IG2) | — | User access control | PR.AA-01 |
+| `mfa_registered_m365` | 6.3, 6.5 (IG1) | Multi-factor authentication | User access control | PR.AA-03 |
+| `disk_encryption` | 3.6 (IG1) | — | — | PR.DS-01 |
+| `backups_verified` | 11.2, 11.3 (IG1), 11.5 (IG2) | Regular backups | — | RC.RP |
+| `dns_filtering` | 9.2 (IG1) | — | — | PR.PS |
+| `continuous_monitoring` | 1.1, 8.2 (IG1) | — | — | DE.CM |
+
+**Coverage is partial by construction and is shown as such.** IG1 has 56 safeguards; telemetry evidences roughly 18. The framework view (W2) renders "N of M safeguards evidenced on this page", with M the framework's full count from the crosswalk table, never "compliant with" or "meets IG1". The gaps (awareness training, incident response plan, vendor management, and so on) are not telemetry and can only ever be declared controls (§18.2) with expiry. The framework view is therefore the main reason declared controls exist; the two ship together in W2.
+
+**Wave split.** W1: `frameworkRefs` on the catalog, the crosswalk table, refs in the payload (§6), and small chips on each control card ("CIS v8 10.1 · IG1"). This is data plus a chip; no evaluation logic changes. W2: framework view grouped by framework with evidenced/total counts; publisher picks which frameworks to display (default CIS v8 only; the editor suggests Essential Eight for AU partners and Cyber Essentials for UK partners by partner country); declared controls carry `frameworkRefs` the same way. W3 candidate: per-benchmark-check mapping using the official CIS Benchmark-to-Controls mappings, so `hardening_baseline` can expand into the specific safeguards each check satisfies.
+
+**Licensing (verify before W2 GA).** NIST CSF 2.0 is a US Government work (public domain). ACSC's Essential Eight is CC BY 4.0. NCSC's Cyber Essentials requirements are under the Open Government Licence; "Cyber Essentials" is a trademark, referenced by name only. CIS Controls v8 is CC BY-NC-ND 4.0 with "commercial use subject to the prior approval of CIS". Referencing safeguard identifiers with our own labels, CIS attribution and a link to cisecurity.org/controls is the industry norm (Vanta, Drata, Secureframe do exactly this), but the spec does not treat that as settled: the page carries the attribution line from W1, and W2's framework view does not ship to GA until CIS has confirmed in writing or Breeze holds a CIS SecureSuite vendor membership (§18.13). No verbatim CIS safeguard text, ever.
+
 ## 6. Exposure rules and the public payload contract
 
 The snapshot payload is the whole public exposure. Closed schema `trustPagePublicPayloadSchema` (`packages/shared/src/validators/trustCenter.ts`), `.strict()`, `schemaVersion: 1`:
@@ -153,9 +182,10 @@ The snapshot payload is the whole public exposure. Closed schema `trustPagePubli
     reason: 'insufficient_telemetry' | 'no_data' | 'not_applicable' | null;   // only with not_assessed
     percent: number | null; coverageNote: string | null;                        // null unless show_percentages
     evidenceAsOf: string | null;
+    frameworkRefs: Array<{ framework: 'cis_v8' | 'essential_eight' | 'cyber_essentials' | 'nist_csf_2'; ref: string }>;  // ids only; labels resolve from the shared crosswalk (§5.5)
   }>,
   documents: Array<{ id: string; title: string; category: string; contentType: string; byteSize: number; updatedAt: string; visibility: 'public' }>,
-  footer: { poweredByBreeze: boolean },
+  footer: { poweredByBreeze: boolean; frameworkAttributions: Array<'cis_v8' | 'essential_eight' | 'cyber_essentials' | 'nist_csf_2'> },  // every framework any shown control references (§5.5 licensing)
 }
 ```
 
@@ -324,16 +354,17 @@ W2: `gated` visibility → "Request access" → email verification (magic link, 
 
 ## 14. Waves
 
-**W1 — Publishable page.** Migration + schema + registrations; catalog + `loadPostureEvidence` extraction (report switched to it) + `evaluateTrustControls`; snapshot builder + `trust-page-snapshot` job + pointer semantics; `trust_page_publish` capability; authenticated routes; public card/payload/badge/document routes; portal pages and layout shell; web editor tab; audit; i18n in all 8 locales; self-hosting note. Deliberately in W1 because the page is not credible without them: method block, coverage floor, staleness display, MFA control, public documents with disclosure confirmation.
+**W1 — Publishable page.** Migration + schema + registrations; catalog + `loadPostureEvidence` extraction (report switched to it) + `evaluateTrustControls`; snapshot builder + `trust-page-snapshot` job + pointer semantics; `trust_page_publish` capability; authenticated routes; public card/payload/badge/document routes; portal pages and layout shell; web editor tab; audit; i18n in all 8 locales; self-hosting note. Deliberately in W1 because the page is not credible without them: method block, coverage floor, staleness display, MFA control, public documents with disclosure confirmation. Also W1, because it is data plus a chip: `frameworkRefs` on the catalog, the crosswalk table, framework chips on each control and the attribution line (§5.5).
 
-**W2 — Depth.** Declared controls with expiry and re-declare reminders (§18.2); MFA *enforcement* from `m365_ca_policies`; gated documents + access requests; framework crosswalk labels (CIS Controls v8 IG1, Essential Eight, Cyber Essentials, NIST CSF 2.0; "indicative mapping", never "compliant with"); subprocessors (prefilled from `securityProducts`, backup vendor, M365; manual add); FAQ blocks; 90-day "controls met" history from snapshots; partner-wide template for intro and default visibility.
+**W2 — Depth.** Declared controls with expiry and re-declare reminders (§18.2); MFA *enforcement* from `m365_ca_policies`; gated documents + access requests; framework view (§5.5): controls grouped by framework with "N of M safeguards evidenced", publisher-selected frameworks (default CIS v8), declared controls carrying `frameworkRefs` to fill the non-telemetry gaps; GA gated on the CIS licensing confirmation (§18.13); subprocessors (prefilled from `securityProducts`, backup vendor, M365; manual add); FAQ blocks; 90-day "controls met" history from snapshots; partner-wide template for intro and default visibility.
 
-**W3 — Distribution.** iframe embed with a per-page `frame-ancestors` allowlist (route-level CSP carve-out); portal self-edit for org admins (needs portal roles, #4562 W3); signed machine-readable payload (JWS) for insurer/auditor tooling; questionnaire answer export; custom domain via #3282.
+**W3 — Distribution.** iframe embed with a per-page `frame-ancestors` allowlist (route-level CSP carve-out); portal self-edit for org admins (needs portal roles, #4562 W3); signed machine-readable payload (JWS) for insurer/auditor tooling; questionnaire answer export; per-benchmark-check safeguard mapping for `hardening_baseline` (§5.5); custom domain via #3282.
 
 ## 15. Testing
 
 - **Unit**: `evaluateTrustControls` fixtures for every metric type, N/A, zero devices, coverage floor (79% vs 80% assessed), exposure inversion, MFA admin rule, evidence-age cutoff. Snapshot builder: hidden controls omitted and `catalogTotal` kept, opt-in nulls, sanitization (script, `javascript:` link, table stripped, oversized intro), document filtering (deleted, superseded, unlinked, unconfirmed).
-- **Contract**: payload `.strict()` + denylist (§6). Slug resolution: soft-deleted org, wrong partner, case-insensitive, invalid slug rejected pre-query, probation partner → 404.
+- **Catalog**: every telemetry control has at least one `cis_v8` ref; every `frameworkRefs` entry resolves in the crosswalk table; every crosswalk `labelKey` exists in all 8 locales; the crosswalk file header names the source publication and version for each framework.
+- **Contract**: payload `.strict()` + denylist (§6); `footer.frameworkAttributions` equals the set of frameworks referenced by shown controls. Slug resolution: soft-deleted org, wrong partner, case-insensitive, invalid slug rejected pre-query, probation partner → 404.
 - **Tenancy**: shape-1 auto-discovery in `rls-coverage.integration.test.ts`; `tenantCascade`, `orgMergeRegistry` (custom executor retires loser; survivor marked for rebuild), `tenant-export-policy` suites (Integration Tests job); forged cross-tenant insert as `breeze_app` fails.
 - **Routes**: unpublished/unknown/archived/untrusted → identical 404; a card request for an unknown slug pair performs zero SQL (query-count assertion); publish with stale `expectedRevision` → 409; publish then GET serves the new `snapshotId`; unpublish then GET 404s in the same second (live `published_at`, not cache); refresh does not flip `is_current` when a publish raced; exactly one `is_current` per page under concurrent publish + refresh; trust-state change to `restricted` empties the partner's serving-set entries; document download refuses unlinked/unconfirmed/superseded; preview token expiry and page mismatch; 429 on the payload bucket; card endpoint exempt from the per-IP bucket.
 - **Erasure**: `tenantCascade.integration.test.ts` children-before-parents passes with no FK cycle; deleting an org with a published page succeeds.
@@ -350,7 +381,7 @@ W2: `gated` visibility → "Request access" → email verification (magic link, 
 
 ## 17. Non-goals
 
-Certification language; the posture score or any overall grade; device, vulnerability or patch detail; custom domains (#3282), new top-level paths, per-feature domain fields; a partner-level *aggregate* page across customer orgs (leaks customer aggregates; §18.8); portal-side editing in W1; an entitlement framework; visitor language negotiation in W1.
+Certification language or any "compliant with" / "meets IG1" wording (§5.5); verbatim framework text; the posture score or any overall grade; device, vulnerability or patch detail; custom domains (#3282), new top-level paths, per-feature domain fields; a partner-level *aggregate* page across customer orgs (leaks customer aggregates; §18.8); portal-side editing in W1; an entitlement framework; visitor language negotiation in W1.
 
 ## 18. Decisions needed (defaults chosen; override any)
 
@@ -366,3 +397,4 @@ Certification language; the posture score or any overall grade; device, vulnerab
 10. **"Managed by" default.** Default: on. The partner slug is in the URL regardless.
 11. **Publish gate = partner `trusted`.** Default: yes. Probation partners see "publishing opens once your account is trusted".
 12. **Badge without counts.** Default: yes ("verified by Breeze · updated <date>"). Alternative: show "N controls met" and accept that it is over a curated set.
+13. **Framework crosswalk and CIS licensing (§5.5).** Default: W1 ships chips with identifiers, Breeze's own labels and a CIS attribution line; W2's framework view defaults to CIS v8 only, with Essential Eight and Cyber Essentials suggested by partner country; W2 GA waits for written CIS confirmation or a SecureSuite vendor membership. Alternative: drop CIS v8 and lead with NIST CSF 2.0 (public domain), which insurers reference less often. Todd owns the CIS contact; it is an outward-facing action and is not taken by the plan.
