@@ -1131,6 +1131,7 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export * from './backupDestinationPrefix';
 export {
   deliverableCadenceSchema,
   deliverableCompletionModeSchema,
