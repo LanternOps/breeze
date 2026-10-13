@@ -59,14 +59,21 @@ If migrations are listed, you're committing prod to those migrations the moment 
 
 Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
 
-1. **Extended fuzzing (private).** The agent's fuzz targets (`agent/**/*_fuzz_test.go`) run time-boxed in the private security repo so a crashing input never appears in public logs:
-   ```bash
-   SHA=$(git -C ~/breeze rev-parse HEAD)
-   gh workflow run agent-fuzz.yml -R LanternOps/breeze-security -f ref=$SHA
-   gh run watch -R LanternOps/breeze-security --exit-status "$(gh run list -R LanternOps/breeze-security -w agent-fuzz.yml -L1 --json databaseId --jq '.[0].databaseId')"
-   ```
-   Green is required. A red run means a crasher: it blocks the cut until it is triaged privately (fixed, or written up as not exploitable with Todd's sign-off). Do not re-run to get green.
-2. **Tenant isolation through the browser.** `e2e-tests/tests/tenant-isolation.spec.ts` signs in as one tenant and probes a second tenant's pages and API resources, with a positive control for every probe. CI's **Tenant Isolation E2E** job runs it on every push to `main`; confirm it is green for this SHA (`gh run list -w CI -c $SHA`). To run it yourself: `pnpm wt-stack up`, then `pnpm wt-stack test -- tests/tenant-isolation.spec.ts`.
+Both workflow gates are dispatched at the SHA and watched to the end. `gh run list -L1` right after `gh workflow run` often returns the PREVIOUS run, and a dispatch run's head SHA is the workflow's branch, not your `ref`, so pick the run created after your dispatch. Each run's summary records the commit it actually tested; check it says your SHA.
+
+```bash
+SHA=$(git -C ~/breeze rev-parse HEAD)
+dispatch_and_watch() {   # $1 = repo, $2 = workflow file
+  local since run; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  gh workflow run "$2" -R "$1" -f ref="$SHA" || return 1
+  until run=$(gh run list -R "$1" -w "$2" -e workflow_dispatch -L5 --json databaseId,createdAt \
+      --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty") && [ -n "$run" ]; do sleep 5; done
+  gh run watch "$run" -R "$1" --exit-status
+}
+```
+
+1. **Extended fuzzing (private).** The agent's fuzz targets (`agent/**/*_fuzz_test.go`) run time-boxed in the private security repo so a crashing input never appears in public logs: `dispatch_and_watch LanternOps/breeze-security agent-fuzz.yml`. Green is required. A red run means a crasher: it blocks the cut until it is triaged privately (fixed, or written up as not exploitable with Todd's sign-off). Do not re-run to get green.
+2. **Tenant isolation through the browser.** `e2e-tests/tests/tenant-isolation.spec.ts` signs in as one tenant and probes a second tenant's pages and API resources, with a positive control for every probe. It runs nightly on `main`, but the nightly run is not the gate: dispatch it at the SHA with `dispatch_and_watch LanternOps/breeze tenant-isolation-e2e.yml`. To run it locally instead: `pnpm wt-stack up`, then `pnpm wt-stack test -- tests/tenant-isolation.spec.ts`.
 3. **Pentest playbook on a running lab, for what this release touched.** Against a `wt-stack` or lab rig at this SHA, run the private playbook's per-release quick set, plus the chapters that `~/breeze-security/pentest/release-gate-map.md` selects for this release's changed paths (Step 0's `git diff --name-only $PREV..HEAD`). Any change to tenancy/RLS, auth/sessions/MFA, roles and permissions, agent enrollment, install or update, IPC, remote access, or AI tools always includes the cross-tenant quick leg. Record date, SHA, chapters run and results in the private release register. A finding of Medium or higher blocks the cut until fixed or explicitly accepted by Todd.
 
 If a gate cannot run (lab down, no hardware), the cut waits or Todd explicitly waives that gate for this release in the private register. A waiver is never implied.
