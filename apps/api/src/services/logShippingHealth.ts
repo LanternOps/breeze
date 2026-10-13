@@ -22,13 +22,13 @@ export const LOG_SHIPPING_SUSTAINED_MS = 30 * 60_000;
 export const LOG_SHIPPING_QUEUE_FAILING_DEPTH = 400;
 /** Column width of devices.log_shipping_last_error. */
 export const LOG_SHIPPING_LAST_ERROR_MAX = 200;
-/** Wire cap for lastError (closed vocabulary, so this is generous). */
+/** Wire cap for lastError (the agent maps to a closed vocabulary; the API only enforces the length). */
 const LOG_SHIPPING_WIRE_ERROR_MAX = 160;
 
 const reportSchema = z.object({
   schemaVersion: z.literal(1),
-  lastAttemptAt: z.string().datetime().optional(),
-  lastSuccessAt: z.string().datetime().optional(),
+  lastAttemptAt: z.string().datetime({ offset: true }).optional(),
+  lastSuccessAt: z.string().datetime({ offset: true }).optional(),
   lastAttemptOk: z.boolean().optional(),
   lastError: z.string().max(LOG_SHIPPING_WIRE_ERROR_MAX).optional(),
   queueDepth: z.number().int().min(0).max(1_000_000),

@@ -57,6 +57,14 @@ describe('parseLogShipping', () => {
     }
   });
 
+  it('accepts non-UTC offsets on the display-only timestamps', () => {
+    const p = parseLogShipping({
+      schemaVersion: 1, queueDepth: 0, droppedLogs: 0, lastAttemptOk: true,
+      lastAttemptAt: '2026-10-12T10:00:00+02:00', lastSuccessAt: '2026-10-12T10:00:00-05:00',
+    });
+    expect(p.kind).toBe('ok');
+  });
+
   it.each([
     ['schemaVersion 2', { schemaVersion: 2, queueDepth: 0, droppedLogs: 0 }],
     ['queueDepth string', { schemaVersion: 1, queueDepth: 'x', droppedLogs: 0 }],

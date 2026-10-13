@@ -648,6 +648,10 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
   }
   const setCalls = (spy: ReturnType<typeof captureSet>) =>
     spy.mock.calls.map((c) => (c as unknown[])[0] as Record<string, unknown>);
+  // The beat's normal UPDATE always carries lastSeenAt; asserting it proves a
+  // "zero log-shipping keys" result is not just "the write path was never reached".
+  const reachedBeatUpdate = (spy: ReturnType<typeof captureSet>) =>
+    setCalls(spy).some((s) => 'lastSeenAt' in s && 'status' in s);
   const lsKeysIn = (spy: ReturnType<typeof captureSet>) =>
     setCalls(spy).flatMap((s) => Object.keys(s).filter((k) => LS_KEYS.includes(k)));
 
@@ -669,6 +673,7 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
     const setSpy = captureSet();
     primeWithRow({});
     expect((await beat()).status).toBe(200);
+    expect(reachedBeatUpdate(setSpy)).toBe(true);
     expect(lsKeysIn(setSpy)).toEqual([]);
   });
 
@@ -686,6 +691,7 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
     const setSpy = captureSet();
     primeWithRow({ logShippingState: 'ok' });
     expect((await beat({ logShipping: shipping({ lastAttemptOk: true }) })).status).toBe(200);
+    expect(reachedBeatUpdate(setSpy)).toBe(true);
     expect(lsKeysIn(setSpy)).toEqual([]);
   });
 
@@ -697,6 +703,7 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
     ).toBe(200);
     const withAny = setCalls(setSpy).filter((s) => Object.keys(s).some((k) => LS_KEYS.includes(k)));
     expect(withAny).toHaveLength(1);
+    expect(withAny[0]).toHaveProperty('lastSeenAt'); // rides the beat's own UPDATE
     expect(withAny[0]!.logShippingState).toBe('failing');
     expect(withAny[0]!.logShippingFailureStartedAt).toBeInstanceOf(Date);
     expect(withAny[0]!.logShippingLastError).toBe('http 503');
@@ -715,6 +722,7 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
     expect(
       (await beat({ logShipping: shipping({ lastAttemptOk: false, lastError: 'http 503' }) })).status,
     ).toBe(200);
+    expect(reachedBeatUpdate(setSpy)).toBe(true);
     expect(lsKeysIn(setSpy)).toEqual([]);
   });
 
@@ -746,6 +754,42 @@ describe('POST /agents/:id/heartbeat — log-shipping health persistence (#8608)
       logShippingLastError: 'http 503',
     });
     expect((await beat({ logShipping: bad })).status).toBe(200);
+    expect(reachedBeatUpdate(setSpy)).toBe(true);
+    expect(lsKeysIn(setSpy)).toEqual([]);
+  });
+
+  it('failing -> ok clears the episode (started_at and error) in the beat UPDATE', async () => {
+    const setSpy = captureSet();
+    primeWithRow({
+      logShippingState: 'failing',
+      logShippingFailureStartedAt: new Date('2026-10-12T10:00:00Z'),
+      logShippingLastError: 'http 503',
+    });
+    expect((await beat({ logShipping: shipping({ lastAttemptOk: true }) })).status).toBe(200);
+    const s = setCalls(setSpy).find((x) => 'logShippingState' in x);
+    expect(s).toMatchObject({
+      logShippingState: 'ok',
+      logShippingFailureStartedAt: null,
+      logShippingLastError: null,
+      status: 'online',
+    });
+  });
+
+  it.each([
+    ['droppedLogs > 0', { lastAttemptOk: true, droppedLogs: 3 }],
+    ['queueDepth >= 400', { lastAttemptOk: true, queueDepth: 400 }],
+  ])('%s classifies failing end to end', async (_n, over) => {
+    const setSpy = captureSet();
+    primeWithRow({ logShippingState: 'ok' });
+    expect((await beat({ logShipping: shipping(over) })).status).toBe(200);
+    expect(setCalls(setSpy).find((x) => 'logShippingState' in x)?.logShippingState).toBe('failing');
+  });
+
+  it('malformed logShipping on a fresh (NULL) device writes nothing', async () => {
+    const setSpy = captureSet();
+    primeWithRow({});
+    expect((await beat({ logShipping: 'garbage' })).status).toBe(200);
+    expect(reachedBeatUpdate(setSpy)).toBe(true);
     expect(lsKeysIn(setSpy)).toEqual([]);
   });
 });
