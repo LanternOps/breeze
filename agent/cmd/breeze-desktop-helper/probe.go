@@ -16,10 +16,17 @@ import (
 
 // Seams so the probe's call pattern can be asserted without real capture.
 var (
-	probeCaptureFn = desktop.ProbeCapture
-	probeTCCFn     = userhelper.ProbeTCCPermissions
-	sckVerdictFn   = desktop.ScreenCaptureKitVerdict
+	probeCaptureFn  = desktop.ProbeCapture
+	probeTCCFn      = userhelper.ProbeTCCPermissions
+	sckVerdictFn    = desktop.ScreenCaptureKitVerdict
+	captureAccessFn = desktop.CheckCaptureAccess
 )
+
+// startupProbeOptions is what the helper's startup log collects: the
+// non-capturing report only. The startup probe used to take a real frame,
+// which on macOS 15 raised the monthly screen-capture acknowledgement alert
+// on every helper restart (#8390).
+func startupProbeOptions() probeOptions { return probeOptions{} }
 
 // probeAttributionWarning is printed by the CLI probe on macOS (#8058).
 const probeAttributionWarning = "macOS charges this probe's screen capture to the process that launched it " +
@@ -37,13 +44,17 @@ type probeOptions struct {
 }
 
 type probeOutput struct {
-	Timestamp      time.Time                       `json:"timestamp"`
-	Context        string                          `json:"context"`
-	ProcessUser    string                          `json:"processUser,omitempty"`
-	Sessions       []sessionbroker.DetectedSession `json:"sessions,omitempty"`
-	TCC            *ipc.TCCStatus                  `json:"tcc,omitempty"`
-	CaptureGranted bool                            `json:"captureGranted"`
-	CaptureError   string                          `json:"captureError,omitempty"`
+	Timestamp   time.Time                       `json:"timestamp"`
+	Context     string                          `json:"context"`
+	ProcessUser string                          `json:"processUser,omitempty"`
+	Sessions    []sessionbroker.DetectedSession `json:"sessions,omitempty"`
+	TCC         *ipc.TCCStatus                  `json:"tcc,omitempty"`
+	// CaptureAccess is the non-capturing Screen Recording check (#8390),
+	// always collected; CaptureGranted below comes from a real capture and
+	// is only meaningful when one was requested.
+	CaptureAccess  *desktop.CaptureAccessStatus `json:"captureAccess,omitempty"`
+	CaptureGranted bool                         `json:"captureGranted"`
+	CaptureError   string                       `json:"captureError,omitempty"`
 	// CaptureBackend names the backend that produced the probe frame.
 	CaptureBackend string `json:"captureBackend,omitempty"`
 	// ScreenCaptureKitCalls is how many times this run called
@@ -91,6 +102,8 @@ func collectProbeOutput(opts probeOptions) probeOutput {
 	}
 
 	out.TCC = probeTCCFn(contextFlag, opts.allowPrompt, false)
+	access := captureAccessFn(desktop.CaptureConfig{DesktopContext: contextFlag}).Status()
+	out.CaptureAccess = &access
 
 	if status := sckVerdictFn(); status.Supported {
 		out.ScreenCaptureKitVerdict = &status

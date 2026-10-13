@@ -160,34 +160,9 @@ func (s *sckVerdictStore) checkDir() (exists bool, err error) {
 
 // load returns the stored verdict, or nil with no error when there is none.
 func (s *sckVerdictStore) load() (*sckVerdict, error) {
-	exists, err := s.checkDir()
-	if err != nil || !exists {
+	data, err := s.readRecord("verdict", sckVerdictFileName)
+	if err != nil || data == nil {
 		return nil, err
-	}
-	f, err := os.OpenFile(s.path(), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open verdict %s: %w", s.path(), err)
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("verdict %s is not a regular file", s.path())
-	}
-	if err := s.checkOwnerOnly("verdict", s.path(), info); err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(io.LimitReader(f, sckVerdictMaxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > sckVerdictMaxBytes {
-		return nil, fmt.Errorf("verdict %s is larger than %d bytes", s.path(), sckVerdictMaxBytes)
 	}
 	var v sckVerdict
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -202,6 +177,53 @@ func (s *sckVerdictStore) load() (*sckVerdict, error) {
 
 // save writes v atomically (temp file in the same directory, then rename).
 func (s *sckVerdictStore) save(v sckVerdict) error {
+	return s.writeRecord(sckVerdictFileName, v)
+}
+
+// clear removes the verdict. removed is false when there was none.
+func (s *sckVerdictStore) clear() (removed bool, err error) {
+	return s.removeRecord(sckVerdictFileName)
+}
+
+// readRecord returns the bytes of the record file name under the same
+// owner-only checks as the directory, or nil with no error when it is absent.
+func (s *sckVerdictStore) readRecord(what, name string) ([]byte, error) {
+	exists, err := s.checkDir()
+	if err != nil || !exists {
+		return nil, err
+	}
+	path := filepath.Join(s.dir, name)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s %s: %w", what, path, err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s %s is not a regular file", what, path)
+	}
+	if err := s.checkOwnerOnly(what, path, info); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, sckVerdictMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > sckVerdictMaxBytes {
+		return nil, fmt.Errorf("%s %s is larger than %d bytes", what, path, sckVerdictMaxBytes)
+	}
+	return data, nil
+}
+
+// writeRecord writes v as JSON to the record file name atomically (temp file
+// in the same directory, then rename), creating the directory 0700.
+func (s *sckVerdictStore) writeRecord(name string, v any) error {
 	exists, err := s.checkDir()
 	if err != nil {
 		return err
@@ -218,7 +240,7 @@ func (s *sckVerdictStore) save(v sckVerdict) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(s.dir, "."+sckVerdictFileName+".*")
+	tmp, err := os.CreateTemp(s.dir, "."+name+".*")
 	if err != nil {
 		return err
 	}
@@ -244,20 +266,21 @@ func (s *sckVerdictStore) save(v sckVerdict) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, s.path()); err != nil {
+	if err := os.Rename(tmpName, filepath.Join(s.dir, name)); err != nil {
 		return err
 	}
 	committed = true
 	return nil
 }
 
-// clear removes the verdict. removed is false when there was none.
-func (s *sckVerdictStore) clear() (removed bool, err error) {
+// removeRecord deletes the record file name. removed is false when there was
+// none.
+func (s *sckVerdictStore) removeRecord(name string) (removed bool, err error) {
 	exists, err := s.checkDir()
 	if err != nil || !exists {
 		return false, err
 	}
-	err = os.Remove(s.path())
+	err = os.Remove(filepath.Join(s.dir, name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}

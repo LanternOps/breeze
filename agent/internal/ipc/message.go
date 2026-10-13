@@ -562,11 +562,16 @@ type LaunchProcessResult struct {
 // TCCStatus reports macOS TCC (Transparency, Consent, Control) permission
 // state from the user helper to the root daemon.
 type TCCStatus struct {
-	ScreenRecording bool      `json:"screenRecording"`
-	Accessibility   bool      `json:"accessibility"`
-	FullDiskAccess  bool      `json:"fullDiskAccess"`
-	RemoteDesktop   *bool     `json:"remoteDesktop,omitempty"`
-	CheckedAt       time.Time `json:"checkedAt"`
+	ScreenRecording bool `json:"screenRecording"`
+	// ScreenRecordingState is what the non-capturing check could establish
+	// (#8390): "granted", "denied" or "unknown". Unknown (macOS 26+ only,
+	// where preflight can misreport) keeps ScreenRecording true so a session
+	// can be attempted; its own capture is the precise check.
+	ScreenRecordingState string    `json:"screenRecordingState,omitempty"`
+	Accessibility        bool      `json:"accessibility"`
+	FullDiskAccess       bool      `json:"fullDiskAccess"`
+	RemoteDesktop        *bool     `json:"remoteDesktop,omitempty"`
+	CheckedAt            time.Time `json:"checkedAt"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the
