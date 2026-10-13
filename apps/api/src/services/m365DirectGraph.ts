@@ -20,7 +20,8 @@
 
 import { randomBytes } from 'crypto';
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { m365ReadActionSchema, M365_READ_ACTION_FIELDS } from '@breeze/shared/m365';
+import { db, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema/m365';
 import { decryptForColumn } from './secretCrypto';
 import { acquireClientCredentialsToken, isM365TenantId } from './c2cM365';
@@ -70,9 +71,10 @@ function generateTempPassword(): string {
   return `Mz9!${raw.slice(0, 18)}`;
 }
 
-// Process-level cache of acquired Graph tokens, keyed `${orgId}:${clientId}`
-// so a stored connection's client id rotating (new app registration on the
-// same org) can never collide with a stale cached token from the old one.
+// Process-level cache of acquired Graph tokens, keyed
+// `${orgId}:${tenantId}:${clientId}` so neither a rotated client id (new app
+// registration on the same org) nor a re-pointed tenant can ever be served a
+// stale cached token minted for the old one.
 // Every getToken caller (invokeDirect here, plus onedriveGraph.ts's
 // listSharePointLibraries/resolveUserGroupMembership) goes through this same
 // function, so the cache is transparent to all of them.
@@ -149,7 +151,7 @@ export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<{
     return { kind: 'error', code: 'connection_key_error', message: 'Legacy Microsoft 365 connection has no stored client secret.' };
   }
 
-  const cacheKey = `${orgId}:${row.clientId}`;
+  const cacheKey = `${orgId}:${row.tenantId}:${row.clientId}`;
   const cached = tokenCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return { token: cached.token };
@@ -293,4 +295,46 @@ export async function invokeDirect(
     default:
       return { kind: 'error', code: 'bad_request', message: `Unsupported tool: ${toolName}` };
   }
+}
+
+/**
+ * Caller verification (#6354 W03): the target's canonical mailbox set, read
+ * by Entra object id only and projected to exactly
+ * `id, userPrincipalName, mail, proxyAddresses`.
+ *
+ * Called from the release gate with NO ambient DB context: the one connection
+ * read runs in its own short system scope (org-filtered) and closes before
+ * token acquisition or Graph I/O. The stored connection must still point at
+ * the subject's pinned tenant — checked before any token/network work. A
+ * missing `proxyAddresses` stays missing (the caller refuses it); nothing here
+ * manufactures an empty set.
+ */
+export async function readMailboxesDirect(
+  orgId: string,
+  input: { userId: string; expectedTenantId: string },
+): Promise<DirectInvokeResult<Record<string, unknown>>> {
+  const action = m365ReadActionSchema.safeParse({ type: 'm365.user.mailboxes', userId: input.userId });
+  if (!action.success || action.data.type !== 'm365.user.mailboxes' || !isM365TenantId(input.expectedTenantId)) {
+    return { kind: 'error', code: 'bad_request', message: 'A pinned tenant and user object id are required.' };
+  }
+  const connection = await withSystemDbAccessContext(
+    () => loadLegacyDirectConnection(orgId), 'callerVerification.mailboxes.directConnection',
+  );
+  if (!connection) {
+    return { kind: 'error', code: 'no_connection', message: 'No legacy Microsoft 365 connection for this organization.' };
+  }
+  if (connection.tenantId?.toLowerCase() !== input.expectedTenantId.toLowerCase()) {
+    return { kind: 'error', code: 'tenant_mismatch', message: 'The Microsoft 365 connection no longer matches the subject tenant.' };
+  }
+  const auth = await getToken(orgId, { connection });
+  if ('kind' in auth) return auth;
+  const fields = M365_READ_ACTION_FIELDS['m365.user.mailboxes'];
+  const query = new URLSearchParams({ $select: fields.join(',') });
+  const response = await graphFetch(auth.token, 'GET', `/users/${encodeURIComponent(action.data.userId)}?${query}`);
+  if (response.kind !== 'ok') return response;
+  if (!response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+    return { kind: 'error', code: 'graph_response_invalid', message: 'Unexpected mailbox response.' };
+  }
+  const raw = response.data as Record<string, unknown>;
+  return { kind: 'ok', data: Object.fromEntries(fields.filter((key) => key in raw).map((key) => [key, raw[key]])) };
 }

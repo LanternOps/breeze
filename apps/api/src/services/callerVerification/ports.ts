@@ -29,7 +29,9 @@ export interface CallerVerificationPorts {
 }
 
 export const callerVerificationPorts: CallerVerificationPorts = {
-  mailboxes: async () => { throw new Invalid('subject_mailboxes_unknown', 'Mailbox read adapter is unavailable'); },
+  // W03: the target's canonical mailbox set (direct Graph / control plane /
+  // Delegant). Callers wrap this in withMailboxReader + runOutsideDbContext.
+  mailboxes: async ({ orgId, target }) => [...await (await import('./mailboxes')).fetchTargetMailboxes(orgId, target)],
   administrativeEligible: async () => false,
   consumeStepUp: async () => { throw new Invalid('stepup_invalidated', 'Interactive step-up adapter is unavailable'); },
   // W03: sms/email go to the link adapter; workstation stays unavailable until
