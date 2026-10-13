@@ -38,6 +38,13 @@ type Recorder struct {
 	timeline *Timeline
 	lastOK   map[int]time.Time
 
+	// Storm phases (scheduler.go). phase is "event/phase" or "" outside every
+	// phase; heartbeat attempts land in that phase's histogram (latency, for
+	// attempts that got a response) or transport-error count.
+	phase          string
+	phases         map[string]*Histogram
+	phaseTransport map[string]uint64
+
 	wsConnects, wsReconnects, wsConnectFailures, wsDisconnects  atomic.Uint64
 	wsControlPings, wsControlPongs                              atomic.Uint64
 	cmdDuplicates, cmdDropped, cmdDispatched, cmdDispatchFailed atomic.Uint64
@@ -49,7 +56,44 @@ func NewRecorder(runID string, start, windowOpen, windowClose time.Time) *Record
 		RunID: runID, Start: start, WindowOpen: windowOpen, WindowClose: windowClose,
 		routes: map[string]*routeStats{}, spans: map[int]*span{}, frames: map[string]uint64{},
 		cmdVia: map[string]uint64{}, resVia: map[string]uint64{}, wsConnectLatency: NewHistogram(),
+		phases: map[string]*Histogram{}, phaseTransport: map[string]uint64{},
 	}
+}
+
+func phaseKey(event, phase string) string { return event + "/" + phase }
+
+// MarkPhase sets the storm phase that heartbeat observations land in from
+// now on; an empty event or phase means "in no phase".
+func (r *Recorder) MarkPhase(event, phase string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if event == "" || phase == "" {
+		r.phase = ""
+		return
+	}
+	r.phase = phaseKey(event, phase)
+	if r.phases[r.phase] == nil {
+		r.phases[r.phase] = NewHistogram()
+	}
+}
+
+// PhaseLatency is the heartbeat attempt latency inside one storm phase (ms).
+func (r *Recorder) PhaseLatency(event, phase string) LatencyReport {
+	r.mu.Lock()
+	h := r.phases[phaseKey(event, phase)]
+	r.mu.Unlock()
+	if h == nil {
+		return LatencyReport{}
+	}
+	return latencyOf(h)
+}
+
+// PhaseTransportErrors is how many heartbeat attempts got no response inside
+// one storm phase. Reported next to PhaseLatency, which cannot see them.
+func (r *Recorder) PhaseTransportErrors(event, phase string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.phaseTransport[phaseKey(event, phase)]
 }
 
 // EnableTimeline turns on the per-step run timeline from r.Start.
@@ -92,6 +136,13 @@ func (r *Recorder) ObserveHTTP(route string, first bool, start time.Time, latenc
 			r.timeline.HeartbeatAttempt(start, latency, status, err)
 		} else {
 			r.timeline.Attempt(start, status, err)
+		}
+	}
+	if route == RouteHeartbeat && r.phase != "" {
+		if err != nil {
+			r.phaseTransport[r.phase]++
+		} else {
+			r.phases[r.phase].Observe(latency)
 		}
 	}
 	if !r.inWindow(start) {
