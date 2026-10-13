@@ -134,9 +134,10 @@ func TestFallbackProvider_DownloadContext_PassesContextAndStopsWhenDone(t *testi
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	out := filepath.Join(t.TempDir(), "out")
 	done := make(chan error, 1)
 	go func() {
-		done <- f.DownloadContext(ctx, "a/b", filepath.Join(t.TempDir(), "out"))
+		done <- f.DownloadContext(ctx, "a/b", out)
 	}()
 
 	select {
