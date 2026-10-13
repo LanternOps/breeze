@@ -126,7 +126,7 @@ export const softwarePolicies = pgTable('software_policies', {
    * writes it; write schemas never accept it. ON DELETE CASCADE: removing the
    * link removes the generated policy (never an uninstall).
    *
-   * The FK (-> config_policy_feature_links(id) ON DELETE CASCADE) lives in the
+   * The FK (-> the feature-link table's id, ON DELETE CASCADE) lives in the
    * SQL migration only: a drizzle .references() would import
    * ./configurationPolicies from here and close an import cycle through its
    * schema dependencies (same reason as config_policy_backup_settings).
