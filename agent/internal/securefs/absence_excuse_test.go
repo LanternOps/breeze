@@ -97,3 +97,44 @@ func TestPublishesCompletedWithin(t *testing.T) {
 		})
 	}
 }
+
+// renamesSpanning is the evidence for the in-flight excuse (#8491): a rename
+// SYSCALL that was entered before the first missing probe and had not returned
+// when the last one was issued. A gap opened outside every rename syscall (a
+// delete or rename-away before the rename, however long) never satisfies it.
+func TestRenamesSpanning(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	at := func(ms int) time.Time { return t0.Add(time.Duration(ms) * time.Millisecond) }
+	log := []renameCall{
+		{start: at(0), end: at(5), done: true, class: 65},                 // 0: returned before the absence
+		{start: at(8), end: at(150), done: true, class: 65},               // 1: spans [10,110]
+		{start: at(9), class: 10},                                         // 2: still running when asked
+		{start: at(12), end: at(200), done: true, class: 65},              // 3: entered after the first miss
+		{start: at(1), end: at(60), done: true, class: 65},                // 4: returned inside the absence
+		{start: at(2), end: at(300), done: true, class: 65, failed: true}, // 5: failed: proves nothing
+	}
+	tests := []struct {
+		name        string
+		first, last time.Time
+		want        []int // indexes into log
+	}{
+		{name: "renames entered before and still running after the absence count", first: at(10), last: at(110), want: []int{1, 2}},
+		{name: "a rename entered at or after the first miss does not", first: at(9), last: at(110), want: []int{1}},
+		{name: "a rename that returned before the last miss does not", first: at(10), last: at(151), want: []int{2}},
+		{name: "no rename in flight at the first miss excuses nothing", first: at(0), last: at(110), want: nil},
+		{name: "boundaries are exclusive", first: at(9), last: at(150), want: nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renamesSpanning(log, tc.first, tc.last)
+			if len(got) != len(tc.want) {
+				t.Fatalf("renamesSpanning = %+v, want indexes %v", got, tc.want)
+			}
+			for i, idx := range tc.want {
+				if got[i] != log[idx] {
+					t.Fatalf("renamesSpanning[%d] = %+v, want %+v", i, got[i], log[idx])
+				}
+			}
+		})
+	}
+}
