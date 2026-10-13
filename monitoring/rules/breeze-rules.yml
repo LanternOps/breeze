@@ -400,3 +400,56 @@ groups:
       # to) false, so the blast radius of the flag stays visible either way.
       - record: breeze:authenticator_l4_basis:rate15m
         expr: sum(rate(breeze_authenticator_l4_basis_total[15m])) by (basis, outcome)
+
+  # Scaling W07 (#8146): the spec §3 capacity KPIs per instance and per region.
+  # Recording rules only; no alert reads them. The dashboard is
+  # monitoring/grafana/dashboards/breeze-agent-capacity.json and the arithmetic
+  # is pinned by monitoring/rules/tests/breeze-capacity-kpis.test.yml.
+  #
+  # `region` comes from the scrape config (deploy/prometheus-remote-scrape.example.yml);
+  # a single-host stack without it still gets the per-instance rules. The
+  # db_tx rule joins postgres-exporter to API series `by (region)`, so the
+  # exporter job needs the same `region` label. Edit `datname="breeze"` if the
+  # deployment renamed the database (compose default POSTGRES_DB=breeze).
+  #
+  # The `> 0` guards turn an empty fleet into "no data", never +Inf. With more
+  # than one API instance per region the per-instance cost is approximate (HTTP
+  # spreads across instances, sockets do not); the region figure is authoritative.
+  - name: breeze-capacity-kpis
+    interval: 30s
+    rules:
+      - record: breeze:agent_ws_connections:instance
+        expr: sum by (region, instance) (breeze_agent_ws_connections{job=~"breeze-api.*"})
+
+      - record: breeze:agent_ws_connections:region
+        expr: sum by (region) (breeze_agent_ws_connections{job=~"breeze-api.*"})
+
+      - record: breeze:api_cpu_ms_per_minute:instance
+        expr: 60000 * sum by (region, instance) (rate(breeze_process_cpu_seconds_total{job=~"breeze-api.*"}[5m]))
+
+      - record: breeze:agent_cost_cpu_ms_per_agent_minute:instance
+        expr: breeze:api_cpu_ms_per_minute:instance / (breeze:agent_ws_connections:instance > 0)
+
+      - record: breeze:agent_cost_cpu_ms_per_agent_minute:region
+        expr: sum by (region) (breeze:api_cpu_ms_per_minute:instance) / (breeze:agent_ws_connections:region > 0)
+
+      - record: breeze:heartbeat_latency_seconds:p50_region
+        expr: histogram_quantile(0.50, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p95_region
+        expr: histogram_quantile(0.95, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p99_region
+        expr: histogram_quantile(0.99, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p95_instance
+        expr: histogram_quantile(0.95, sum by (region, instance, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:db_tx_per_agent_minute:region
+        expr: 60 * sum by (region) (rate(pg_stat_database_xact_commit{datname="breeze"}[5m])) / (breeze:agent_ws_connections:region > 0)
+
+      # The W0a hand-off (G2): production requests per agent-minute, comparable
+      # with the simulator's requestsPerAgentMinute (agent routes plus the
+      # workspace crawl-config poll the simulator also models).
+      - record: breeze:agent_requests_per_agent_minute:region
+        expr: 60 * sum by (region) (rate(http_requests_total{job=~"breeze-api.*", route=~"/api/v1/agents/.*|/api/v1/workspace/agent/.*"}[5m])) / (breeze:agent_ws_connections:region > 0)

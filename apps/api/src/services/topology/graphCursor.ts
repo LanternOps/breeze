@@ -90,7 +90,9 @@ export async function graphAuthority(ctx: TopologyRequestContext) {
       orgs: sorted(p.allowedOrgIds), sites: sorted(p.allowedSiteIds),
     })),
   })).digest('hex');
-  return { digest, physical, interfaceHealth, canEdit: topologyPermissionPairs('write').every(([r, a]) => hasPermission(current, r, a) && hasPermission(ctx.permissions, r, a)) };
+  // `current` is the live permission re-read above; presence's site gate (presenceVisibility.ts) reuses it rather
+  // than fetching twice.
+  return { digest, physical, interfaceHealth, current, canEdit: topologyPermissionPairs('write').every(([r, a]) => hasPermission(current, r, a) && hasPermission(ctx.permissions, r, a)) };
 }
 /** Weak validator ignores response assembly time; revisions, projection and authority remain included. */
 export function topologyReadEtag(authority: string, value: unknown): string {

@@ -711,6 +711,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_anomaly_incidents',
   'metric_rollups',
   'metric_rollups_default',
+  // migration_window_orgs (#8313, 2026-12-23-110000): partner-axis, but its
+  // org_id names an org a migration window may import into, so erasing the
+  // org drops it from every window. It references organizations (deleted
+  // last) and migration_windows (a partner table, not in this list).
+  'migration_window_orgs',
   'ml_feedback_events',
   // #5289. Deleting a definition cascades to its compiled alert template /
   // rule / automation rows and to every config_policy_monitors attachment, all
@@ -1008,6 +1013,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_collection_sources',
   'topology_config_template_versions',
   'topology_config_templates',
+  'topology_device_presence',
   'topology_diagnostic_runs',
   'topology_diagnostic_steps',
   // M3 interface samples: partitioned (raw/5m/1h -> daily leaves); the parent
@@ -1023,10 +1029,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_node_positions',
   'topology_nodes',
   'topology_observations',
+  'topology_org_presence_state',
   'topology_policy_targets',
   'topology_probe_targets',
   'topology_relationship_support',
   'topology_relationships',
+  'topology_site_fingerprints',
   'topology_site_state',
   'topology_site_template_bindings',
   'topology_telemetry_arms',

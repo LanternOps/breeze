@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { GraphResponse, RelationshipDetailResponse, RelationshipEvidenceResponse, TopologyAiSelection, TopologyView } from '@breeze/shared';
+import type { GraphResponse, PresenceVisitor, RelationshipDetailResponse, RelationshipEvidenceResponse, TopologyAiSelection, TopologyView } from '@breeze/shared';
 import { isPresentation, selectedTopologyEntity, type TopologySelection, topologyHealthLabel } from './topologyPresentation';
 import { topologyApi } from './topologyApi';
 import PhysicalEvidencePanel from './PhysicalEvidencePanel';
@@ -52,7 +52,7 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount, siteName }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount, siteName, visitor }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean; sharedAddressCount?: number;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
@@ -64,6 +64,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   /** The server has no model provider (`ai_not_configured`): say so where "Explain this" would be. */
   aiNotConfigured?: boolean;
   /** Names the site in a network card's declaration note (site location W1). */ siteName?: string;
+  /** The selection is a visitor from another site (site location W2): a presentation-only explanation, no diagnostics or actions. */
+  visitor?: PresenceVisitor;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -73,6 +75,13 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   // A connection hidden from this view is not in the graph; its authorized detail still is.
   const entity = inGraph ?? detail?.relationship;
   useEffect(() => { heading.current?.focus(); }, [selection.id]);
+  if (visitor) return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
+    <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{visitor.label}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
+    <p className="text-sm">{(() => {
+      const values = { assigned: visitor.assignedSite.name, site: siteName || t('grouped.thisSite'), prefix: visitor.network.prefix, gateway: visitor.network.gatewayAddress };
+      return visitor.macCorroborated ? t('grouped.crossSite.visitorExplanationMac', values) : t('grouped.crossSite.visitorExplanation', values);
+    })()}</p>
+  </aside>;
   if (!entity) return null;
   const schematic = isPresentation(entity);
   // IDs only; a schematic element or a non-canonical id is never explainable.

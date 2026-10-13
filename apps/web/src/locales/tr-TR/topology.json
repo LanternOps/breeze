@@ -746,6 +746,34 @@
     "declaredEmpty": "{{site}} için bildirilmiş — hiçbir cihaz bu ağı bildirmiyor",
     "declaredColumn": "Bildirilmiş",
     "declaredYes": "Evet",
-    "declaredNo": "Hayır"
+    "declaredNo": "Hayır",
+    "crossSite": {
+      "rosterToggle": "Bu sitenin ağları dışındaki cihazlar ({{count}})",
+      "observedHeading": "Diğer sitelerde gözlemlenenler ({{count}})",
+      "unknownHeading": "Konum bilinmiyor ({{count}})",
+      "observedEntry": "{{site}} sitesinin ağında ({{prefix}}) · {{time}} saatinden beri",
+      "observedEntryNoTime": "{{site}} sitesinin ağında ({{prefix}})",
+      "unrecognizedEntry": "{{gateway}} üzerinden {{prefix}} — hiçbir sitenin ağı olarak tanımlanamadı",
+      "unrecognizedEntryNoNetwork": "Hiçbir sitenin ağı olarak tanımlanamadı",
+      "hint": {
+        "declaredUnconfirmed": "{{site}} için bildirilmiş, ancak henüz hiçbir {{site}} cihazı bu ağ geçidini doğrulamıyor.",
+        "consumerUncorroborated": "Yaygın ev yönlendirici aralığı. Yönlendirici, {{site}} sitesinin yönlendiricisiyle eşleştirilemedi.",
+        "gatewayMismatch": "{{site}} sitesinin bildirilen aralığında, ancak farklı bir ağ geçidi üzerinden.",
+        "ownGatewayMismatch": "{{site}} sitesinin bildirilen aralığında, ancak farklı bir ağ geçidi üzerinden ({{gateway}})."
+      },
+      "ambiguousEntry": "{{sites}} için bildirilmiş. Breeze bunun hangi site olduğunu belirleyemiyor.",
+      "lastReported": "Son bildirilen: {{gateway}} üzerinden {{prefix}}, {{when}}",
+      "locationNotCurrent": "Konum güncel değil",
+      "visitingBadge": "Ziyaretçi",
+      "visiting": "+{{count}} ziyaretçi",
+      "assignedTo": "{{site}} sitesine atanmış",
+      "visitorAlt": "Ziyaretçi cihaz, {{site}} sitesine atanmış",
+      "visitingCard": "Ziyaretçi cihazlar ({{prefix}})",
+      "observedChip": "Diğer sitelerde gözlemlenen: {{count}}",
+      "visitorExplanation": "{{assigned}} sitesine atanmış. {{site}} sitesinin {{prefix}} ağını {{gateway}} üzerinden bildiriyor. Ağ geçidi {{site}} cihazlarıyla eşleşiyor.",
+      "visitorExplanationMac": "{{assigned}} sitesine atanmış. {{site}} sitesinin {{prefix}} ağını {{gateway}} üzerinden bildiriyor. Ağ geçidi {{site}} cihazlarıyla, yönlendiricisinin MAC adresi dahil, eşleşiyor.",
+      "ignoredDeclarations_one": "{{count}} bildirilmiş alt ağ girişi yok sayıldı (aralık, tek adres, IPv6 veya ayrıştırılamayan metin). Bir sitenin ağlarını yalnızca tam IPv4 önekleri belirler.",
+      "ignoredDeclarations_other": "{{count}} bildirilmiş alt ağ girişi yok sayıldı (aralıklar, tek adresler, IPv6 veya ayrıştırılamayan metin). Bir sitenin ağlarını yalnızca tam IPv4 önekleri belirler."
+    }
   }
 }

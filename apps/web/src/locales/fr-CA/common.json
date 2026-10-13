@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Déclenché lorsqu’un ticket est attribué ou désattribué.",
             "label": "Ticket attribué"
+          },
+          "migrationWindowClosed": {
+            "description": "Déclenché une fois par organisation à la fermeture d'une fenêtre de migration de billets, avec les nombres importés.",
+            "label": "Fenêtre de migration fermée"
           }
         },
         "fields": {

@@ -1366,6 +1366,30 @@
       "installAbandoned": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): a instalação da versão oferecida falhou repetidamente, então o agente pausou as novas tentativas. Ele tentará de novo em algumas horas ou quando uma versão mais recente for oferecida; o log do agente contém o erro de instalação.",
       "unknown": "O Breeze Assist está ativado, mas não instalado (desde {{since}})."
     },
+    "logShipping": {
+      "label": "Envio de logs",
+      "state": {
+        "healthy": "Saudável",
+        "quiet": "Inativo",
+        "failing": "Com falha"
+      },
+      "tooltip": {
+        "healthy": "O agente está enviando seus logs normalmente.",
+        "quiet": "O agente não fez tentativas de envio recentes, então não há nada a informar.",
+        "failing": "O envio de logs está falhando desde {{since}}. Motivo: {{reason}}"
+      },
+      "reason": {
+        "http": "O servidor retornou HTTP {{status}}",
+        "timeout": "A solicitação expirou",
+        "dns": "Não foi possível resolver o nome do servidor",
+        "connectionRefused": "A conexão foi recusada",
+        "tls": "A conexão segura falhou",
+        "authRejected": "O servidor rejeitou as credenciais do agente",
+        "urlUnresolved": "Não foi possível determinar o endereço do servidor",
+        "other": "Outro erro de envio",
+        "unspecified": "Não especificado"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",

@@ -133,6 +133,9 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
 // after app-layer authorization.
 const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
+  // org_id names an org the window may import into, not the row's tenant.
+  'migration_window_orgs',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
@@ -325,6 +328,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Policy: breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // Functional forge: customerEmailDomainsRls.integration.test.ts.
   ['customer_email_domains', 'partner_id'],
+  // Ticket migration windows (#8313, 2026-12-23-110000): partner-axis grants
+  // of import mode to one keyless principal across chosen orgs. Policy:
+  // breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
+  // migration_window_orgs also carries a non-tenancy org_id and is in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). Functional forge:
+  // migrationWindowsRls.integration.test.ts.
+  ['migration_windows', 'partner_id'],
+  ['migration_window_orgs', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is

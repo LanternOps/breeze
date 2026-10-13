@@ -96,6 +96,7 @@ import {
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
+import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
 import {
   agentIdentityAssertionRefused,
   agentIdentityNeedsSync,
@@ -1136,6 +1137,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.helperInstallIssue = helperInstallIssue;
     deviceUpdates.helperInstallIssueSince = helperInstallIssue ? new Date() : null;
   }
+
+  // #8608 — log-shipping health (#8406). Classified per beat, persisted ONLY on
+  // a state change against the `device` row this beat already loaded, so
+  // steady-state beats add zero keys to this single UPDATE. Absent = the agent
+  // does not report it (old agent / downgrade) -> reset to unknown; a malformed
+  // object changes nothing (neither clears nor extends an episode).
+  Object.assign(deviceUpdates, planLogShippingWrite(device, parseLogShipping(data.logShipping), new Date()));
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went

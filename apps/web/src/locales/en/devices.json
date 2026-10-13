@@ -1366,6 +1366,30 @@
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
     },
+    "logShipping": {
+      "label": "Log shipping",
+      "state": {
+        "healthy": "Healthy",
+        "quiet": "Quiet",
+        "failing": "Failing"
+      },
+      "tooltip": {
+        "healthy": "The agent is uploading its logs normally.",
+        "quiet": "The agent has made no recent upload attempts, so there is nothing to report.",
+        "failing": "Log uploads have been failing since {{since}}. Reason: {{reason}}"
+      },
+      "reason": {
+        "http": "The server returned HTTP {{status}}",
+        "timeout": "The request timed out",
+        "dns": "The server name could not be resolved",
+        "connectionRefused": "The connection was refused",
+        "tls": "The secure connection failed",
+        "authRejected": "The server rejected the agent credentials",
+        "urlUnresolved": "The server address could not be determined",
+        "other": "Another upload error",
+        "unspecified": "Unspecified"
+      }
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Failed to fetch device details",

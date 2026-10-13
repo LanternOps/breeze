@@ -746,6 +746,34 @@
     "declaredEmpty": "Declarada para {{site}} — ningún dispositivo informa esta red",
     "declaredColumn": "Declarada",
     "declaredYes": "Sí",
-    "declaredNo": "No declarada"
+    "declaredNo": "No declarada",
+    "crossSite": {
+      "rosterToggle": "Dispositivos fuera de las redes de este sitio ({{count}})",
+      "observedHeading": "Observados en otros sitios ({{count}})",
+      "unknownHeading": "Ubicación desconocida ({{count}})",
+      "observedEntry": "En la red de {{site}} ({{prefix}}) · desde las {{time}}",
+      "observedEntryNoTime": "En la red de {{site}} ({{prefix}})",
+      "unrecognizedEntry": "{{prefix}} mediante {{gateway}} — no identificada como red de ningún sitio",
+      "unrecognizedEntryNoNetwork": "No identificada como red de ningún sitio",
+      "hint": {
+        "declaredUnconfirmed": "Declarada para {{site}}, pero ningún dispositivo de {{site}} confirma aún esta puerta de enlace.",
+        "consumerUncorroborated": "Rango habitual de routers domésticos. No se pudo asociar el router con el de {{site}}.",
+        "gatewayMismatch": "Dentro del rango declarado de {{site}}, pero a través de otra puerta de enlace.",
+        "ownGatewayMismatch": "Dentro del rango declarado de {{site}}, pero a través de otra puerta de enlace ({{gateway}})."
+      },
+      "ambiguousEntry": "Declarada para {{sites}}. Breeze no puede determinar de qué sitio se trata.",
+      "lastReported": "Último reporte: {{prefix}} mediante {{gateway}}, {{when}}",
+      "locationNotCurrent": "Ubicación no actual",
+      "visitingBadge": "De visita",
+      "visiting": "+{{count}} de visita",
+      "assignedTo": "Asignado a {{site}}",
+      "visitorAlt": "Dispositivo de visita, asignado a {{site}}",
+      "visitingCard": "Dispositivos de visita ({{prefix}})",
+      "observedChip": "{{count}} observados en otros sitios",
+      "visitorExplanation": "Asignado a {{assigned}}. Informa la red {{prefix}} de {{site}} mediante {{gateway}}. La puerta de enlace coincide con los dispositivos de {{site}}.",
+      "visitorExplanationMac": "Asignado a {{assigned}}. Informa la red {{prefix}} de {{site}} mediante {{gateway}}. La puerta de enlace coincide con los dispositivos de {{site}}, incluida la MAC de su router.",
+      "ignoredDeclarations_one": "Se ignoró {{count}} entrada de subred declarada (un rango, una dirección única, IPv6 o texto no interpretable). Solo los prefijos IPv4 exactos identifican las redes de un sitio.",
+      "ignoredDeclarations_other": "Se ignoraron {{count}} entradas de subred declaradas (rangos, direcciones únicas, IPv6 o texto no interpretable). Solo los prefijos IPv4 exactos identifican las redes de un sitio."
+    }
   }
 }

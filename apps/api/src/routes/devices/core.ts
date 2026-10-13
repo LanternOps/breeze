@@ -98,6 +98,7 @@ import {
 
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
+import { deriveLogShipping } from '../../services/logShippingHealth';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
  * These get SET NULL rather than deleted during cascade.
@@ -315,6 +316,10 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   // org never authorizes anything in the new one.
   'diagnostic_access_grants',
   'topology_node_bindings',
+  // Topology site location W2 (#7886): listed for the coverage contract, but a cross-org move never restamps a
+  // presence row — breeze_topology_presence_device_moved (BEFORE UPDATE on devices) deletes it first, and it is in
+  // CORE_DEVICE_ORG_MOVE_DELETE_TABLES, which the restamp loop skips (its matched_site_id names a source-org site).
+  'topology_device_presence',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -431,7 +436,11 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [];
+const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+  // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
+  // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
+  'topology_device_presence',
+];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
   return withExtensionDeviceOrgMoveDelete(CORE_DEVICE_ORG_MOVE_DELETE_TABLES);
@@ -615,6 +624,7 @@ export async function rewriteDeviceSiteDenormalizedTables(
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'topology_node_bindings',
+  'topology_device_presence',
   'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
@@ -1316,6 +1326,11 @@ coreRoutes.get(
         // #6925 — agent-reported Breeze Assist install problem; drives the
         // "Assist enabled but not installed" list badge (#7023).
         helperInstallIssue: devices.helperInstallIssue,
+        // #8608 — raw log-shipping columns, consumed ONLY by deriveLogShipping
+        // below; they are never forwarded in the response.
+        logShippingState: devices.logShippingState,
+        logShippingFailureStartedAt: devices.logShippingFailureStartedAt,
+        logShippingLastError: devices.logShippingLastError,
         // #7067 — latest agent-logs ingest time; drives the "logs silent"
         // list badge.
         lastLogAt: devices.lastLogAt
@@ -1530,6 +1545,7 @@ coreRoutes.get(
         updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
         updateAttemptLastAt: d.updateAttemptLastAt ?? null,
         helperInstallIssue: d.helperInstallIssue ?? null,
+        logShipping: deriveLogShipping(d, new Date()),
         lastLogAt: d.lastLogAt ?? null,
         metrics: latestMetrics
           ? {
@@ -1716,6 +1732,8 @@ coreRoutes.get(
 
     return c.json({
       ...projectPublicDevice(device),
+      // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
+      logShipping: deriveLogShipping(device, new Date()),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

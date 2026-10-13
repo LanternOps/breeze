@@ -251,7 +251,8 @@ describe('compileTopologyRender', () => {
     g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
       meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
     const text: RenderText = { devices: (n) => `${n} Geräte`, gatewayFor: (n) => `Gateway für ${n} Geräte`, via: (gw) => `über ${gw}`, gatewaysDiffer: 'Gateways unterschiedlich',
-      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}` };
+      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}`,
+      visiting: (n) => `+${n} zu Besuch`, assignedTo: (site) => `Zugewiesen zu ${site}`, visitorAlt: (site) => `Gerät zu Besuch, zugewiesen zu ${site}`, visitingCard: (prefix) => `Gäste (${prefix})` };
     const render = compileTopologyRender(g, { showAllNetworks: false, text });
     const byId = new Map(render.nodes.map((n) => [n.id, n]));
     expect(byId.get(P('net-lan'))!.detail).toBe('3 Geräte · über 10.1.2.100 · Gateways unterschiedlich');

@@ -1231,6 +1231,8 @@ export * from './topologyCollection';
 
 export * from './topologyConfiguration';
 
+export * from './topologyPresence';
+
 export * from './topologyDiagnostics';
 
 export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';

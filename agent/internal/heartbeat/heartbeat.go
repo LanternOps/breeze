@@ -297,6 +297,11 @@ type SecurityCapabilities struct {
 	// "agent too old" instead of "no data".
 	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
 	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	// RetainStateProtocolVersion (#8258) declares that this build honours
+	// HeartbeatResponse.RetainState (retain_state.go). Contract for the API
+	// (emission lands in a later wave): send retainState only to a beat
+	// declaring exactly 1; any other value gets the legacy response shape.
+	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -344,6 +349,9 @@ type HeartbeatResponse struct {
 	// IdentityAssertion (#8317) is present only when the row's org/site differ
 	// from this beat's ReportedIdentity. Verified before use; see identity_sync.go.
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
+	// RetainState (#8258) lists features the server made no decision about this
+	// beat (keep current state); see retain_state.go. Absent = today's semantics.
+	RetainState RetainState `json:"retainState"`
 }
 
 type HelperSettings struct {
@@ -714,6 +722,10 @@ type Heartbeat struct {
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
+
+	// retainStreaks counts consecutive beats each feature was retained
+	// (HeartbeatResponse.RetainState, #8258); see retain_state.go.
+	retainStreaks retainStreakTracker
 
 	// uacInterceptionEnabled is set when the server's resolved 'pam' config
 	// policy turns UAC capture ON for this device. Opt-in: the zero value
@@ -5280,7 +5292,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// any commands from this same response are submitted to the worker pool.
 	// Enabling also precedes command admission so the first v2 apply is not
 	// falsely rejected merely because the policy and command arrived together.
-	h.handleUACInterception(response.UacInterceptionEnabled)
+	h.applyPAMDecision(response)
 
 	// Pin per-deployment manifest trust keys delivered by the server (#625).
 	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
@@ -5472,29 +5484,9 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
 
-	// Update tunnel manager policy flag
-	h.tunnelMgr.SetManagedByPolicy(response.ManageRemoteManagement)
-
-	// Update helper enabled state and apply full settings
-	h.handleHelperEnabled(response.HelperEnabled)
-	if response.HelperSettings != nil {
-		h.helperMgr.Apply(&helper.Settings{
-			Enabled:            response.HelperSettings.Enabled,
-			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
-			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
-			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
-			PortalUrl:          response.HelperSettings.PortalUrl,
-		})
-		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
-		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
-		// and cheap — the manager no-ops when the resolved mode is unchanged.
-		h.mu.Lock()
-		lc := h.helperLifecycle
-		h.mu.Unlock()
-		if lc != nil {
-			lc.SetModeOverride(response.HelperSettings.LifecycleMode)
-		}
-	}
+	// Tunnel manager policy flag, helper enabled state and full helper
+	// settings; each is skipped when the server retained it (#8258).
+	h.applyHelperAndRemoteManagement(response)
 }
 
 // IsHelperEnabled returns whether the helper chat is enabled for this device's org.
@@ -5522,9 +5514,13 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 }
 
 // handleUACInterception updates the UAC interception flag from the heartbeat
-// response and logs state transitions. nil (field absent — older server) means
-// disabled: capture is opt-in and stays off until the server sends an explicit
-// true.
+// response and logs state transitions. nil (field absent) and false are
+// identical: both turn capture off AND run the PAM lifetime disable/cleanup
+// path, on every such beat (idempotent; a cleanup that failed to verify is
+// therefore retried). Capture is opt-in and
+// stays off until the server sends an explicit true. Absence never means
+// "keep the current state" — only HeartbeatResponse.RetainState expresses
+// that, and applyPAMDecision handles it before calling here (#8258).
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	on := enabled != nil && *enabled
 	if !on {
@@ -8211,5 +8207,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		ConsentPromptProtocolVersion:     2,
 		IdentitySyncProtocolVersion:      identitySyncProtocolVersion,
 		WorkloadInventoryProtocolVersion: workloads.ProtocolVersion,
+		RetainStateProtocolVersion:       retainStateProtocolVersion,
 	}
 }

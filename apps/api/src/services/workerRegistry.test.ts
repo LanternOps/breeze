@@ -38,6 +38,8 @@ const EXPECTED_WORKER_NAMES = [
   'topologyDiagnosticSweeper',
   // M3 Task 5 — interface sample partitions, retention and rollups.
   'topologyTelemetryMaintenance',
+  // Site location W2 — presence read-model evaluation.
+  'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
@@ -55,6 +57,8 @@ const EXPECTED_WORKER_NAMES = [
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
+  // Ticket migration windows (#8313) — the per-minute window sweep.
+  'migrationWindowSweep',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'softwareUploadSessionCleanup',

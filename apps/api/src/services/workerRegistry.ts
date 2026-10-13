@@ -150,6 +150,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Site location W2 (#7886) — presence read-model evaluation (never moves a device).
+    name: 'topologyPresenceWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyPresenceWorker');
+      return { init: m.initializeTopologyPresenceWorker, shutdown: m.shutdownTopologyPresenceWorker };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {
@@ -643,6 +652,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/enrollmentKeyCleanup');
       return { init: m.initializeEnrollmentKeyCleanupWorker, shutdown: m.shutdownEnrollmentKeyCleanupWorker };
+    },
+  },
+  {
+    name: 'migrationWindowSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/migrationWindowSweep');
+      return { init: m.initializeMigrationWindowSweepWorker, shutdown: m.shutdownMigrationWindowSweepWorker };
     },
   },
   {

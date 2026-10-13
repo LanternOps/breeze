@@ -429,6 +429,51 @@ describe('GET /devices — response shape', () => {
     const response = await app.request('/devices');
     expect((await response.json()).data[0]).toMatchObject({ hardwareHealth: null, hardwareHealthSummary: null });
   });
+  // Log-shipping health W01 (#8608): the list row carries ONLY the derived
+  // `logShipping` object. The raw columns must never reach the response, so
+  // `lastError` surfaces solely through the derived view while `failing`.
+  it('exposes a derived logShipping object and never the raw log-shipping columns', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', deviceRole: 'server', deviceRoleSource: 'auto', osVersion: '1', osBuild: null,
+      architecture: 'x64', agentVersion: 'v1', watchdogVersion: null, watchdogStatus: null,
+      mainAgentSilentSince: null, pendingReboot: false, lastSeenAt: new Date(), lastSeenIp: null,
+      enrolledAt: new Date(), tags: [], customFields: {}, desktopAccess: null, lastUser: null,
+      uptimeSeconds: null, isHeadless: false, linkGroupId: null, linkGroupRole: null,
+      createdAt: new Date(), updatedAt: new Date(), cpuModel: null, cpuCores: null, ramTotalMb: null,
+      diskTotalGb: null, reliabilityScore: null, reliabilityTrend: null, reliabilityProvisional: null,
+      helperLifecycleMode: null, purchaseDate: null, purchaseDateSource: null,
+      updateOfferWithheldReason: null, updateAttemptTargetVersion: null, updateAttemptStartedAt: null,
+      updateAttemptLastAt: null, helperInstallIssue: null, lastLogAt: null,
+    };
+    const started = new Date(Date.now() - 45 * 60_000);
+    rigDeviceListRows([
+      {
+        ...base, id: '11111111-1111-4111-8111-111111111111', status: 'online',
+        logShippingState: 'failing', logShippingFailureStartedAt: started, logShippingLastError: 'http 503',
+      },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', status: 'online',
+        logShippingState: null, logShippingFailureStartedAt: null, logShippingLastError: null },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', status: 'offline',
+        logShippingState: 'failing', logShippingFailureStartedAt: started, logShippingLastError: 'http 503' },
+    ]);
+
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0].logShipping).toEqual({
+      state: 'failing', failingSince: started.toISOString(), lastError: 'http 503',
+    });
+    expect(rows[1].logShipping).toEqual({ state: 'unknown', failingSince: null, lastError: null });
+    // Offline devices never report a shipping failure.
+    expect(rows[2].logShipping).toEqual({ state: 'unknown', failingSince: null, lastError: null });
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('logShippingState');
+      expect(row).not.toHaveProperty('logShippingFailureStartedAt');
+      expect(row).not.toHaveProperty('logShippingLastError');
+    }
+  });
+
   // Filtering on hardware health goes through the shared filter engine
   // (`hardware.health`), not a bespoke list query param.
   it('does not filter on a hardwareHealth query param', async () => {

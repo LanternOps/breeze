@@ -137,6 +137,7 @@ import {
 import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
 import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
 import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
+import { registerConnectedAgentSource } from '../services/capacityMetrics';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = [
   'terminal_output_base64',
@@ -4954,6 +4955,9 @@ export function getConnectedAgentIds(): string[] {
 export function getConnectedAgentCount(): number {
   return activeConnections.size;
 }
+
+// W07 (#8146): publish the owned-socket count as breeze_agent_ws_connections (spec §3 agent-cost denominator).
+registerConnectedAgentSource(getConnectedAgentCount);
 
 /**
  * Broadcast a message to all connected agents

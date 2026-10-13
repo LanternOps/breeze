@@ -64,7 +64,9 @@ import {
 import { mediaClassName, scrollerClassName, type ViewScaling } from '../lib/displayScaling';
 import type { StatsSample } from '../lib/statsReporter';
 import { statsOverlayRows } from '../lib/statsOverlay';
-import { getTauriPrefsStore, loadDevicePrefs, saveDevicePrefs, type DevicePrefs } from '../lib/devicePrefs';
+import { getTauriPrefsStore, loadDevicePrefs, loadKeyboardMode, saveDevicePrefs, saveKeyboardMode, type DevicePrefs } from '../lib/devicePrefs';
+import { DEFAULT_KEYBOARD_MODE, effectiveKeyboardMode, keyboardModeSupport, type KeyboardMode } from '../lib/keyboardMode';
+import { CompositionCapture, deliverComposedText } from '../lib/compositionCapture';
 import { captureFramePng, screenshotFailureMessage } from '../lib/screenshot';
 import {
   createKeyboardLockController,
@@ -73,6 +75,7 @@ import {
   type KeyboardLockController,
 } from '../lib/keyboardLock';
 import ViewerToolbar from './ViewerToolbar';
+import { ImeCaptureInput } from './ImeCaptureInput';
 import CredentialsPromptModal from './CredentialsPromptModal';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
@@ -380,6 +383,38 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // state copy drives the indicator and toolbar.
   const viewOnlyRef = useRef(false);
   const [viewOnly, setViewOnly] = useState(false);
+  // Keyboard mode (W06, #8242): the operator's choice, remembered per device.
+  // What is in force also depends on the session (see keyboardModeSupport).
+  const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(DEFAULT_KEYBOARD_MODE);
+  // The agent's input_capabilities reply, as render state for the mode UI.
+  // Event handlers keep reading the gate / router directly.
+  const [inputCaps, setInputCaps] = useState({ typeText: false, keyCodes: false });
+  const syncInputCaps = useCallback(() => {
+    const snap = inputCapabilitiesRef.current.snapshot();
+    setInputCaps({ typeText: snap.typeText, keyCodes: snap.extended.keyCodes });
+  }, []);
+  // Read from key handlers without re-creating them on every mode change.
+  const effectiveKeyboardModeRef = useRef<KeyboardMode>(DEFAULT_KEYBOARD_MODE);
+  const captureEnabledRef = useRef(false);
+  const imeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  // sendComposedText is defined after sendInputFn; ref breaks the TDZ.
+  const sendComposedTextRef = useRef<(text: string) => void>(() => {});
+  // Keyboard focus goes to the hidden composition input while capture is on
+  // (IME only composes into an editable element), else to the media element.
+  const focusKeyboardTarget = useCallback((fallback: HTMLElement | null | undefined) => {
+    const ime = imeInputRef.current;
+    if (captureEnabledRef.current && ime) ime.focus({ preventScroll: true });
+    else fallback?.focus();
+  }, []);
+
+  // One per viewer window; its state is reset on blur and on mode changes.
+  const [composition] = useState(() => new CompositionCapture({
+    sendText: (text) => sendComposedTextRef.current(text),
+    enabled: () => captureEnabledRef.current && !viewOnlyRef.current,
+    onDropped: () => setInputNotice('Typed text was not sent — the keyboard mode changed while you were composing.'),
+  }));
+  // Set once the operator picks a mode, so the async prefs restore cannot undo it.
+  const keyboardModeChosenRef = useRef(false);
   const viewScalingRef = useRef<ViewScaling>('fit');
   const [viewScaling, setViewScaling] = useState<ViewScaling>('fit');
   const [blockLocalInput, setBlockLocalInput] = useState<BlockLocalInputState>(INITIAL_BLOCK_LOCAL_INPUT);
@@ -715,7 +750,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         setConnectedAt(new Date());
         setErrorMessage(null);
         // Ensure keyboard input is captured without an extra click.
-        videoRef.current?.focus();
+        focusKeyboardTarget(videoRef.current);
       },
       onDisconnected: () => {
         if (webrtcRef.current !== sessionWrapper) return;
@@ -1441,6 +1476,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      // type_text has no case for this and no default branch, so it simply
 	      // never answers and Paste Text keeps its old behaviour.
 	      inputCapabilitiesRef.current.arm();
+	      syncInputCaps();
 	      ch.send(JSON.stringify({ type: 'input_capabilities' }));
 	    };
     const onMessage = (e: MessageEvent) => {
@@ -1483,6 +1519,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           case 'input_capabilities':
             inputCapabilitiesRef.current.apply(msg);
             reliableInput.onCapabilities(inputCapabilitiesRef.current.snapshot());
+            syncInputCaps();
             break;
           // The agent released all held input and moved to a new reset epoch.
           case 'input_epoch':
@@ -1549,6 +1586,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      // Release anything waiting on the old answer so a paste can't hang.
 	      inputCapabilitiesRef.current.release();
 	      reliableInput.detach();
+	      syncInputCaps();
 	    };
 	    // webrtcEpoch: re-attach to the NEW control channel after an
 	    // auto-reconnect — without it this stays bound to the dead channel and
@@ -1725,6 +1763,19 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     };
   }, [scale, transport]);
 
+  // ── Input: keyboard mode (W06, #8242) ──────────────────────────────
+
+  const keyboardSupport = keyboardModeSupport({
+    transport,
+    keyCodes: inputCaps.keyCodes,
+    typeText: inputCaps.typeText,
+  });
+  const effectiveMode = effectiveKeyboardMode(keyboardMode, keyboardSupport);
+  // IME / dead-key capture: "Type what I see" on a session that can carry type_text.
+  const captureEnabled = effectiveMode === 'text' && keyboardSupport.composition;
+  effectiveKeyboardModeRef.current = effectiveMode;
+  captureEnabledRef.current = captureEnabled;
+
   // ── Input: send event ──────────────────────────────────────────────
 
   // The live input channel's send, with any stranded releases flushed first,
@@ -1774,6 +1825,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     send(event);
     return true;
   }, [getInputSender]);
+
+  // Composed text (IME commit, dead-key result) as type_text on the reliable
+  // control channel, chunked like Paste Text. Not on the input sender, so
+  // view-only is checked here. Never logged.
+  const sendComposedText = useCallback((text: string) => {
+    if (viewOnlyRef.current) return;
+    const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
+    const delivered = deliverComposedText(
+      text,
+      control && control.readyState === 'open' ? (json: string) => control.send(json) : null,
+    );
+    if (!delivered) setInputNotice('Typed text not delivered — the connection to the remote is down.');
+  }, []);
+  sendComposedTextRef.current = sendComposedText;
 
   // Releases every key and mouse button the remote believes is held. Called
   // when focus leaves the session, on reconnect, session switch, disconnect and
@@ -1934,8 +1999,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     // preventDefault on mousedown suppresses the browser's default focus behavior,
-    // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
-    (e.currentTarget as HTMLElement).focus();
+    // so explicitly re-focus the video/canvas to ensure keyboard events are captured
+    // (or the composition input, while IME capture is on).
+    focusKeyboardTarget(e.currentTarget as HTMLElement);
     if (viewOnlyRef.current) return;
     // Back/forward only for an agent that injects them (W2c); otherwise they
     // are dropped (they used to arrive as a left click).
@@ -1956,7 +2022,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
-  }, [scaleCoordsFn, sendInputFn, reliableInput]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (viewOnlyRef.current) return;
@@ -1996,11 +2062,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, []);
 
-  const handleInputFocus = useCallback(() => setInputFocused(true), []);
+  const handleInputFocus = useCallback((e?: React.FocusEvent) => {
+    setInputFocused(true);
+    // Tabbing onto the video while capture is on: move on to the composition input.
+    if (e && e.currentTarget !== imeInputRef.current) focusKeyboardTarget(null);
+  }, [focusKeyboardTarget]);
   const handleInputBlur = useCallback(() => {
     setInputFocused(false);
     releaseAllKeys();
+    composition.reset();
   }, [releaseAllKeys]);
+
+  // Keyboard mode or capture changed (operator choice, agent capabilities,
+  // transport): keys held under the old mode are released through the normal
+  // send path, the capture forgets its state, and focus follows the target.
+  const prevKeyboardRef = useRef({ mode: effectiveMode, capture: captureEnabled });
+  useEffect(() => {
+    const prev = prevKeyboardRef.current;
+    if (prev.mode === effectiveMode && prev.capture === captureEnabled) return;
+    prevKeyboardRef.current = { mode: effectiveMode, capture: captureEnabled };
+    releaseAllKeysRef.current();
+    composition.interrupt();
+    // The composition input may just have unmounted with focus (focus falls
+    // to <body>): hand it to the media element rather than lose the keyboard.
+    const active = document.activeElement;
+    if (!active || active === document.body || active === imeInputRef.current || active === videoRef.current) {
+      focusKeyboardTarget(videoRef.current);
+    }
+  }, [effectiveMode, captureEnabled, focusKeyboardTarget]);
 
   // ── Input: paste as keystrokes ────────────────────────────────────
 
@@ -2127,9 +2216,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const ne = e.nativeEvent;
+    // IME / dead-key keystrokes are left to the browser (not prevented, not
+    // forwarded): their text is sent once, as type_text, by the capture.
+    if (!viewOnlyRef.current && composition.keyDown(ne) === 'capture') return;
     e.preventDefault();
 
-    const ne = e.nativeEvent;
     // View-only: nothing is forwarded. The fullscreen host key still works;
     // paste-as-keystrokes would be input, and there is nothing held to release.
     if (viewOnlyRef.current) {
@@ -2142,7 +2234,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const capsLock = getCapsLockState(ne);
     // W2c physical key + Num Lock; empty for every agent without key codes.
     const keyCodes = reliableInput.extended().keyCodes;
-    const keyFields = extendedKeyFields(ne, keyCodes);
+    // `code` only in Physical keys mode; "Type what I see" goes by key name.
+    const sendKeyCodes = effectiveKeyboardModeRef.current === 'physical';
+    const keyFields = extendedKeyFields(ne, keyCodes, { omitCode: !sendKeyCodes });
 
     // Modifier keys pressed alone: forward as key_down so Shift+Click,
     // Ctrl+Click, etc. hold the modifier on the remote machine for
@@ -2159,7 +2253,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (e.repeat) return;
       if (pressedKeysRef.current.has(modKey)) return;
       pressedKeysRef.current.add(modKey);
-      const modFields = extendedKeyFields(ne, keyCodes, { omitCode: remapped });
+      const modFields = extendedKeyFields(ne, keyCodes, { omitCode: remapped || !sendKeyCodes });
       if (modFields.code) heldCodeByKeyRef.current.set(modKey, modFields.code);
       sendInputFn({ type: 'key_down', key: modKey, capsLock, ...modFields });
       return;
@@ -2297,14 +2391,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (viewOnlyRef.current) return;
 
     const ne = e.nativeEvent;
+    // The release of a key the composition capture kept from the remote.
+    if (composition.keyUp(ne) === 'suppress') return;
     const capsLock = getCapsLockState(ne);
     const keyCodes = reliableInput.extended().keyCodes;
+    const sendKeyCodes = effectiveKeyboardModeRef.current === 'physical';
 
     // Caps Lock never enters pressedKeysRef (see handleKeyDown), so its release
     // is forwarded unconditionally rather than gated on membership. On macOS
     // this is the ONLY event fired when Caps Lock is disengaged.
     if (isCapsLock(ne)) {
-      sendInputFn({ type: 'key_up', key: 'capslock', capsLock, ...extendedKeyFields(ne, keyCodes) });
+      sendInputFn({ type: 'key_up', key: 'capslock', capsLock, ...extendedKeyFields(ne, keyCodes, { omitCode: !sendKeyCodes }) });
       return;
     }
 
@@ -2322,7 +2419,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
     heldCodeByKeyRef.current.delete(key);
-    sendInputFn({ type: 'key_up', key, capsLock, ...extendedKeyFields(ne, keyCodes, { omitCode: remapped }) });
+    sendInputFn({ type: 'key_up', key, capsLock, ...extendedKeyFields(ne, keyCodes, { omitCode: remapped || !sendKeyCodes }) });
   }, [sendInputFn, remapCmdCtrl, keyNameMode, reliableInput]);
 
   // ── Toolbar: config changes ────────────────────────────────────────
@@ -2486,6 +2583,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (next === viewOnlyRef.current) return;
     if (next) {
       releaseAllKeys();
+      composition.reset();
       if (webrtcMouseMoveRafRef.current !== null) {
         cancelAnimationFrame(webrtcMouseMoveRafRef.current);
         webrtcMouseMoveRafRef.current = null;
@@ -2564,6 +2662,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     vncSessionRef.current?.setScaling(mode);
   }, []);
 
+  const handleKeyboardModeChange = useCallback((mode: KeyboardMode) => {
+    keyboardModeChosenRef.current = true;
+    // The release and capture reset run in the mode-change effect.
+    setKeyboardMode(mode);
+    void getTauriPrefsStore().then((store) => saveKeyboardMode(store, params.deviceId, mode));
+  }, [params.deviceId]);
+
   const handleViewScalingChange = useCallback((mode: ViewScaling) => {
     applyViewScaling(mode);
     rememberDevicePrefs({ viewScaling: mode });
@@ -2583,6 +2688,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       }
       if (prefs.viewScaling) applyViewScaling(prefs.viewScaling);
       if (prefs.audio) setPendingAudioRestore(true);
+      const mode = await loadKeyboardMode(store, params.deviceId);
+      if (!cancelled && !keyboardModeChosenRef.current) setKeyboardMode(mode);
     });
     return () => { cancelled = true; };
   }, [params.deviceId, applyViewScaling]);
@@ -2746,6 +2853,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onToggleBlockLocalInput={handleToggleBlockLocalInput}
         statsOverlay={statsOverlay}
         onStatsOverlayChange={handleStatsOverlayChange}
+        keyboardMode={effectiveMode}
+        keyboardModeSupport={keyboardSupport}
+        onKeyboardModeChange={handleKeyboardModeChange}
         onCopyScreenshot={() => { void handleCopyScreenshot(); }}
         onSaveScreenshot={() => { void handleSaveScreenshot(); }}
       />
@@ -2764,6 +2874,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
             {...interactionProps}
           />
+
+          {/* IME / dead-key composition input (W06): holds keyboard focus while capture is on. */}
+          {captureEnabled && transport === 'webrtc' && (
+            <ImeCaptureInput
+              ref={imeInputRef}
+              capture={composition}
+              onKeyDown={handleKeyDown}
+              onKeyUp={handleKeyUp}
+              onFocus={handleInputFocus}
+              onBlur={handleInputBlur}
+            />
+          )}
 
           {/* WebSocket: <canvas> element (JPEG software decode) */}
           <canvas

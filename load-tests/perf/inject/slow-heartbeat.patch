@@ -1,0 +1,12 @@
+diff --git a/apps/api/src/routes/agents/heartbeat.ts b/apps/api/src/routes/agents/heartbeat.ts
+index 437d44eff5..73d533891f 100644
+--- a/apps/api/src/routes/agents/heartbeat.ts
++++ b/apps/api/src/routes/agents/heartbeat.ts
+@@ -469,6 +469,7 @@ heartbeatRoutes.on('POST', '/:id/heartbeat', async (c, next) => {
+ });
+ 
+ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
++  { const until = performance.now() + 30; while (performance.now() < until) { /* W07 perf-gate self-test: deliberate slowdown */ } }
+   const agentId = c.req.param('id');
+   const data = c.req.valid('json');
+   const agent = c.get('agent') as AgentAuthContext | undefined;

@@ -746,6 +746,34 @@
     "declaredEmpty": "Declarada para {{site}} — nenhum dispositivo informa esta rede",
     "declaredColumn": "Declarada",
     "declaredYes": "Sim",
-    "declaredNo": "Não"
+    "declaredNo": "Não",
+    "crossSite": {
+      "rosterToggle": "Dispositivos fora das redes deste site ({{count}})",
+      "observedHeading": "Observados em outros sites ({{count}})",
+      "unknownHeading": "Localização desconhecida ({{count}})",
+      "observedEntry": "Na rede de {{site}} ({{prefix}}) · desde {{time}}",
+      "observedEntryNoTime": "Na rede de {{site}} ({{prefix}})",
+      "unrecognizedEntry": "{{prefix}} via {{gateway}} — não identificada como rede de nenhum site",
+      "unrecognizedEntryNoNetwork": "Não identificada como rede de nenhum site",
+      "hint": {
+        "declaredUnconfirmed": "Declarada para {{site}}, mas nenhum dispositivo de {{site}} confirma esse gateway ainda.",
+        "consumerUncorroborated": "Faixa comum de roteadores domésticos. Não foi possível associar o roteador ao de {{site}}.",
+        "gatewayMismatch": "Na faixa declarada de {{site}}, mas por outro gateway.",
+        "ownGatewayMismatch": "Na faixa declarada de {{site}}, mas por outro gateway ({{gateway}})."
+      },
+      "ambiguousEntry": "Declarada para {{sites}}. O Breeze não consegue dizer de qual site se trata.",
+      "lastReported": "Último relato: {{prefix}} via {{gateway}}, {{when}}",
+      "locationNotCurrent": "Localização desatualizada",
+      "visitingBadge": "Visitante",
+      "visiting": "+{{count}} visitando",
+      "assignedTo": "Atribuído a {{site}}",
+      "visitorAlt": "Dispositivo visitante, atribuído a {{site}}",
+      "visitingCard": "Dispositivos visitantes ({{prefix}})",
+      "observedChip": "{{count}} observados em outros sites",
+      "visitorExplanation": "Atribuído a {{assigned}}. Informa a rede {{prefix}} de {{site}} via {{gateway}}. O gateway corresponde aos dispositivos de {{site}}.",
+      "visitorExplanationMac": "Atribuído a {{assigned}}. Informa a rede {{prefix}} de {{site}} via {{gateway}}. O gateway corresponde aos dispositivos de {{site}}, incluindo o MAC do roteador.",
+      "ignoredDeclarations_one": "{{count}} entrada de sub-rede declarada foi ignorada (intervalo, endereço único, IPv6 ou texto ilegível). Somente prefixos IPv4 exatos identificam as redes de um site.",
+      "ignoredDeclarations_other": "{{count}} entradas de sub-rede declaradas foram ignoradas (intervalos, endereços únicos, IPv6 ou texto ilegível). Somente prefixos IPv4 exatos identificam as redes de um site."
+    }
   }
 }

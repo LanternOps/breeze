@@ -163,6 +163,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',
   'services/topology/monitorOverlays.ts': 'Topology map health overlays for a human-scoped graph read',
   'services/topology/presentationGroups.ts': 'Grouped-overview read model for a human-scoped topology graph read: reads device status only to hide decommissioned agents; selects nothing to act on',
+  'services/topology/presenceRead.ts': 'Site-gated presence read model for a human-scoped topology read (site location W2): device labels/sites for display only; selects nothing to act on',
   'services/vulnerabilityFleetQueries.ts': 'Fleet triage UI fetch layer, RLS-scoped request read',
   'services/vulnerabilityFleetSql.ts': 'Fleet work-queue aggregation for the triage UI, RLS-scoped',
 };
@@ -185,6 +186,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
   'services/assetPlacement.ts': 'resolves placement authority by joining the ONE device already linked to a discovered asset (by id, within the asset org); selects no targets',
   'services/autopay/enrollmentLifecycle.ts': 'org payment lifecycle rejects hidden orgs; never reads devices or dispatches device work',
   'services/timeEntryService.ts': 'request path: rejects a hidden org a caller names on a time entry (#4186); never reads devices or dispatches device work',
@@ -386,6 +388,8 @@ const EXEMPT: Record<string, string> = {
   'services/topology/collectionRetention.ts': 'lifecycle: Retention purge of orphaned topology evidence; only checks device absence, never selects a live device',
   'services/topology/discoveryDispatch.ts': 'derived: resolves the one agent discoveryWorker already selected with notParkedDeviceCondition, pinned to the job orgId',
   'services/topology/diagnosticDispatch.ts': 'derived: Dispatches/validates a command bound to a run row created by an upstream diagnostic-run request',
+  'services/topology/presenceEvaluator.ts': 'derived: classifies presence for devices already bound in a site graph of one org; writes only presence read-model rows, never acts on or moves a device',
+  'services/topology/presenceInputs.ts': 'derived: reads device site/status within one site graph scope to classify presence; selects nothing to act on',
   'services/topology/legacyReplay.ts': 'derived: Reads device existence within a scope already fixed by an upstream per-site topology state row',
   'services/topology/unifiAdapter.ts': 'derived: read-only MAC binding inside a scope fixed by a UniFi site mapping to a real org site; no per-device action',
   'services/topology/unifiAuthority.ts': 'agent self-service: resolves the reporting collector device; advertisement is reached only via listCollectorsForDevice, which refuses parked devices',

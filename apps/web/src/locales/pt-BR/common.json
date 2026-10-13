@@ -1323,6 +1323,10 @@
           "ticketAssigned": {
             "description": "Acionado quando um ticket é atribuído ou desatribuído.",
             "label": "Ticket atribuído"
+          },
+          "migrationWindowClosed": {
+            "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
+            "label": "Janela de migração encerrada"
           }
         },
         "fields": {

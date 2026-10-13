@@ -9,6 +9,8 @@ import { ClipboardChip } from './ClipboardChip';
 import type { ClipboardChipInput } from '../lib/clipboardChip';
 import type { BlockLocalInputState } from '../lib/blockLocalInput';
 import type { ViewScaling } from '../lib/displayScaling';
+import type { KeyboardMode, KeyboardModeSupport } from '../lib/keyboardMode';
+import { KeyboardModeControl } from './KeyboardModeControl';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 
@@ -99,6 +101,10 @@ interface Props {
   /** Stats overlay (RTT, fps, bitrate, loss, codec, transport), off by default. */
   statsOverlay?: boolean;
   onStatsOverlayChange?: (on: boolean) => void;
+  /** Keyboard mode in force (W06): "Type what I see" or "Physical keys". */
+  keyboardMode?: KeyboardMode;
+  keyboardModeSupport?: KeyboardModeSupport;
+  onKeyboardModeChange?: (mode: KeyboardMode) => void;
   /** Screenshot of the current frame, kept on this machine. */
   onCopyScreenshot?: () => void;
   onSaveScreenshot?: () => void;
@@ -224,6 +230,9 @@ export default function ViewerToolbar({
   onStatsOverlayChange,
   onCopyScreenshot,
   onSaveScreenshot,
+  keyboardMode = 'text',
+  keyboardModeSupport,
+  onKeyboardModeChange,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
   const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
@@ -782,6 +791,16 @@ export default function ViewerToolbar({
           </div>
         )}
       </div>
+
+      {/* Keyboard mode (W06): type what I see vs physical keys */}
+      {keyboardModeSupport && onKeyboardModeChange && (
+        <KeyboardModeControl
+          mode={keyboardMode}
+          support={keyboardModeSupport}
+          onChange={onKeyboardModeChange}
+          disabled={viewOnly}
+        />
+      )}
 
       <button
         onClick={toggleFullscreen}

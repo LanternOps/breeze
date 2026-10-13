@@ -32,6 +32,7 @@ export type WorkerInitializerClassification =
         | 'topologyDiagnosticSweeper'
         | 'topologyMonitoringWorker'
         | 'topologyTelemetryMaintenance'
+        | 'topologyPresenceWorker'
         | 'incidentCorrelationWorker'
         | 'incidentTimelineEnricher'
         | 'incidentSlaMonitor';
@@ -107,6 +108,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('authEmailWorker'),
   consumers('quoteSendWorker'),
   consumers('enrollmentKeyCleanup'),
+  consumers('migrationWindowSweep'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
   consumers('softwareUploadSessionCleanup'),
@@ -128,6 +130,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   { kind: 'non_consumer', initializer: 'topologyDiagnosticSweeper' },
   { kind: 'non_consumer', initializer: 'topologyMonitoringWorker' },
   { kind: 'non_consumer', initializer: 'topologyTelemetryMaintenance' },
+  { kind: 'non_consumer', initializer: 'topologyPresenceWorker' },
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),

@@ -168,9 +168,16 @@ const POSITIVE_OUTCOMES: ReadonlySet<string> = new Set(['complete', 'partial']);
 const notExpired = (value: string | null | undefined, now: Date) => !!value && Number.isFinite(Date.parse(value)) && Date.parse(value) > now.getTime();
 const iso = (value: string) => new Date(value).toISOString();
 
-/** Build the bounded tuple index once per read. Expired/unknown freshness removes a row; truncation marks coverage limited. */
-export function buildNeighborEvidenceIndex(read: NeighborEvidenceRead, now: Date, options: { tupleBudget?: number } = {}): NeighborEvidenceIndex {
+/**
+ * Build the bounded tuple index once per read. Expired/unknown freshness removes a row; truncation marks coverage limited.
+ * `freshnessHorizonSeconds` (site location W2 anchors, S§6.3) widens "expired" to "expired more than that long ago";
+ * the default is unchanged: fresh now.
+ */
+export function buildNeighborEvidenceIndex(
+  read: NeighborEvidenceRead, now: Date, options: { tupleBudget?: number; freshnessHorizonSeconds?: number } = {},
+): NeighborEvidenceIndex {
   const budget = options.tupleBudget ?? NEIGHBOR_TUPLE_BUDGET;
+  if (options.freshnessHorizonSeconds) now = new Date(now.getTime() - options.freshnessHorizonSeconds * 1000);
   const index: NeighborEvidenceIndex = { coverage: read.limited ? 'limited' : 'complete', tupleCount: 0, byAddress: new Map(), rejected: {} };
   const reject = (reason: NeighborRowRejection | 'expired', count = 1) => { index.rejected[reason] = (index.rejected[reason] ?? 0) + count; };
   const ordered = [...read.baselines].sort((a, b) => (a.sourceId < b.sourceId ? -1 : a.sourceId > b.sourceId ? 1 : 0));

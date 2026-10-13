@@ -45,6 +45,7 @@ import {
   topologyViewSchema,
 } from './topology';
 import { graphNodeSchema, TOPOLOGY_INTERFACE_KINDS, topologyInterfaceKindEvidence, topologyNetworkClass } from './topology';
+import { TOPOLOGY_CONSUMER_DEFAULT_PREFIXES, isTopologyConsumerDefaultPrefix } from './topology';
 import { topologyInterfaceRowSchema } from './topologyCollection';
 
 const SITE_ID = '11111111-1111-4111-8111-111111111111';
@@ -543,5 +544,30 @@ describe('grouped overview contract (2026-10-02)', () => {
     const row = { rowKey: 'k', interfaceKey: 'k', osIndex: 1, name: 'eth0', adminState: 'up', operState: 'up', mtu: 1500, addresses: [] };
     for (const kind of TOPOLOGY_INTERFACE_KINDS) expect(topologyInterfaceRowSchema.safeParse({ ...row, kind }).success).toBe(true);
     expect(topologyInterfaceRowSchema.safeParse({ ...row, kind: 'wireguard' }).success).toBe(false);
+  });
+});
+
+describe('isTopologyConsumerDefaultPrefix', () => {
+  it('keeps the reviewed list frozen at 19 entries', () => {
+    expect(TOPOLOGY_CONSUMER_DEFAULT_PREFIXES).toHaveLength(19);
+    expect(Object.isFrozen(TOPOLOGY_CONSUMER_DEFAULT_PREFIXES)).toBe(true);
+  });
+  it.each([
+    ['192.168.1.0/24', true],
+    ['192.168.69.0/24', true],
+    ['192.168.68.0/24', true],
+    ['10.1.5.0/24', false],
+    ['10.0.0.0/24', true],
+    ['10.0.0.0/16', true],
+    ['172.16.5.0/24', false],
+    ['not-a-prefix', false],
+    ['', false],
+    ['192.168.1.0/33', false],
+    ['192.168.1.0', false],
+    ['fd00::/64', false],
+    ['fe80::/10', false],
+    ['300.1.1.0/24', false],
+  ])('isTopologyConsumerDefaultPrefix(%s) = %s', (prefix, expected) => {
+    expect(isTopologyConsumerDefaultPrefix(prefix)).toBe(expected);
   });
 });

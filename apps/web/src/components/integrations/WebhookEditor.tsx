@@ -21,6 +21,7 @@ const availableEvents = [
   "ticket.status_changed",
   "ticket.updated",
   "ticket.assigned",
+  "migration.window_closed",
   "patch.completed",
   "backup.failed",
   "security.alert",
