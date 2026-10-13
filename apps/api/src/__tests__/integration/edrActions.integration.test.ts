@@ -9,16 +9,46 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import JSZip from 'jszip';
+
+// The vendor, the credential blob and the Redis limiter are faked; every DB
+// read/write (RLS, FKs, the in-flight index, audit) is real.
+const fake = vi.hoisted(() => ({
+  performAction: vi.fn(),
+  calls: 0,
+}));
+vi.mock('../../services/edrProviders/credentials', async () => {
+  const actual = await vi.importActual<typeof import('../../services/edrProviders/credentials')>('../../services/edrProviders/credentials');
+  return { ...actual, decryptEdrSecret: () => ({ apiKey: 'k'.repeat(24) }) };
+});
+vi.mock('../../services/edrProviders/actionGates', async () => {
+  const actual = await vi.importActual<typeof import('../../services/edrProviders/actionGates')>('../../services/edrProviders/actionGates');
+  return { ...actual, checkEdrActionRateLimit: async () => ({ ok: true }) };
+});
+vi.mock('../../services/edrProviders/context', () => ({ buildEdrAdapterContext: () => ({ fake: true }) }));
+vi.mock('../../services/edrProviders/registry', async () => {
+  const actual = await vi.importActual<typeof import('../../services/edrProviders/registry')>('../../services/edrProviders/registry');
+  const real = actual.getEdrProvider('bitdefender');
+  const adapter = { ...real, performAction: (...a: unknown[]) => { fake.calls += 1; return fake.performAction(...a); } };
+  return { ...actual, getEdrProvider: () => adapter };
+});
+
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   devices,
   edrActions,
   edrConnections,
+  edrDetections,
   edrEndpoints,
   edrTenants,
 } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+import { dispatchEdrAction } from '../../services/edrProviders/actions';
+import { EdrActionError } from '../../services/edrProviders/actionErrors';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { buildOrgExportZip } from '../../services/tenantExport';
 import { pgErrorCode } from '../../routes/edr/access';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -54,6 +84,7 @@ async function seedEdrTenant(label: string) {
     const [connection] = await db.insert(edrConnections).values({
       partnerId: partner.id,
       provider: 'bitdefender',
+      actionsEnabled: true,
       name: `GravityZone ${label} ${randomUUID().slice(0, 6)}`,
       credentialsEncrypted: 'enc:test',
       vendorRootId: 'root-1',
@@ -152,11 +183,15 @@ describe('edr actions — migration (real PostgreSQL)', () => {
 
   runDb('new connections default actions OFF; new tenants carry no denials', async () => {
     const t = await seedEdrTenant('defaults');
+    // The seed opts its connection in; a connection inserted without naming the column is OFF.
+    const [conn] = await withSystemDbAccessContext(() => db.insert(edrConnections).values({
+      partnerId: t.partner.id, provider: 'bitdefender', name: `Default ${randomUUID().slice(0, 6)}`,
+      credentialsEncrypted: 'enc:test',
+    }).returning({ actionsEnabled: edrConnections.actionsEnabled }));
+    expect(conn!.actionsEnabled).toBe(false);
     const [row] = Array.from(await admin().execute(sql`
-      SELECT c.actions_enabled, t.unsupported_actions, t.unsupported_actions_at
-        FROM edr_connections c JOIN edr_tenants t ON t.connection_id = c.id
-       WHERE c.id = ${t.connection.id}`)) as Row[];
-    expect(row).toMatchObject({ actions_enabled: false, unsupported_actions_at: null });
+      SELECT unsupported_actions, unsupported_actions_at FROM edr_tenants WHERE id = ${t.tenant.id}`)) as Row[];
+    expect(row).toMatchObject({ unsupported_actions_at: null });
     expect(row!.unsupported_actions).toEqual([]);
   });
 
@@ -174,5 +209,148 @@ describe('edr actions — migration (real PostgreSQL)', () => {
     // Settled rows never collide with each other.
     expect(await codeOf(insertActionAsSystem(t, { status: 'succeeded' }))).toBeNull();
     expect(await codeOf(insertActionAsSystem(t, { status: 'succeeded' }))).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A13 — tenancy, concurrency, tombstones, erasure, export
+// ---------------------------------------------------------------------------
+
+function partnerAuth(t: Tenant, reach: string[] = [t.org.id]): AuthContext {
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: t.user.id, email: 'tech@example.com', name: 'Tech', isPlatformAdmin: false },
+    token: { mfa: true },
+    scope: 'partner',
+    partnerId: t.partner.id,
+    orgId: null,
+    accessibleOrgIds: reach,
+    partnerOrgAccess: 'selected',
+    canAccessOrg: (id: string) => reach.includes(id),
+    orgCondition: () => undefined,
+  } as unknown as AuthContext;
+}
+const uiActor = (auth: AuthContext) => ({
+  auth,
+  restriction: { allowedDeviceIds: null, allowedSiteIds: null },
+  requestedVia: 'ui' as const,
+  requestedBy: auth.user.id,
+  aiSessionId: null,
+  approvalId: null,
+  reason: null,
+});
+const countActions = (orgId: string) => admin().execute(sql`SELECT count(*)::int AS n FROM edr_actions WHERE org_id = ${orgId}`)
+  .then((r) => (r as unknown as Array<{ n: number }>)[0]!.n);
+
+describe('edr actions — tenancy and dispatch (real PostgreSQL)', () => {
+  beforeEach(() => {
+    fake.calls = 0;
+    fake.performAction.mockReset();
+    fake.performAction.mockResolvedValue({ status: 'succeeded' });
+  });
+
+  runDb('1. an org-A token cannot INSERT an edr_actions row for org B -> 42501', async () => {
+    const a = await seedEdrTenant('rls-a');
+    const b = await seedEdrTenant('rls-b');
+    const orgContext: DbAccessContext = {
+      scope: 'organization', orgId: a.org.id, accessibleOrgIds: [a.org.id], accessiblePartnerIds: [], userId: a.user.id,
+    };
+    const code = await codeOf(withDbAccessContext(orgContext, () => db.insert(edrActions).values(actionValues(b))));
+    expect(code).toBe('42501');
+    expect(await countActions(b.org.id)).toBe(0);
+  });
+
+  runDb('2. a selected-org partner (reach A only) acting on an org-B endpoint -> target_not_found, no row, no vendor call', async () => {
+    const a = await seedEdrTenant('reach-a');
+    const b = await seedEdrTenant('reach-b');
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a, [a.org.id])), {
+      kind: 'endpoint', endpointId: b.endpoint.id, action: 'isolate',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EdrActionError);
+    expect((err as EdrActionError).code).toBe('target_not_found');
+    expect(await countActions(b.org.id)).toBe(0);
+    expect(fake.calls).toBe(0);
+  });
+
+  runDb('2b. the happy path writes one audited row through RLS and settles it', async () => {
+    const a = await seedEdrTenant('happy');
+    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
+    expect(out).toMatchObject({ status: 'succeeded', httpStatus: 200 });
+    const [row] = Array.from(await admin().execute(sql`
+      SELECT status, requested_by, requested_via, endpoint_id, breeze_device_id FROM edr_actions WHERE id = ${out.actionId}`)) as Row[];
+    expect(row).toMatchObject({
+      status: 'succeeded', requested_by: a.user.id, requested_via: 'ui', endpoint_id: a.endpoint.id, breeze_device_id: a.device.id,
+    });
+    const audits = Array.from(await admin().execute(sql`
+      SELECT action FROM audit_logs WHERE resource_id = ${out.actionId}`)) as Row[];
+    expect(audits.map((r) => r.action)).toContain('edr.action.requested');
+    expect(fake.calls).toBe(1);
+  });
+
+  runDb('3. two concurrent isolates on one endpoint -> exactly one row and one vendor call; the other is action_in_progress', async () => {
+    const a = await seedEdrTenant('race');
+    fake.performAction.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+      return { status: 'succeeded' };
+    });
+    const actor = uiActor(partnerAuth(a));
+    const target = { kind: 'endpoint' as const, endpointId: a.endpoint.id, action: 'isolate' as const };
+    const results = await Promise.allSettled([dispatchEdrAction(actor, target), dispatchEdrAction(actor, target)]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(EdrActionError);
+    expect((rejected[0]!.reason as EdrActionError).code).toBe('action_in_progress');
+    expect(await countActions(a.org.id)).toBe(1);
+    expect(fake.calls).toBe(1);
+  });
+
+  runDb('4. a tombstoned detection is read-only -> target_detached, no row', async () => {
+    const a = await seedEdrTenant('tomb');
+    const [det] = await withSystemDbAccessContext(() => db.insert(edrDetections).values({
+      connectionId: a.connection.id,
+      partnerId: a.partner.id,
+      orgId: a.org.id,
+      tenantId: null,
+      provider: 'bitdefender',
+      vendorDetectionId: `q-${randomUUID().slice(0, 8)}`,
+      vendorKind: 'quarantine_item',
+      severity: 'high',
+      status: 'open',
+      detachedAt: new Date(),
+    } as typeof edrDetections.$inferInsert).returning({ id: edrDetections.id }));
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), {
+      kind: 'detection', detectionId: det!.id, action: 'quarantine_restore',
+    }).catch((e: unknown) => e);
+    expect((err as EdrActionError).code).toBe('target_detached');
+    expect(await countActions(a.org.id)).toBe(0);
+  });
+
+  runDb('5. org erasure succeeds with edr_actions rows in all four statuses', async () => {
+    const a = await seedEdrTenant('erase');
+    const keep = await seedEdrTenant('erase-keep');
+    await insertActionAsSystem(a, { status: 'queued', action: 'isolate' });
+    await insertActionAsSystem(a, { status: 'submitted', action: 'scan', vendorActionId: 'task-1' });
+    await insertActionAsSystem(a, { status: 'succeeded', action: 'unisolate' });
+    await insertActionAsSystem(a, { status: 'failed', action: 'isolate', error: 'licence' });
+    await insertActionAsSystem(keep, { status: 'queued' });
+    await cascadeDeleteOrg(a.org.id, a.user.id, 'tech@example.com');
+    expect(await countActions(a.org.id)).toBe(0);
+    expect(await countActions(keep.org.id)).toBe(1);
+  });
+
+  runDb('6. edr_tenants.unsupported_actions round-trips through the tenant export', async () => {
+    const a = await seedEdrTenant('export');
+    const deniedAt = new Date('2026-10-13T00:00:00Z');
+    await admin().execute(sql`
+      UPDATE edr_tenants SET unsupported_actions = ARRAY['isolate']::text[], unsupported_actions_at = ${deniedAt.toISOString()}::timestamptz
+      WHERE id = ${a.tenant.id}`);
+    const { zipBuffer } = await buildOrgExportZip(a.org.id, a.user.id, 'tech@example.com');
+    const archive = await JSZip.loadAsync(zipBuffer);
+    const rows = JSON.parse(await archive.file('edr_tenants.json')!.async('string')) as Row[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.unsupported_actions).toEqual(['isolate']);
+    expect(new Date(String(rows[0]!.unsupported_actions_at)).toISOString()).toBe(deniedAt.toISOString());
   });
 });
