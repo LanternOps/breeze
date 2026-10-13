@@ -58,7 +58,51 @@ func TestServiceInstallReturnsTheStartError(t *testing.T) {
 					"start/install failure must win over the watchdog outcome (#5252)",
 					file, exprText(call.Args[0]), src.agentErr)
 			}
+			if arg, ok := call.Args[1].(*ast.Ident); !ok || arg.Name != "watchdogExit" {
+				t.Errorf("%s: installExitError's second argument is %s, want watchdogExit — "+
+					"otherwise --strict-watchdog can never exit 78", file, exprText(call.Args[1]))
+			}
+			assertWatchdogReportWiring(t, file, body)
 		})
+	}
+}
+
+// assertWatchdogReportWiring pins `watchdogExit = reportWatchdogBootstrap(err,
+// strictWatchdog, os.Stdout)` inside the `if !skipWatchdog` block, so a
+// refactor cannot silently drop strict mode or move the marker to stderr.
+func assertWatchdogReportWiring(t *testing.T, file string, body *ast.BlockStmt) {
+	t.Helper()
+	found := 0
+	for _, stmt := range body.List {
+		ifs, ok := stmt.(*ast.IfStmt)
+		if !ok {
+			continue
+		}
+		if u, ok := ifs.Cond.(*ast.UnaryExpr); !ok || exprText(u.X) != "skipWatchdog" {
+			continue
+		}
+		ast.Inspect(ifs.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 || exprText(as.Lhs[0]) != "watchdogExit" {
+				return true
+			}
+			call, ok := as.Rhs[0].(*ast.CallExpr)
+			if !ok || callName(call) != "reportWatchdogBootstrap" || len(call.Args) != 3 {
+				return true
+			}
+			found++
+			if exprText(call.Args[1]) != "strictWatchdog" {
+				t.Errorf("%s: reportWatchdogBootstrap strict argument is %s, want strictWatchdog", file, exprText(call.Args[1]))
+			}
+			sel, ok := call.Args[2].(*ast.SelectorExpr)
+			if !ok || exprText(sel.X) != "os" || sel.Sel.Name != "Stdout" {
+				t.Errorf("%s: the BREEZE_WATCHDOG_INSTALL marker must go to os.Stdout", file)
+			}
+			return true
+		})
+	}
+	if found != 1 {
+		t.Errorf("%s: want exactly one `watchdogExit = reportWatchdogBootstrap(...)` inside `if !skipWatchdog`, found %d", file, found)
 	}
 }
 
