@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn() }));
 vi.mock('../../db', () => ({
@@ -9,6 +9,7 @@ vi.mock('../../db', () => ({
   getCurrentDbAccessContext: () => ({ scope: 'organization' }),
 }));
 vi.mock('./effects', () => ({ recordEffect: vi.fn() }));
+vi.mock('./rejection', () => ({ handleRejection: vi.fn() }));
 vi.mock('./gate', () => ({ fencedUntil: async () => null }));
 vi.mock('./policy', async (original) => ({ ...await original<typeof import('./policy')>(), getEffectivePolicy: ref.policy }));
 vi.mock('./subjects', () => ({ bindingsForContact: ref.bindings }));
@@ -16,7 +17,8 @@ vi.mock('./destinations', async (original) => ({ ...await original<typeof import
 
 import { makeDbMock } from './testing';
 import { resolveEffectivePolicy } from './policy';
-import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel } from './service';
+import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel, applyDecision } from './service';
+import { handleRejection } from './rejection';
 import { recordEffect } from './effects';
 import type { VerificationRow, CallerVerificationActor } from './types';
 
@@ -187,4 +189,43 @@ it('cancel only cancels a pending row', async () => {
   state.results.push(...getReads(cancelled), [], ...getReads(cancelled));
   expect((await cancel(actor, org, user)).status).toBe('cancelled');
   expect(recordEffect).not.toHaveBeenCalled();
+});
+
+describe('public not_me window (#6354 W03)', () => {
+  const DAY = 86_400_000;
+  beforeEach(() => vi.mocked(handleRejection).mockClear());
+
+  it('honours a late link not_me within 24 hours of creation and records the first decision IP', async () => {
+    const row = stored({ method: 'sms', status: 'expired', createdAt: new Date(Date.now() - DAY + 60_000) });
+    state.results.push([row], [], [{ ...row, status: 'rejected_by_user' }]);
+    const result = await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '198.51.100.10' });
+    expect(handleRejection).toHaveBeenCalledWith(user);
+    expect(result.status).toBe('rejected_by_user');
+    const set = state.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
+    expect(set).toEqual({ decidedFromIp: '198.51.100.10' });
+  });
+
+  it.each(['sms', 'email'] as const)('ignores a %s not_me older than 24 hours', async (method) => {
+    const row = stored({ method, status: 'expired', createdAt: new Date(Date.now() - DAY - 1_000) });
+    state.results.push([row]);
+    const result = await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '198.51.100.10' });
+    expect(handleRejection).not.toHaveBeenCalled();
+    expect(result.status).toBe('expired');
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
+
+  it('keeps the unbounded rejection window for non-link methods', async () => {
+    const row = stored({ method: 'workstation', status: 'expired', createdAt: new Date(Date.now() - 3 * DAY) });
+    state.results.push([row], [{ ...row, status: 'rejected_by_user' }]);
+    await applyDecision({ verificationId: user, decision: { kind: 'not_me' } });
+    expect(handleRejection).toHaveBeenCalledWith(user);
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
+
+  it('a repeated not_me never overwrites the first decision IP', async () => {
+    const row = stored({ method: 'email', status: 'rejected_by_user', createdAt: new Date() });
+    state.results.push([row], [row]);
+    await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '203.0.113.20' });
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
 });

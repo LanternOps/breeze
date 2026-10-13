@@ -100,6 +100,7 @@ import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
+import { callerVerifyPublicRoutes } from './routes/callerVerifyPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { preAssignmentRoutes } from './routes/preAssignment';
@@ -874,6 +875,11 @@ api.route('/installer', installerRoutes);
 // Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
 // and a single atomic pending->claimed transition.
 api.route('/support', supportPublicRoutes);
+// Public caller-verification card (#6354 W03) — the 32-byte SMS/email link
+// token is the only credential (no bearer). 404 while CALLER_VERIFICATION_ENABLED
+// is off, before any Redis/DB work; per-IP, per-token and miss budgets; one
+// hash lookup in a short system context. See routes/callerVerifyPublic.ts.
+api.route('/verify', callerVerifyPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding

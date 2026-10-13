@@ -341,6 +341,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/sso/link/confirm': 'public: Link confirm via pending-link cookie and password',
   // routes/supportPublic.ts
   'POST /api/v1/support/redeem': 'public: one-time support code redemption, rate limited',
+  // routes/callerVerifyPublic.ts
+  'POST /api/v1/verify/:token': 'public: caller-verification SMS/email link token is the credential; single CAS decision, per-IP/per-token/miss budgets',
   // routes/system.ts
   'POST /api/v1/system/setup-complete': 'own account: sets caller\'s own setupCompletedAt',
   // routes/tickets/emailWebhook.ts
