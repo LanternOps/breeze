@@ -19,7 +19,7 @@ spec: docs/superpowers/specs/security/2026-10-12-security-agents-policy-spec.md
 
 ## Decided (from spec)
 
-The spec's nine Open Decisions are resolved with the spec's recommendation. They are inputs to this plan, not open questions:
+The spec's nine Open Decisions are resolved with the spec's recommendation (owner approval with recommendations, 2026-10-13). They are inputs to this plan, not open questions. If Decision 9 ever flips so #6960 owns the periodic `service_running` bridge, that is agent-shipped work and adds a wave:
 
 1. **Vendor order:** Huntress, then SentinelOne, then DNS vendors, in waves.
 2. **Secrets** stay in the existing integration/mapping tables read via `decryptForColumn`; DNS enrollment values are non-secret tenant variables. The `{{var.*}}` secret rejection stays.
@@ -40,7 +40,7 @@ The spec's nine Open Decisions are resolved with the spec's recommendation. They
 - `managed_by_link_id` FK is `ON DELETE CASCADE` (not SET NULL).
 - Writing requires `devices.write` + MFA (`featureLinks.ts`), `devices.execute` (install-arming, `softwarePolicyAuthorization.ts`), and `canManagePartnerWidePolicies` for partner-wide policies.
 - Readiness is evaluated against the **device's org** and **that org's partner's** integration, never the policy owner's.
-- Migrations: `apps/api/migrations/2026-12-25-2NNNNN-<slug>.sql`, starting at `-200000-`. Idempotent, no inner `BEGIN;`/`COMMIT;`, row-count reporting on any cleanup statement, `SELECT set_config('breeze.scope','system',true);` before any write, never edit shipped migrations. Newest committed at plan time: `2026-12-25-110000-caller-verification-link-tier.sql`. **Task 0 of every wave re-checks** `git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail` and moves up if anything newer landed.
+- Migrations: `apps/api/migrations/2026-12-25-2NNNNN-<slug>.sql`, starting at `-200000-`. Idempotent, no inner `BEGIN;`/`COMMIT;`, row-count reporting on any cleanup statement, `SELECT set_config('breeze.scope','system',true);` before any write, never edit shipped migrations. Newest committed at plan time: `2026-12-25-110000-caller-verification-link-tier.sql`. **Every wave that adds a migration (W1, W3) re-checks in its Task 0** `git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail` and moves up if anything newer landed.
 - Public repo hygiene: fixtures use placeholders (`<org-key>`, `<acct-key>`); no customer names, hostnames or IPs.
 - Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p .` and check the exit code directly (never pipe to `tail`). Same for `apps/web` when touched.
 - API tests: `cd apps/api && npx vitest run <files>` (no `--` before flags). Web: `cd apps/web && npx vitest run <files>`.
@@ -49,7 +49,7 @@ The spec's nine Open Decisions are resolved with the spec's recommendation. They
 
 Failure modes the spec implies but no obvious task covers; each is pinned by a test in the owning task.
 
-1. **Child-org device of a partner-wide link with an org-scoped agent read.** Agent/heartbeat paths run in org-scoped RLS context and cannot see partner-owned managed policies. Pinned in W2 Task 2.3 (system context in the worker).
+1. **Child-org device of a partner-wide link with an org-scoped agent read.** Org-scoped sessions can SELECT their own partner's managed policy but never write it; background fan-out must not depend on that scope. Pinned in W2 Task 2.3 (system context in the worker; SELECT-only assertions).
 2. **Opt-out child link** (a closer `security_agents` link with `agents: []`) must cancel queued installs. Pinned in W2 Task 2.4.
 3. **Two vendors, one not ready:** attempt counters/cooldowns are per `(policy, device)`, so a not-ready vendor must not burn the ready vendor's retries. Pinned in W2 Task 2.2.
 4. **Deleting the owning config policy** while status rows and deployments reference the generated policy. Pinned in W1 Task 1.2 / W3 Task 3.1.
@@ -145,7 +145,7 @@ ALTER TYPE config_feature_type ADD VALUE IF NOT EXISTS 'security_agents';
 
 **Files:** Create `.../2026-12-25-200100-software-policies-managed-by-link.sql`; modify `db/schema/softwarePolicies.ts`, `services/tenantExportPolicyRegistry.ts` (`software_policies` entry).
 
-- [ ] **Step 1 (red):** extend the export-policy coverage test so `software_policies.managed_by_link_id` must be classified. Run the tenant export policy test (`git ls-files | grep -i "tenantExportPolicy.*test"`) with `npx vitest run <file>`; expect FAIL once the schema column exists, so add the schema column first (Step 2), then run.
+- [ ] **Step 1 (red):** add a unit assertion to `services/tenantExportPolicy.test.ts` (`describe('CORE_TENANT_EXPORT_POLICY migration-era columns')`) that `software_policies` `included` contains `managed_by_link_id`. Run `cd apps/api && npx vitest run src/services/tenantExportPolicy.test.ts`; expect FAIL. Also add the drizzle `managedByLinkId` column. The completeness gate is `__tests__/integration/tenant-export-policy.integration.test.ts` (Integration Tests, Step 5).
 - [ ] **Step 2:**
 ```sql
 SELECT set_config('breeze.scope','system',true);
@@ -189,7 +189,8 @@ export const securityAgentsInlineSettingsSchema; // Zod, strict, version 1
 
 **Files:** modify `routes/configurationPolicies/featureLinks.ts`, `services/configurationPolicy.ts` (~2969 `PARTNER_LINKABLE_FEATURE_TYPES`; `validateFeaturePolicyExists` gains **no table**, assert NULL `featurePolicyId`), `routes/configurationPolicies/featureLinks.test.ts`.
 
-- [ ] **Step 1 (red), in this order:** (a) `security_agents` ∈ `PARTNER_LINKABLE_FEATURE_TYPES`; (b) POST link with `featurePolicyId` set → 400; (c) inline settings with an unknown key → 400; (d) any `enabled:true` vendor → 400 `vendor_not_enableable` (W1); (e) partner-wide policy + writer without `canManagePartnerWidePolicies` → 403; (f) writer lacking `devices.execute` → 403 on `enabled:true`.
+- [ ] **Step 1 (red), in this order:** (a) `security_agents` ∈ `PARTNER_LINKABLE_FEATURE_TYPES`; (b) POST link with `featurePolicyId` set → 400; (c) inline settings with an unknown key → 400; (d) any `enabled:true` vendor → 400 `vendor_not_enableable` (W1); (e) partner-wide policy + writer without `canManagePartnerWidePolicies` → 403; (f) writer lacking `devices.execute` → 403 on `enabled:true`. Authorization checks (e, f) run **before** the enableable check (d), so (f) is reachable in W1.
+- [ ] **Step 1b (red, AI path):** the `manage_policy_feature_link` AI tool (`services/aiToolsConfigPolicy.ts`, offers `[...CONFIG_FEATURE_TYPES]`) calls `addFeatureLink`/`updateFeatureLink` directly, bypassing the route. Put the inline-settings validation, NULL-`featurePolicyId` check, arming gate and (from W2) the generator call in the **service functions** (or one shared helper both paths call), add `security_agents` to `VALIDATED_INLINE_SETTINGS`, and make the AI tool refuse `enabled:true` (AI callers never arm installs, `AI_AUTO_INSTALL_REFUSAL_MESSAGE`). Test: the AI path cannot create a `security_agents` link with `enabled:true`, a `featurePolicyId`, or unknown keys. Update `SAFE_WRITE_SITES` line keys if the contract tests shift.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/configurationPolicies/featureLinks.test.ts`; expect FAIL.
 - [ ] **Step 3:** implement beside the `workload_inventory` branch (~line 402); reuse `softwarePolicyAuthorization.ts` for the arming check; add to `partner-wide-write-coverage` contract (locate with `git ls-files | grep partner-wide-write`).
 - [ ] **Step 4:** PASS; run the partner-wide-write contract file. Commit.
@@ -211,7 +212,7 @@ Closest wins within `security_agents` using the same hierarchy walk and the `con
 
 ### Task 1.6: Read-only guards (409)
 
-**Files:** `routes/softwarePolicies.ts` (PATCH/DELETE, manual remediation ~1066), `services/aiToolsPolicyPrereqs.ts` (~517), tests.
+**Files:** `routes/softwarePolicies.ts` (PATCH/DELETE, manual remediation ~1066), `services/aiToolsPolicyPrereqs.ts` (~517), `services/aiToolsCompliance.ts` (`manage_software_policy` update/soft-delete and `remediate_software_violation`), the software-policy POST/PATCH schemas (must reject/strip a caller-supplied `managedByLinkId`; only the generator sets it), tests, and the AI contract test `aiTools.userOwnedRelease.contract.test.ts` line keys.
 
 - [ ] **Step 1 (red):** a row with `managedByLinkId` set returns 409 with a pointer (config policy id) on PATCH, DELETE and manual remediation (which authorizes uninstall independently of `autoUninstall`), and the AI updater refuses it. Existing AI contract tests key `SAFE_WRITE_SITES` by line number: after editing `aiToolsPolicyPrereqs.ts`, update line keys (see memory trap) and rerun the AI contract tests.
 - [ ] **Step 2:** `npx vitest run src/routes/softwarePolicies.test.ts src/services/aiToolsPolicyPrereqs.test.ts` FAIL; implement; PASS.
@@ -279,7 +280,7 @@ Never decrypts. Evaluated against the device's org and that org's partner's inte
 **Files:** Create `SecurityAgentsTab.tsx` (+ test); modify `featureTabs/types.ts`, `ConfigPolicyDetailPage.tsx` (icon map ~135, switch ~487); locale JSON in all 7 locales.
 
 - [ ] **Step 1 (red):** component tests: toggling Huntress calls the link API through `runAction` (guarded by `no-silent-mutations.test.ts`); catalog-missing renders a deep link; platform notes shown (macOS requires MDM); the closer-link warning appears; the **create-only** `ownerScope` selector and an "All orgs" badge for partner-wide (copy the selector pattern from existing partner-wide forms: `git grep -n ownerScope apps/web/src`); selected-tab/filter state in `window.location.hash`, not query params.
-- [ ] **Step 2:** `cd apps/web && npx vitest run <tab test> src/lib/i18n/localeParity.test.ts` FAIL; implement; add every new en key to all 7 locales; PASS.
+- [ ] **Step 2:** `cd apps/web && npx vitest run src/components/configurationPolicies/featureTabs/SecurityAgentsTab.test.tsx src/lib/i18n/localeParity.test.ts` FAIL; implement; add every new en key to all 7 locales; PASS.
 - [ ] **Step 3:** Managed badge ("Managed by config policy", links to owner) in the `software/` policy list; `PolicyForm` ownerScope selector disabled for managed rows. `runAction` catch pattern per CLAUDE.md.
 - [ ] **Step 4:** Typecheck api + web (12 GB heap, check exit). `<table>.orgId` sweep: for `software_policies` run `git grep -n "softwarePolicies.orgId" -- apps/api/src` and confirm every site tolerates a NULL `orgId` for partner-owned managed rows. Commit, PR `Refs #6960`.
 
@@ -299,12 +300,13 @@ Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL,
 
 - [ ] **Step 1 (red):** extend the contract tests first (they fail only under **Integration Tests**): rls-coverage (table has RLS enabled/forced/policy), org-cascade order, export policy, merge registry, device-cascade lists.
 - [ ] **Step 2:** write migration + schema; mechanical registration, **grep don't judge**:
-  - `git grep -n "'edr_endpoints'" -- apps/api/src | grep -v test` to see every list `edr_endpoints` sits in; mirror each for the new table.
+  - Grep both quote styles (`git grep -nE "['\"]edr_endpoints['\"]" -- apps/api/src`) for the org-keyed registries; `edr_endpoints` is not in any device list, so for device lists template on a device-keyed table (e.g. `software_compliance_status`).
+  - `device_id` FK is `ON DELETE CASCADE` (checked by `orgCascadeFkOnDelete.integration.test.ts`).
   - `CORE_ORG_CASCADE_DELETE_ORDER` in `tenantCascade.ts` : the list must be **alphabetical** (`tenantCascade.integration.test.ts` asserts it, `organizations` last); do NOT hand-place it before `devices`. FK ordering is resolved at runtime from topology; the alphabetical slot is under `security_*`. Verify with that contract test.
   - `CORE_DEVICE_CASCADE_DELETE_TABLES` and `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (device_id + denormalized org_id, shape 5) in `routes/devices/core.ts` (device delete and org move).
   - `orgMergeRegistry.ts`; `CORE_TENANT_EXPORT_POLICY` (every column classified; no json/bytea so no `excludedOpen`; `detail` is text; if it ever becomes jsonb it is `excludedOpen`; review credential-ish names).
-  - rls-coverage allowlists in `rls-coverage.integration.test.ts` (shape-1 list, not `DUAL_AXIS_TENANT_TABLES`).
-- [ ] **Step 3:** `pnpm test-stack up`; run rls-coverage, org-cascade, export-policy, merge and device-move suites (CI **Integration Tests**; Test API will not catch these); `pnpm test-stack down`; `pnpm db:check-drift`.
+  - rls-coverage: shape 1 is auto-discovered (no list entry; not `DUAL_AXIS_TENANT_TABLES`); confirm in `docs/agents/tenancy-rls.md`.
+- [ ] **Step 3:** run each suite on its own CI job (see `tenancy-rls.md`): `tenantCascade.integration`, rls-coverage, `tenant-export-policy.integration`, `orgCascadeFkOnDelete.integration` under **Integration Tests** (`pnpm test-stack up`, then `pnpm test-stack down`); `cascadeDelete.test.ts`, `moveOrg.coverage.test.ts`, `orgMerge.test.ts` under **Test API** (`cd apps/api && npx vitest run <file>`); then `pnpm db:check-drift`.
 - [ ] **Step 4:** move Task 2.2's recorded reasons into this table (compliance worker writes `not_applicable` + reason, clears on recovery). Test: unmapped org device has a `not_applicable/org_not_mapped` row and zero deployments.
 - [ ] **Step 5:** Commit.
 
@@ -319,7 +321,7 @@ Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL,
 - [ ] **Step 4:** Commit.
 
 ### Task 3.3: UI panels
-- [ ] Red tests then implement: coverage in `ComplianceDashboard`, EDR summary, device EDR panel; filter/tab state in `window.location.hash`; read-only for org users; `runAction` for any mutation; new en keys in all 7 locales; `localeParity` run. Typecheck web; commit; PR `Refs #6960`.
+- [ ] Red tests then implement: coverage in `apps/web/src/components/software/ComplianceDashboard.tsx`, `security/EdrSummaryPanel.tsx`, `devices/DeviceEdrPanel.tsx` (extend their existing tests); filter/tab state in `window.location.hash`; read-only for org users; `runAction` for any mutation; new en keys in all 7 locales; `localeParity` run. Typecheck web; commit; PR `Refs #6960`.
 
 **W3 leaves behind** (if W4 never ships): Huntress with persisted coverage, alerts and UI; no S1/DNS.
 
@@ -328,7 +330,7 @@ Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL,
 ## Wave 4: SentinelOne
 
 - [ ] Task 4.0 slot/branch check (no migration expected).
-- [ ] Task 4.1 (red first): S1 `enableable` is false until the partner has uploaded the MSI (`requiresBinaryUpload` built-in); the generator returns 400 with a deep link; tab explains it. `edrInstallerResolver.ts` S1 branch becomes explicit (no fall-through) with a test that an unknown provider errors.
+- [ ] Task 4.1 (red first): S1 `enableable` is false until the partner has uploaded the MSI (`requiresBinaryUpload` built-in); the generator returns 400 with a deep link; tab explains it. the S1 branch of `edrInstallerResolver.ts` gets its own explicit case and readiness test (the unknown-provider error default already landed in W2 Task 2.1).
 - [ ] Task 4.2: readiness reasons for S1 (`org_not_mapped`, `integration_inactive`, `org_key_missing`); `s1_agents` as a `VendorEndpointSource`; integration test extends Task 2.5 to S1 with placeholder keys (`<org-key>`).
 - [ ] Run `npx vitest run` on touched files, typecheck, **Integration Tests** if the reconciler changed; PR `Refs #6960`.
 
@@ -362,4 +364,4 @@ New questions this plan surfaces (spec items are decided above):
 
 ## Quorum
 
-`codex exec` (gpt-6-astra, medium, read-only) returned 8 findings; cited files were re-read before acting. Folded in: approval-generation bump for same-link vendor removal (T2.4); exhaustive web records in W1 (T1.1); no durable reason storage until W3 (T2.2); corrected partner-SELECT RLS expectation (T2.3); presence rule lives on catalog versions (T5.2); barrel exports (T1.3, T3.1); alphabetical cascade placement (T3.1); corrected test paths and trust-tier symbol (T1.0, T1.1). No unresolved disagreements.
+`codex exec` (gpt-6-astra, medium, read-only) returned 8 findings; cited files were re-read before acting. Folded in: approval-generation bump for same-link vendor removal (T2.4); exhaustive web records in W1 (T1.1); no durable reason storage until W3 (T2.2); corrected partner-SELECT RLS expectation (T2.3); presence rule lives on catalog versions (T5.2); barrel exports (T1.3, T3.1); alphabetical cascade placement (T3.1); corrected test paths and trust-tier symbol (T1.0, T1.1). No unresolved disagreements. A later `/pr-review-toolkit:review-pr` pass additionally folded in: AI feature-link path bypassing route gates (T1.4 Step 1b), two more AI software-policy tools and `managedByLinkId` write-rejection (T1.6), export-policy red test, accurate CI-job mapping and file names (T1.2, T3.1, T3.3), migration re-check wording, and auth-before-enableable ordering.
