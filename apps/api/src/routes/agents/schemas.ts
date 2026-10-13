@@ -614,7 +614,8 @@ export const securityProviderValues = [
   'emsisoft',
   'webroot',
   'withsecure',
-  'other'
+  'other',
+  'unknown'
 ] as const;
 
 export type SecurityProviderValue = (typeof securityProviderValues)[number];
