@@ -142,6 +142,12 @@ describe('deriveWatchdogInstallBanner', () => {
     ).toEqual({ state: 'gave_up', errorClass: 'signature', since: EARLIER.toISOString() });
   });
 
+  it('a banner state with a null class is reported with class unknown', () => {
+    expect(
+      deriveWatchdogInstallBanner({ watchdogInstallState: 'unsupported', watchdogInstallErrorClass: null, watchdogInstallSince: EARLIER }),
+    ).toEqual({ state: 'unsupported', errorClass: 'unknown', since: EARLIER.toISOString() });
+  });
+
   it('an out-of-vocabulary stored class is reported as unknown', () => {
     expect(
       deriveWatchdogInstallBanner({ watchdogInstallState: 'gave_up', watchdogInstallErrorClass: 'weird', watchdogInstallSince: null }),

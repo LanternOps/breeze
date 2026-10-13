@@ -742,7 +742,28 @@ describe('DeviceInfoTab — watchdog install banner (#8620)', () => {
     expect(notice.textContent).toMatch(/install command/i);
   });
 
-  it('falls back to a generic reason for an unknown class', async () => {
+  it.each([
+    'network', 'server', 'policy', 'signature', 'checksum',
+    'dev_build', 'unsupported_os', 'install_cmd', 'locked', 'unknown',
+  ])('class %s resolves to a real localized phrase (no raw key, no raw token)', async (errorClass) => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass, since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).not.toContain('deviceInfoTab.');
+    // Only snake_case tokens are distinguishable from the English phrases.
+    if (errorClass.includes('_')) expect(notice.textContent).not.toContain(errorClass);
+    expect(notice.textContent).toMatch(/\(since .+\): [a-z]/i);
+  });
+
+  it('renders a dash, not Invalid Date, when since is null', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'network', since: null } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).toContain('—');
+    expect(notice.textContent).not.toMatch(/invalid date/i);
+  });
+
+  it('falls back to the generic reason for an unknown class', async () => {
     load({ watchdogInstall: { state: 'gave_up', errorClass: 'brand_new_class', since: SINCE } });
     render(<DeviceInfoTab deviceId={deviceId} />);
     const notice = await screen.findByTestId('watchdog-install-issue');

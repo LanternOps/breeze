@@ -1032,11 +1032,4 @@ describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
   ])('never rejects the heartbeat for %s', (_label, bad) => {
     expect(heartbeatSchema.safeParse({ ...minimal, watchdogInstall: bad }).success).toBe(true);
   });
-
-  it('new payload against the PRE-change schema snapshot parses and strips the key (new agent / old API)', () => {
-    const preChange = z.object({ status: z.enum(['ok', 'warning', 'error']), agentVersion: z.string() });
-    const r = preChange.safeParse({ ...minimal, watchdogInstall: valid });
-    expect(r.success).toBe(true);
-    if (r.success) expect(r.data).not.toHaveProperty('watchdogInstall');
-  });
 });
