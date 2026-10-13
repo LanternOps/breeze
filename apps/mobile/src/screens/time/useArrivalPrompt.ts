@@ -266,7 +266,13 @@ export function useArrivalPrompt() {
         ).catch(() => undefined);
         track('location_prompt_started');
       }
-      showToast(effects.toast);
+      // The non-billable retry lives on the ticket screen; a toast phrased as a
+      // question with no button would be a dead end here.
+      showToast(
+        effects.offerNonBillable
+          ? { kind: 'error', text: 'Approval required for this ticket. Start the timer from the ticket to log it as non-billable.' }
+          : effects.toast
+      );
       close();
     } catch (error) {
       reportInternalError(error, 'arrivalPrompt.start');

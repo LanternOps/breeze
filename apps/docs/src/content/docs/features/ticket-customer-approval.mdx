@@ -54,7 +54,7 @@ In the **Work Types** card on the Billing **Rates** tab, tick **After-hours** on
 | Finished entry (manual log, timer stop, edit) crosses the line | Recorded as **Awaiting approval**, linked to a pending request | Same -- past work is never refused |
 | Billable timer **start** at or over the ceiling, or on an uncovered after-hours work type | Allowed; held at stop | Refused with an **Approval required** message |
 
-When a hard-mode start is refused, the technician can retry the start as **non-billable** or ask for approval. Held entries stay editable; editing one re-runs the check and may release it.
+When a hard-mode start is refused, the technician can retry the start as **non-billable** (this needs the same billing permission as any change to an entry's billable flag; without it they are told to ask someone who has it) or ask for approval. Held entries stay editable; editing one re-runs the check and may release it.
 
 One entry can need both kinds of consent. After-hours is evaluated first, and a release re-runs the budget check.
 

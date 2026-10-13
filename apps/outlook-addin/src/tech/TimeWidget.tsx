@@ -70,11 +70,18 @@ const APPROVAL_MESSAGES: Record<string, string> = {
   REQUEST_NOT_PENDING: 'That approval request was already decided.',
   REQUEST_CHANGED: 'The approval request was updated. Refresh and review it again.',
   REQUEST_EXPIRED: 'The approval request expired.',
+  // The server requires billing permission for ANY billable-flag change, including
+  // the non-billable retry. Say what to do instead of a raw code.
+  MANAGE_BILLING_REQUIRED:
+    'You do not have permission to log this as non-billable. Ask someone with billing permission, or have customer approval requested.',
 };
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof TechApiError) {
-    const friendly = err.status === 409 ? APPROVAL_MESSAGES[err.code] : undefined;
+    const friendly =
+      err.status === 409 || (err.status === 403 && err.code === 'MANAGE_BILLING_REQUIRED')
+        ? APPROVAL_MESSAGES[err.code]
+        : undefined;
     if (friendly) return friendly;
     return `${fallback} (${err.code}).`;
   }
@@ -110,6 +117,15 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
   const [workTypes, setWorkTypes] = useState<AddinWorkType[]>([]);
   // '' = Default: the field is omitted and the server applies the category default.
   const [workTypeId, setWorkTypeId] = useState('');
+
+  // The non-billable prompt and held notice describe ONE ticket. Switching the
+  // linked ticket must not let "Log as non-billable" start a timer on a ticket
+  // the gate never refused.
+  const linkedTicketId = linkedTicket?.id ?? null;
+  useEffect(() => {
+    setApprovalBlocked(false);
+    setHeldNotice(false);
+  }, [linkedTicketId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,10 +203,12 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
       });
       setPendingStart(false);
     } catch (err) {
-      if (err instanceof TechApiError && err.status === 409 && err.code === 'APPROVAL_REQUIRED') {
+      if (err instanceof TechApiError && err.status === 409 && err.code === 'APPROVAL_REQUIRED' && !nonBillable) {
         setPendingStart(false);
         setApprovalBlocked(true);
       } else {
+        // Also the non-billable retry being refused: say so instead of re-asking.
+        if (nonBillable) setApprovalBlocked(false);
         onBanner(errorMessage(err, 'Failed to start timer'));
       }
     } finally {

@@ -130,6 +130,17 @@ describe('TimeWidget customer-approval handling (#8196 W05)', () => {
     await waitFor(() => expect(onBanner).toHaveBeenCalledWith(expect.stringContaining(fragment)));
   });
 
+  it('a non-billable retry without billing permission (403 MANAGE_BILLING_REQUIRED) explains what to do', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'startTimer').mockRejectedValue(new TechApiError(403, 'MANAGE_BILLING_REQUIRED'));
+    const onBanner = vi.fn();
+    render(<TimeWidget {...baseProps({ onBanner })} />);
+    await waitFor(() => expect(screen.getByTestId('time-start-button')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('time-start-button'));
+    await waitFor(() => expect(onBanner).toHaveBeenCalledWith(expect.stringContaining('billing permission')));
+    expect(onBanner).not.toHaveBeenCalledWith(expect.stringContaining('MANAGE_BILLING_REQUIRED'));
+  });
+
   it('ENTRY_CHANGED is still surfaced with its code (not swallowed)', async () => {
     vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
     vi.spyOn(api, 'logTime').mockRejectedValue(new TechApiError(409, 'ENTRY_CHANGED'));
@@ -137,5 +148,41 @@ describe('TimeWidget customer-approval handling (#8196 W05)', () => {
     render(<TimeWidget {...baseProps({ onBanner })} />);
     await submitLog();
     await waitFor(() => expect(onBanner).toHaveBeenCalledWith(expect.stringContaining('ENTRY_CHANGED')));
+  });
+
+  it('switching the linked ticket clears the non-billable prompt, so it cannot start a timer on another ticket', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'startTimer').mockRejectedValue(new TechApiError(409, 'APPROVAL_REQUIRED'));
+    const view = render(<TimeWidget {...baseProps()} />);
+    await waitFor(() => expect(screen.getByTestId('time-start-button')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('time-start-button'));
+    await waitFor(() => expect(screen.getByTestId('time-approval-required')).toBeTruthy());
+    view.rerender(<TimeWidget {...baseProps({ linkedTicket: { ...ticket, id: 'ticket-2', internalNumber: 'T-200' } })} />);
+    await waitFor(() => expect(screen.queryByTestId('time-approval-required')).toBeNull());
+  });
+
+  it('a refused non-billable retry shows a banner instead of re-asking', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'startTimer').mockRejectedValue(new TechApiError(409, 'APPROVAL_REQUIRED'));
+    const onBanner = vi.fn();
+    render(<TimeWidget {...baseProps({ onBanner })} />);
+    await waitFor(() => expect(screen.getByTestId('time-start-button')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('time-start-button'));
+    await waitFor(() => expect(screen.getByTestId('time-approval-nonbillable')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('time-approval-nonbillable'));
+    await waitFor(() => expect(onBanner).toHaveBeenCalledWith(expect.stringContaining('Approval required')));
+    expect(screen.queryByTestId('time-approval-required')).toBeNull();
+  });
+
+  it('a held notice is cleared by the next write that is not held', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'logTime')
+      .mockResolvedValueOnce({ entry: entry({ requestId: 'req-1', trigger: 'budget' }) })
+      .mockResolvedValueOnce({ entry: entry(null) });
+    render(<TimeWidget {...baseProps()} />);
+    await submitLog();
+    await waitFor(() => expect(screen.getByTestId('time-held-notice')).toBeTruthy());
+    await submitLog();
+    await waitFor(() => expect(screen.queryByTestId('time-held-notice')).toBeNull());
   });
 });

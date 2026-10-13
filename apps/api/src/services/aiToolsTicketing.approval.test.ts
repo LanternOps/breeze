@@ -14,6 +14,9 @@ const timeSvc = vi.hoisted(() => ({
 }));
 vi.mock('./timeEntryService', () => timeSvc);
 
+const scope = vi.hoisted(() => ({ deviceInSiteScope: vi.fn() }));
+vi.mock('../routes/tickets/siteScope', async (orig) => ({ ...(await orig<object>()), deviceInSiteScope: scope.deviceInSiteScope }));
+
 import { db } from '../db';
 import { aiTools } from './aiToolNames';
 import './aiTools';
@@ -37,6 +40,7 @@ function stubTicketLookup(rows: unknown[]) {
 beforeEach(() => {
   vi.restoreAllMocks();
   summary.getTicketApprovalSummary.mockReset();
+  scope.deviceInSiteScope.mockReset().mockResolvedValue(true);
   for (const k of ['startTimer', 'stopTimer', 'createTimeEntry'] as const) timeSvc[k].mockReset();
 });
 
@@ -72,6 +76,40 @@ describe('get_ticket_approval_status (read-only, #8196 W05)', () => {
     expect(out.approval).toEqual({ policy: { enabled: true }, requests: [] });
   });
 
+  it('hides a device-bound ticket outside the caller site scope', async () => {
+    stubTicketLookup([{ id: 't1', orgId: 'o1', partnerId: 'p1', deviceId: 'd1' }]);
+    scope.deviceInSiteScope.mockResolvedValue(false);
+    const out = JSON.parse(await tool().handler({ ticketId: 't1' }, partnerAuth()));
+    expect(out.error).toMatch(/not found/i);
+    expect(scope.deviceInSiteScope).toHaveBeenCalled();
+    expect(summary.getTicketApprovalSummary).not.toHaveBeenCalled();
+  });
+
+  it('resolves the partner from the org when the ticket row has none, and refuses when neither exists', async () => {
+    const rows: Record<string, unknown>[][] = [[{ id: 't1', orgId: 'o1', partnerId: null, deviceId: null }], [{ partnerId: 'p9' }]];
+    const chain: Record<string, unknown> = {};
+    chain.from = () => chain; chain.where = () => chain;
+    chain.limit = async () => rows.shift() ?? [];
+    vi.spyOn(db, 'select').mockReturnValue(chain as never);
+    summary.getTicketApprovalSummary.mockResolvedValue({ requests: [] });
+    await tool().handler({ ticketId: 't1' }, partnerAuth());
+    expect(summary.getTicketApprovalSummary).toHaveBeenCalledWith(expect.anything(), { ticketId: 't1', partnerId: 'p9', orgId: 'o1' });
+
+    summary.getTicketApprovalSummary.mockClear();
+    rows.push([{ id: 't1', orgId: 'o1', partnerId: null, deviceId: null }], [{ partnerId: null }]);
+    const out = JSON.parse(await tool().handler({ ticketId: 't1' }, partnerAuth()));
+    expect(out.error).toMatch(/not found/i);
+    expect(summary.getTicketApprovalSummary).not.toHaveBeenCalled();
+  });
+
+  it('returns a generic error when the summary throws', async () => {
+    stubTicketLookup([{ id: 't1', orgId: 'o1', partnerId: 'p1', deviceId: null }]);
+    summary.getTicketApprovalSummary.mockRejectedValue(new Error('boom'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const out = JSON.parse(await tool().handler({ ticketId: 't1' }, partnerAuth()));
+    expect(out.error).toMatch(/operation failed/i);
+  });
+
   it('requires a ticketId', async () => {
     const out = JSON.parse(await tool().handler({}, partnerAuth()));
     expect(out.error).toMatch(/ticketId/);
@@ -97,6 +135,14 @@ describe('manage_tickets time results explain customer-approval holds (#8196 W05
     const out = JSON.parse(await manage().handler({ action, ...extra }, partnerAuth()));
     expect(out.approvalHold).toEqual({ requestId: 'req-1', trigger: 'budget' });
     expect(out.note).toBe('Recorded; held pending customer approval (request req-1). It is not billed until the customer approves or staff record consent.');
+  });
+
+  it('start_timer forwards isBillable only when it is a boolean (the non-billable retry)', async () => {
+    timeSvc.startTimer.mockResolvedValue({ id: 'e1', currencyCode: null, approvalHold: null });
+    await manage().handler({ action: 'start_timer', isBillable: false }, partnerAuth());
+    expect(timeSvc.startTimer.mock.calls[0]![0]).toMatchObject({ isBillable: false });
+    await manage().handler({ action: 'start_timer', isBillable: 'no' }, partnerAuth());
+    expect(timeSvc.startTimer.mock.calls[1]![0].isBillable).toBeUndefined();
   });
 
   it('adds no note when nothing is held', async () => {
