@@ -341,6 +341,80 @@ export function assertNoPolicyApprovalEdits(
   }
 }
 
+/**
+ * The approval keys a patch link still stores from before the Update Ring
+ * owned them (#8186). W04 strips them; until then a write that does not send
+ * them keeps the stored values (#8671).
+ */
+export const LEGACY_PATCH_APPROVAL_KEYS = [
+  'apps',
+  'autoApprove',
+  'autoApproveSeverities',
+  'autoApproveDeferralDays',
+] as const;
+
+/**
+ * `patchInlineSettingsSchema` fills an absent `apps` with `[]` and absent
+ * `autoApprove*` with their defaults. Hand the service only the legacy
+ * approval keys the client actually sent, so an omitted key means "unchanged"
+ * rather than an explicit edit the ring-ownership guards reject (#8671).
+ */
+export function omitUnsentLegacyApprovalKeys(
+  raw: unknown,
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
+  const sent = isRecord(raw) ? raw : {};
+  const result: Record<string, unknown> = { ...parsed };
+  for (const key of LEGACY_PATCH_APPROVAL_KEYS) {
+    if (!(key in sent)) delete result[key];
+  }
+  return result;
+}
+
+/**
+ * Fill the legacy approval keys an update did not send from what the link
+ * stores, so a write that omits them (the Patch tab, the AI tool, a PATCH
+ * routed through `omitUnsentLegacyApprovalKeys`) does not reset them to
+ * schema defaults (#8671). `stored` is the link JSONB with the relational
+ * `autoApprove` the read path serves overlaid; `apps` comes from the salvage
+ * reader so a stored document that fails validation still yields its valid
+ * rules instead of failing the write.
+ */
+export function withStoredLegacyApprovalKeys(
+  incoming: Record<string, unknown>,
+  stored: unknown,
+  context: { configPolicyId: string; featureLinkId: string },
+): Record<string, unknown> {
+  const missing = LEGACY_PATCH_APPROVAL_KEYS.filter((key) => !(key in incoming));
+  if (missing.length === 0 || stored === null || stored === undefined) return incoming;
+  const salvaged = normalizeStoredInlineSettingsWithSalvage(stored, context);
+  const storedRecord = isRecord(stored) ? stored : {};
+  const result: Record<string, unknown> = { ...incoming };
+  for (const key of missing) {
+    if (key === 'apps') {
+      result.apps = salvaged.apps;
+    } else if (key === 'autoApprove') {
+      result.autoApprove = storedRecord.autoApprove === true;
+    } else if (key === 'autoApproveSeverities') {
+      result.autoApproveSeverities = salvaged.autoApproveSeverities;
+    } else {
+      result.autoApproveDeferralDays = salvaged.autoApproveDeferralDays;
+    }
+  }
+  // The schema refuses autoApprove without a severity. A stored document can
+  // only reach that state by failing validation (its severities fall back to
+  // the default); the policy flag is inert since reads moved to the ring, so
+  // drop it rather than fail an unrelated save.
+  if (
+    result.autoApprove === true
+    && Array.isArray(result.autoApproveSeverities)
+    && result.autoApproveSeverities.length === 0
+  ) {
+    result.autoApprove = false;
+  }
+  return result;
+}
+
 /** The enforced set of a link's stored legacy `apps`, as the salvage reads it. */
 export function storedLegacyAppRuleSet(
   stored: unknown,

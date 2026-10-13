@@ -75,6 +75,7 @@ import {
 import type { AuthContext } from '../middleware/auth';
 import {
   assertNoPolicyApprovalEdits,
+  withStoredLegacyApprovalKeys,
   enforcedAppRuleSet,
   loadConfigPolicyPartnerId,
   normalizePatchInlineSettings,
@@ -2029,25 +2030,45 @@ export async function updateFeatureLink(
       // (assembleInlineSettings), so a stale tab may echo a `true` that the
       // link JSONB lacks. Treat either source as "already stored".
       const [relational] = await tx
-        .select({ autoApprove: configPolicyPatchSettings.autoApprove })
+        .select({
+          autoApprove: configPolicyPatchSettings.autoApprove,
+          autoApproveSeverities: configPolicyPatchSettings.autoApproveSeverities,
+        })
         .from(configPolicyPatchSettings)
         .where(eq(configPolicyPatchSettings.featureLinkId, existing.id))
         .limit(1);
       const storedInline = existing.inlineSettings && typeof existing.inlineSettings === 'object' && !Array.isArray(existing.inlineSettings)
         ? existing.inlineSettings as Record<string, unknown>
         : null;
+      const relationalSeverities = Array.isArray(relational?.autoApproveSeverities) && relational.autoApproveSeverities.length > 0
+        ? { autoApproveSeverities: relational.autoApproveSeverities }
+        : {};
       const stored = relational?.autoApprove === true
-        ? { ...(storedInline ?? {}), autoApprove: true }
+        ? { ...(storedInline ?? {}), ...relationalSeverities, autoApprove: true }
         : existing.inlineSettings;
-      assertNoPolicyApprovalEdits(stored, updates.inlineSettings, { configPolicyId: existing.configPolicyId, featureLinkId: existing.id });
-    }
-
-    // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
-    if (
+      const linkContext = { configPolicyId: existing.configPolicyId, featureLinkId: existing.id };
+      // Only the approval keys the caller sent are judged; an absent key means
+      // "unchanged" (#8671).
+      assertNoPolicyApprovalEdits(stored, updates.inlineSettings, linkContext);
+      if (
+        updates.featurePolicyId !== undefined
+        && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
+      ) {
+        // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
+        await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
+      }
+      // ...and is written back as stored, not reset to schema defaults.
+      updates.inlineSettings = withStoredLegacyApprovalKeys(
+        updates.inlineSettings as Record<string, unknown>,
+        stored,
+        linkContext,
+      );
+    } else if (
       existing.featureType === 'patch'
       && updates.featurePolicyId !== undefined
       && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
     ) {
+      // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
       await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
     }
 
