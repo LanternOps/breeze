@@ -65,6 +65,56 @@ func TestRetainStateDecodeBoundsEntries(t *testing.T) {
 	}
 }
 
+func TestRetainStateDecodeSeventeenthEntryIgnored(t *testing.T) {
+	raw := "[" + strings.Repeat(`"x",`, retainStateMaxEntries) + `"pam"]`
+	if got := decodeRetain(t, raw); got.PAM {
+		t.Fatal("the entry just past the cap must be ignored")
+	}
+}
+
+func captureMalformedRetainWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := logRetainStateMalformed
+	logRetainStateMalformed = func(reason string) { got = append(got, reason) }
+	retainStateMalformedWarned.Store(false)
+	t.Cleanup(func() {
+		logRetainStateMalformed = old
+		retainStateMalformedWarned.Store(false)
+	})
+	return &got
+}
+
+// A wrongly shaped retainState silently falls back to legacy semantics, so it
+// must be visible once per process — never once per beat.
+func TestRetainStateMalformedWarnsOncePerProcess(t *testing.T) {
+	got := captureMalformedRetainWarnings(t)
+	for _, raw := range []string{`["pam","helper"]`, `[]`, `null`, `["futureThing"]`} {
+		decodeRetain(t, raw)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("well-formed, empty, null and unknown-name values are not malformed, got %v", *got)
+	}
+	decodeRetain(t, `{"pam":true}`)
+	decodeRetain(t, `["pam",{}]`)
+	decodeRetain(t, `["pam",5]`)
+	if len(*got) != 1 {
+		t.Fatalf("want exactly one malformed warning per process, got %v", *got)
+	}
+}
+
+func TestRetainStateMalformedShapesEachWarn(t *testing.T) {
+	for _, raw := range []string{`{"pam":true}`, `"pam"`, `3`, `["pam",{}]`, `["pam",["x"]]`, `["pam",5]`} {
+		t.Run(raw, func(t *testing.T) {
+			got := captureMalformedRetainWarnings(t)
+			decodeRetain(t, raw)
+			if len(*got) != 1 {
+				t.Fatalf("want a malformed warning for %s, got %v", raw, *got)
+			}
+		})
+	}
+}
+
 func TestRetainStateAbsentIsZero(t *testing.T) {
 	var resp HeartbeatResponse
 	if err := json.Unmarshal([]byte(`{"commands":[]}`), &resp); err != nil {
@@ -237,6 +287,14 @@ func TestRetainStateRemoteManagementKeepsPolicyFlag(t *testing.T) {
 	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}})
 	if !h.tunnelMgr.IsManagedByPolicy() {
 		t.Fatal("retain must keep managedByPolicy")
+	}
+}
+
+func TestRetainStateRemoteManagementIgnoresStrayLegacyTrue(t *testing.T) {
+	h := newRetainTestHeartbeat()
+	h.applySettingsDecisions(&HeartbeatResponse{RetainState: RetainState{RemoteManagement: true}, ManageRemoteManagement: true})
+	if h.tunnelMgr.IsManagedByPolicy() {
+		t.Fatal("retain wins: a retained remoteManagement's legacy value must be ignored")
 	}
 }
 

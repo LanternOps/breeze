@@ -28,16 +28,42 @@ type RetainState struct {
 	RemoteManagement bool
 }
 
+// retainStateMalformedWarned latches the malformed-retainState warning so it
+// is logged once per process: a server that sends a bad shape sends it on
+// every beat, and a per-beat line would flood every agent's log.
+var retainStateMalformedWarned atomic.Bool
+
+// logRetainStateMalformed is the log seam for that warning, so tests can count
+// the lines an agent would actually emit.
+var logRetainStateMalformed = func(reason string) {
+	log.Warn("ignoring malformed retainState in heartbeat response; applying legacy semantics (absent = off)",
+		"reason", reason)
+}
+
+func noteRetainStateMalformed(reason string) {
+	if retainStateMalformedWarned.CompareAndSwap(false, true) {
+		logRetainStateMalformed(reason)
+	}
+}
+
 // UnmarshalJSON never returns an error: this field rides on the heartbeat
 // response, and a decode failure would drop the beat's commands and upgrade
-// instructions. Anything that is not an array of strings degrades to "retain
-// nothing" (legacy semantics); unknown names, oversized names and entries
-// beyond retainStateMaxEntries are ignored.
+// instructions. A value that is not an array (null included) retains
+// nothing, which is the legacy semantics. Within an array, entries are read
+// in order: names seen before a nested object/array are kept and parsing
+// stops there; non-string entries, unknown names, oversized names and
+// entries beyond retainStateMaxEntries are ignored. Wrong shapes (not null,
+// not unknown names, which are forward compatibility) are logged once per
+// process.
 func (r *RetainState) UnmarshalJSON(data []byte) error {
 	*r = RetainState{}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
-		return nil // not an array: retain nothing
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('[') {
+		if err != nil || tok != nil { // tok == nil is JSON null: not malformed
+			noteRetainStateMalformed("not an array")
+		}
+		return nil // retain nothing
 	}
 	// Stream tokens and stop after retainStateMaxEntries, so parse work is
 	// bounded by the cap rather than by the array length. A nested value
@@ -45,13 +71,19 @@ func (r *RetainState) UnmarshalJSON(data []byte) error {
 	for i := 0; i < retainStateMaxEntries && dec.More(); i++ {
 		tok, err := dec.Token()
 		if err != nil {
+			noteRetainStateMalformed("unreadable entry")
 			return nil
 		}
 		if _, nested := tok.(json.Delim); nested {
+			noteRetainStateMalformed("nested value")
 			return nil
 		}
 		name, ok := tok.(string)
-		if !ok || len(name) > retainStateMaxNameLen {
+		if !ok {
+			noteRetainStateMalformed("non-string entry")
+			continue
+		}
+		if len(name) > retainStateMaxNameLen {
 			continue
 		}
 		switch name {
@@ -81,7 +113,8 @@ func (h *Heartbeat) applySettingsDecisions(resp *HeartbeatResponse) {
 // the current state is kept: if PAM is enabled nothing runs; if PAM is off
 // (the boot default, or a disable whose verified cleanup may still be
 // pending) the disable path keeps running exactly as it does today for an
-// off state — it is idempotent, retries unfinished cleanup, and can never
+// off state — it runs on every such beat, is idempotent (so a cleanup that
+// failed to verify is retried), and can never
 // enable anything. It also advances the per-beat retain-streak counters, so
 // it must be called exactly once per response.
 func (h *Heartbeat) applyPAMDecision(resp *HeartbeatResponse) {

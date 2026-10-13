@@ -298,9 +298,9 @@ type SecurityCapabilities struct {
 	WorkloadInventoryProtocolVersion int                      `json:"workloadInventoryProtocolVersion,omitempty"`
 	PamReconciliation                *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 	// RetainStateProtocolVersion (#8258) declares that this build honours
-	// HeartbeatResponse.RetainState (retain_state.go). The API sends
-	// retainState only to a beat declaring exactly 1; any other value gets
-	// the legacy response shape.
+	// HeartbeatResponse.RetainState (retain_state.go). Contract for the API
+	// (emission lands in a later wave): send retainState only to a beat
+	// declaring exactly 1; any other value gets the legacy response shape.
 	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
 }
 
@@ -5516,7 +5516,8 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 // handleUACInterception updates the UAC interception flag from the heartbeat
 // response and logs state transitions. nil (field absent) and false are
 // identical: both turn capture off AND run the PAM lifetime disable/cleanup
-// path (retried on every such beat until it verifies). Capture is opt-in and
+// path, on every such beat (idempotent; a cleanup that failed to verify is
+// therefore retried). Capture is opt-in and
 // stays off until the server sends an explicit true. Absence never means
 // "keep the current state" — only HeartbeatResponse.RetainState expresses
 // that, and applyPAMDecision handles it before calling here (#8258).
