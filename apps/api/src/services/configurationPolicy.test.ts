@@ -305,6 +305,36 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
     expect(writtenInline(tx)).toMatchObject({ apps: PATCH_INPUT.apps });
   });
 
+  it('a Patch-tab ring change (settings sent, apps omitted) off an invalid ring still needs a target that carries the legacy rules', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
+    const { apps: _apps, autoApprove: _aa, autoApproveSeverities: _sev, ...rest } = PATCH_INPUT;
+    resolvePatchPolicyReferenceMock
+      .mockResolvedValueOnce(ring([], false, null))
+      .mockResolvedValueOnce(ring([]));
+    const rejected = txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2', inlineSettings: rest }, 'policy-1'))
+      .rejects.toMatchObject(moved);
+    expect(rejected.update).not.toHaveBeenCalled();
+
+    resolvePatchPolicyReferenceMock
+      .mockResolvedValueOnce(ring([], false, null))
+      .mockResolvedValueOnce(ring(ENFORCED_RULES));
+    const accepted = txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2', inlineSettings: rest }, 'policy-1'))
+      .resolves.not.toBeNull();
+    expect(writtenInline(accepted)).toMatchObject({ apps: PATCH_INPUT.apps });
+  });
+
+  it('drops (and warns about) a stored autoApprove that has no valid severity instead of failing an unrelated save', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tx = txWithStoredPatchLink({ ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: [] });
+    const { apps: _apps, autoApprove: _aa, autoApproveSeverities: _sev, autoApproveDeferralDays: _d, ...rest } = PATCH_INPUT_NO_APPROVAL;
+    await expect(updateFeatureLink('link-1', { inlineSettings: rest }, 'policy-1')).resolves.not.toBeNull();
+    expect(writtenInline(tx)).toMatchObject({ autoApprove: false, autoApproveSeverities: [] });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/autoApprove.*link-1|link-1.*autoApprove/));
+    warn.mockRestore();
+  });
+
   it('an explicitly sent apps list is written as sent (no merge over it)', async () => {
     const tx = txWithStoredPatchLink({ ...PATCH_INPUT_NO_APPROVAL, scheduleTime: '2:00', apps: PATCH_INPUT.apps });
     await updateFeatureLink('link-1', { inlineSettings: PATCH_INPUT_NO_APPROVAL }, 'policy-1');

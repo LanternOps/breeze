@@ -509,6 +509,26 @@ describe('PatchTab', () => {
       expect(await screen.findByText('Failed to create update ring')).toBeInTheDocument();
     });
 
+    it('does not call a just-created ring unavailable when the ring refetch fails', async () => {
+      let gets = 0;
+      fetchMock.mockImplementation((_url: any, opts: any) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: { id: 'ring-9' } }) } as unknown as Response);
+        }
+        gets += 1;
+        if (gets > 1) return Promise.resolve({ ok: false, status: 503, json: vi.fn() } as unknown as Response);
+        return Promise.resolve({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [] }) } as unknown as Response);
+      });
+
+      render(<PatchTab {...baseProps} />);
+      fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+      fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Broad' } });
+      fireEvent.click(screen.getByRole('button', { name: /create ring/i }));
+
+      expect(await screen.findByText('Failed to load update rings')).toBeInTheDocument();
+      expect(screen.queryByTestId('patch-ring-invalid')).toBeNull();
+    });
+
     it("surfaces the server's reason when an inline ring save is rejected", async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {
         if (opts?.method === 'POST') {

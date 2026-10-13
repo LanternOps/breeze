@@ -275,6 +275,8 @@ export default function PatchTab({
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
     setRingsError(undefined);
+    // A stale list must not mark a linked (or just-created) ring unavailable.
+    setRingsLoaded(false);
     try {
       const response = await fetchWithAuth("/update-rings");
       // fetchWithAuth doesn't throw on 4xx/5xx — without this the picker would

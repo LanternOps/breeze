@@ -410,6 +410,10 @@ export function withStoredLegacyApprovalKeys(
     && Array.isArray(result.autoApproveSeverities)
     && result.autoApproveSeverities.length === 0
   ) {
+    console.warn(
+      `[configPolicyPatching] Dropping stored autoApprove with no valid severity for config policy ` +
+        `${context.configPolicyId} (feature link ${context.featureLinkId}); the Update Ring owns auto-approval`,
+    );
     result.autoApprove = false;
   }
   return result;
