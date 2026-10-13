@@ -139,7 +139,7 @@ import { m365CustomerGraphReadRoutes } from './m365CustomerGraphRead';
 
 const requiredGrant = {
   resourceApplicationId: '00000003-0000-0000-c000-000000000000',
-  appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4',
+  appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca',
   value: 'User.ReadWrite.All',
 };
 
@@ -150,7 +150,7 @@ function connection(overrides: Record<string, unknown> = {}) {
     tenantId: TENANT_ID,
     clientId: '88888888-8888-4888-8888-888888888888',
     profile: 'customer-graph-actions',
-    permissionManifestVersion: 1,
+    permissionManifestVersion: 2,
     observedGrants: [requiredGrant],
     consentAttemptId: ATTEMPT_ID,
     grantsVerifiedAt: new Date('2026-07-14T10:00:00.000Z'),
@@ -226,7 +226,7 @@ beforeEach(() => {
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
     tenantId: null, clientId: '', displayName: null, status: 'revoked',
-    permissionManifestVersion: 1, observedGrants: [], grantsVerifiedAt: null,
+    permissionManifestVersion: 2, observedGrants: [], grantsVerifiedAt: null,
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
@@ -267,7 +267,7 @@ describe('GET /m365/customer-graph-actions/connections', () => {
     expect(response.status).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(ORG_ID);
     await expect(response.json()).resolves.toMatchObject({
-      profile: { id: 'customer-graph-actions', displayName: 'Customer Graph Actions', manifestVersion: 1 },
+      profile: { id: 'customer-graph-actions', displayName: 'Customer Graph Actions', manifestVersion: 2 },
       onboardingEnabled: true,
       connection: null,
     });
@@ -285,8 +285,8 @@ describe('GET /m365/customer-graph-actions/connections', () => {
       displayName: 'Contoso',
       status: 'active',
       grantHealth: 'active',
-      manifestVersion: 1,
-      currentManifestVersion: 1,
+      manifestVersion: 2,
+      currentManifestVersion: 2,
       observedGrants: [requiredGrant],
       missingGrants: [],
       unexpectedGrants: [],
@@ -391,7 +391,7 @@ describe('POST /m365/customer-graph-actions/connections/consent', () => {
       connectionId: CONNECTION_ID,
       profile: 'customer-graph-actions',
       consentAttemptId: ATTEMPT_ID,
-      manifestVersion: 1,
+      manifestVersion: 2,
       outcome: 'initiated',
       actorId: USER_ID,
     }));
@@ -418,7 +418,7 @@ describe('scoped connection mutations', () => {
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       event: 'm365.customer_graph_actions.retested', connectionId: CONNECTION_ID,
-      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 1,
+      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 2,
     }));
   });
 
@@ -456,7 +456,7 @@ describe('scoped connection mutations', () => {
         clientId: null,
         displayName: null,
         status: 'revoked',
-        manifestVersion: 1,
+        manifestVersion: 2,
         observedGrants: [],
         missingGrants: [],
         unexpectedGrants: [],
@@ -611,8 +611,8 @@ describe('connection DTO grant health', () => {
     )).json();
 
     expect(body.connection.grantHealth).toBe('active');
-    expect(body.connection.manifestVersion).toBe(1);
-    expect(body.connection.currentManifestVersion).toBe(1);
+    expect(body.connection.manifestVersion).toBe(2);
+    expect(body.connection.currentManifestVersion).toBe(2);
   });
 
   it('reports manifest-stale for a row behind the code manifest', async () => {
@@ -627,7 +627,7 @@ describe('connection DTO grant health', () => {
 
     expect(body.connection.grantHealth).toBe('manifest-stale');
     expect(body.connection.manifestVersion).toBe(0);
-    expect(body.connection.currentManifestVersion).toBe(1);
+    expect(body.connection.currentManifestVersion).toBe(2);
   });
 });
 

@@ -745,7 +745,7 @@ describe('createConnectionService factory (non-read profile)', () => {
 
   function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-    organizationDisplayName: 'Contoso', manifestVersion: 1,
+    organizationDisplayName: 'Contoso', manifestVersion: 2,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z',

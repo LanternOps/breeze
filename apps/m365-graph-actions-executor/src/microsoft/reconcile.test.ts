@@ -25,6 +25,17 @@ describe('reconcileCustomerGraphActions', () => {
     expect(expected).toHaveLength(2);
   });
 
+  it('reconciles to active for the real application appRoleAssignments Graph returns (#8648)', () => {
+    const result = reconcile([
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca', value: null },
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7', value: null },
+    ]);
+
+    expect(result.outcome).toBe('active');
+    expect(result.missingGrants).toEqual([]);
+    expect(result.unexpectedGrants).toEqual([]);
+  });
+
   it('returns observed=2/missing=0/unexpected=0 for exactly the two actions grants', () => {
     const result = reconcile(expected);
 
@@ -103,7 +114,7 @@ describe('reconcileCustomerGraphActions', () => {
   it('returns verified-but-degraded proof with no partial set or grant timestamp when reconciliation is unavailable', () => {
     expect(reconcile(null)).toEqual({
       ...PROOF,
-      manifestVersion: 1,
+      manifestVersion: 2,
       verifiedAt: VERIFIED_AT.toISOString(),
       outcome: 'grant_reconciliation_unavailable',
       grantReconciliation: 'unavailable',
