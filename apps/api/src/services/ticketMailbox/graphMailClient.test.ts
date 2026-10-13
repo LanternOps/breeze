@@ -91,6 +91,15 @@ describe('markRead', () => {
   });
 });
 
+describe('markRead failures', () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  it('rejects with the HTTP status when Graph refuses the PATCH', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, headers: new Map(), text: async () => 'denied' });
+    await expect(markRead('tok', 'support@a.com', 'm1')).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('listMessageAttachments (#6688)', () => {
   beforeEach(() => fetchMock.mockReset());
 

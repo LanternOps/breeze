@@ -326,11 +326,17 @@ export async function getFileAttachmentBytes(
 /** `deadlineAt` is the sweep's shared deadline (#8308); past it the call throws GraphSweepBudgetError. */
 export async function markRead(token: string, mailbox: string, messageId: string, deadlineAt?: number): Promise<void> {
   const url = `${GRAPH}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}`;
-  await graphFetch(url, token, {
+  const res = await graphFetch(url, token, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ isRead: true }),
   }, GRAPH_POLL_TIMEOUT_MS, deadlineAt);
+  // A rejected PATCH is a failure, so the caller's best-effort handler logs it.
+  if (!res.ok) {
+    const err = new Error(`Graph mark-read ${res.status}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
 }
 
 /**
