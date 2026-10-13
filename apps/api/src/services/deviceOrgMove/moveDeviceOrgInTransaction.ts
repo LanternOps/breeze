@@ -891,7 +891,7 @@ export async function moveDeviceOrgInTransaction(
       // devices_restamp_unactuated_elevation_requests trigger, which has
       // normally already run, so this copy matches nothing.
       await tx.execute(
-        sql`UPDATE elevation_requests r SET org_id = ${targetOrgId}::uuid
+        sql`UPDATE ${sql.identifier(table)} r SET org_id = ${targetOrgId}::uuid
             WHERE r.device_id = ${deviceId}::uuid AND r.org_id IS DISTINCT FROM ${targetOrgId}::uuid
               AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)`,
       );

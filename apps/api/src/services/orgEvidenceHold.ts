@@ -6,7 +6,10 @@
  * behind under the loser's org_id). `elevation_requests` and
  * `elevation_audit` still repoint today; whatever chain rows the loser STILL
  * owns after the Phase-B walk keep the loser org row alive as a held shell
- * (`org_evidence_holds`) instead of being erased in Phase C. A survivor that
+ * (`org_evidence_holds`). The hold scopes the shell's erasure rather than
+ * refusing it (W6-pre #8746): Phase C still erases the shell, but
+ * `cascadeDeleteOrg` keeps its `organizations` row and
+ * EVIDENCE_HOLD_RETAINED_TABLES and erases everything else. A survivor that
  * is itself the survivor of a held shell is held transitively when it merges
  * away, so A -> B -> C keeps A's lineage alive.
  *
@@ -27,13 +30,50 @@ import * as dbModule from '../db';
 /** Hops of held lineage a survivor can read (matches the SQL walk in breeze_merged_lineage_org_ids). */
 export const EVIDENCE_HOLD_LINEAGE_DEPTH_CAP = 5;
 
-/** Tables whose loser-owned rows keep a merged-away shell alive. */
+/**
+ * The PAM evidence chain: a merged-away shell that still owns a row in any of
+ * these is held, and a hold is released (retention expiry) only once all four
+ * are empty for the shell. This is the ONE definition of "the shell still has
+ * evidence" — writeEvidenceHold and releaseEmptyEvidenceHolds both use it.
+ */
 export const EVIDENCE_HOLD_CHAIN_TABLES = [
   'pam_actuations',
   'pam_actuation_results',
   'elevation_requests',
   'elevation_audit',
 ] as const;
+
+/**
+ * Ownership lineage the chain is anchored to (W2: the chain's composite FKs
+ * point at `device_ownership_epochs`, and the closures carry the display
+ * snapshot survivors read history through). Retained with the chain while a
+ * hold stands, but never a reason to hold on their own: a loser's epoch rows
+ * are immutable and outlive every device that ever enrolled in it, so counting
+ * them would make retention release unreachable. They go with the shell's
+ * full erasure once the hold is released.
+ */
+export const EVIDENCE_HOLD_ANCHOR_TABLES = [
+  'device_ownership_epochs',
+  'device_ownership_epoch_closures',
+] as const;
+
+/**
+ * What an erasure of a held shell keeps (besides its `organizations` row):
+ * the chain plus its anchors. Exactly the tables carrying the
+ * `breeze_merged_lineage_select` policy (spec §7.3) — the history a survivor
+ * reads is the history the hold retains; pinned by orgEvidenceHold.integration.
+ */
+export const EVIDENCE_HOLD_RETAINED_TABLES: readonly string[] = [
+  ...EVIDENCE_HOLD_CHAIN_TABLES,
+  ...EVIDENCE_HOLD_ANCHOR_TABLES,
+];
+
+/**
+ * `organizations.settings` key stamped when a held shell's scoped erasure
+ * (everything but the retained evidence) has completed. The offboarding
+ * sweeper's merge-erasure retry uses it to stop re-enqueueing that shell.
+ */
+export const EVIDENCE_HOLD_SCOPED_ERASURE_KEY = 'evidenceHoldScopedErasureAt';
 
 export const EVIDENCE_HOLD_DEFERRED_ACTION = 'tenant.erasure.deferred_evidence_hold';
 export const EVIDENCE_HOLD_RELEASED_ACTION = 'tenant.erasure.evidence_hold_released';
@@ -68,7 +108,11 @@ function ownsChainRows(org: ReturnType<typeof sql>) {
  * the walk, or that is the survivor of an existing hold. Must run AFTER the
  * registry walk (rows a policy repointed to the survivor do not count) and
  * after the `org_merge_events` insert (the hold references it). Returns the
- * reason written, or null when the loser needs no hold.
+ * reason the loser is held for, or null when the loser needs no hold.
+ *
+ * Idempotent for a Phase B retry: `ON CONFLICT DO NOTHING` (a hold row is
+ * immutable, so DO UPDATE is not an option) and, when the row already stood,
+ * its stored reason is returned rather than a false "no hold".
  */
 export async function writeEvidenceHold(input: {
   loserOrgId: string;
@@ -83,8 +127,10 @@ export async function writeEvidenceHold(input: {
            CASE WHEN ${ownsChainRows(loser)} THEN 'pam_evidence' ELSE 'transitive' END
      WHERE (${ownsChainRows(loser)})
         OR EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.survivor_org_id = ${loser})
+    ON CONFLICT (loser_org_id) DO NOTHING
     RETURNING reason`));
-  return written[0]?.reason ?? null;
+  if (written[0]) return written[0].reason;
+  return (await findEvidenceHold(input.loserOrgId))?.reason ?? null;
 }
 
 /**

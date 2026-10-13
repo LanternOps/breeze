@@ -195,12 +195,13 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
  * evidence-hold tests build the
  * post-Phase-B state by hand and drive this directly.
  *
- * A loser kept as an evidence-hold shell is NOT handed to erasure: its PAM
- * chain still lives under its org_id, and erasure would destroy it. The skip
- * is audited (`tenant.erasure.deferred_evidence_hold`, org-less). The hold is
- * re-read from the database rather than taken from `result`, so a result
- * built by any other path cannot talk Phase C into erasing a held shell; and
- * `cascadeDeleteOrg` refuses a held shell independently of this check.
+ * Every loser is handed to erasure. A loser kept as an evidence-hold shell is
+ * erased SCOPED by `cascadeDeleteOrg` itself (#8746): its PAM evidence and its
+ * organizations row stay, everything else goes. The deferral of the evidence
+ * is audited here (`tenant.erasure.deferred_evidence_hold`, org-less). The
+ * hold is re-read from the database only to word the audit: the scoping is
+ * decided by `cascadeDeleteOrg`'s own read, so no `result` built by another
+ * path can talk erasure out of it.
  */
 export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMergeResult): Promise<void> {
   const { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail } = input;
@@ -238,25 +239,25 @@ export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMer
         survivorOrgId: hold.survivorOrgId,
         mergeEventId: hold.mergeEventId,
         holdReason: hold.reason,
-        note: 'the merged-away organization still owns privileged-access evidence; its shell is kept (deleted, non-operational) and is erased with the surviving organization or once retention empties its evidence',
+        note: 'the merged-away organization still owns privileged-access evidence; erasure removes everything else now, and the evidence and the (deleted, non-operational) organization row are erased with the surviving organization or once retention empties the evidence',
       },
       result: 'success',
     });
-  } else {
-    const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
-
-    await writeAudit({
-      orgId: null,
-      actorType: 'user',
-      actorId: performedBy,
-      actorEmail: performedByEmail,
-      action: 'org.merge.erasure_enqueued',
-      resourceType: 'organization',
-      resourceId: loserOrgId,
-      details: { erasureJobId: erasureJob.id },
-      result: 'success',
-    });
   }
+
+  const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
+
+  await writeAudit({
+    orgId: null,
+    actorType: 'user',
+    actorId: performedBy,
+    actorEmail: performedByEmail,
+    action: 'org.merge.erasure_enqueued',
+    resourceType: 'organization',
+    resourceId: loserOrgId,
+    details: { erasureJobId: erasureJob.id, ...(hold ? { evidenceHoldScoped: true } : {}) },
+    result: 'success',
+  });
 
   // Cosmetic, best-effort: never lets a failure here mask a completed
   // merge + enqueued erasure, which are the parts that actually matter.

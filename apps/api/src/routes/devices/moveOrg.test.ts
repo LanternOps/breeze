@@ -795,6 +795,14 @@ describe('POST /devices/:id/move-org', () => {
         );
       }
 
+      // #8746: elevation_requests restamps only UN-actuated requests; an
+      // actuated request of any ownership epoch is frozen PAM evidence.
+      expect(flat).toContain(
+        `UPDATE elevation_requests r SET org_id = ${TARGET_ORG}::uuid WHERE r.device_id = ${DEVICE_ID}::uuid ` +
+          `AND r.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid ` +
+          'AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)',
+      );
+
       // tickets stays UNFILTERED: the trigger already moved tickets.org_id but
       // not partner_id, and the RETURNING ids drive assignee revalidation. A
       // filter here would skip every trigger-moved ticket.

@@ -30,7 +30,6 @@ import { enqueueTenantErasure } from '../../jobs/tenantErasure';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
-  EVIDENCE_HOLD_ACTIVE_MESSAGE,
   hasActiveBackupLegalHold,
   LEGAL_HOLD_ACTIVE_MESSAGE,
 } from '../../services/tenantCascade';
@@ -108,9 +107,11 @@ tenantErasureRoutes.post(
       );
     }
 
-    // Same fast path for a merged-away org kept under an evidence hold
-    // (PAM ownership epochs W5): cascadeDeleteOrg refuses it regardless, but
-    // the refused job reports as a successful skip, so say so here.
+    // A merged-away org kept under an evidence hold (PAM ownership epochs) is
+    // erased like any other, but SCOPED (#8746): cascadeDeleteOrg keeps its
+    // PAM evidence and its organizations row until the hold is released.
+    // Recorded here so the admin's request shows what was deferred, and
+    // returned so the caller is not told the org is gone.
     const evidenceHold = await withSystemDbAccessContext(() => findEvidenceHold(orgId));
     if (evidenceHold) {
       await createAuditLog({
@@ -124,19 +125,15 @@ tenantErasureRoutes.post(
         resourceName: org.name,
         details: {
           stage: 'admin_request',
-          reason: 'EVIDENCE_HOLD_ACTIVE',
           survivorOrgId: evidenceHold.survivorOrgId,
           mergeEventId: evidenceHold.mergeEventId,
+          holdReason: evidenceHold.reason,
+          note: 'erasure proceeds for everything except the privileged-access evidence and the organization row the hold retains',
         },
         ipAddress: getTrustedClientIpOrUndefined(c),
         userAgent: c.req.header('user-agent'),
-        result: 'failure',
-        errorMessage: EVIDENCE_HOLD_ACTIVE_MESSAGE,
+        result: 'success',
       });
-      return c.json(
-        { error: EVIDENCE_HOLD_ACTIVE_MESSAGE, code: 'EVIDENCE_HOLD_ACTIVE' as const },
-        409,
-      );
     }
 
     const enqueued = await enqueueTenantErasure({
@@ -161,6 +158,7 @@ tenantErasureRoutes.post(
       details: {
         jobId: enqueued.id,
         partnerId: org.partnerId,
+        ...(evidenceHold ? { evidenceHoldScoped: true } : {}),
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
@@ -174,6 +172,9 @@ tenantErasureRoutes.post(
         orgId,
         orgName: org.name,
         partnerId: org.partnerId,
+        ...(evidenceHold
+          ? { evidenceHold: { retained: true as const, survivorOrgId: evidenceHold.survivorOrgId } }
+          : {}),
       },
       202,
     );
