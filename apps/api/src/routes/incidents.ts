@@ -262,8 +262,13 @@ incidentRoutes.get(
     // /huntress/incidents and /sentinelone/threats do; partner/system callers
     // carry no site restriction (allowedSiteIds undefined → null → no narrowing).
     let allowedDeviceIds: string[] | null = null;
+    let allowedSiteIds: string[] | null = null;
     if (hasDevicesRead && perms?.allowedSiteIds && auth.scope === 'organization' && auth.orgId) {
       allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      // The EDR-framework leg also needs the site ids themselves: a detection
+      // detached from its device (org move / device delete, D14) keeps only
+      // its last site.
+      allowedSiteIds = perms.allowedSiteIds;
     }
 
     try {
@@ -275,6 +280,7 @@ incidentRoutes.get(
         offset,
         hasDevicesRead,
         allowedDeviceIds,
+        allowedSiteIds,
       });
       return c.json({
         data: rows,
