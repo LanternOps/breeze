@@ -287,7 +287,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * block's stray version is ignored, as the evaluator ignores it). A
  * non-object entry keeps a raw token so it can never match a stored list.
  */
-function enforcedAppRuleSet(apps: unknown): string[] {
+export function enforcedAppRuleSet(apps: unknown): string[] {
   if (!Array.isArray(apps)) return [];
   const tokens = apps.map((entry) => {
     if (!isRecord(entry)) return `invalid|${JSON.stringify(entry)}`;
@@ -298,7 +298,7 @@ function enforcedAppRuleSet(apps: unknown): string[] {
   return [...new Set(tokens)].sort();
 }
 
-function sameAppRuleSet(a: string[], b: string[]): boolean {
+export function sameAppRuleSet(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((token, i) => token === b[i]);
 }
 
@@ -314,7 +314,11 @@ function sameAppRuleSet(a: string[], b: string[]): boolean {
  * that fails validation is read back with schema defaults, i.e. `apps: []`).
  * `stored` is the link's current `inline_settings`, or null for a new link.
  */
-export function assertNoPolicyApprovalEdits(stored: unknown, incoming: unknown): void {
+export function assertNoPolicyApprovalEdits(
+  stored: unknown,
+  incoming: unknown,
+  context: { configPolicyId: string; featureLinkId: string } = { configPolicyId: 'unknown', featureLinkId: 'unknown' },
+): void {
   if (!isRecord(incoming)) return;
 
   if (incoming.apps !== undefined) {
@@ -323,7 +327,7 @@ export function assertNoPolicyApprovalEdits(stored: unknown, incoming: unknown):
       ? [[]]
       : [
           enforcedAppRuleSet(
-            normalizeStoredInlineSettingsWithSalvage(stored, { configPolicyId: 'write-guard', featureLinkId: 'write-guard' }).apps,
+            normalizeStoredInlineSettingsWithSalvage(stored, context).apps,
           ),
           enforcedAppRuleSet(tryNormalizePatchInlineSettings(stored).settings.apps),
         ];
@@ -335,6 +339,27 @@ export function assertNoPolicyApprovalEdits(stored: unknown, incoming: unknown):
   if (incoming.autoApprove === true && !(isRecord(stored) && stored.autoApprove === true)) {
     throw new PolicyApprovalFieldMovedError();
   }
+}
+
+/** The enforced set of a link's stored legacy `apps`, as the salvage reads it. */
+export function storedLegacyAppRuleSet(
+  stored: unknown,
+  context: { configPolicyId: string; featureLinkId: string },
+): string[] {
+  if (stored === null || stored === undefined) return [];
+  return enforcedAppRuleSet(normalizeStoredInlineSettingsWithSalvage(stored, context).apps);
+}
+
+/** The partner a configuration policy's patch ring must belong to. */
+export async function loadConfigPolicyPartnerId(configPolicyId: string): Promise<string | null> {
+  const [policy] = await db
+    .select({ partnerId: configurationPolicies.partnerId, orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, configPolicyId))
+    .limit(1);
+  if (!policy) return null;
+  if (policy.partnerId) return policy.partnerId;
+  return policy.orgId ? resolvePartnerIdForOrg(policy.orgId) : null;
 }
 
 export async function resolvePatchPolicyReference(

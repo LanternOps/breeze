@@ -29,6 +29,16 @@ vi.mock('./automationRuntime', () => ({
   ),
 }));
 
+const { resolvePatchPolicyReferenceMock, loadConfigPolicyPartnerIdMock } = vi.hoisted(() => ({
+  resolvePatchPolicyReferenceMock: vi.fn(),
+  loadConfigPolicyPartnerIdMock: vi.fn(),
+}));
+vi.mock('./configPolicyPatching', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./configPolicyPatching')>()),
+  resolvePatchPolicyReference: resolvePatchPolicyReferenceMock,
+  loadConfigPolicyPartnerId: loadConfigPolicyPartnerIdMock,
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -178,7 +188,7 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
     vi.clearAllMocks();
   });
 
-  function txWithStoredPatchLink(storedInline: unknown) {
+  function txWithStoredPatchLink(storedInline: unknown, featurePolicyId: string | null = null) {
     const update = vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'link-1' }])) })),
@@ -186,7 +196,7 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
     }));
     const tx: any = {
       select: vi.fn(() => selectLimitRows([
-        { id: 'link-1', configPolicyId: 'policy-1', featureType: 'patch', featurePolicyId: null, inlineSettings: storedInline },
+        { id: 'link-1', configPolicyId: 'policy-1', featureType: 'patch', featurePolicyId, inlineSettings: storedInline },
       ])),
       update,
       delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
@@ -276,12 +286,72 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
     }, 'policy-1')).resolves.not.toBeNull();
   });
 
-  it('addFeatureLink rejects any app rule or autoApprove: true before opening a transaction', async () => {
+  function ring(appRules: unknown[], valid = true, ringId: string | null = 'ring-1') {
+    return { classification: valid ? (ringId ? 'patch_policy' : 'null') : 'missing_target', valid, ringId, ringName: null,
+      categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules };
+  }
+  const ENFORCED_RULES = [
+    { source: 'third_party', packageId: 'mozilla.firefox', action: 'block' },
+    { source: 'custom', packageId: '7ZIP.7zip', action: 'pin', pinnedVersion: '23.01' },
+  ];
+
+  it('addFeatureLink rejects app rules with no ring, or a ring that does not carry them, before opening a transaction', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
     await expect(addFeatureLink('policy-1', 'patch', null, { ...PATCH_INPUT_NO_APPROVAL, apps: PATCH_INPUT.apps }))
       .rejects.toMatchObject(moved);
-    await expect(addFeatureLink('policy-1', 'patch', null, { ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] }))
+    resolvePatchPolicyReferenceMock.mockResolvedValueOnce(ring([ENFORCED_RULES[0]]));
+    await expect(addFeatureLink('policy-1', 'patch', 'ring-1', { ...PATCH_INPUT_NO_APPROVAL, apps: PATCH_INPUT.apps }))
+      .rejects.toMatchObject(moved);
+    resolvePatchPolicyReferenceMock.mockResolvedValueOnce(ring(PATCH_INPUT.apps, false));
+    await expect(addFeatureLink('policy-1', 'patch', 'ring-1', { ...PATCH_INPUT_NO_APPROVAL, apps: PATCH_INPUT.apps }))
       .rejects.toMatchObject(moved);
     expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('addFeatureLink accepts an Override copy: app rules the linked ring already enforces, and the inert autoApprove flag', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
+    resolvePatchPolicyReferenceMock.mockResolvedValue(ring(ENFORCED_RULES));
+    // The transaction body is out of scope here; stop at it and assert the
+    // guard let the write through to it.
+    vi.mocked(db.transaction).mockImplementation(async () => { throw new Error('reached the write'); });
+    const err = await addFeatureLink('policy-1', 'patch', 'ring-1', { ...PATCH_INPUT, apps: PATCH_INPUT.apps })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(err?.message).toBe('reached the write');
+    expect(resolvePatchPolicyReferenceMock).toHaveBeenCalledWith('partner-1', 'ring-1');
+  });
+
+  it('rejects a ring change that re-sends a non-empty apps list (a tab loaded before the cutover)', async () => {
+    // The backfill moved this ring-less link onto 'ring-migrated'; the stale
+    // tab still holds featurePolicyId null and the old rules.
+    const tx = txWithStoredPatchLink(PATCH_INPUT, 'ring-migrated');
+    await expect(updateFeatureLink('link-1', { featurePolicyId: null, inlineSettings: PATCH_INPUT }, 'policy-1'))
+      .rejects.toMatchObject(moved);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts a ring change without apps when the current ring is valid (the ring owns the rules)', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
+    resolvePatchPolicyReferenceMock.mockResolvedValue(ring(ENFORCED_RULES));
+    const tx = txWithStoredPatchLink(PATCH_INPUT, 'ring-1');
+    const { apps: _apps, ...rest } = PATCH_INPUT;
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2', inlineSettings: rest }, 'policy-1'))
+      .resolves.not.toBeNull();
+    expect(tx.update).toHaveBeenCalled();
+  });
+
+  it('repairing an invalid ring reference must not drop the link\'s legacy rules: the target ring has to carry them', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
+    resolvePatchPolicyReferenceMock
+      .mockResolvedValueOnce(ring([], false, null))  // current: invalid reference
+      .mockResolvedValueOnce(ring([]));              // target: a valid ring without the rules
+    txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')).rejects.toMatchObject(moved);
+
+    resolvePatchPolicyReferenceMock
+      .mockResolvedValueOnce(ring([], false, null))
+      .mockResolvedValueOnce(ring(ENFORCED_RULES));
+    txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')).resolves.not.toBeNull();
   });
 
   it('does not apply to other feature types', async () => {

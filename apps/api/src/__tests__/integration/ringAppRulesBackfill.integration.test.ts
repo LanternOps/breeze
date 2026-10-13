@@ -319,6 +319,13 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
       { partnerId: P, patchId: patchPartnerWide, ringId: null, status: 'approved', approvedAt: new Date() },
     ]);
 
+    // A linker whose apps are ALL invalid enforces nothing at runtime: it is
+    // a rule-less linker and must stay on R2.
+    const polC6 = await seedPolicy({ orgId: O2, name: 'C6 only invalid rules' });
+    const linkC6 = await seedLink(polC6, R2, {
+      apps: [{ source: 'winget', packageId: 'Vendor.Z', action: 'block' }, { source: 'third_party', packageId: 'Vendor.Z', action: 'pin' }],
+    });
+
     // ---- C′: shared ring, no rule-less linker → the most common set stays ----
     const R4 = await seedRing(P, 'Ring C prime');
     const polC4a = await seedPolicy({ orgId: O1, name: 'C4a' });
@@ -340,6 +347,28 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
     // ---- policy auto-approve, ring-less, no rules → no ring ----
     const polAuto = await seedPolicy({ orgId: O2, name: 'Auto on, no ring' });
     const linkAuto = await seedLink(polAuto, null, { autoApprove: true, autoApproveSeverities: ['critical'] });
+
+    // ---- ring-less links whose apps enforce nothing → no ring ----
+    const polJunk = await seedPolicy({ orgId: O1, name: 'Only invalid rules' });
+    const linkJunk = await seedLink(polJunk, null, {
+      apps: [{ source: 'third_party', packageId: 123, action: 'block' }, 'not-an-object'],
+    });
+    const polNotArray = await seedPolicy({ orgId: O2, name: 'apps not an array' });
+    const linkNotArray = await seedLink(polNotArray, null, { apps: { source: 'third_party', packageId: 'X', action: 'block' } });
+
+    // ---- length-boundary parity: each bad field drops the whole entry ----
+    const polEdge = await seedPolicy({ orgId: O1, name: 'Length edges' });
+    const edgeInline = {
+      apps: [
+        { source: 'third_party', packageId: 'Edge.EmptyPin', action: 'pin', pinnedVersion: '' },
+        { source: 'third_party', packageId: 'Edge.LongPin', action: 'pin', pinnedVersion: 'v'.repeat(65) },
+        { source: 'third_party', packageId: 'p'.repeat(257), action: 'block' },
+        { source: 'third_party', packageId: 'p'.repeat(256), action: 'block' },
+        { source: 'custom', packageId: '   ', action: 'block' },
+        { source: 'third_party', packageId: 'Edge.Pin64', action: 'pin', pinnedVersion: 'v'.repeat(64) },
+      ],
+    };
+    const linkEdge = await seedLink(polEdge, null, edgeInline);
 
     // ---- salvage parity ----
     const salvageInline = {
@@ -471,7 +500,7 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
     expect(first.metrics.get('ringless_links_with_policy_auto_approve')).toBe(1);
 
     // salvage parity: the ring carries exactly what the runtime enforced
-    for (const [linkId, inline] of [[linkS, salvageInline], [linkCap, { apps: manyApps }]] as const) {
+    for (const [linkId, inline] of [[linkS, salvageInline], [linkCap, { apps: manyApps }], [linkEdge, edgeInline]] as const) {
       const ring = (await linkTarget(linkId))!;
       expect(ring).not.toBeNull();
       const expected = normalizeStoredInlineSettingsWithSalvage(inline, { configPolicyId: 'parity', featureLinkId: linkId }).apps;
@@ -486,11 +515,18 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
     ]);
     expect((await ringRow((await linkTarget(linkCap))!)).app_rules as Rule[]).toHaveLength(200);
 
-    // Ring accounting: A, A′, salvage, cap (4 new) + C (2 clones) + C′ (1 clone).
+    // Links whose apps enforce nothing are untouched: no ring, no clone.
+    expect(await linkTarget(linkJunk)).toBeNull();
+    expect(await linkTarget(linkNotArray)).toBeNull();
+    expect(await linkTarget(linkC6)).toBe(R2);
+    // Edge parity, explicitly: only the 256-char id, the whitespace id and the 64-char pin survive.
+    expect((await ringRow((await linkTarget(linkEdge))!)).app_rules as Rule[]).toHaveLength(3);
+
+    // Ring accounting: A, A′, salvage, cap, edge (5 new) + C (2 clones) + C′ (1 clone).
     const ringsAfter = await ringsOf(P);
-    expect(ringsAfter.length - ringsBefore.length).toBe(7);
-    expect(first.metrics.get('rings_created_for_ringless_links')).toBe(4);
-    expect(first.metrics.get('ringless_links_relinked')).toBe(4);
+    expect(ringsAfter.length - ringsBefore.length).toBe(8);
+    expect(first.metrics.get('rings_created_for_ringless_links')).toBe(5);
+    expect(first.metrics.get('ringless_links_relinked')).toBe(5);
     expect(first.metrics.get('shared_rings_rules_set')).toBe(2); // R1 (B) and R4 (C′)
     expect(first.metrics.get('clone_rings_created')).toBe(3);
     expect(first.metrics.get('clone_approvals_copied')).toBe(2);
@@ -506,7 +542,7 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
       expect(second.metrics.get(metric), `${metric} on re-run (${second.notices.join(' | ')})`).toBe(0);
     }
     // Every processed link is now recognised as already carried by its ring.
-    expect(second.metrics.get('links_already_carried_by_ring')).toBe(4 + 2 + 3 + 3); // ring-less (A, A′, salvage, cap) + B + C + C′
+    expect(second.metrics.get('links_already_carried_by_ring')).toBe(5 + 2 + 3 + 3); // ring-less (A, A′, salvage, cap, edge) + B + C + C′
   });
 
   runDb('aborts on a non-ASCII package id rather than risk a case-folding mismatch with the runtime', async () => {

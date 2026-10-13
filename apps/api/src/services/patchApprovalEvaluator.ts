@@ -67,8 +67,10 @@ export interface ApprovalEvaluationConfig {
   /**
    * The partner that owns the ring referenced by ringId. Used to guard against
    * a config policy that links a ring from another partner (featurePolicyId is
-   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the ring
-   * is ignored (treated as ringId = null).
+   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the
+   * reference is invalid and fails closed: every candidate is denied with
+   * 'ring_reference_invalid' (#8186). Never fall back to "no ring", or a manual
+   * approval could install an app the ring blocks.
    */
   ringPartnerId?: string | null;
   categoryRules: CategoryRule[];
