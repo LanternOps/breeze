@@ -1993,6 +1993,10 @@
           "label": "Visibilità di rete",
           "description": "Mostra nel portale cliente lo stato della rete e gli asset rilevati in sola lettura."
         },
+        "enableEdrVisibility": {
+          "label": "Protezione degli endpoint (EDR)",
+          "description": "Mostra ai clienti uno stato generico «Protezione degli endpoint gestita» e il numero di minacce dei provider EDR collegati. I nomi dei fornitori non vengono mai mostrati nel portale."
+        },
         "enableNetworkAlerts": {
           "label": "Avvisi di rete",
           "description": "Mostra nel portale cliente il numero di avvisi attivi e i ticket aperti collegati agli asset di rete."
@@ -2892,6 +2896,7 @@
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {

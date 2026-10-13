@@ -19,7 +19,7 @@ import { captureException } from './sentry';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 
-type ScriptExecutionAuth = {
+export type ScriptExecutionAuth = {
   user: { id: string };
   orgId: string | null;
   canAccessOrg: (orgId: string) => boolean;

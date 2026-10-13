@@ -773,7 +773,29 @@
       "visitorExplanation": "{{assigned}} sitesine atanmış. {{site}} sitesinin {{prefix}} ağını {{gateway}} üzerinden bildiriyor. Ağ geçidi {{site}} cihazlarıyla eşleşiyor.",
       "visitorExplanationMac": "{{assigned}} sitesine atanmış. {{site}} sitesinin {{prefix}} ağını {{gateway}} üzerinden bildiriyor. Ağ geçidi {{site}} cihazlarıyla, yönlendiricisinin MAC adresi dahil, eşleşiyor.",
       "ignoredDeclarations_one": "{{count}} bildirilmiş alt ağ girişi yok sayıldı (aralık, tek adres, IPv6 veya ayrıştırılamayan metin). Bir sitenin ağlarını yalnızca tam IPv4 önekleri belirler.",
-      "ignoredDeclarations_other": "{{count}} bildirilmiş alt ağ girişi yok sayıldı (aralıklar, tek adresler, IPv6 veya ayrıştırılamayan metin). Bir sitenin ağlarını yalnızca tam IPv4 önekleri belirler."
+      "ignoredDeclarations_other": "{{count}} bildirilmiş alt ağ girişi yok sayıldı (aralıklar, tek adresler, IPv6 veya ayrıştırılamayan metin). Bir sitenin ağlarını yalnızca tam IPv4 önekleri belirler.",
+      "suggestedBadge": "Taşıma öneriliyor",
+      "headerSuggested_one": "Başka bir siteye atanmış {{count}} cihaz bu ağı 7 gün veya daha uzun süredir bildiriyor",
+      "headerSuggested_other": "Başka sitelere atanmış {{count}} cihaz bu ağı 7 gün veya daha uzun süredir bildiriyor",
+      "review": "İncele",
+      "suggestion": {
+        "title": "Büyük olasılıkla yanlış siteye atanmış.",
+        "evidence": "{{site}} sitesinin ağını ({{prefix}}) {{from}} ile {{to}} arasında {{days}} günde bildirdi. Bu süre boyunca {{assigned}} ağında gözlem yok.",
+        "evidenceNoPrefix": "{{site}} sitesinin ağını {{from}} ile {{to}} arasında {{days}} günde bildirdi. Bu süre boyunca {{assigned}} ağında gözlem yok.",
+        "move": "{{site}} sitesine taşı",
+        "keep": "{{site}} sitesinde tut",
+        "confirmMove": "Taşıma, {{device}} için hangi sitenin yapılandırma ilkelerinin, bakım pencerelerinin, uyarı yönlendirmesinin ve raporlarının geçerli olduğunu değiştirir. Breeze onu otomatik olarak geri taşımaz.",
+        "cancel": "İptal",
+        "moved": "{{device}} cihazı {{site}} sitesine taşındı.",
+        "kept": "{{device}} cihazı {{site}} sitesinde kalıyor. Bu cihaz için öneriler kapalı.",
+        "confirmed": "Site ataması {{date}} tarihinde onaylandı \u00b7 Öneriler kapalı",
+        "turnOn": "Aç",
+        "turnedOn": "{{device}} için öneriler yeniden açıldı.",
+        "moveFailed": "Cihaz taşınamadı",
+        "keepFailed": "Site ataması onaylanamadı",
+        "turnOnFailed": "Öneriler yeniden açılamadı",
+        "siteChanged": "Bu cihaz başka biri tarafından taşındı \u2014 güncel sitesini görmek için sayfayı yenileyin"
+      }
     }
   }
 }

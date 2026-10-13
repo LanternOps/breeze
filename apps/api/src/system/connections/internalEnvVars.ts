@@ -225,6 +225,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
+  // HEARTBEAT_*
+  HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',

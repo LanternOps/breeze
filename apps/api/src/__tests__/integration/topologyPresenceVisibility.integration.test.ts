@@ -227,6 +227,80 @@ describe('presence visibility — cross-site leak tests', () => {
     expect(onB.visitors).toEqual([]); // stale/mismatched visits never render as visitors
   });
 
+  // Site location W3 (#7887): wrong-site suggestions under the same gate (S§8 R2, R3, R5; plan W3 Task 5).
+  const suggest = (key: string, siteId: string) => getTestDb().execute(sql`UPDATE topology_device_presence SET suggested_site_id = ${siteId}::uuid,
+    suggestion_days = 9, suggestion_first_at = '2026-09-14T08:00:00Z', suggestion_last_at = '2026-10-02T18:00:00Z'
+    WHERE device_id = ${f.ids[key]!}::uuid`);
+  const SUGGESTION = (siteId: string, siteName: string) => ({ siteId, siteName, days: 9, firstObservedAt: '2026-09-14T08:00:00.000Z', lastObservedAt: '2026-10-02T18:00:00.000Z' });
+
+  it('suggestion is null for onlyA viewers (would name B)', async () => {
+    await suggest('MIS1', f.siteB);
+    const both = await body(f.users.both.token, f.siteA);
+    expect(entry(both, 'MIS1')!.suggestion).toEqual(SUGGESTION(f.siteB, 'Lakeside'));
+    const onlyA = await body(f.users.onlyA.token, f.siteA);
+    expect(entry(onlyA, 'MIS1')!.suggestion).toBeNull();
+    expect(shape(entry(onlyA, 'MIS1')!)).toEqual(shape(entry(onlyA, 'HOME')!));
+    expect(onlyA.raw).not.toContain(f.siteB);
+    expect(onlyA.raw).not.toContain('Lakeside');
+    expect(onlyA.raw).not.toContain('2026-09-14');
+    // The token ceiling narrows the same way as the role.
+    const ceiling = await body(f.users.both.token, f.siteA, (auth) => ({ ...auth, allowedSiteIds: [f.siteA] }));
+    expect(entry(ceiling, 'MIS1')!.suggestion).toBeNull();
+    expect(ceiling.raw).not.toContain('Lakeside');
+  });
+
+  it("suggestion on B's visitor requires A and B", async () => {
+    await suggest('MIS1', f.siteB);
+    const both = await body(f.users.both.token, f.siteB);
+    expect(both.visitors.find((v) => v.deviceId === f.ids.MIS1)!.suggestion).toEqual(SUGGESTION(f.siteB, 'Lakeside'));
+    const ab = await body(f.users.both.token, f.siteB, (auth) => ({ ...auth, allowedSiteIds: [f.siteA, f.siteB] }));
+    expect(ab.visitors.find((v) => v.deviceId === f.ids.MIS1)!.suggestion).toEqual(SUGGESTION(f.siteB, 'Lakeside'));
+    for (const viewer of [await body(f.users.onlyB.token, f.siteB),
+      await body(f.users.both.token, f.siteB, (auth) => ({ ...auth, allowedSiteIds: [f.siteB, f.siteC] }))]) {
+      expect(viewer.visitors).toEqual([]);
+      expect(viewer.raw).not.toContain(f.ids.MIS1!);
+      expect(viewer.raw).not.toContain('2026-09-14');
+    }
+    // A stored suggestion for a site other than the one the device is visiting is never emitted (stale row).
+    await suggest('MIS2', f.siteC);
+    const again = await body(f.users.both.token, f.siteB);
+    expect(again.visitors.find((v) => v.deviceId === f.ids.MIS2)!.suggestion).toBeNull();
+    const onA = await body(f.users.both.token, f.siteA);
+    expect(entry(onA, 'MIS2')!.suggestion).toBeNull();
+  });
+
+  it('a stored suggestion on an expired or older-version row is never emitted', async () => {
+    await suggest('MIS1', f.siteB);
+    await suggest('MIS2', f.siteB);
+    await getTestDb().execute(sql`UPDATE topology_device_presence SET fresh_until = now() - interval '1 minute' WHERE device_id = ${f.ids.MIS1!}::uuid`);
+    await getTestDb().execute(sql`UPDATE topology_device_presence SET fingerprint_version = fingerprint_version - 1 WHERE device_id = ${f.ids.MIS2!}::uuid`);
+    const onA = await body(f.users.both.token, f.siteA);
+    for (const key of ['MIS1', 'MIS2']) expect(entry(onA, key), key).toMatchObject({ state: 'unknown', reason: 'not_current', suggestion: null });
+    const onB = await body(f.users.both.token, f.siteB);
+    expect(onB.visitors.filter((v) => v.suggestion)).toEqual([]);
+  });
+
+  it('site header suggestion count counts only visible', async () => {
+    await suggest('MIS1', f.siteB);
+    await suggest('LAP', f.siteA);
+    const suggested = (b: PresenceResponse) => b.assigned.filter((x) => x.suggestion).length + b.visitors.filter((v) => v.suggestion).length;
+    expect(suggested(await body(f.users.both.token, f.siteB))).toBe(1 + 1); // MIS1 visiting B; LAP assigned to B, suggested A
+    expect(suggested(await body(f.users.onlyB.token, f.siteB))).toBe(0);
+    expect(suggested(await body(f.users.both.token, f.siteA))).toBe(1 + 1); // MIS1 assigned to A; LAP visiting A
+    expect(suggested(await body(f.users.onlyA.token, f.siteA))).toBe(0);
+  });
+
+  it('a confirmed device carries its confirmation (no site named) and no suggestion, even before re-evaluation', async () => {
+    await suggest('MIS1', f.siteB);
+    await getTestDb().execute(sql`UPDATE devices SET site_assignment_confirmed_at = '2026-10-02T09:30:00Z' WHERE id = ${f.ids.MIS1!}::uuid`);
+    const both = await body(f.users.both.token, f.siteA);
+    expect(entry(both, 'MIS1')).toMatchObject({ siteAssignmentConfirmedAt: '2026-10-02T09:30:00.000Z', suggestion: null });
+    expect((await body(f.users.both.token, f.siteB)).visitors.find((v) => v.deviceId === f.ids.MIS1)!.suggestion).toBeNull();
+    const onlyA = await body(f.users.onlyA.token, f.siteA);
+    expect(entry(onlyA, 'MIS1')).toMatchObject({ siteAssignmentConfirmedAt: '2026-10-02T09:30:00.000Z', suggestion: null });
+    expect(onlyA.raw).not.toContain('Lakeside');
+  });
+
   it('a user from another org gets 404 for the site', async () => {
     const other = await setupTestEnvironment({ scope: 'organization', rolePermissions: PRESENCE_GRANTS });
     const response = await get(other.token, f.siteA);

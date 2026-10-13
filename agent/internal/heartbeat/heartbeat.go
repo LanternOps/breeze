@@ -116,7 +116,9 @@ type HeartbeatPayload struct {
 	VirtualizationPlatform string                         `json:"virtualizationPlatform,omitempty"`
 	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
 	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
-	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	// LogShipping is absent when no shipper runs (unknown); see logship_payload.go.
+	LogShipping   *LogShippingPayload `json:"logShipping,omitempty"`
+	HelperVersion string              `json:"helperVersion,omitempty"`
 	// HelperCapabilities is caller-verification readiness (#6354 W02): the
 	// console logins whose Assist helper can render a card right now. Always
 	// sent so a false report replaces an earlier true one; servers that do
@@ -4982,10 +4984,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
 	}
 
-	// Include dropped log count if any logs were lost
-	if dropped := logging.DroppedLogCount(); dropped > 0 {
-		payload.DroppedLogs = dropped
-	}
+	// Log-shipping health plus the legacy top-level droppedLogs (#8610).
+	attachLogShipping(&payload)
 
 	h.attachNetworkContext(&payload)
 
@@ -5116,7 +5116,7 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
 	// not re-reported. If the POST had failed, the count would be preserved
 	// for the next attempt.
-	logging.CommitDroppedLogCount()
+	commitDroppedLogCount()
 
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {

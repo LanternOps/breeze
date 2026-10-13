@@ -87,7 +87,8 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 183,
+    // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'devices.json': 187,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -105,7 +106,8 @@ const namespaceDuplicateBaselines = {
     // +3 (#7728): vendor names that were wrongly translated in pt-BR
     // (Huntress, SentinelOne, Slack, Discord) are now pinned literal, so they
     // match English exactly, as vendor names should.
-    'integrations.json': 29,
+    // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'integrations.json': 31,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -136,7 +138,8 @@ const namespaceDuplicateBaselines = {
     // automations are both "Jobs" (same loanword in pt-BR); tabs.webhooks is
     // "Webhooks" in both languages.
     'scripts.json': 61,
-    'security.json': 140,
+    // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 143,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
@@ -278,7 +281,8 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
-    'integrations.json': 33,
+    // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'integrations.json': 35,
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -307,7 +311,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
     // in es-419.
     'scripts.json': 61,
-    'security.json': 114,
+    // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 116,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in es-419 technical UI.
@@ -427,7 +432,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-FR.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 164,
+    // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'devices.json': 165,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -451,7 +457,8 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 3,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
-    'integrations.json': 39,
+    // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'integrations.json': 40,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -481,7 +488,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
     // in fr-FR.
     'scripts.json': 64,
-    'security.json': 144,
+    // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 146,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
     // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
@@ -618,7 +626,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-CA.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 164,
+    // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'devices.json': 165,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -672,7 +681,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
     // in fr-CA.
     'scripts.json': 64,
-    'security.json': 144,
+    // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 146,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
     // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
@@ -823,7 +833,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 5,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 174,
+    // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'devices.json': 178,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -848,7 +859,8 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
-    'integrations.json': 44,
+    // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'integrations.json': 45,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -879,7 +891,8 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 56,
     // +1 #6263 W01: securityScansPage.scansTab — "Scans" is the standard
     // German loanword in this locale, same root cause as "Status" above.
-    'security.json': 167,
+    // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 171,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
@@ -983,7 +996,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 3,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 150,
+    // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'devices.json': 153,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1032,7 +1046,8 @@ const namespaceDuplicateBaselines = {
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
-    'security.json': 163,
+    // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
+    'security.json': 166,
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in it-IT technical UI.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4

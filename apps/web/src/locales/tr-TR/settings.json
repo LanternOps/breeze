@@ -1993,6 +1993,10 @@
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."
         },
+        "enableEdrVisibility": {
+          "label": "Uç nokta koruması (EDR)",
+          "description": "Müşterilere genel bir “Yönetilen uç nokta koruması” durumunu ve bağlı EDR sağlayıcılarından gelen tehdit sayılarını gösterir. Sağlayıcı adları portalda asla gösterilmez."
+        },
         "enableNetworkAlerts": {
           "label": "Ağ uyarıları",
           "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."
@@ -2892,6 +2896,7 @@
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
+          "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
         },
         "failureClasses": {

@@ -1972,6 +1972,7 @@
       "excludedSourceTitle": "Yama ilkesinin kaynakları bu yamayı kapsamıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Yama ilkesindeki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
       "pending": "Onay bekliyor",
       "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",
       "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",
@@ -4083,6 +4084,54 @@
       "label": "İmaj durumu",
       "all": "Tümü",
       "empty": "Bu imaj durumuyla eşleşen iş yükü yok."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Diğer EDR sağlayıcıları",
+    "loadError": "Bazı EDR sağlayıcı verileri yüklenemedi.",
+    "duplicateNotice": "İki konsol tarafından bağlandı: bu cihaz birden fazla {{provider}} bağlantısında görünüyor.",
+    "openDetections": "Açık tespitler",
+    "coverageHeading": "Kapsam eksik olabilir",
+    "fields": {
+      "health": "Sağlık",
+      "status": "Durum",
+      "isolation": "İzolasyon",
+      "agentVersion": "Ajan sürümü",
+      "lastSeen": "Son görülme"
+    },
+    "health": {
+      "healthy": "Sağlıklı",
+      "degraded": "Düşük performanslı",
+      "unhealthy": "Sağlıksız",
+      "unknown": "Bilinmiyor"
+    },
+    "online": {
+      "online": "Çevrimiçi",
+      "offline": "Çevrimdışı",
+      "unknown": "Bilinmiyor"
+    },
+    "isolation": {
+      "isolated": "İzole",
+      "not_isolated": "İzole değil",
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi",
+      "unknown": "Bilinmiyor"
+    },
+    "detectionStatus": {
+      "open": "Açık",
+      "in_progress": "Devam ediyor",
+      "mitigated": "Hafifletildi",
+      "resolved": "Çözüldü",
+      "false_positive": "Yanlış pozitif",
+      "dismissed": "Yoksayıldı",
+      "unknown": "Bilinmiyor"
     }
   }
 }

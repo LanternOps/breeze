@@ -85,7 +85,7 @@ export function projectionGraph(name: ProjectionName, seed = TOPOLOGY_FIXTURE_SE
       omittedNodes: G10K_TOTAL.nodes - expected.nodes, omittedRelationships: G10K_TOTAL.edges - expected.edges,
     },
     coverage: { state: 'limited', reasons: [{ code: 'projection', message: 'Collapsed projection of a 10,000-node site' }] },
-    frontier: [], permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true },
+    frontier: [], permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true, canMoveDevices: false },
   };
   return { graph, body: JSON.stringify(graph), pinned: graph.layout.positions.length };
 }

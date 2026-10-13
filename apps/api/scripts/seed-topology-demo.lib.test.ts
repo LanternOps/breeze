@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEMO_LAKESIDE_SITE_ID, DEMO_SITE_ID, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins,
+  DEMO_LAKESIDE_SITE_ID, DEMO_SITE_ID, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins, demoPresenceHistory,
 } from './seed-topology-demo.lib';
+import { evaluateSuggestion } from '../src/services/topology/presenceEligibility';
 
 const env = (DATABASE_URL: string | undefined, NODE_ENV: string | undefined = 'development') => ({ DATABASE_URL, NODE_ENV });
 
@@ -94,5 +95,50 @@ describe('seed-topology-demo fixture shape', () => {
       expect.objectContaining({ siteId: DEMO_SITE_ID, subnets: ['10.1.2.0/24'] }),
       expect.objectContaining({ siteId: DEMO_LAKESIDE_SITE_ID, subnets: ['10.1.5.0/24'] }),
     ]));
+  });
+});
+
+describe('seed-topology-demo synthetic presence history (site location W3)', () => {
+  const now = new Date('2026-10-12T14:00:00.000Z');
+  const history = demoPresenceHistory(now);
+  const siteId = { main: DEMO_SITE_ID, lakeside: DEMO_LAKESIDE_SITE_ID } as const;
+  const rowsFor = (hostname: string) => history.filter((r) => r.hostname === hostname).map((r) => ({
+    day: r.day, assignedSiteId: siteId[r.assigned], state: r.state, matchedSiteId: r.matched ? siteId[r.matched] : null,
+    firstObservedAt: r.firstObservedAt, lastObservedAt: r.lastObservedAt,
+  }));
+  const eligibility = (hostname: string, assigned: 'main' | 'lakeside', matched: 'main' | 'lakeside') => {
+    // What the evaluator adds for today's visit, then S§10.2 as the evaluator applies it.
+    const today = { day: now.toISOString().slice(0, 10), assignedSiteId: siteId[assigned], state: 'visiting' as const, matchedSiteId: siteId[matched],
+      firstObservedAt: now.toISOString(), lastObservedAt: now.toISOString() };
+    return evaluateSuggestion({ now, assignedSiteId: siteId[assigned], confirmedAt: null, anchoredUniquely: true,
+      current: { valid: true, state: 'visiting', matchedSiteId: siteId[matched] }, days: [...rowsFor(hostname), today] });
+  };
+
+  it('gives the two misassigned desktops 9 days of Lakeside visits with nightly stale rows', () => {
+    for (const hostname of ['DESKTOP-HD7K2QF', 'WIN-HD4M8T2C9']) {
+      const rows = history.filter((r) => r.hostname === hostname);
+      expect(rows.every((r) => r.assigned === 'main')).toBe(true);
+      expect(new Set(rows.filter((r) => r.state === 'visiting' && r.matched === 'lakeside').map((r) => r.day)).size).toBe(9);
+      expect(rows.filter((r) => r.state === 'stale')).toHaveLength(9);
+      expect(rows.some((r) => r.state === 'home')).toBe(false);
+      expect(eligibility(hostname, 'main', 'lakeside')).toMatchObject({ siteId: DEMO_LAKESIDE_SITE_ID, days: 10 });
+    }
+  });
+
+  it('gives the travelling laptop 3 mixed days, which never makes it eligible', () => {
+    const rows = history.filter((r) => r.hostname === 'LAPTOP-LOV-01');
+    expect(new Set(rows.map((r) => r.day)).size).toBe(3);
+    expect(new Set(rows.map((r) => r.state))).toEqual(new Set(['visiting', 'home']));
+    expect(eligibility('LAPTOP-LOV-01', 'lakeside', 'main')).toBeNull();
+  });
+
+  it('only names the demo hostnames, and every row is well-formed (first <= last, day = UTC date of first)', () => {
+    expect(new Set(history.map((r) => r.hostname))).toEqual(new Set(['DESKTOP-HD7K2QF', 'WIN-HD4M8T2C9', 'LAPTOP-LOV-01']));
+    for (const r of history) {
+      expect(Date.parse(r.firstObservedAt)).toBeLessThanOrEqual(Date.parse(r.lastObservedAt));
+      expect(r.day).toBe(r.firstObservedAt.slice(0, 10));
+      expect(Date.parse(r.lastObservedAt)).toBeLessThan(now.getTime());
+      expect(r.state === 'visiting').toBe(r.matched !== null);
+    }
   });
 });

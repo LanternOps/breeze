@@ -48,5 +48,5 @@ export const groupedGraphFixture = (networks: GroupedFixtureNetwork[], options: 
   return { schemaVersion: 1, siteId: SITE, view: 'overview', asOf: '2026-10-02T00:00:00.000Z', revisions: { graph: '1', health: '1', layout: '0' }, nodes, relationships: [],
     presentation: { nodes: presentationNodes, edges }, layout: { algorithm: 'none', version: 0, positions: [] },
     counts: { totalNodes: nodes.length, totalRelationships: 0, visibleNodes: nodes.length, visibleRelationships: 0, omittedNodes: 0, omittedRelationships: 0 },
-    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } };
+    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } };
 };

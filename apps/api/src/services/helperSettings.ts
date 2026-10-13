@@ -203,6 +203,11 @@ export interface HelperConfigUpdateOptions extends DevicePolicySetOpts {
   skipCacheRead?: boolean;
   /** Source of the legacy organizations.settings.helper flag; defaults to getOrgHelperSettings. */
   loadOrgHelperSettings?: (orgId: string) => Promise<{ enabled: boolean }>;
+  /**
+   * #8616: resolve without writing the per-device Redis entry (the heartbeat
+   * sets it when its own hierarchy load failed; see PamConfigUpdateOptions).
+   */
+  skipCacheWrite?: boolean;
 }
 
 function helperCacheKey(deviceId: string): string {
@@ -256,7 +261,7 @@ export async function buildHelperConfigUpdate(
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
-  const redis = getRedis();
+  const redis = opts?.skipCacheWrite ? null : getRedis();
   if (redis) {
     try {
       await redis.set(helperCacheKey(deviceId), JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);

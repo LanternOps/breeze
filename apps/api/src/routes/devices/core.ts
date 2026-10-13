@@ -320,6 +320,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   // presence row — breeze_topology_presence_device_moved (BEFORE UPDATE on devices) deletes it first, and it is in
   // CORE_DEVICE_ORG_MOVE_DELETE_TABLES, which the restamp loop skips (its matched_site_id names a source-org site).
   'topology_device_presence',
+  // W3 (#7887): same shape for the daily summaries — the same BEFORE trigger deletes them on an org change.
+  'topology_device_presence_days',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -440,6 +442,8 @@ const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
   'topology_device_presence',
+  // W3 (#7887): day rows name source-org sites the same way; history does not cross orgs (prospective again).
+  'topology_device_presence_days',
 ];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
@@ -625,6 +629,7 @@ export async function rewriteDeviceSiteDenormalizedTables(
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'topology_node_bindings',
   'topology_device_presence',
+  'topology_device_presence_days',
   'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
@@ -2008,14 +2013,58 @@ function siteChangedConflict(c: Context, currentSiteId: string | null | undefine
 class SiteMoveConflict extends Error {
   constructor() { super('device site changed during the move'); }
 }
+export type SiteMoveEvidence = {
+  matchedSiteId: string | null; prefix: string | null; gatewayAddress: string | null; macCorroborated: boolean;
+  days: number | null; firstObservedAt: string | null; lastObservedAt: string | null; fingerprintVersion: string;
+};
+export type SiteMoveSuggestion = { state: 'eligible' | 'not_eligible'; evidence: SiteMoveEvidence | null };
 export type SiteMoveAuditInput = {
   from: string; fromName: string | null; to: string; toName: string | null;
   expectedSiteId: string | null; trigger: 'manual' | 'topology_suggestion';
+  /** Only for `topology_suggestion` moves: read server-side from the presence row (S§12.3). */
+  suggestion?: SiteMoveSuggestion;
 };
-/** `device.site_move` audit details (S§12.4). W3 adds server-derived suggestion evidence here. */
+/** `device.site_move` audit details (S§12.4), with server-derived suggestion evidence for suggestion moves (W3). */
 export function siteMoveAuditDetails(input: SiteMoveAuditInput): Record<string, unknown> {
   return { fromSiteId: input.from, fromSiteName: input.fromName, toSiteId: input.to, toSiteName: input.toName,
-    expectedSiteId: input.expectedSiteId, trigger: input.trigger };
+    expectedSiteId: input.expectedSiteId, trigger: input.trigger,
+    ...(input.suggestion ? { suggestionState: input.suggestion.state, evidence: input.suggestion.evidence } : {}) };
+}
+
+const isoOrNull = (value: string | Date | null | undefined) => (value ? new Date(value).toISOString() : null);
+
+/**
+ * Site location W3 (S§12.3): the evidence for a move accepted from a wrong-site suggestion, read from the device's
+ * presence row under the request's RLS context. Never from the client. Must run BEFORE the devices UPDATE, whose
+ * BEFORE trigger (breeze_topology_presence_device_moved) deletes the presence row. `eligible` only when the stored
+ * suggestion names the destination and the row is still valid for the current assignment (S§7.3) and unconfirmed;
+ * otherwise the move still proceeds (the user's explicit choice) and the audit says `not_eligible`.
+ */
+async function readSuggestionEvidence(deviceId: string, fromSiteId: string, toSiteId: string): Promise<SiteMoveSuggestion> {
+  const rows = await db.execute<{
+    suggested_site_id: string | null; suggestion_days: number | null; suggestion_first_at: string | Date | null; suggestion_last_at: string | Date | null;
+    matched_site_id: string | null; prefix: string | null; gateway_address: string | null; mac_corroborated: boolean; fingerprint_version: string;
+    assigned_site_id: string; version_ok: boolean | null; fresh: boolean; confirmed: boolean;
+  }>(sql`SELECT p.suggested_site_id::text AS suggested_site_id, p.suggestion_days, p.suggestion_first_at, p.suggestion_last_at,
+      p.matched_site_id::text AS matched_site_id, p.prefix::text AS prefix, host(p.gateway_address) AS gateway_address, p.mac_corroborated,
+      p.fingerprint_version::text AS fingerprint_version, p.assigned_site_id::text AS assigned_site_id,
+      (p.fingerprint_version = s.fingerprint_version) AS version_ok, (p.fresh_until IS NOT NULL AND p.fresh_until > now()) AS fresh,
+      (d.site_assignment_confirmed_at IS NOT NULL) AS confirmed
+    FROM topology_device_presence p
+    JOIN devices d ON d.id = p.device_id AND d.org_id = p.org_id
+    LEFT JOIN topology_org_presence_state s ON s.org_id = p.org_id
+    WHERE p.device_id = ${deviceId}::uuid`);
+  const row = (rows as unknown as typeof rows | undefined)?.[0];
+  if (!row) return { state: 'not_eligible', evidence: null };
+  const eligible = row.suggested_site_id === toSiteId.toLowerCase() && row.version_ok === true && row.fresh && row.assigned_site_id === fromSiteId && !row.confirmed;
+  return {
+    state: eligible ? 'eligible' : 'not_eligible',
+    evidence: {
+      matchedSiteId: row.matched_site_id, prefix: row.prefix, gatewayAddress: row.gateway_address, macCorroborated: row.mac_corroborated,
+      days: row.suggestion_days, firstObservedAt: isoOrNull(row.suggestion_first_at), lastObservedAt: isoOrNull(row.suggestion_last_at),
+      fingerprintVersion: row.fingerprint_version,
+    },
+  };
 }
 
 // PATCH /devices/:id - Update device
@@ -2028,7 +2077,7 @@ coreRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
-    const { expectedSiteId, siteMoveTrigger, ...data } = c.req.valid('json');
+    const { expectedSiteId, siteMoveTrigger, evidence: _clientEvidence, ...data } = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -2105,6 +2154,7 @@ coreRoutes.patch(
     // transaction commits, so the guarded UPDATE below cannot lose the row in between.
     const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
     let sourceSiteName: string | null = null;
+    let suggestion: SiteMoveSuggestion | undefined;
     if (siteChanged) {
       // devices alone: a joined relation would keep its pre-wait row in the post-lock recheck and drop the row.
       const [locked] = await db
@@ -2117,6 +2167,8 @@ coreRoutes.patch(
       }
       const [sourceSite] = await db.select({ name: sites.name }).from(sites).where(eq(sites.id, device.siteId)).limit(1);
       sourceSiteName = sourceSite?.name ?? null;
+      // Under the row lock and before the UPDATE (whose trigger deletes the presence row).
+      if (siteMoveTrigger === 'topology_suggestion') suggestion = await readSuggestionEvidence(deviceId, device.siteId, data.siteId!);
     }
 
     // Values go to `device_custom_field_values`; `devices.custom_fields` is a
@@ -2220,7 +2272,7 @@ coreRoutes.patch(
         resourceId: updated?.id ?? deviceId,
         resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
         details: siteMoveAuditDetails({ from: device.siteId, fromName: sourceSiteName, to: data.siteId!, toName: targetSiteName,
-          expectedSiteId: expectedSiteId ?? null, trigger: siteMoveTrigger ?? 'manual' }),
+          expectedSiteId: expectedSiteId ?? null, trigger: siteMoveTrigger ?? 'manual', suggestion }),
       });
     }
 

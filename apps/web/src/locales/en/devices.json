@@ -1972,6 +1972,7 @@
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule in the patch policy holds this patch, so scheduled patch runs skip it.",
+      "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
       "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",
@@ -4083,6 +4084,54 @@
       "label": "Image status",
       "all": "All",
       "empty": "No workloads match this image status."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Other EDR providers",
+    "loadError": "Some EDR provider data could not be loaded.",
+    "duplicateNotice": "Linked by two consoles: this device appears in more than one {{provider}} connection.",
+    "openDetections": "Open detections",
+    "coverageHeading": "Coverage may be incomplete",
+    "fields": {
+      "health": "Health",
+      "status": "Status",
+      "isolation": "Isolation",
+      "agentVersion": "Agent version",
+      "lastSeen": "Last seen"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "unhealthy": "Unhealthy",
+      "unknown": "Unknown"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Unknown"
+    },
+    "isolation": {
+      "isolated": "Isolated",
+      "not_isolated": "Not isolated",
+      "pending": "Pending",
+      "unknown": "Unknown"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info",
+      "unknown": "Unknown"
+    },
+    "detectionStatus": {
+      "open": "Open",
+      "in_progress": "In progress",
+      "mitigated": "Mitigated",
+      "resolved": "Resolved",
+      "false_positive": "False positive",
+      "dismissed": "Dismissed",
+      "unknown": "Unknown"
     }
   }
 }

@@ -855,7 +855,8 @@ export async function moveDeviceOrgInTransaction(
   const moveDeleteTables = new Set(getDeviceOrgMoveDeleteTables());
   for (const table of getDeviceOrgDenormalizedTables()) {
     // Move-delete tables are deleted below, never restamped: their rows reference source-org rows through a
-    // composite (x, org_id) FK (topology_device_presence.matched_site_id), so a restamp would 23503 first.
+    // composite (x, org_id) FK (topology_device_presence.matched_site_id, topology_device_presence_days.assigned_site_id),
+    // so a restamp would 23503 first.
     if (moveDeleteTables.has(table)) continue;
     // Immutable evidence revokes app-role UPDATE. Its composite FK uses
     // ON UPDATE CASCADE, so the devices row flip above already performed

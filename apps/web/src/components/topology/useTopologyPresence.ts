@@ -10,8 +10,9 @@ export const PRESENCE_STALE_AFTER_MS = 5 * 60_000;
  * that is not a presence response) is reported to the console and keeps the last good value, so the map renders without it —
  * but only for PRESENCE_STALE_AFTER_MS; after that the value is dropped so stale visitors are never shown indefinitely.
  * Refreshes every 60 s while the tab is visible and on return to the tab; the value is cleared when the site changes.
+ * Bumping `reloadKey` refetches at once (site location W3: after a move, "Keep at" or "Turn on").
  */
-export function useTopologyPresence(siteId: string, enabled = true): PresenceResponse | null {
+export function useTopologyPresence(siteId: string, enabled = true, reloadKey = 0): PresenceResponse | null {
   const [presence, setPresence] = useState<PresenceResponse | null>(null);
   const activeSite = useRef('');
   const lastOk = useRef(0);
@@ -36,6 +37,6 @@ export function useTopologyPresence(siteId: string, enabled = true): PresenceRes
     const visibility = () => { if (!document.hidden) void load(); };
     document.addEventListener('visibilitychange', visibility);
     return () => { controller.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', visibility); };
-  }, [siteId, enabled]);
+  }, [siteId, enabled, reloadKey]);
   return presence;
 }

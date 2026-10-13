@@ -20,6 +20,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { bumpApprovalGeneration } from './approvalGeneration';
 import {
   ringAutoApproveSchema,
+  ringAppRulesSchema,
   mergeRingAutoApproveWrite,
   backupProfileSelectionsSchema,
 } from '@breeze/shared/validators';
@@ -85,6 +86,19 @@ function validateRingAutoApprove(
   // fields it wasn't asked about, so absent third-party fields preserve the
   // ring's current opt-in instead of resetting it to defaults.
   return { value: mergeRingAutoApproveWrite(parsed.data, storedRaw) as unknown as Record<string, unknown> };
+}
+
+/**
+ * Validate the ring's per-app block/pin rules through the same shared schema
+ * the REST route uses (#8184): max 200, unique canonical keys, pin needs a
+ * version. Returns the parsed rules or an error string.
+ */
+function validateRingAppRules(raw: unknown): { value: unknown[] } | { error: string } {
+  const parsed = ringAppRulesSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Invalid appRules configuration.' };
+  }
+  return { value: parsed.data };
 }
 
 /**
@@ -226,6 +240,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
+          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
@@ -307,6 +322,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           autoApprove = validated.value;
         }
 
+        let appRules: unknown[] = [];
+        if (input.appRules != null) {
+          const validated = validateRingAppRules(input.appRules);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          appRules = validated.value;
+        }
+
         const rows = await db.insert(patchPolicies).values({
           partnerId,
           kind: 'ring',
@@ -318,6 +340,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: (input.categories as string[]) ?? [],
           excludeCategories: (input.excludeCategories as string[]) ?? [],
           autoApprove,
+          appRules,
           createdBy: auth.user.id,
         }).returning();
         const ring = rows[0];
@@ -357,6 +380,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const validated = validateRingAutoApprove(input.autoApprove, existing.autoApprove);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           updates.autoApprove = validated.value;
+        }
+        if (input.appRules != null) {
+          const validated = validateRingAppRules(input.appRules);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          updates.appRules = validated.value;
         }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 

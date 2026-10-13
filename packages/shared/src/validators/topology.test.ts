@@ -180,7 +180,7 @@ const graphResponse = {
   },
   coverage: { state: 'limited', reasons: [{ code: 'projection_limit', message: 'Projection is bounded' }] },
   frontier: [{ token: 'opaque-frontier-token', label: 'More gateways', memberCount: 3 }],
-  permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: false },
+  permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: false, canMoveDevices: false },
 } as const;
 
 describe('graphQuerySchema', () => {

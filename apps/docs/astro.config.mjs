@@ -92,6 +92,7 @@ export default defineConfig({
                 { slug: 'features/browser-security' },
                 { slug: 'features/dns-security' },
                 { slug: 'features/edr-integrations' },
+                { slug: 'features/edr-provider-framework' },
                 { slug: 'features/incident-response' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },

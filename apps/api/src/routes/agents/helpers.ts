@@ -3390,6 +3390,13 @@ export async function resolveOrgPamFallback(orgId: string): Promise<PamSettings>
 export interface PamConfigUpdateOptions extends DevicePolicySetOpts {
   /** Source of the org grandfather flag; defaults to resolveOrgPamFallback. */
   loadOrgPamFallback?: (orgId: string) => Promise<PamSettings>;
+  /**
+   * #8616: resolve without writing the per-device Redis entry. The heartbeat
+   * sets it when its own hierarchy load failed: the resolver then reads
+   * without the beat's hierarchy and may return defaults for a device it
+   * cannot see, which must not be served to later beats as a decision.
+   */
+  skipCacheWrite?: boolean;
 }
 
 /** #8142: PAM's own rules (raw partner, no role/OS filter). */
@@ -3513,7 +3520,7 @@ export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpd
 
   const settings = await resolveDevicePamSettings(deviceId, opts);
 
-  if (redis) {
+  if (redis && !opts?.skipCacheWrite) {
     try {
       await redis.set(cacheKey, JSON.stringify(settings), 'EX', PAM_CACHE_TTL_SECONDS);
     } catch (cacheErr) {

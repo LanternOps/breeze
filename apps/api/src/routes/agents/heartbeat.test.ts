@@ -384,10 +384,14 @@ vi.mock('../../services/agentHealthObservations', () => ({
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
   HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS: 180_000,
+  // The resolver's real shape (#8616: `resolved` = an effective config was
+  // found). The old stub lacked `settings`, so every beat silently took the
+  // resolver's catch path.
   resolveRemoteAccessForDevice: vi.fn(async () => ({
-    helperEnabled: false,
-    helperSettings: null,
-    manageRemoteManagement: false,
+    settings: { vncRelay: false },
+    policyName: null,
+    policyId: null,
+    resolved: true,
   })),
 }));
 
@@ -441,7 +445,7 @@ vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaselin
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
 import { and, eq, notInArray } from 'drizzle-orm';
-import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
+import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
@@ -4297,6 +4301,15 @@ describe('uninstallIntentAt clearing (#2764)', () => {
   });
 });
 
+describe('normalizeRetainStateProtocolVersion (#8616)', () => {
+  it('maps exactly the number 1 to 1 and everything else to 0', () => {
+    expect(normalizeRetainStateProtocolVersion(1)).toBe(1);
+    for (const v of [0, 2, -1, 1.5, '1', true, null, undefined, {}, [1], NaN]) {
+      expect(normalizeRetainStateProtocolVersion(v)).toBe(0);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------
 // PAM config delivery (#uacInterceptionEnabled in heartbeat response)
 // ---------------------------------------------------------------------
@@ -4797,6 +4810,249 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(body.uacInterceptionEnabled).toBe(false);
     expect(body.helperEnabled).toBe(false);
     expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------
+// #8616 — retain-state: a beat advertising retainStateProtocolVersion 1 gets
+// `retainState` for features with no decision instead of a false/absent value;
+// every other beat gets the legacy payload, byte for byte.
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const V1 = { retainStateProtocolVersion: 1 };
+
+  async function beatRaw(securityCapabilities?: Record<string, unknown>) {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(securityCapabilities ? { ...minimalHeartbeatBody, securityCapabilities } : minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    return resp.text();
+  }
+  async function beat(securityCapabilities?: Record<string, unknown>) {
+    return JSON.parse(await beatRaw(securityCapabilities)) as Record<string, unknown>;
+  }
+  /** Re-arm the authenticated device row for a second beat in the same test. */
+  function rearmDevice() {
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+  }
+
+  it('v1 beat + pam resolver throws: retainState has pam, no uacInterceptionEnabled key, Sentry still told', async () => {
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect(body.helperEnabled).toBe(true);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'pam boom' }));
+  });
+
+  it('pam resolver throws: a beat without the capability, or with any value but 1, gets the legacy payload byte for byte', async () => {
+    const helpers = await import('./helpers');
+    const variants: Array<Record<string, unknown> | undefined> = [
+      undefined,
+      {},
+      { retainStateProtocolVersion: 0 },
+      { retainStateProtocolVersion: 2 },
+      { retainStateProtocolVersion: '1' },
+      { retainStateProtocolVersion: true },
+      { retainStateProtocolVersion: -1 },
+    ];
+    const raws: string[] = [];
+    for (const [i, caps] of variants.entries()) {
+      if (i > 0) rearmDevice();
+      vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+      raws.push(await beatRaw(caps));
+    }
+    const legacy = JSON.parse(raws[0]!) as Record<string, unknown>;
+    expect(legacy.uacInterceptionEnabled).toBe(false);
+    expect(legacy.helperEnabled).toBe(false);
+    expect('retainState' in legacy).toBe(false);
+    for (const raw of raws) expect(raw).toBe(raws[0]);
+  });
+
+  it('kill switch off (HEARTBEAT_RETAIN_STATE_ENABLED=false) + v1 beat: legacy payload byte for byte', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    const legacyRaw = await beatRaw();
+
+    vi.stubEnv('HEARTBEAT_RETAIN_STATE_ENABLED', 'false');
+    rearmDevice();
+    vi.mocked(helpers.buildPamConfigUpdate).mockRejectedValueOnce(new Error('pam boom'));
+    const killedRaw = await beatRaw(V1);
+
+    expect(killedRaw).toBe(legacyRaw);
+    expect(JSON.parse(killedRaw).uacInterceptionEnabled).toBe(false);
+  });
+
+  it('device hierarchy missing mid-beat + v1: pam and helper retained, policy blocks still omitted', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(null as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
+    expect('helperSettings' in body).toBe(false);
+    expect(vi.mocked(helpers.buildPamConfigUpdate)).not.toHaveBeenCalled();
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.monitoring_settings).toBeUndefined();
+    expect(configUpdate?.event_log_settings).toBeUndefined();
+  });
+
+  it('helper throws, pam decided true + v1: uacInterceptionEnabled:true sent, only helper retained', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildHelperConfigUpdate).mockRejectedValueOnce(new Error('helper boom'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const body = await beat(V1);
+
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect(body.retainState).toEqual(['helper']);
+    expect('helperEnabled' in body).toBe(false);
+    expect('helperSettings' in body).toBe(false);
+  });
+
+  it('pam decided false (admin disabled) + v1: uacInterceptionEnabled:false sent explicitly, nothing retained', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: false });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const body = await beat(V1);
+
+    expect(body.uacInterceptionEnabled).toBe(false);
+    expect(body.helperEnabled).toBe(false);
+    expect('retainState' in body).toBe(false);
+  });
+
+  it('remote-access resolver throws: v1 retains remoteManagement, legacy keeps the absent key, Sentry is told', async () => {
+    const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(resolveRemoteAccessForDevice).mockRejectedValueOnce(new Error('remote boom'));
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const v1 = await beat(V1);
+    expect(v1.retainState).toEqual(['remoteManagement']);
+    expect('manageRemoteManagement' in v1).toBe(false);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'remote boom' }));
+
+    rearmDevice();
+    vi.mocked(resolveRemoteAccessForDevice).mockRejectedValueOnce(new Error('remote boom'));
+    const legacy = await beat();
+    expect('manageRemoteManagement' in legacy).toBe(false);
+    expect('retainState' in legacy).toBe(false);
+  });
+
+  it('remote-access resolved:false (no effective config) + v1: remoteManagement retained even though the default is on; legacy still sends the default', async () => {
+    const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+    const unresolved = { settings: { vncRelay: true }, policyName: null, policyId: null, resolved: false };
+    vi.mocked(resolveRemoteAccessForDevice).mockResolvedValueOnce(unresolved as never);
+
+    const v1 = await beat(V1);
+    expect(v1.retainState).toEqual(expect.arrayContaining(['remoteManagement']));
+    expect('manageRemoteManagement' in v1).toBe(false);
+
+    rearmDevice();
+    vi.mocked(resolveRemoteAccessForDevice).mockResolvedValueOnce(unresolved as never);
+    const legacy = await beat();
+    expect(legacy.manageRemoteManagement).toBe(true);
+  });
+
+  it('hierarchy load ERRORS + v1: pam and helper retained although the resolvers returned defaults, and their cache writes are skipped', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: false });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
+    // Decision 13 (approved override of the plan's OD13): no per-device Redis
+    // write of a value read without the beat's own hierarchy.
+    expect(vi.mocked(helpers.buildPamConfigUpdate))
+      .toHaveBeenCalledWith('device-1', expect.objectContaining({ skipCacheWrite: true }));
+    expect(vi.mocked(helpers.buildHelperConfigUpdate))
+      .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ skipCacheWrite: true }));
+  });
+
+  it('hierarchy load ERRORS, legacy beat: the resolver values are still delivered exactly as before', async () => {
+    const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+    const helpers = await import('./helpers');
+    vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const body = await beat();
+
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect(body.helperEnabled).toBe(true);
+    expect('retainState' in body).toBe(false);
+  });
+
+  it('loaded hierarchy: builders may write their caches, and a helper cache hit counts as a decision', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.readCachedHelperSettings).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const body = await beat(V1);
+
+    expect(body.helperEnabled).toBe(true);
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect('retainState' in body).toBe(false);
+    expect(vi.mocked(helpers.buildHelperConfigUpdate)).not.toHaveBeenCalled();
+    expect(vi.mocked(helpers.buildPamConfigUpdate))
+      .toHaveBeenCalledWith('device-1', expect.objectContaining({ skipCacheWrite: false }));
+  });
+
+  it('the policy context fails to open + v1: pam and helper retained instead of false', async () => {
+    withDbAccessContextMock
+      .mockImplementationOnce(orgDbAccessContextPassthrough)
+      .mockImplementationOnce(async () => {
+        throw new Error('policy context failed to open');
+      });
+
+    const body = await beat(V1);
+
+    expect(body.retainState).toEqual(['pam', 'helper']);
+    expect('uacInterceptionEnabled' in body).toBe(false);
+    expect('helperEnabled' in body).toBe(false);
   });
 });
 

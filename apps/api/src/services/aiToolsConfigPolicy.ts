@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { securitySettingsAutoQuarantine, withoutFeatureLinkAuthority } from './securityScanQuarantineAuthority';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
@@ -157,6 +158,14 @@ function rejectElevatedAutomationActions(raw: unknown): string | null {
  * carries no driver or schema detail.
  */
 function warrantyConsentRefusal(err: unknown): string | null {
+  // #8186: approval / app rules now live on the Update Ring. Say where, so
+  // the model can redo the change there instead of seeing a generic failure.
+  if (err instanceof PolicyApprovalFieldMovedError) {
+    return JSON.stringify({
+      error: `${err.message} Edit them with manage_update_rings, and link the ring with featurePolicyId.`,
+      code: err.code,
+    });
+  }
   if (!(err instanceof WarrantyConsentError)) return null;
   return JSON.stringify({
     error: `${err.message} Ask a user to switch it on from the policy's Warranty tab, where they accept HP's licence themselves.`,
@@ -214,7 +223,7 @@ export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
 
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
-  patch: `{ sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
+  patch: `{ sources: ["os","third_party"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } for schedule/reboot only; set featurePolicyId → existing update ring UUID to attach approval behaviour. Approval (auto-approve severities, deferral) and per-app block/pin rules live on the linked Update Ring (manage_update_rings), not on the policy.`,
   maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }`,
   automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
   event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }`,

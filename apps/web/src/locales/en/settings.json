@@ -1993,6 +1993,10 @@
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."
         },
+        "enableEdrVisibility": {
+          "label": "Endpoint protection (EDR)",
+          "description": "Show customers a generic “Managed endpoint protection” status and threat counts from connected EDR providers. Vendor names are never shown in the portal."
+        },
         "enableNetworkAlerts": {
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
@@ -2892,6 +2896,7 @@
           "blocked_by_app_rule": "Blocked by an app rule",
           "awaiting_manual_approval": "Awaiting manual approval",
           "no_ring_resolved": "The device has no update ring",
+          "ring_reference_invalid": "Policy's update ring is invalid",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {

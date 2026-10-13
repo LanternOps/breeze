@@ -5,6 +5,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { buildFingerprintIndex, classifyDevicePresence, type DevicePresence, type FingerprintRow } from './presenceClassifier';
 import { anchorEvidenceFrom, readSitePresenceInputs, type AnchorEvidence, type ObservedAttachment, type SitePresenceInputs } from './presenceInputs';
 import { readOrgNetworkDeclarations, type DeclarationSource } from './siteNetworkDeclarations';
+import { evaluateSuggestion, SUGGESTION_READ_DAYS, type PresenceDayRow, type Suggestion } from './presenceEligibility';
 
 /**
  * Presence evaluator (site location W2, spec S§7.2,
@@ -14,7 +15,8 @@ import { readOrgNetworkDeclarations, type DeclarationSource } from './siteNetwor
  * reader never sees half an evaluation: fingerprints and presence rows are stamped with the NEW fingerprint_version
  * and the state row only advances to it at the end of the same transaction.
  *
- * It classifies and records. It NEVER writes devices.site_id: no automatic site reassignment, ever (S§2).
+ * It classifies and records. It NEVER writes devices.site_id: no automatic site reassignment, ever (S§2). W3's
+ * wrong-site suggestions are stored on the presence row for a technician to accept or dismiss; they move nothing.
  */
 export const TOPOLOGY_PRESENCE_INTERVAL_MS = 60_000;
 export const PRESENCE_ORGS_PER_TICK = 20;
@@ -28,6 +30,10 @@ export const PRESENCE_SITE_CAP = 1024;
 export const DEVICE_CAP = 20_000;
 export const PRESENCE_WRITE_BATCH = 1000;
 export const ANCHOR_HORIZON_SECONDS = 7 * 86_400;
+/** S§10.1: a day row is extended at most once per this interval. */
+export const PRESENCE_DAY_THROTTLE_MS = 60 * 60_000;
+/** S§7 bounds: at most this many day rows per device per UTC day. */
+export const PRESENCE_DAY_ROWS_PER_DEVICE = 8;
 
 const OBSERVER_CAP = 64;
 const GATEWAY_MAC_CAP = 16;
@@ -136,7 +142,97 @@ async function writeFingerprints(tx: Tx, orgId: string, rows: FingerprintDraft[]
   }
 }
 
-type PresenceDraft = { deviceId: string; assignedSiteId: string; presence: DevicePresence; display: ObservedAttachment | null; freshUntil: Date };
+type PresenceDraft = {
+  deviceId: string; assignedSiteId: string; presence: DevicePresence; display: ObservedAttachment | null; freshUntil: Date;
+  /** W3 (S§10.2): set by step 6; null when the device is not eligible. */
+  suggestion?: Suggestion | null;
+};
+
+/** S§7.1: `<state>:<matched_site_id|->`. */
+export const presenceDayMatchKey = (state: string, matchedSiteId: string | null) => `${state}:${state === 'visiting' && matchedSiteId ? matchedSiteId : '-'}`;
+
+/**
+ * S§10.1: one row per (device, UTC day, assigned site, match key) for every evaluated device, extended at most once
+ * per 60 minutes (the ON CONFLICT ... WHERE throttle, against the evaluation's own clock) and capped at
+ * PRESENCE_DAY_ROWS_PER_DEVICE rows per device per day. Rows carry the device's org (the evaluated org).
+ * Stale and unknown rows are written too: they are how S§10.2 tells explained gaps from unexplained ones.
+ */
+export async function upsertPresenceDays(tx: Tx, orgId: string, drafts: PresenceDraft[], now: Date): Promise<void> {
+  const day = now.toISOString().slice(0, 10);
+  const at = now.toISOString();
+  for (let i = 0; i < drafts.length; i += PRESENCE_WRITE_BATCH) {
+    const values: SQL[] = drafts.slice(i, i + PRESENCE_WRITE_BATCH).map((d) => {
+      const matched = d.presence.state === 'visiting' ? d.presence.matchedSiteId : null;
+      return sql`(${d.deviceId}::uuid, ${d.assignedSiteId}::uuid, ${d.presence.state}::varchar, ${matched}::uuid,
+        ${presenceDayMatchKey(d.presence.state, matched)}::varchar)`;
+    });
+    await tx.execute(sql`INSERT INTO topology_device_presence_days AS existing (org_id, device_id, day, assigned_site_id, state, matched_site_id,
+        match_key, first_observed_at, last_observed_at)
+      SELECT ${orgId}::uuid, v.device_id, ${day}::date, v.assigned_site_id, v.state, v.matched_site_id, v.match_key,
+        ${at}::timestamptz, ${at}::timestamptz
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(device_id, assigned_site_id, state, matched_site_id, match_key)
+      WHERE EXISTS (SELECT 1 FROM topology_device_presence_days k WHERE k.device_id = v.device_id AND k.day = ${day}::date
+                      AND k.assigned_site_id = v.assigned_site_id AND k.match_key = v.match_key)
+         OR (SELECT count(*) FROM topology_device_presence_days k WHERE k.device_id = v.device_id AND k.day = ${day}::date)
+            < ${PRESENCE_DAY_ROWS_PER_DEVICE}
+      ON CONFLICT (device_id, day, assigned_site_id, match_key) DO UPDATE
+        SET last_observed_at = EXCLUDED.last_observed_at, observation_count = existing.observation_count + 1, updated_at = now()
+        WHERE existing.last_observed_at <= EXCLUDED.last_observed_at - make_interval(secs => ${PRESENCE_DAY_THROTTLE_MS / 1000})`);
+  }
+}
+
+const isoOf = (value: string | Date) => new Date(value).toISOString();
+
+/**
+ * S§10.2 for the evaluated devices. Only devices currently visiting a uniquely anchored site can be eligible, so
+ * only their day rows (last SUGGESTION_READ_DAYS days) and confirmations are read, two statements per batch of 1,000.
+ * Returns deviceId -> suggestion (absent = not eligible).
+ */
+async function computeSuggestions(tx: Tx, orgId: string, drafts: PresenceDraft[], fingerprints: FingerprintDraft[],
+  declarers: Map<string, string[]>, now: Date): Promise<Map<string, Suggestion>> {
+  const anchored = new Set(fingerprints.filter((f) => f.status === 'anchored' && f.gatewayAddress)
+    .map((f) => `${f.siteId}|${f.prefix}|${f.gatewayAddress}`));
+  // S§10.2 rule 6: B's fingerprint for this attachment is anchored and B is the prefix's only declarer.
+  const anchoredUniquely = (d: PresenceDraft) => {
+    const p = d.presence;
+    return !!p.attachment && !!p.matchedSiteId && (declarers.get(p.attachment.prefix) ?? []).length === 1
+      && anchored.has(`${p.matchedSiteId}|${p.attachment.prefix}|${p.attachment.gateway}`);
+  };
+  const out = new Map<string, Suggestion>();
+  const candidates = drafts.filter((d) => d.presence.state === 'visiting' && d.presence.matchedSiteId && d.presence.matchedSiteId !== d.assignedSiteId);
+  const fromDay = new Date(now.getTime() - SUGGESTION_READ_DAYS * 86_400_000).toISOString().slice(0, 10);
+  for (let i = 0; i < candidates.length; i += PRESENCE_WRITE_BATCH) {
+    const batch = candidates.slice(i, i + PRESENCE_WRITE_BATCH);
+    const ids = uuidArray(batch.map((d) => d.deviceId));
+    const confirmed = await tx.execute<{ id: string; confirmed_at: string | Date | null }>(sql`SELECT id::text AS id,
+        site_assignment_confirmed_at AS confirmed_at FROM devices WHERE org_id = ${orgId}::uuid AND id = ANY(${ids})`);
+    const confirmedBy = new Map([...confirmed].map((r) => [r.id, r.confirmed_at === null ? null : isoOf(r.confirmed_at)]));
+    const rows = await tx.execute<{ device_id: string; day: string; assigned_site_id: string; state: PresenceDayRow['state'];
+      matched_site_id: string | null; first_observed_at: string | Date; last_observed_at: string | Date }>(sql`
+      SELECT device_id::text AS device_id, day::text AS day, assigned_site_id::text AS assigned_site_id, state,
+        matched_site_id::text AS matched_site_id, first_observed_at, last_observed_at
+      FROM topology_device_presence_days
+      WHERE org_id = ${orgId}::uuid AND device_id = ANY(${ids}) AND day >= ${fromDay}::date`);
+    const byDevice = new Map<string, PresenceDayRow[]>();
+    for (const r of rows) {
+      const list = byDevice.get(r.device_id) ?? [];
+      list.push({ day: r.day, assignedSiteId: r.assigned_site_id, state: r.state, matchedSiteId: r.matched_site_id,
+        firstObservedAt: isoOf(r.first_observed_at), lastObservedAt: isoOf(r.last_observed_at) });
+      byDevice.set(r.device_id, list);
+    }
+    for (const d of batch) {
+      const suggestion = evaluateSuggestion({
+        now, assignedSiteId: d.assignedSiteId, confirmedAt: confirmedBy.get(d.deviceId) ?? null,
+        // Just classified in this transaction and stamped with the new version (S§7.3); visiting implies complete coverage.
+        current: { valid: d.freshUntil.getTime() > now.getTime(), state: d.presence.state, matchedSiteId: d.presence.matchedSiteId },
+        anchoredUniquely: anchoredUniquely(d),
+        days: byDevice.get(d.deviceId) ?? [],
+      });
+      if (suggestion) out.set(d.deviceId, suggestion);
+    }
+  }
+  return out;
+}
 
 async function writePresence(tx: Tx, orgId: string, drafts: PresenceDraft[], version: bigint, now: Date) {
   for (let i = 0; i < drafts.length; i += PRESENCE_WRITE_BATCH) {
@@ -150,16 +246,21 @@ async function writePresence(tx: Tx, orgId: string, drafts: PresenceDraft[], ver
       return sql`(${d.deviceId}::uuid, ${orgId}::uuid, ${d.assignedSiteId}::uuid, ${p.state}, ${p.reason}, ${p.state === 'visiting' ? p.matchedSiteId : null}::uuid,
         ${uuidArray(p.declaringSiteIds.slice(0, 8))}, ${shown?.prefix ?? null}::cidr, ${shown?.gateway ?? null}::inet, ${shown?.mac ?? null}::macaddr,
         ${p.macCorroborated}, ${JSON.stringify(evidence.slice(0, 8))}::jsonb, ${shown?.confirmedAt ?? null}::timestamptz,
-        ${d.freshUntil.toISOString()}::timestamptz, ${version.toString()}::bigint, ${now.toISOString()}::timestamptz)`;
+        ${d.freshUntil.toISOString()}::timestamptz, ${version.toString()}::bigint, ${now.toISOString()}::timestamptz,
+        ${d.suggestion?.siteId ?? null}::uuid, ${d.suggestion?.firstObservedAt ?? null}::timestamptz, ${d.suggestion?.lastObservedAt ?? null}::timestamptz,
+        ${d.suggestion ? Math.min(d.suggestion.days, 31) : null}::smallint)`;
     });
     await tx.execute(sql`INSERT INTO topology_device_presence (device_id, org_id, assigned_site_id, state, reason, matched_site_id, declaring_site_ids,
-        prefix, gateway_address, gateway_mac, mac_corroborated, evidence, observed_at, fresh_until, fingerprint_version, evaluated_at)
+        prefix, gateway_address, gateway_mac, mac_corroborated, evidence, observed_at, fresh_until, fingerprint_version, evaluated_at,
+        suggested_site_id, suggestion_first_at, suggestion_last_at, suggestion_days)
       VALUES ${sql.join(values, sql`, `)}
       ON CONFLICT (device_id) DO UPDATE SET org_id = EXCLUDED.org_id, assigned_site_id = EXCLUDED.assigned_site_id, state = EXCLUDED.state,
         reason = EXCLUDED.reason, matched_site_id = EXCLUDED.matched_site_id, declaring_site_ids = EXCLUDED.declaring_site_ids,
         prefix = EXCLUDED.prefix, gateway_address = EXCLUDED.gateway_address, gateway_mac = EXCLUDED.gateway_mac,
         mac_corroborated = EXCLUDED.mac_corroborated, evidence = EXCLUDED.evidence, observed_at = EXCLUDED.observed_at,
         fresh_until = EXCLUDED.fresh_until, fingerprint_version = EXCLUDED.fingerprint_version, evaluated_at = EXCLUDED.evaluated_at,
+        suggested_site_id = EXCLUDED.suggested_site_id, suggestion_first_at = EXCLUDED.suggestion_first_at,
+        suggestion_last_at = EXCLUDED.suggestion_last_at, suggestion_days = EXCLUDED.suggestion_days,
         updated_at = now()`);
   }
 }
@@ -260,6 +361,11 @@ export async function evaluateOrgPresence(orgId: string, now = new Date(), hooks
     }
 
     await writeFingerprints(tx, orgId, fingerprints, version, now);
+    // S§7.2 step 6 (W3): today's day rows first, so eligibility counts today; then the suggestion rides on the presence
+    // upsert (all four columns written every evaluation, NULL once no longer eligible).
+    await upsertPresenceDays(tx, orgId, drafts, now);
+    const suggestions = await computeSuggestions(tx, orgId, drafts, fingerprints, finalIndex.declarers, now);
+    for (const d of drafts) d.suggestion = suggestions.get(d.deviceId) ?? null;
     await writePresence(tx, orgId, drafts, version, now);
     // Devices no longer bound (or past the cap) lose their row (S§7.2: rows only for evaluated devices).
     await tx.execute(sql`DELETE FROM topology_device_presence WHERE org_id = ${orgId}::uuid

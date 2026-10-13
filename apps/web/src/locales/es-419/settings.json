@@ -1993,6 +1993,10 @@
           "label": "Visibilidad de red",
           "description": "Muestra en el portal del cliente el estado de la red y los activos detectados en modo de solo lectura."
         },
+        "enableEdrVisibility": {
+          "label": "Protección de endpoints (EDR)",
+          "description": "Muestra a los clientes un estado genérico de «Protección de endpoints administrada» y los recuentos de amenazas de los proveedores de EDR conectados. Los nombres de los proveedores nunca se muestran en el portal."
+        },
         "enableNetworkAlerts": {
           "label": "Alertas de red",
           "description": "Muestra en el portal del cliente la cantidad de alertas activas y los tickets abiertos vinculados a los activos de red."
@@ -2892,6 +2896,7 @@
           "blocked_by_app_rule": "Bloqueada por una regla de aplicación",
           "awaiting_manual_approval": "En espera de aprobación manual",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
+          "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
         },
         "failureClasses": {

@@ -22,6 +22,7 @@ const sampleAssigned = () => ({
   observedAt: TS,
   freshUntil: TS,
   suggestion: null,
+  siteAssignmentConfirmedAt: null,
 });
 const sampleVisitor = () => ({
   id: `presentation:overview:scope123:visitor-${'a'.repeat(40)}`,
@@ -33,6 +34,7 @@ const sampleVisitor = () => ({
   observedAt: TS,
   freshUntil: TS,
   suggestion: null,
+  siteAssignmentConfirmedAt: null,
 });
 const samplePresence = () => ({
   schemaVersion: 1 as const,

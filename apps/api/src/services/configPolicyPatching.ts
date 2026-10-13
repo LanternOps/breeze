@@ -1,6 +1,11 @@
 import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
-import { patchInlineSettingsSchema, policyAppRuleSchema, rebootPromptTextSchemas } from '@breeze/shared/validators';
+import {
+  canonicalAppRuleKey,
+  patchInlineSettingsSchema,
+  policyAppRuleSchema,
+  rebootPromptTextSchemas,
+} from '@breeze/shared/validators';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
 import { captureException } from './sentry';
@@ -186,7 +191,7 @@ export function tryNormalizePatchInlineSettings(settings: unknown): {
  * `policyAppRuleSchema`, and `autoApproveDeferralDays` when it is a valid
  * non-negative integer <= 60.
  */
-function normalizeStoredInlineSettingsWithSalvage(
+export function normalizeStoredInlineSettingsWithSalvage(
   raw: unknown,
   context: { configPolicyId: string; featureLinkId: string }
 ): PatchInlineSettings {
@@ -255,6 +260,106 @@ function normalizeStoredInlineSettingsWithSalvage(
   }
 
   return settings;
+}
+
+/**
+ * A configuration-policy patch write tried to change approval config that now
+ * lives on the Update Ring (#8186): the per-app `apps` rules, or switching
+ * policy-level `autoApprove` on. Routes map it to a 400 with `code`.
+ */
+export class PolicyApprovalFieldMovedError extends Error {
+  readonly status = 400 as const;
+  readonly code = 'APPROVAL_RULES_MOVED_TO_RING' as const;
+
+  constructor() {
+    super('Approval and application rules are configured on the Update Ring linked to this policy.');
+    this.name = 'PolicyApprovalFieldMovedError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * What a rule list enforces, order- and case-insensitively: one
+ * `key|action|version` token per entry (display names do not count, and a
+ * block's stray version is ignored, as the evaluator ignores it). A
+ * non-object entry keeps a raw token so it can never match a stored list.
+ */
+export function enforcedAppRuleSet(apps: unknown): string[] {
+  if (!Array.isArray(apps)) return [];
+  const tokens = apps.map((entry) => {
+    if (!isRecord(entry)) return `invalid|${JSON.stringify(entry)}`;
+    const key = canonicalAppRuleKey(String(entry.source), String(entry.packageId));
+    const version = entry.action === 'pin' ? String(entry.pinnedVersion ?? '') : '';
+    return `${key}|${String(entry.action)}|${version}`;
+  });
+  return [...new Set(tokens)].sort();
+}
+
+export function sameAppRuleSet(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((token, i) => token === b[i]);
+}
+
+/**
+ * Reject a patch feature-link write that edits approval config which the
+ * Update Ring now owns (#8186, Open Decision 4 = A):
+ *  - `apps` present and enforcing a different set than the stored link's;
+ *  - `autoApprove: true` when the stored link does not already have it.
+ *
+ * An unchanged round-trip passes, so a Patch tab loaded before the release
+ * can still save its other fields. "Stored" is matched both as the raw link
+ * salvages it and as the read path hands it to a client (a stored document
+ * that fails validation is read back with schema defaults, i.e. `apps: []`).
+ * `stored` is the link's current `inline_settings`, or null for a new link.
+ */
+export function assertNoPolicyApprovalEdits(
+  stored: unknown,
+  incoming: unknown,
+  context: { configPolicyId: string; featureLinkId: string } = { configPolicyId: 'unknown', featureLinkId: 'unknown' },
+): void {
+  if (!isRecord(incoming)) return;
+
+  if (incoming.apps !== undefined) {
+    const incomingSet = enforcedAppRuleSet(incoming.apps);
+    const acceptable = stored === null || stored === undefined
+      ? [[]]
+      : [
+          enforcedAppRuleSet(
+            normalizeStoredInlineSettingsWithSalvage(stored, context).apps,
+          ),
+          enforcedAppRuleSet(tryNormalizePatchInlineSettings(stored).settings.apps),
+        ];
+    if (!acceptable.some((set) => sameAppRuleSet(set, incomingSet))) {
+      throw new PolicyApprovalFieldMovedError();
+    }
+  }
+
+  if (incoming.autoApprove === true && !(isRecord(stored) && stored.autoApprove === true)) {
+    throw new PolicyApprovalFieldMovedError();
+  }
+}
+
+/** The enforced set of a link's stored legacy `apps`, as the salvage reads it. */
+export function storedLegacyAppRuleSet(
+  stored: unknown,
+  context: { configPolicyId: string; featureLinkId: string },
+): string[] {
+  if (stored === null || stored === undefined) return [];
+  return enforcedAppRuleSet(normalizeStoredInlineSettingsWithSalvage(stored, context).apps);
+}
+
+/** The partner a configuration policy's patch ring must belong to. */
+export async function loadConfigPolicyPartnerId(configPolicyId: string): Promise<string | null> {
+  const [policy] = await db
+    .select({ partnerId: configurationPolicies.partnerId, orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, configPolicyId))
+    .limit(1);
+  if (!policy) return null;
+  if (policy.partnerId) return policy.partnerId;
+  return policy.orgId ? resolvePartnerIdForOrg(policy.orgId) : null;
 }
 
 export async function resolvePatchPolicyReference(

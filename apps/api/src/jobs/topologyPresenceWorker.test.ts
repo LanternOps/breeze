@@ -38,7 +38,7 @@ describe('topology presence worker', () => {
   it('enrols, then evaluates each due org in its own system context', async () => {
     const now = new Date('2026-12-26T12:00:00Z');
     const result = await runTopologyPresenceTick(now);
-    expect(result).toEqual({ enrolled: 1, evaluated: 2, busy: 0, notConfigured: 0, failed: 0 });
+    expect(result).toEqual({ enrolled: 1, evaluated: 2, busy: 0, notConfigured: 0, failed: 0, pruned: 0 });
     expect(mocks.evaluate.mock.calls).toEqual([[ORG_A, now], [ORG_B, now]]);
     expect(mocks.contexts.every((id) => id > 0)).toBe(true);
   });
@@ -64,6 +64,27 @@ describe('topology presence worker', () => {
     const result = await runTopologyPresenceTick(new Date());
     expect(result).toMatchObject({ enrolled: 0, evaluated: 2 });
     expect(mocks.capture).toHaveBeenCalledOnce();
+  });
+
+  it('prunes day rows older than 35 days, bounded, in system context, and survives a prune failure', async () => {
+    const now = new Date('2026-12-26T12:00:00Z');
+    mocks.execute.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      if (text.includes('DELETE FROM topology_device_presence_days')) return [{ id: 'a' }, { id: 'b' }];
+      return [];
+    });
+    expect(await runTopologyPresenceTick(now)).toMatchObject({ pruned: 2 });
+    const prune = mocks.execute.mock.calls.map(([q]) => JSON.stringify(q)).find((t) => t.includes('DELETE FROM topology_device_presence_days'))!;
+    expect(prune).toContain('2026-11-21'); // 35 days before now
+    expect(prune).toContain('10000');
+    expect(mocks.contexts.every((id) => id > 0)).toBe(true);
+
+    mocks.execute.mockImplementation(async (query: unknown) => {
+      if (JSON.stringify(query).includes('DELETE FROM topology_device_presence_days')) throw new Error('prune');
+      return [];
+    });
+    expect(await runTopologyPresenceTick(now)).toMatchObject({ pruned: 0 });
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { worker: 'topologyPresence', step: 'retention' });
   });
 
   it('coalesces ticks and waits for the in-flight tick on shutdown', async () => {

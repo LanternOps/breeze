@@ -68,6 +68,11 @@ import {
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
+import {
+  buildSettingsDecisionFields,
+  retainStateKillSwitchEnabled,
+  type RemoteManagementDecision,
+} from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
 import { orgHelperSettingsCache, orgPamFallbackCache, orgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
@@ -374,6 +379,16 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2
 }
 
 /**
+ * Normalize the retain-state protocol (#8616): whether THIS beat's agent
+ * honours the response's `retainState` list. Exactly 1 only; absent,
+ * malformed or a future version is 0 and gets the legacy payload. Parse-only,
+ * never persisted — each beat is answered from its own report.
+ */
+export function normalizeRetainStateProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
  * Normalize the only workload-inventory protocol version implemented here
  * (#3834). Absent, malformed, or a future version this server does not speak
  * is 0; the device Workloads view then reports "agent too old" rather than
@@ -536,7 +551,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   //   - `helperEnabled`          -> handleHelperEnabled(false) turns the helper flag off
   //   - `manageRemoteManagement` -> SetManagedByPolicy(false) clears the tunnel policy flag
   // Both therefore flip off on every beat for the whole drain window.
-  // (`uacInterceptionEnabled` is a `*bool` and handles absence correctly.)
+  // `uacInterceptionEnabled` is absent too, and the agent reads that absence
+  // as "disable" (it switches PAM interception off and runs its disable
+  // cleanup) — benign on a machine being removed. This branch deliberately
+  // does not emit `retainState` (#8616, plan OD6): it stays minimal.
   // Bounded and self-correcting: these are in-memory flags on a machine that is
   // being uninstalled, and a restore ends the drain, after which the next
   // NORMAL heartbeat carries both fields again and restores them.
@@ -714,7 +732,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown>; remoteManagement: RemoteManagementDecision }> => {
 
   const [device] = await db
     .select()
@@ -2141,7 +2159,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     presentedTokenHash: agent.authTokenHash,
   });
 
-  let manageRemoteManagement = false;
+  // #8616: `resolved` is false when the resolver threw or found no effective
+  // config (its settings are then defaults, not a decision); a protocol-aware
+  // agent is then told to retain its remote-management state.
+  let remoteManagement: RemoteManagementDecision = { resolved: false, value: false };
   try {
     // #8053: the heartbeat's own (longer) max age — the default 30 s is
     // shorter than the 60 s beat, so it never hit and every beat re-ran the
@@ -2149,9 +2170,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const remoteAccess = await resolveRemoteAccessForDevice(device.id, {
       maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
     });
-    manageRemoteManagement = remoteAccess.settings.vncRelay === true;
+    remoteManagement = { resolved: remoteAccess.resolved, value: remoteAccess.settings.vncRelay === true };
   } catch (err) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
+    captureException(err);
   }
 
   // #2414 — decrypt just-in-time; a command whose payload fails decryption is
@@ -2214,6 +2236,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceSiteId: device.siteId,
     deviceOwnershipEpoch: device.ownershipEpoch,
     deviceId: device.id,
+    remoteManagement,
     mainResponse: {
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
@@ -2228,7 +2251,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // helperEnabled/helperSettings are merged in AFTER this org-scoped block
       // closes — see the #1105 comment below. uacInterceptionEnabled likewise
       // (#2930): the pam resolver moved out with the other policy readers.
-      manageRemoteManagement: manageRemoteManagement || undefined,
+      // manageRemoteManagement: this slot only fixes the key's position in the
+      // response (unchanged since before #8616); its value is set at final
+      // assembly by buildSettingsDecisionFields.
+      manageRemoteManagement: undefined,
       // Bare-metal recovery W04a: only present (and only ever `true`) when a
       // recoveryMarker in this beat matched — its absence tells the agent
       // nothing (no ack yet, or no marker was sent), same shape as the other
@@ -2414,6 +2440,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // assignments made inside that callback.)
   let policyProbeConfig = null as PolicyProbeConfigUpdate | null;
   let helperSettings = null as HelperSettings | null;
+  // #8616: read after the context below. Defaults to 'error', which also
+  // covers a context that failed before the hierarchy load assigned it.
+  let hierarchyOutcome = 'error' as 'loaded' | 'missing' | 'error';
 
   // #8142 (scaling W03 / W1a-2) — ONE post-commit context for every
   // policy-derived field, ORG-SCOPED: the org block's own `dbContext`
@@ -2435,9 +2464,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   //      org/partner is not the authenticated one (moved, deleted or
   //      re-parented after the org transaction committed). Skip EVERY policy
   //      builder: generating answers here would send defaults/reverts and cache
-  //      them. Helper and PAM read false for this one beat, as they do whenever
-  //      this context fails (the agent reads an absent value as off).
-  //    - hierarchy ERROR: every resolver reads its own (W01's fallback).
+  //      them. For a legacy beat helper and PAM read false for this one beat,
+  //      as they do whenever this context fails (the agent reads an absent
+  //      value as off); a retain-state beat is told to keep both (#8616).
+  //    - hierarchy ERROR: every resolver reads its own (W01's fallback). Their
+  //      values reach legacy beats as before; a retain-state beat retains PAM
+  //      and helper instead, and neither builder writes its device cache.
   //    - set ERROR: the hierarchy is kept (it was read before the failure);
   //      resolvers read their own assignments with it.
   // 2. Every result is written to an outer variable as soon as it is produced.
@@ -2481,7 +2513,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     await withDbAccessContext(dbContext, async () => {
       let beatHierarchy = null as DeviceHierarchy | null;
       let beatPolicySet = null as DevicePolicySet | null;
-      let hierarchyOutcome = 'error' as 'loaded' | 'missing' | 'error';
       let missingReason = 'absent' as 'absent' | 'org_mismatch' | 'partner_mismatch';
       let missingLoadedOrgId = null as string | null;
       let missingLoadedPartnerId = null as string | null;
@@ -2540,7 +2571,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // resolves in memory and only the legacy org flag can read (its own
       // savepoint, on a per-org cache miss). Without it, the whole helper read
       // keeps its own savepoint, as before: a null helper delivers
-      // helperEnabled:false, so its SQL error must not abort the context.
+      // helperEnabled:false to a legacy beat (a retain-state beat retains it),
+      // so its SQL error must not abort the context.
       try {
         const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
         if (cachedHelper) {
@@ -2549,6 +2581,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           const helperOpts = {
             ...policyOpts,
             skipCacheRead: true,
+            // #8616 (decision 13, approved override of the plan's OD13): a
+            // value read without this beat's own hierarchy is never cached.
+            skipCacheWrite: hierarchyOutcome !== 'loaded',
             loadOrgHelperSettings: (orgId: string) =>
               orgCacheFills.through(orgHelperSettingsCache, orgId, () => withDbTransaction(() => getOrgHelperSettings(orgId)), fillScope),
           };
@@ -2595,15 +2630,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       try {
         policyConfigs.pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
           ...policyOpts,
+          // #8616: see the helper read above.
+          skipCacheWrite: hierarchyOutcome !== 'loaded',
           loadOrgPamFallback: (orgId) =>
             orgCacheFills.through(orgPamFallbackCache, orgId, () => withDbTransaction(() => resolveOrgPamFallback(orgId)), fillScope),
         });
       } catch (err) {
-        // Opt-in default: a resolver failure sends uacInterceptionEnabled:false.
-        // For an org that ENFORCES PAM this momentarily drops elevation gating
-        // until the next successful heartbeat. Not cached; self-heals.
+        // Opt-in default: a resolver failure sends uacInterceptionEnabled:false
+        // to a legacy agent (for an org that ENFORCES PAM this momentarily
+        // drops elevation gating until the next successful heartbeat), and
+        // `retainState: ['pam']` to a protocol-aware one (#8616). Not cached.
         console.error(
-          `[agents] failed to build pam config update for ${agentId} — sending uacInterceptionEnabled:false this heartbeat:`,
+          `[agents] failed to build pam config update for ${agentId} — no PAM decision this heartbeat:`,
           err,
         );
         captureException(err);
@@ -2780,18 +2818,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
     : null;
 
+  // #8616 — PAM, helper and remote management: the legacy payload for every
+  // beat except one that advertised retainStateProtocolVersion 1 (kill switch
+  // HEARTBEAT_RETAIN_STATE_ENABLED=false forces legacy for all). Legacy keeps
+  // the opt-in default: no PAM decision sends false, so we never prompt users
+  // on a device that opted into nothing. Each key below sits at its pre-#8616
+  // position (manageRemoteManagement overwrites its mainResponse slot), so a
+  // legacy payload is byte-identical to before.
+  const settingsDecision = buildSettingsDecisionFields({
+    retainProtocol: normalizeRetainStateProtocolVersion(data.securityCapabilities?.retainStateProtocolVersion),
+    enabled: retainStateKillSwitchEnabled(),
+    policyHierarchyLoaded: hierarchyOutcome === 'loaded',
+    pamSettings,
+    helperSettings,
+    remoteManagement: scoped.remoteManagement,
+  });
+
   return c.json({
     ...scoped.mainResponse,
+    manageRemoteManagement: settingsDecision.manageRemoteManagement,
     configUpdate,
     manifestTrustKeys,
     manifestKeyDelegations,
-    // Opt-in default: a null pamSettings (resolver error, logged above) sends
-    // false so we never prompt users on a device that opted into nothing.
-    uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
-    helperEnabled: helperSettings?.enabled ?? false,
-    helperSettings: helperSettings ?? undefined,
+    uacInterceptionEnabled: settingsDecision.uacInterceptionEnabled,
+    helperEnabled: settingsDecision.helperEnabled,
+    helperSettings: settingsDecision.helperSettings,
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
+    ...(settingsDecision.retainState ? { retainState: settingsDecision.retainState } : {}),
   });
 });
 

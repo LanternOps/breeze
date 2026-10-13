@@ -5,6 +5,7 @@ import type { PresenceAssignedEntry, PresenceResponse } from '@breeze/shared';
 import type { RosterNetwork } from './renderProjection';
 import type { TopologySelection } from './topologyPresentation';
 import { formatRelativeTime, formatTime } from '../../lib/dateTimeFormat';
+import SiteMoveSuggestion from './SiteMoveSuggestion';
 
 /**
  * The viewed site's devices that are not on its networks, in up to three sections (site location W1/W2, spec S§4.3):
@@ -12,12 +13,16 @@ import { formatRelativeTime, formatTime } from '../../lib/dateTimeFormat';
  * and "Location unknown". Collapsed by default; each device opens in the inspector. It names a site only when the API sent
  * that site (a match the viewer may not see arrives as an unrecognized entry with no reason), and never says how far away anything is.
  */
-export default function TopologySiteRoster({ siteName, roster, nodesById, onSelect, presence, deviceNodeIds }: {
+export default function TopologySiteRoster({ siteName, roster, nodesById, onSelect, presence, deviceNodeIds, canMoveDevices = false, onPresenceChanged }: {
   siteName: string; roster: RosterNetwork[]; nodesById: ReadonlyMap<string, { label: string }>; onSelect: (selection: TopologySelection) => void;
   /** Cross-site presence of this site's assigned devices; absent until it loads (or when it fails), then only W01's networks are listed. */
   presence?: PresenceResponse | null;
   /** Breeze device id -> the node this map draws for it, so an entry can open the inspector. */
   deviceNodeIds?: ReadonlyMap<string, string>;
+  /** W3: devices:write, for "Move to <site>" / "Keep at <site>" on a wrong-site suggestion. */
+  canMoveDevices?: boolean;
+  /** W3: refetch presence after a suggestion action. */
+  onPresenceChanged?: () => void;
 }) {
   const { t, i18n } = useTranslation('topology');
   const [open, setOpen] = useState(false);
@@ -73,7 +78,10 @@ export default function TopologySiteRoster({ siteName, roster, nodesById, onSele
   const list = (rows: PresenceAssignedEntry[]) => <ul className="mt-1 space-y-1.5">{rows.map((entry) => {
     const detail = line(entry);
     return <li key={entry.deviceId} data-testid="topology-roster-device">{device(entry)}
-      <p className="text-xs text-muted-foreground">{detail.text}</p>{detail.hint && <p className="text-xs text-muted-foreground">{detail.hint}</p>}</li>;
+      <p className="text-xs text-muted-foreground">{detail.text}</p>{detail.hint && <p className="text-xs text-muted-foreground">{detail.hint}</p>}
+      {presence && (entry.suggestion || entry.siteAssignmentConfirmedAt) && <SiteMoveSuggestion deviceId={entry.deviceId} deviceName={entry.label}
+        assignedSite={{ id: presence.siteId, name: siteName }} prefix={entry.network?.prefix ?? null} suggestion={entry.suggestion}
+        confirmedAt={entry.siteAssignmentConfirmedAt} canMove={canMoveDevices} onChanged={() => onPresenceChanged?.()} />}</li>;
   })}</ul>;
   return <section data-testid="topology-site-roster" className="rounded-md border bg-card text-sm">
     <button type="button" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}

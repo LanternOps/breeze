@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  bigint, boolean, check, cidr, foreignKey, index, inet, jsonb, macaddr, pgTable, text, timestamp, uniqueIndex, uuid, varchar,
+  bigint, boolean, check, cidr, date, foreignKey, index, inet, integer, jsonb, macaddr, pgTable, smallint, text, timestamp, uniqueIndex, uuid, varchar,
 } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { devices } from './devices';
@@ -91,6 +91,11 @@ export const topologyDevicePresence = pgTable('topology_device_presence', {
   evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  /** W3 (S§10.2): the wrong-site suggestion computed by the evaluator; all four NULL when not eligible. A suggestion only. */
+  suggestedSiteId: uuid('suggested_site_id'),
+  suggestionFirstAt: timestamp('suggestion_first_at', { withTimezone: true }),
+  suggestionLastAt: timestamp('suggestion_last_at', { withTimezone: true }),
+  suggestionDays: smallint('suggestion_days'),
 }, (table) => [
   foreignKey({ name: 'topology_device_presence_device_fk', columns: [table.deviceId, table.orgId], foreignColumns: [devices.id, devices.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_device_presence_matched_site_fk', columns: [table.matchedSiteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
@@ -99,4 +104,45 @@ export const topologyDevicePresence = pgTable('topology_device_presence', {
   index('topology_device_presence_matched_site_idx').on(table.matchedSiteId),
   check('topology_device_presence_state_check', sql`state IN ('home', 'visiting', 'unrecognized', 'ambiguous', 'stale', 'unknown')`),
   check('topology_device_presence_visiting_chk', sql`(state = 'visiting') = (matched_site_id IS NOT NULL)`),
+  foreignKey({ name: 'topology_device_presence_suggested_site_fk', columns: [table.suggestedSiteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+  index('topology_device_presence_suggested_site_idx').on(table.suggestedSiteId).where(sql`suggested_site_id IS NOT NULL`),
+  check('topology_device_presence_suggestion_days_check', sql`suggestion_days IS NULL OR suggestion_days BETWEEN 0 AND 31`),
+  check('topology_device_presence_suggestion_chk', sql`(suggested_site_id IS NULL) = (suggestion_days IS NULL)
+       AND (suggested_site_id IS NULL) = (suggestion_first_at IS NULL)
+       AND (suggested_site_id IS NULL) = (suggestion_last_at IS NULL)`),
+]);
+
+/**
+ * W3 (#7887, spec S§7.1, S§10.1): prospective daily presence summaries, one row per (device, UTC day, assigned
+ * site, match key), written by the evaluator at most once per 60 minutes per row and pruned after 35 days.
+ * `assigned_site_id` is the historical assignment, never rewritten. Migration:
+ * 2026-12-27-000000-topology-presence-days-and-confirmation.sql (SQL owns the DEFERRABLE composite FKs).
+ */
+export const topologyDevicePresenceDays = pgTable('topology_device_presence_days', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  day: date('day').notNull(),
+  assignedSiteId: uuid('assigned_site_id').notNull(),
+  state: varchar('state', { length: 16 }).$type<'home' | 'visiting' | 'unrecognized' | 'ambiguous' | 'stale' | 'unknown'>().notNull(),
+  matchedSiteId: uuid('matched_site_id'),
+  matchKey: varchar('match_key', { length: 80 }).notNull(),
+  firstObservedAt: timestamp('first_observed_at', { withTimezone: true }).notNull(),
+  lastObservedAt: timestamp('last_observed_at', { withTimezone: true }).notNull(),
+  observationCount: integer('observation_count').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  foreignKey({ name: 'topology_device_presence_days_device_fk', columns: [table.deviceId, table.orgId], foreignColumns: [devices.id, devices.orgId] }).onDelete('cascade'),
+  foreignKey({ name: 'topology_device_presence_days_assigned_site_fk', columns: [table.assignedSiteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+  foreignKey({ name: 'topology_device_presence_days_matched_site_fk', columns: [table.matchedSiteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+  uniqueIndex('topology_device_presence_days_key_uniq').on(table.deviceId, table.day, table.assignedSiteId, table.matchKey),
+  index('topology_device_presence_days_org_device_idx').on(table.orgId, table.deviceId, table.day),
+  index('topology_device_presence_days_day_idx').on(table.day),
+  index('topology_device_presence_days_assigned_site_idx').on(table.assignedSiteId),
+  index('topology_device_presence_days_matched_site_idx').on(table.matchedSiteId).where(sql`matched_site_id IS NOT NULL`),
+  check('topology_device_presence_days_state_check', sql`state IN ('home', 'visiting', 'unrecognized', 'ambiguous', 'stale', 'unknown')`),
+  check('topology_device_presence_days_observation_count_check', sql`observation_count > 0`),
+  check('topology_device_presence_days_visiting_chk', sql`(state = 'visiting') = (matched_site_id IS NOT NULL)`),
+  check('topology_device_presence_days_observed_chk', sql`last_observed_at >= first_observed_at`),
 ]);

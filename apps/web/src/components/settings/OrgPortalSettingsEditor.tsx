@@ -31,6 +31,7 @@ type PortalSettings = {
   enablePerformanceMetrics: boolean;
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
@@ -82,6 +83,7 @@ type VisibilityToggleKey =
   | 'enablePerformanceMetrics'
   | 'enableSoftwareInventory'
   | 'enableNetworkVisibility'
+  | 'enableEdrVisibility'
   | 'enableNetworkAlerts'
   | 'enableHourBlock'
   | 'enablePatchDetail'
@@ -162,6 +164,11 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableNetworkVisibility',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.description',
+  },
+  {
+    key: 'enableEdrVisibility',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.description',
   },
   // Distinct sensitivity tier from asset inventory (enableNetworkVisibility
   // above), gated by its own flag -- listed here so an org admin can toggle
@@ -264,6 +271,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enablePerformanceMetrics: true,
     // Opt in individually until the customer-facing software page ships.
     enableNetworkVisibility: true,
+    enableEdrVisibility: true,
   });
 
   const save = useCallback(async () => {
@@ -292,6 +300,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enablePerformanceMetrics: draft.enablePerformanceMetrics,
             enableSoftwareInventory: draft.enableSoftwareInventory,
             enableNetworkVisibility: draft.enableNetworkVisibility,
+            enableEdrVisibility: draft.enableEdrVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             enablePatchDetail: draft.enablePatchDetail,

@@ -235,6 +235,13 @@ export const PATCH_INELIGIBLE_REASONS = [
   /** The device resolves to no update ring, so only a manual approval could admit it — and none does. */
   'no_ring_resolved',
   'device_not_in_org',
+  /**
+   * The device's patch policy links an update ring that does not resolve
+   * (missing, not a ring, or another partner's). Fails closed: every candidate
+   * is denied until the link is fixed — the ring owns the app rules, so
+   * treating it as "no ring" could install a blocked app (#8186).
+   */
+  'ring_reference_invalid',
 ] as const;
 export type PatchIneligibleReason = (typeof PATCH_INELIGIBLE_REASONS)[number];
 

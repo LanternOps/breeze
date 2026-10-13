@@ -109,7 +109,6 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'services/alertCorrelationRca.ts',
   // AI tools operate on a policy's own links (create/update/remove/list).
   'services/aiToolsConfigPolicy.ts',
-  'services/aiToolsFleet.ts',
   'services/aiToolsBackup.ts',
   // Approval-digest content pin for the AI tool `manage_policy_feature_link:update`.
   // It pins the CURRENT content of the one authored row the approver evaluated,

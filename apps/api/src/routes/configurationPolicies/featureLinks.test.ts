@@ -1616,6 +1616,39 @@ describe('featureLinks routes', () => {
     });
   });
 
+  describe('approval rules moved to the Update Ring (#8186)', () => {
+    it('maps a PolicyApprovalFieldMovedError on add to a 400 with its code', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      addFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: { sources: ['os'] } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
+        code: 'APPROVAL_RULES_MOVED_TO_RING',
+      });
+    });
+
+    it('maps a PolicyApprovalFieldMovedError on update to a 400 with its code', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: {} }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
+    });
+  });
+
   // ============================================================
   // #5511 W02 — the hpCmsl authorization gate (contract D4)
   // ============================================================

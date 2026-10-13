@@ -1014,6 +1014,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_config_template_versions',
   'topology_config_templates',
   'topology_device_presence',
+  'topology_device_presence_days',
   'topology_diagnostic_runs',
   'topology_diagnostic_steps',
   // M3 interface samples: partitioned (raw/5m/1h -> daily leaves); the parent

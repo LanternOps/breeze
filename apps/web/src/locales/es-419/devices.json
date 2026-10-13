@@ -1972,6 +1972,7 @@
       "excludedSourceTitle": "Los orígenes de la directiva de parches no incluyen este parche, así que las ejecuciones programadas lo omiten.",
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación de la directiva de parches retiene este parche, así que las ejecuciones programadas lo omiten.",
+      "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
       "pending": "Aprobación pendiente",
       "needsApprovalRingTitle": "El anillo de actualización {{ring}} no aprueba este parche automáticamente. Apruébelo manualmente para instalarlo.",
       "needsApprovalNoRingTitle": "La directiva de parches de este dispositivo no tiene un anillo de actualización vinculado, así que este parche solo se instala tras una aprobación manual.",
@@ -4083,6 +4084,54 @@
       "label": "Estado de la imagen",
       "all": "Todas",
       "empty": "Ninguna carga de trabajo coincide con este estado de imagen."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Otros proveedores de EDR",
+    "loadError": "No se pudieron cargar algunos datos de proveedores de EDR.",
+    "duplicateNotice": "Vinculado por dos consolas: este dispositivo aparece en más de una conexión de {{provider}}.",
+    "openDetections": "Detecciones abiertas",
+    "coverageHeading": "La cobertura podría estar incompleta",
+    "fields": {
+      "health": "Estado de salud",
+      "status": "Estado",
+      "isolation": "Aislamiento",
+      "agentVersion": "Versión del agente",
+      "lastSeen": "Última vez visto"
+    },
+    "health": {
+      "healthy": "Saludable",
+      "degraded": "Degradado",
+      "unhealthy": "No saludable",
+      "unknown": "Desconocido"
+    },
+    "online": {
+      "online": "En línea",
+      "offline": "Sin conexión",
+      "unknown": "Desconocido"
+    },
+    "isolation": {
+      "isolated": "Aislado",
+      "not_isolated": "No aislado",
+      "pending": "Pendiente",
+      "unknown": "Desconocido"
+    },
+    "severity": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa",
+      "unknown": "Desconocida"
+    },
+    "detectionStatus": {
+      "open": "Abierta",
+      "in_progress": "En curso",
+      "mitigated": "Mitigada",
+      "resolved": "Resuelta",
+      "false_positive": "Falso positivo",
+      "dismissed": "Descartada",
+      "unknown": "Desconocido"
     }
   }
 }

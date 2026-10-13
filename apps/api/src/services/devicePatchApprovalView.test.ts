@@ -151,14 +151,33 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     expect(view.byPatchId.get(P4)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
   });
 
-  it("names no ring and auto-approves nothing when the linked ring belongs to another partner", async () => {
+  it("names no ring and excludes everything (ring_reference_invalid) when the linked ring belongs to another partner (#8186)", async () => {
     mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 }, 0, '99999999-9999-9999-9999-999999999999');
     mockEvaluatorReads([row({ patchId: P1, severity: 'critical' })]);
 
     const view = await loadDevicePatchApprovalView(DEV, ORG);
 
     expect(view.evaluation.ring).toBeNull();
-    expect(view.byPatchId.get(P1)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'ring_reference_invalid', holdUntil: null });
+  });
+
+  it('reports every patch as excluded (ring_reference_invalid) when the policy links an unresolvable ring (#8186)', async () => {
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue({
+      configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
+      featurePolicyId: RING, sourcePolicyId: 'cp-1', inherited: false,
+      settings: { sources: ['os'], autoApprove: false, autoApproveSeverities: [], autoApproveDeferralDays: 0, apps: [] },
+      ring: {
+        classification: 'missing_target', valid: false, ringId: null, ringName: null,
+        categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules: [],
+      },
+    } as never);
+    mockEvaluatorReads([row({ patchId: P1 })], [{ patchId: P1, status: 'approved', ringId: null }]);
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.evaluation).toEqual({ available: true, ring: null });
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'ring_reference_invalid', holdUntil: null });
   });
 
   it('mirrors the scheduled job on superseded patches (it does not exclude them)', async () => {

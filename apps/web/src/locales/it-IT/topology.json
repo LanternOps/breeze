@@ -773,7 +773,29 @@
       "visitorExplanation": "Assegnato a {{assigned}}. Segnala la rete {{prefix}} di {{site}} tramite {{gateway}}. Il gateway corrisponde ai dispositivi di {{site}}.",
       "visitorExplanationMac": "Assegnato a {{assigned}}. Segnala la rete {{prefix}} di {{site}} tramite {{gateway}}. Il gateway corrisponde ai dispositivi di {{site}}, incluso il MAC del suo router.",
       "ignoredDeclarations_one": "{{count}} voce di sottorete dichiarata è stata ignorata (intervallo, indirizzo singolo, IPv6 o testo non interpretabile). Solo i prefissi IPv4 esatti identificano le reti di una sede.",
-      "ignoredDeclarations_other": "{{count}} voci di sottorete dichiarate sono state ignorate (intervalli, indirizzi singoli, IPv6 o testo non interpretabile). Solo i prefissi IPv4 esatti identificano le reti di una sede."
+      "ignoredDeclarations_other": "{{count}} voci di sottorete dichiarate sono state ignorate (intervalli, indirizzi singoli, IPv6 o testo non interpretabile). Solo i prefissi IPv4 esatti identificano le reti di una sede.",
+      "suggestedBadge": "Spostamento suggerito",
+      "headerSuggested_one": "{{count}} dispositivo assegnato a un'altra sede segnala questa rete da almeno 7 giorni",
+      "headerSuggested_other": "{{count}} dispositivi assegnati ad altre sedi segnalano questa rete da almeno 7 giorni",
+      "review": "Rivedi",
+      "suggestion": {
+        "title": "Probabilmente assegnato alla sede sbagliata.",
+        "evidence": "Ha segnalato la rete di {{site}} ({{prefix}}) in {{days}} giorni tra il {{from}} e il {{to}}. Nessuna rilevazione della rete di {{assigned}} in quel periodo.",
+        "evidenceNoPrefix": "Ha segnalato la rete di {{site}} in {{days}} giorni tra il {{from}} e il {{to}}. Nessuna rilevazione della rete di {{assigned}} in quel periodo.",
+        "move": "Sposta in {{site}}",
+        "keep": "Mantieni in {{site}}",
+        "confirmMove": "Lo spostamento cambia quali criteri di configurazione, finestre di manutenzione, instradamento degli avvisi e report della sede si applicano a {{device}}. Breeze non lo sposterà di nuovo automaticamente.",
+        "cancel": "Annulla",
+        "moved": "{{device}} spostato in {{site}}.",
+        "kept": "{{device}} resta in {{site}}. I suggerimenti sono disattivati per questo dispositivo.",
+        "confirmed": "Assegnazione della sede confermata il {{date}} \u00b7 Suggerimenti disattivati",
+        "turnOn": "Attiva",
+        "turnedOn": "I suggerimenti sono di nuovo attivi per {{device}}.",
+        "moveFailed": "Impossibile spostare il dispositivo",
+        "keepFailed": "Impossibile confermare l'assegnazione della sede",
+        "turnOnFailed": "Impossibile riattivare i suggerimenti",
+        "siteChanged": "Questo dispositivo è stato spostato da qualcun altro \u2014 ricarica per vedere la sede attuale"
+      }
     }
   }
 }

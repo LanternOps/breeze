@@ -19,7 +19,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../services/partnerWideAccess';
-import { ringAutoApproveSchema, mergeRingAutoApproveWrite } from '@breeze/shared/validators';
+import { ringAutoApproveSchema, ringAppRulesSchema, mergeRingAutoApproveWrite } from '@breeze/shared/validators';
 
 // Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
 // auto-provisioned ring auto-approves nothing until an operator opts in.
@@ -126,6 +126,8 @@ const createRingSchema = z.object({
   // Ring-level auto-approval gate (#1317). Typed shape replaces the old
   // free-form record so the ring owns approval rules with validated severities.
   autoApprove: ringAutoApproveSchema.optional(),
+  // Per-app block/pin rules (#8184). Omitted on update leaves the column alone.
+  appRules: ringAppRulesSchema.optional(),
   targets: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -142,6 +144,8 @@ const updateRingSchema = z.object({
   categoryRules: z.array(categoryRuleSchema).optional(),
   // Ring-level auto-approval gate (#1317). See createRingSchema.
   autoApprove: ringAutoApproveSchema.optional(),
+  // Per-app block/pin rules (#8184). Omitted on update leaves the column alone.
+  appRules: ringAppRulesSchema.optional(),
   targets: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -267,6 +271,7 @@ updateRingRoutes.post(
           ? mergeRingAutoApproveWrite(data.autoApprove, undefined)
           : DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
+        appRules: data.appRules ?? [],
         targets: data.targets ?? {},
         createdBy: auth.user.id,
       })
@@ -392,6 +397,7 @@ updateRingRoutes.patch(
       updateFields.autoApprove = mergeRingAutoApproveWrite(data.autoApprove, existing.autoApprove);
     }
     if (data.categoryRules !== undefined) updateFields.categoryRules = data.categoryRules;
+    if (data.appRules !== undefined) updateFields.appRules = data.appRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 
     const [updated] = await db

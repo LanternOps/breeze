@@ -20,7 +20,10 @@ export const presenceNetworkSchema = z
   .object({ prefix: z.string().max(64), gatewayAddress: z.string().max(64) })
   .strict();
 
-/** Filled by site-location W3; W2 always emits null. */
+/**
+ * Site location W3 (spec S§9, S§10): a wrong-site SUGGESTION, never an assignment. Emitted only when the viewer can
+ * see both the device's assigned site and the suggested one (R2, R3, R5).
+ */
 export const presenceSuggestionSchema = z
   .object({
     siteId: uuid,
@@ -44,6 +47,8 @@ export const presenceAssignedEntrySchema = z
     observedAt: timestamp.nullable(),
     freshUntil: timestamp.nullable(),
     suggestion: presenceSuggestionSchema.nullable(),
+    /** W3 (S§11): "Keep at <site>" was chosen; suggestions are off for this device until it moves or this is cleared. */
+    siteAssignmentConfirmedAt: timestamp.nullable(),
   })
   .strict();
 
@@ -59,6 +64,7 @@ export const presenceVisitorSchema = z
     observedAt: timestamp.nullable(),
     freshUntil: timestamp.nullable(),
     suggestion: presenceSuggestionSchema.nullable(),
+    siteAssignmentConfirmedAt: timestamp.nullable(),
   })
   .strict();
 

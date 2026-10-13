@@ -75,6 +75,16 @@ describe('buildHelperConfigUpdate', () => {
     expect(redis.set).toHaveBeenCalledWith('helper:settings:device:dev-1', expect.any(String), 'EX', 120);
   });
 
+  it('skipCacheWrite: resolves the same value but never writes the device cache (#8616)', async () => {
+    queueNoPolicyMatch();
+    queue.push({ rows: [{ settings: { helper: { enabled: true } } }] });
+
+    const settings = await buildHelperConfigUpdate('dev-1', 'org-1', { skipCacheWrite: true });
+
+    expect(settings.enabled).toBe(true);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
   it('surfaces a failed org-flag read instead of reporting the Helper disabled', async () => {
     queueNoPolicyMatch();
     queue.push({ error: new Error('connection terminated') });

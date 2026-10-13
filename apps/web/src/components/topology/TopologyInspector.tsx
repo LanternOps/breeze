@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SiteMoveSuggestion from './SiteMoveSuggestion';
 import type { GraphResponse, PresenceVisitor, RelationshipDetailResponse, RelationshipEvidenceResponse, TopologyAiSelection, TopologyView } from '@breeze/shared';
 import { isPresentation, selectedTopologyEntity, type TopologySelection, topologyHealthLabel } from './topologyPresentation';
 import { topologyApi } from './topologyApi';
@@ -52,7 +53,7 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount, siteName, visitor }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount, siteName, visitor, canMoveDevices, onPresenceChanged }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean; sharedAddressCount?: number;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
@@ -66,6 +67,10 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   /** Names the site in a network card's declaration note (site location W1). */ siteName?: string;
   /** The selection is a visitor from another site (site location W2): a presentation-only explanation, no diagnostics or actions. */
   visitor?: PresenceVisitor;
+  /** W3: devices:write, for the visitor's "Move to <site>" / "Keep at <site>" suggestion actions. */
+  canMoveDevices?: boolean;
+  /** W3: refetch presence after a suggestion action. */
+  onPresenceChanged?: () => void;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -81,6 +86,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
       const values = { assigned: visitor.assignedSite.name, site: siteName || t('grouped.thisSite'), prefix: visitor.network.prefix, gateway: visitor.network.gatewayAddress };
       return visitor.macCorroborated ? t('grouped.crossSite.visitorExplanationMac', values) : t('grouped.crossSite.visitorExplanation', values);
     })()}</p>
+    <SiteMoveSuggestion deviceId={visitor.deviceId} deviceName={visitor.label} assignedSite={visitor.assignedSite} prefix={visitor.network.prefix}
+      suggestion={visitor.suggestion} confirmedAt={visitor.siteAssignmentConfirmedAt} canMove={!!canMoveDevices} onChanged={() => onPresenceChanged?.()} />
   </aside>;
   if (!entity) return null;
   const schematic = isPresentation(entity);

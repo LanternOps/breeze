@@ -108,6 +108,8 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     { selector: 'node[?stale]', style: { 'border-style': 'dashed' } },
     // A visitor (assigned to another site): neutral, dashed, never a health colour (site location W2).
     { selector: 'node[?visiting]', style: { 'border-style': 'dashed', 'border-color': c.muted, 'background-color': c.mutedBg } },
+    // A visitor with a wrong-site suggestion (site location W3): solid primary border, still never a health colour.
+    { selector: 'node[?suggested]', style: { 'border-style': 'solid', 'border-color': c.primary, 'border-width': 1.5 } },
     { selector: 'node[?unverified]', style: { 'border-style': 'dashed', 'background-color': c.mutedBg } },
     // Neighbour-cache placement (#7816): distinct from an address match, still neutral — never a health colour.
     { selector: 'node[?corroborated]', style: { 'border-style': 'dotted', 'border-width': 1.5 } },
@@ -352,8 +354,10 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     const family = fontFamily();
     const badgeLabel = t('grouped.sharedIpBadge'), badgeW = badgeWidth(badgeLabel, family);
     const visitingLabel = t('grouped.crossSite.visitingBadge'), visitingW = badgeWidth(visitingLabel, family);
+    const suggestedLabel = t('grouped.crossSite.suggestedBadge'), suggestedW = badgeWidth(suggestedLabel, family);
     /** The compact pill closing a tile's second line: "Visiting" for a visitor, "Shared IP" for tiles that report one address. */
-    const markerOf = (node: RenderNode) => node.visiting ? { label: visitingLabel, width: visitingW } : node.sharedWith > 0 ? { label: badgeLabel, width: badgeW } : null;
+    const markerOf = (node: RenderNode) => node.suggested ? { label: suggestedLabel, width: suggestedW } : node.visiting ? { label: visitingLabel, width: visitingW }
+      : node.sharedWith > 0 ? { label: badgeLabel, width: badgeW } : null;
     renderer.batch(() => {
       // Parents first so children can reference them.
       const ordered = [...render.nodes].sort((a, b) => Number(!!a.parent) - Number(!!b.parent));
@@ -364,7 +368,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           textWidth: card ? '4000px' : `${Math.max(80, width - TEXT_INSET - TEXT_END)}px`, textShift: card || node.kind === 'outside' ? 0 : TEXT_INSET - width,
           icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined, member: !!node.parent,
           health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, corroborated: node.corroborated, networkClass: node.networkClass ?? undefined,
-          visiting: !!node.visiting, presentation: node.id.startsWith('presentation:'), titleShift: 0, ...(node.parent ? { parent: node.parent } : {}) },
+          visiting: !!node.visiting, suggested: !!node.suggested, presentation: node.id.startsWith('presentation:'), titleShift: 0, ...(node.parent ? { parent: node.parent } : {}) },
           ...(card ? {} : { position: points.get(node.id) ?? { x: 0, y: 0 } }) };
       });
       // Section headers follow the packed members; they are drawing only (never persisted or selected).

@@ -413,6 +413,10 @@ export const heartbeatSchema = z.object({
     // v2, which adds the ownership epoch (#8206); anything else means no
     // assertion is sent.
     identitySyncProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8616 — the agent honours the response's `retainState` list. Parse-only
+    // (never persisted): the beat being answered is the only source of truth.
+    // Same tolerant contract; anything but exactly 1 gets the legacy payload.
+    retainStateProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),

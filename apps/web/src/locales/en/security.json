@@ -207,6 +207,77 @@
     "sentineloneThreats": "SentinelOne Threats",
     "threatsAndIncidentsAcrossYourFleetFrom": "Threats and incidents across your fleet from SentinelOne and Huntress."
   },
+  "securityOtherEdr": {
+    "tabLabel": "Other EDR",
+    "statusError": "Couldn't check for other EDR providers.",
+    "title": "Other EDR detections",
+    "loading": "Loading detections...",
+    "showing": "Showing {{from}}-{{to}} of {{total}}",
+    "refresh": "Refresh",
+    "filters": {
+      "severity": "Severity",
+      "status": "Status",
+      "provider": "Provider",
+      "allSeverities": "All severities",
+      "allProviders": "All providers",
+      "openDefault": "Open (default)",
+      "allStatuses": "All statuses"
+    },
+    "severities": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info",
+      "unknown": "Unknown"
+    },
+    "statuses": {
+      "open": "Open",
+      "in_progress": "In progress",
+      "mitigated": "Mitigated",
+      "resolved": "Resolved",
+      "false_positive": "False positive",
+      "dismissed": "Dismissed",
+      "unknown": "Unknown"
+    },
+    "connectionStatuses": {
+      "connected": "Connected",
+      "error": "Error",
+      "reauth_required": "Re-authentication required"
+    },
+    "tenants": {
+      "stale": "Stale tenants",
+      "failed": "Failed tenants",
+      "pending": "Pending tenants",
+      "unmapped": "Unmapped tenants"
+    },
+    "openDetections": "Open detections",
+    "endpoints": "Endpoints",
+    "linkedEndpoints": "Linked endpoints",
+    "unhealthyEndpoints": "Unhealthy endpoints",
+    "lastDetectionSync": "Last detection sync",
+    "never": "Never",
+    "coverageHeading": "Coverage information",
+    "emptyPartial": "No detections returned. Coverage is incomplete - see notes above.",
+    "empty": "No detections match your filters.",
+    "table": {
+      "provider": "Provider",
+      "detection": "Detection",
+      "severity": "Severity",
+      "status": "Status",
+      "device": "Device",
+      "detected": "Detected",
+      "actions": "Actions"
+    },
+    "unnamedDetection": "Detection",
+    "detached": "Detached",
+    "promoteToIncident": "Promote to incident",
+    "promoted": "Promoted",
+    "alreadyPromoted": "Already promoted",
+    "promoteFailed": "Failed to create incident",
+    "previous": "Previous",
+    "next": "Next"
+  },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "EDR status couldn't be loaded. Refresh to try again.",
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",

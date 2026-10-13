@@ -10,12 +10,12 @@ export const presenceDeviceId = deviceUuid;
 export const presenceVisitor = (n: number, over: Partial<PresenceVisitor> = {}): PresenceVisitor => ({
   id: `presentation:overview:scope:visitor-${hex40(n)}`, deviceId: deviceUuid(n), label: 'LAPTOP-LOV-01', assignedSite: MAIN_OFFICE,
   network: { prefix: '10.1.5.0/24', gatewayAddress: '10.1.5.1' }, macCorroborated: false,
-  observedAt: '2026-10-12T09:12:00Z', freshUntil: '2026-10-12T10:12:00Z', suggestion: null, ...over });
+  observedAt: '2026-10-12T09:12:00Z', freshUntil: '2026-10-12T10:12:00Z', suggestion: null, siteAssignmentConfirmedAt: null, ...over });
 
 export const presenceAssigned = (n: number, over: Partial<PresenceAssignedEntry> = {}): PresenceAssignedEntry => ({
   deviceId: deviceUuid(n), label: 'DESKTOP-HD7K2QF', state: 'visiting', reason: null, matchedSite: LAKESIDE, declaringSites: null,
   network: { prefix: '10.1.5.0/24', gatewayAddress: '10.1.5.1' }, macCorroborated: true,
-  observedAt: '2026-10-12T09:12:00Z', freshUntil: '2026-10-12T10:12:00Z', suggestion: null, ...over });
+  observedAt: '2026-10-12T09:12:00Z', freshUntil: '2026-10-12T10:12:00Z', suggestion: null, siteAssignmentConfirmedAt: null, ...over });
 
 export const presenceFixture = (over: Partial<PresenceResponse> = {}): PresenceResponse => ({
   schemaVersion: 1, siteId: MAIN_OFFICE.id, asOf: '2026-10-12T09:30:00Z', authority: false, coverage: 'complete', ignoredDeclarations: 0,
