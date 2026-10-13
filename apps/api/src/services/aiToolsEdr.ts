@@ -29,6 +29,8 @@ import {
 import { runFrozenDeviceIds, siteAllowlistOf, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 const DEFAULT_LIMIT = 25;
+/** MITRE ATT&CK technique / sub-technique id, e.g. T1059 or T1059.001. */
+const MITRE_TECHNIQUE_RE = /^T\d{4}(?:\.\d{3})?$/;
 const MAX_LIMIT = 100;
 
 /**
@@ -133,7 +135,12 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
           offset: 0,
         });
 
-        const rows = result.rows;
+        // mitreTechniques is a vendor-supplied string ARRAY (raw-text fencing
+        // covers string fields only): keep only well-formed technique ids.
+        const rows = result.rows.map((r) => ({
+          ...r,
+          mitreTechniques: (r.mitreTechniques ?? []).filter((t) => MITRE_TECHNIQUE_RE.test(t)),
+        }));
         const scopeNote = frozen ? 'Results are limited to the devices in this run\'s scope.' : undefined;
 
         return JSON.stringify({

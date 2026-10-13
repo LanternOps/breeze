@@ -305,7 +305,7 @@ describe('incidentRoutes', () => {
 
   // #8166 A4: EDR-framework promotion verifies sourceRef server-side.
   describe('promoting an EDR-framework detection (edr_detection)', () => {
-    const DET_ID = '44444444-4444-4444-8444-444444444444';
+    const DET_ID = 'abcdef44-4444-4444-8444-44444444abcd';
     const DEV_A = '55555555-5555-4555-8555-555555555555';
     const DEV_B = '66666666-6666-4666-8666-666666666666';
     const SITE_A = '77777777-7777-4777-8777-777777777777';
@@ -344,6 +344,26 @@ describe('incidentRoutes', () => {
       const res = await promote(DET_ID);
       expect(res.status).toBe(201);
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ sourceType: 'edr_detection', sourceRef: DET_ID }));
+    });
+
+    it('stores the canonical (lowercase) detection id so an uppercase sourceRef cannot dodge the unique index', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle(detection()));
+      const values = insertReturning([created]);
+      const res = await promote(DET_ID.toUpperCase());
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ sourceRef: DET_ID }));
+    });
+
+    it('the detection lookup is pinned to the incident org, the id and live rows', async () => {
+      const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where }) } as any);
+      await promote(DET_ID);
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const q = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+      expect(q.sql).toContain('"edr_detections"."id" = $');
+      expect(q.sql).toContain('"edr_detections"."org_id" = $');
+      expect(q.sql).toContain('"edr_detections"."detached_at" is null');
+      expect(q.params).toEqual(expect.arrayContaining([DET_ID, '22222222-2222-4222-8222-222222222222']));
     });
 
     it('a second promotion of the same detection is a 409', async () => {

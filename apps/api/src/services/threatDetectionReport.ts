@@ -63,6 +63,7 @@ import {
   resolutionStats,
 } from '@breeze/shared';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from './huntressConstants';
+import { edrReportEvidenceAllowed } from './portal/edrVisibility';
 import {
   assertReportExecutionPreflight,
   type EvidenceRunContext,
@@ -327,6 +328,9 @@ export async function generateThreatDetectionReport(
     configSites: cfg.sites,
     authoritySites: restrictedScope ? restrictedScope.siteIds : null,
   };
+  // A portal (customer self-service) run honours the strict portal EDR flag.
+  const includeEdr = await edrReportEvidenceAllowed(orgId, authority);
+  const edrCoverageFor = () => (includeEdr ? loadEdrCoverage(orgId, filter) : Promise.resolve(null));
 
   const [orgRow] = await db
     .select({ id: organizations.id, name: organizations.name, partnerId: organizations.partnerId })
@@ -401,7 +405,7 @@ export async function generateThreatDetectionReport(
       : gap;
     // An org with EDR coverage but no Huntress is NOT a data gap: its EDR
     // fields are real. Huntress-derived values above stay unmeasured (null).
-    const edr = orgMissing ? null : await loadEdrCoverage(orgId, filter);
+    const edr = orgMissing ? null : await edrCoverageFor();
     return {
       rows: [],
       rowCount: 0,
@@ -424,7 +428,7 @@ export async function generateThreatDetectionReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: withEdr(neverSynced, await loadEdrCoverage(orgId, filter)) as unknown as Record<string, unknown>,
+      summary: withEdr(neverSynced, await edrCoverageFor()) as unknown as Record<string, unknown>,
     };
   }
 
@@ -626,7 +630,7 @@ export async function generateThreatDetectionReport(
   coverage.note = coverageGapLine(coverage);
 
   // Last query on this path so the Huntress query order is untouched.
-  const edr = await loadEdrCoverage(orgId, filter);
+  const edr = await edrCoverageFor();
   const summary: ThreatDetectionSummary = withEdr({
     orgId,
     orgName,

@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+const edrGate = vi.hoisted(() => ({ edrReportEvidenceAllowed: vi.fn() }));
+vi.mock('./portal/edrVisibility', () => edrGate);
 
 import { db } from '../db';
 import type { OrgReportGenerationAuthority } from './siteScope';
@@ -119,6 +121,7 @@ const PRE_CHANGE_NEVER_SYNCED = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  edrGate.edrReportEvidenceAllowed.mockResolvedValue(true);
 });
 
 describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
@@ -156,6 +159,16 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     expect(s.incidents?.opened).toBeNull();
     expect(s.agentCoverage?.huntressAgents).toBeNull();
     expect(s.coverage?.sourceStatus).toBe('not_connected');
+  });
+
+  // #8166 review: a customer self-service run honours the strict portal flag.
+  it('a run the portal EDR flag does not allow gets no EDR fields and runs no EDR query', async () => {
+    edrGate.edrReportEvidenceAllowed.mockResolvedValue(false);
+    queueSelects(ORG, [{ id: 'd1' }, { id: 'd2' }], [], [{ total: 2 }], [{ severity: 'high', total: 2 }]);
+    const res = await generateThreatDetectionReport('o', {}, authority(), EV);
+    expect(Object.keys((res.summary as { agentCoverage: object }).agentCoverage)).not.toContain('edrEndpoints');
+    expect(Object.keys(res.summary ?? {})).not.toContain('edrDetections');
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
 
   it('an EDR-only org whose Huntress never synced also gets the EDR fields', async () => {

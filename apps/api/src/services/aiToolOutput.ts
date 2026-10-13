@@ -993,7 +993,7 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // EDR-framework detection rows: vendor-authored strings that routinely echo
   // endpoint-chosen artifact names (threat/file/process names). get_edr_status
   // is deliberately absent: it carries Breeze-generated labels and notes only.
-  list_edr_detections: new Set(['title', 'threatName', 'filePath', 'processName', 'category']),
+  list_edr_detections: new Set(['title', 'threatName', 'filePath', 'processName', 'category', 'vendorDetectionId']),
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),

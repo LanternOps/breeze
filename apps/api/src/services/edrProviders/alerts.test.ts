@@ -64,7 +64,7 @@ function fakeDeps(rows: DetectionCandidate[], over: Partial<EdrAlertDeps> = {}) 
     createAlert: vi.fn(async (a) => { alerts.push(a as Record<string, unknown>); return `alert-${alerts.length}`; }),
     publish: vi.fn(async (type, orgId, payload) => { published.push({ type, orgId, payload: payload as Record<string, unknown> }); }),
     stamp: vi.fn(async (id) => { stamped.push(id); return true; }),
-    stampMany: vi.fn(async (ids) => { stamped.push(...ids); return ids.length; }),
+    stampMany: vi.fn(async (rows: Array<{ id: string }>) => { stamped.push(...rows.map((r) => r.id)); return rows.length; }),
     resolveClosedDetectionAlerts: vi.fn(async () => 0),
     ...over,
   };
@@ -132,6 +132,8 @@ describe('evaluateEdrAlerts', () => {
     expect(published).toHaveLength(0);
     expect(alerts).toHaveLength(0);
     expect(new Set(stamped)).toEqual(new Set(rows.map((x) => x.id)));
+    // Compare-and-set: each row is stamped at the severity it was evaluated at.
+    expect(vi.mocked(deps.stampMany).mock.calls[0]![0]).toEqual(rows.map((x) => ({ id: x.id, severity: 'critical' })));
   });
 
   it('(e) an unlinked detection gets the event only, no alert', async () => {

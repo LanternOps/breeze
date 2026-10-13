@@ -14,7 +14,7 @@ export const EDR_PRODUCT_LABEL = 'Managed endpoint protection';
 
 /**
  * Device ids (within the report's already site-narrowed population) that an
- * EDR connector reports as HEALTHY. Unhealthy / degraded / unknown endpoints do
+ * EDR connector reports as HEALTHY and ONLINE. Unhealthy / degraded / unknown endpoints do
  * not count as protection, mirroring how only an active product is evidence.
  *
  * Reads the org-axis `edr_endpoints` only; the partner-axis connection tables
@@ -34,6 +34,9 @@ export async function loadEdrDeviceCoverage(
     .where(and(
       eq(edrEndpoints.orgId, orgId),
       eq(edrEndpoints.health, 'healthy'),
+      // Same rule as the portal (services/portal/edrVisibility.ts): an
+      // offline endpoint's protection state is unknown, so it is no evidence.
+      eq(edrEndpoints.online, true),
       inArray(edrEndpoints.breezeDeviceId, deviceIds),
     ));
 

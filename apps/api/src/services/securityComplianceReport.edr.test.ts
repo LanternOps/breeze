@@ -16,6 +16,8 @@ vi.mock('./securityComplianceReportEdr', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./securityComplianceReportEdr')>()),
   ...edrMocks,
 }));
+const edrGate = vi.hoisted(() => ({ edrReportEvidenceAllowed: vi.fn() }));
+vi.mock('./portal/edrVisibility', () => edrGate);
 vi.mock('./authenticatorPolicy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./authenticatorPolicy')>()),
   loadPartnerPolicy: vi.fn(async () => null),
@@ -62,11 +64,23 @@ function queue(securityStatus: unknown[] = []) {
 beforeEach(() => {
   vi.clearAllMocks();
   edrMocks.loadEdrDeviceCoverage.mockResolvedValue(new Set());
+  edrGate.edrReportEvidenceAllowed.mockResolvedValue(true);
 });
 
 const run = () => generateSecurityCompliancePostureReport(ORG, { includeCis: false }, authority);
 
 describe('posture report: EDR coverage', () => {
+  // #8166 review: a customer self-service run honours the strict portal flag.
+  it('a run the portal EDR flag does not allow reads no EDR evidence at all', async () => {
+    edrGate.edrReportEvidenceAllowed.mockResolvedValue(false);
+    edrMocks.loadEdrDeviceCoverage.mockResolvedValue(new Set(['dev-1', 'dev-2']));
+    queue();
+    const result = await run();
+    expect(edrGate.edrReportEvidenceAllowed).toHaveBeenCalledWith(ORG, authority);
+    expect(edrMocks.loadEdrDeviceCoverage).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('Managed endpoint protection');
+  });
+
   it('asks for EDR coverage of exactly the in-scope devices', async () => {
     queue();
     await run();

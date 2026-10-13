@@ -39,6 +39,7 @@ import {
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
+import { edrReportEvidenceAllowed } from './portal/edrVisibility';
 import { classifyDeviceProtection } from './portal/protection';
 
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
@@ -290,7 +291,10 @@ export async function generateSecurityCompliancePostureReport(
   const backupProviders = await loadBackupProviderEvidence(orgId, deviceIds);
   // EDR provider framework (#8164): devices an EDR connector reports healthy.
   // Same device scoping as the Huntress/SentinelOne evidence above.
-  const edrDevices = await loadEdrDeviceCoverage(orgId, deviceIds);
+  // A portal (customer self-service) run honours the strict portal EDR flag.
+  const edrDevices = (await edrReportEvidenceAllowed(orgId, authority))
+    ? await loadEdrDeviceCoverage(orgId, deviceIds)
+    : new Set<string>();
 
   const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
   const orgWideEvidence = includeOrgWideEvidence

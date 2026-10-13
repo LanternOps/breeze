@@ -35,3 +35,17 @@ export const edrEndpointLinkedSql = (orgId: string) => sql<boolean>`exists (
   where e.org_id = ${orgId}
     and e.breeze_device_id = ${devices.id}
 )`;
+
+/**
+ * Whether a report run may use EDR-framework evidence (#8166). A run by a
+ * PORTAL user (customer self-service) honours the org's strict
+ * enableEdrVisibility flag, so a customer never sees EDR influence the MSP has
+ * not opted into; MSP-side runs (user / system authorities) always may.
+ */
+export async function edrReportEvidenceAllowed(
+  orgId: string,
+  authority: { principalKind?: string },
+): Promise<boolean> {
+  if (authority.principalKind !== 'portal_user') return true;
+  return isEdrVisibilityEnabled(orgId);
+}

@@ -97,7 +97,7 @@ import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDev
 import { getTestDb } from './setup';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { persistDetections } from '../../services/edrProviders/persist';
-import { evaluateEdrAlerts } from '../../services/edrProviders/alerts';
+import { evaluateEdrAlerts, evaluateEdrEndpointHealth } from '../../services/edrProviders/alerts';
 import type { VendorEdrDetection } from '../../services/edrProviders/types';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -566,6 +566,37 @@ describe('edr sync — real job functions against Postgres', () => {
     const after = await openAlerts();
     expect(after).toHaveLength(1);
     expect(after[0]!.status).toBe('resolved');
+  });
+
+  // #8166 review: endpoint-health alerts are bounded per run, raised once per
+  // endpoint, and resolve when the vendor reports the endpoint healthy again.
+  runDb('Phase 4: endpoint-health alerts are capped per run, deduped, and resolve on recovery', async () => {
+    const fx = await seedJob();
+    const tenantId = await fx.addTenant(`co-eh-${sfx()}`, fx.orgA.id);
+    const deviceB = await fx.mkDevice(fx.orgA.id, fx.siteA.id, `eh-b-${sfx()}`);
+    const devices2 = [fx.deviceA.id, deviceB.id];
+    const endpointIds: string[] = [];
+    for (const [i, deviceId] of devices2.entries()) {
+      const id = await fx.addEndpoint(tenantId, fx.orgA.id, `ep-eh-${i}-${sfx()}`, `EH-${i}`);
+      await admin().execute(sql`UPDATE edr_endpoints SET breeze_device_id = ${deviceId}::uuid, health = 'unhealthy' WHERE id = ${id}::uuid`);
+      endpointIds.push(id);
+    }
+    const healthAlerts = () => adminRows<Row>(sql`
+      SELECT status, context->>'endpointId' AS endpoint_id FROM alerts
+      WHERE context->>'source' = 'edr_provider' AND context->>'kind' = 'endpoint_health'
+        AND context->>'connectionId' = ${fx.connectionId}`);
+
+    expect(await evaluateEdrEndpointHealth(fx.connectionId, { maxAlertsPerRun: 1 })).toEqual({ raised: 1, resolved: 0 });
+    expect(await healthAlerts()).toHaveLength(1);
+    expect(await evaluateEdrEndpointHealth(fx.connectionId, { maxAlertsPerRun: 1 })).toEqual({ raised: 1, resolved: 0 });
+    expect(await evaluateEdrEndpointHealth(fx.connectionId, { maxAlertsPerRun: 1 })).toEqual({ raised: 0, resolved: 0 });
+    expect(await healthAlerts()).toHaveLength(2);
+
+    await admin().execute(sql`UPDATE edr_endpoints SET health = 'healthy' WHERE id = ${endpointIds[0]!}::uuid`);
+    expect(await evaluateEdrEndpointHealth(fx.connectionId)).toEqual({ raised: 0, resolved: 1 });
+    const after = await healthAlerts();
+    expect(after.find((a) => a.endpoint_id === endpointIds[0])!.status).toBe('resolved');
+    expect(after.find((a) => a.endpoint_id === endpointIds[1])!.status).toBe('active');
   });
 
   runDb('a company missing from listTenants is tombstoned, not deleted; its endpoints go after 7 days', async () => {

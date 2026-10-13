@@ -36,7 +36,8 @@ export const EDR_ALERT_PUBLISHER = 'edr-provider-sync';
 export const EDR_ALERT_CONFIG_ITEM = 'edr_provider';
 export const EDR_NOTIFY_HORIZON_MS = 24 * 60 * 60 * 1000;
 export const EDR_TENANT_STALE_MS = 24 * 60 * 60 * 1000;
-const ADVISORY_LOCK_NAMESPACE = 'edr-provider-alerts';
+/** Max endpoint-health alerts raised per connection per sync (the rest follow on later syncs). */
+export const EDR_ENDPOINT_ALERTS_PER_RUN = 25;
 const RESOLUTION_NOTE = 'Condition cleared by EDR provider sync';
 
 const SEVERITY_RANK: Record<EdrSeverity, number> = {
@@ -93,7 +94,12 @@ export interface EdrAlertDeps {
   publish(type: string, orgId: string, payload: Record<string, unknown>): Promise<void>;
   /** Compare-and-set stamp; false when the row moved on (severity changed / tombstoned). */
   stamp(detectionId: string, severity: EdrSeverity): Promise<boolean>;
-  stampMany(detectionIds: string[]): Promise<number>;
+  /**
+   * Compare-and-set stamp of many rows at the severity they were evaluated at:
+   * a row whose severity moved since the load is left for the next run (so an
+   * escalation is never swallowed), and tombstones are never touched.
+   */
+  stampMany(rows: Array<{ id: string; severity: EdrSeverity }>): Promise<number>;
   /** Resolve this connection's open detection alerts whose detection closed, was tombstoned or is gone. */
   resolveClosedDetectionAlerts(connectionId: string): Promise<number>;
 }
@@ -166,14 +172,17 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
     return updated.length > 0;
   }, 'edrProviderAlerts.stamp'),
 
-  stampMany: (detectionIds) => system(async () => {
-    if (detectionIds.length === 0) return 0;
-    const updated = await db
-      .update(edrDetections)
-      .set({ notifiedSeverity: sql`${edrDetections.severity}` })
-      .where(inArray(edrDetections.id, detectionIds))
-      .returning({ id: edrDetections.id });
-    return updated.length;
+  stampMany: (rows) => system(async () => {
+    if (rows.length === 0) return 0;
+    const values = sql.join(rows.map((r) => sql`(${r.id}::uuid, ${r.severity}::varchar)`), sql`, `);
+    const updated = await db.execute(sql`
+      UPDATE edr_detections AS d
+      SET notified_severity = v.severity
+      FROM (VALUES ${values}) AS v(id, severity)
+      WHERE d.id = v.id AND d.severity = v.severity AND d.detached_at IS NULL
+      RETURNING d.id
+    `);
+    return (updated as unknown as unknown[]).length;
   }, 'edrProviderAlerts.stampMany'),
 
   resolveClosedDetectionAlerts: (connectionId) => system(async () => {
@@ -196,7 +205,11 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
     for (const a of stale) {
       // An indefinitely-suppressed alert keeps its mute (backupProviders precedent).
       if (a.status === 'suppressed' && a.suppressedUntil === null) continue;
-      if (await resolveAlert(a.id, RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+      try {
+        if (await resolveAlert(a.id, RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+      } catch (error) {
+        logFailure('resolveDetectionAlert', error, { connectionId, alertId: a.id });
+      }
     }
     return resolved;
   }, 'edrProviderAlerts.resolveClosed'),
@@ -225,14 +238,14 @@ export async function evaluateEdrAlerts(
     return { published: 0, suppressed: 0 };
   }
 
-  const silent: string[] = [];
-  const suppressedIds: string[] = [];
+  const silent: Array<{ id: string; severity: EdrSeverity }> = [];
+  const suppressedIds: Array<{ id: string; severity: EdrSeverity }> = [];
   let published = 0;
 
   for (const row of candidates) {
     const decision = decideDetection(row, opts.now, horizon);
-    if (decision === 'silent') { silent.push(row.id); continue; }
-    if (decision === 'suppress') { suppressedIds.push(row.id); continue; }
+    if (decision === 'silent') { silent.push({ id: row.id, severity: row.severity }); continue; }
+    if (decision === 'suppress') { suppressedIds.push({ id: row.id, severity: row.severity }); continue; }
     try {
       // 1. Alert (linked rows only), deduped so a retry after a failed
       //    publish/stamp does not raise a second alert.
@@ -300,7 +313,7 @@ export async function evaluateEdrAlerts(
     logFailure('resolveClosedDetectionAlerts', error, { connectionId });
   }
   if (suppressedIds.length > 0) {
-    console.info(
+    console.warn(
       `[EdrProviderAlerts] connection ${connectionId}: ${suppressedIds.length} detection(s) older than the `
       + 'notify horizon stamped without publishing',
     );
@@ -318,10 +331,18 @@ export async function evaluateEdrAlerts(
  * The open alert IS the state (no edr_* state column in W02), so unlinked
  * endpoints — which have no alert to hold state — raise nothing, and there is
  * no two-poll hysteresis: `degraded` / `unknown` neither raise nor resolve.
+ * At most EDR_ENDPOINT_ALERTS_PER_RUN alerts are raised per run.
  */
-export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{ raised: number; resolved: number }> {
-  return system(async () => {
-    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ADVISORY_LOCK_NAMESPACE}), hashtext(${connectionId}))`);
+export async function evaluateEdrEndpointHealth(
+  connectionId: string,
+  opts: { maxAlertsPerRun?: number } = {},
+): Promise<{ raised: number; resolved: number }> {
+  const cap = opts.maxAlertsPerRun ?? EDR_ENDPOINT_ALERTS_PER_RUN;
+  // Load in one short context; every create/resolve then runs in its OWN
+  // context, so one failure never rolls back or blocks the others. The
+  // inventory job for a connection is single-flight (BullMQ job id), so no
+  // advisory lock is held across the loop.
+  const loaded = await system(async () => {
     const endpoints = await db
       .select({
         id: edrEndpoints.id,
@@ -352,17 +373,27 @@ export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{
         sql`${alerts.context}->>'kind' = 'endpoint_health'`,
         sql`${alerts.context}->>'connectionId' = ${connectionId}`,
       ));
+    return { endpoints, open };
+  }, 'edrProviderAlerts.endpointHealth.load');
+  {
+    const { endpoints, open } = loaded;
     const openByEndpoint = new Map(open.map((a) => [a.endpointId ?? '', a]));
     const byId = new Map(endpoints.map((e) => [e.id, e]));
 
     let raised = 0;
     let resolved = 0;
+    let deferred = 0;
     const events: Array<{ type: string; orgId: string; payload: Record<string, unknown> }> = [];
 
     for (const e of endpoints) {
       if (e.health !== 'unhealthy' || openByEndpoint.has(e.id)) continue;
+      // Bounded per run: a newly connected tenant with hundreds of unhealthy
+      // agents raises them over successive syncs instead of one flood.
+      if (raised >= cap) { deferred += 1; continue; }
       const label = edrProviderLabel(e.provider);
-      const alertId = await createSourcedAlert({
+      let alertId: string | null;
+      try {
+        alertId = await system(() => createSourcedAlert({
         deviceId: e.breezeDeviceId!,
         orgId: e.orgId,
         severity: 'high',
@@ -372,8 +403,15 @@ export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{
         configItemName: EDR_ALERT_CONFIG_ITEM,
         publisher: EDR_ALERT_PUBLISHER,
         eventPayload: { connectionId, provider: e.provider, endpointId: e.id },
-      });
-      if (!alertId) continue;
+        }), 'edrProviderAlerts.endpointHealth.raise');
+      } catch (error) {
+        logFailure('raiseEndpointHealthAlert', error, { connectionId, endpointId: e.id });
+        continue;
+      }
+      if (!alertId) {
+        console.error(`[EdrProviderAlerts] endpoint-health alert for ${e.id} was not created; the next run retries`);
+        continue;
+      }
       raised += 1;
       events.push({
         type: EVENT_TYPES.EDR_ENDPOINT_UNHEALTHY,
@@ -388,7 +426,16 @@ export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{
       if (!cleared) continue;
       // An indefinitely-suppressed alert keeps its mute (backupProviders precedent).
       if (a.status === 'suppressed' && a.suppressedUntil === null) continue;
-      if (await resolveAlert(a.id, RESOLUTION_NOTE, undefined, false, 'condition_cleared')) {
+      let ok = false;
+      try {
+        ok = await system(
+          () => resolveAlert(a.id, RESOLUTION_NOTE, undefined, false, 'condition_cleared'),
+          'edrProviderAlerts.endpointHealth.resolve',
+        );
+      } catch (error) {
+        logFailure('resolveEndpointHealthAlert', error, { connectionId, alertId: a.id });
+      }
+      if (ok) {
         resolved += 1;
         if (e) {
           events.push({
@@ -407,8 +454,14 @@ export async function evaluateEdrEndpointHealth(connectionId: string): Promise<{
         logFailure('publishEndpointEvent', error, { connectionId });
       }
     }
+    if (deferred > 0) {
+      console.warn(
+        `[EdrProviderAlerts] connection ${connectionId}: ${deferred} unhealthy endpoint alert(s) deferred to the next sync `
+        + `(cap ${cap} per run)`,
+      );
+    }
     return { raised, resolved };
-  }, 'edrProviderAlerts.endpointHealth');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +494,7 @@ export interface StaleTenantDeps {
   publish(type: string, orgId: string, payload: Record<string, unknown>): Promise<void>;
 }
 
+let warnedNoRedis = false;
 const STALE_KEY = (tenantId: string) => `edr:tenant-stale:${tenantId}`;
 const STALE_MARK_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -467,8 +521,14 @@ export const defaultStaleTenantDeps: StaleTenantDeps = {
   }, 'edrProviderAlerts.staleTenants'),
   markStale: async (tenantId) => {
     const redis = getRedis();
-    // No Redis: fail quiet (no event) rather than publish on every tick.
-    if (!redis) return false;
+    // No Redis: no event rather than one on every tick — but say so, once.
+    if (!redis) {
+      if (!warnedNoRedis) {
+        warnedNoRedis = true;
+        console.warn('[EdrProviderAlerts] Redis unavailable: edr.tenant_stale events are disabled until it returns');
+      }
+      return false;
+    }
     return (await redis.set(STALE_KEY(tenantId), '1', 'EX', STALE_MARK_TTL_SECONDS, 'NX')) === 'OK';
   },
   clearStale: async (tenantId) => {
@@ -517,8 +577,13 @@ export async function evaluateEdrStaleTenants(
         published += 1;
       } catch (error) {
         // Release the mark so the next tick retries the announcement.
-        await deps.clearStale(t.id);
-        throw error;
+        logFailure('publishTenantStale', error, { tenantId: t.id });
+        try {
+          await deps.clearStale(t.id);
+        } catch (clearError) {
+          logFailure('clearStaleAfterPublishFailure', clearError, { tenantId: t.id });
+        }
+        continue;
       }
     } catch (error) {
       logFailure('staleTenant', error, { tenantId: t.id });

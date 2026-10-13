@@ -294,7 +294,7 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
 
   if (input.syncHealthVisible) {
     const orgsWithTenants = new Set<string>();
-    let stale = 0, failed = 0, pending = 0, unmapped = 0, partialSync = 0, reauth = 0, errored = 0;
+    let stale = 0, failed = 0, pending = 0, unmapped = 0, partialSync = 0, reauth = 0, errored = 0, noMapped = 0;
     for (const c of input.connections) {
       const tenants = input.tenants.filter((t) => t.connectionId === c.id);
       const mapped = tenants.filter((t) => t.orgId !== null);
@@ -307,6 +307,7 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
       const cUnmapped = tenants.length - mapped.length;
       for (const t of mapped) orgsWithTenants.add(t.orgId!);
       stale += cStale; failed += cFailed; pending += cPending; unmapped += cUnmapped; partialSync += cPartial;
+      if (mapped.length === 0) noMapped += 1;
       if (c.status === 'reauth_required') reauth += 1;
       if (c.status === 'error') errored += 1;
       const agg = endpointsByKey.get(c.id) ?? { endpoints: 0, linked: 0, unhealthy: 0 };
@@ -337,6 +338,7 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
     if (partialSync > 0) { partial = true; notes.push(`${partialSync} mapped EDR tenant(s) completed their last detection sync only partially.`); }
     if (stale > 0) { partial = true; notes.push(`${stale} mapped EDR tenant(s) have not synced detections recently (older than twice the sync interval).`); }
     if (pending > 0) { partial = true; notes.push(`${pending} mapped EDR tenant(s) have not completed a first detection sync yet (pending).`); }
+    if (noMapped > 0) { partial = true; notes.push(`${noMapped} EDR connection(s) have no vendor tenant mapped to an organization in this scope.`); }
     if (unmapped > 0) { partial = true; notes.push(`${unmapped} EDR vendor tenant(s) are not mapped to an organization; their detections are not synced.`); }
     return finish(orgsWithTenants.size);
   }
@@ -364,6 +366,9 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
     partial = true;
     notes.push('No EDR provider endpoints are visible for this organization; an empty detection list is not evidence of no threats.');
   }
+  // Sync health is hidden from this caller, so completeness cannot be
+  // confirmed: an organization-scope result is always partial.
+  partial = true;
   notes.push(SYNC_HEALTH_PARTNER_ONLY_NOTE);
   return finish(orgsWithEndpoints.size);
 

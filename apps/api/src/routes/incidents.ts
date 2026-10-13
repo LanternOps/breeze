@@ -95,6 +95,7 @@ incidentRoutes.post(
     // in the incident's org through the caller's RLS context, and a
     // site-restricted caller must be allowed to see it (same D14 rule as the
     // feed). Otherwise no incident row is written.
+    let sourceRef = data.sourceRef;
     if (data.sourceType === 'edr_detection') {
       if (!data.sourceRef || !UUID_RE.test(data.sourceRef)) {
         return c.json({ error: 'sourceRef must be an EDR detection id' }, 400);
@@ -116,6 +117,10 @@ incidentRoutes.post(
       if (!detection) {
         return c.json({ error: 'EDR detection not found' }, 404);
       }
+      // Store the canonical (lowercase) id: the unique index and the feed's
+      // dedupe compare source_ref as text, so an uppercase ref must not mint
+      // a second incident for the same detection.
+      sourceRef = detection.id;
       const perms = c.get('permissions') as UserPermissions | undefined;
       if (perms?.allowedSiteIds) {
         const allowedDeviceIds = (await resolveSiteAllowedDeviceIds(orgId!, perms)) ?? [];
@@ -160,7 +165,7 @@ incidentRoutes.post(
         assignedTo: data.assignedTo,
         detectedAt,
         sourceType: data.sourceType,
-        sourceRef: data.sourceRef,
+        sourceRef,
       })
       .onConflictDoNothing()
       .returning();

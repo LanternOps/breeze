@@ -52,6 +52,8 @@ describe('buildEdrStatusSummary — coverage disclosure (D6)', () => {
     ] }, /not mapped to an organization/],
     ['reauth-required connection', { connections: [{ id: 'c1', provider: 'bitdefender', status: 'reauth_required', lastDetectionSyncAt: minutesAgo(5), detectionIntervalMinutes: 15 }] }, /re-authentication/],
     ['no connection at all', { connections: [], tenants: [], endpoints: [] }, /No active EDR provider connection/],
+    ['errored connection', { connections: [{ id: 'c1', provider: 'bitdefender', status: 'error', lastDetectionSyncAt: minutesAgo(5), detectionIntervalMinutes: 15 }] }, /error state/],
+    ['connection with no mapped tenant', { tenants: [{ connectionId: 'c1', orgId: null, lastDetectionSyncAt: null, lastDetectionSyncStatus: null }] }, /no vendor tenant mapped/],
   ];
   it.each(triggers)('%s ⇒ partial with a note', (_name, over, note) => {
     const s = buildEdrStatusSummary(partnerInput(over));
@@ -79,7 +81,8 @@ describe('buildEdrStatusSummary — coverage disclosure (D6)', () => {
       expect(s.providers[0]).not.toHaveProperty(key);
     }
     expect(s.coverage.notes).toContain(SYNC_HEALTH_PARTNER_ONLY_NOTE);
-    expect(s.coverage.partial).toBe(false);
+    // Sync health is hidden from org scope, so completeness can never be confirmed.
+    expect(s.coverage.partial).toBe(true);
   });
 
   it('organization scope with zero endpoint rows is partial (an empty list is not "clean")', () => {

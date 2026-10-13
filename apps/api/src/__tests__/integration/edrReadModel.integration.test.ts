@@ -121,6 +121,16 @@ describe('EDR read model (real Postgres, breeze_app)', () => {
     expect(out.coverage).toBeDefined();
   });
 
+  // #8166 review: status counts for a site-restricted caller exclude foreign-site linked rows.
+  runDb('site-restricted status counts exclude another site\'s linked endpoints and detections', async () => {
+    const fx = await seed();
+    const status = await withDbAccessContext(fx.orgCtx, () => getEdrStatus(
+      { auth: authFor('organization', fx.org.id, fx.partner.id), allowedDeviceIds: [fx.devA], allowedSiteIds: [fx.siteA.id] },
+      {},
+    ));
+    expect(status.providers[0]).toMatchObject({ endpoints: 1, linkedEndpoints: 1, openDetections: 1 });
+  });
+
   runDb('an empty result still carries coverage', async () => {
     const fx = await seed();
     const out = await withDbAccessContext(fx.orgCtx, () => listEdrDetections(
