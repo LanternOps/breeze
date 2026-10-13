@@ -134,3 +134,38 @@ export function pdfPageCount(pdf: Buffer): number {
   const m = /\/Type \/Pages[\s\S]*?\/Count (\d+)/.exec(pdf.toString('latin1'));
   return m ? Number(m[1]) : 0;
 }
+
+/** #8604 review: a named line whose BOLD title wraps (with a blurb under it),
+ *  then one-line fillers so that a TALL time-entry row (a long note plus the
+ *  worked-vs-billed sub-line) starts near the bottom of page 1. Pins the two
+ *  intentional layout changes under DEFAULT settings: the wrapped title is
+ *  measured in bold, so the blurb no longer prints over its second line; and a
+ *  tall row moves whole to the next page instead of splitting across pages. */
+export const WRAPPING_GOLDEN_FILLERS = 16;
+export function wrappingGoldenLines(fillers = WRAPPING_GOLDEN_FILLERS): FixtureInvoiceLineRow[] {
+  const ticket = { ticketId: 't-2', ticketNumber: '1043', ticketSubject: 'Network refresh', ticketCategory: 'Network' };
+  const lines: FixtureInvoiceLineRow[] = [
+    makeFixtureLine({
+      sourceType: 'manual',
+      name: 'Quarterly managed services review including firewall rule audit and backup verification',
+      description: 'Reviewed with the office manager',
+      quantity: '1.00', unitPrice: '100.00', lineTotal: '100.00', sortOrder: 0,
+    }),
+  ];
+  for (let i = 0; i < fillers; i += 1) {
+    lines.push(makeFixtureLine({
+      sourceType: 'manual', description: `Filler item ${i + 1}`,
+      quantity: '1.00', unitPrice: '1.00', lineTotal: '1.00', sortOrder: i + 1,
+    }));
+  }
+  lines.push(makeFixtureLine({
+    ...ticket,
+    sourceType: 'time_entry',
+    sourceId: 'te-tall',
+    description: Array.from({ length: 6 }, () =>
+      'Replaced the core switch, re-patched every drop in the comms cabinet and verified each VLAN end to end.').join(' '),
+    quantity: '2.00', unitPrice: '100.00', lineTotal: '200.00', workedMinutes: 150, workDate: '2026-09-18',
+    sortOrder: fillers + 1,
+  }));
+  return lines;
+}
