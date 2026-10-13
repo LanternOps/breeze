@@ -483,8 +483,12 @@ func TestHealthSnapshot_QueueDepthCountsHeldBatch(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock() // runs before srv.Close, so a failed assertion cannot deadlock it
 	s := newHealthTestShipper(srv.URL)
 	s.Start()
+	defer s.Stop()
 
 	for i := 0; i < defaultMaxBatchSize; i++ {
 		s.Enqueue(LogEntry{Message: "m"})
@@ -500,7 +504,7 @@ func TestHealthSnapshot_QueueDepthCountsHeldBatch(t *testing.T) {
 	if got, want := s.HealthSnapshot().QueueDepth, defaultMaxBatchSize+10; got != want {
 		t.Fatalf("QueueDepth during held batch = %d, want %d", got, want)
 	}
-	close(release)
+	unblock()
 	s.Stop()
 	if got := s.HealthSnapshot().QueueDepth; got != 0 {
 		t.Fatalf("QueueDepth after drain = %d, want 0", got)
