@@ -1625,14 +1625,23 @@ func (h *Heartbeat) reconcilePAMLifetimeLocked(ctx context.Context) []pamlifetim
 		return nil
 	}
 	results := h.pamLifetimeManager.Reconcile(ctx)
+	retainedActive := false
 	for _, result := range results {
 		if result.State == pamlifetime.ResultVerifiedActive {
 			// Reconciliation adopted a live elevation, proving the account
 			// already exists. EnsureProvisioned would reset its credentials and
 			// demote it, so policy enable must preserve this account.
 			h.pamAccountProvisioned.Store(true)
+			retainedActive = true
 			break
 		}
+	}
+	if proof, ok := h.pamLifetimeManager.(interface{ AccountProvisioningRequired() bool }); ok && !retainedActive && proof.AccountProvisioningRequired() {
+		// A previously provisioned account can be deleted while the agent
+		// keeps running. Clear the latch only after independent reconciliation
+		// proves that absence and verifies cleanup, so policy admission creates
+		// it again without rotating any retained active account.
+		h.pamAccountProvisioned.Store(false)
 	}
 	h.setPamReconciliationManagerAvailable(h.refreshPamLifetimeAvailability())
 	results = h.stagePamReconciliationResults(results)

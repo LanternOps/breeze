@@ -108,6 +108,7 @@ type lifecycleManager struct {
 	enabled       bool
 	admissionOpen bool
 	available     bool
+	accountAbsent bool // positive account-absence proof from the latest reconciliation
 	unresolved    map[string]uint64
 }
 
@@ -125,6 +126,21 @@ func (m *lifecycleManager) Available() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.available
+}
+
+// AccountProvisioningRequired is true only after a successful reconciliation
+// positively identified a missing account. Clean or disabled account evidence
+// alone does not justify rotating an account retained by a live elevation.
+func (m *lifecycleManager) AccountProvisioningRequired() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.available && m.accountAbsent
+}
+
+func (m *lifecycleManager) setAccountAbsent(absent bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accountAbsent = absent
 }
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
@@ -394,6 +410,7 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 		return results
 	}
 	defer m.releaseOperation()
+	m.setAccountAbsent(false)
 	m.setAvailable(false)
 	entries := m.store.Entries()
 	results := make([]Result, 0, len(entries))
@@ -563,6 +580,7 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 		// disable settles, and the next call returns at SetEnabled's early
 		// return without reaching this code.
 		tokenScanned = false
+		m.setAccountAbsent(true)
 		log.Info("PAM token scan skipped: elevation account absent and no actuation on record",
 			"account", elevaccount.AccountName)
 	case privileged:

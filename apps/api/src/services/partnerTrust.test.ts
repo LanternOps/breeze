@@ -259,6 +259,15 @@ describe('evaluateCapability', () => {
       .toEqual({ allow: true });
   });
 
+  it('denies PAM reconciliation reset for a restricted partner', async () => {
+    state.trustState = 'restricted';
+    expect(isLifecycleCommand('pam_reconcile_v2')).toBe(false);
+    const decision = await evaluateCapability('device_execute', {
+      partnerId: 'p1', deviceId: 'device-1', commandType: 'pam_reconcile_v2',
+    });
+    expect(decision).toMatchObject({ allow: false, code: 'TRUST_RESTRICTED', capability: 'device_execute' });
+  });
+
   it('denies custom_sending_domain for a restricted partner with reason "restricted"', async () => {
     state.trustState = 'restricted';
     const d = await evaluateCapability('custom_sending_domain', { partnerId: 'p1' });
@@ -510,6 +519,7 @@ describe('command allowlist', () => {
       'network_http_check',
       'network_dns_check',
       'pam_apply_v2',
+      'pam_reconcile_v2',
       'apply_browser_policy',
       'dev_update',
       'snmp_poll',

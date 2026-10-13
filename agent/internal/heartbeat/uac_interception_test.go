@@ -11,6 +11,58 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+type accountAbsencePamManager struct {
+	fakePamLifetimeManager
+	missing bool
+}
+
+func (m *accountAbsencePamManager) AccountProvisioningRequired() bool {
+	return m.available && m.missing
+}
+
+func TestReconciliationReprovisionsDeletedAccountBeforePolicyAdmission(t *testing.T) {
+	for _, state := range []string{"verified absence", "unknown cleanup", "retained active"} {
+		t.Run(state, func(t *testing.T) {
+			manager := &accountAbsencePamManager{fakePamLifetimeManager: fakePamLifetimeManager{available: true}}
+			h := readyPamApplyTestHeartbeat(manager, nil)
+			provisions := 0
+			h.pamProvisionAccountFn = func() error {
+				if h.IsUACInterceptionEnabled() {
+					t.Fatal("account provisioned while UAC admission was open")
+				}
+				provisions++
+				return nil
+			}
+			h.uacInterceptionEnabled.Store(false)
+			h.handleUACInterception(boolPtr(true))
+			if provisions != 1 {
+				t.Fatalf("initial provisions = %d", provisions)
+			}
+			manager.missing = true
+			switch state {
+			case "unknown cleanup":
+				manager.available = false
+			case "retained active":
+				manager.reconcileResults = []pamlifetime.Result{{State: pamlifetime.ResultVerifiedActive}}
+			}
+			h.reconcileAndReapplyPAMPolicy(context.Background())
+			want := 1
+			if state == "verified absence" {
+				want = 2
+			}
+			if provisions != want {
+				t.Fatalf("provisions after reset = %d, want %d", provisions, want)
+			}
+			if state == "unknown cleanup" && h.IsUACInterceptionEnabled() {
+				t.Fatal("unknown cleanup reopened admission")
+			}
+			if state == "verified absence" && !h.IsUACInterceptionEnabled() {
+				t.Fatal("verified recovery did not reopen admission after reprovisioning")
+			}
+		})
+	}
+}
+
 func TestUACInterceptionFlag(t *testing.T) {
 	tests := []struct {
 		name        string

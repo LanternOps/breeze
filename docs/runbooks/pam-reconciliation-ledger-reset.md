@@ -13,8 +13,10 @@ is zero. Heartbeats rewrite the independent capability claim, clearing it when
 an older agent omits it. The API returns `409` without queuing a command when
 the device does not currently advertise reset support.
 
-1. Revoke or expire all active elevations on the device. The endpoint returns
-   `409` while any actuation still has desired state `active`.
+1. Revoke active elevations, or wait for their expiry cleanup to be scheduled.
+   The endpoint returns `409` while any actuation still has desired state
+   `active`, even if its expiration timestamp has already passed. A timestamp
+   alone does not prove that the server has requested cleanup.
 2. As an authenticated operator satisfying the current MFA policy, with `pam:approve` and `devices:execute`
    for the device's current organization and site, call:
 

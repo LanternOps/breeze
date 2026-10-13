@@ -76,6 +76,9 @@ func TestReconcileAbsentAccountRecovery(t *testing.T) {
 			manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order}, nil)
 			manager.markUnresolved(testActuationID, generation)
 			results := manager.Reconcile(context.Background())
+			if manager.AccountProvisioningRequired() != tc.clean {
+				t.Fatalf("provisioning required = %v, want %v", manager.AccountProvisioningRequired(), tc.clean)
+			}
 			if len(results) != 1 {
 				t.Fatalf("results = %+v", results)
 			}

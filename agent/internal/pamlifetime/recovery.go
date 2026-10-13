@@ -70,6 +70,7 @@ func (m *lifecycleManager) recoverAbsentAccountEntry(ctx context.Context, entry 
 	if err := m.store.MarkReconciledClean(entry.ActuationID, entry.Generation); err != nil {
 		return m.failed(entry.ActuationID, entry.Generation, bootID, "persist_cleanup_evidence_failed"), true
 	}
+	m.setAccountAbsent(true)
 	evidence := evidenceFromEntry(entry)
 	evidence.BootID = bootID
 	evidence.JobMemberCount = intPtr(0)

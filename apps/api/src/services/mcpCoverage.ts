@@ -100,6 +100,9 @@ export type McpExemptReason =
    * one an AI should be able to trigger.
    */
   | 'human_only_agent_rollback'
+  /** Operator recovery of privileged-access verification requires a human reason
+   * and independent agent evidence; an AI must not restore its own elevation availability. */
+  | 'human_only_pam_reconciliation'
   /**
    * Bulk compliance export of the PAM elevation ledger (#4910) to a SIEM or
    * an auditor: up to a year per request, `audit:export` + `requireMfa()`,
@@ -388,6 +391,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'deployments.ts': { tools: ['manage_deployments'] },
   'desktopWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'devPush.ts': { exempt: 'internal_plumbing' },
+  'devices/pamReconciliation.ts': { exempt: 'human_only_pam_reconciliation', note: 'Privileged-access recovery is a human operator decision requiring PAM approval, device execution permission, MFA policy and an audited reason. No AI reset tool: restoring elevation availability must not be initiated by an autonomous agent.' },
   'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
