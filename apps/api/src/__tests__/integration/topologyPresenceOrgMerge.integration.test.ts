@@ -55,6 +55,11 @@ describe.each([
         VALUES (${survivor.id}::uuid, 7, 'complete', now())`);
     }
     const loserBefore = await stateOf(f.orgId);
+    // W3 (#7887): a daily summary row. A merge repoints it (history survives); only a non-merge org move deletes it.
+    await admin(sql`INSERT INTO topology_device_presence_days (org_id, device_id, day, assigned_site_id, state, matched_site_id, match_key,
+        first_observed_at, last_observed_at)
+      VALUES (${f.orgId}::uuid, ${f.ids.MIS1}::uuid, '2026-09-01', ${f.env.site.id}::uuid, 'visiting', ${f.siteB}::uuid,
+        ${`visiting:${f.siteB}`}, '2026-09-01T08:00:00Z', '2026-09-01T09:00:00Z')`);
 
     await executeOrgMerge({ loserOrgId: f.orgId, survivorOrgId: survivor.id, partnerId: f.env.partner.id,
       performedBy: f.env.user.id, performedByEmail: f.env.user.email });
@@ -63,6 +68,9 @@ describe.each([
     const presence = await admin<{ org_id: string }>(sql`SELECT org_id FROM topology_device_presence
       WHERE device_id IN (${f.ids.L1}::uuid, ${f.ids.MIS1}::uuid)`);
     expect(presence).toEqual([]);
+    const days = await admin<{ org_id: string; assigned_site_id: string }>(sql`SELECT org_id::text, assigned_site_id::text
+      FROM topology_device_presence_days WHERE device_id = ${f.ids.MIS1}::uuid AND day = '2026-09-01'`);
+    expect(days).toEqual([{ org_id: survivor.id, assigned_site_id: f.env.site.id }]);
     // leave-for-erasure: the loser keeps its own state row; nothing repointed onto the survivor.
     expect(await stateOf(f.orgId)).toMatchObject({ org_id: f.orgId, fingerprint_version: loserBefore!.fingerprint_version });
     // The survivor is dirty (created by the trigger if it had no row), with its own version untouched.

@@ -369,6 +369,10 @@ export const devices = pgTable('devices', {
   // silently extend itself. NULL on a decommissioned row means "removal time
   // unknown" and the purge job treats that as NEVER PURGE (fail closed).
   decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
+  // Topology site location W3 (#7887, spec S§11): "Keep at <site>" — a technician confirmed this
+  // assignment, so no wrong-site suggestion is computed. Cleared by the
+  // breeze_devices_site_assignment_confirmation_reset trigger on any site/org change; no expiry.
+  siteAssignmentConfirmedAt: timestamp('site_assignment_confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

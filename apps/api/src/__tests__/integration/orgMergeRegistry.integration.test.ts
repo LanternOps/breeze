@@ -292,7 +292,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
   // Topology site location W2 (#7886, 2026-12-25-140000): deletes the device's presence read-model row and
   // marks the affected orgs dirty on a site/org change; writes nothing on devices, never RAISEs.
-  'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row and marks presence dirty; never RAISEs or reverts org_id',
+  'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row (and, outside a merge, its day rows on an org change) and marks presence dirty; never RAISEs or reverts org_id',
+  // Topology site location W3 (#7887, 2026-12-26-120000): clears NEW.site_assignment_confirmed_at on a site/org
+  // change; touches no other column, never RAISEs.
+  'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   // Customer work approval (#4617, 2026-12-20-200200): freezes a DECIDED
   // request, but org_id is in its exempt list (to_jsonb(NEW) - org_id …), so an

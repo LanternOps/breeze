@@ -39,6 +39,20 @@ const insertVisiting = (t: Pick<Tenant, 'orgId' | 'siteA' | 'siteB' | 'deviceId'
   VALUES (${t.deviceId}::uuid, ${t.orgId}::uuid, ${t.siteA}::uuid, 'visiting', ${t.siteB}::uuid, '10.1.5.0/24', '10.1.5.1',
     1, now(), now() + interval '1 hour')`;
 
+const insertDay = (t: Pick<Tenant, 'orgId' | 'siteA' | 'siteB' | 'deviceId'>, day = '2026-10-01', matchKey?: string) => sql`
+  INSERT INTO topology_device_presence_days (org_id, device_id, day, assigned_site_id, state, matched_site_id, match_key,
+    first_observed_at, last_observed_at)
+  VALUES (${t.orgId}::uuid, ${t.deviceId}::uuid, ${day}::date, ${t.siteA}::uuid, 'visiting', ${t.siteB}::uuid,
+    ${matchKey ?? `visiting:${t.siteB}`}, ${`${day}T08:00:00Z`}::timestamptz, ${`${day}T09:00:00Z`}::timestamptz)`;
+
+async function dayRows(deviceId: string) {
+  return admin<{ org_id: string }>(sql`SELECT org_id FROM topology_device_presence_days WHERE device_id = ${deviceId}::uuid`);
+}
+async function confirmedAt(deviceId: string): Promise<unknown> {
+  const [row] = await admin<{ c: unknown }>(sql`SELECT site_assignment_confirmed_at AS c FROM devices WHERE id = ${deviceId}::uuid`);
+  return row!.c;
+}
+
 async function presenceRows(deviceId: string) {
   return admin<{ org_id: string }>(sql`SELECT org_id FROM topology_device_presence WHERE device_id = ${deviceId}::uuid`);
 }
@@ -54,7 +68,7 @@ describe('topology presence read model — tenancy', () => {
   it('forces RLS: a cross-org insert into each presence table fails with 42501, as breeze_app', async () => {
     const a = await tenant();
     const b = await tenant();
-    for (const forged of [insertState(b), insertFingerprint(b), insertVisiting(b)]) {
+    for (const forged of [insertState(b), insertFingerprint(b), insertVisiting(b), insertDay(b)]) {
       await expect(withDbAccessContext(orgContext(a.orgId), () => db.execute(forged))).rejects.toMatchObject({
         cause: { code: '42501', message: expect.stringMatching(/row-level security/i) },
       });
@@ -68,12 +82,13 @@ describe('topology presence read model — tenancy', () => {
       await db.execute(insertState(a));
       await db.execute(insertFingerprint(a));
       await db.execute(insertVisiting(a));
+      await db.execute(insertDay(a));
     });
     const count = (orgId: string, table: string) => withDbAccessContext(orgContext(orgId), async () => {
       const [row] = await db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${a.orgId}::uuid`);
       return row!.n;
     });
-    for (const table of ['topology_org_presence_state', 'topology_site_fingerprints', 'topology_device_presence']) {
+    for (const table of ['topology_org_presence_state', 'topology_site_fingerprints', 'topology_device_presence', 'topology_device_presence_days']) {
       expect(await count(a.orgId, table), table).toBe(1);
       expect(await count(b.orgId, table), table).toBe(0);
     }
@@ -151,6 +166,8 @@ describe('topology presence read model — invalidation triggers', () => {
     const actor = await createUser({ partnerId: t.partnerId });
     await admin(insertState(t));
     await admin(insertVisiting(t));
+    await admin(insertDay(t));
+    await admin(sql`UPDATE devices SET site_assignment_confirmed_at = now() WHERE id = ${t.deviceId}::uuid`);
     await clearDirty(t.orgId);
 
     await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
@@ -169,6 +186,9 @@ describe('topology presence read model — invalidation triggers', () => {
     const [device] = await admin<{ org_id: string }>(sql`SELECT org_id FROM devices WHERE id = ${t.deviceId}::uuid`);
     expect(device!.org_id).toBe(target.id);
     expect(await presenceRows(t.deviceId)).toHaveLength(0);
+    // W3: day rows name source-org sites, so a cross-org move deletes them rather than restamping (no 23503).
+    expect(await dayRows(t.deviceId)).toHaveLength(0);
+    expect(await confirmedAt(t.deviceId)).toBeNull();
     expect(await dirtyAt(t.orgId)).toEqual(expect.any(String));
     expect(await dirtyAt(target.id)).toEqual(expect.any(String));
   });
@@ -188,10 +208,48 @@ describe('topology presence read model — invalidation triggers', () => {
     await admin(insertState(t));
     await admin(insertFingerprint(t));
     await admin(insertVisiting(t));
+    await admin(insertDay(t));
     await cascadeDeleteOrg(t.orgId, actor.id);
-    for (const table of ['topology_org_presence_state', 'topology_site_fingerprints', 'topology_device_presence']) {
+    for (const table of ['topology_org_presence_state', 'topology_site_fingerprints', 'topology_device_presence', 'topology_device_presence_days']) {
       const [row] = await admin<{ n: number }>(sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${t.orgId}::uuid`);
       expect(row!.n, table).toBe(0);
     }
+  });
+});
+
+describe('topology presence days and site-assignment confirmation (W3, #7887)', () => {
+  it('clears site_assignment_confirmed_at on any site_id or org_id change, and only then', async () => {
+    const t = await tenant();
+    const set = () => admin(sql`UPDATE devices SET site_assignment_confirmed_at = '2026-10-01T00:00:00Z' WHERE id = ${t.deviceId}::uuid`);
+    await set();
+    await admin(sql`UPDATE devices SET display_name = 'x', site_id = site_id WHERE id = ${t.deviceId}::uuid`);
+    expect(await confirmedAt(t.deviceId)).not.toBeNull();
+    await withDbAccessContext(orgContext(t.orgId), () => db.execute(sql`UPDATE devices SET site_id = ${t.siteB}::uuid WHERE id = ${t.deviceId}::uuid`));
+    expect(await confirmedAt(t.deviceId)).toBeNull();
+
+    await set();
+    const target = await createOrganization({ partnerId: t.partnerId });
+    const targetSite = await createSite({ orgId: target.id });
+    await admin(sql`UPDATE devices SET org_id = ${target.id}::uuid, site_id = ${targetSite.id}::uuid WHERE id = ${t.deviceId}::uuid`);
+    expect(await confirmedAt(t.deviceId)).toBeNull();
+  });
+
+  it('a same-org site move keeps day rows (historical assignment, never rewritten)', async () => {
+    const t = await tenant();
+    await admin(insertDay(t));
+    await admin(sql`UPDATE devices SET site_id = ${t.siteB}::uuid WHERE id = ${t.deviceId}::uuid`);
+    const [row] = await admin<{ assigned_site_id: string }>(sql`SELECT assigned_site_id FROM topology_device_presence_days WHERE device_id = ${t.deviceId}::uuid`);
+    expect(row!.assigned_site_id).toBe(t.siteA);
+  });
+
+  it('enforces the (device, day, assigned site, match key) key and cascades on device delete', async () => {
+    const t = await tenant();
+    await admin(insertDay(t));
+    await expect(admin(insertDay(t))).rejects.toMatchObject({ cause: { code: '23505' } });
+    await admin(insertDay(t, '2026-10-01', 'stale:-'));
+    await admin(insertDay(t, '2026-10-02'));
+    expect(await dayRows(t.deviceId)).toHaveLength(3);
+    await admin(sql`DELETE FROM devices WHERE id = ${t.deviceId}::uuid`);
+    expect(await dayRows(t.deviceId)).toHaveLength(0);
   });
 });
