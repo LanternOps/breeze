@@ -625,8 +625,8 @@ function accountingLineTitle(line: InvoiceLineRow, detail: InvoiceLineDetail): s
 }
 
 function buildLinePayload(line: InvoiceLineRow, detail: InvoiceLineDetail): AccountingInvoiceLinePayload {
-  // Legacy-line fallback mirrors invoiceService/invoicePdf's own
-  // name-then-description title resolution.
+  // Untrimmed name-then-description title (see accountingLineTitle: unlike the
+  // PDF there is no trim / '—' placeholder, keeping default pushes unchanged).
   const title = accountingLineTitle(line, detail);
   // #7161: a hidden line is KEPT with its description and quantity but pushed
   // at zero — see pushedLineAmounts (accountingInvoiceTotals.ts).
