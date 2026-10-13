@@ -6,6 +6,11 @@ import { positiveMoneyAmountSchema } from './ticketApproval';
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 export const ticketSourceSchema = z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+// #7900: the fixed ITIL core set (tickets.ticket_type). Separate axis from
+// work_kind; display labels come from i18n, never from these keys.
+export const TICKET_TYPES = ['incident', 'service_request', 'problem', 'change'] as const;
+export const ticketTypeSchema = z.enum(TICKET_TYPES);
+export type TicketType = z.infer<typeof ticketTypeSchema>;
 export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 

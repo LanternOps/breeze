@@ -10,6 +10,9 @@ export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'h
 export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
 // Spec #5573 §4.8: planned work (service deliverables, project tasks) is typed, not tagged.
 export const ticketWorkKindEnum = pgEnum('ticket_work_kind', ['support', 'deliverable', 'project_task']);
+// #7900: fixed ITIL classification (what the ticket is ABOUT). A separate axis
+// from work_kind (how the work is delivered/billed). Labels live in i18n only.
+export const ticketTypeEnum = pgEnum('ticket_type', ['incident', 'service_request', 'problem', 'change']);
 export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
@@ -202,6 +205,9 @@ export const tickets = pgTable('tickets', {
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
+  // #7900 (2026-12-25-150000): constant default, so existing rows read as
+  // 'incident' without a backfill. Per-source defaults: services/ticketType.ts.
+  ticketType: ticketTypeEnum('ticket_type').notNull().default('incident'),
   internalNumber: varchar('internal_number', { length: 20 }),
   emailMessageId: text('email_message_id'),
   emailThreadKey: text('email_thread_key'),
