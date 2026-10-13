@@ -446,14 +446,20 @@ configsRoutes.patch(
         // ONLY thing standing between a malformed endpoint and the database on
         // the PATCH path. Do not remove it without adding equivalent
         // validation elsewhere. Covered by the PATCH tests in configs.test.ts.
-        const { error, region, endpoint, prefix } = validateS3Details(nextProviderConfig);
+        const storedDetails = isRecord(current.providerConfig) ? current.providerConfig : {};
+        const { error, region, endpoint, prefix, keepStoredPrefix } = validateS3Details(nextProviderConfig, {
+          storedPrefix: storedDetails.prefix,
+        });
         if (error) {
           return c.json({ error }, 400);
         }
         if (region) nextProviderConfig.region = region;
-        // #7081: persist the normalized key prefix; none is an absent key.
-        if (prefix) nextProviderConfig.prefix = prefix;
-        else delete nextProviderConfig.prefix;
+        // #7081: persist the normalized key prefix; none is an absent key. An
+        // unchanged stored prefix is left as it is (see validateS3Details).
+        if (!keepStoredPrefix) {
+          if (prefix) nextProviderConfig.prefix = prefix;
+          else delete nextProviderConfig.prefix;
+        }
         if (endpoint) {
           nextProviderConfig.endpoint = endpoint;
         } else {

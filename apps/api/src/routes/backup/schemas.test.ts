@@ -231,6 +231,17 @@ describe('validateS3Details key prefix', () => {
     expect(validateS3Details({ ...base, prefix: '/' })).toMatchObject({ error: null, prefix: null });
   });
 
+  it('leaves an unchanged stored prefix alone on an update, but refuses a changed invalid one', () => {
+    expect(validateS3Details({ ...base, prefix: 'a b' }, { storedPrefix: 'a b' }))
+      .toMatchObject({ error: null, keepStoredPrefix: true });
+    expect(validateS3Details({ ...base, prefix: 'c d' }, { storedPrefix: 'a b' }).error).toMatch(/Invalid key prefix/);
+    expect(validateS3Details({ ...base, prefix: 'a b' }, { storedPrefix: undefined }).error).toMatch(/Invalid key prefix/);
+    // A valid prefix is always normalized, changed or not.
+    expect(validateS3Details({ ...base, prefix: '/acme/' }, { storedPrefix: '/acme/' }))
+      .toEqual(expect.objectContaining({ error: null, prefix: 'acme' }));
+    expect(validateS3Details({ ...base, prefix: '/acme/' }, { storedPrefix: '/acme/' }).keepStoredPrefix).toBeUndefined();
+  });
+
   it('configSchema refuses an S3 create with an invalid prefix', () => {
     const parsed = configSchema.safeParse({ name: 'x', provider: 's3', details: { ...base, prefix: 'a//b' } });
     expect(parsed.success).toBe(false);

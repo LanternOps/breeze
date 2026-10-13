@@ -35,19 +35,34 @@ const queryBoolean = z.preprocess((value) => {
  * (`normalizeBackupDestinationPrefix`, #7081). Callers persist the returned
  * `prefix` (and drop the key when it is null) so a stored prefix is always in
  * normalized form.
+ *
+ * On an update, pass the stored prefix as `storedPrefix`: a stored prefix the
+ * update leaves unchanged is not re-validated (`keepStoredPrefix: true`, the
+ * caller leaves it as is), so an edit to another field of a destination saved
+ * before validation existed is not refused. A new or changed prefix always
+ * is. Backups to a destination whose prefix is invalid are refused when they
+ * start, with an actionable message.
  */
-export function validateS3Details(details: Record<string, unknown>): {
+export function validateS3Details(
+  details: Record<string, unknown>,
+  opts: { storedPrefix?: unknown } = {},
+): {
   error: string | null;
   region: string | null;
   endpoint: string | undefined;
   prefix: string | null;
+  keepStoredPrefix?: true;
 } {
   const bucket = typeof details.bucket === 'string' ? details.bucket.trim() : '';
   if (!bucket) {
     return { error: 'S3 bucket is required', region: null, endpoint: undefined, prefix: null };
   }
   const normalizedPrefix = normalizeBackupDestinationPrefix(details.prefix);
-  if (!normalizedPrefix.ok) {
+  const keepStoredPrefix = !normalizedPrefix.ok
+    && 'storedPrefix' in opts
+    && opts.storedPrefix !== undefined
+    && details.prefix === opts.storedPrefix;
+  if (!normalizedPrefix.ok && !keepStoredPrefix) {
     return {
       error: `Invalid key prefix: ${backupDestinationPrefixReasonMessage(normalizedPrefix.reason)}`,
       region: null,
@@ -55,7 +70,8 @@ export function validateS3Details(details: Record<string, unknown>): {
       prefix: null,
     };
   }
-  const prefix = normalizedPrefix.prefix;
+  const prefix = normalizedPrefix.ok ? normalizedPrefix.prefix : null;
+  const keep = keepStoredPrefix ? { keepStoredPrefix: true as const } : {};
   const explicitRegion = typeof details.region === 'string' ? details.region.trim() : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
 
@@ -81,6 +97,7 @@ export function validateS3Details(details: Record<string, unknown>): {
         region: null,
         endpoint: undefined,
         prefix,
+        ...keep,
       };
     }
   }
@@ -92,9 +109,10 @@ export function validateS3Details(details: Record<string, unknown>): {
       region: null,
       endpoint: normalizedEndpoint,
       prefix,
+      ...keep,
     };
   }
-  return { error: null, region, endpoint: normalizedEndpoint, prefix };
+  return { error: null, region, endpoint: normalizedEndpoint, prefix, ...keep };
 }
 
 /**

@@ -690,6 +690,17 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
       expect(updateMock).not.toHaveBeenCalled();
     });
 
+    it('accepts an update that leaves an invalid stored prefix unchanged', async () => {
+      mockSelectReturns({ ...stored, providerConfig: { ...stored.providerConfig, prefix: 'Acme Corp' } });
+      mockUpdate();
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: 'Acme Corp' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig.prefix).toBe('Acme Corp');
+    });
+
     it('stores the normalized prefix on update, and drops an empty one', async () => {
       mockSelectReturns(stored);
       mockUpdate();

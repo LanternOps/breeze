@@ -113,15 +113,19 @@ function validateRingAppRules(raw: unknown): { value: unknown[] } | { error: str
  * coercion of its own.
  */
 function resolveS3ProviderConfig(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  opts: { storedPrefix?: unknown } = {},
 ): { value: Record<string, unknown> } | { error: string } {
   const details: Record<string, unknown> = { ...raw };
-  const { error, region, endpoint, prefix } = validateS3Details(details);
+  const { error, region, endpoint, prefix, keepStoredPrefix } = validateS3Details(details, opts);
   if (error) return { error };
   if (region) details.region = region;
-  // #7081: persist the normalized key prefix; none is an absent key.
-  if (prefix) details.prefix = prefix;
-  else delete details.prefix;
+  // #7081: persist the normalized key prefix; none is an absent key. An
+  // unchanged stored prefix is left as it is (see validateS3Details).
+  if (!keepStoredPrefix) {
+    if (prefix) details.prefix = prefix;
+    else delete details.prefix;
+  }
   if (endpoint) {
     details.endpoint = endpoint;
   } else {
@@ -1140,7 +1144,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const mergedProviderConfig = preserveSecretFields(incomingProviderConfig, existingProviderConfig) as Record<string, unknown>;
 
           if (targetProvider === 's3') {
-            const resolved = resolveS3ProviderConfig(mergedProviderConfig);
+            const resolved = resolveS3ProviderConfig(mergedProviderConfig, { storedPrefix: existingProviderConfig.prefix });
             if ('error' in resolved) return JSON.stringify({ error: resolved.error });
             updates.providerConfig = resolved.value;
           } else {

@@ -969,4 +969,91 @@ describe('write sessions resolve physical keys from the reservation key root', (
     `)) as unknown as Array<Record<string, unknown>>;
     expect(after).toEqual([{ key_layout: 'prefixed_flat', key_prefix: PREFIX, file_count: 2 }]);
   });
+
+  runDb('a redelivery onto a reservation whose root became unreadable is refused and writes nothing', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const { minted } = await mintWith(t, recordingDeps(calls, P_ROOT));
+    await corruptReservationRoot(minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+    const generation = (await reservationRow(minted.snapshotId))?.write_generation;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await mint(t, t.jobId, recordingDeps(calls, P_ROOT))).toEqual({ mode: 'unbrokered', reason: 'key_root_invalid' });
+    } finally {
+      error.mockRestore();
+    }
+    expect((await reservationRow(minted.snapshotId))?.write_generation).toBe(generation);
+    expect((await sessionRow(minted.sessionId)).revoked_at).toBeNull();
+  });
+
+  runDb('a resume onto an id whose root is unreadable is refused; nothing moves', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const prevJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const earlier = await mintWith(t, recordingDeps(calls, P_ROOT), prevJob);
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${prevJob}`);
+    await corruptReservationRoot(earlier.minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+    const newJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const fresh = await mintWith(t, recordingDeps(calls, P_ROOT), newJob);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await resumeWriteSession(fresh.session, earlier.minted.snapshotId, runFor(t), recordingDeps(calls, P_ROOT)))
+        .toMatchObject({ status: 409, code: 'not_resumable' });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await reservationRow(earlier.minted.snapshotId)).toMatchObject({ current_job_id: prevJob, write_generation: 1 });
+    expect(calls).toEqual([]);
+  });
+
+  runDb('delete never passes on a key storage answered with that was not requested', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls, P_ROOT, {
+      deleteKeys: async (_cfg, keys) => ({
+        deleted: [...keys, `${PREFIX}/snapshots/other/x`],
+        failed: [{ key: 'unrelated', code: 'AccessDenied' }],
+      }),
+    });
+    const { minted, session } = await mintWith(t, deps);
+    const a = `snapshots/${minted.snapshotId}/files/a`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await deleteWriteSessionKeys(session, [a], runFor(t), deps))
+        .toEqual({ status: 200, body: { deleted: [a], denied: [], failed: [] } });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  runDb('a base read resolves through a retired base\'s recorded root; a prefixed run refuses a base with no row left', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const retired = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, reason, key_layout, key_prefix)
+      VALUES (${t.orgId}, ${t.configId}, ${t.deviceId}, ${retired}, ${WRITE_IDENTITY}, 'manual', 'prefixed_flat', ${PREFIX})
+    `);
+    const deps = recordingDeps(calls, P_ROOT);
+    const first = await mintWith(t, deps, t.jobId, `snapshots/${retired}/manifest.json`);
+    expect(await asAgent(t, first.session, (r) => resolveWriteSessionObjects(first.session, r, [
+      { method: 'GET', key: `snapshots/${retired}/manifest.json` },
+    ], deps))).toMatchObject({ status: 200 });
+    expect(calls).toEqual([{ op: 'presignGet', key: `${PREFIX}/snapshots/${retired}/manifest.json` }]);
+
+    calls.length = 0;
+    const gone = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+    const job = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const second = await mintWith(t, deps, job, `snapshots/${gone}/manifest.json`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await asAgent(t, second.session, (r) => resolveWriteSessionObjects(second.session, r, [
+        { method: 'GET', key: `snapshots/${gone}/manifest.json` },
+      ], deps))).toMatchObject({ status: 409, code: 'base_key_root_invalid' });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(calls).toEqual([]);
+  });
 });

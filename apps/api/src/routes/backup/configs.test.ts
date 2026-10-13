@@ -1224,6 +1224,35 @@ describe('backup config routes', () => {
       expect(s3SendMock).not.toHaveBeenCalled();
     });
 
+    it('accepts an update that leaves an invalid stored prefix unchanged, keeping it as stored', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: { ...s3Details, prefix: 'Acme Corp' } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ details: { ...s3Details, region: 'us-west-2', prefix: 'Acme Corp' } }),
+      });
+
+      expect(res.status).toBe(200);
+      const persisted = updateMock.mock.results[0]?.value?.set.mock.calls[0]?.[0]?.providerConfig;
+      expect(persisted).toMatchObject({ region: 'us-west-2', prefix: 'Acme Corp' });
+    });
+
+    it('refuses an update that changes an invalid stored prefix to another invalid one', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: { ...s3Details, prefix: 'Acme Corp' } })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ details: { ...s3Details, prefix: 'Acme Corp 2' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('Invalid key prefix');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
     it('stores the normalized prefix on update', async () => {
       selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
       updateMock.mockReturnValueOnce(chainMock([makeConfig()]));

@@ -30,7 +30,7 @@ import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
-import type { SnapshotKeyRoot } from './backupKeyLayout';
+import { snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 
 /** The unique violation every ownership refusal is reported under. */
 export const SNAPSHOT_ID_RESERVATION_CONSTRAINT = 'backup_snapshot_id_reservations_pkey';
@@ -87,6 +87,10 @@ export async function reserveNewSnapshotId(
   },
   opts: { now?: Date; random?: (n: number) => Buffer } = {},
 ): Promise<string> {
+  // Only a root readers can read is ever recorded.
+  if (!snapshotKeyRootOf({ keyLayout: input.keyRoot.layout, keyPrefix: input.keyRoot.prefix })) {
+    throw new Error('reserveNewSnapshotId: refusing to record an unreadable key root');
+  }
   for (let attempt = 0; ; attempt++) {
     const snapshotId = mintSnapshotId(opts.now ?? new Date(), opts.random ?? randomBytes);
     try {

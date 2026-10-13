@@ -1630,6 +1630,14 @@ export async function applyBackupCommandResultToJob(params: {
     keyPrefix: reservationRoot ? reservationRoot.keyPrefix : null,
   };
   const recordedRoot = snapshotKeyRootOf(keyRoot);
+  if (!recordedRoot) {
+    // Copied verbatim (the trigger requires it); readers refuse such a row.
+    const msg =
+      `[BackupPersistence] Snapshot ${providerSnapshotId} on job ${jobId} is published under a key root this server ` +
+      `cannot read (${String(keyRoot.keyLayout)}); restores of it will be refused.`;
+    console.error(msg);
+    captureException(new Error(msg));
+  }
   const insertValues = {
     ...snapshotValues,
     ...keyRoot,

@@ -32,19 +32,19 @@ import {
   backupConfigs,
   backupJobs,
   backupSnapshotIdReservations,
-  backupSnapshots,
   backupStorageSessionUploads,
   backupStorageSessions,
   devices,
 } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import { effectiveHelperProtocol } from './backupHelperProtocols';
+import { loadOriginKeyRootRows } from './backupOriginKeyRoots';
 import {
   LEGACY_FLAT_ROOT,
   logicalKeyFrom,
+  originKeyRootAllows,
   physicalKeyFits,
   physicalKeyFor,
-  sameKeyRoot,
   snapshotKeyRootOf,
   type SnapshotKeyRoot,
 } from './backupKeyLayout';
@@ -547,7 +547,13 @@ export async function mintBackupWriteSession(
       // The redelivered session writes under the root recorded at the first
       // mint, never the destination's current one. One this server cannot
       // read refuses before anything is written.
-      if (!snapshotKeyRootOf(existing)) return { refused: 'key_root_invalid' };
+      if (!snapshotKeyRootOf(existing)) {
+        console.error('[backupStorageWriteSessions] refused a redelivery: its reservation records an unreadable key root', {
+          jobId: input.jobId,
+          snapshotId: existing.snapshotId,
+        });
+        return { refused: 'key_root_invalid' };
+      }
       // A redelivery of the same job: the new session writes the same id, and
       // becomes its only writer — every earlier session of the job is revoked
       // and the reservation moves to a new write generation, so an earlier
@@ -973,17 +979,22 @@ async function checkControlKeyRoots(
     .map((key) => parseBackupObjectKey(key)?.snapshotId)
     .filter((id): id is string => typeof id === 'string' && id !== reservedId))];
   if (baseIds.length === 0) return null;
-  const rows = await db
-    .select({ keyLayout: backupSnapshots.keyLayout, keyPrefix: backupSnapshots.keyPrefix })
-    .from(backupSnapshots)
-    .where(and(
-      eq(backupSnapshots.orgId, session.orgId),
-      eq(backupSnapshots.storageIdentity, session.storageIdentity),
-      inArray(backupSnapshots.snapshotId, baseIds),
-    ));
-  for (const row of rows) {
-    const baseRoot = snapshotKeyRootOf(row);
-    if (!baseRoot || !sameKeyRoot(baseRoot, root)) return { status: 409, code: 'base_key_root_invalid' };
+  // The base's live row, else its retirement row; same rule as external refs
+  // (originKeyRootAllows): with neither left, a legacy run resolves as before
+  // and a prefixed run is refused.
+  const roots = await loadOriginKeyRootRows({
+    orgId: session.orgId,
+    storageIdentity: session.storageIdentity,
+    originSnapshotIds: baseIds,
+  });
+  for (const id of baseIds) {
+    if (!originKeyRootAllows(root, roots.get(id))) {
+      console.warn('[backupStorageWriteSessions] refused a base read under another or unreadable key root', {
+        sessionId: session.id,
+        baseSnapshotId: id,
+      });
+      return { status: 409, code: 'base_key_root_invalid' };
+    }
   }
   return null;
 }
@@ -1303,14 +1314,24 @@ export async function deleteWriteSessionKeys(
 
   // Storage deletes physical keys; the helper is answered in logical keys.
   const logicalOf = new Map(prepared.allowed.map((key) => [physicalKeyFor(prepared.root, key), key]));
-  const toLogical = (physical: string) => logicalOf.get(physical) ?? logicalKeyFrom(prepared.root, physical) ?? physical;
+  // A key storage answers with that this call did not ask for is never
+  // passed on (it could be a physical key under the root): dropped and logged.
+  let unmapped = 0;
+  const toLogical = (physical: string): string[] => {
+    const logical = logicalOf.get(physical);
+    if (logical === undefined) { unmapped++; return []; }
+    return [logical];
+  };
   let result: { deleted: string[]; failed: Array<{ key: string; code: string }> };
   try {
     const out = await deps.storage.deleteKeys(prepared.destination.providerConfig, [...logicalOf.keys()]);
     result = {
-      deleted: out.deleted.map(toLogical),
-      failed: out.failed.map((f) => ({ ...f, key: toLogical(f.key) })),
+      deleted: out.deleted.flatMap(toLogical),
+      failed: out.failed.flatMap((f) => toLogical(f.key).map((key) => ({ ...f, key }))),
     };
+    if (unmapped > 0) {
+      console.warn('[backupStorageWriteSessions] dropped delete results for keys that were not requested', { sessionId: session.id, unmapped });
+    }
   } catch (err) {
     logStorageFailure('delete failed', session.id, err);
     result = { deleted: [], failed: prepared.allowed.map((key) => ({ key, code: 'storage_error' })) };
@@ -1470,7 +1491,13 @@ async function resumePhase(
   // the one this session's own id got): a root this server cannot read is
   // not resumable, and the helper starts fresh under the issued id.
   const targetRoot = snapshotKeyRootOf(reservation);
-  if (!targetRoot) return { status: 409, code: 'not_resumable' };
+  if (!targetRoot) {
+    console.warn('[backupStorageWriteSessions] refused a resume: the journaled id records an unreadable key root', {
+      sessionId: session.id,
+      snapshotId: reservation.snapshotId,
+    });
+    return { status: 409, code: 'not_resumable' };
+  }
 
   const issuedId = session.reservationSnapshotId!;
   const abandonIssued = async () => {
