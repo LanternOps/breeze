@@ -142,7 +142,7 @@ Each script's detail page also shows a **Provenance panel**: whether it was writ
 
 4. **Fill in parameters.** If the script defines parameters, fill in the values. Required parameters are marked with an asterisk. Boolean parameters show as checkboxes; select parameters show as dropdowns.
 
-5. **Select target devices.** The device list shows only devices with a compatible OS. Filter by hostname search, site, or status (online/offline/maintenance). Click checkboxes to select individual devices, or click **Select all online** to target all compatible online devices. An **Advanced Filters** button opens the full filter builder for complex targeting.
+5. **Select target devices.** The device list shows only devices with a compatible OS. Filter by hostname search, site, or status (online/offline/maintenance). Click checkboxes to select individual devices, or click **Select all online** to target all compatible online devices. An **Advanced Filters** button opens the full filter builder for complex targeting. To run on saved device groups instead, switch **Run on** to **Device groups**; see [Running on device groups](#running-on-device-groups).
 
 6. **Confirm and execute.** Click **Execute**. A confirmation banner appears showing the script name, device count, and run-as context. Click **Confirm Execute** to dispatch the script. A progress indicator shows submission status across all targeted devices.
 
@@ -360,6 +360,56 @@ The execute endpoint validates the following before dispatching commands:
 5. The device is not in a maintenance window with script suppression enabled.
 
 Devices that fail any check are silently excluded. If no devices remain after filtering, the API returns `400`.
+
+## Running on device groups
+
+Instead of picking devices one by one, you can run a script on saved [device groups](/features/device-groups/). In the Run Script modal, set **Run on** to **Device groups**, then select up to 100 groups. The picker shows each group's device count, marks dynamic groups, and summarizes the unique devices across your selection, how many have a matching operating system, and how many are offline (offline devices run the script when they come online).
+
+Through the API, send `target` instead of `deviceIds`:
+
+```bash
+POST /scripts/:scriptId/execute
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "target": { "type": "groups", "groupIds": ["group-uuid-1", "group-uuid-2"] },
+  "parameters": { "days": "7" },
+  "runAs": "system"
+}
+```
+
+Provide exactly one of `deviceIds` or `target`. `targetSessionId` cannot be combined with `target`. The server resolves the groups to devices before dispatch, then applies the same per-device checks as any other run (see [Pre-execution checks](#pre-execution-checks)).
+
+### How groups are resolved
+
+- Every requested group must exist, belong to an organization you can access and, if you are restricted to specific sites, sit at one of your sites. If any group fails these checks, the request returns `404` with code `GROUP_NOT_FOUND` and a `groupIds` array naming them. The message is the same whether a group does not exist or you cannot access it. The run is never silently reduced to the groups that did resolve.
+- A device that belongs to several of the groups runs the script once.
+- If you are restricted to specific sites, devices outside your allowlist are excluded and a warning says so.
+- Static groups use their current members. Dynamic groups use the stored membership from the group's last evaluation. Breeze does not re-evaluate the filter when you run the script. Re-evaluation normally follows a device change within about 5 seconds, but that is not guaranteed: evaluation jobs can retry or back up. A device that just started matching a dynamic group may not be in the run yet.
+- A dynamic group whose rules match on fields a device reports about itself is refused as an execution target and skipped, with a warning. These groups are marked unavailable in the picker.
+
+### Limits and errors
+
+| Status | Code | Meaning |
+|---|---|---|
+| `404` | `GROUP_NOT_FOUND` | One or more groups do not exist or are not accessible. `groupIds` lists them. |
+| `400` | `NO_TARGETS` | Every requested group was refused, or the groups have no members. Nothing was run. |
+| `400` | `TOO_MANY_TARGETS` | The groups resolve to more than 500 unique devices. The response includes `count` and `perGroupCounts`. Nothing is dispatched and the list is not truncated; split the run across smaller groups. |
+
+A successful group run returns `201` with the usual response plus a `warnings` array (refused groups, devices excluded by your site allowlist).
+
+### Audit
+
+A group run writes the normal `script.execute` audit entry with two extra details, `target` and `resolvedGroups` (each group's id, organization, member count in this run, and whether it was refused). The resolved device ids are recorded in the entry's targets.
+
+A separate `script.execute_group_target` entry is written for every group-target request, whether it was admitted, had no devices admitted, or was rejected. It records the devices the groups resolved to at that moment, so the record stays accurate after group membership changes.
+
+### AI assistant
+
+The AI assistant's `run_script` tool accepts a `groupId` (one saved device group) in place of `deviceIds`; provide exactly one of the two. The group is resolved to a concrete device list when the approval is requested. The approval shows the device list, the member count, and a short hash of the resolved device ids, and that exact list is what runs once approved. Membership changes after the approval is requested do not change the run.
+
+An AI run is limited to 10 devices. A group that resolves to more than 10 is refused with the resolved count; it is never truncated, and the 500-device limit above does not apply. Use the Run Script modal or the API for larger groups. A group outside the conversation's organization is refused with the same message as a group that does not exist. See [AI Tools](/features/ai-tools/#scripts--automation).
 
 ---
 

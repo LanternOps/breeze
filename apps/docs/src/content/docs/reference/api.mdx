@@ -382,10 +382,20 @@ correlation endpoints remain active.
 | `POST` | `/scripts` | Create script |
 | `PUT` | `/scripts/:id` | Update script |
 | `DELETE` | `/scripts/:id` | Delete script |
-| `POST` | `/scripts/:id/execute` | Execute on device(s) |
+| `POST` | `/scripts/:id/execute` | Execute on device(s) or device groups |
 | `GET` | `/scripts/:id/executions` | List executions |
 | `GET` | `/scripts/executions/:id` | Get execution details |
 | `POST` | `/scripts/executions/:id/cancel` | Cancel execution |
+
+`POST /scripts/:id/execute` takes exactly one of `deviceIds` (1 to 500 device ids) or `target`. `target` is `{ "type": "groups", "groupIds": [...] }` with 1 to 100 group ids; the server resolves the groups to devices, runs each device once, and returns `warnings` in the `201` body. `targetSessionId` is rejected together with `target`.
+
+| Status | Code | Meaning |
+|---|---|---|
+| `404` | `GROUP_NOT_FOUND` | A group does not exist or is not accessible (one message for both). `groupIds` lists them. |
+| `400` | `NO_TARGETS` | Every group was refused as an execution target, or the groups have no members. |
+| `400` | `TOO_MANY_TARGETS` | The groups resolve to more than 500 devices. Includes `count` and `perGroupCounts`; nothing is dispatched. |
+
+See [Running on device groups](/features/scripts/#running-on-device-groups) for resolution rules and audit entries.
 
 ## Script Library
 
