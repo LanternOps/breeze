@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const m = vi.hoisted(() => ({ auth: null as any, read: true, write: true, mfa: true, get: vi.fn(), start: vi.fn(), directoryUsers: vi.fn(), syncDirectory: vi.fn() }));
+const m = vi.hoisted(() => ({ limit: vi.fn(), auth: null as any, read: true, write: true, mfa: true, get: vi.fn(), start: vi.fn(), directoryUsers: vi.fn(), syncDirectory: vi.fn() }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, n: any) => { if (!m.auth) return c.json({ error: 'unauthorized' }, 401); c.set('auth', m.auth); return n(); },
   requireScope: (...s: string[]) => async (c: any, n: any) => (s.includes(c.get('auth').scope) ? n() : c.json({}, 403)),
@@ -10,7 +10,7 @@ vi.mock('../middleware/auth', () => ({
   withAuthDbAccessContext: (_a: unknown, f: () => unknown) => f(),
 }));
 vi.mock('./orgContacts', () => ({ canReachContactSite: (_a: unknown, site: string | null) => site === null }));
-vi.mock('../services/rate-limit', () => ({ rateLimiter: async () => ({ allowed: true, remaining: 9, resetAt: Date.now() + 600000 }) }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: m.limit }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/contacts/import', () => ({ importDirectoryContact: vi.fn() }));
 vi.mock('../services/callerVerification/directory', () => ({ directoryUsers: m.directoryUsers, syncDirectory: m.syncDirectory }));
@@ -43,8 +43,17 @@ beforeEach(() => {
   m.read = true; m.write = true; m.mfa = true;
   m.auth = { scope: 'organization', user: { id, name: 'Tech' }, partnerId: null, accessibleOrgIds: [org], allowedSiteIds: null, canAccessOrg: () => true };
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+  m.limit.mockResolvedValue({ allowed: true, remaining: 9, resetAt: Date.now() + 600000 });
 });
 afterEach(() => vi.unstubAllEnvs());
+
+it('caps technician starts per user before any service work (#6354 W03)', async () => {
+  m.limit.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: Date.now() + 600000 });
+  const response = await app.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contactId: id, method: 'sms', actionScope: 'any' }) });
+  expect(response.status).toBe(429);
+  expect(m.limit).toHaveBeenCalledWith(null, `caller-verification:start:${id}`, 10, 600);
+  expect(m.start).not.toHaveBeenCalled();
+});
 
 it.each(routes)('%s %s authenticates first, then is dark, then permission protected', async (method, url) => {
   // Auth runs BEFORE the readiness gate: __tests__/routerAuthGate.contract.test.ts
