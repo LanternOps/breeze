@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, User } from "lucide-react";
 import AiToolCallCard from "./AiToolCallCard";
+import { CallerVerificationRefusal } from "../callerVerification/CallerVerificationRefusal";
 import AiApprovalDialog from "./AiApprovalDialog";
 import AiPlanReviewCard from "./AiPlanReviewCard";
 import AiPlanProgressBar from "./AiPlanProgressBar";
@@ -399,6 +400,11 @@ export default function AiChatMessages({
                 isError={msg.isError}
                 handoff={msg.handoff}
               />
+              {/* #6354: a tool refused for caller verification offers an
+                  inline verification workflow (never a retry). Renders
+                  nothing unless the error carries the structured payload
+                  and the feature is enabled. */}
+              <CallerVerificationRefusal output={msg.toolOutput ?? msg.content} isError={msg.isError} />
               {proposalHref && (
                 <a
                   href={proposalHref}
