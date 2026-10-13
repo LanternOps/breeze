@@ -79,6 +79,28 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.data.securityCapabilities?.consentPromptProtocolVersion).toBe(2);
   });
 
+  it('parses retainStateProtocolVersion tolerantly: a valid 1 survives, a malformed one is dropped without a 400 (#8616)', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: { consentPromptProtocolVersion: 2, retainStateProtocolVersion: 1 },
+    });
+    expect(valid.success).toBe(true);
+    if (!valid.success) return;
+    expect(valid.data.securityCapabilities?.retainStateProtocolVersion).toBe(1);
+
+    for (const bad of ['x', '1', true, 1.5, { v: 1 }, [1]]) {
+      const result = heartbeatSchema.safeParse({
+        ...minimal,
+        securityCapabilities: { consentPromptProtocolVersion: 2, retainStateProtocolVersion: bad },
+      });
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.securityCapabilities?.retainStateProtocolVersion).toBeUndefined();
+      // A bad value drops only its own key, never the sibling capabilities.
+      expect(result.data.securityCapabilities?.consentPromptProtocolVersion).toBe(2);
+    }
+  });
+
   it('accepts a valid rollback observation and drops a malformed optional one', () => {
     const valid = heartbeatSchema.safeParse({
       ...minimal,

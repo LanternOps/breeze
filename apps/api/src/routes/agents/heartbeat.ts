@@ -372,6 +372,16 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2
 }
 
 /**
+ * Normalize the retain-state protocol (#8616): whether THIS beat's agent
+ * honours the response's `retainState` list. Exactly 1 only; absent,
+ * malformed or a future version is 0 and gets the legacy payload. Parse-only,
+ * never persisted — each beat is answered from its own report.
+ */
+export function normalizeRetainStateProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
  * Normalize the only workload-inventory protocol version implemented here
  * (#3834). Absent, malformed, or a future version this server does not speak
  * is 0; the device Workloads view then reports "agent too old" rather than

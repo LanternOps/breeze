@@ -436,7 +436,7 @@ vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaselin
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
 import { and, eq, notInArray } from 'drizzle-orm';
-import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
+import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
@@ -4221,6 +4221,15 @@ describe('uninstallIntentAt clearing (#2764)', () => {
     expect(resp.status).toBe(200);
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg).toHaveProperty('uninstallIntentAt', null);
+  });
+});
+
+describe('normalizeRetainStateProtocolVersion (#8616)', () => {
+  it('maps exactly the number 1 to 1 and everything else to 0', () => {
+    expect(normalizeRetainStateProtocolVersion(1)).toBe(1);
+    for (const v of [0, 2, -1, 1.5, '1', true, null, undefined, {}, [1], NaN]) {
+      expect(normalizeRetainStateProtocolVersion(v)).toBe(0);
+    }
   });
 });
 
