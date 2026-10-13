@@ -1,0 +1,8 @@
+{
+  "identifier": "message-card",
+  "description": "Endpoint message card windows (#8293). They render technician-authored text, so they get only the core defaults: no window show/hide/focus/drag (a card must never be able to surface the main window) and nothing beyond what the card's own commands need.",
+  "windows": ["message-*"],
+  "permissions": [
+    "core:default"
+  ]
+}

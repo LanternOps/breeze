@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default permissions for Breeze Helper",
-  "windows": ["main", "consent", "session-banner", "caller-verify-*", "message-*"],
+  "windows": ["main", "consent", "session-banner", "caller-verify-*"],
   "permissions": [
     "core:default",
     "core:event:default",

@@ -31,6 +31,11 @@ pub const TYPE_MESSAGE_PRESENTED: &str = "message_presented";
 pub const TYPE_MESSAGE_ACK: &str = "message_ack";
 pub const TYPE_MESSAGE_DISMISSED: &str = "message_dismissed";
 
+/// `message_presented.status` values (mirror `agent/internal/ipc/message.go`);
+/// absent means the card is on screen.
+pub const PRESENTED_ALREADY_RESOLVED: &str = "already_resolved";
+pub const PRESENTED_FAILED: &str = "failed";
+
 pub const REASON_USER: &str = "user";
 pub const REASON_EXPIRED: &str = "expired";
 
@@ -269,7 +274,37 @@ impl MessageTracker {
         }
     }
 
-    /// The window could not be built: forget the message (no reply).
+    /// A `message_presented` reply that says why nothing is on screen
+    /// (`already_resolved` / `failed`), on the SAME envelope id as the show.
+    pub fn presented_with_status(env_id: &str, message_id: &str, status: &str) -> Outbound {
+        Outbound {
+            id: env_id.to_string(),
+            typ: TYPE_MESSAGE_PRESENTED,
+            payload: serde_json::json!({ "messageId": message_id, "status": status }),
+        }
+    }
+
+    /// Frames for every `ShowAction` except `Show` (whose reply depends on
+    /// whether the window could be built). The `presented` resolution goes
+    /// first so the agent's waiter never falls back to a native toast.
+    pub fn replies_for(env_id: &str, message_id: &str, action: ShowAction) -> Vec<Outbound> {
+        match action {
+            ShowAction::AlreadyShown => vec![Self::presented(env_id, message_id)],
+            ShowAction::Suppressed => {
+                vec![Self::presented_with_status(env_id, message_id, PRESENTED_ALREADY_RESOLVED)]
+            }
+            ShowAction::Reply(dismissed) => vec![
+                Self::presented_with_status(env_id, message_id, PRESENTED_ALREADY_RESOLVED),
+                dismissed,
+            ],
+            ShowAction::Reject(_) => {
+                vec![Self::presented_with_status(env_id, message_id, PRESENTED_FAILED)]
+            }
+            ShowAction::Show { .. } => Vec::new(),
+        }
+    }
+
+    /// The window could not be built: forget the message (caller replies `failed`).
     pub fn on_show_failed(&mut self, message_id: &str) {
         self.active.remove(message_id);
     }
@@ -393,6 +428,15 @@ impl MessageBridge {
             Err(_) => false,
         }
     }
+    /// Deliver the user's acknowledgement; Err (so the card can say so and
+    /// stay open for a retry) when there is no live session to carry it.
+    pub fn submit_ack(&self, message_id: &str) -> Result<(), String> {
+        if self.submit(MsgEvent::Ack(message_id.to_string())) {
+            Ok(())
+        } else {
+            Err("Not connected to your IT provider's agent. Try again in a moment.".into())
+        }
+    }
     pub fn view(&self, message_id: &str) -> Option<MessageView> {
         self.tracker().view(message_id)
     }
@@ -446,6 +490,71 @@ mod tests {
         assert_eq!(f.id, "env-42");
         assert_eq!(f.typ, "message_presented");
         assert_eq!(f.payload, serde_json::json!({ "messageId": ID }));
+    }
+
+    #[test]
+    fn presented_with_status_reuses_env_id_and_carries_status() {
+        let f = MessageTracker::presented_with_status("env-7", ID, PRESENTED_FAILED);
+        assert_eq!(f.id, "env-7");
+        assert_eq!(f.typ, "message_presented");
+        assert_eq!(f.payload, serde_json::json!({ "messageId": ID, "status": "failed" }));
+        // The success reply keeps no status key (omitempty on the Go side).
+        assert!(MessageTracker::presented("e", ID).payload.get("status").is_none());
+        assert_eq!(PRESENTED_ALREADY_RESOLVED, "already_resolved");
+    }
+
+    #[test]
+    fn suppressed_replies_already_resolved_on_the_show_id() {
+        let mut t = MessageTracker::default();
+        t.on_show(NOW, &show("warning", true));
+        t.on_ack(ID);
+        let a = t.on_show(NOW, &show("warning", true));
+        let frames = MessageTracker::replies_for("env-1", ID, a);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, "env-1");
+        assert_eq!(frames[0].typ, "message_presented");
+        assert_eq!(frames[0].payload["status"], "already_resolved");
+    }
+
+    #[test]
+    fn rejected_show_replies_failed_without_content() {
+        let frames = MessageTracker::replies_for("env-2", ID, ShowAction::Reject("invalid severity".into()));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, "env-2");
+        assert_eq!(frames[0].payload, serde_json::json!({ "messageId": ID, "status": "failed" }));
+    }
+
+    #[test]
+    fn expired_on_arrival_resolves_the_waiter_then_reports_dismissed() {
+        let mut t = MessageTracker::default();
+        let m: MessageShow = serde_json::from_str(&show_json("info", false, "2001-01-01T00:00:00Z")).unwrap();
+        let a = t.on_show(NOW, &m);
+        let frames = MessageTracker::replies_for("env-3", ID, a);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].id, "env-3");
+        assert_eq!(frames[0].typ, "message_presented");
+        assert_eq!(frames[0].payload["status"], "already_resolved");
+        assert_eq!(frames[1].typ, "message_dismissed");
+        assert_eq!(frames[1].payload["reason"], "expired");
+        assert_ne!(frames[1].id, "env-3");
+    }
+
+    #[test]
+    fn already_shown_replies_plain_presented() {
+        let frames = MessageTracker::replies_for("env-4", ID, ShowAction::AlreadyShown);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].payload.get("status").is_none());
+    }
+
+    #[test]
+    fn show_arm_replies_failed_when_the_window_cannot_be_built() {
+        let client = include_str!("client.rs").split("\nmod tests {").next().unwrap();
+        let arm = client.find("\"message_show\" =>").expect("arm");
+        let end = client[arm..].find("\"message_retract\" =>").map(|i| i + arm).expect("end");
+        let a = &client[arm..end];
+        assert!(a.contains("on_show_failed"));
+        assert!(a.contains("PRESENTED_FAILED"));
+        assert!(a.contains("replies_for"));
     }
 
     #[test]
@@ -659,6 +768,29 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), MsgEvent::Ack(ID.into()));
         b.clear_sender();
         assert!(!b.submit(MsgEvent::Closed(ID.into())));
+    }
+
+    #[test]
+    fn ack_without_a_live_session_is_an_error_and_sends_nothing() {
+        let b = MessageBridge::default();
+        let err = b.submit_ack(ID).unwrap_err();
+        assert!(!err.is_empty());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        assert!(b.submit_ack(ID).is_ok());
+        assert_eq!(rx.try_recv().unwrap(), MsgEvent::Ack(ID.into()));
+    }
+
+    #[test]
+    fn message_ack_command_only_closes_after_a_successful_submit() {
+        let lib = include_str!("../lib.rs");
+        let start = lib.find("fn message_ack(").expect("message_ack");
+        let end = lib[start..].find("\n}\n").map(|i| i + start).expect("end");
+        let body = &lib[start..end];
+        let submit = body.find("submit_ack").expect("uses submit_ack");
+        let close = body.find("window.close()").expect("closes");
+        assert!(body.contains("?"), "submit error must propagate");
+        assert!(submit < close);
     }
 
     // #8138 start-hidden: a message builds only its own card window, from the

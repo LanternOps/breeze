@@ -35,6 +35,30 @@ describe('MessageMarkdown links', () => {
     expect(a.getAttribute('rel')).toContain('noopener');
   });
 
+  it('replaces a label that embeds a URL anywhere with the real host only', () => {
+    const c = html('[Sign in at https://login.contoso.com](https://evil.example/x)');
+    expect(c.textContent).toContain('evil.example');
+    expect(c.textContent).not.toContain('contoso');
+    expect(c.textContent).not.toContain('Sign in');
+  });
+
+  it('replaces a label that embeds a bare host anywhere with the real host only', () => {
+    const c = html('[visit login.contoso.com now](https://evil.example/x)');
+    expect(c.textContent).toContain('evil.example');
+    expect(c.textContent).not.toContain('contoso');
+  });
+
+  it('keeps a plain-word label and appends the real host', () => {
+    const c = html('[status page](https://status.example.com/)');
+    expect(c.querySelector('a')).toHaveTextContent('status page');
+    expect(c.textContent).toContain('(status.example.com)');
+  });
+
+  it('does not treat "e.g." or version numbers as hosts', () => {
+    const c = html('[see notes, e.g. v1.2.3](https://notes.example.com/)');
+    expect(c.querySelector('a')).toHaveTextContent('see notes, e.g. v1.2.3');
+  });
+
   it('does not duplicate the host when the label is already the same host', () => {
     const c = html('[https://portal.example.com](https://portal.example.com)');
     expect(c.textContent!.match(/portal\.example\.com/g)).toHaveLength(1);

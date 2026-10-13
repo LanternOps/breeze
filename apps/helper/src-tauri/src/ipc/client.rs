@@ -18,7 +18,9 @@ use super::consent::{
     ConsentRequest, ConsentTracker, Outbound, RequestAction, UiEvent, CONSENT_PROTOCOL_VERSION,
 };
 use super::desktop::{self, ConsentBridge};
-use super::message::{MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction};
+use super::message::{
+    MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
+};
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
 use super::token::HelperToken;
 use super::transport::{
@@ -472,28 +474,30 @@ where
                     // main Assist window is never shown for a message (#8138).
                     let action =
                         desktop_ctx.map(|ctx| ctx.messages.tracker().on_show(now_unix_ms(), &req));
-                    let reply = match (action, desktop_ctx) {
+                    let frames: Vec<Outbound> = match (action, desktop_ctx) {
                         (Some(ShowAction::Show { plan, view }), Some(ctx)) => {
                             match desktop::show_message_window(&ctx.app, &plan, &view) {
-                                Ok(()) => Some(MessageTracker::presented(&env.id, &req.message_id)),
+                                Ok(()) => vec![MessageTracker::presented(&env.id, &req.message_id)],
                                 Err(e) => {
                                     eprintln!("[helper] message card could not be shown: {}", e);
                                     ctx.messages.tracker().on_show_failed(&req.message_id);
-                                    None
+                                    vec![MessageTracker::presented_with_status(
+                                        &env.id,
+                                        &req.message_id,
+                                        PRESENTED_FAILED,
+                                    )]
                                 }
                             }
                         }
-                        (Some(ShowAction::AlreadyShown), _) => {
-                            Some(MessageTracker::presented(&env.id, &req.message_id))
+                        (Some(action), _) => {
+                            if let ShowAction::Reject(why) = &action {
+                                eprintln!("[helper] message_show rejected: {}", why);
+                            }
+                            MessageTracker::replies_for(&env.id, &req.message_id, action)
                         }
-                        (Some(ShowAction::Reply(frame)), _) => Some(frame),
-                        (Some(ShowAction::Reject(why)), _) => {
-                            eprintln!("[helper] message_show rejected: {}", why);
-                            None
-                        }
-                        _ => None,
+                        _ => Vec::new(),
                     };
-                    if let Some(frame) = reply {
+                    for frame in frames {
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
                 }

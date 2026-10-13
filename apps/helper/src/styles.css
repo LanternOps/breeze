@@ -2304,3 +2304,4 @@ body {
 .helper-message-body a { color: var(--accent); text-decoration: underline; }
 .helper-message-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .helper-message-source { font-size: 11px; color: var(--text-muted); }
+.helper-message-error { font-size: 12px; color: #c0392b; margin-top: 8px; }

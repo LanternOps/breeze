@@ -836,9 +836,11 @@ fn message_ack(
     if !crate::ipc::message::label_matches(window.label(), &message_id) {
         return Err("wrong window".into());
     }
-    if !bridge.submit(crate::ipc::message::MsgEvent::Ack(message_id)) {
+    // No live session: keep the card open and surface the error so the user
+    // can retry (closing would lose the acknowledgement silently).
+    bridge.submit_ack(&message_id).inspect_err(|_| {
         eprintln!("[helper] message_ack: no live IPC session to deliver the acknowledgement");
-    }
+    })?;
     let _ = window.close();
     Ok(())
 }

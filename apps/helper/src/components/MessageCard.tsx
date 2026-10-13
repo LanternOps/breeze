@@ -28,15 +28,24 @@ export function MessageCard({
   onClose,
 }: {
   view: MessageView;
-  onAcknowledge: () => void;
+  /** May reject (e.g. no live agent session): the card then shows the error and allows a retry. */
+  onAcknowledge: () => void | Promise<void>;
   onClose: () => void;
 }) {
-  // Double-click guard: the agent must see at most one ack.
+  // In-flight guard: the agent must see at most one ack. Released on failure
+  // so the user can retry.
   const acked = useRef(false);
-  const ack = useCallback(() => {
+  const [ackError, setAckError] = useState<string | null>(null);
+  const ack = useCallback(async () => {
     if (acked.current) return;
     acked.current = true;
-    onAcknowledge();
+    setAckError(null);
+    try {
+      await onAcknowledge();
+    } catch (err) {
+      acked.current = false;
+      setAckError(typeof err === 'string' && err ? err : "Couldn't send your acknowledgement. Please try again.");
+    }
   }, [onAcknowledge]);
 
   const sender = view.branding.companyName.trim() || view.branding.displayName.trim() || 'your IT provider';
@@ -52,10 +61,15 @@ export function MessageCard({
       <div className="helper-message-body">
         <MessageMarkdown body={view.body} plain={view.plain} />
       </div>
+      {ackError && (
+        <div className="helper-message-error" role="alert">
+          {ackError}
+        </div>
+      )}
       <div className="helper-message-footer">
         <span className="helper-message-source">Sent by your IT provider</span>
         {view.requiresAck ? (
-          <button type="button" className="helper-btn helper-btn-accept" onClick={ack}>
+          <button type="button" className="helper-btn helper-btn-accept" onClick={() => void ack()}>
             Acknowledge
           </button>
         ) : (
@@ -98,7 +112,9 @@ export function MessageCardWindow({
         if (live) setView(v);
       })
       .catch(() => {
-        // Retracted/expired before it painted: nothing to show.
+        // Retracted/expired before it painted: close the (empty) frame rather
+        // than leave an always-on-top blank window.
+        if (live) void api.close(messageId).catch(() => {});
       });
     return () => {
       live = false;
@@ -109,7 +125,7 @@ export function MessageCardWindow({
   return (
     <MessageCard
       view={view}
-      onAcknowledge={() => void api.acknowledge(messageId).catch(() => {})}
+      onAcknowledge={() => api.acknowledge(messageId)}
       onClose={() => void api.close(messageId).catch(() => {})}
     />
   );

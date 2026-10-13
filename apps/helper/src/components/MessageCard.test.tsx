@@ -122,7 +122,7 @@ describe('MessageCardWindow', () => {
     expect(a.close).not.toHaveBeenCalled();
   });
 
-  it('renders nothing when the message is unavailable', async () => {
+  it('renders nothing and closes the window when the message is unavailable', async () => {
     const a = api();
     (a.getView as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gone'));
     const { container } = render(<MessageCardWindow messageId={view.messageId} api={a} />);
@@ -130,5 +130,23 @@ describe('MessageCardWindow', () => {
       await Promise.resolve();
     });
     expect(container).toBeEmptyDOMElement();
+    expect(a.close).toHaveBeenCalledWith(view.messageId);
+  });
+
+  it('shows an inline error when the ack fails and lets the user retry', async () => {
+    const a = api();
+    (a.acknowledge as ReturnType<typeof vi.fn>).mockRejectedValueOnce('Not connected');
+    render(<MessageCardWindow messageId={view.messageId} api={a} />);
+    const btn = await screen.findByRole('button', { name: 'Acknowledge' });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(a.acknowledge).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(/not connected/i);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    });
+    expect(a.acknowledge).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

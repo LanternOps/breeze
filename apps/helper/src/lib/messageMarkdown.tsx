@@ -54,9 +54,10 @@ function textOf(node: ReactNode): string {
 }
 
 /** The host a label claims to be, or null when it does not look like a URL/host. */
-function claimedHost(label: string): string | null {
-  const t = label.trim();
-  if (!t || /\s/.test(t)) return null;
+function claimedHostOfToken(token: string): string | null {
+  // Strip wrapping/trailing punctuation: "(https://x.example)." etc.
+  const t = token.replace(/^[("'<[]+/, '').replace(/[)"'>\],.;:!?]+$/, '');
+  if (!t) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
     try {
       return new URL(t).hostname.toLowerCase();
@@ -64,13 +65,27 @@ function claimedHost(label: string): string | null {
       return t.toLowerCase();
     }
   }
-  // Bare host or host/path: "www.bank.example", "bank.example/login".
-  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]\S*)?$/i.test(t)) {
+  // Bare host or host/path: "www.bank.example", "bank.example/login". The TLD
+  // must be alphabetic (2+) so "e.g." and "v1.2.3" are not hosts.
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(:\d+)?([/?#]\S*)?$/i.test(t)) {
     try {
       return new URL(`https://${t}`).hostname.toLowerCase();
     } catch {
       return t.toLowerCase();
     }
+  }
+  return null;
+}
+
+/**
+ * The first host a label claims anywhere in its text ("Sign in at
+ * https://login.contoso.com", "visit login.contoso.com now"), or null when no
+ * token looks like a URL/host.
+ */
+function claimedHost(label: string): string | null {
+  for (const token of label.split(/\s+/)) {
+    const h = claimedHostOfToken(token);
+    if (h !== null) return h;
   }
   return null;
 }
