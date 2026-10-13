@@ -374,7 +374,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_fleet_device_stats',
       description:
-        'Exact live device counts by status (total, online, offline, byStatus, migrationRequiredCount, logShippingFailingCount) across every accessible device. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
+        'Exact live fleet device counts: total, online, offline, byStatus, migrationRequiredCount, logShippingFailingCount. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
       input_schema: {
         type: 'object' as const,
         properties: {
