@@ -91,6 +91,7 @@ export const orgHelperSettingsCache = new HotPathTtlCache<string, { enabled: boo
   name: 'org-helper-legacy-settings',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgPamFallbackCache = new HotPathTtlCache<string, PamSettings>({

@@ -21,6 +21,7 @@ vi.mock('../db', () => ({
 import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
 import {
   invalidateAgentOrgSettingsCaches,
+  invalidateOrgHelperSettingsCache,
 } from './agentOrgSettingsCache';
 
 let published: Array<[string, string | null]>;
@@ -76,5 +77,17 @@ describe('org-topology-flags is cluster-invalidated (W05 #8144, C2)', () => {
   it('a partner write publishes the whole cache (key null)', () => {
     invalidateAgentOrgSettingsCaches();
     expect(publishedFor('org-topology-flags')).toEqual([null]);
+  });
+});
+
+describe('org-helper-legacy-settings is cluster-invalidated (W05 #8144, C3)', () => {
+  it('PATCH /agents/org/:orgId/settings/helper publishes that org id', () => {
+    invalidateOrgHelperSettingsCache('org-1');
+    expect(publishedFor('org-helper-legacy-settings')).toEqual(['org-1']);
+  });
+
+  it('a partner settings write publishes the whole cache (key null)', () => {
+    invalidateAgentOrgSettingsCaches();
+    expect(publishedFor('org-helper-legacy-settings')).toEqual([null]);
   });
 });
