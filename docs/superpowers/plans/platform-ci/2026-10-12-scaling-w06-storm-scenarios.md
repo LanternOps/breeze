@@ -63,9 +63,9 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 |---|---|---|
 | `Recorder` (`sim/recorder.go`) | Per-route counters and one latency `Histogram` per route, **steady window only**; run totals for WS connects/reconnects/failures/disconnects | No time dimension: it cannot produce a curve. No live-socket gauge. No logical (after-retry) outcome. No heartbeat gap |
 | `Histogram` (`sim/histogram.go`) | 720 log buckets (~5.8 KB each), ±2 % quantiles | Fine per phase; too big per second (1,800 s × 5.8 KB per route). Use per-phase histograms, counts per second |
-| `wsSession.Run` (`sim/ws.go:62-91`) | Mirrors `client.go` `reconnectLoop`: immediate redial after an established drop; backoff 1 → 60 s ±30 % after a failed connect; reset after 30 s | Correct model of today's agent. Needs a live gauge hook and a way to close every socket at once |
+| `wsSession.Run` (`sim/ws.go:59-90`) | Mirrors `client.go` `reconnectLoop`: immediate redial after an established drop; backoff 1 → 60 s ±30 % after a failed connect; reset after 30 s | Correct model of today's agent. Needs a live gauge hook and a way to close every socket at once |
 | `recordingTransport` (`sim/transport.go`) | Records every attempt by route; ignores attempts cut off by the run's own context | Reuse for per-second attempt counts |
-| `Agent.send` (`sim/agent.go:111-131`) | One logical request through `httputil.Do` (3 retries, honours `Retry-After`) | The caller sees the final outcome; nothing records it |
+| `Agent.send` (`sim/agent.go:113-131`) | One logical request through `httputil.Do` (3 retries, honours `Retry-After`) | The caller sees the final outcome; nothing records it |
 | `Run` (`sim/runner.go`) | Ramp, enroll/reuse, agents, commander; report on exit, including Ctrl-C | Needs timeline sampler, pool sampler and scheduler goroutines |
 | `fakeapi_test.go` | `dropSockets()`, `setRejectWS()`, counts by route | Add `/metrics/scrape` with a settable body |
 | Report | `breeze.agentsim.report/v1`; "change it on any breaking change" (`report.go:12`) | Additive sections keep v1 |
@@ -80,7 +80,7 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 | Spec fault | Lever | Honest about |
 |---|---|---|
 | Kill the API | `docker kill --signal KILL ${STORM_API}`, hold 5 s, `docker start ${STORM_API}` | Unannounced: no shutdown phases, in-flight requests reset. If the compose restart policy restarts the container first, `docker start` is a no-op [I: Task 11 Step 2] |
-| Drop every socket | (a) `docker restart ${STORM_CADDY}` — server-side, every agent socket and HTTP keep-alive cut at the proxy. (b) internal `drop-sockets` — the simulator closes all its sockets at once | No API route mass-disconnects agents: the `disconnectAgent` callers (`routes/agents/enrollment.ts`, `mtls.ts`, `devices/moveOrg.ts`, `devices/core.ts`) are per-device. (a) also cuts in-flight HTTP; (b) exercises only the socket path. Both are shipped as scenarios |
+| Drop every socket | (a) `docker restart ${STORM_CADDY}` — server-side, every agent socket and HTTP keep-alive cut at the proxy. (b) internal `drop-sockets` — the simulator closes all its sockets at once | No API route mass-disconnects agents: the `disconnectAgent*` callers (`routes/agents/enrollment.ts` via `disconnectAgentCredentialGeneration`, `mtls.ts`, `devices/moveOrg.ts`, `devices/core.ts`) are per-device. (a) also cuts in-flight HTTP; (b) exercises only the socket path. Both are shipped as scenarios |
 | Slow event loop | `docker update --cpus ${STORM_CPUS} ${STORM_API}` for the hold, then `--cpus 0` (unlimited) | CPU starvation, not a blocked loop. There is no lag-injection hook in `apps/api/src` (grep for `STALL`/`LAG_INJECT`/`injectLag` finds only unrelated names), and adding one is outside this wave's files and a production-surface change |
 | (W1e lever) Stall | `docker pause ${STORM_API}`, hold 20 s, `docker unpause` | A frozen process: every timer fires late on resume, prologue deadlines expire, abandoned permits must be reclaimed. This is the "slow-loop chaos" W1e's acceptance names |
 | Roll a deploy | `docker stop --time 30 ${STORM_API}` (SIGTERM → `runShutdownPhases`), then `docker start` | **With one API instance this is planned downtime, not a rolling deploy.** It records today's baseline curve. A real roll needs W5a (`api-1..N`) and W5c (server-paced drain); W5c extends this scenario file per instance. No `drain` message exists yet (spec R6) |
@@ -153,7 +153,7 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 | D3 | Timeline resolution | 1 s buckets of counts; latency in **per-phase** histograms (`pre`/`storm`/`recovery` per event) plus a per-second `heartbeatSlow` count (attempts over 1 s — a descriptive bucket at the spec's G3 drain/failover figure, not a gate) | Per-second histograms would cost ~10 MB per route per 30 min. Counts give the curve's shape; per-phase histograms give exact p95/p99 |
 | D4 | What is "reconnected"? | Live sockets (`serve` running) sampled each timeline step, against the mean live count over the event's `pre` window (60 s before the start) | Connect events double-count flapping sockets; the gauge is what an operator sees as "agents online" |
 | D5 | Reconnect-curve numbers | `trough`; `t50S`/`t90S`/`t99S` = seconds from the event **end** until live ≥ 50/90/99 % of baseline (null if never); `peakConnectsPerSecond`; `connects`, `connectFailures`; `reconnectSpanS` = first to 99th-percentile reconnect after the end; `peakToMean` | t-from-end isolates recovery from hold time. Span and peak-to-mean are what W09 needs ("arrive spread over 120 s ±10 %") |
-| D6 | Error budget | Logical requests (after the agent's own retries) that ended in a transport error or status ≥ 400, per event window `[start, end+recovery]`, for heartbeats and for all routes; `crawl-config` 401/404 count as success (README: workspace module off) | Spec G5 is about requests that fail after retry. Attempt-level non-2xx are already in the route table |
+| D6 | Error budget | Logical requests (after the agent's own retries) that ended in a transport error or status ≥ 400, per event window `[start, end+recovery]`, for heartbeats and for all routes; `crawl-config` 401/404 count as success (README: workspace module off) | A proxy for spec G5 ("fails no in-flight HTTP request more than once"): a request that still fails after the agent's own retries is the failure an operator sees. Attempt-level non-2xx are already in the route table |
 | D7 | Pool recovery | Over ok samples in `[start, end+recovery]`: `minEffectiveRatio` (`effective/permits`), `maxWaiting`, `maxWedged`, `longestScrapeGapS`; `recoveryS` = seconds from end to the first ok sample with `effective == permits` and `wedged == 0` (null if never) | Matches W1e's "pool returns to max" and W08's "usable pool". A scrape gap (API down) is reported, never filled |
 | D8 | Pool data source | Simulator scrapes `${server}/metrics/scrape` (Bearer from `METRICS_SCRAPE_TOKEN`); `--scrape-url` overrides | One clock, one report. W08's `admission-watch.sh` keeps running alongside for `pg_stat_activity` columns |
 | D9 | Gates | Optional flags: `--gate-heartbeat-p95`, `--gate-pool-min-ratio`, `--gate-pool-recovery`, `--gate-max-gap`, `--gate-lost-pct`. Evaluated per event on the `storm` and `recovery` phases. `storm.pass` = all evaluated gates pass; exit code **3** when false | Thresholds belong to W04/W08/W09; W06 provides the mechanism. Exit 3 is distinct from config errors (2) and run errors (1) |
@@ -168,17 +168,17 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
   "stepSeconds": 1,
   "buckets": [ { "t": 0, "wsLive": 0, "wsConnects": 0, "wsConnectFailures": 0, "wsDisconnects": 0,
                  "heartbeats": 0, "heartbeatSlow": 0, "heartbeatsLost": 0, "requestsLost": 0,
-                 "attempts503": 0, "attempts429": 0, "transportErrors": 0, "maxHeartbeatGapS": 0 } ]
+                 "requests": 0, "attempts503": 0, "attempts429": 0, "transportErrors": 0, "maxHeartbeatGapS": 0 } ]
 },
 "pool": { "intervalSeconds": 5, "url": "<scrape url, no token>",
   "samples": [ { "t": 12.0, "ok": true, "permits": 30, "effective": 30, "inUse": 4, "waiting": 0,
                  "abandoned": 0, "wedged": 0, "lagMaxS": 0.004, "level": 0 } ] },
 "storm": {
   "scenario": "api-kill", "file": "load-tests/agentsim/storms/api-kill.json",
-  "steps": [ { "event": "api-kill", "phase": "start", "plannedS": 180, "startedS": 180.0, "finishedS": 180.3,
+  "steps": [ { "event": "api-kill", "phase": "start", "plannedS": 320, "startedS": 320.0, "finishedS": 320.3,
                "argv": ["docker","kill","--signal","KILL","<container>"], "ok": true, "output": "" } ],
   "events": [ {
-    "name": "api-kill", "startS": 180.0, "endS": 185.4, "recoveryS": 180,
+    "name": "api-kill", "startS": 320.0, "endS": 325.4, "recoveryWindowS": 300,
     "reconnect": { "baseline": 400, "trough": 0, "t50S": 21, "t90S": 24, "t99S": 31,
                    "peakConnectsPerSecond": 210, "connects": 412, "connectFailures": 1630,
                    "reconnectSpanS": 12, "peakToMean": 6.1 },
@@ -194,7 +194,7 @@ Labels: **[V]** read in code at `origin/main` `75965823a9`. **[I]** inferred, ve
 }
 ```
 
-Latency values are milliseconds (as in `LatencyReport` today); every `…S` field is seconds; `t…S`/`recoveryS` are `null` when the condition never held.
+Latency values are milliseconds (as in `LatencyReport` today); every `…S` field is seconds, and every time point (`plannedS`, `startedS`, `finishedS`, `startS`, `endS`, bucket `t`, sample `t`) is measured from **run start** (`Recorder.Start`), not from the steady-window open — the example's 320 s is a 3m `at` after a 140 s ramp + warmup; `t…S`/`recoveryS` are `null` when the condition never held.
 
 ---
 
@@ -537,7 +537,7 @@ Add a second test that an observation made between start and end lands in `Phase
 - [ ] **Step 3: Implement**
 
 - `Executor` interface `Exec(ctx, argv []string) (output string, err error)`; `osExecutor` uses `exec.CommandContext` with a 90 s timeout and `CombinedOutput`, trimming output to its last 400 bytes.
-- `Scheduler{Scenario; Exec Executor; Rec *Recorder; Internal map[string]func() int; PreWindow time.Duration}`. `Run(ctx, windowOpen)`: for each event, sleep until `open + At − PreWindow` and call `Rec.MarkPhase(event, "pre")`; sleep until `open + At`, mark `"storm"`, record `Start` time, run start actions in order; sleep `Hold`; run end actions; record `End`, mark `"recovery"`; sleep `Recovery`; `Rec.MarkPhase("", "")`. Each action produces a `StepRecord{Event, Phase, PlannedS, StartedS, FinishedS, Argv, Internal, OK, Output}` (seconds from `Rec.Start`). An action error is recorded and the schedule continues (a failed `docker start` must still be visible in the report, and the next event still runs). Ctx cancellation stops the loop; the partial records stay.
+- `Scheduler{Scenario; Exec Executor; Rec *Recorder; Internal map[string]func() int; PreWindow time.Duration}`. `Run(ctx, windowOpen)`: for each event, sleep until `open + At − PreWindow` and call `Rec.MarkPhase(event, "pre")`; sleep until `open + At`, mark `"storm"`, record `Start` time, run start actions in order; sleep `Hold`; run end actions; record `End`, mark `"recovery"`; sleep `Recovery`; `Rec.MarkPhase("", "")`. Each action produces a `StepRecord{Event, Phase, PlannedS, StartedS, FinishedS, Argv, Internal, OK, Output}` (all seconds from `Rec.Start`; `PlannedS` = window open + `At` (+ `Hold` for end actions), converted to run-relative). An action error is recorded and the schedule continues (a failed `docker start` must still be visible in the report, and the next event still runs). Ctx cancellation stops the loop; the partial records stay.
 - `Recorder`: `MarkPhase(event, phase string)` sets the current phase under `r.mu`; `phases map[string]*Histogram` keyed `event + "/" + phase`, created on first mark; `phaseTransport map[string]uint64` for heartbeat transport errors per phase. `ObserveHTTP` for `RouteHeartbeat` observes into the current phase (latency on success, transport error count on `err != nil`). `PhaseLatency(event, phase) LatencyReport`.
 
 - [ ] **Step 4: Run them to verify they pass**, then the whole package.
@@ -606,8 +606,10 @@ func TestRunStormShowsTroughAndRecovery(t *testing.T) {
 		t.Fatalf("5 sockets, all gone while upgrades are refused: %+v", rc)
 	}
 	// Refused connects back off 1 s ±30 % (the real agent's loop), so the
-	// fleet is back 0.2-2.8 s after the end action, never instantly.
-	if rc.T99S == nil || *rc.T99S < 0.2 || *rc.T99S > 2.8 {
+	// fleet is back within ~0.2-0.8 s of the end action (first retry 0.7-1.3 s
+	// after the failed redial at the drop). 100 ms buckets can round t99 down,
+	// so the bounds are loose; Trough == 0 above is what proves the dip.
+	if rc.T99S == nil || *rc.T99S > 2 {
 		t.Fatalf("t99 %v, want the backoff-shaped recovery", rc.T99S)
 	}
 }
@@ -701,7 +703,7 @@ In `fakeapi_test.go`: `setScrape(token, body string)`; `serve` answers `GET /met
 - [ ] **Step 2: Run them to verify they fail** — `go test -race -count=1 -run 'TestParseScrape|TestSampler' ./tools/agentsim/sim/`. Expected: FAIL, `undefined: parseScrape`.
 - [ ] **Step 3: Implement**
 
-`PoolSample{T float64; OK bool; Permits, Effective, InUse, Waiting, Abandoned, Wedged, Level float64; LagMaxS float64}` (JSON per "Report additions"). `parseScrape(text)`: line scanner; skip `#`; split the metric name (up to `{` or space) and the value (last field, `strconv.ParseFloat`); pick only the unlabelled series listed in "Metrics the pool sampler reads". `OK` requires all six pool/wedged series present, finite, and `permits > 0`. `PoolSampler.Run`: ticker at `Interval`; each tick one GET with a 3 s timeout; any error, non-200 or `!OK` parse appends `{T, OK:false}`. The token goes in the header only; the report records the URL without it.
+`PoolSample{T float64; OK bool; Permits, Effective, InUse, Waiting, Abandoned, Wedged, Level float64; LagMaxS float64}` (JSON per "Report additions"). `parseScrape(text)`: line scanner; skip `#`; split the metric name (up to `{` or space) and the value (last field, `strconv.ParseFloat`); pick only the unlabelled series listed in "Metrics the pool sampler reads". `OK` requires all six pool/wedged series present, finite, `permits > 0`, and every size series ≥ 0 (each reads `-1` with no request pool). `breeze_db_wedged_client_read_backends` is `-1` while the wedge detector has not observed (`metricsRuntime.ts:199-201`): parse it to `Wedged = -1` without failing `OK`, and treat `-1` as "unknown" — `poolBlock` ignores the wedged condition for such samples and counts them in a `wedgedUnknown` field, so recovery is never null just because the detector is idle. Add a `TestParseScrape` case for it. `PoolSampler.Run`: ticker at `Interval`; each tick one GET with a 3 s timeout; any error, non-200 or `!OK` parse appends `{T, OK:false}`. The token goes in the header only; the report records the URL without it.
 
 `Run` (runner): when `cfg.ScrapeToken != ""`, start a sampler (URL `cfg.ScrapeURL` or `cfg.ServerURL + "/metrics/scrape"`) in `wg`. Without a token, `pool` is omitted and each event's `pool` block says `"samples": 0` (Task 8 reports why).
 
@@ -959,7 +961,7 @@ func TestCommittedScenariosLoad(t *testing.T) {
 set -euo pipefail
 ```
 
-Behaviour: resolve `REPO`, `HERE`, `DESC=.breeze-stack.json`; source `.state/lab.env` the way `run.sh` does; resolve `PROJECT` and `svc()` exactly as the W08 README does; export `STORM_API="$(svc api)"`, `STORM_CADDY="$(svc caddy)"`, `STORM_CPUS="${STORM_CPUS:-0.5}"`, refusing to start when either container name is empty. Warn (not fail) when `METRICS_SCRAPE_TOKEN` is unset: the report's `pool` section will be empty. Start `admission-watch.sh watch` in the background **after** the token store exists (wait up to 10 min for `$AGENTSIM_STORE`), keep its PID, and `trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT` — never `pkill -f`. Run `rc=0; "$HERE/run.sh" --storm "$HERE/storms/$1.json" "${@:2}" --report "$REPORT" || rc=$?` with `REPORT="$HERE/reports/storm-$1-$(date -u +%Y%m%dT%H%M%SZ).json"` (a repeated flag takes the last value, so this overrides `run.sh`'s own `--report`). Then print `admission-watch.sh summarize <csv> <DB_POOL_MAX>` (pool max read with `docker exec "$STORM_API" printenv DB_POOL_MAX`, default 30). Exit: `rc` when the report is missing or `rc` is not 0/1; otherwise `jq -e '.storm.pass // true' "$REPORT" >/dev/null || exit 3`, else `exit "$rc"`. **Why the shell reads the report:** `run.sh` is `exec go run …`, and `go run` prints `exit status 3` and exits **1**, so the binary's exit 3 (kept for direct use of a built binary) never reaches the shell.
+Behaviour: resolve `REPO`, `HERE`, `DESC=.breeze-stack.json`; source `.state/lab.env` the way `run.sh` does; resolve `PROJECT` and `svc()` exactly as the W08 README does; export `STORM_API="$(svc api)"`, `STORM_CADDY="$(svc caddy)"`, `STORM_CPUS="${STORM_CPUS:-0.5}"`, refusing to start when either container name is empty. Warn (not fail) when `METRICS_SCRAPE_TOKEN` is unset: the report's `pool` section will be empty. Start `admission-watch.sh watch` in the background **after** the token store exists (wait up to 10 min for `$AGENTSIM_STORE`), keep its PID, and `trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT` — never `pkill -f`. Run `rc=0; "$HERE/run.sh" --storm "$HERE/storms/$1.json" "${@:2}" --report "$REPORT" || rc=$?` with `REPORT="$HERE/reports/storm-$1-$(date -u +%Y%m%dT%H%M%SZ).json"` (a repeated flag takes the last value, so this overrides `run.sh`'s own `--report`). Then print `admission-watch.sh summarize <csv> <DB_POOL_MAX>` (pool max read with `docker exec "$STORM_API" printenv DB_POOL_MAX`, default 30). Exit: `rc` when the report is missing or `rc` is not 0/1; otherwise `jq -e '.storm.pass != false' "$REPORT" >/dev/null || exit 3` (not `.storm.pass // true`: jq's `//` treats `false` as missing, so that form always passes), else `exit "$rc"`. **Why the shell reads the report:** `run.sh` is `exec go run …`, and `go run` prints `exit status 3` and exits **1**, so the binary's exit 3 (kept for direct use of a built binary) never reaches the shell.
 
 Check: `bash -n load-tests/agentsim/storm.sh && shellcheck load-tests/agentsim/storm.sh`.
 
@@ -970,7 +972,7 @@ Check: `bash -n load-tests/agentsim/storm.sh && shellcheck load-tests/agentsim/s
 
   1. **Verify the scrape path** [I]: after `pnpm wt-stack up` with `METRICS_SCRAPE_TOKEN` exported, `curl -fsS -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" "$(jq -r .baseUrl .breeze-stack.json)/metrics/scrape" | grep -c breeze_db_pool_admission_permits` prints 1. **If not** (Caddy route or IP allowlist): retry against `$(jq -r .apiUrl .breeze-stack.json)` with its `/api` suffix stripped; if that works, `storm.sh` passes `--scrape-url` with it. If neither works, stop and report: the pool section cannot be produced without an API change.
   2. **Verify the levers** [I]: `storm.sh --dry-run storm-suite` prints real container names. Then by hand, once: `docker kill --signal KILL "$STORM_API"; sleep 2; docker ps -a --filter name="$STORM_API" --format '{{.Status}}'`. If the restart policy already restarted it, note it in the README (the `docker start` end action is then a no-op and the hold is shorter than 5 s). `docker update --cpus 0` must be accepted on this Docker; if it is refused, change the `slow-loop` end action to the host's CPU count (`docker info --format '{{.NCPU}}'`, exported as `STORM_CPUS_RESTORE` by `storm.sh`) and update the scenario test's placeholder list.
-  3. **Smoke** each single-event file at 50 agents: `storm.sh <name> --agents 50 --ramp 10 --warmup 1m --duration 10m --start cold`. Each report has one event with non-null `reconnect`, `heartbeat`, `errors` and `pool` blocks.
+  3. **Smoke** each single-event file at 50 agents: `storm.sh <name> --agents 50 --ramp 10 --warmup 1m --duration 10m --start cold` (`--duration 14m` for `slow-loop`, whose 3m + 5m hold + 3m recovery does not fit a 10m run's 8m55s window; `Validate` refuses it). Each report has one event with non-null `reconnect`, `heartbeat`, `errors` and `pool` blocks.
   4. **Acceptance run**: `BREEZE_ADMISSION_MODE=enforce`, `storm.sh storm-suite --agents 400 --ramp 20 --warmup 2m --duration 32m --start cold --gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s --gate-max-gap 180s`. **Acceptance for W06** = the report has five events, each with a reconnect curve, p95/p99 per phase, a pool block with `okSamples > 0` and a `recoveryS`, and an error block — the spec's four items for each scenario. **The gate verdicts are recorded, not required**: a failed gate is filed as a finding against W04/W08 with the report excerpt.
   5. Paste each event's summary line and the gate table into the PR body. `pnpm wt-stack down`.
 
