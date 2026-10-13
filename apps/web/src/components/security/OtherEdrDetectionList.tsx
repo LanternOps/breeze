@@ -429,6 +429,7 @@ export default function OtherEdrDetectionList({
                     <td className="px-4 py-3">
                       {d.breezeDeviceId ? (
                         <a
+                          data-testid={`other-edr-device-link-${d.id}`}
                           href={`/devices/${d.breezeDeviceId}`}
                           className="font-medium text-primary hover:underline"
                         >

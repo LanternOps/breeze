@@ -197,8 +197,10 @@ export default function EdrProviderConnectionCard({
       body.credentials = Object.fromEntries(
         fields.filter((f) => (creds[f.name] ?? "").trim() !== "").map((f) => [f.name, creds[f.name]!.trim()]),
       );
-      if (provider?.baseUrlPolicy && baseUrl.trim()) body.baseUrl = baseUrl.trim();
     }
+    // Independent of enteredCreds: a URL-only edit (secret fields left blank)
+    // must still PATCH the new URL.
+    if (editingCredentials && provider?.baseUrlPolicy && baseUrl.trim()) body.baseUrl = baseUrl.trim();
     try {
       await patchEdrConnection(connection.id, body, {
         errorFallback: t("edrProviders.errorSave"),
@@ -420,6 +422,20 @@ export default function EdrProviderConnectionCard({
                 </label>
               )}
               <p className="text-xs text-muted-foreground sm:col-span-2">{t("edrProviders.blankKeepsSecret")}</p>
+              <div className="sm:col-span-2">
+                <button
+                  type="button"
+                  data-testid="edr-connection-cancel-credentials"
+                  onClick={() => {
+                    setCreds({});
+                    setBaseUrl("");
+                    setEditingCredentials(false);
+                  }}
+                  className="rounded-md border px-3 py-1.5 text-xs font-medium"
+                >
+                  {t("common:actions.cancel")}
+                </button>
+              </div>
             </div>
           )}
 

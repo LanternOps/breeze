@@ -245,6 +245,31 @@ describe("EdrProvidersIntegration", () => {
     expect(body).not.toHaveProperty("credentials");
   });
 
+  it("a URL-only edit PATCHes { baseUrl } with no credentials", async () => {
+    connections = [conn({ provider: "fakevendor" })];
+    render(<EdrProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("edr-connection-edit-credentials"));
+    fireEvent.change(screen.getByTestId("edr-connection-base-url"), { target: { value: " https://new.example.invalid " } });
+    fireEvent.click(screen.getByTestId("edr-connection-save"));
+    await waitFor(() => expect(calls("PATCH")).toHaveLength(1));
+    const body = JSON.parse((calls("PATCH")[0]![1] as RequestInit).body as string);
+    expect(body.baseUrl).toBe("https://new.example.invalid");
+    expect(body).not.toHaveProperty("credentials");
+  });
+
+  it("Cancel in the credential editor discards typed secrets and the URL", async () => {
+    connections = [conn({ provider: "fakevendor" })];
+    render(<EdrProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("edr-connection-edit-credentials"));
+    fireEvent.change(screen.getByTestId("edr-connection-cred-apiKey"), { target: { value: "s3cret" } });
+    fireEvent.change(screen.getByTestId("edr-connection-base-url"), { target: { value: "https://x.example.invalid" } });
+    fireEvent.click(screen.getByTestId("edr-connection-cancel-credentials"));
+    expect(screen.queryByTestId("edr-connection-cred-apiKey")).toBeNull();
+    fireEvent.click(screen.getByTestId("edr-connection-edit-credentials"));
+    expect((screen.getByTestId("edr-connection-cred-apiKey") as HTMLInputElement).value).toBe("");
+    expect((screen.getByTestId("edr-connection-base-url") as HTMLInputElement).value).toBe("");
+  });
+
   it("shows the reauth hint in the test modal when the test result carries reauth", async () => {
     overrides = (url, method) =>
       url === "/edr/connections/c1/test" && method === "POST"

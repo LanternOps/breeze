@@ -272,7 +272,7 @@ export default function EdrProvidersIntegration() {
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t("common:actions.save")}
             </button>
-            <button type="button" data-testid="edr-add-cancel" onClick={() => setAdding(false)} className="rounded-md border px-3 py-1.5 text-sm font-medium">
+            <button type="button" data-testid="edr-add-cancel" onClick={() => { setAdding(false); setForm(EMPTY_FORM); }} className="rounded-md border px-3 py-1.5 text-sm font-medium">
               {t("common:actions.cancel")}
             </button>
           </div>
