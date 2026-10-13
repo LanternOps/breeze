@@ -134,7 +134,7 @@ invoiceCrudRoutes.post('/:id/refresh-time-lines', scopes, writePerm, zValidator(
       action: 'invoice.time_lines.refreshed',
       resourceType: 'invoice',
       resourceId: result.invoiceId,
-      details: result.summary,
+      details: { ...result.summary },
     });
     return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }
