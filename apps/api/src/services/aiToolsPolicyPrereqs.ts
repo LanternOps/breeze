@@ -116,9 +116,12 @@ function resolveS3ProviderConfig(
   raw: Record<string, unknown>
 ): { value: Record<string, unknown> } | { error: string } {
   const details: Record<string, unknown> = { ...raw };
-  const { error, region, endpoint } = validateS3Details(details);
+  const { error, region, endpoint, prefix } = validateS3Details(details);
   if (error) return { error };
   if (region) details.region = region;
+  // #7081: persist the normalized key prefix; none is an absent key.
+  if (prefix) details.prefix = prefix;
+  else delete details.prefix;
   if (endpoint) {
     details.endpoint = endpoint;
   } else {

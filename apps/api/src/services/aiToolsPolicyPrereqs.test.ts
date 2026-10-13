@@ -649,6 +649,69 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
 
+  // #7081: the destination key prefix goes through the same validation and
+  // normalization as the REST routes.
+  describe('destination key prefix (#7081)', () => {
+    const s3Config = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
+    const stored = {
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    };
+
+    it('rejects create with a reserved prefix and does NOT write', async () => {
+      const output = await getBackupConfigsTool().handler(
+        { action: 'create', name: 'S3 backup', type: 'file', provider: 's3', providerConfig: { ...s3Config, prefix: 'snapshots' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).error).toBe('Invalid key prefix: must not contain a "snapshots" segment');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalized prefix on create', async () => {
+      mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'S3 backup' });
+      const output = await getBackupConfigsTool().handler(
+        { action: 'create', name: 'S3 backup', type: 'file', provider: 's3', providerConfig: { ...s3Config, prefix: '/acme/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(insertMock.mock.results[0]!.value.values.mock.calls[0][0].providerConfig.prefix).toBe('acme');
+    });
+
+    it('rejects update with a reserved prefix and does NOT write', async () => {
+      mockSelectReturns(stored);
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: 'snapshots' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).error).toMatch(/Invalid key prefix/);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalized prefix on update, and drops an empty one', async () => {
+      mockSelectReturns(stored);
+      mockUpdate();
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: '/acme/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig.prefix).toBe('acme');
+
+      vi.clearAllMocks();
+      mockSelectReturns(stored);
+      mockUpdate();
+      const second = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: '/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(second).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig).not.toHaveProperty('prefix');
+    });
+  });
+
   // Site-ceiling gate contract §3/finding 2: this AI-tool write is a second
   // (non-route) write path to backup_configs and needs its own bump.
   it('bumps approvalGeneration on update (site-ceiling gate contract §3)', async () => {

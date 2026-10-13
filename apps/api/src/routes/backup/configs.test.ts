@@ -1132,6 +1132,114 @@ describe('backup config routes', () => {
     expect(body.status).toBe('success');
   });
 
+  describe('destination key prefix (#7081)', () => {
+    const s3Details = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
+
+    it('rejects S3 config creation with an invalid prefix', async () => {
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Prefixed', provider: 's3', details: { ...s3Details, prefix: 'a b' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('Invalid key prefix');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalized prefix on create', async () => {
+      insertMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Prefixed', provider: 's3', details: { ...s3Details, prefix: '/acme/' } }),
+      });
+
+      expect(res.status).toBe(201);
+      const persisted = insertMock.mock.results[0]?.value?.values.mock.calls[0]?.[0]?.providerConfig;
+      expect(persisted.prefix).toBe('acme');
+    });
+
+    it('drops an empty prefix on create', async () => {
+      insertMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Prefixed', provider: 's3', details: { ...s3Details, prefix: ' / ' } }),
+      });
+
+      expect(res.status).toBe(201);
+      const persisted = insertMock.mock.results[0]?.value?.values.mock.calls[0]?.[0]?.providerConfig;
+      expect('prefix' in persisted).toBe(false);
+    });
+
+    it('rejects S3 config updates with an invalid prefix', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ details: { ...s3Details, prefix: 'a b' } }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid key prefix');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('test-connection probes under the normalized stored prefix', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: { ...s3Details, prefix: '/acme/' } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      s3SendMock.mockResolvedValue({});
+      checkBackupProviderCapabilitiesMock.mockResolvedValue({ objectLock: { supported: true, error: null } });
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe('success');
+      const putKey = (s3SendMock.mock.calls[0]?.[0] as { input: { Key: string } }).input.Key;
+      expect(putKey).toMatch(/^acme\/\.breeze-probe-/);
+    });
+
+    it('test-connection fails, without touching storage, for a stored prefix that is invalid', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: { ...s3Details, prefix: 'a//b' } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      s3SendMock.mockResolvedValue({});
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.status).toBe('failed');
+      expect(JSON.stringify(body)).toContain('Invalid key prefix');
+      expect(s3SendMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalized prefix on update', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ details: { ...s3Details, prefix: '/acme/' } }),
+      });
+
+      expect(res.status).toBe(200);
+      const persisted = updateMock.mock.results[0]?.value?.set.mock.calls[0]?.[0]?.providerConfig;
+      expect(persisted.prefix).toBe('acme');
+    });
+  });
+
   it('rejects S3 config updates that drop the region without a derivable endpoint', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
 

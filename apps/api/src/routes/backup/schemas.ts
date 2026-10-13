@@ -4,6 +4,8 @@ import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
   backupScheduleSchema as sharedBackupScheduleSchema,
+  backupDestinationPrefixReasonMessage,
+  normalizeBackupDestinationPrefix,
 } from '@breeze/shared/validators';
 import { drRestoreConfigSchema } from '../../services/drBareMetalRebuildStep';
 // Pool-free leaf (imports only zod) — this module must stay pool-free at load.
@@ -28,16 +30,32 @@ const queryBoolean = z.preprocess((value) => {
  * Backblaze B2 reject requests signed with a mismatched region, so a
  * blanket default is never safe. Returns the resolved region so callers
  * can persist it.
+ *
+ * Also validates and normalizes the destination key prefix
+ * (`normalizeBackupDestinationPrefix`, #7081). Callers persist the returned
+ * `prefix` (and drop the key when it is null) so a stored prefix is always in
+ * normalized form.
  */
 export function validateS3Details(details: Record<string, unknown>): {
   error: string | null;
   region: string | null;
   endpoint: string | undefined;
+  prefix: string | null;
 } {
   const bucket = typeof details.bucket === 'string' ? details.bucket.trim() : '';
   if (!bucket) {
-    return { error: 'S3 bucket is required', region: null, endpoint: undefined };
+    return { error: 'S3 bucket is required', region: null, endpoint: undefined, prefix: null };
   }
+  const normalizedPrefix = normalizeBackupDestinationPrefix(details.prefix);
+  if (!normalizedPrefix.ok) {
+    return {
+      error: `Invalid key prefix: ${backupDestinationPrefixReasonMessage(normalizedPrefix.reason)}`,
+      region: null,
+      endpoint: undefined,
+      prefix: null,
+    };
+  }
+  const prefix = normalizedPrefix.prefix;
   const explicitRegion = typeof details.region === 'string' ? details.region.trim() : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
 
@@ -62,6 +80,7 @@ export function validateS3Details(details: Record<string, unknown>): {
         error: error instanceof Error ? error.message : 'S3 endpoint is not a valid URL',
         region: null,
         endpoint: undefined,
+        prefix,
       };
     }
   }
@@ -72,9 +91,10 @@ export function validateS3Details(details: Record<string, unknown>): {
       error: 'S3 region is required (set it explicitly or use an endpoint that includes it, e.g. s3.us-west-004.backblazeb2.com)',
       region: null,
       endpoint: normalizedEndpoint,
+      prefix,
     };
   }
-  return { error: null, region, endpoint: normalizedEndpoint };
+  return { error: null, region, endpoint: normalizedEndpoint, prefix };
 }
 
 /**
