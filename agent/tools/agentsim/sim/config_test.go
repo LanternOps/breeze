@@ -98,7 +98,7 @@ func TestValidateStormAndScrapeFields(t *testing.T) {
 		want   string
 	}{
 		"legacy fraction":  {func(c *Config) { c.LegacyRetryFraction = 1.5 }, "--legacy-retry-fraction"},
-		"scrape interval":  {func(c *Config) { c.ScrapeToken, c.ScrapeInterval = "tok", 100 * ms }, "--scrape-interval"},
+		"scrape interval":  {func(c *Config) { c.ScrapeToken, c.ScrapeInterval = "tok", 100*ms }, "--scrape-interval"},
 		"timeline step":    {func(c *Config) { c.Timeline, c.TimelineStep = true, 0 }, "timeline step"},
 		"negative gate":    {func(c *Config) { c.Gates.LostPct = -1 }, "--gate-lost-pct"},
 		"scrape url shape": {func(c *Config) { c.ScrapeToken, c.ScrapeURL = "tok", "ftp://x" }, "--scrape-url"},
