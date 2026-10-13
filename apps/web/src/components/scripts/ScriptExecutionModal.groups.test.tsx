@@ -126,6 +126,54 @@ describe('ScriptExecutionModal device-group targets (#8599)', () => {
     expect(onExecute).not.toHaveBeenCalled();
   });
 
+  it('does not block overlapping groups whose raw sum exceeds 500 but whose unique count does not', async () => {
+    const a = Array.from({ length: 300 }, (_, i) => member(`x-${i}`));
+    const b = Array.from({ length: 300 }, (_, i) => member(`x-${i + 100}`)); // 200 overlap -> 400 unique
+    installFetch({ 'g-1': a, 'g-2': b });
+    renderModal();
+    fireEvent.click(await chooseGroups());
+    fireEvent.click(screen.getByTestId('group-checkbox-g-2'));
+    await waitFor(() => expect(screen.getByTestId('group-summary').textContent).toContain('400'));
+    expect(screen.queryByTestId('group-over-cap')).toBeNull();
+    expect((screen.getByText('Execute').closest('button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('allows exactly 500 unique devices', async () => {
+    installFetch({ 'g-1': Array.from({ length: 500 }, (_, i) => member(`e-${i}`)) });
+    renderModal();
+    fireEvent.click(await chooseGroups());
+    await waitFor(() => expect(screen.getByTestId('group-summary').textContent).toContain('500'));
+    expect(screen.queryByTestId('group-over-cap')).toBeNull();
+  });
+
+  it('closes the confirm step when the mode or the group selection changes', async () => {
+    renderModal();
+    fireEvent.click(await chooseGroups());
+    await waitFor(() => expect(screen.getByTestId('group-summary')).toBeTruthy());
+    fireEvent.click(screen.getByText('Execute'));
+    expect(await screen.findByTestId('group-confirm-text')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('group-checkbox-g-2'));
+    expect(screen.queryByTestId('group-confirm-text')).toBeNull();
+  });
+
+  it('keeps the modal open when a fully admitted group run carries server warnings', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const onClose = vi.fn();
+      const onExecute = vi.fn().mockResolvedValue(admitted(['Device group g-9 was excluded']));
+      render(<ScriptExecutionModal script={script} devices={devices} isOpen onClose={onClose} onExecute={onExecute} />);
+      fireEvent.click(await chooseGroups());
+      await waitFor(() => expect(screen.getByTestId('group-summary')).toBeTruthy());
+      fireEvent.click(screen.getByText('Execute'));
+      fireEvent.click(await screen.findByText('Confirm Execute'));
+      await screen.findByTestId('script-execute-warnings');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders a server TOO_MANY_TARGETS rejection as a readable sentence with the count', async () => {
     const onExecute = vi.fn().mockRejectedValue(
       new ActionError('too many', 400, 'TOO_MANY_TARGETS', {

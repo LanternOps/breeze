@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionError } from './runAction';
 import { describeScriptExecuteError, postScriptExecute } from './scriptExecute';
 import { fetchWithAuth } from '../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../components/shared/Toast';
 
 vi.mock('../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -50,7 +51,30 @@ describe('postScriptExecute', () => {
   });
 });
 
+describe('postScriptExecute auth and trust handling', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('redirects to login on a 401 without a toast, and describes it with the fallback', async () => {
+    fetchMock.mockResolvedValue(json(401, { error: 'Unauthorized' }));
+    const err = await postScriptExecute('s-1', ['d-1'], {}, 'system', 'fb').catch((e) => e);
+    expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(describeScriptExecuteError(err, t, new Map(), 'fallback-text')).toBe('fallback-text');
+  });
+
+  it('does not suppress the toast for a 403 so trust denials still surface', async () => {
+    fetchMock.mockResolvedValue(json(403, { error: 'Forbidden' }));
+    await postScriptExecute('s-1', ['d-1'], {}, 'system', 'fb').catch(() => undefined);
+    expect(showToast).toHaveBeenCalled();
+  });
+});
+
 describe('describeScriptExecuteError', () => {
+  it('does not invent a count when TOO_MANY_TARGETS carries none', () => {
+    const msg = describeScriptExecuteError(new ActionError('server says 612 devices', 400, 'TOO_MANY_TARGETS', {}), t, new Map(), 'fb');
+    expect(msg).toBe('server says 612 devices');
+  });
+
   const names = new Map([['g-1', 'Servers'], ['g-2', 'Laptops']]);
 
   it('names the resolved count and cap for TOO_MANY_TARGETS, with per-group counts', () => {

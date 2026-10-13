@@ -49,7 +49,8 @@ export async function postScriptExecute(
       body: JSON.stringify(body),
     }),
     errorFallback,
-    suppressErrorToast: () => true,
+    // Not 403: a trust-probation denial must still reach TrustProbationBanner.
+    suppressErrorToast: (status) => status !== 403,
     onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
   });
 }
@@ -74,6 +75,9 @@ export function describeScriptExecuteError(
   if (!(err instanceof ActionError)) {
     return err instanceof Error ? err.message : fallback;
   }
+  // The auth redirect is the feedback for an expired session; don't surface the
+  // raw English 'Unauthorized' token in the form on top of it.
+  if (err.status === 401) return fallback;
   const body = asRecord(err.body);
   const warnings = Array.isArray(body.warnings)
     ? body.warnings.filter((w): w is string => typeof w === 'string')
@@ -81,12 +85,14 @@ export function describeScriptExecuteError(
 
   if (err.code === 'TOO_MANY_TARGETS') {
     const count = typeof body.count === 'number' ? body.count : undefined;
+    // Never state a count the server did not send; its own message names it.
+    if (count === undefined) return err.message || fallback;
     const perGroup = (Array.isArray(body.perGroupCounts) ? body.perGroupCounts : [])
       .map(asRecord)
       .filter((row): row is PerGroupCount => typeof row.id === 'string' && typeof row.memberCount === 'number')
       .map((row) => `${groupNames.get(row.id) ?? row.id} (${row.memberCount})`);
     const head = t('scripts:scriptExecutionModal.groups.errors.tooManyTargets', {
-      count: count ?? MAX_SCRIPT_RUN_TARGETS + 1,
+      count,
       max: MAX_SCRIPT_RUN_TARGETS,
     });
     return perGroup.length > 0

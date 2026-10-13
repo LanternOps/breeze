@@ -121,6 +121,43 @@ describe('GroupTargetPicker', () => {
     expect(screen.getByTestId('group-summary-error')).toBeTruthy();
   });
 
+  it('retries a failed member count and recovers to a ready summary', async () => {
+    const onSummary = vi.fn();
+    let failMembers = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/device-groups?') || url === '/device-groups') return respond({ data: groups });
+      const match = url.match(/^\/device-groups\/([^/]+)\/devices/);
+      if (match && failMembers) return respond({ error: 'boom' }, 500);
+      const rows = members[match![1]!] ?? [];
+      return respond({ data: rows, total: rows.length });
+    });
+    render(<Harness onSummary={onSummary} />);
+    fireEvent.click(await screen.findByTestId('group-checkbox-g-static'));
+    const retry = await screen.findByTestId('group-summary-error');
+    failMembers = false;
+    fireEvent.click(retry.querySelector('button')!);
+    await waitFor(() => {
+      const last = onSummary.mock.calls.at(-1)![0] as GroupSelectionSummary;
+      expect(last.status).toBe('ready');
+      expect(last.uniqueDevices).toBe(2);
+    });
+    expect(screen.queryByTestId('group-summary-error')).toBeNull();
+  });
+
+  it('keeps an already-selected group toggleable even if it is refused', async () => {
+    function Preselected() {
+      const [selected, setSelected] = useState<string[]>(['g-refused']);
+      return (
+        <GroupTargetPicker scriptOsTypes={['windows']} selectedIds={selected} onSelectedIdsChange={setSelected} />
+      );
+    }
+    render(<Preselected />);
+    const box = (await screen.findByTestId('group-checkbox-g-refused')) as HTMLInputElement;
+    expect(box.disabled).toBe(false);
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+  });
+
   it('shows an error with retry when the group list fails to load', async () => {
     installFetch({ listStatus: 500 });
     render(<Harness />);

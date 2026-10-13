@@ -67,6 +67,8 @@ export default function GroupTargetPicker({
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [listState, setListState] = useState<ListState>('loading');
   const [reloadKey, setReloadKey] = useState(0);
+  // Bumped by Retry so the membership effect re-runs for groups that failed.
+  const [membersReloadKey, setMembersReloadKey] = useState(0);
   const [search, setSearch] = useState('');
   // groupId -> members, or 'error' when that group's member list failed.
   const [members, setMembers] = useState<Record<string, MemberRow[] | 'error'>>({});
@@ -112,13 +114,14 @@ export default function GroupTargetPicker({
           setMembers((prev) => ({ ...prev, [id]: 'error' }));
         });
     }
-  }, [selectedIds]);
+  }, [selectedIds, membersReloadKey]);
 
   const retryMembers = useCallback(() => {
     for (const id of selectedIds) {
       if (members[id] === 'error') requested.current.delete(id);
     }
     setMembers((prev) => Object.fromEntries(Object.entries(prev).filter(([, v]) => v !== 'error')));
+    setMembersReloadKey((k) => k + 1);
   }, [members, selectedIds]);
 
   const groupNames = useMemo(() => new Map(groups.map((g) => [g.id, g.name])), [groups]);

@@ -350,7 +350,10 @@ export default function ScriptExecutionModal({
       if (result.targets.some(target => target.delivery === 'queued_offline')) {
         showToast({ type: 'success', message: t('scriptExecutionModal.toasts.runsWhenOnline') });
       }
-      if (presentationState === 'admitted') {
+      // Keep the modal open when the server attached notes (a refused group,
+      // devices dropped for site access): a fully admitted run that silently
+      // excluded something must not look like a clean one.
+      if (presentationState === 'admitted' && !(result.warnings && result.warnings.length > 0)) {
         cancelAutoClose();
         autoCloseTimer.current = setTimeout(() => {
           autoCloseTimer.current = null;
