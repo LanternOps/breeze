@@ -674,6 +674,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/operations.ts': { exempt: 'internal_plumbing' },
   // Topology monitoring policy CRUD has no registered AI tool.
   'topology/policies.ts': { gap: '#6778' },
+  'topology/presence.ts': { exempt: 'internal_plumbing', note: 'Site-gated presentation read of observed device location (site location W2, #7886). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP topology evidence unchanged, and aiPresenceIsolation.test.ts pins that no AI module reads presence.' },
   'topology/settings.ts': { gap: '#6778' },
   // Topology probe target CRUD has no registered AI tool.
   'topology/targets.ts': { gap: '#6778' },
