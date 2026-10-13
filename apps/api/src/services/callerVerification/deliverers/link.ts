@@ -12,10 +12,12 @@
  *  - provider refused / no transport / destination changed / sealed material
  *    unusable → `applyDecision({kind:'undeliverable'})`, whose CAS writes the
  *    `undeliverable` audit;
- *  - a failing DB write propagates so the publisher retries the row.
+ *  - `delivery_published_at` is stamped right after acceptance and BEFORE the
+ *    audit write; an audit failure is logged + reported, never thrown, so a
+ *    send is never repeated because of it.
  *
- * At-least-once: a crash between provider acceptance and the publisher's mark
- * re-sends the SAME sealed token; a new token is never minted on retry.
+ * At-least-once only across a crash between provider acceptance and the mark:
+ * that re-sends the SAME sealed token; a new token is never minted on retry.
  * Neither the token nor the URL is ever logged or audited.
  */
 import { eq } from 'drizzle-orm';
@@ -112,9 +114,30 @@ export async function deliverLink(verificationId: string): Promise<void> {
       await applyDecision({ verificationId: row.id, decision: { kind: 'undeliverable', reason } });
       return;
     }
-    await withSystemDbAccessContext(async () => {
-      const [current] = await db.select().from(v).where(eq(v.id, row.id)).limit(1);
-      if (current) await recordEffect(current, 'link_sent');
-    }, 'callerVerification.link.audit');
+    // The send happened: stamp the "sent" marker BEFORE the audit write so a
+    // later failure can never cause the same message to be sent again. A
+    // failed stamp is reported, not thrown — the publisher stamps the row
+    // itself right after this returns.
+    try {
+      await withSystemDbAccessContext(
+        () => db.update(v).set({ deliveryPublishedAt: new Date() }).where(eq(v.id, row.id)),
+        'callerVerification.link.mark',
+      );
+    } catch (err) {
+      console.error('[callerVerification] link sent but delivery mark failed', { verificationId: row.id, error: errorName(err) });
+      captureException(err instanceof Error ? err : new Error(errorName(err)), undefined, { verificationId: row.id, code: 'link_mark_failed' });
+    }
+    // Audit is best-effort after the fact: the delivery already happened, so a
+    // failure here is logged + tagged and never thrown (a throw would make the
+    // publisher re-send).
+    try {
+      await withSystemDbAccessContext(async () => {
+        const [current] = await db.select().from(v).where(eq(v.id, row.id)).limit(1);
+        if (current) await recordEffect(current, 'link_sent');
+      }, 'callerVerification.link.audit');
+    } catch (err) {
+      console.error('[callerVerification] link sent but link_sent audit failed', { verificationId: row.id, error: errorName(err) });
+      captureException(err instanceof Error ? err : new Error(errorName(err)), undefined, { verificationId: row.id, code: 'link_sent_audit_failed' });
+    }
   });
 }

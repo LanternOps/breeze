@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.twilio = true; m.email = true; m.contexts = [];
   state = makeDbMock(); m.db = state.db;
-  state.results.push([{ id, orgId: 'org', status: 'pending' }]);
+  state.results.push([], [{ id, orgId: 'org', status: 'pending' }]); // sent-mark update, then audit select
   vi.stubEnv('PUBLIC_WEB_URL', 'https://app.example.com');
   m.load.mockResolvedValue(smsRow);
   m.sms.mockResolvedValue({ success: true });
@@ -62,9 +62,9 @@ it('sends the link by Messaging SMS, audits the send, and never approves', async
   expect(body).toContain('number you already have');
   expect(m.decide).not.toHaveBeenCalled();
   expect(m.effect).toHaveBeenCalledWith(expect.objectContaining({ id }), 'link_sent');
-  // The DB read and the audit write each ran in a short system scope, with the
+  // The DB read, the sent-mark and the audit write each ran in a short system scope, with the
   // provider call between them.
-  expect(m.contexts.filter((c) => c === 'system')).toHaveLength(2);
+  expect(m.contexts.filter((c) => c === 'system')).toHaveLength(3);
 });
 
 it('sends email on the partner support stream through the shared template', async () => {
@@ -146,4 +146,16 @@ it('never logs the token or the link', async () => {
   await deliverLink(id);
   for (const spy of spies) expect(JSON.stringify(spy.mock.calls)).not.toContain(token);
   spies.forEach((s) => s.mockRestore());
+});
+
+it('a failing link_sent audit write never repeats the send, still marks the row published, and is reported', async () => {
+  m.effect.mockRejectedValueOnce(new Error('audit db down'));
+  await expect(deliverLink(id)).resolves.toBeUndefined();
+  expect(m.sms).toHaveBeenCalledTimes(1);
+  const names = state.calls.map((c) => c.name);
+  const setCall = state.calls.find((c) => c.name === 'set');
+  expect(setCall?.args[0]).toEqual({ deliveryPublishedAt: expect.any(Date) });
+  // mark happens before the audit select
+  expect(names.indexOf('set')).toBeLessThan(names.indexOf('select'));
+  expect(m.capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ verificationId: id, code: 'link_sent_audit_failed' }));
 });
