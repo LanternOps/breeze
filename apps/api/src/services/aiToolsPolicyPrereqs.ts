@@ -31,6 +31,7 @@ import {
   AI_AUTO_INSTALL_REFUSAL_MESSAGE,
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
+import { managedSoftwarePolicyRefusal } from './securityAgents/managedSoftwarePolicyGuard';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
 import {
@@ -556,6 +557,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
         }
+
+        // #6960: a generated (security_agents) policy is owned by its config policy.
+        const managed = await managedSoftwarePolicyRefusal(existing);
+        if (managed) return JSON.stringify(managed);
 
         // Contract-A D4: AI callers may never arm software installation.
         if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
