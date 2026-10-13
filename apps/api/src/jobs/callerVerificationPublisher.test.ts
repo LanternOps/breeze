@@ -102,6 +102,7 @@ it('refuses to mark a rejection notified when no email transport exists', async 
 it('leaves the rejection unmarked when one email send fails (at-least-once)', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   m.sendEmail.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('smtp'));
-  await expect(publishCallerVerificationEffects()).rejects.toThrow('smtp');
+  await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'smtp' }), undefined, { verificationId: 'v1' });
   expect(m.updates).toEqual([]);
 });
