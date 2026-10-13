@@ -757,6 +757,41 @@ func TestDownloadFile_WritesThePackage(t *testing.T) {
 	}
 }
 
+// Some CDNs (Cloudflare bot rules in front of vendor download hosts) answer
+// Go's default "Go-http-client" User-Agent with 403 while serving the same
+// URL to any other client. Every hop, redirects included, must carry the
+// agent's own User-Agent.
+func TestDownloadFile_SendsAgentUserAgent(t *testing.T) {
+	var seen []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.UserAgent())
+		http.Redirect(w, r, "/pkg.exe", http.StatusFound)
+	})
+	mux.HandleFunc("/pkg.exe", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.UserAgent())
+		if strings.HasPrefix(r.UserAgent(), "Go-http-client") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte("installer-bytes"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	if err := downloadFile(server.Client(), server.URL+"/start", swTempFile(t)); err != nil {
+		t.Fatalf("downloadFile: %v (user agents seen: %q)", err, seen)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 requests (redirect + download), got %d: %q", len(seen), seen)
+	}
+	for i, ua := range seen {
+		if ua != softwareDownloadUserAgent {
+			t.Fatalf("request %d sent User-Agent %q, want %q", i, ua, softwareDownloadUserAgent)
+		}
+	}
+}
+
 // safeDownloadError is what keeps a *url.Error's full-URL text out of every
 // reported install failure.
 func TestSafeDownloadError(t *testing.T) {
