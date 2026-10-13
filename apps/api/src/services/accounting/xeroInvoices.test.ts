@@ -151,7 +151,7 @@ describe('xeroLineAmounts (refinement 3)', () => {
     });
 
     it('emoji note: no split surrogate pair, suffixes whole, within 4000 UTF-16 units', () => {
-      const out = xeroLineAmounts(line({ description: `${'😀'.repeat(3000)}${WB}`, descriptionSuffix: WB, serviceDate: '2026-09-16' })).Description;
+      const out = xeroLineAmounts(line({ description: `a${'😀'.repeat(3000)}${WB}`, descriptionSuffix: WB, serviceDate: '2026-09-16' })).Description;
       expect(out.length).toBeLessThanOrEqual(4000);
       expect(out.length).toBeGreaterThanOrEqual(3999);
       expect(LONE_SURROGATE.test(out)).toBe(false);
