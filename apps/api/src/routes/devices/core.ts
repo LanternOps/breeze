@@ -2056,7 +2056,7 @@ async function readSuggestionEvidence(deviceId: string, fromSiteId: string, toSi
     WHERE p.device_id = ${deviceId}::uuid`);
   const row = (rows as unknown as typeof rows | undefined)?.[0];
   if (!row) return { state: 'not_eligible', evidence: null };
-  const eligible = row.suggested_site_id === toSiteId && row.version_ok === true && row.fresh && row.assigned_site_id === fromSiteId && !row.confirmed;
+  const eligible = row.suggested_site_id === toSiteId.toLowerCase() && row.version_ok === true && row.fresh && row.assigned_site_id === fromSiteId && !row.confirmed;
   return {
     state: eligible ? 'eligible' : 'not_eligible',
     evidence: {

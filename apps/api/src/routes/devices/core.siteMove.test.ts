@@ -242,6 +242,14 @@ describe('PATCH /devices/:id site-move guard', () => {
       expect(readOrder).toBeLessThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
     });
 
+    it('matches the suggested site case-insensitively (z.guid accepts uppercase)', async () => {
+      moveSelects();
+      vi.mocked(db.execute).mockResolvedValueOnce([presenceRow()] as never);
+      const res = await patch({ siteId: SITE_B.toUpperCase(), expectedSiteId: SITE_A, siteMoveTrigger: 'topology_suggestion' });
+      expect(res.status).toBe(200);
+      expect(siteMoveDetails()).toMatchObject({ suggestionState: 'eligible' });
+    });
+
     it('rejects client-supplied evidence with 400 (never accepted, never recorded)', async () => {
       moveSelects();
       const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A, siteMoveTrigger: 'topology_suggestion', evidence: { forged: true } });

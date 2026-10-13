@@ -97,7 +97,7 @@ If a site declares no networks, its map is unchanged, with a hint to declare the
 ### What the map shows
 
 - **Networks that are not this site's.** When a site declares its networks, cards for other networks move off the map into **Devices not on this site's networks**, below it. That list has up to three sections: **Observed at other sites** (devices on another site's declared network), **Other / unidentified networks** (networks no site has declared or confirmed, such as a home network) and **Location unknown** (no recent report, or Breeze can't currently tell). Turn on **Show other networks on the map** to draw them on the map again.
-- **Visitors.** A device assigned to another site that is on one of this site's networks appears in that network's card as a dashed tile marked **Visiting**, with "Assigned to <site>". The card says "+N visiting". Visitors are for display only: you can't pin them, run diagnostics on them or expand them.
+- **Visitors.** A device assigned to another site that is on one of this site's networks appears in that network's card as a dashed tile marked **Visiting**, with "Assigned to `<site>`". The card says "+N visiting". Visitors are for display only: you can't pin them, run diagnostics on them or expand them.
 - **Nothing about sites you can't see.** If you can't access the site a device is observed at, it appears as on an unidentified network, exactly as if no site had declared that network. If you can't access a visitor's assigned site, the visitor isn't shown or counted. The same applies to site-limited API keys.
 
 Locations refresh about every minute while the map is open. Breeze re-evaluates each organisation at least hourly, and sooner after a declaration, a device move or a new topology snapshot.
@@ -112,7 +112,7 @@ A suggestion appears only when all of these are true:
 - Since that started, it hasn't reported its assigned site's network or a third site's, and it hasn't been on an ambiguous network.
 - Breeze has no unexplained gap of more than 36 hours in that time. A device that is switched off, for example over a weekend, does not break the run. A gap caused by Breeze being unable to evaluate the site does.
 - The other site's network is still confirmed and declared by that site only, and the device is on it now.
-- Nobody has chosen **Keep at <site>** for the device.
+- Nobody has chosen **Keep at `<site>`** for the device.
 
 History starts when this feature is deployed, so the first suggestions can appear after about a week. Daily summaries are kept for 35 days.
 
@@ -122,8 +122,8 @@ A long secondment can look like a wrong assignment, which is why the copy says "
 
 These actions need **Devices — Write** and multi-factor authentication. **Move** also needs access to both sites; **Keep** needs access to the device's site. Without **Devices — Write**, you see the suggestion but no actions.
 
-- **Move to <site>.** You confirm a summary of what moving changes: "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to <device>. Breeze will not move it back automatically." The move uses the same checks as changing the site on the device page. If someone else moved the device first, you're asked to reload. The audit log records `device.site_move` with the evidence Breeze held: the matched site, network, gateway, number of days and date range. The evidence comes from the server, never from the browser. If the suggestion lapsed before you confirmed (for example, the device was confirmed or moved by someone else, or the evidence went stale), the move still happens and the audit records `suggestionState: not_eligible`.
-- **Keep at <site>.** This dismisses the suggestion and records that the assignment is correct. Nothing moves. The entry then shows "Site assignment confirmed on <date> · Suggestions off", with **Turn on** to allow suggestions again. A confirmation doesn't expire. It's cleared automatically when the device moves to another site or organisation. Both actions are audited (`device.site_assignment_confirmed` and `device.site_assignment_unconfirmed`).
+- **Move to `<site>`.** You confirm a summary of what moving changes: "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to `<device>`. Breeze will not move it back automatically." The move uses the same checks as changing the site on the device page. If someone else moved the device first, you're asked to reload. The audit log records `device.site_move` with the evidence Breeze held: the matched site, network, gateway, number of days and date range. The evidence comes from the server, never from the browser. If the suggestion lapsed before you confirmed (for example, the device was confirmed or moved by someone else, or the evidence went stale), the move still happens and the audit records `suggestionState: not_eligible`.
+- **Keep at `<site>`.** This dismisses the suggestion and records that the assignment is correct. Nothing moves. The entry then shows "Site assignment confirmed on `<date>` · Suggestions off", with **Turn on** to allow suggestions again. A confirmation doesn't expire. It's cleared automatically when the device moves to another site or organisation. Both actions are audited (`device.site_assignment_confirmed` and `device.site_assignment_unconfirmed`).
 
 Location, visitors and suggestions are display only. AI and MCP tools don't read them.
 
@@ -520,5 +520,5 @@ Device endpoints used by wrong-site suggestions (under `/devices/:id`, `devices:
 | Method | Path | Description |
 |--------|------|-------------|
 | PATCH | `/devices/:id` | Move a device: `{siteId, expectedSiteId, siteMoveTrigger: 'topology_suggestion'}`. Returns 409 `device_site_changed` if the device is no longer at `expectedSiteId`. Client-supplied `evidence` is rejected. |
-| PUT | `/devices/:id/site-assignment-confirmation` | **Keep at <site>**: confirm the assignment and turn suggestions off. Returns `{confirmedAt}` |
+| PUT | `/devices/:id/site-assignment-confirmation` | **Keep at `<site>`**: confirm the assignment and turn suggestions off. Returns `{confirmedAt}` |
 | DELETE | `/devices/:id/site-assignment-confirmation` | **Turn on** suggestions again. Returns `{confirmedAt: null}` |
