@@ -162,6 +162,8 @@ export function assembleAttachments(
 }
 
 export type SitePresenceInputs = {
+  /** Every live device assigned to this site and bound to an endpoint of its graph (sorted). */
+  devices: string[];
   /** deviceId -> attachments (confirmed within the horizon; the classifier keeps the fresh ones). */
   attachments: Map<string, ObservedAttachment[]>;
   neighborCoverage: 'complete' | 'limited';
@@ -178,7 +180,8 @@ export async function readSitePresenceInputs(
   const read = await readNeighborEvidence(tx, scope, 'overview', LOGICAL_EXPOSURE, gateways);
   const fresh = buildNeighborEvidenceIndex(read, now);
   const anchor = buildNeighborEvidenceIndex(read, now, { freshnessHorizonSeconds: horizonSeconds });
-  return { attachments: assembleAttachments(obs, { fresh, anchor }), neighborCoverage: read.limited ? 'limited' : fresh.coverage, truncated: obs.truncated };
+  const devices = [...new Set(obs.bindings.map((b) => b.deviceId))].sort();
+  return { devices, attachments: assembleAttachments(obs, { fresh, anchor }), neighborCoverage: read.limited ? 'limited' : fresh.coverage, truncated: obs.truncated };
 }
 
 export type AnchorEvidence = { prefix: string; gateway: string; observerDeviceId: string; mac: string | null; confirmedAt: string };

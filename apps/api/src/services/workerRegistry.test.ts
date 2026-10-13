@@ -38,6 +38,8 @@ const EXPECTED_WORKER_NAMES = [
   'topologyDiagnosticSweeper',
   // M3 Task 5 — interface sample partitions, retention and rollups.
   'topologyTelemetryMaintenance',
+  // Site location W2 — presence read-model evaluation.
+  'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
