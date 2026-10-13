@@ -89,7 +89,7 @@ vi.mock('../services/automationReferenceAuthorization', () => ({
 // (services/automationTargetValidation.test.ts); here it is a seam the
 // create/update routes must call, defaulting to "valid".
 const { validateAutomationTargetConditionsMock } = vi.hoisted(() => ({
-  validateAutomationTargetConditionsMock: vi.fn(async () => ({ ok: true })),
+  validateAutomationTargetConditionsMock: vi.fn(async (_input?: unknown): Promise<Record<string, unknown>> => ({ ok: true })),
 }));
 vi.mock('../services/automationTargetValidation', () => ({
   validateAutomationTargetConditions: validateAutomationTargetConditionsMock,
@@ -3069,6 +3069,34 @@ describe('automations routes — target validation on write (#8598)', () => {
       conditions: { type: 'groups', groupIds: [G1] },
     });
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a site-restricted manual trigger hands the check\'s target diagnostics to the run', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    const targetDiagnostics = { warnings: [], problems: [`Target device group(s) ${G1} no longer exist`] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValueOnce({
+      ok: true,
+      outOfScopeDeviceIds: [],
+      unbounded: false,
+      restricted: true,
+      targetDeviceIds: [],
+      targetDiagnostics,
+    } as any);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([orgAutomation]) }),
+      }),
+    } as any);
+
+    await app.request(`/automations/${AUTOMATION_ID}/trigger`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(createAutomationRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+      boundDeviceIds: [],
+      targetDiagnostics,
+    }));
   });
 
   it('an update that omits conditions skips target validation', async () => {

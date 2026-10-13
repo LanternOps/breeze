@@ -38,6 +38,7 @@ import {
   replaceAutomationResourceBindings,
   resolveAutomationReferencesForOwner,
   withWebhookDefaults,
+  type AutomationTargetDiagnostics,
 } from '../services/automationRuntime';
 import {
   validateAutomationTargetConditions,
@@ -313,7 +314,11 @@ function automationTargetInvalid(
 async function enforceAutomationSiteScope(
   c: Context,
   automation: Parameters<typeof checkAutomationTargetsWithinSiteScope>[0],
-): Promise<{ denied: Response | null; targetDeviceIds: string[] | null }> {
+): Promise<{
+  denied: Response | null;
+  targetDeviceIds: string[] | null;
+  targetDiagnostics?: AutomationTargetDiagnostics;
+}> {
   const perms = c.get('permissions') as UserPermissions | undefined;
   const result = await checkAutomationTargetsWithinSiteScope(automation, perms);
   if (!result.ok) {
@@ -333,7 +338,13 @@ async function enforceAutomationSiteScope(
   // its own resolution, exactly as before the field-provenance/TOCTOU fix) from "site-restricted
   // caller whose resolved target legitimately came back empty" (`[]`, which
   // must be bound as-is, not treated as "resolve your own").
-  return { denied: null, targetDeviceIds: result.restricted ? result.targetDeviceIds : null };
+  return {
+    denied: null,
+    targetDeviceIds: result.restricted ? result.targetDeviceIds : null,
+    // #8598 — travels with the bound set so a broken group target still fails
+    // the run visibly instead of running as an empty bound set.
+    ...(result.restricted && result.targetDiagnostics ? { targetDiagnostics: result.targetDiagnostics } : {}),
+  };
 }
 
 // Dual-ownership (#2133): an automation is org-owned (orgId set) or
@@ -1830,7 +1841,11 @@ async function admitManualAutomationRun(
   // Site-scope gate: re-validate the *current* resolved target set. Protects
   // against a target set that drifted (new devices/sites) since creation, and
   // against an automation created before the user's sites were restricted.
-  const { denied: siteScopeDenied, targetDeviceIds: siteScopedTargetDeviceIds } = await enforceAutomationSiteScope(c, automation);
+  const {
+    denied: siteScopeDenied,
+    targetDeviceIds: siteScopedTargetDeviceIds,
+    targetDiagnostics: siteScopedTargetDiagnostics,
+  } = await enforceAutomationSiteScope(c, automation);
   if (siteScopeDenied) {
     return siteScopeDenied;
   }
@@ -1847,6 +1862,9 @@ async function admitManualAutomationRun(
     // an empty array is a real (possibly zero-device) resolved result and is
     // bound as-is.
     ...(siteScopedTargetDeviceIds !== null ? { boundDeviceIds: siteScopedTargetDeviceIds } : {}),
+    ...(siteScopedTargetDeviceIds !== null && siteScopedTargetDiagnostics
+      ? { targetDiagnostics: siteScopedTargetDiagnostics }
+      : {}),
   });
 
   return { automation, run, targetDeviceIds };

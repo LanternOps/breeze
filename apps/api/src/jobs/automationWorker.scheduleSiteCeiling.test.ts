@@ -166,6 +166,29 @@ describe('schedule-triggered automation runs recheck the creator\'s current site
     }));
   });
 
+  it('carries the site check\'s target diagnostics into the bound run (#8598)', async () => {
+    mockAutomationRow(BASE_AUTOMATION);
+    getUserPermissionsMock.mockResolvedValue({ allowedSiteIds: ['site-visible'] });
+    const targetDiagnostics = { warnings: [], problems: ['Target device group(s) g-gone no longer exist'] };
+    checkAutomationTargetsWithinSiteScopeMock.mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: ['dev-out-of-scope'],
+      unbounded: false,
+      restricted: true,
+      targetDeviceIds: ['dev-out-of-scope'],
+      targetDiagnostics,
+    });
+
+    await __testOnly.processTriggerSchedule(BASE_JOB);
+
+    // A broken group target is not "every target sat outside the ceiling":
+    // the run is created so it can fail visibly with its reasons.
+    expect(createAutomationRunRecordMock).toHaveBeenCalledWith(expect.objectContaining({
+      boundDeviceIds: [],
+      targetDiagnostics,
+    }));
+  });
+
   it('skips the run entirely when every resolved target sits outside the ceiling', async () => {
     mockAutomationRow(BASE_AUTOMATION);
     getUserPermissionsMock.mockResolvedValue({ allowedSiteIds: ['site-visible'] });
