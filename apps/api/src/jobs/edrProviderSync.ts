@@ -17,6 +17,7 @@ import {
   type EdrProviderAdapter,
 } from '../services/edrProviders/types';
 import {
+  clearExpiredTenantDenials,
   isDeadlockError,
   persistDetections,
   persistInventory,
@@ -34,6 +35,7 @@ import {
   evaluateEdrEndpointHealth,
   evaluateEdrStaleTenants,
 } from '../services/edrProviders/alerts';
+import { pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { attachWorkerObservability } from './workerObservability';
 import { isFinalSyncAttempt } from './syncAttempt';
 
@@ -49,7 +51,9 @@ export type EdrSyncStream = 'inventory' | 'detections';
 export type EdrSyncJobData =
   | { type: 'sync-all' }
   | { type: 'sync-inventory'; connectionId: string }
-  | { type: 'sync-detections'; connectionId: string };
+  | { type: 'sync-detections'; connectionId: string }
+  /** W03 (#8167): settle open response actions; never re-sends (actionStatus.ts). */
+  | { type: 'sync-action-status'; connectionId: string };
 
 export const EDR_PROVIDER_SYNC_JOB_OPTS: Omit<JobsOptions, 'jobId'> = {
   removeOnComplete: { count: 50 },
@@ -88,6 +92,24 @@ export async function enqueueEdrSync(
     type,
     o.rerun ? `${edrSyncJobId(stream, connectionId)}-rerun` : edrSyncJobId(stream, connectionId),
     { type, connectionId } as EdrSyncJobData,
+    EDR_PROVIDER_SYNC_JOB_OPTS,
+    '[EdrProviderSync]',
+  );
+  return id;
+}
+
+export function edrActionStatusJobId(connectionId: string): string {
+  return `edr-action-status-${connectionId}`;
+}
+
+/** Queue one action-status pass for a connection (coalesces on the job id). */
+export async function enqueueEdrActionStatus(connectionId: string): Promise<string> {
+  if (!connectionId) throw new Error('enqueueEdrActionStatus requires a connection id');
+  const { id } = await enqueueOrReplaceStale(
+    getEdrProviderSyncQueue(),
+    'sync-action-status',
+    edrActionStatusJobId(connectionId),
+    { type: 'sync-action-status', connectionId },
     EDR_PROVIDER_SYNC_JOB_OPTS,
     '[EdrProviderSync]',
   );
@@ -207,6 +229,25 @@ async function processSyncAll(): Promise<{ queued: number }> {
   // Enqueue with NO transaction held (#1105).
   const due = selectDueStreams(rows, new Date());
   await Promise.all(due.map((d) => enqueueEdrSync(d.connectionId, d.stream)));
+
+  // W03 (#8167): connections with open (queued/submitted) actions get a
+  // status pass. One scan on edr_actions_open_status_idx; never fails the tick.
+  await runPhase4('enqueueEdrActionStatus', 'all', async () => {
+    const ids = candidates.map((c) => c.id);
+    if (ids.length === 0) return;
+    const open = (await runWithSystemDbAccess(() => db.execute(sql`
+      SELECT DISTINCT connection_id FROM edr_actions
+      WHERE status IN ('queued', 'submitted')
+        AND connection_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+    `), 'edrProviderSync.openActions')) as unknown as Array<{ connection_id: string }>;
+    for (const row of open) {
+      try {
+        await enqueueEdrActionStatus(row.connection_id);
+      } catch (error) {
+        console.error(`[EdrProviderSync] Failed to queue action status for ${row.connection_id}:`, error);
+      }
+    }
+  });
 
   // D10 (#8166): stale mapped tenants are checked on the tick, not after a
   // sync, because a connection whose every sync throws before Phase 3 never
@@ -640,6 +681,7 @@ export async function syncEdrInventory(
       const dropped = fetched.results.length - keep.length;
       const inv = await persistInventory(tx, conn, keep, now);
       await pruneMissingTenantEndpoints(tx, conn.id, now);
+      await clearExpiredTenantDenials(tx, conn.id, now);
       const match = await matchEdrEndpoints(tx, conn.id);
       await refreshDetectionDeviceLinks(tx, conn.id);
 
@@ -810,22 +852,27 @@ export async function syncEdrDetections(
 // Moved to ./syncAttempt (shared with the backup/M365/Huntress workers, #8351).
 export { isFinalSyncAttempt };
 
+async function processJob(data: EdrSyncJobData, isFinalAttempt: boolean): Promise<unknown> {
+  switch (data.type) {
+    case 'sync-all':
+      return processSyncAll();
+    case 'sync-inventory':
+      return syncEdrInventory(data.connectionId, { isFinalAttempt });
+    case 'sync-detections':
+      return syncEdrDetections(data.connectionId, { isFinalAttempt });
+    case 'sync-action-status':
+      return pollEdrActionStatus(data.connectionId, new Date());
+    default:
+      throw new Error(`Unknown EDR provider sync job type: ${(data as { type: string }).type}`);
+  }
+}
+
 function createEdrProviderSyncWorker(): Worker<EdrSyncJobData> {
   return new Worker<EdrSyncJobData>(
     EDR_PROVIDER_SYNC_QUEUE,
     async (job: Job<EdrSyncJobData>) => {
       // No blanket system-context wrap: each path manages its own short contexts.
-      const isFinalAttempt = isFinalSyncAttempt(job);
-      switch (job.data.type) {
-        case 'sync-all':
-          return processSyncAll();
-        case 'sync-inventory':
-          return syncEdrInventory(job.data.connectionId, { isFinalAttempt });
-        case 'sync-detections':
-          return syncEdrDetections(job.data.connectionId, { isFinalAttempt });
-        default:
-          throw new Error(`Unknown EDR provider sync job type: ${(job.data as { type: string }).type}`);
-      }
+      return processJob(job.data, isFinalSyncAttempt(job));
     },
     {
       connection: getBullMQConnection(),
@@ -886,4 +933,4 @@ export async function shutdownEdrProviderSyncJob(): Promise<void> {
   console.log('[EdrProviderSync] EDR provider sync worker shut down');
 }
 
-export const __testOnly = { processSyncAll };
+export const __testOnly = { processSyncAll, processJob };

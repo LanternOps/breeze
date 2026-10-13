@@ -121,6 +121,8 @@ const m = vi.hoisted(() => ({
   evaluateEdrAlerts: vi.fn(),
   evaluateEdrEndpointHealth: vi.fn(),
   evaluateEdrStaleTenants: vi.fn(),
+  clearExpiredTenantDenials: vi.fn(),
+  pollEdrActionStatus: vi.fn(),
 }));
 
 vi.mock('../services/edrProviders/types', () => ({ EdrProviderRequestError: FakeEdrError }));
@@ -150,7 +152,9 @@ vi.mock('../services/edrProviders/persist', () => ({
   pruneMissingTenantEndpoints: m.pruneMissingTenantEndpoints,
   refreshDetectionDeviceLinks: m.refreshDetectionDeviceLinks,
   isDeadlockError: m.isDeadlockError,
+  clearExpiredTenantDenials: m.clearExpiredTenantDenials,
 }));
+vi.mock('../services/edrProviders/actionStatus', () => ({ pollEdrActionStatus: m.pollEdrActionStatus }));
 vi.mock('../services/edrProviders/mapping', () => ({ autoMapEdrTenants: m.autoMapEdrTenants }));
 vi.mock('../services/edrProviders/alerts', () => ({
   evaluateEdrAlerts: (...a: unknown[]) => { events.push(`alerts@${contextDepth}`); return m.evaluateEdrAlerts(...a); },
@@ -171,7 +175,8 @@ vi.mock('../services/bullmqQueue', () => ({
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: m.enqueueOrReplaceStale }));
 
 import {
-  __testOnly, edrSyncJobId, enqueueEdrSync, isFinalSyncAttempt, selectDueStreams, syncEdrDetections, syncEdrInventory,
+  __testOnly, edrActionStatusJobId, edrSyncJobId, enqueueEdrActionStatus, enqueueEdrSync, isFinalSyncAttempt,
+  selectDueStreams, syncEdrDetections, syncEdrInventory,
 } from './edrProviderSync';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000e1';
@@ -223,6 +228,8 @@ beforeEach(() => {
   m.evaluateEdrAlerts.mockResolvedValue({ published: 0, suppressed: 0 });
   m.evaluateEdrEndpointHealth.mockResolvedValue({ raised: 0, resolved: 0 });
   m.evaluateEdrStaleTenants.mockResolvedValue({ published: 0 });
+  m.clearExpiredTenantDenials.mockResolvedValue(0);
+  m.pollEdrActionStatus.mockResolvedValue({ checked: 0, settled: 0 });
 });
 
 describe('isFinalSyncAttempt', () => {
@@ -668,5 +675,52 @@ describe('Phase 4 notifier wiring (#8166)', () => {
     m.evaluateEdrStaleTenants.mockRejectedValueOnce(new Error('redis down'));
     await expect(__testOnly.processSyncAll()).resolves.toEqual(expect.objectContaining({ queued: expect.any(Number) }));
     expect(m.evaluateEdrStaleTenants).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('W03 (#8167): action status job', () => {
+  it('has a stable per-connection job id and enqueues sync-action-status', async () => {
+    expect(edrActionStatusJobId('x')).toBe('edr-action-status-x');
+    await enqueueEdrActionStatus('x');
+    expect(m.enqueueOrReplaceStale).toHaveBeenCalledWith(
+      expect.anything(), 'sync-action-status', 'edr-action-status-x',
+      { type: 'sync-action-status', connectionId: 'x' }, expect.anything(), expect.any(String),
+    );
+  });
+
+  it('the worker routes sync-action-status to pollEdrActionStatus (never a sync stream)', async () => {
+    await __testOnly.processJob({ type: 'sync-action-status', connectionId: 'c-9' }, true);
+    expect(m.pollEdrActionStatus).toHaveBeenCalledWith('c-9', expect.any(Date));
+    expect(m.listTenants).not.toHaveBeenCalled();
+    expect(m.listDetections).not.toHaveBeenCalled();
+  });
+
+  it('sync-all enqueues an action-status job only for active connections that have open actions', async () => {
+    // The open-actions scan returns this connection only.
+    executeRows = [{ connection_id: CONNECTION_ID }];
+    await __testOnly.processSyncAll();
+    const statusCalls = m.enqueueOrReplaceStale.mock.calls.filter((c) => c[1] === 'sync-action-status');
+    expect(statusCalls.map((c) => c[2])).toEqual([`edr-action-status-${CONNECTION_ID}`]);
+    // The scan ran inside a system context.
+    expect(events).toContain('execute');
+
+    m.enqueueOrReplaceStale.mockClear();
+    executeRows = [];
+    await __testOnly.processSyncAll();
+    expect(m.enqueueOrReplaceStale.mock.calls.filter((c) => c[1] === 'sync-action-status')).toEqual([]);
+  });
+
+  it('an action-status enqueue failure never fails the sync-all tick', async () => {
+    executeRows = [{ connection_id: CONNECTION_ID }];
+    m.enqueueOrReplaceStale.mockImplementation(async (_q: unknown, name: string) => {
+      if (name === 'sync-action-status') throw new Error('redis down');
+      return { id: 'job-1' };
+    });
+    await expect(__testOnly.processSyncAll()).resolves.toEqual(expect.objectContaining({ queued: expect.any(Number) }));
+  });
+
+  it('the inventory Phase 3 clears expired tenant licence denials for this connection', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.clearExpiredTenantDenials).toHaveBeenCalledWith(expect.anything(), CONNECTION_ID, expect.any(Date));
   });
 });
