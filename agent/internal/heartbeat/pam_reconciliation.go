@@ -19,15 +19,24 @@ import (
 )
 
 const (
+	// pamReconciliationProtocolVersion is the version of the result and
+	// received-observation acknowledgements, which stay v1. The binding
+	// request negotiates its own version (pamBindingProtocolVersion).
 	pamReconciliationProtocolVersion = 1
-	pamBindingChunkSize              = 100
-	pamTransportTimeout              = 30 * time.Second
-	pamTransportMaxResponseBytes     = 1 << 20
+	// PAM ownership epochs (#8202 W4): binding protocol v2 adds the `retired`
+	// disposition. The agent asks for v2 and drops to v1 for the rest of the
+	// process when the server answers 400 (a server that only knows v1).
+	pamBindingProtocolVersionV1  = 1
+	pamBindingProtocolVersionV2  = 2
+	pamBindingChunkSize          = 100
+	pamTransportTimeout          = 30 * time.Second
+	pamTransportMaxResponseBytes = 1 << 20
 
 	pamBindingStatusBound      = "bound"
 	pamBindingStatusDuplicate  = "duplicate"
 	pamBindingStatusStale      = "stale"
 	pamBindingStatusUnresolved = "unresolved"
+	pamBindingStatusRetired    = "retired"
 
 	pamResultClassificationApplied   = "applied"
 	pamResultClassificationDuplicate = "duplicate"
@@ -74,6 +83,25 @@ type pamBindingRequest struct {
 type pamBindingResponse struct {
 	ProtocolVersion int                     `json:"protocolVersion"`
 	Dispositions    []pamBindingDisposition `json:"dispositions"`
+}
+
+// pamHTTPStatusError is a PAM transport answer other than 200, kept typed so
+// the binding resolver can tell a protocol refusal (400) from an outage.
+type pamHTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *pamHTTPStatusError) Error() string {
+	return fmt.Sprintf("PAM reconciliation request failed with status %d", e.StatusCode)
+}
+
+// pamBindingProtocolVersion is the binding protocol this process asks for: v2
+// until a server refused it with 400, then v1 for the process lifetime.
+func (h *Heartbeat) pamBindingProtocolVersion() int {
+	if h.pamBindingV1Fallback.Load() {
+		return pamBindingProtocolVersionV1
+	}
+	return pamBindingProtocolVersionV2
 }
 
 func (h *Heartbeat) pamTransportHTTPClient() (*http.Client, error) {
@@ -141,7 +169,7 @@ func (h *Heartbeat) postPamJSON(ctx context.Context, requestURL string, payload 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("PAM reconciliation request failed with status %d", resp.StatusCode)
+		return &pamHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	if err := decodePamTransportResponse(resp.Body, response); err != nil {
 		return fmt.Errorf("decode PAM reconciliation response: %w", err)
@@ -162,7 +190,7 @@ func validatePamBindingCandidate(candidate pamBindingCandidate) error {
 	return nil
 }
 
-func validatePamBindingDisposition(disposition pamBindingDisposition) error {
+func validatePamBindingDisposition(disposition pamBindingDisposition, protocolVersion int) error {
 	if _, err := canonicalPamUUID(disposition.ObservationID); err != nil {
 		return fmt.Errorf("invalid disposition observation ID: %w", err)
 	}
@@ -170,6 +198,13 @@ func validatePamBindingDisposition(disposition pamBindingDisposition) error {
 	case pamBindingStatusBound:
 		if _, err := canonicalPamUUID(disposition.CommandID); err != nil {
 			return fmt.Errorf("invalid bound command ID: %w", err)
+		}
+	case pamBindingStatusRetired:
+		if protocolVersion < pamBindingProtocolVersionV2 {
+			return fmt.Errorf("binding status %q is not part of protocol v%d", disposition.Status, protocolVersion)
+		}
+		if disposition.CommandID != "" {
+			return fmt.Errorf("%s disposition returned an unexpected command ID", disposition.Status)
 		}
 	case pamBindingStatusDuplicate, pamBindingStatusStale, pamBindingStatusUnresolved:
 		if disposition.CommandID != "" {
@@ -207,14 +242,11 @@ func (h *Heartbeat) resolvePamBindings(ctx context.Context, candidates []pamBind
 	for start := 0; start < len(candidates); start += pamBindingChunkSize {
 		end := min(start+pamBindingChunkSize, len(candidates))
 		chunk := candidates[start:end]
-		var response pamBindingResponse
-		if err := h.postPamJSON(ctx, requestURL, pamBindingRequest{
-			ProtocolVersion: pamReconciliationProtocolVersion,
-			Candidates:      chunk,
-		}, &response); err != nil {
+		version, response, err := h.postPamBindingChunk(ctx, requestURL, chunk)
+		if err != nil {
 			return nil, fmt.Errorf("resolve PAM reconciliation bindings: %w", err)
 		}
-		if response.ProtocolVersion != pamReconciliationProtocolVersion {
+		if response.ProtocolVersion != version {
 			return nil, fmt.Errorf("unsupported PAM binding protocol version %d", response.ProtocolVersion)
 		}
 		if len(response.Dispositions) != len(chunk) {
@@ -222,7 +254,7 @@ func (h *Heartbeat) resolvePamBindings(ctx context.Context, candidates []pamBind
 		}
 		byObservation := make(map[string]pamBindingDisposition, len(response.Dispositions))
 		for _, disposition := range response.Dispositions {
-			if err := validatePamBindingDisposition(disposition); err != nil {
+			if err := validatePamBindingDisposition(disposition, version); err != nil {
 				return nil, err
 			}
 			if _, expected := seen[disposition.ObservationID]; !expected {
@@ -242,6 +274,66 @@ func (h *Heartbeat) resolvePamBindings(ctx context.Context, candidates []pamBind
 		}
 	}
 	return resolved, nil
+}
+
+// postPamBindingChunk posts one chunk at the negotiated version. A 400 to v2
+// means the server does not know v2: the process drops to v1 for good and the
+// chunk is retried once at v1. Nothing else changes the version, so an outage
+// (429, 5xx, transport error) never downgrades it.
+func (h *Heartbeat) postPamBindingChunk(ctx context.Context, requestURL string, chunk []pamBindingCandidate) (int, pamBindingResponse, error) {
+	version := h.pamBindingProtocolVersion()
+	var response pamBindingResponse
+	err := h.postPamJSON(ctx, requestURL, pamBindingRequest{ProtocolVersion: version, Candidates: chunk}, &response)
+	var statusErr *pamHTTPStatusError
+	if err == nil || version == pamBindingProtocolVersionV1 || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusBadRequest {
+		return version, response, err
+	}
+	if h.pamBindingV1Fallback.CompareAndSwap(false, true) {
+		log.Warn("server refused PAM reconciliation binding protocol v2; using v1 for this process",
+			"hint", "retired ledger entries are not cleared until the server supports v2")
+	}
+	version = pamBindingProtocolVersionV1
+	response = pamBindingResponse{}
+	err = h.postPamJSON(ctx, requestURL, pamBindingRequest{ProtocolVersion: version, Candidates: chunk}, &response)
+	return version, response, err
+}
+
+// pamLedgerRetirer is the optional lifecycle-manager capability that applies a
+// server `retired` disposition (see pamlifetime.lifecycleManager.Retire). The
+// frozen pamlifetime.Manager interface does not carry it, so it is discovered
+// by type assertion; a manager without it never retires anything.
+type pamLedgerRetirer interface {
+	Retire(ctx context.Context, actuationID string, generation uint64) error
+}
+
+// retirePamLedgerEntry asks the manager to retire the ledger entry a `retired`
+// disposition named. It reports whether the entry is gone; a refusal or a
+// missing capability keeps the observation staged, so admission stays closed
+// (fail closed) and the next pass asks again.
+func (h *Heartbeat) retirePamLedgerEntry(ctx context.Context, result pamlifetime.Result) bool {
+	retirer, ok := h.pamLifetimeManager.(pamLedgerRetirer)
+	if !ok {
+		h.logPamRetirementRefusal(result, "lifecycle manager cannot retire ledger entries")
+		return false
+	}
+	if err := retirer.Retire(ctx, result.ActuationID, result.Generation); err != nil {
+		h.logPamRetirementRefusal(result, err.Error())
+		return false
+	}
+	log.Info("retired PAM ledger entry from an earlier ownership epoch",
+		"actuationId", result.ActuationID, "generation", result.Generation)
+	return true
+}
+
+// logPamRetirementRefusal logs once per observation and reason, so the retry
+// loop does not log on every pass.
+func (h *Heartbeat) logPamRetirementRefusal(result pamlifetime.Result, reason string) {
+	key := result.ObservationID + "|" + reason
+	if _, loaded := h.pamRetirementRefusalsLogged.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	log.Warn("PAM ledger entry not retired; keeping it reconcilable",
+		"actuationId", result.ActuationID, "generation", result.Generation, "reason", reason)
 }
 
 func validPamResultClassification(classification string) bool {
@@ -469,6 +561,12 @@ func (h *Heartbeat) resolveStagedPamReconciliation(ctx context.Context) {
 			}
 		case pamBindingStatusDuplicate, pamBindingStatusStale:
 			h.removeStagedPamReconciliationResult(result.ObservationID)
+		case pamBindingStatusRetired:
+			if h.retirePamLedgerEntry(ctx, result) {
+				h.removeStagedPamReconciliationResult(result.ObservationID)
+			} else {
+				h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonBindingUnresolved)
+			}
 		case pamBindingStatusUnresolved:
 			h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonBindingUnresolved)
 		}
@@ -489,7 +587,10 @@ func (h *Heartbeat) resolveQuarantinedPamReconciliation(ctx context.Context, ent
 		return
 	}
 	for i, disposition := range dispositions {
-		if disposition.Status != pamBindingStatusDuplicate && disposition.Status != pamBindingStatusStale {
+		// `retired` drops the outbox observation like `stale`; the ledger
+		// entry itself is retired only from the startup reconcile path.
+		if disposition.Status != pamBindingStatusDuplicate && disposition.Status != pamBindingStatusStale &&
+			disposition.Status != pamBindingStatusRetired {
 			continue
 		}
 		entry := entries[i]
@@ -509,7 +610,7 @@ func (h *Heartbeat) reresolveRejectedPamEntry(ctx context.Context, entry pamReco
 	}
 	disposition := dispositions[0]
 	switch disposition.Status {
-	case pamBindingStatusDuplicate, pamBindingStatusStale:
+	case pamBindingStatusDuplicate, pamBindingStatusStale, pamBindingStatusRetired:
 		if err := h.pamReconciliationOutbox.Remove(pamReconciliationStatePending, entry.CommandID, entry.Observation.ObservationID); err == nil {
 			h.setPamReconciliationBlocked(entry.Observation.ObservationID, false)
 		}

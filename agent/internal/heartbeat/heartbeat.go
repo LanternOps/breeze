@@ -783,16 +783,22 @@ type Heartbeat struct {
 	// PAM startup reconciliation has a separate, non-expiring REST outbox.
 	// pamReconciliationMu protects only the small in-memory staged set and
 	// availability/error markers; it is never held across disk or network I/O.
-	pamReconciliationOutbox                     *pamReconciliationOutbox
-	pamReconciliationMu                         sync.Mutex
-	pamReconciliationStaged                     map[string]pamlifetime.Result
-	pamReconciliationStagedReasons              map[string]string
-	pamReconciliationBlocked                    map[string]struct{}
-	pamReconciliationIdentityFailures           int
-	pamReconciliationManagerAvailable           bool
-	pamReconciliationWake                       chan struct{}
-	pamReconciliationRetryOnce                  sync.Once
-	pamReconciliationPassRunning                atomic.Bool
+	pamReconciliationOutbox           *pamReconciliationOutbox
+	pamReconciliationMu               sync.Mutex
+	pamReconciliationStaged           map[string]pamlifetime.Result
+	pamReconciliationStagedReasons    map[string]string
+	pamReconciliationBlocked          map[string]struct{}
+	pamReconciliationIdentityFailures int
+	pamReconciliationManagerAvailable bool
+	pamReconciliationWake             chan struct{}
+	pamReconciliationRetryOnce        sync.Once
+	pamReconciliationPassRunning      atomic.Bool
+	// pamBindingV1Fallback latches when a server refused binding protocol v2
+	// with 400 (#8206); the process then asks for v1 until it restarts.
+	pamBindingV1Fallback atomic.Bool
+	// pamRetirementRefusalsLogged bounds the refused-retirement log to once
+	// per observation and reason.
+	pamRetirementRefusalsLogged                 sync.Map
 	pamLocalReconcileRunning                    atomic.Bool
 	pamReconciliationResolverUnavailable        bool
 	pamReconciliationAcknowledgementUnavailable bool
