@@ -14,7 +14,7 @@ import type { EdrActionRequest, EdrAdapterContext, EdrProviderAdapter, EdrReconc
  * or a request whose outcome never came back (`queued`, typically
  * `dispatch_outcome_unknown`, or a crash between insert and vendor call).
  *
- * NEVER RE-SENDS. This file has no path to `performAction` (pinned by
+ * NEVER RE-SENDS. This file has no path to the adapter send method (pinned by
  * edrActions.chokepoint.contract.test.ts): a `queued` row is settled only from
  * READ-ONLY vendor state (`reconcileAction`), and if that cannot tell, the row
  * is failed for a human to re-issue after a give-up window.
