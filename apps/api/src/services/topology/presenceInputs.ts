@@ -120,7 +120,8 @@ function gatewayMacFor(index: NeighborEvidenceIndex | null, route: RouteRow, gat
  * Pure: pair memberships with the same endpoint's default routes (S§6.1) into attachments, per bound device.
  * IPv4 `lan` prefixes only (tunnel / overlay / link-local / host never attach); a route pairs with a membership on
  * the same interface and context, or — interface unknown — with the endpoint's only IPv4 LAN membership. One
- * attachment per gateway address. Freshness is the later-expiring pair's earliest bound (both must hold).
+ * attachment per gateway address. `freshUntil` is the earlier of the membership's and the route's, so both must still
+ * be fresh; `confirmedAt` is the earlier of their confirmation times.
  */
 export function assembleAttachments(
   obs: SiteObservations, neighbors: { fresh: NeighborEvidenceIndex | null; anchor: NeighborEvidenceIndex | null },

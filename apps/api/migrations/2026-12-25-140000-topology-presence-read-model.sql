@@ -3,7 +3,9 @@
 --
 -- Three derived, org-scoped runtime tables (RLS shape 1, no partner owner — Partner-Wide First does not
 -- apply to a read model): one state row per org, per-site network fingerprints, one presence row per bound
--- device. Rows are written only by the presence evaluator (system scope) and deleted by the triggers below.
+-- device. Fingerprint and presence rows are written and pruned by the presence evaluator (system scope); state
+-- rows are also created or marked dirty by the invalidation triggers below and by the worker's enrolment, and the
+-- device-moved trigger deletes a device's presence row.
 -- NOTHING here writes devices.site_id: presence classifies and displays, it never moves a device.
 --
 -- Idempotent; no inner BEGIN/COMMIT; this file writes no rows (the trigger functions write at run time and
@@ -16,6 +18,9 @@ CREATE TABLE IF NOT EXISTS topology_org_presence_state (
   coverage varchar(16) NOT NULL DEFAULT 'not_configured' CHECK (coverage IN ('complete', 'limited', 'not_configured')),
   coverage_reason varchar(64),
   dirty_at timestamptz,
+  -- Bumped by every invalidation. dirty_at keeps the FIRST stamp (the debounce anchor), so only this counter tells
+  -- an evaluation that a change landed after it read the state (compare-and-clear in presenceEvaluator.ts).
+  dirty_seq bigint NOT NULL DEFAULT 0 CHECK (dirty_seq >= 0),
   evaluated_at timestamptz,
   next_evaluation_at timestamptz,
   input_digest varchar(64),
@@ -140,10 +145,11 @@ BEGIN
   IF p_create THEN
     INSERT INTO public.topology_org_presence_state (org_id, dirty_at) VALUES (p_org, now())
     ON CONFLICT (org_id) DO UPDATE
-      SET dirty_at = coalesce(public.topology_org_presence_state.dirty_at, now()), updated_at = now();
+      SET dirty_at = coalesce(public.topology_org_presence_state.dirty_at, now()),
+          dirty_seq = public.topology_org_presence_state.dirty_seq + 1, updated_at = now();
   ELSE
     UPDATE public.topology_org_presence_state
-       SET dirty_at = coalesce(dirty_at, now()), updated_at = now()
+       SET dirty_at = coalesce(dirty_at, now()), dirty_seq = dirty_seq + 1, updated_at = now()
      WHERE org_id = p_org;
   END IF;
   PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
@@ -230,7 +236,7 @@ BEGIN
   IF NEW.graph_revision > OLD.graph_revision THEN
     PERFORM set_config('breeze.scope', 'system', true);
     UPDATE public.topology_org_presence_state
-       SET dirty_at = coalesce(dirty_at, now()), updated_at = now()
+       SET dirty_at = coalesce(dirty_at, now()), dirty_seq = dirty_seq + 1, updated_at = now()
      WHERE org_id = NEW.org_id AND coverage <> 'not_configured';
     PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   END IF;

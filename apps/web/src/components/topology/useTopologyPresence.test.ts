@@ -41,6 +41,20 @@ it('refreshes every 60 seconds and keeps the last good value across a failed ref
   await waitFor(() => expect(result.current!.visitors).toHaveLength(0));
 });
 
+it('reports failed refreshes, and drops presence that has not refreshed for 5 minutes rather than showing it forever', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.mocked(fetchWithAuth).mockResolvedValueOnce(json(presenceFixture({ visitors: [presenceVisitor(1)] })));
+  const { result } = renderHook(() => useTopologyPresence(MAIN_OFFICE.id));
+  await waitFor(() => expect(result.current).not.toBeNull());
+  vi.mocked(fetchWithAuth).mockResolvedValue(json({ error: 'boom' }, 500));
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(warn).toHaveBeenCalledWith('[topology] presence refresh failed', expect.anything());
+  expect(result.current).not.toBeNull(); // a transient failure keeps the last good value
+  await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+  expect(result.current).toBeNull();
+  warn.mockRestore();
+});
+
 it('never throws on a body that is not a presence response: the value stays null and the map still renders', async () => {
   vi.mocked(fetchWithAuth).mockResolvedValue(json({ some: 'graph' }));
   const { result } = renderHook(() => useTopologyPresence(MAIN_OFFICE.id));

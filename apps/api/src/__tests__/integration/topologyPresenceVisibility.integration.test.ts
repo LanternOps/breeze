@@ -35,12 +35,15 @@ const DEVICES: PresenceDeviceSpec[] = [
   // Annex (site C) and Lakeside both declare 192.168.7.0/24: ambiguous for a Main Office device there.
   { key: 'C1', site: 'C', hostname: 'ANNEX-PC-01', address: '192.168.7.20', gateway: '192.168.7.1', gatewayMac: GW_C },
   { key: 'AMB', site: 'A', hostname: 'DESKTOP-AMB-01', address: '192.168.7.30', gateway: '192.168.7.1', gatewayMac: GW_C },
+  // Lakeside declares a consumer-default range with one observer: a Main Office device there is consumer_uncorroborated.
+  { key: 'L3', site: 'B', hostname: 'LAKESIDE-PC-03', address: '192.168.0.20', gateway: '192.168.0.1', gatewayMac: '00:00:5e:00:01:1b' },
+  { key: 'CON', site: 'A', hostname: 'DESKTOP-CON-01', address: '192.168.0.30', gateway: '192.168.0.1', gatewayMac: '00:00:5e:00:01:1b' },
 ];
 
 // setup.ts truncates tenant tables before every test, so the org is rebuilt per test.
 let f: TwoSiteOrg;
 beforeEach(async () => {
-  f = await twoSiteOrg({ withSiteC: true, declare: { A: ['10.1.2.0/24'], B: ['10.1.5.0/24', '192.168.7.0/24'], C: ['192.168.7.0/24'] }, devices: DEVICES });
+  f = await twoSiteOrg({ withSiteC: true, declare: { A: ['10.1.2.0/24'], B: ['10.1.5.0/24', '192.168.7.0/24', '192.168.0.0/24'], C: ['192.168.7.0/24'] }, devices: DEVICES });
   await f.reportAll();
   await f.publishAll();
   const result = await evaluateOrgPresence(f.orgId);
@@ -147,6 +150,25 @@ describe('presence visibility — cross-site leak tests', () => {
     expect(shape(entry(ab, 'AMB')!)).toEqual(shape(entry(ab, 'HOME')!));
     expect(ab.raw).not.toContain('Harbor Annex');
     expect(ab.raw).not.toContain(f.siteC);
+  });
+
+  it('reason hints: a declaring-site reason serializes only when that site is visible', async () => {
+    const both = await body(f.users.both.token, f.siteA);
+    expect(entry(both, 'CON')).toMatchObject({ state: 'unrecognized', reason: 'consumer_uncorroborated', declaringSites: [{ id: f.siteB, name: 'Lakeside' }] });
+    const onlyA = await body(f.users.onlyA.token, f.siteA);
+    for (const key of ['CON', 'GWM', 'MIS1', 'AMB']) expect(shape(entry(onlyA, key)!), key).toEqual(shape(entry(onlyA, 'HOME')!));
+    expect(onlyA.raw).not.toContain('Lakeside');
+  });
+
+  it('declaredNetworks: a prefix shows as ambiguous only when every other declaring site is visible', async () => {
+    const onlyB = await body(f.users.both.token, f.siteB, (auth) => ({ ...auth, allowedSiteIds: [f.siteB] }));
+    const shared = onlyB.declaredNetworks.find((n) => n.prefix === '192.168.7.0/24');
+    expect(shared).toBeDefined();
+    expect(shared!.status).not.toBe('ambiguous');
+    expect(onlyB.raw).not.toContain(f.siteC);
+    expect(onlyB.raw).not.toContain('Harbor Annex');
+    const bc = await body(f.users.both.token, f.siteB, (auth) => ({ ...auth, allowedSiteIds: [f.siteB, f.siteC] }));
+    expect(bc.declaredNetworks.find((n) => n.prefix === '192.168.7.0/24')!.status).toBe('ambiguous');
   });
 
   it('declared_unconfirmed hint names B only for B viewers', async () => {

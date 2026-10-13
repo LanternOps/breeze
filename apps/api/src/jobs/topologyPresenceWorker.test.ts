@@ -54,7 +54,9 @@ describe('topology presence worker', () => {
     const result = await runTopologyPresenceTick(new Date());
     expect(result).toMatchObject({ evaluated: 1, failed: 1 });
     expect(mocks.capture).toHaveBeenCalledOnce();
-    expect(mocks.execute.mock.calls.some(([q]) => JSON.stringify(q).includes('SET dirty_at = now()'))).toBe(true);
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { worker: 'topologyPresence', orgId: ORG_A });
+    // Deferred into the future, not re-queued hot.
+    expect(mocks.execute.mock.calls.some(([q]) => JSON.stringify(q).includes('SET dirty_at = now() + make_interval'))).toBe(true);
   });
 
   it('still evaluates when enrolment fails', async () => {

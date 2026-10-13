@@ -9,15 +9,19 @@ import { captureException } from '../services/sentry';
  * Topology presence worker (site location W2, spec S§7.4): an interval tick, same shape as
  * topologyTelemetryMaintenance.ts. Database only, one short system transaction per org; reads never trigger it.
  *
- * Each tick (≤ PRESENCE_ORGS_PER_TICK orgs):
+ * Each tick enrols up to PRESENCE_ORGS_PER_TICK orgs and evaluates up to PRESENCE_ORGS_PER_TICK due orgs:
  *  1. Enrols orgs that already hold declarations but have no state row yet (declarations that predate the
  *     read-model migration never fired an invalidation trigger), marking them dirty.
  *  2. Evaluates due orgs: dirty for at least the debounce, or a configured org past its hourly re-evaluation.
  *     `not_configured` orgs are re-checked only when dirty.
- * A failed org is pushed to the back of the queue (dirty_at = now) rather than retried hot.
+ * A failed org is deferred for PRESENCE_FAILURE_BACKOFF_MS (dirty_at in the future) so a persistently failing org can
+ * neither retry hot nor crowd healthy orgs' re-evaluations out of the per-tick limit; the error is reported with its org.
  * It never writes devices.site_id.
  */
 export type TopologyPresenceTick = { enrolled: number; evaluated: number; busy: number; notConfigured: number; failed: number };
+
+/** How long a failed org waits before its next attempt. */
+export const PRESENCE_FAILURE_BACKOFF_MS = 15 * 60_000;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let kick: ReturnType<typeof setTimeout> | null = null;
@@ -40,7 +44,8 @@ export async function runTopologyPresenceTick(now = new Date()): Promise<Topolog
       RETURNING org_id`), 'topology presence enrolment');
     result.enrolled = enrolled.length;
   } catch (error) {
-    captureException(error);
+    captureException(error, undefined, { worker: 'topologyPresence', step: 'enrolment' });
+    console.warn('[topology-presence] enrolment failed', error instanceof Error ? error.message : String(error));
   }
 
   const due = await system(() => db.execute<{ org_id: string }>(sql`
@@ -58,9 +63,11 @@ export async function runTopologyPresenceTick(now = new Date()): Promise<Topolog
       else result.evaluated += 1;
     } catch (error) {
       result.failed += 1;
-      captureException(error);
+      captureException(error, undefined, { worker: 'topologyPresence', orgId });
+      console.warn('[topology-presence] evaluation failed', { orgId, error: error instanceof Error ? error.message : String(error) });
       try {
-        await system(() => db.execute(sql`UPDATE topology_org_presence_state SET dirty_at = now(), updated_at = now() WHERE org_id = ${orgId}::uuid`),
+        await system(() => db.execute(sql`UPDATE topology_org_presence_state
+          SET dirty_at = now() + make_interval(secs => ${PRESENCE_FAILURE_BACKOFF_MS / 1000}), updated_at = now() WHERE org_id = ${orgId}::uuid`),
           'topology presence failure backoff');
       } catch (backoffError) {
         captureException(backoffError);

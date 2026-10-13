@@ -8,7 +8,8 @@ import { devices } from './devices';
 /**
  * Topology site location W2 (#7886): the presence read model (spec S§7.1,
  * docs/superpowers/specs/monitoring/2026-10-03-topology-site-location-design.md).
- * Derived runtime state, written only by the presence evaluator; RLS shape 1 on org_id.
+ * Derived runtime state (fingerprint/presence rows written by the presence evaluator; state rows also by the
+ * invalidation triggers and the worker's enrolment); RLS shape 1 on org_id.
  * Migration: 2026-12-25-140000-topology-presence-read-model.sql (SQL owns the
  * DEFERRABLE INITIALLY IMMEDIATE composite FKs, the triggers and the expression index).
  * Nothing that reads these tables may write devices.site_id: presence never moves a device.
@@ -28,6 +29,8 @@ export const topologyOrgPresenceState = pgTable('topology_org_presence_state', {
   coverage: varchar('coverage', { length: 16 }).$type<TopologyPresenceCoverage>().notNull().default('not_configured'),
   coverageReason: varchar('coverage_reason', { length: 64 }),
   dirtyAt: timestamp('dirty_at', { withTimezone: true }),
+  /** Bumped by every invalidation; the evaluator clears dirty_at only if it is unchanged since its read. */
+  dirtySeq: bigint('dirty_seq', { mode: 'bigint' }).notNull().default(0n),
   evaluatedAt: timestamp('evaluated_at', { withTimezone: true }),
   nextEvaluationAt: timestamp('next_evaluation_at', { withTimezone: true }),
   inputDigest: varchar('input_digest', { length: 64 }),

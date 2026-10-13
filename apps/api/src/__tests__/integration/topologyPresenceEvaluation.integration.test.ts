@@ -127,9 +127,21 @@ describe('presence evaluation', () => {
     expect((await state(f.orgId))!.next_evaluation_at).not.toBeNull();
 
     await getTestDb().execute(sql`UPDATE topology_org_presence_state SET dirty_at = now() - interval '1 minute' WHERE org_id = ${f.orgId}::uuid`);
-    // A declaration change committed while the evaluation runs (simulated by the hook, between read and clear).
+    // A declaration change committed while the evaluation runs, through the REAL invalidation trigger. The org is
+    // already dirty, so the trigger keeps the first dirty_at stamp (debounce anchor): only a generation counter can
+    // tell the evaluator its snapshot is stale.
     await evaluateOrgPresence(f.orgId, new Date(), {
-      beforeFinalize: () => getTestDb().execute(sql`UPDATE topology_org_presence_state SET dirty_at = clock_timestamp() WHERE org_id = ${f.orgId}::uuid`).then(() => undefined),
+      beforeFinalize: () => getTestDb().execute(sql`INSERT INTO network_baselines (org_id, site_id, subnet)
+        VALUES (${f.orgId}::uuid, ${f.siteB}::uuid, '10.1.9.0/24')`).then(() => undefined),
+    });
+    expect((await state(f.orgId))!.dirty_at).not.toBeNull();
+
+    // And a change while the org was clean at the start is kept too.
+    await evaluateOrgPresence(f.orgId);
+    expect((await state(f.orgId))!.dirty_at).toBeNull();
+    await evaluateOrgPresence(f.orgId, new Date(), {
+      beforeFinalize: () => getTestDb().execute(sql`UPDATE network_baselines SET subnet = '10.1.8.0/24'
+        WHERE org_id = ${f.orgId}::uuid AND subnet = '10.1.9.0/24'`).then(() => undefined),
     });
     expect((await state(f.orgId))!.dirty_at).not.toBeNull();
   });

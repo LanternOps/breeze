@@ -178,12 +178,12 @@ export async function evaluateOrgPresence(orgId: string, now = new Date(), hooks
     if (!lock?.locked) return { status: 'busy', version: 0n, devices: 0, coverage: 'not_configured' } as EvaluateResult;
 
     await tx.execute(sql`INSERT INTO topology_org_presence_state (org_id) VALUES (${orgId}::uuid) ON CONFLICT (org_id) DO NOTHING`);
-    const [current] = await tx.execute<{ version: string; dirty_at: string | null }>(sql`
-      SELECT fingerprint_version::text AS version, dirty_at::text AS dirty_at FROM topology_org_presence_state WHERE org_id = ${orgId}::uuid`);
+    const [current] = await tx.execute<{ version: string; dirty_seq: string }>(sql`
+      SELECT fingerprint_version::text AS version, dirty_seq::text AS dirty_seq FROM topology_org_presence_state WHERE org_id = ${orgId}::uuid`);
     const version = BigInt(current?.version ?? '0') + 1n;
-    const dirtyAtStart = current?.dirty_at ?? null;
-    // Compare-and-clear: a trigger that re-marks the org after our read leaves a different dirty_at, which survives.
-    const clearDirty = dirtyAtStart === null ? sql`dirty_at` : sql`CASE WHEN dirty_at = ${dirtyAtStart}::timestamptz THEN NULL ELSE dirty_at END`;
+    // Compare-and-clear on the invalidation counter, not on dirty_at: a trigger that fires after our read bumps
+    // dirty_seq (dirty_at keeps its first stamp), so its change keeps the org dirty for the next tick.
+    const clearDirty = sql`CASE WHEN dirty_seq = ${current?.dirty_seq ?? '0'}::bigint THEN NULL ELSE coalesce(dirty_at, now()) END`;
 
     const declarations = await readOrgNetworkDeclarations(tx, orgId);
     if (!declarations.bySite.size) {
