@@ -98,7 +98,8 @@ func init() {
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper LaunchAgent")
-	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation and remember the choice (the running agent will not install it either)")
+	serviceInstallCmd.Flags().BoolVar(&watchdogOptIn, "watchdog", false, watchdogOptInUsage)
 	// A failed start returns an error from RunE; usage text would bury it.
 	serviceInstallCmd.SilenceUsage = true
 }
@@ -121,6 +122,13 @@ var serviceInstallCmd = &cobra.Command{
 		// to 0755 on startup so the Helper can read agent.yaml.
 		if err := os.Chmod(darwinConfigDir, 0700); err != nil {
 			return fmt.Errorf("failed to set permissions on %s: %w", darwinConfigDir, err)
+		}
+
+		// Persist --no-watchdog / --watchdog (or honour a standing opt-out)
+		// before any install side effect: a failed marker write aborts here.
+		skipWatchdog, err := applyWatchdogFlags(defaultWatchdogFlagDeps(nil), noWatchdog, watchdogOptIn)
+		if err != nil {
+			return err
 		}
 		// The binary directory must be root-owned and not group/other
 		// writable — this is exactly what verifyOwnExecutableTrustedIfPrivileged
@@ -281,7 +289,7 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
 			fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		}
-		if !noWatchdog {
+		if !skipWatchdog {
 			// Describe the service state we actually left behind. This line
 			// used to assert "installed and running" unconditionally, which
 			// before #5252 was never true on this platform and is still not

@@ -168,7 +168,17 @@ export type McpExemptReason =
    * Breeze billing portal, or a support forward. Not tenant data the AI
    * manages on the partner's behalf (W05 gap triage).
    */
-  | 'breeze_account';
+  | 'breeze_account'
+  /**
+   * Material that establishes or extends TRUST in the tenant and is finished
+   * by a human out-of-band: BMR tokens/signing keys/boot media, backup
+   * encryption keys, DNS/domain-ownership verification at the registrar, and
+   * plugin installs (code entering the tenant). An agent that could mint,
+   * rotate, verify or install these could widen what the tenant trusts, and a
+   * bad call (orphaned snapshots, hijacked sending domain, hostile plugin) is
+   * hard to unwind.
+   */
+  | 'human_only_trust_material';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6781' },
@@ -276,11 +286,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'auth/verifyEmail.ts': { exempt: 'identity' },
   'authenticator.ts': { exempt: 'identity' },
   'automations.ts': { tools: ['manage_automations'] },
-  'backup/bmr.ts': { gap: '#6792' },
+  'backup/bmr.ts': { exempt: 'human_only_trust_material', note: "BMR tokens, signing keys and boot media are finished by a human at the physical machine; recover/* is recovery-environment transport. From #6792." },
   'backup/bmrRecoveries.ts': { gap: '#6788' },
   'backup/configs.ts': { tools: ['manage_backup_configs'] },
   'backup/dashboard.ts': { tools: ['query_backups', 'get_backup_status'] },
-  'backup/encryption.ts': { gap: '#6793' },
+  'backup/encryption.ts': { exempt: 'human_only_trust_material', note: "Key rotate/delete can orphan every snapshot; key metadata alone is low AI value. From #6793." },
   // #6008 W03 — unified breeze+provider backup-health read model for the
   // Integrations tab (GET /backup/health/devices). No MCP tool queries this
   // read model yet; `get_backup_status` (backup/dashboard.ts) reads
@@ -303,7 +313,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'edr/providers.ts': { exempt: 'vendor_console_admin', note: 'static adapter catalog for the connect-a-provider form' },
   'edr/tenants.ts': { exempt: 'vendor_console_admin', note: 'maps a discovered EDR tenant onto a Breeze org' },
   'backup/storageCredentials.ts': { exempt: 'human_only_revocation_evidence', note: 'lists storage keys used before brokered backup writes, checks a replaced key, records a user confirmation' },
-  'backup/reconcile.ts': { gap: '#6794' },
+  'backup/reconcile.ts': { exempt: 'human_only_migration', note: "Adopting orphaned S3 snapshots is a rare operator recovery action with a self-managed DB context. From #6794." },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'backup/restoreIntegrityGate.ts': { exempt: 'internal_plumbing', note: 'Restore integrity check shared by the restore routes; no endpoint of its own.' },
   'backup/restore.ts': { tools: ['restore_snapshot'] },
@@ -330,7 +340,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'catalog/bundles.ts': { tools: ['manage_catalog'] },
   'catalog/catalog.ts': { tools: ['search_catalog', 'get_catalog_item', 'manage_catalog'] },
   'catalog/distributors.ts': { tools: ['lookup_distributor_product'] },
-  'catalog/enrich.ts': { gap: '#6795' },
+  'catalog/enrich.ts': { exempt: 'internal_plumbing', note: "AI copy-polish endpoint backing the catalog UI; the AI can draft copy and call manage_catalog directly. From #6795." },
   'catalog/pricing.ts': { tools: ['manage_catalog'] },
   'changes.ts': { tools: ['query_change_log'] },
   'cisHardening.ts': { tools: ['get_cis_compliance', 'get_cis_device_report', 'apply_cis_remediation'] },
@@ -366,7 +376,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'deployments.ts': { tools: ['manage_deployments'] },
   'desktopWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'devPush.ts': { exempt: 'internal_plumbing' },
-  'devices/actuateElevation.ts': { gap: '#6796' },
+  'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
   'devices/anomalies.ts': { gap: '#6777' },
@@ -454,7 +464,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'invoices/invoices.ts': { tools: ['list_invoices', 'get_invoice', 'manage_invoices'] },
   'invoices/lifecycle.ts': { tools: ['manage_invoices'] },
   'invoices/payments.ts': { tools: ['manage_invoices'] },
-  'invoices/pdf.ts': { gap: '#6798' },
+  'invoices/pdf.ts': { exempt: 'ui_file_transfer', note: "Binary PDF download; revisit if a tool can return a binary artifact. From #6798." },
   'invoices/settings.ts': { gap: '#6784' },
   'invoices/stripe.ts': { tools: ['manage_invoices'] },
   'invoicesPublic.ts': { exempt: 'portal' },
@@ -476,7 +486,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'networkBaselines.ts': { tools: ['configure_network_baseline'] },
   'networkChanges.ts': { tools: ['get_network_changes', 'acknowledge_network_device'] },
   'networkKnownGuests.ts': { gap: '#6779' },
-  'notifications.ts': { gap: '#6799' },
+  'notifications.ts': { exempt: 'internal_plumbing', note: "The caller's own in-app bell; marginal value for an AI agent. From #6799." },
   'oauth.ts': { exempt: 'identity' },
   'oauthInteraction.ts': { exempt: 'identity' },
   'oauthWellKnown.ts': { exempt: 'identity' },
@@ -485,7 +495,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'officeAddin/emailContext.ts': { exempt: 'addin_surface' },
   'officeAddin/tickets.ts': { exempt: 'addin_surface' },
   'officeAddin/time.ts': { exempt: 'addin_surface' },
-  'onedrive.ts': { gap: '#6800' },
+  'onedrive.ts': { exempt: 'ui_file_transfer', note: "OneDrive helper library picker; niche browser file-selection surface. From #6800." },
   'orgAccountReadiness.ts': { gap: '#6789' },
   'orgArchive.ts': { exempt: 'human_only_tenant_restructure', note: 'Archive/restore an organization -- tenant-restructure decision.' },
   'orgAuditRetentionSettings.ts': { gap: '#6789' },
@@ -504,7 +514,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'packageSearch.ts': { gap: '#6782' },
   'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history'] },
   'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
-  'partner.ts': { gap: '#6801' },
+  'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
@@ -519,13 +529,13 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/organizations.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
-  'partnerLoginBranding.ts': { gap: '#6802' },
+  'partnerLoginBranding.ts': { exempt: 'internal_plumbing', note: "Cosmetic, one-time partner login branding setup. From #6802." },
   'preAssignment.ts': { exempt: 'human_only_tenant_restructure', note: 'Parked-device assignment and holding-area incident actions (enrollment switch, expire by deploy key) -- full-partner-admin surface that decides which customer org a pre-assignment device joins; no AI tool in v1.' },
-  'partnerSendingDomains.ts': { gap: '#6803' },
+  'partnerSendingDomains.ts': { exempt: 'human_only_trust_material', note: "DNS verification is completed by a human at the registrar; test-send leaves the tenant. From #6803." },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },
   'patchPlan.ts': { gap: '#6786' },
-  'patchPolicies.ts': { gap: '#6804' },
+  'patchPolicies.ts': { exempt: 'internal_plumbing', note: "Read-only kind='legacy' surface superseded by config-policy patch features; retire rather than build a tool. From #6804." },
   'patches/appOptions.ts': { exempt: 'internal_plumbing' },
   'patches/approvals.ts': { tools: ['manage_patches'] },
   'patches/compliance.ts': { tools: ['manage_patches'] },
@@ -536,7 +546,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'peripheralControl.ts': { tools: ['manage_peripheral_policies', 'get_peripheral_activity', 'manage_peripheral_policy'] },
   'permissionsCatalog.ts': { exempt: 'identity' },
   'playbooks.ts': { tools: ['list_playbooks', 'execute_playbook', 'get_playbook_history'] },
-  'plugins.ts': { gap: '#6805' },
+  'plugins.ts': { exempt: 'human_only_trust_material', note: "Installing a plugin puts code into the tenant: supply-chain class risk, low demand. From #6805." },
   'policyManagement/actions.ts': { gap: '#6781' },
   'policyManagement/compliance.ts': { tools: ['get_compliance_status'] },
   'policyManagement/crud.ts': { tools: ['query_compliance_policies'] },
@@ -588,7 +598,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/seriesCombine.ts': { exempt: 'human_only_migration', note: 'Multi-org report series W04 Combine: an opt-in, one-shot consolidation of existing per-org reports that a human reviews in a dialog (candidate groups, CC resolution) before confirming; spec §3.8 gives it no AI tool and D4 forbids automatic consolidation.' },
   'roles.ts': { gap: '#6789' },
   'scriptAi.ts': { exempt: 'ai_transport' },
-  'scriptBundle.ts': { gap: '#6806' },
+  'scriptBundle.ts': { exempt: 'ui_file_transfer', note: "Bundle export/import; import is bulk content ingestion, low frequency. From #6806." },
   'scriptLibrary.ts': { tools: ['search_script_library'] },
   'scripts.ts': { tools: ['list_scripts', 'get_script_details', 'run_script', 'cancel_script_execution', 'get_script_execution_history', 'get_script_execution', 'list_script_templates'] },
   'search.ts': { exempt: 'internal_plumbing' },
@@ -616,7 +626,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'sso.ts': { exempt: 'identity' },
   'stripeConnect/index.ts': { exempt: 'vendor_console_admin' },
   'supportPublic.ts': { exempt: 'portal' },
-  'system.ts': { gap: '#6807' },
+  'system.ts': { exempt: 'internal_plumbing', note: "Version/config-status reads are low AI value; setup-complete is onboarding UI. From #6807." },
   'systemTools/eventLogs.ts': { gap: '#6783' },
   'systemTools/fileBrowser.ts': { tools: ['file_operations'] },
   'systemTools/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

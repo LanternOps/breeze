@@ -67,6 +67,9 @@ export const deviceWorkloads = pgTable(
     upstreamStatus: varchar('upstream_status', { length: 20 }).$type<WorkloadUpstreamStatus>().default('pending').notNull(),
     upstreamDigest: varchar('upstream_digest', { length: 80 }),
     upstreamCheckedAt: timestamp('upstream_checked_at'),
+    // W06 (spec §10.2): when upstream_status first became `behind` for the
+    // current local image. Transition logic lives in services/workloads/behindSince.ts.
+    behindSince: timestamp('behind_since'),
   },
   (t) => [
     uniqueIndex('device_workloads_device_runtime_workload_uniq').on(t.deviceId, t.runtime, t.workloadId),

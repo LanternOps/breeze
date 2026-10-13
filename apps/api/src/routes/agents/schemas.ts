@@ -402,7 +402,8 @@ export const heartbeatSchema = z.object({
     // value drops this field alone rather than rejecting the beat.
     workloadInventoryProtocolVersion: z.number().int().optional().catch(undefined),
     // #8317 — the agent verifies a signed identity assertion and adopts the
-    // row's org/site. Same tolerant contract; anything but exactly 1 means no
+    // row's org/site. Same tolerant contract. 1 = v1 assertions; 2 or later =
+    // v2, which adds the ownership epoch (#8206); anything else means no
     // assertion is sent.
     identitySyncProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
@@ -430,6 +431,10 @@ export const heartbeatSchema = z.object({
     orgId: z.string().uuid(),
     siteId: z.string().uuid(),
     nonce: z.string().regex(/^[0-9a-f]{32}$/),
+    // #8206 — the PAM ownership epoch whose identity the agent loaded (v2
+    // agents; absent until it has received one). Its own catch: a malformed
+    // epoch drops this field alone, never the identity sync above.
+    ownershipEpoch: z.number().int().positive().max(2_147_483_647).optional().catch(undefined),
   }).optional().catch(undefined),
   // #8382 — why the agent refused the last identity assertion, and the
   // org/site that assertion named. The server stops signing for that target

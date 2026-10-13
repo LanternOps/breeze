@@ -37,6 +37,7 @@ type lifetimeStore interface {
 	ClearProcessIdentity(string, uint64) error
 	Entry(string) (LedgerEntry, bool)
 	Entries() []LedgerEntry
+	Retire(string) error
 	// LoadError reports a ledger that could not be read. Entries() returns an
 	// empty slice in that case, so emptiness alone never means "no actuation".
 	LoadError() error
@@ -620,6 +621,46 @@ func (m *lifecycleManager) AcquireLegacyActuation(ctx context.Context) (func(), 
 	}
 	var once sync.Once
 	return func() { once.Do(m.releaseOperation) }, nil
+}
+
+// Retire applies a server `retired` disposition (PAM ownership epochs, #8202
+// W4): the actuation belongs to an earlier ownership epoch and is closed or
+// carries a retirement marker, so its ledger entry no longer needs
+// reconciling. Optional capability beside the frozen Manager interface,
+// discovered by type assertion like Available and ProtocolVersion.
+//
+// It takes the operation gate and refuses, leaving the entry in place, when
+// the entry is still unresolved locally, when this process owns a live job or
+// suspended process for it (a verified_active reconcile), or when the ledger
+// holds a different generation than the one the server retired: a server
+// answer must never orphan a live elevated process. An entry already gone is
+// a no-op.
+func (m *lifecycleManager) Retire(ctx context.Context, actuationID string, generation uint64) error {
+	if err := m.acquireOperation(ctx); err != nil {
+		return fmt.Errorf("PAM lifecycle operation timed out: %w", err)
+	}
+	defer m.releaseOperation()
+	entry, ok := m.store.Entry(actuationID)
+	if !ok {
+		return nil
+	}
+	if entry.Generation != generation {
+		return fmt.Errorf("ledger holds generation %d, not the retired generation %d", entry.Generation, generation)
+	}
+	m.mu.Lock()
+	_, unresolved := m.unresolved[actuationID]
+	_, ownsJob := m.jobs[actuationID]
+	_, ownsProcess := m.processes[actuationID]
+	m.mu.Unlock()
+	switch {
+	case unresolved:
+		return errors.New("refusing to retire an entry the local reconcile left unresolved")
+	case ownsJob:
+		return errors.New("refusing to retire an entry with a live job")
+	case ownsProcess:
+		return errors.New("refusing to retire an entry with an owned process")
+	}
+	return m.store.Retire(actuationID)
 }
 
 func (m *lifecycleManager) acquireOperation(ctx context.Context) error {

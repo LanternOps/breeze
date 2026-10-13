@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ticketTypeSchema } from '@breeze/shared';
 
 /**
  * A `z.coerce.date()` field that reports a plain "<field> is required" when
@@ -98,6 +99,7 @@ export const fromEmailSchema = z.object({
     z.object({ kind: z.literal('raw') }), // submitter_email/name only
   ]),
   followUpOf: z.object({ ticketId: z.string().uuid() }).nullish(), // closed-ticket continuation: carries thread key + prior number
+  ticketType: ticketTypeSchema.optional(), // #7900: omitted -> incident
 });
 
 /** Body of POST /office-addin/tickets/:id/link-email (spec §3.3, Task 17). */

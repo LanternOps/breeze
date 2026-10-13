@@ -408,7 +408,9 @@
       "unratedPending": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "unratedPending_one": "{{count}} correctif non évalué en attente (ne sera pas approuvé automatiquement)",
       "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
-      "empty": "Pas encore de données de correctifs"
+      "empty": "Pas encore de données de correctifs",
+      "imagesNotChecked_one": "{{count}} image de conteneur non vérifiée",
+      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées"
     },
     "vuln": {
       "title": "Vulnérabilités",

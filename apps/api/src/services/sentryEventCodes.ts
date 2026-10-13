@@ -406,6 +406,10 @@ export const SENTRY_EVENT_CODES = [
    *  (ACCEPT_CHECKOUT_TIMEOUT_MS) and sent the customer to the invoice page.
    *  A run of these means Stripe (or the partner's account) is slow. */
   'quote_accept_checkout_timeout',
+  /** #8603: a partner's stored `timezone` is not a zone Intl knows, so invoice
+   *  line work dates were computed in UTC instead (assembly never blocks on
+   *  it). Fix the partner's timezone setting; near-midnight lines may be a day off. */
+  'invoice_work_date_invalid_timezone',
 ] as const;
 
 /**

@@ -355,6 +355,12 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(deriveGrantHealth(snapshot({ grantsVerifiedAt: null, observedGrants: [], status: 'degraded' }), manifest).state).toBe('degraded');
   });
 
+  it('flags an actions row stored at manifest v1 (delegated-ID manifest) as manifest-stale (#8648)', () => {
+    const manifest = M365_PERMISSION_PROFILES['customer-graph-actions'];
+    expect(manifest.version).toBe(2);
+    expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 1, status: 'degraded' }), manifest).state).toBe('manifest-stale');
+  });
+
   it('does not claim definitive drift before the first authoritative grant observation', () => {
     const manifest = M365_PERMISSION_PROFILES['customer-graph-read'];
     const unknown = deriveGrantHealth(snapshot({
@@ -745,7 +751,7 @@ describe('createConnectionService factory (non-read profile)', () => {
 
   function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-    organizationDisplayName: 'Contoso', manifestVersion: 1,
+    organizationDisplayName: 'Contoso', manifestVersion: 2,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z',

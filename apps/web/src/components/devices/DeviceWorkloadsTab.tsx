@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { Container, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type {
-  WorkloadCollection,
-  WorkloadDetection,
-  WorkloadKind,
-  WorkloadRuntime,
-  WorkloadState,
+import {
+  workloadUpstreamStatusClass,
+  type WorkloadCollection,
+  type WorkloadDetection,
+  type WorkloadKind,
+  type WorkloadRuntime,
+  type WorkloadState,
+  type WorkloadUpstreamStatus,
 } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -42,6 +45,9 @@ type WorkloadView = {
   composeProject: string | null;
   composeService: string | null;
   startedAt: string | null;
+  /** Image currency (W05); absent on rows from an API that predates it. */
+  upstreamStatus?: WorkloadUpstreamStatus;
+  upstreamCheckedAt?: string | null;
 };
 
 type WorkloadsView = {
@@ -60,6 +66,36 @@ const STATE_BADGE: Record<WorkloadState, string> = {
   restarting: 'bg-warning/15 text-warning border-warning/30',
   other: 'bg-muted text-muted-foreground border-border',
 };
+
+/**
+ * Image status badge (spec §9.1). The unknown-class statuses (pending,
+ * private, unsupported_registry, error) all read "Not checked" and are never
+ * styled as healthy; the specific reason is in the tooltip.
+ */
+type ImageStatusKey = 'behind' | 'current' | 'pinned' | 'local' | 'not_found' | 'not_checked';
+const IMAGE_FILTERS: readonly ImageStatusKey[] = ['behind', 'current', 'not_checked', 'pinned', 'local', 'not_found'];
+const IMAGE_STATUS_BADGE: Record<ImageStatusKey, string> = {
+  behind: 'bg-warning/15 text-warning border-warning/30',
+  current: 'bg-success/15 text-success border-success/30',
+  pinned: 'bg-muted text-muted-foreground border-border',
+  local: 'bg-muted text-muted-foreground border-border',
+  not_found: 'bg-muted text-muted-foreground border-border',
+  not_checked: 'bg-muted text-muted-foreground border-dashed border-border',
+};
+
+function imageStatusKey(workload: WorkloadView): ImageStatusKey | null {
+  if (workload.kind !== 'container' || !workload.upstreamStatus) return null;
+  return workloadUpstreamStatusClass(workload.upstreamStatus) === 'unknown'
+    ? 'not_checked'
+    : (workload.upstreamStatus as Exclude<ImageStatusKey, 'not_checked'>);
+}
+
+/** `#workloads/<filter>` — the tab router only reads the first hash segment. */
+const HASH_TAB = 'workloads';
+function parseImageFilter(hash: string): ImageStatusKey | 'all' {
+  const [tab, filter] = hash.split('/');
+  return tab === HASH_TAB && IMAGE_FILTERS.includes(filter as ImageStatusKey) ? (filter as ImageStatusKey) : 'all';
+}
 
 /** Collections that mean "we could not list" — styled as a problem, not as a note. */
 const PROBLEM_COLLECTIONS: ReadonlySet<WorkloadCollection> = new Set(['permission_denied', 'error']);
@@ -96,6 +132,12 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
   const [view, setView] = useState<WorkloadsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [imageFilter, setImageFilter] = useHashState<ImageStatusKey | 'all'>('all', parseImageFilter);
+
+  const changeImageFilter = (next: ImageStatusKey | 'all') => {
+    setImageFilter(next);
+    window.location.hash = next === 'all' ? HASH_TAB : `${HASH_TAB}/${next}`;
+  };
 
   // Monotonic request id: a late response for a previous device (or an
   // earlier retry) must not overwrite the current one.
@@ -166,8 +208,28 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
     );
   }
 
+  const hasImageStatus = view.workloads.some((w) => imageStatusKey(w) !== null);
+
   return (
     <div className="space-y-6">
+      {hasImageStatus && (
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">{t('workloads.imageFilter.label')}</span>
+          <select
+            data-testid="workloads-image-filter"
+            value={imageFilter}
+            onChange={(e) => changeImageFilter(e.target.value as ImageStatusKey | 'all')}
+            className="h-8 rounded-md border bg-background px-2 text-sm"
+          >
+            <option value="all">{t('workloads.imageFilter.all')}</option>
+            {IMAGE_FILTERS.map((key) => (
+              <option key={key} value={key}>
+                {t(/* i18n-dynamic */ `workloads.imageStatus.${key}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {/* API order is alphabetical; detect-only runtimes (no listing) go last. */}
       {[...view.runtimes]
         .sort((a, b) => Number(DETECT_ONLY.has(a.runtime)) - Number(DETECT_ONLY.has(b.runtime)))
@@ -176,6 +238,7 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
           key={runtime.runtime}
           runtime={runtime}
           workloads={view.workloads.filter((w) => w.runtime === runtime.runtime)}
+          imageFilter={hasImageStatus ? imageFilter : 'all'}
           timezone={timezone}
         />
       ))}
@@ -186,10 +249,12 @@ export default function DeviceWorkloadsTab({ deviceId, timezone }: DeviceWorkloa
 function RuntimeSection({
   runtime,
   workloads,
+  imageFilter,
   timezone,
 }: {
   runtime: RuntimeView;
   workloads: WorkloadView[];
+  imageFilter: ImageStatusKey | 'all';
   timezone?: string;
 }) {
   const { t } = useTranslation('devices');
@@ -205,6 +270,8 @@ function RuntimeSection({
   const stopped = workloads.filter((w) => w.state === 'stopped').length;
   const truncated =
     runtime.observedCount != null && runtime.reportedCount != null && runtime.observedCount > runtime.reportedCount;
+  // Counts above stay unfiltered; only the table follows the image filter.
+  const shown = imageFilter === 'all' ? workloads : workloads.filter((w) => imageStatusKey(w) === imageFilter);
 
   return (
     <section data-testid={`workloads-runtime-${name}`} className="rounded-lg border bg-card shadow-xs">
@@ -257,7 +324,10 @@ function RuntimeSection({
             {t('workloads.truncated', { reported: runtime.reportedCount, observed: runtime.observedCount })}
           </p>
         )}
-        {listed && workloads.length > 0 && <WorkloadTable workloads={workloads} timezone={timezone} />}
+        {listed && workloads.length > 0 && shown.length > 0 && <WorkloadTable workloads={shown} timezone={timezone} />}
+        {listed && workloads.length > 0 && shown.length === 0 && (
+          <p className="text-sm text-muted-foreground">{t('workloads.imageFilter.empty')}</p>
+        )}
         {listed && runtime.collection === 'ok' && workloads.length === 0 && (
           <p className="text-sm text-muted-foreground">{t('workloads.empty')}</p>
         )}
@@ -276,6 +346,7 @@ function WorkloadTable({ workloads, timezone }: { workloads: WorkloadView[]; tim
             <th className="py-2 pr-4 font-medium">{t('workloads.columns.name')}</th>
             <th className="py-2 pr-4 font-medium">{t('workloads.columns.state')}</th>
             <th className="py-2 pr-4 font-medium">{t('workloads.columns.image')}</th>
+            <th className="py-2 pr-4 font-medium">{t('workloads.columns.imageStatus')}</th>
             <th className="py-2 pr-4 font-medium">{t('workloads.columns.compose')}</th>
             <th className="py-2 font-medium">{t('workloads.columns.started')}</th>
           </tr>
@@ -293,6 +364,9 @@ function WorkloadTable({ workloads, timezone }: { workloads: WorkloadView[]; tim
                 </span>
               </td>
               <td className="py-2 pr-4 break-all">{imageLabel(workload)}</td>
+              <td className="py-2 pr-4">
+                <ImageStatusBadge workload={workload} />
+              </td>
               <td className="py-2 pr-4">{composeLabel(workload)}</td>
               <td className="py-2 whitespace-nowrap">{formatWhen(workload.startedAt, timezone)}</td>
             </tr>
@@ -300,5 +374,20 @@ function WorkloadTable({ workloads, timezone }: { workloads: WorkloadView[]; tim
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ImageStatusBadge({ workload }: { workload: WorkloadView }) {
+  const { t } = useTranslation('devices');
+  const key = imageStatusKey(workload);
+  if (!key || !workload.upstreamStatus) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span
+      data-testid="workloads-image-status"
+      title={t(/* i18n-dynamic */ `workloads.imageStatusReason.${workload.upstreamStatus}`)}
+      className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs ${IMAGE_STATUS_BADGE[key]}`}
+    >
+      {t(/* i18n-dynamic */ `workloads.imageStatus.${key}`)}
+    </span>
   );
 }

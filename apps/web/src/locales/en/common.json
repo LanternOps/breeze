@@ -408,7 +408,9 @@
       "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
       "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
       "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
-      "empty": "No patch data yet"
+      "empty": "No patch data yet",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked"
     },
     "vuln": {
       "title": "Vulnerabilities",

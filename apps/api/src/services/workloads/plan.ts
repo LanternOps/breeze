@@ -87,6 +87,14 @@ export interface WorkloadRuntimePlan {
    * so ingest keeps the stored digest for an unchanged image (W05 handoff).
    */
   incompleteSnapshot: boolean;
+  /**
+   * W06: this runtime's outcome is a definitive statement of what runs on the
+   * host (an ok + complete, untruncated snapshot; collection turned off by
+   * policy; or the runtime gone), so an image no longer referenced afterwards
+   * retires its open image-currency alert. Failed, incomplete or truncated
+   * snapshots never retire (spec §10.2), even where age-out deletes rows.
+   */
+  retiresSubjects: boolean;
 }
 
 export interface WorkloadHostAxis {
@@ -133,6 +141,10 @@ function truncatedDeleteIds(
   return sortedIds([...aged, ...trimmed]);
 }
 
+function isTruncated(report: WorkloadRuntimeReport): boolean {
+  return !report.complete || report.observedCount > report.workloads.length;
+}
+
 function planWorkloads(
   report: WorkloadRuntimeReport,
   collection: WorkloadCollection,
@@ -149,8 +161,7 @@ function planWorkloads(
     storedExact: (row: StoredWorkload) => row.workloadId,
     reportedExact: (row: WorkloadReportItem) => row.workloadId,
   });
-  const truncated = !report.complete || report.observedCount > report.workloads.length;
-  if (!truncated) return plan;
+  if (!isTruncated(report)) return plan;
   return { updates: plan.updates, inserts: plan.inserts, deleteIds: truncatedDeleteIds(stored, report.workloads, now) };
 }
 
@@ -196,6 +207,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
         runtimeRow: null,
         workloads: emptyWorkloadPlan(),
         incompleteSnapshot: false,
+        retiresSubjects: false,
       };
     }
     const stored = input.storedWorkloads.filter((row) => row.runtime === report.runtime);
@@ -211,6 +223,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
         runtimeRow: toRuntimeWrite(report, report.collection, input),
         workloads: { updates: [], inserts: [], deleteIds: sortedIds(stored) },
         incompleteSnapshot: false,
+        retiresSubjects: true,
       };
     }
     if (report.detection === 'present') membership.add(report.runtime);
@@ -224,6 +237,7 @@ export function planWorkloadSync(input: WorkloadSyncInput): WorkloadSyncPlan {
       runtimeRow: toRuntimeWrite(report, collection, input),
       workloads: planWorkloads(report, collection, stored, input.now),
       incompleteSnapshot: collection === 'ok' && !report.complete,
+      retiresSubjects: collection === 'disabled' || (collection === 'ok' && !isTruncated(report)),
     };
   });
 

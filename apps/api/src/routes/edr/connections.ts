@@ -226,6 +226,23 @@ edrConnectionRoutes.post(
   },
 );
 
+/**
+ * A credential that resolves to a different vendor root than the one stored
+ * would make the next sync tombstone every mapped tenant (endpoints pruned
+ * 7 days later). Refuse it; the operator creates a new connection instead.
+ * A connection with no stored root yet may adopt its first one.
+ */
+function vendorRootMismatch(stored: string | null, resolved: string) {
+  if (!stored || stored === resolved) return null;
+  return {
+    error: 'These credentials belong to a different vendor account than this connection. '
+      + 'Create a new connection instead of changing the account on an existing one.',
+    code: 'VENDOR_ROOT_MISMATCH',
+    storedVendorRootId: stored,
+    newVendorRootId: resolved,
+  };
+}
+
 // PATCH /edr/connections/:id  (self-managed — may re-test)
 edrConnectionRoutes.patch(
   '/connections/:id',
@@ -284,6 +301,9 @@ edrConnectionRoutes.patch(
         // leave the connection with no working credential at all.
         return c.json({ success: false, error: test.error, reauth: test.reauth }, 422);
       }
+
+      const mismatch = vendorRootMismatch(existing.vendorRootId, test.rootId);
+      if (mismatch) return c.json(mismatch, 409);
 
       if (body.credentials !== undefined) {
         // Re-sealed under the EXISTING row id: the AAD is bound to it.
@@ -374,6 +394,11 @@ edrConnectionRoutes.post(
         creds, baseUrl: existing.baseUrl, region: existing.region, vendorRootId: existing.vendorRootId,
       }),
     );
+
+    if (result.ok) {
+      const mismatch = vendorRootMismatch(existing.vendorRootId, result.rootId);
+      if (mismatch) return c.json(mismatch, 409);
+    }
 
     // Only a REAUTH failure changes `status`; a transient failure persists nothing.
     if (result.ok || result.reauth) {

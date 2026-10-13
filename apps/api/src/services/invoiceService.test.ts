@@ -1597,7 +1597,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
     quantity: '1.00', unitPrice: lineTotal, costBasis: null, taxable: false, customerVisible: true,
-    lineTotal, isUnapprovedTime: false, workedMinutes: null
+    lineTotal, isUnapprovedTime: false, workedMinutes: null, workDate: '2026-06-03'
   });
   const empty = () => ({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
   const gap = (sourceId: string, quantity = '1.50') => ({
@@ -1635,6 +1635,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(a) org: every gathered row blocked → ALL_BLOCKED_BY_CURRENCY 409 with a summary, transient draft deleted', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);   // org currency
     queueResult([draftRow('USD')]);            // draft insert returning
     queueResult([]);                           // delete transient draft
@@ -1654,6 +1655,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(b) org: nothing gathered at all → NOTHING_TO_INVOICE (no details)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueResult([]);
@@ -1666,6 +1668,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(c) org: currencyCode override stamps the draft and drives the gathers (old-currency draft path, spec §7)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);   // org is GBP now
     queueResult([draftRow('EUR')]);            // insert returning (header EUR)
     queueTail('EUR');
@@ -1674,13 +1677,14 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1', status: 'draft' }));
-    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR', expect.any(Date), 'UTC');
     expect(gatherOrgParts).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
     expect(out.blockedByCurrency).toEqual([]);
     expect(out.invoice.currencyCode).toBe('EUR');
   });
 
   it('(c\') org: no override → the org currency is the header', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueTail('GBP');
@@ -1689,10 +1693,11 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'GBP' }));
-    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP');
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP', expect.any(Date), 'UTC');
   });
 
   it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1718,6 +1723,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1742,6 +1748,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(e) ticket: all blocked → ALL_BLOCKED_BY_CURRENCY with details, draft deleted', async () => {
     queueResult([{ orgId: 'org1' }]);          // ticket
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);    // org currency
     queueResult([draftRow('GBP')]);            // insert returning
     queueResult([]);                           // delete
@@ -1750,13 +1757,14 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
       code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
       details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] }
     });
-    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP');
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP', expect.any(Date), 'UTC');
     const deleteMock = (db as unknown as { delete: Mock }).delete;
     expect(deleteMock).toHaveBeenCalledTimes(1);
   });
 
   it('(f) ticket: currencyCode override stamps the draft and drives the gather', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('EUR')]);
     queueTail('EUR');
@@ -1764,11 +1772,12 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const out = await svc.assembleDraftFromTicket('t1', actor, { currencyCode: 'EUR' });
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1' }));
-    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'EUR');
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'EUR', expect.any(Date), 'UTC');
     expect(out.blockedByCurrency).toEqual([]);
   });
 
   it('(h) org: only rate-less billable time → ALL_MISSING_RATE 409 listing the entries; nothing billed at zero, draft deleted (review #1)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueResult([]);                           // delete transient draft
@@ -1788,6 +1797,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(i) org: rate-less time alongside an included row → response.missingRate lists it and it is never materialized', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1805,6 +1815,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(j) ticket: blocked currency + rate-less time, nothing included → ALL_BLOCKED_BY_CURRENCY carries both groups', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueResult([]);
@@ -1820,8 +1831,34 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     });
   });
 
+  it('(k) org: the partner timezone drives the gather and workDate is materialized (#8603)', async () => {
+    queueResult([{ timezone: 'America/New_York' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'USD', expect.any(Date), 'America/New_York');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    const lines = valuesMock.mock.calls[1]![0] as Array<{ sourceId: string; workDate: string | null }>;
+    expect(lines).toEqual([expect.objectContaining({ sourceId: 'te-usd', workDate: '2026-06-03' })]);
+  });
+
+  it('(k\') ticket: the partner timezone drives the gather; a missing partner row falls back to UTC (#8603)', async () => {
+    queueResult([{ orgId: 'org1' }]);
+    queueResult([]);                           // no partner row visible
+    queueResult([{ currencyCode: 'GBP' }]);
+    queueResult([draftRow('GBP')]);
+    queueResult([]);                           // delete
+    (gatherTicketBillables as Mock).mockResolvedValue(empty());
+    await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE' });
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP', expect.any(Date), 'UTC');
+  });
+
   it('(g) ticket: nothing gathered → NOTHING_TO_INVOICE', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueResult([]);

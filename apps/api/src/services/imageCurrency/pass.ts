@@ -30,6 +30,7 @@ import {
 } from './classify';
 import { createRegistryClient, type RegistryClient, type RegistryLookupResult } from './registryClient';
 import { captureException } from '../sentry';
+import { behindSinceOnUpstreamWrite } from '../workloads/behindSince';
 
 const HOUR_MS = 3_600_000;
 /** Spec §9.3: a checked row is due again after 6 h; the cache TTL matches. */
@@ -197,7 +198,8 @@ async function writeOrg(orgId: string, writes: GroupWrite[], now: Date): Promise
       UPDATE device_workloads w
       SET upstream_status = v.status,
           upstream_digest = v.upstream_digest,
-          upstream_checked_at = ${now.toISOString()}::timestamp
+          upstream_checked_at = ${now.toISOString()}::timestamp,
+          behind_since = ${behindSinceOnUpstreamWrite(sql`v.status`, sql`w.behind_since`, sql`${now.toISOString()}::timestamp`)}
       FROM jsonb_to_recordset(${payload}::jsonb)
         AS v(repository text, tag text, digest text, pinned boolean, status text, upstream_digest text)
       WHERE w.org_id = ${orgId}

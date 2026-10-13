@@ -139,6 +139,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
   'services/timeSuggestionService.ts': 'billing: time suggestions',
   'jobs/patchComplianceReportWorker.ts': 'report: patch compliance summary for the requesting org',
+  'services/workloads/imageCompliance.ts': 'report: container image term of patch compliance (W06); the org-scope form excludes parked and Quick Support devices like the report it feeds',
   // --- examined device readers (jobs, services, ee) ---
   'services/aiAgentRunSiteScope.ts': 'site-allowlist filter for AI run listings shown to a person',
   'services/aiOriginSummary.ts': 'label for one command/execution a person is already viewing',

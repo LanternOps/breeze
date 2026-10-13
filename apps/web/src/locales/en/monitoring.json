@@ -192,7 +192,8 @@
     "script": "Script check",
     "network_check": "Network check",
     "hardware_health": "Hardware health",
-    "time_sync": "Time synchronization"
+    "time_sync": "Time synchronization",
+    "container_image_currency": "Container image currency"
   },
   "fields": {
     "operator": "Comparison",
@@ -647,6 +648,9 @@
           "policy_not_applied": "Time policy was not applied",
           "policy_conflict_gpo": "Group Policy controls time settings"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Minimum days behind"
       }
     }
   },

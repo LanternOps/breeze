@@ -15,7 +15,12 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import type { DevicePatchApprovalEvaluation, DevicePatchEffectiveApproval } from '@breeze/shared';
+import {
+  compliancePercentWithImageTerm,
+  type ContainerImageComplianceTerms,
+  type DevicePatchApprovalEvaluation,
+  type DevicePatchEffectiveApproval,
+} from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
@@ -80,7 +85,16 @@ type PatchPayload = {
   installedPatches?: PatchItem[];
   applied?: PatchItem[];
   patches?: PatchItem[];
+  /** W06: distinct container images on the device, present only when it has any. */
+  containerImages?: ContainerImageComplianceTerms;
 };
+
+function readContainerImages(value: unknown): ContainerImageComplianceTerms | null {
+  if (!value || typeof value !== 'object') return null;
+  const { stale, current, unknown } = value as Record<string, unknown>;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  return count(stale) && count(current) && count(unknown) ? { stale, current, unknown } : null;
+}
 
 type PatchScanResponse = {
   jobId?: string;
@@ -1005,7 +1019,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const nativeSource = useMemo(() => getNativePatchSource(normalizedOsType), [normalizedOsType]);
   const nativeProviderLabel = useMemo(() => getNativePatchProviderLabel(normalizedOsType), [normalizedOsType]);
 
-  const { pendingNative, pendingOther, installedNative, installedThirdParty, compliancePercent } = useMemo(() => {
+  const { pendingNative, pendingOther, installedNative, installedThirdParty, compliancePercent, containerImages } = useMemo(() => {
     const data = payload ?? {};
     const pendingList = data.pending ?? data.pendingPatches ?? data.available ?? [];
     const installedList = data.installed ?? data.installedPatches ?? data.applied ?? [];
@@ -1029,8 +1043,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       : effectiveInstalled.filter(patch => isNativePatchForOs(patch, normalizedOsType));
     const thirdPartyInstalled = effectiveInstalled.filter(patch => !isNativePatchForOs(patch, normalizedOsType));
 
+    // W06: the same shared arithmetic as the API — a stale image is one more
+    // pending item, a current image one more installed item; unknowns are only
+    // shown as coverage. No `containerImages` → exactly the old number.
+    const images = readContainerImages(data.containerImages);
     const total = inferredPending.length + effectiveInstalled.length;
-    const computedCompliance = total > 0 ? Math.round((effectiveInstalled.length / total) * 100) : 100;
+    const computedCompliance = compliancePercentWithImageTerm(effectiveInstalled.length, total, images);
     const compliance = normalizedOsType === 'linux'
       ? computedCompliance
       : data.compliancePercent ?? data.compliance ?? computedCompliance;
@@ -1040,7 +1058,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       pendingOther: otherPending,
       installedNative: nativeInstalled,
       installedThirdParty: thirdPartyInstalled,
-      compliancePercent: compliance
+      compliancePercent: compliance,
+      containerImages: images
     };
   }, [payload, normalizedOsType]);
 
@@ -1472,6 +1491,20 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             <span>{t('devicePatchStatusTab.compliance.pending', { count: pendingNative.length + pendingOther.length })}</span>
             <span>{t('devicePatchStatusTab.compliance.installed', { count: displayedInstalledNative.length + installedThirdParty.length })}</span>
           </div>
+          {containerImages && (containerImages.stale > 0 || containerImages.unknown > 0) && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-4 text-xs text-muted-foreground">
+              {containerImages.stale > 0 && (
+                <span data-testid="patch-compliance-images-behind">
+                  {t('devicePatchStatusTab.compliance.imagesBehind', { count: containerImages.stale })}
+                </span>
+              )}
+              {containerImages.unknown > 0 && (
+                <span data-testid="patch-compliance-images-not-checked">
+                  {t('devicePatchStatusTab.compliance.imagesNotChecked', { count: containerImages.unknown })}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

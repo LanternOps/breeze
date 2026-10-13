@@ -212,6 +212,31 @@ func (s *Store) ClearProcessIdentity(actuationID string, generation uint64) erro
 	return s.replaceLocked(actuationID, entry)
 }
 
+// Retire removes an entry the server reported `retired` (PAM ownership epochs,
+// #8202 W4): its actuation belongs to an earlier ownership epoch and is closed
+// or carries a retirement marker. The removal is persisted with fsync before
+// Retire returns; on a persist error the entry is restored and the error
+// returned, so a failed retirement keeps the entry reconcilable. An unknown id
+// is a no-op and writes nothing. Callers must decide whether retirement is
+// safe (no live job, nothing unresolved); the store only makes it durable.
+func (s *Store) Retire(actuationID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	previous, exists := s.entries[actuationID]
+	if !exists {
+		return nil
+	}
+	delete(s.entries, actuationID)
+	if err := s.persistLocked(); err != nil {
+		s.entries[actuationID] = previous
+		return fmt.Errorf("%w: %w", ErrLedgerPersist, err)
+	}
+	return nil
+}
+
 func (s *Store) Entry(actuationID string) (LedgerEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

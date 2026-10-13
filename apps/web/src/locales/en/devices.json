@@ -1855,7 +1855,11 @@
       "description": "Pending vs installed updates",
       "installed": "{{count}} installed",
       "pending": "{{count}} pending",
-      "title": "Patch Compliance"
+      "title": "Patch Compliance",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked",
+      "imagesBehind_one": "{{count}} container image behind",
+      "imagesBehind_other": "{{count}} container images behind"
     },
     "confirm": {
       "install": "Install",
@@ -4036,7 +4040,8 @@
       "state": "State",
       "image": "Image / guest OS",
       "compose": "Compose project",
-      "started": "Started"
+      "started": "Started",
+      "imageStatus": "Image status"
     },
     "states": {
       "running": "Running",
@@ -4054,6 +4059,30 @@
       "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
       "interval": "Collection interval (minutes)",
       "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Behind",
+      "current": "Up to date",
+      "pinned": "Pinned",
+      "local": "Local build",
+      "not_found": "Tag not found",
+      "not_checked": "Not checked"
+    },
+    "imageStatusReason": {
+      "pending": "Not checked yet",
+      "private": "Private registry — credentials required",
+      "unsupported_registry": "Registry not supported",
+      "error": "Registry check failed — will retry",
+      "behind": "A newer image is published for this tag",
+      "current": "Matches the registry",
+      "pinned": "Pinned to a digest — nothing to compare",
+      "local": "Built locally — no registry digest",
+      "not_found": "The tag no longer exists in the registry"
+    },
+    "imageFilter": {
+      "label": "Image status",
+      "all": "All",
+      "empty": "No workloads match this image status."
     }
   }
 }
