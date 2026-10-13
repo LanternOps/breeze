@@ -72,7 +72,7 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, DEFAULT_INVOICE_LINE_DETAIL, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 import { tApi } from '../i18n';
 
 function requirePartner(actor: InvoiceActor): string {
@@ -985,7 +985,9 @@ export function customerLineDetail(invoice: Pick<InvoiceRow,
  *  hidden time-entry note is replaced by the localised generic labor label. */
 export function toCustomerInvoiceLine(
   line: CustomerInvoiceLineSource,
-  detail: InvoiceLineDetail = DEFAULT_INVOICE_LINE_DETAIL,
+  // Required (no default): an omitted detail must not fail open and ship a
+  // withheld note / worked time to the customer (#8604).
+  detail: InvoiceLineDetail,
   locale = 'en',
 ): CustomerInvoiceLine {
   const text = invoiceLineText(line, detail);
