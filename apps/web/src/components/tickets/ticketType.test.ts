@@ -4,7 +4,6 @@ import {
   isTicketType,
   ticketTypeFromHash,
   ticketTypeLabelKey,
-  withTypeSegment,
 } from './ticketType';
 
 describe('ticketTypeFromHash', () => {
@@ -29,6 +28,10 @@ describe('ticketTypeFromHash', () => {
     expect(ticketTypeFromHash('#type=<script>')).toBeNull();
   });
 
+  it('uses the first valid segment when type= is repeated', () => {
+    expect(ticketTypeFromHash('#type=bogus&type=problem&type=change')).toBe('problem');
+  });
+
   it('does not treat a selection that merely contains "type=" as a type', () => {
     expect(ticketTypeFromHash('#mytype=problem')).toBeNull();
   });
@@ -45,17 +48,5 @@ describe('ticketType metadata', () => {
   });
   it('maps a type to its i18n key', () => {
     expect(ticketTypeLabelKey('service_request')).toBe('ticketType.service_request');
-  });
-});
-
-describe('withTypeSegment', () => {
-  it('replaces an existing type segment, keeping the rest', () => {
-    expect(withTypeSegment('#T-1&sort=newest&type=change', 'problem')).toBe('#T-1&sort=newest&type=problem');
-  });
-  it('adds a segment, or removes it when null', () => {
-    expect(withTypeSegment('#T-1', 'problem')).toBe('#T-1&type=problem');
-    expect(withTypeSegment('', 'problem')).toBe('#type=problem');
-    expect(withTypeSegment('#T-1&type=problem', null)).toBe('#T-1');
-    expect(withTypeSegment('#type=problem', null)).toBe('');
   });
 });

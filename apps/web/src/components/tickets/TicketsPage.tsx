@@ -144,13 +144,13 @@ function parseHash(hash: string): { selection: string | null; sort: TicketSort; 
     if (part.startsWith('sort=')) {
       const value = part.slice('sort='.length);
       if (isTicketSort(value)) sort = value;
-    } else if (part.startsWith('type=')) {
-      type = ticketTypeFromHash(part);
-    } else {
+    } else if (!part.startsWith('type=')) {
       selection = part;
     }
   }
-  return { selection, sort, type };
+  // Same helper as the sidebar, over the whole hash, so a repeated `type=`
+  // segment resolves identically in the list filter and the nav highlight.
+  return { selection, sort, type: ticketTypeFromHash(hash) };
 }
 
 function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null): string {

@@ -735,7 +735,8 @@
       "DUPLICATE_TARGET_IS_DUPLICATE": "Esse chamado já é uma duplicata. Vincule o chamado original.",
       "CROSS_ORG": "Os chamados só podem ser vinculados dentro da mesma organização.",
       "SELF_LINK": "Um chamado não pode ser vinculado a ele mesmo.",
-      "NOT_FOUND": "Esse chamado não foi encontrado ou não está mais disponível."
+      "NOT_FOUND": "Esse chamado não foi encontrado ou não está mais disponível.",
+      "LINK_GONE": "Esse vínculo já foi removido."
     }
   }
 }

@@ -735,7 +735,8 @@
       "DUPLICATE_TARGET_IS_DUPLICATE": "Quel ticket è a sua volta un duplicato. Collega invece il ticket originale.",
       "CROSS_ORG": "I ticket possono essere collegati solo all’interno della stessa organizzazione.",
       "SELF_LINK": "Un ticket non può essere collegato a se stesso.",
-      "NOT_FOUND": "Quel ticket non è stato trovato o non è più disponibile."
+      "NOT_FOUND": "Quel ticket non è stato trovato o non è più disponibile.",
+      "LINK_GONE": "Quel collegamento è già stato rimosso."
     }
   }
 }

@@ -41,11 +41,3 @@ export function ticketTypeFromHash(hash: string): TicketType | null {
   }
   return null;
 }
-
-/** Return `hash` with its type segment set (or removed when `type` is null). */
-export function withTypeSegment(hash: string, type: TicketType | null): string {
-  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
-  const parts = raw.split('&').filter((p) => p && !p.startsWith(TYPE_PREFIX));
-  if (type) parts.push(`${TYPE_PREFIX}${type}`);
-  return parts.length > 0 ? `#${parts.join('&')}` : '';
-}

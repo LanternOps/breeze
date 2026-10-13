@@ -105,7 +105,8 @@ describe('TicketLinksCard — list', () => {
     expect(within(row).getByTestId('ticket-link-status-l1')).toBeInTheDocument();
 
     const anchor = within(row).getByTestId('ticket-link-open-l1');
-    expect(anchor).toHaveAttribute('href', '/tickets#T-2026-0010');
+    // By id, not `/tickets#<number>`: the queue only lists open tickets.
+    expect(anchor).toHaveAttribute('href', '/tickets/a');
   });
 
   it('shows an error with retry when the load fails (not the empty state)', async () => {
@@ -238,7 +239,7 @@ describe('TicketLinksCard — add', () => {
     ['CROSS_ORG', 422],
     ['SELF_LINK', 422],
     ['NOT_FOUND', 404],
-  ])('maps %s to a specific message (not the generic fallback or the raw code)', async (code, status) => {
+  ])('maps %s to its own message from the locale (not the fallback, raw code or server prose)', async (code, status) => {
     mockApi({
       links: [],
       search: [{ id: 'tk-9', internalNumber: 'T-2026-0009', subject: 'Root cause', status: 'open' }],
@@ -256,9 +257,14 @@ describe('TicketLinksCard — add', () => {
     expect(toast.message).not.toContain('server prose');
     // Specific, not the shared fallback.
     expect(toast.message).not.toBe('Could not add the link.');
+    // Exactly this code's string, so two codes can never share (or swap) copy.
+    const en = (await import('../../locales/en/tickets.json')).default as { ticketLinks: { errors: Record<string, string> } };
+    expect(toast.message).toBe(en.ticketLinks.errors[code]);
+    const others = Object.entries(en.ticketLinks.errors).filter(([k]) => k !== code).map(([, v]) => v);
+    expect(others).not.toContain(toast.message);
   });
 
-  it('an unknown error code falls back to the generic message', async () => {
+  it('an unknown error code falls back to the server message', async () => {
     mockApi({
       links: [],
       search: [{ id: 'tk-9', internalNumber: 'T-2026-0009', subject: 'Root cause', status: 'open' }],
@@ -285,7 +291,75 @@ describe('TicketLinksCard — add', () => {
   });
 });
 
+describe('TicketLinksCard — failures', () => {
+  it('a 401 on add redirects to login without a toast', async () => {
+    mockApi({
+      links: [],
+      search: [{ id: 'tk-9', internalNumber: 'T-2026-0009', subject: 'Root cause', status: 'open' }],
+      post: json({ error: 'expired' }, 401),
+    });
+    render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    fireEvent.click(await screen.findByTestId('ticket-links-add'));
+    fireEvent.change(await screen.findByTestId('ticket-link-search'), { target: { value: 'root' } });
+    fireEvent.click(await screen.findByText('Root cause', {}, { timeout: 3000 }));
+    fireEvent.click(screen.getByTestId('ticket-link-submit'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login?next=%2Ftickets', { replace: true }));
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('a failed remove toasts, closes the confirm and refreshes the list', async () => {
+    mockApi({ links: [link({ id: 'l1' })], del: json({ error: 'gone', code: 'NOT_FOUND' }, 404) });
+    render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    await screen.findByTestId('ticket-link-row-l1');
+    const before = listCalls().length;
+    fireEvent.click(screen.getByTestId('ticket-link-remove-l1'));
+    fireEvent.click(await screen.findByTestId('ticket-link-remove-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const en = (await import('../../locales/en/tickets.json')).default as { ticketLinks: { errors: Record<string, string> } };
+    // The link (not a ticket) is gone: dedicated copy.
+    expect((showToast.mock.calls[0][0] as { message: string }).message).toBe(en.ticketLinks.errors.LINK_GONE);
+    await waitFor(() => expect(screen.queryByTestId('ticket-link-remove-confirm')).toBeNull());
+    await waitFor(() => expect(listCalls().length).toBeGreaterThan(before));
+  });
+
+  it('a malformed search response reads as a failed search, not "no results"', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1/links' && (!init?.method || init.method === 'GET')) return json({ data: [] });
+      if (url.startsWith('/tickets?')) return json({ html: 'proxy page' });
+      return json({ error: 'unexpected' }, 404);
+    });
+    render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    fireEvent.click(await screen.findByTestId('ticket-links-add'));
+    fireEvent.change(await screen.findByTestId('ticket-link-search'), { target: { value: 'root' } });
+    await screen.findByTestId('ticket-link-search-error', {}, { timeout: 3000 });
+    expect(screen.queryByTestId('ticket-link-no-results')).toBeNull();
+  });
+});
+
 describe('TicketLinksCard — ticket switch', () => {
+  it('ignores a slow response for the previous ticket', async () => {
+    let releaseOld: () => void = () => {};
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1/links') {
+        return new Promise<Response>((resolve) => {
+          releaseOld = () => resolve(json({ data: [link({ id: 'old' })] }));
+        });
+      }
+      if (url === '/tickets/tk-2/links') return json({ data: [link({ id: 'new' })] });
+      return json({ error: 'unexpected' }, 404);
+    });
+    const { rerender } = render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    rerender(<TicketLinksCard ticketId="tk-2" orgId="org-1" canWrite />);
+    await screen.findByTestId('ticket-link-row-new');
+    releaseOld();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId('ticket-link-row-new')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-link-row-old')).toBeNull();
+  });
+
   it('reloads when the ticket changes', async () => {
     mockApi({ links: [] });
     const { rerender } = render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);

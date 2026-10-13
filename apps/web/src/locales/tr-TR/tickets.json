@@ -735,7 +735,8 @@
       "DUPLICATE_TARGET_IS_DUPLICATE": "Bu bilet zaten bir kopya. Bunun yerine asıl bileti bağlayın.",
       "CROSS_ORG": "Biletler yalnızca aynı kuruluş içinde bağlanabilir.",
       "SELF_LINK": "Bir bilet kendisine bağlanamaz.",
-      "NOT_FOUND": "Bu bilet bulunamadı veya artık mevcut değil."
+      "NOT_FOUND": "Bu bilet bulunamadı veya artık mevcut değil.",
+      "LINK_GONE": "Bu bağlantı zaten kaldırılmış."
     }
   }
 }

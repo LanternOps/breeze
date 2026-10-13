@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Link2, Plus, X } from 'lucide-react';
 import { ticketLinkLabel, type TicketLinkLabel, type TicketLinkType } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { cn } from '@/lib/utils';
@@ -112,7 +112,8 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
       if (seq !== loadSeq.current) return;
       setLinks(body.data as TicketLinkRow[]);
       setLoadFailed(false);
-    } catch {
+    } catch (err) {
+      console.error('[TicketLinksCard] failed to load links', err);
       // A failed load must not read as "no links": that would hide the very
       // links that explain a later LINK_LIMIT / duplicate refusal.
       if (seq !== loadSeq.current) return;
@@ -161,7 +162,8 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
           if (!res.ok) throw new Error(String(res.status));
           const body = (await res.json()) as { data?: SearchHit[] };
           if (cancelled) return;
-          const rows = (Array.isArray(body.data) ? body.data : []).filter((r) => r.id !== ticketId);
+          if (!Array.isArray(body.data)) throw new Error('malformed');
+          const rows = body.data.filter((r) => r.id !== ticketId);
           setHits(rows.slice(0, SEARCH_RESULT_LIMIT));
           setSearchFailed(false);
         } catch {
@@ -204,8 +206,10 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
       await load();
     } catch (err) {
       // runAction already toasted ActionErrors; the dialog stays open so the
-      // user can pick another ticket or type.
+      // user can pick another ticket or type. A 404/409 means our list is out
+      // of date (another user changed the links), so refresh it behind the dialog.
       handleActionError(err, t('ticketLinks.addFailed'));
+      if (err instanceof ActionError && (err.status === 404 || err.status === 409)) void load();
     } finally {
       setAdding(false);
     }
@@ -223,7 +227,9 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
           }),
         errorFallback: t('ticketLinks.removeFailed'),
         successMessage: t('ticketLinks.removed'),
-        friendly,
+        // A 404 on DELETE means the LINK is gone (removed by someone else), not a ticket.
+        friendly: (code, message, body) =>
+          code === 'NOT_FOUND' ? t('ticketLinks.errors.LINK_GONE') : friendly(code),
         onUnauthorized,
       });
       setRemoving(null);
@@ -231,6 +237,8 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
     } catch (err) {
       handleActionError(err, t('ticketLinks.removeFailed'));
       setRemoving(null);
+      // The link may already be gone or changed; show the real state.
+      void load();
     } finally {
       setRemoveBusy(false);
     }
@@ -313,7 +321,9 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
                 data-testid={`ticket-link-row-${row.id}`}
               >
                 <a
-                  href={`/tickets#${encodeURIComponent(row.other.ticketNumber)}`}
+                  // The full-page view by id: the queue (`/tickets#<number>`) only holds
+                  // the open tab, so a resolved/closed counterpart would not be found.
+                  href={`/tickets/${encodeURIComponent(row.other.id)}`}
                   className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
                   data-testid={`ticket-link-open-${row.id}`}
                 >

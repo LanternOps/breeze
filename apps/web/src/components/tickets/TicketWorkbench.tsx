@@ -1710,7 +1710,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
-            <TicketLinksCard ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
+            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}

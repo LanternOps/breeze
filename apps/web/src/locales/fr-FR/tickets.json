@@ -735,7 +735,8 @@
       "DUPLICATE_TARGET_IS_DUPLICATE": "Ce ticket est lui-même un doublon. Liez plutôt le ticket d’origine.",
       "CROSS_ORG": "Les tickets ne peuvent être liés qu’au sein de la même organisation.",
       "SELF_LINK": "Un ticket ne peut pas être lié à lui-même.",
-      "NOT_FOUND": "Ce ticket est introuvable ou n’est plus disponible."
+      "NOT_FOUND": "Ce ticket est introuvable ou n’est plus disponible.",
+      "LINK_GONE": "Ce lien a déjà été supprimé."
     }
   }
 }

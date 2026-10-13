@@ -413,6 +413,14 @@ describe('TicketsPage', () => {
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('change');
     });
 
+    it('resolves a repeated type= segment the way the sidebar does (first valid)', async () => {
+      window.location.hash = '#type=problem&type=bogus';
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('problem');
+    });
+
     it('ignores an invalid type value (no param, no filter)', async () => {
       window.location.hash = '#T-2026-0001&type=banana';
       mockListApi([healthy]);
@@ -450,6 +458,25 @@ describe('TicketsPage', () => {
       } finally {
         window.removeEventListener('breeze:urlchange', urlChange);
       }
+    });
+
+    it('keeps the type when the sort changes, and drops it when the hash is cleared', async () => {
+      window.location.hash = '#type=problem';
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      await waitFor(() => expect(window.location.hash).toContain('T-2026-0001'));
+
+      fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
+      await waitFor(() => expect(window.location.hash).toContain('sort=newest'));
+      expect(window.location.hash).toContain('type=problem');
+      expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
+
+      // Back to "all tickets": a hash with no type segment resets the filter.
+      window.location.hash = '#T-2026-0001';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      await waitFor(() => expect(screen.getByTestId('tickets-filter-type')).toHaveValue(''));
+      await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('ticketType'));
     });
 
     it('a hashchange (sidebar nav click while on the page) updates the filter without remount', async () => {
