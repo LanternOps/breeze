@@ -365,6 +365,9 @@ x-api-env: &api-env
   # Large-tool-result capture + read_artifact (#6732). Independent of the
   # workspace flag above; default false. Requires an artifact blob store.
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
+  # EDR response actions (#8167): server-wide kill switch, default on. Each
+  # EDR connection must still opt in (off by default).
+  BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
   AI_WORKSPACE_BACKEND: ${AI_WORKSPACE_BACKEND:-}
   VERCEL_SANDBOX_TOKEN: ${VERCEL_SANDBOX_TOKEN:-}
   VERCEL_TEAM_ID: ${VERCEL_TEAM_ID:-}
