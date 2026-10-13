@@ -1598,3 +1598,144 @@ it('no longer exports the admin-consent-first lifecycle functions', () => {
     expect(removed in connectionServiceModule, removed).toBe(false);
   }
 });
+
+describe('applyRetestResult manifest promotion (retestPromotesManifestOnlyWhenSatisfied, #8661)', () => {
+  const N = 5;
+  const GRANT_A = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'aaaaaaaa-0000-4000-8000-000000000001',
+    value: 'Test.A',
+  };
+  const GRANT_B = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'bbbbbbbb-0000-4000-8000-000000000002',
+    value: 'Test.B',
+  };
+  const GRANT_EXTRA = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'cccccccc-0000-4000-8000-000000000003',
+    value: 'Test.Extra',
+  };
+  const testManifest = {
+    ...M365_PERMISSION_PROFILES['customer-graph-actions'],
+    version: N,
+    applicationPermissionAssignments: [GRANT_A, GRANT_B],
+  };
+
+  function build(flag: boolean) {
+    return createConnectionService({
+      profile: 'customer-graph-actions',
+      manifest: testManifest,
+      loadRuntimeConfig: () => ({
+        clientId: CLIENT_ID,
+        callbackUrl: 'https://console.example.test/api/v1/m365/consent/callback',
+        vaultRef: 'akv://vault.example/m365-customer-graph-actions/0123456789abcdef0123456789abcdef',
+        credentialVersion: '0123456789abcdef0123456789abcdef',
+        executorUrl: 'https://actions-executor.example.test',
+      }),
+      createExecutorClient: vi.fn(() => ({ retest: vi.fn() })),
+      retest: (client, request) => client.retest(request),
+      ...(flag ? { retestPromotesManifestOnlyWhenSatisfied: true } : {}),
+    });
+  }
+
+  function input(storedVersion: number, status: 'active' | 'degraded' = 'active') {
+    return {
+      ...snapshot(),
+      profile: 'customer-graph-actions',
+      permissionManifestVersion: storedVersion,
+      status,
+      tenantId: TENANT_ID,
+      auth: auth(),
+    } as unknown as RetestSnapshot;
+  }
+
+  function complete(observed: unknown[], manifestVersion = N) {
+    return {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'complete',
+      observedGrants: observed, missingGrants: [], unexpectedGrants: [],
+      grantsVerifiedAt: '2026-07-15T10:00:00.000Z',
+    } as unknown as RetestResult;
+  }
+
+  async function apply(flag: boolean, snap: RetestSnapshot, result: RetestResult) {
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateResults.push((set) => [row({ profile: 'customer-graph-actions', ...set })]);
+    await build(flag).applyRetestResult(snap as never, result);
+    return dbMocks.updateSets[0]!;
+  }
+
+  beforeEach(() => {
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+  });
+
+  it('keeps a stale row stale with manifest_stale (status unchanged) when a required grant is missing', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1,
+      status: 'active',
+      lastErrorCode: 'manifest_stale',
+      observedGrants: [GRANT_A],
+      displayName: 'Contoso Fresh',
+    });
+    expect(set.grantsVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
+    expect(set.lastVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
+  });
+
+  it('preserves an already-degraded status on a kept stale row', async () => {
+    const set = await apply(true, input(N - 1, 'degraded'), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'degraded', lastErrorCode: 'manifest_stale',
+    });
+  });
+
+  it('promotes when every required grant is present and surfaces unexpected extras as grant_unexpected', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B, GRANT_EXTRA]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_unexpected',
+    });
+  });
+
+  it('promotes cleanly to active when the observation exactly satisfies the manifest', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B]));
+    expect(set).toMatchObject({ permissionManifestVersion: N, status: 'active', lastErrorCode: null });
+  });
+
+  it('keeps the stored version when the executor reports a different manifest version', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B], N + 1));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'active', lastErrorCode: 'manifest_stale',
+    });
+  });
+
+  it('keeps the stored version and degrades when reconciliation is unavailable', async () => {
+    const set = await apply(true, input(N - 1), {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion: N,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
+      missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
+    } as unknown as RetestResult);
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'degraded', lastErrorCode: 'grant_reconciliation_unavailable',
+    });
+    expect(set).not.toHaveProperty('observedGrants');
+  });
+
+  it('still degrades a CURRENT row with a missing grant to grant_missing', async () => {
+    const set = await apply(true, input(N), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_missing',
+    });
+  });
+
+  it('without the flag, the same stale-row retest promotes and degrades to grant_missing (legacy behavior)', async () => {
+    const set = await apply(false, input(N - 1), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_missing',
+    });
+  });
+});
