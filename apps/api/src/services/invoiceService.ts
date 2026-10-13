@@ -1346,6 +1346,8 @@ export async function assembleDraftFromOrg(
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
+  const timeZone = await readPartnerTimeZone(partnerId);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
   // Create the draft FIRST so the gathered line totals are rounded in the
@@ -1365,7 +1367,6 @@ export async function assembleDraftFromOrg(
   // lower bound (a closed month's charge only exists from the 1st of the next
   // month; see gatherOrgAiUsageCharges). The ticket path
   // (assembleDraftFromTicket) intentionally does not gather them.
-  const timeZone = await readPartnerTimeZone(inv!.partnerId);
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode, new Date(), timeZone),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode),
@@ -1382,6 +1383,8 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // This path produces an org-level (null-site) invoice; a site-restricted caller
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
+  // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
+  const timeZone = await readPartnerTimeZone(partnerId);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
   // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),
@@ -1391,7 +1394,6 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
     const currencyCode = opts.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });
-  const timeZone = await readPartnerTimeZone(inv!.partnerId);
   const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode, new Date(), timeZone);
   return finishAssembly(inv!, gathered, 'Nothing billable on this ticket', actor);
 }

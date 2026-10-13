@@ -289,9 +289,8 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
   });
 
   it('#8603: assembly stamps work_date from started_at in the partner timezone; reissue copies it; manual lines stay NULL', async () => {
-    // An entry that started 23:30 New York time the day before yesterday and
-    // ran past local midnight: UTC already reads the next day, the work date
-    // must be the local START day.
+    // An entry that started 23:30 New York time two days ago: UTC already
+    // reads the next day, the work date must be the local START day.
     const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
     const startedAt = new Date(`${twoDaysAgo}T23:30:00-04:00`); // EDT offset; checked below against the zone itself
     const expectedLocal = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(startedAt);
@@ -310,6 +309,12 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
     expect(manual!.workDate).toBeNull();
 
     const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    // Move the source entry's start AND the partner zone after issue: a clone
+    // that re-derived the date (instead of copying it) would now differ.
+    await withSystemDbAccessContext(async () => {
+      await db.update(timeEntries).set({ startedAt: new Date(startedAt.getTime() - 5 * 86400000) }).where(eq(timeEntries.orgId, f.orgId));
+      await db.update(partners).set({ timezone: 'Pacific/Auckland' }).where(eq(partners.id, f.partnerId));
+    });
     const result = await withDbAccessContext(ctx(f), () => svc.voidInvoice(issued.id, 'redo', { reissue: true }, actor(f)));
     const cloned = await withSystemDbAccessContext(() =>
       db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, result.invoice.id)));

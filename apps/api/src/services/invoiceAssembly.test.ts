@@ -372,8 +372,9 @@ describe('workDate on invoice lines (#8603)', () => {
     expect(spec.workDate).toBe('2026-09-16');
   });
 
-  it('an entry spanning local midnight takes its START date', () => {
-    // 23:30 Sep 16 → 01:00 Sep 17 New York time: the work date is Sep 16.
+  it('dates by startedAt only: a 23:30-local start that runs past midnight keeps the start day', () => {
+    // 23:30 Sep 16 New York (03:30Z Sep 17) + 90 min ends Sep 17 locally; the
+    // spec has no endedAt input at all, so the work date can only be Sep 16.
     const spec = timeEntryToLineSpec({ ...base, durationMinutes: 90, startedAt: new Date('2026-09-17T03:30:00Z') }, 'USD', 'America/New_York');
     expect(spec.workDate).toBe('2026-09-16');
   });

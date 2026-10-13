@@ -1635,9 +1635,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(a) org: every gathered row blocked → ALL_BLOCKED_BY_CURRENCY 409 with a summary, transient draft deleted', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);   // org currency
     queueResult([draftRow('USD')]);            // draft insert returning
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);                           // delete transient draft
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1655,9 +1655,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(b) org: nothing gathered at all → NOTHING_TO_INVOICE (no details)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);
     (gatherOrgTimeEntries as Mock).mockResolvedValue(empty());
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1668,9 +1668,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(c) org: currencyCode override stamps the draft and drives the gathers (old-currency draft path, spec §7)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);   // org is GBP now
     queueResult([draftRow('EUR')]);            // insert returning (header EUR)
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('EUR');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1684,9 +1684,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(c\') org: no override → the org currency is the header', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('GBP');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1697,9 +1697,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1723,9 +1723,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({
       included: [spec('50.00', 'te-usd')], blockedByCurrency: { EUR: [spec('100.00', 'te-eur')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 }
@@ -1748,9 +1748,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(e) ticket: all blocked → ALL_BLOCKED_BY_CURRENCY with details, draft deleted', async () => {
     queueResult([{ orgId: 'org1' }]);          // ticket
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);    // org currency
     queueResult([draftRow('GBP')]);            // insert returning
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);                           // delete
     (gatherTicketBillables as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({
@@ -1764,9 +1764,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(f) ticket: currencyCode override stamps the draft and drives the gather', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('EUR')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('EUR');
     (gatherTicketBillables as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     const out = await svc.assembleDraftFromTicket('t1', actor, { currencyCode: 'EUR' });
@@ -1777,9 +1777,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(h) org: only rate-less billable time → ALL_MISSING_RATE 409 listing the entries; nothing billed at zero, draft deleted (review #1)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);                           // delete transient draft
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [gap('te-norate')], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1797,9 +1797,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(i) org: rate-less time alongside an included row → response.missingRate lists it and it is never materialized', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({
       included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [gap('te-norate', '0.25')], heldForHourBlock: { count: 0, hours: 0 }
@@ -1815,9 +1815,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(j) ticket: blocked currency + rate-less time, nothing included → ALL_BLOCKED_BY_CURRENCY carries both groups', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);
     (gatherTicketBillables as Mock).mockResolvedValue({
       included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [gap('te-norate')], heldForHourBlock: { count: 0, hours: 0 }
@@ -1832,9 +1832,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(k) org: the partner timezone drives the gather and workDate is materialized (#8603)', async () => {
+    queueResult([{ timezone: 'America/New_York' }]);
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
-    queueResult([{ timezone: 'America/New_York' }]);
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
@@ -1847,9 +1847,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(k\') ticket: the partner timezone drives the gather; a missing partner row falls back to UTC (#8603)', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([]);                           // no partner row visible
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
-    queueResult([]);                           // no partner row visible
     queueResult([]);                           // delete
     (gatherTicketBillables as Mock).mockResolvedValue(empty());
     await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE' });
@@ -1858,9 +1858,9 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(g) ticket: nothing gathered → NOTHING_TO_INVOICE', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
-    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([]);
     (gatherTicketBillables as Mock).mockResolvedValue(empty());
     await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE', status: 409 });
