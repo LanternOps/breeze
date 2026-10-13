@@ -130,7 +130,8 @@ function description(
   fallback = '',
 ): string {
   const date = line.serviceDate ? ` — ${formatWorkDate(line.serviceDate, 'en')}` : '';
-  const base = `${line.description}${date}`.trim() || EMPTY_DESCRIPTION;
+  // Trim and placeholder the line text BEFORE the date, exactly as before W04.
+  const base = `${line.description.trim() || EMPTY_DESCRIPTION}${date}`;
   return `${capWithSuffix(base, `${line.descriptionSuffix ?? ''}${date}`, DESCRIPTION_MAX - fallback.length)}${fallback}`;
 }
 

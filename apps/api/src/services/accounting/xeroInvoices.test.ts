@@ -164,6 +164,10 @@ describe('xeroLineAmounts (refinement 3)', () => {
       expect(out.endsWith(WB)).toBe(true);
     });
 
+    it('an empty description keeps its placeholder ahead of the date', () => {
+      expect(xeroLineAmounts(line({ description: '  ', serviceDate: '2026-09-16' })).Description).toBe('Invoice line — Sep 16, 2026');
+    });
+
     it('CJK note within the cap is untouched', () => {
       expect(xeroLineAmounts(line({ description: '再起動', serviceDate: '2026-09-16' })).Description).toBe('再起動 — Sep 16, 2026');
     });
