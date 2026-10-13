@@ -145,17 +145,9 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 // services/workloads/imageCompliance.integration.test.ts. Default: no
 // workload rows, so the report must be exactly what it was before.
 const imageTermsMock = vi.hoisted(() => vi.fn(async () => new Map()));
-vi.mock('../services/workloads/imageCompliance', () => ({
+vi.mock('../services/workloads/imageCompliance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/workloads/imageCompliance')>()),
   containerImageComplianceTerms: imageTermsMock,
-  sumContainerImageTerms: (terms: Iterable<{ stale: number; current: number; unknown: number }>) => {
-    let total: { stale: number; current: number; unknown: number } | null = null;
-    for (const t of terms) {
-      total ??= { stale: 0, current: 0, unknown: 0 };
-      total.stale += t.stale; total.current += t.current; total.unknown += t.unknown;
-    }
-    return total;
-  },
-  imageTermAppliesToView: (f: { severity?: string | null; source?: string | null }) => !f.severity && !f.source,
 }));
 
 import { db, withSystemDbAccessContext } from '../db';

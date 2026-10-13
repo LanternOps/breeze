@@ -92,9 +92,8 @@ type PatchPayload = {
 function readContainerImages(value: unknown): ContainerImageComplianceTerms | null {
   if (!value || typeof value !== 'object') return null;
   const { stale, current, unknown } = value as Record<string, unknown>;
-  return typeof stale === 'number' && typeof current === 'number' && typeof unknown === 'number'
-    ? { stale, current, unknown }
-    : null;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  return count(stale) && count(current) && count(unknown) ? { stale, current, unknown } : null;
 }
 
 type PatchScanResponse = {

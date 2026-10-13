@@ -85,16 +85,22 @@ describe('containerImageCurrencyHandler', () => {
     expect(result.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1.25', status: 'unknown' })]);
   });
 
-  it('reports every unknown-class and not_found image as unknown, never recovered', async () => {
-    rows(['pending', 'private', 'unsupported_registry', 'error', 'not_found'].map((s, i) => row(`img${i}`, 'x', s)));
+  it('reports every unknown-class image as unknown, never recovered', async () => {
+    rows(['pending', 'private', 'unsupported_registry', 'error'].map((s, i) => row(`img${i}`, 'x', s)));
     const result = await containerImageCurrencyHandler.evaluate(condition, deviceId);
     expect(result.passed).toBe(false);
     expect(result.subjects!.every((s) => s.status === 'unknown')).toBe(true);
-    expect(result.subjects).toHaveLength(5);
+    expect(result.subjects).toHaveLength(4);
   });
 
-  it('emits no subject for pinned or locally built images (nothing to compare)', async () => {
-    rows([row('app', 'dev', 'local'), row('base', 'v1', 'pinned')]);
+  it('ignores a not_found replica, like the compliance helper', async () => {
+    rows([row('nginx', '1', 'current'), row('nginx', '1', 'not_found')]);
+    const result = await containerImageCurrencyHandler.evaluate(condition, deviceId);
+    expect(result.subjects).toEqual([expect.objectContaining({ subjectKey: 'nginx:1', status: 'recovered' })]);
+  });
+
+  it('emits no subject for pinned, locally built or vanished-tag images (nothing to compare)', async () => {
+    rows([row('app', 'dev', 'local'), row('base', 'v1', 'pinned'), row('gone', '0', 'not_found')]);
     const result = await containerImageCurrencyHandler.evaluate(condition, deviceId);
     expect(result.subjects).toEqual([]);
     expect(result.dataAvailable).toBe(false);

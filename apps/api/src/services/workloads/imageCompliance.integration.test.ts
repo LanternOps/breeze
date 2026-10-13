@@ -127,6 +127,30 @@ describe('containerImageComplianceTerms (real rows, forced RLS)', () => {
     const otherSite = await withDbAccessContext(f.ctx, () =>
       containerImageComplianceTerms({ orgIds: [f.org.id], siteIds: [randomUUID()] }));
     expect(otherSite.size).toBe(0);
+    const ownSite = await withDbAccessContext(f.ctx, () =>
+      containerImageComplianceTerms({ orgIds: [f.org.id], siteIds: [f.site.id] }));
+    expect([...ownSite.keys()]).toEqual([f.device.id]);
+
+    // A device parked in the partner's unassigned pool never counts, even when
+    // the holding org is in the requested org list.
+    const holding = (await createOrganization({
+      partnerId: f.partner.id, name: 'Unassigned devices', slug: `unassigned-pool-${f.partner.id}`, type: 'unassigned_pool',
+    }))!;
+    const holdingSite = (await createSite({ orgId: holding.id }))!;
+    const [parked] = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
+      return tx.insert(devices).values({
+        orgId: holding.id, siteId: holdingSite.id, agentId: randomUUID(), hostname: 'terms-parked', osType: 'linux',
+        osVersion: '1', architecture: 'x64', agentVersion: '1.0.0',
+      }).returning();
+    });
+    await addWorkload(holding.id, parked!.id, 'pk1', img(`nginx-${run}`, '1', 'behind'));
+    const withHolding = await withDbAccessContext(system, () =>
+      containerImageComplianceTerms({ orgIds: [f.org.id, holding.id] }));
+    expect([...withHolding.keys()]).toEqual([f.device.id]);
+    // control: the parked device's rows are real and visible by device id
+    const parkedById = await withDbAccessContext(system, () => containerImageComplianceTerms({ deviceIds: [parked!.id] }));
+    expect(parkedById.get(parked!.id)).toEqual({ stale: 1, current: 0, unknown: 0 });
   });
 });
 

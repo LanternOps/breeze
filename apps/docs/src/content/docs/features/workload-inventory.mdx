@@ -117,7 +117,7 @@ The **Container image currency** monitor (`container_image_currency`) is evaluat
 
 - The clock starts when the image was first seen behind. A transient registry error does not restart it; a change of the local image does.
 - The alert recovers when the image is `current`. Any other status is unknown: it neither alerts nor recovers.
-- Pinned and locally built images are not monitored.
+- Pinned, locally built and `not_found` images are not monitored: there is nothing to compare.
 - When the last container using an image is removed, its open alert resolves automatically. This happens in a complete inventory snapshot, when workload collection is turned off by policy, or when the runtime is uninstalled. Failed, incomplete or truncated snapshots never resolve alerts.
 
 Every partner gets a partner-wide built-in monitor, **Container image out of date** (low severity, 7 days, 24-hour cooldown). Like the other built-in monitors it is not attached to any policy: attach it to a configuration policy to start evaluating. Only devices whose policy enables **Workload inventory** have data.

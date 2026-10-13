@@ -10,11 +10,14 @@
  *   - any replica `behind`  → `breaching` once the OLDEST `behind_since` is at
  *     least `minDaysBehind` days old, otherwise `unknown` (behind, but not for
  *     long enough — it must not read as recovered either);
- *   - else any replica unknown-class or `not_found` → `unknown`;
- *   - else every replica `current` → `recovered`.
+ *   - else any unknown-class replica → `unknown`;
+ *   - else (every remaining replica `current`) → `recovered`.
  *
- * `pinned` and `local` images have no registry tag to compare with, so they
- * produce no subject at all (not a coverage gap, nothing to monitor).
+ * `pinned`, `local` and `not_found` rows have nothing to compare (the
+ * compliance helper's `not_applicable` class), so they are ignored; an image
+ * with only such rows produces no subject. A digest-pinned reference has no
+ * tag, so moving an image from a tag to a digest drops its repo:tag subject
+ * and ingest retirement resolves the alert.
  */
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { monitorConditionSchemas, workloadUpstreamStatusClass, type WorkloadUpstreamStatus } from '@breeze/shared';
@@ -61,7 +64,9 @@ export const containerImageCurrencyHandler: ConditionHandler = {
     const images = new Map<string, ImageAggregate>();
     for (const row of rows) {
       if (!row.imageRepository || !row.imageTag) continue;
-      if (workloadUpstreamStatusClass(row.upstreamStatus) === 'not_applicable' && row.upstreamStatus !== 'not_found') continue;
+      // pinned / local / not_found: nothing to compare — the same rule as the
+      // compliance helper, so a replica in one of these never blocks recovery.
+      if (workloadUpstreamStatusClass(row.upstreamStatus) === 'not_applicable') continue;
       const key = containerImageSubjectKey(row.imageRepository, row.imageTag);
       const agg = images.get(key) ?? {
         repository: row.imageRepository, tag: row.imageTag, statuses: new Set(), oldestBehindSince: null, behindUnstamped: false,
