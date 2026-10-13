@@ -38,6 +38,8 @@ import { isInvoiceRemoteDeletedMarker, type AccountingProviderId } from './accou
 import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherOrgAiUsageCharges, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
+import { hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
+import { planTimeLineRefresh, summarizeRefresh, type TimeLineRefreshOutcome, type TimeLineRefreshSummary } from './invoiceTimeLineRefresh';
 import { InvoiceServiceError } from './invoiceTypes';
 import {
   assertInvoiceSessionsRevoked,
@@ -541,14 +543,77 @@ export async function updateLine(invoiceId: string, lineId: string, patch: { nam
     const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
     const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
     if (patch.unitPrice != null) assertRepresentable(unitPrice, inv.currencyCode);
+    // #8606: only an ACTUAL description change marks the line hand-edited, so
+    // a full-row save that resends the same text never opts it out of refresh.
+    const descriptionChanged = patch.description !== undefined && patch.description !== existing.description;
     await tx.update(invoiceLines).set({
       name: patch.name !== undefined ? patch.name : existing.name,
       description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
+      descriptionEdited: descriptionChanged ? true : existing.descriptionEdited,
       taxable: patch.taxable ?? existing.taxable, customerVisible: patch.customerVisible ?? existing.customerVisible,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode)
     }).where(eq(invoiceLines.id, lineId));
     await recomputeInvoiceTotals(invoiceId, undefined, tx);
     return getOwnedInvoiceOr404(invoiceId, tx);
+  });
+}
+
+/**
+ * #8606: "Refresh from time entries" on an unissued draft. Re-reads each
+ * time_entry line's source entry and refreshes the snapshot fields assembly
+ * copied (description, work_date, worked_minutes, is_unapproved_time) through
+ * the same helper assembly uses (planTimeLineRefresh → timeEntryToLineSpec).
+ *
+ * Never changes quantity, unit price, line total or the invoice totals; never
+ * adds or removes a line. A hand-edited description (`description_edited`) is
+ * kept. A line whose entry would now bill a different quantity is reported
+ * `quantityDrifted` and left alone; an entry that assembly would no longer
+ * gather (billed elsewhere, deleted, contract/no-charge, held for a block of
+ * hours, ...) is skipped with its reason. Draft gathering never flips
+ * billing_status, so `not_billed` is the only refreshable source state.
+ *
+ * Lock order matches every draft writer (B10): the invoice row first
+ * (lockDraftInvoice → 409 NOT_A_DRAFT on anything issued), then lines.
+ */
+export async function refreshDraftTimeLines(invoiceId: string, actor: InvoiceActor): Promise<{
+  invoiceId: string; orgId: string; summary: TimeLineRefreshSummary; lines: TimeLineRefreshOutcome[];
+}> {
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const lines = await tx.select({
+      id: invoiceLines.id, sourceId: invoiceLines.sourceId, description: invoiceLines.description,
+      descriptionEdited: invoiceLines.descriptionEdited, quantity: invoiceLines.quantity,
+      workDate: invoiceLines.workDate, workedMinutes: invoiceLines.workedMinutes, isUnapprovedTime: invoiceLines.isUnapprovedTime,
+    }).from(invoiceLines)
+      .where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.sourceType, 'time_entry')))
+      .orderBy(invoiceLines.sortOrder, invoiceLines.id);
+    const sourceIds = [...new Set(lines.map((l) => l.sourceId).filter((id): id is string => id !== null))];
+    const entries = sourceIds.length === 0 ? [] : await tx.select({
+      id: timeEntries.id, orgId: timeEntries.orgId, ticketId: timeEntries.ticketId, description: timeEntries.description,
+      durationMinutes: timeEntries.durationMinutes, billableMinutes: timeEntries.billableMinutes,
+      hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved, isBillable: timeEntries.isBillable,
+      billingStatus: timeEntries.billingStatus, currencyCode: timeEntries.currencyCode,
+      startedAt: timeEntries.startedAt, endedAt: timeEntries.endedAt,
+    }).from(timeEntries).where(inArray(timeEntries.id, sourceIds));
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    // Same zone and hold rule assembly uses, so a refreshed line matches what
+    // a fresh assembly of the entry would write.
+    const [partner] = await tx.select({ timezone: partners.timezone }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+    const windows = lines.length === 0 ? [] : await hourBlockHoldWindows(inv.orgId);
+    const ctx = {
+      orgId: inv.orgId, currencyCode: inv.currencyCode, timeZone: partner?.timezone || 'UTC',
+      isHeld: (endedAt: Date) => isHeldForHourBlock(windows, endedAt),
+    };
+
+    const outcomes: TimeLineRefreshOutcome[] = [];
+    for (const line of lines) {
+      const plan = planTimeLineRefresh(line, line.sourceId ? byId.get(line.sourceId) : undefined, ctx);
+      if (plan.set) await tx.update(invoiceLines).set(plan.set).where(eq(invoiceLines.id, line.id));
+      outcomes.push(plan.outcome);
+    }
+    const summary = summarizeRefresh(outcomes);
+    if (summary.refreshed > 0) await tx.update(invoices).set({ updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+    return { invoiceId, orgId: inv.orgId, summary, lines: outcomes };
   });
 }
 
@@ -2528,7 +2593,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes,
       // #8603: copied verbatim — the reissue keeps the date the work was done,
       // never re-derived from the (possibly edited) time entry.
-      workDate: l.workDate, sortOrder: l.sortOrder
+      workDate: l.workDate, descriptionEdited: l.descriptionEdited, sortOrder: l.sortOrder
     });
     // Mint every new line id UP FRONT — parents AND children — so the map is
     // complete and order-independent before a single row is written.

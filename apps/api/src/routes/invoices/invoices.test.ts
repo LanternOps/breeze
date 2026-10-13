@@ -9,6 +9,7 @@ vi.mock('../../services/invoiceService', () => ({
   addCatalogLine: vi.fn(),
   addBundleLine: vi.fn(),
   updateLine: vi.fn(),
+  refreshDraftTimeLines: vi.fn(),
   removeLine: vi.fn(),
   deleteDraftInvoice: vi.fn(),
   updateInvoice: vi.fn(),
@@ -259,6 +260,44 @@ describe('invoice crud + lines routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NOTHING_TO_INVOICE');
+  });
+});
+
+describe('POST /:id/refresh-time-lines (#8606)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('refreshes the draft, returns the per-line outcome and audits the counts', async () => {
+    const result = {
+      invoiceId: INV_ID, orgId: ORG_ID,
+      summary: { refreshed: 1, unchanged: 0, skipped: 1, quantityDrifted: 0 },
+      lines: [
+        { lineId: 'l1', status: 'refreshed', changed: ['description'] },
+        { lineId: 'l2', status: 'skipped', reason: 'billed_elsewhere' },
+      ],
+    };
+    (svc.refreshDraftTimeLines as any).mockResolvedValue(result);
+    const res = await app().request(`/${INV_ID}/refresh-time-lines`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual(result);
+    expect(svc.refreshDraftTimeLines).toHaveBeenCalledWith(INV_ID, expect.objectContaining({ userId: 'u1', partnerId: 'p1' }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'invoice.time_lines.refreshed', resourceType: 'invoice', resourceId: INV_ID,
+      details: result.summary,
+    }));
+  });
+
+  it('maps a non-draft refusal to 409 NOT_A_DRAFT and writes no audit', async () => {
+    (svc.refreshDraftTimeLines as any).mockRejectedValue(new InvoiceServiceError('Invoice is not a draft', 409, 'NOT_A_DRAFT'));
+    const res = await app().request(`/${INV_ID}/refresh-time-lines`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('NOT_A_DRAFT');
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-UUID id with 400 and never calls the service', async () => {
+    const res = await app().request('/not-a-uuid/refresh-time-lines', { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(svc.refreshDraftTimeLines).not.toHaveBeenCalled();
   });
 });
 

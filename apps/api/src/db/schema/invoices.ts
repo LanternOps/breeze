@@ -197,6 +197,11 @@ export const invoiceLines = pgTable('invoice_lines', {
   // in the partner timezone, captured at assembly and copied on reissue. NULL
   // for non-time-entry lines (incl. block-hours overage) and pre-column rows.
   workDate: date('work_date'),
+  // #8606: true once an operator hand-edits the description (updateLine, only
+  // on an actual change); "Refresh from time entries" then never overwrites
+  // it. Copied verbatim on reissue. Backfilled true for draft time_entry
+  // lines that predate the column (migration 2026-12-27-070000).
+  descriptionEdited: boolean('description_edited').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
