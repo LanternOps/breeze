@@ -137,7 +137,7 @@ func TestVerifyIdentityAssertionRejects(t *testing.T) {
 		"org that is not a UUID":     {mutate: func(a *IdentityAssertion) { a.OrgID = "not-a-uuid" }, keepSigning: true},
 		"line break in a field":      {mutate: func(a *IdentityAssertion) { a.SiteID = identityTestSiteB + "\nx" }},
 		"empty field":                {mutate: func(a *IdentityAssertion) { a.KeyID = "" }},
-		"unknown version":            {mutate: func(a *IdentityAssertion) { a.Version = 2 }},
+		"unknown version":            {mutate: func(a *IdentityAssertion) { a.Version = 3 }},
 		"tampered field":             {mutate: func(a *IdentityAssertion) { a.OrgID = identityTestOrgA }},
 		"signature from an unpinned key": {mutate: func(a *IdentityAssertion) {
 			canonical, _ := a.canonicalBytes()
@@ -174,6 +174,7 @@ type identitySeams struct {
 	persisted  atomic.Int32
 	restarted  chan struct{}
 	org, site  string
+	epoch      uint64
 	markerPath string
 	now        time.Time
 	restartErr error
@@ -184,9 +185,9 @@ func withIdentitySeams(t *testing.T, persistErr error) *identitySeams {
 	s := &identitySeams{restarted: make(chan struct{}, 4), markerPath: filepath.Join(t.TempDir(), identityRestartMarkerFile)}
 	prevPersist, prevRestart, prevNow := persistServerIdentityFn, restartForIdentityFn, identitySyncNow
 	prevMarker, prevJitter, prevPoll := identityRestartMarkerPath, identityRestartJitter, identityRestartPollInterval
-	persistServerIdentityFn = func(_ string, org, site string) error {
+	persistServerIdentityFn = func(_ string, org, site string, epoch uint64) error {
 		s.persisted.Add(1)
-		s.org, s.site = org, site
+		s.org, s.site, s.epoch = org, site, epoch
 		return persistErr
 	}
 	restartForIdentityFn = func() error {
@@ -545,8 +546,9 @@ func TestHeartbeatDeclaresIdentitySyncAndReportsIdentity(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if got := decoded.SecurityCapabilities["identitySyncProtocolVersion"]; got != float64(1) {
-		t.Fatalf("identitySyncProtocolVersion = %v, want 1", got)
+	// #8206: v2 adds the ownership epoch to the signed assertion.
+	if got := decoded.SecurityCapabilities["identitySyncProtocolVersion"]; got != float64(2) {
+		t.Fatalf("identitySyncProtocolVersion = %v, want 2", got)
 	}
 	want := map[string]string{"deviceId": identityTestDeviceID, "orgId": identityTestOrgA, "siteId": identityTestSiteA, "nonce": second.Nonce}
 	for k, v := range want {
