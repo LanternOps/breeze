@@ -134,6 +134,14 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
     }
     expect(bad).toEqual([]);
   });
+  it('tool_in_later_wave entries name the issue that ships the tool', () => {
+    // Not a parking lot: an entry without the shipping wave's issue would be a
+    // gap under another name, escaping FROZEN_GAPS.
+    const bad = Object.entries(MCP_COVERAGE)
+      .filter(([, e]) => 'exempt' in e && e.exempt === 'tool_in_later_wave' && !/#\d+/.test(e.note ?? ''))
+      .map(([k]) => k);
+    expect(bad).toEqual([]);
+  });
   it('gap entries are frozen: none outside FROZEN_GAPS, and FROZEN_GAPS has no stale entry', () => {
     const gaps = Object.entries(MCP_COVERAGE).filter(([, e]) => 'gap' in e).map(([k]) => k);
     expect(gaps.filter((g) => !FROZEN_GAPS.has(g)), 'new gap entries — write the tool or a real exemption').toEqual([]);
