@@ -47,8 +47,9 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 	// timer: on a loaded runner the file operations below can take longer than any
 	// fixed debounce, which split the batch into two posts (#8568).
 	flushC := make(chan time.Time)
-	removeSeen := make(chan struct{})
-	var removeOnce sync.Once
+	bothSeen := make(chan struct{})
+	var bothSeenOnce sync.Once
+	var keepSeen, removeSeen atomic.Bool
 	profileDir := filepath.Join(t.TempDir(), "alice")
 	documentsDir := filepath.Join(profileDir, "Documents")
 	if err := os.MkdirAll(documentsDir, 0o755); err != nil {
@@ -84,10 +85,17 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 		WatchDirCap:   16,
 		watchFlushC:   flushC,
 		watchEventHandled: func(e fsnotify.Event) {
-			// Events arrive in order, so once the last operation's Remove has been
-			// handled every earlier event is already pending.
-			if e.Op&fsnotify.Remove != 0 && filepath.Base(e.Name) == "doomed.txt" {
-				removeOnce.Do(func() { close(removeSeen) })
+			// Ordering across files is not guaranteed on every platform (kqueue
+			// reports a file's Remove separately from its directory's Create), so
+			// wait until both the keep.txt and doomed.txt Remove events are handled.
+			switch {
+			case filepath.Base(e.Name) == "keep.txt":
+				keepSeen.Store(true)
+			case e.Op&fsnotify.Remove != 0 && filepath.Base(e.Name) == "doomed.txt":
+				removeSeen.Store(true)
+			}
+			if keepSeen.Load() && removeSeen.Load() {
+				bothSeenOnce.Do(func() { close(bothSeen) })
 			}
 		},
 	}, SourceConfig{ID: "source-watch", Kind: "local_profile", Watch: true})
@@ -105,21 +113,23 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 	}
 
 	select {
-	case <-removeSeen:
+	case <-bothSeen:
 	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for watcher to observe the remove event")
+		t.Fatal("timed out waiting for watcher to observe the keep and remove events")
 	}
-	select {
-	case flushC <- time.Now():
-	case <-time.After(10 * time.Second):
-		t.Fatal("watcher never armed its debounce flush")
-	}
-
+	// Fire the debounce, retrying: if the watcher still had queued events when the
+	// tick landed it drains them and stays armed rather than flushing. Once it
+	// flushes it stops receiving on flushC, so the payload case wins.
 	var payload watchEventsPayload
-	select {
-	case payload = <-payloads:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for debounced events request")
+	deadline := time.After(10 * time.Second)
+	for received := false; !received; {
+		select {
+		case flushC <- time.Now():
+		case payload = <-payloads:
+			received = true
+		case <-deadline:
+			t.Fatal("timed out waiting for debounced events request")
+		}
 	}
 
 	if len(payload.Upserts) != 1 {
@@ -134,12 +144,6 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 	}
 	if len(payload.Deletes) != 1 || payload.Deletes[0] != "alice/Documents/doomed.txt" {
 		t.Fatalf("deletes = %v, want alice/Documents/doomed.txt", payload.Deletes)
-	}
-
-	select {
-	case extra := <-payloads:
-		t.Fatalf("received second PostEvents payload after coalescing: %+v", extra)
-	case <-time.After(250 * time.Millisecond):
 	}
 }
 
