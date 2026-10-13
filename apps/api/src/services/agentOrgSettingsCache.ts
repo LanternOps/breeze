@@ -13,13 +13,13 @@ import type { PamSettings } from '../routes/agents/pamSettings';
  * is derived from exactly that org's row and its own partner's row. Nothing
  * here is secret.
  *
- * Staleness: a settings change reaches an org's agents up to one TTL later
- * than before on other API instances (and an agent only learns of it at its
- * next 60 s beat in any case). The org/partner settings routes in
- * routes/orgs.ts invalidate this process at once. Other writers of
- * `organizations.settings` / `partners.settings` (imports, onboarding, the
- * topology bootstrap) rely on the TTL. An org merge re-points automation_policies,
- * so the target org's policy probe can be up to one TTL stale after a merge.
+ * Staleness: writers below invalidate every API instance within about 1 s
+ * through the cluster bus (W05, #8144): the org/partner settings routes in
+ * routes/orgs.ts call invalidateAgentOrgSettingsCaches after their write, and
+ * the publish runs only once their transaction commits. Writers not listed
+ * rely on the TTL; `__tests__/orgSettingsWriters.contract.test.ts` classifies
+ * every `organizations` / `partners` writer so a new one cannot skip this
+ * silently. An agent only learns of a change at its next 60 s beat in any case.
  *
  * The loaders live with their resolvers (`getOrgAgentUpdateConfigCached` in
  * routes/agents/helpers.ts, `loadAgentTopologyFlags` in
@@ -36,6 +36,7 @@ export const orgAgentUpdateConfigCache = new HotPathTtlCache<string, AgentUpdate
   name: 'org-agent-update-config',
   ttlMs: AGENT_ORG_SETTINGS_CACHE_TTL_MS,
   maxEntries: MAX_ORGS,
+  cluster: true,
 });
 
 export const orgTopologyFlagsCache = new HotPathTtlCache<string, TopologyFlags>({
