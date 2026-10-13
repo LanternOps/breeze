@@ -52,10 +52,8 @@ func TestHubCloseAllDropsEverySocketAndTheyRedial(t *testing.T) {
 	rec := newTestRecorder()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var ids []Identity
 	for i := 0; i < 3; i++ {
 		id := f.preEnroll(i)
-		ids = append(ids, id)
 		a := NewAgent(&cfg, rec, id, nil)
 		a.hub = hub
 		go a.Run(ctx)
