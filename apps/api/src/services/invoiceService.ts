@@ -594,7 +594,11 @@ export async function refreshDraftTimeLines(invoiceId: string, actor: InvoiceAct
       hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved, isBillable: timeEntries.isBillable,
       billingStatus: timeEntries.billingStatus, currencyCode: timeEntries.currencyCode,
       startedAt: timeEntries.startedAt, endedAt: timeEntries.endedAt,
-    }).from(timeEntries).where(inArray(timeEntries.id, sourceIds));
+    // FOR SHARE, in id order (the order issueInvoice takes FOR UPDATE on the
+    // same rows): another invoice cannot bill, and a timesheet edit cannot
+    // change, an entry between this eligibility read and the line write.
+    // Lock order stays invoice → sources, like every other draft writer.
+    }).from(timeEntries).where(inArray(timeEntries.id, sourceIds)).orderBy(timeEntries.id).for('share');
     const byId = new Map(entries.map((e) => [e.id, e]));
     // Same zone and hold rule assembly uses, so a refreshed line matches what
     // a fresh assembly of the entry would write.

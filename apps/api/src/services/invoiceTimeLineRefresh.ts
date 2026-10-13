@@ -70,12 +70,13 @@ export interface RefreshContext {
  *   billing_status (only issueInvoice does), so a billed entry was billed by
  *   ANOTHER invoice; this draft will fail SOURCE_ALREADY_BILLED at issue.
  * - `contract` / `no_charge`: the entry is now covered or comped.
+ * - `awaiting_approval`: the entry is held until the customer approves it.
  * - `held_for_hour_block`: a block of hours will bill it at period close.
  * - `other_org`, `not_billable`, `not_ended`, `currency_mismatch`,
  *   `missing_rate`: the entry would no longer be gathered by assembly.
  */
 export type RefreshSkipReason =
-  | 'source_missing' | 'billed_elsewhere' | 'contract' | 'no_charge' | 'held_for_hour_block'
+  | 'source_missing' | 'billed_elsewhere' | 'contract' | 'no_charge' | 'awaiting_approval' | 'held_for_hour_block'
   | 'other_org' | 'not_billable' | 'not_ended' | 'currency_mismatch' | 'missing_rate';
 
 export type RefreshableField = 'description' | 'workDate' | 'workedMinutes' | 'isUnapprovedTime';
@@ -100,10 +101,23 @@ function skip(lineId: string, reason: RefreshSkipReason): TimeLineRefreshPlan {
   return { outcome: { lineId, status: 'skipped', reason } };
 }
 
+/** Only `not_billed` is refreshable (the only state assembly gathers). Every
+ *  other status maps to its own reason; the default keeps a future enum value
+ *  from slipping through as refreshable. */
+function statusSkipReason(status: BillingStatus): RefreshSkipReason | null {
+  switch (status) {
+    case 'not_billed': return null;
+    case 'billed': return 'billed_elsewhere';
+    case 'contract': return 'contract';
+    case 'no_charge': return 'no_charge';
+    case 'awaiting_approval': return 'awaiting_approval';
+    default: return 'not_billable';
+  }
+}
+
 function skipReason(entry: RefreshEntry, ctx: RefreshContext): RefreshSkipReason | null {
-  if (entry.billingStatus === 'billed') return 'billed_elsewhere';
-  if (entry.billingStatus === 'contract') return 'contract';
-  if (entry.billingStatus === 'no_charge') return 'no_charge';
+  const byStatus = statusSkipReason(entry.billingStatus);
+  if (byStatus) return byStatus;
   if (entry.orgId !== ctx.orgId) return 'other_org';
   if (!entry.isBillable) return 'not_billable';
   if (entry.endedAt === null) return 'not_ended';

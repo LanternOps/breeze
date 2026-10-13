@@ -214,10 +214,14 @@ describe.runIf(RUN)('migration 2026-12-27-070000 description_edited backfill (#8
   const flag = (id: string) => sys(async () =>
     (await db.select({ v: invoiceLines.descriptionEdited }).from(invoiceLines).where(eq(invoiceLines.id, id)))[0]!.v);
 
-  runDb('flags only existing draft time_entry lines, reports the count, and is a no-op the second time', async () => {
+  runDb('flags only pre-existing draft time_entry lines, reports the count, and a re-run never flags newer lines', async () => {
     const ids = await seedLines();
     expect(await flag(ids.draftTime)).toBe(false);
 
+    // Simulate the first deploy: the lines exist, the column does not yet.
+    // (globalSetup already migrated this database, so drop the column first;
+    // the migration under test puts it back.)
+    await adminSql!.unsafe('ALTER TABLE invoice_lines DROP COLUMN description_edited');
     notices.length = 0;
     await adminSql!.unsafe(migrationSql);
     expect(await flag(ids.draftTime)).toBe(true);
@@ -225,9 +229,20 @@ describe.runIf(RUN)('migration 2026-12-27-070000 description_edited backfill (#8
     expect(await flag(ids.issuedTime)).toBe(false);
     expect(notices.some((n) => /description_edited backfill: flagged 1 row/.test(n))).toBe(true);
 
+    // A draft assembled AFTER the column existed starts unflagged; applying
+    // the migration again (by hand) must not flag it.
+    const [later] = await sys(async () => {
+      const [src] = await db.select({ invoiceId: invoiceLines.invoiceId, orgId: invoiceLines.orgId })
+        .from(invoiceLines).where(eq(invoiceLines.id, ids.draftTime));
+      return db.insert(invoiceLines).values({
+        invoiceId: src!.invoiceId, orgId: src!.orgId, sourceType: 'time_entry',
+        quantity: '1.00', unitPrice: '10.00', lineTotal: '10.00', description: 'later',
+      }).returning({ id: invoiceLines.id });
+    });
     notices.length = 0;
     await adminSql!.unsafe(migrationSql);
     expect(notices.some((n) => /description_edited backfill/.test(n))).toBe(false);
+    expect(await flag(later!.id)).toBe(false);
     expect(await flag(ids.draftTime)).toBe(true);
     expect(await flag(ids.draftManual)).toBe(false);
   });

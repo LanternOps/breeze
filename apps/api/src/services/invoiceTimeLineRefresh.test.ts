@@ -105,6 +105,7 @@ describe('planTimeLineRefresh (#8606)', () => {
     ['billed_elsewhere', entry({ billingStatus: 'billed' }), line()],
     ['contract', entry({ billingStatus: 'contract' }), line()],
     ['no_charge', entry({ billingStatus: 'no_charge' }), line()],
+    ['awaiting_approval', entry({ billingStatus: 'awaiting_approval' }), line()],
     ['other_org', entry({ orgId: '44444444-4444-4444-8444-444444444444' }), line()],
     ['not_billable', entry({ isBillable: false }), line()],
     ['not_ended', entry({ endedAt: null }), line()],
