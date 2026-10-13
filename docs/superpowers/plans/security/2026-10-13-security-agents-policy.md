@@ -3,6 +3,7 @@ status: draft-for-review
 issue: LanternOps/breeze#6960
 prerequisite: [6958]
 spec: docs/superpowers/specs/security/2026-10-12-security-agents-policy-spec.md
+tracking_issue: LanternOps/breeze#8734
 ---
 
 # Security Agents Config-Policy Implementation Plan
@@ -361,6 +362,8 @@ New questions this plan surfaces (spec items are decided above):
 1. **Generator trigger.** (a) Synchronous in the link-write transaction plus a periodic repair sweep. (b) Event-driven worker only. (c) Sweep only. **Recommend (a):** the 409/read-only contract and "enable → rule exists" feedback need the policy to exist when the request returns; the sweep repairs drift from direct DB or catalog changes.
 2. **Disabling the last vendor.** (a) Deactivate the generated policy, keep the row for audit. (b) Delete it. **Recommend (a):** `software_policy_audit` keeps a stable referent and re-enabling reuses the row.
 3. **Gap alert severity/routing.** (a) Reuse the existing software-compliance alert pipeline and default severity; (b) new alert category. **Recommend (a):** no new notification surface for v1; revisit if MSPs ask to route security-agent gaps separately.
+
+**Owner approved all recommendations 2026-10-13.**
 
 ## Quorum
 

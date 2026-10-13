@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#8740
+---
+
 # Endpoint Messaging + Live Chat Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -495,6 +499,8 @@ N8. **Hard rollout flag.** Per-partner `endpoint_messaging.enabled`, default off
 **Unresolved disagreements:** see "Quorum" below.
 
 ---
+
+**Owner approved all recommendations 2026-10-13.**
 
 # Quorum
 
