@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import {
   presenceResponseSchema,
-  type PresenceAssignedEntry, type PresenceDeclaredNetwork, type PresenceReason, type PresenceResponse, type PresenceSiteRef, type PresenceVisitor,
+  type PresenceAssignedEntry, type PresenceDeclaredNetwork, type PresenceReason, type PresenceResponse, type PresenceSiteRef, type PresenceSuggestion,
+  type PresenceVisitor,
 } from '@breeze/shared';
 import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
@@ -21,6 +22,9 @@ import { readSiteNetworkDeclarations } from './siteNetworkDeclarations';
  *     `asUnrecognized`), and `not_declared` is never serialized;
  *  R6 visitor DTOs carry the device id and a presentation id only — never canonical node, relationship or
  *     interface ids (the evidence column is never read here).
+ *  W3 suggestions (S§10.2, R5): an assigned entry carries its suggestion only on the visiting branch whose matched site
+ *     is visible and equals the stored suggestion (it names B); a visitor carries one only when it suggests the viewed
+ *     site (the visitor itself already required its owner site). Hidden and not-current entries never carry one.
  * Every response is `authority: false`: presence is presentation, never a site assignment.
  */
 export const PRESENCE_ASSIGNED_LIMIT = 1000;
@@ -31,6 +35,8 @@ type PresenceRow = {
   device_id: string; label: string; device_site_id: string; assigned_site_id: string; state: string; reason: string | null;
   matched_site_id: string | null; declaring_site_ids: string[] | null; prefix: string | null; gateway_address: string | null;
   mac_corroborated: boolean; observed_at: string | null; fresh_until: string | null; version_ok: boolean; fresh: boolean;
+  suggested_site_id: string | null; suggestion_days: number | null; suggestion_first_at: string | null; suggestion_last_at: string | null;
+  confirmed_at: string | null;
 };
 type FingerprintRow = { prefix: string; site_id: string; declared_by: string[] | null; gateway_address: string | null; status: string };
 
@@ -51,13 +57,20 @@ function asUnrecognized(row: PresenceRow): PresenceAssignedEntry {
   return {
     deviceId: row.device_id, label: row.label, state: 'unrecognized', reason: null, matchedSite: null, declaringSites: null,
     network: network(row), macCorroborated: false, observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until), suggestion: null,
+    siteAssignmentConfirmedAt: iso(row.confirmed_at),
   };
 }
 function asNotCurrent(row: PresenceRow): PresenceAssignedEntry {
   return {
     deviceId: row.device_id, label: row.label, state: 'unknown', reason: 'not_current', matchedSite: null, declaringSites: null,
     network: network(row), macCorroborated: false, observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until), suggestion: null,
+    siteAssignmentConfirmedAt: iso(row.confirmed_at),
   };
+}
+/** The stored suggestion, if it names `site` (a ref the caller has already gated) and is complete. */
+function suggestionFor(row: PresenceRow, site: PresenceSiteRef): PresenceSuggestion | null {
+  if (row.suggested_site_id !== site.id || row.suggestion_days === null || !row.suggestion_first_at || !row.suggestion_last_at) return null;
+  return { siteId: site.id, siteName: site.name, days: row.suggestion_days, firstObservedAt: iso(row.suggestion_first_at)!, lastObservedAt: iso(row.suggestion_last_at)! };
 }
 
 export async function readSitePresence(ctx: TopologyRequestContext, now = new Date()): Promise<{ body: PresenceResponse; etag: string }> {
@@ -89,7 +102,9 @@ export async function readSitePresence(ctx: TopologyRequestContext, now = new Da
       d.site_id::text AS device_site_id, p.assigned_site_id::text AS assigned_site_id, p.state, p.reason, p.matched_site_id::text AS matched_site_id,
       p.declaring_site_ids::text[] AS declaring_site_ids, p.prefix::text AS prefix, host(p.gateway_address) AS gateway_address,
       p.mac_corroborated, p.observed_at, p.fresh_until, (p.fingerprint_version = ${version}::bigint) AS version_ok,
-      (p.fresh_until IS NOT NULL AND p.fresh_until > ${now.toISOString()}::timestamptz) AS fresh`;
+      (p.fresh_until IS NOT NULL AND p.fresh_until > ${now.toISOString()}::timestamptz) AS fresh,
+      p.suggested_site_id::text AS suggested_site_id, p.suggestion_days, p.suggestion_first_at, p.suggestion_last_at,
+      d.site_assignment_confirmed_at AS confirmed_at`;
 
     // (a) Devices assigned (live) to the viewed site that are not validly home.
     const assignedRows = [...await tx.execute<PresenceRow>(sql`SELECT ${columns}
@@ -139,12 +154,14 @@ export async function readSitePresence(ctx: TopologyRequestContext, now = new Da
     for (const row of assignedRows.slice(0, PRESENCE_ASSIGNED_LIMIT)) {
       const valid = row.version_ok && row.fresh && row.assigned_site_id === row.device_site_id && (row.state !== 'visiting' || coverage === 'complete');
       if (!valid) { assigned.push(asNotCurrent(row)); continue; }
-      const base = { deviceId: row.device_id, label: row.label, network: network(row), observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until), suggestion: null };
+      const base = { deviceId: row.device_id, label: row.label, network: network(row), observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until),
+        suggestion: null, siteAssignmentConfirmedAt: iso(row.confirmed_at) };
       switch (row.state) {
         case 'visiting': {
           const matched = row.matched_site_id && row.matched_site_id !== siteId ? ref(row.matched_site_id) : null;
           assigned.push(matched
-            ? { ...base, state: 'visiting', reason: null, matchedSite: matched, declaringSites: null, macCorroborated: row.mac_corroborated }
+            ? { ...base, state: 'visiting', reason: null, matchedSite: matched, declaringSites: null, macCorroborated: row.mac_corroborated,
+              suggestion: suggestionFor(row, matched) }
             : asUnrecognized(row));
           break;
         }
@@ -191,7 +208,8 @@ export async function readSitePresence(ctx: TopologyRequestContext, now = new Da
       return [{
         id: `presentation:overview:${scopeHash}:visitor-${createHash('sha256').update(row.device_id).digest('hex').slice(0, 40)}`,
         deviceId: row.device_id, label: row.label, assignedSite: owner, network: net, macCorroborated: row.mac_corroborated,
-        observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until), suggestion: null,
+        observedAt: iso(row.observed_at), freshUntil: iso(row.fresh_until), suggestion: suggestionFor(row, ref(siteId)!),
+        siteAssignmentConfirmedAt: iso(row.confirmed_at),
       }];
     });
 

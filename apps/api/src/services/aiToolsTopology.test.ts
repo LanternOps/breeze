@@ -51,7 +51,7 @@ function graphResponse(nodes: number, rels: number, overrides: Record<string, un
     presentation: { nodes: [], edges: [] }, layout: { algorithm: 'x', version: 1, positions: [{ nodeId: NODE, x: 1, y: 2, pinned: false, source: 'auto', rowRevision: '1' }] },
     counts: { totalNodes: nodes, totalRelationships: rels, visibleNodes: nodes, visibleRelationships: rels, omittedNodes: 0, omittedRelationships: 0 },
     coverage: { state: 'complete', reasons: [] }, frontier: [{ token: 'secret-token', label: 'More', memberCount: 1 }],
-    permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true }, ...overrides };
+    permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true, canMoveDevices: true }, ...overrides };
 }
 
 beforeEach(() => {

@@ -92,7 +92,9 @@ export async function graphAuthority(ctx: TopologyRequestContext) {
   })).digest('hex');
   // `current` is the live permission re-read above; presence's site gate (presenceVisibility.ts) reuses it rather
   // than fetching twice.
-  return { digest, physical, interfaceHealth, current, canEdit: topologyPermissionPairs('write').every(([r, a]) => hasPermission(current, r, a) && hasPermission(ctx.permissions, r, a)) };
+  return { digest, physical, interfaceHealth, current, canEdit: topologyPermissionPairs('write').every(([r, a]) => hasPermission(current, r, a) && hasPermission(ctx.permissions, r, a)),
+    // Site location W3: gates "Move to <site>" / "Keep at <site>" in the UI. The routes re-check devices:write and both sites.
+    canMoveDevices: hasPermission(current, 'devices', 'write') && hasPermission(ctx.permissions, 'devices', 'write') };
 }
 /** Weak validator ignores response assembly time; revisions, projection and authority remain included. */
 export function topologyReadEtag(authority: string, value: unknown): string {

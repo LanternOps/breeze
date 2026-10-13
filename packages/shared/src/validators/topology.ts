@@ -496,6 +496,8 @@ export const graphResponseSchema = z.object({
     canEdit: z.boolean(),
     canDiagnose: z.boolean(),
     canConfigureMonitoring: z.boolean(),
+    /** Site location W3: devices:write (live and request permissions), for the wrong-site suggestion actions. */
+    canMoveDevices: z.boolean(),
   }).strict(),
 }).strict();
 

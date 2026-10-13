@@ -75,7 +75,7 @@ it('provides keyboard-equivalent list inspection and preserves conflict drafts',
   expect(screen.getByTestId('topology-list-toggle')).toHaveFocus();
 });
 it('read-only users can arrange but cannot save shared coordinates', async () => {
-  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false } })));
+  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } })));
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   await screen.findByTestId('topology-arrange');
   expect(screen.queryByTestId('topology-layout-save')).not.toBeInTheDocument();
@@ -155,7 +155,7 @@ it('lists connections hidden from the view and restores one through runAction', 
 it('takes diagnose and monitoring authority from the site settings, not the graph projection (M3 Task 11)', async () => {
   // The graph read reports canDiagnose/canConfigureMonitoring false by design; the
   // per-site settings read carries the real execute/configure + MFA answer.
-  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } })));
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } })));
   const settings = topologySettingsFixture();
   render(<TopologyExplorer siteId={SITE} settings={settings} />);
   await screen.findByTestId('topology-health-internet');
