@@ -40,6 +40,14 @@ type fakeAPI struct {
 	nextCommand int
 	// holdHeartbeat, when set, blocks every heartbeat until it is closed.
 	holdHeartbeat chan struct{}
+	// /metrics/scrape: 401 unless "Bearer scrapeToken", else scrapeBody.
+	scrapeToken, scrapeBody string
+}
+
+func (f *fakeAPI) setScrape(token, body string) {
+	f.mu.Lock()
+	f.scrapeToken, f.scrapeBody = token, body
+	f.mu.Unlock()
 }
 
 type fakeSocket struct {
@@ -80,6 +88,18 @@ func pathSegment(path string, i int) string {
 }
 
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/metrics/scrape" { // not agent traffic: never counted
+		f.mu.Lock()
+		tok, body := f.scrapeToken, f.scrapeBody
+		f.mu.Unlock()
+		if tok == "" || r.Header.Get("Authorization") != "Bearer "+tok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = io.WriteString(w, body)
+		return
+	}
 	route := RouteKey(r.Method, r.URL.Path)
 	f.mu.Lock()
 	f.counts[route]++

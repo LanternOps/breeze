@@ -122,6 +122,18 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			}
 		}()
 	}
+	var samp *PoolSampler
+	if cfg.ScrapeToken != "" {
+		u := cfg.ScrapeURL
+		if u == "" {
+			u = cfg.ServerURL + "/metrics/scrape"
+		}
+		// Its own client: the scrape is never counted as agent traffic.
+		samp = &PoolSampler{URL: u, Token: cfg.ScrapeToken, Interval: cfg.ScrapeInterval, Start: start,
+			Client: &http.Client{Timeout: scrapeTimeout}}
+		wg.Add(1)
+		go func() { defer wg.Done(); samp.Run(runCtx) }()
+	}
 	var sched *Scheduler
 	if cfg.Storm != nil {
 		exe := cfg.executor
