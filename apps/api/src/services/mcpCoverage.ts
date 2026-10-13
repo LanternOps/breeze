@@ -514,7 +514,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'packageSearch.ts': { gap: '#6782' },
   'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history'] },
   'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
-  'partner.ts': { exempt: 'identity', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
+  'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
