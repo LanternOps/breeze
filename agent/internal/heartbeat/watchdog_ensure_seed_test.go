@@ -127,12 +127,62 @@ func TestSeedWatchdogInstallReport_FirstBeatAfterRestart(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "registered watchdog with a stale record",
+			name: "registered and running watchdog with a stale record",
 			setup: func(t *testing.T, dir string, f *ensureFake, _ *Heartbeat) {
 				saveRec(t, dir, watchdoginstall.Record{BudgetVersion: ensureAgentVersion, Attempts: 12, Terminal: true, LastClass: watchdoginstall.ClassServer})
+				f.installed = true // registered and running
+			},
+			want: nil,
+		},
+		{
+			name: "registered, not running, no record",
+			setup: func(_ *testing.T, _ string, f *ensureFake, _ *Heartbeat) {
 				f.status = watchdoginstall.StatusRegistered
 			},
 			want: nil,
+		},
+		{
+			name: "registered, not running, open record (interrupted install)",
+			setup: func(t *testing.T, dir string, f *ensureFake, _ *Heartbeat) {
+				saveRec(t, dir, watchdoginstall.Record{BudgetVersion: ensureAgentVersion, Attempts: 2, LastAttemptAt: lastAttempt, LastClass: watchdoginstall.ClassInstallCmd})
+				f.status = watchdoginstall.StatusRegistered
+			},
+			want: &WatchdogInstallReport{State: "retrying", Attempts: 2, LastAttemptAt: "2026-10-11T09:30:00Z", LastErrorClass: "install_cmd"},
+		},
+		{
+			name: "record from an older agent version is reported as persisted",
+			setup: func(t *testing.T, dir string, _ *ensureFake, _ *Heartbeat) {
+				saveRec(t, dir, watchdoginstall.Record{BudgetVersion: "1.4.0", Attempts: 12, LastAttemptAt: lastAttempt, LastClass: watchdoginstall.ClassServer, Terminal: true})
+			},
+			want: &WatchdogInstallReport{State: "gave_up", Attempts: 12, LastAttemptAt: "2026-10-11T09:30:00Z", LastErrorClass: "server"},
+		},
+		{
+			name: "unsupported beats dev build",
+			setup: func(_ *testing.T, _ string, f *ensureFake, h *Heartbeat) {
+				f.status = watchdoginstall.StatusUnsupported
+				h.agentVersion = "dev"
+			},
+			want: &WatchdogInstallReport{State: "unsupported"},
+		},
+		{
+			name: "dev build beats opt-out",
+			setup: func(t *testing.T, dir string, _ *ensureFake, h *Heartbeat) {
+				h.agentVersion = "dev"
+				if err := (watchdoginstall.Store{Dir: dir}).SetOptedOut(true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: &WatchdogInstallReport{State: "gave_up", LastErrorClass: "dev_build"},
+		},
+		{
+			name: "opt-out beats auto-update disabled",
+			setup: func(t *testing.T, dir string, _ *ensureFake, h *Heartbeat) {
+				h.config.AutoUpdate = false
+				if err := (watchdoginstall.Store{Dir: dir}).SetOptedOut(true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: &WatchdogInstallReport{State: "opted_out"},
 		},
 		{
 			name: "detect unknown",
