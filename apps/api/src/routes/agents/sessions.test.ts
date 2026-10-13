@@ -60,11 +60,19 @@ import { sessionsRoutes } from './sessions';
 import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
 import { writeAuditEvent } from '../../services/auditEvents';
 
+// #6354 W02: the device row is share-locked for the request so an org move
+// (which locks it FOR UPDATE) cannot interleave with login observation.
+const deviceLockModes: string[] = [];
 function mockDeviceLookup() {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: 'org-1', hostname: 'host-1' }]),
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn(async (mode: string) => {
+            deviceLockModes.push(mode);
+            return [{ id: DEVICE_ID, orgId: 'org-1', hostname: 'host-1' }];
+          }),
+        }),
       }),
     }),
   } as any);
@@ -121,6 +129,17 @@ describe('PUT /agents/:id/sessions', () => {
     });
     expect(response.status).toBe(200);
     expect(observeSessionPrincipal).toHaveBeenCalledWith('org-1', 'host-1', 'alex', principal);
+  });
+
+  it('share-locks the device row for the request (#6354 W02)', async () => {
+    deviceLockModes.length = 0;
+    mockDeviceLookup();
+    const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [], events: [] }),
+    });
+    expect(response.status).toBe(200);
+    expect(deviceLockModes).toEqual(['share']);
   });
 
   it('rejects a principal that carries both sid and uid', async () => {

@@ -36,7 +36,11 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
     })
     .from(devices)
     .where(eq(devices.agentId, agentId))
-    .limit(1);
+    .limit(1)
+    // Caller verification (#6354 W02): held for the request transaction so a
+    // device org move (FOR UPDATE on this row before it revokes workstation
+    // grants) cannot interleave with the login observation below.
+    .for('share');
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
