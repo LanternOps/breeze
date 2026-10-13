@@ -4157,5 +4157,70 @@
       "dismissed": "Dismissed",
       "unknown": "Unknown"
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Send message to users",
+    "sendAction": "Send message",
+    "fields": {
+      "title": "Title",
+      "body": "Message",
+      "severity": "Severity",
+      "requiresAck": "Require acknowledgement",
+      "expiry": "Expires"
+    },
+    "severity": {
+      "info": "Info",
+      "warning": "Warning",
+      "critical": "Critical"
+    },
+    "expiry": {
+      "h1": "1 hour",
+      "h4": "4 hours",
+      "h24": "24 hours",
+      "h72": "72 hours",
+      "untilClosed": "Until closed (max 7 days)"
+    },
+    "preview": {
+      "heading": "Preview",
+      "sender": "From your company",
+      "footer": "Sent by your IT provider",
+      "acknowledge": "Acknowledge"
+    },
+    "recipients": "Recipients: {{count}} devices",
+    "columns": {
+      "device": "Device",
+      "delivery": "Delivery"
+    },
+    "capability": {
+      "assist_card": "Assist card (console session) or native fallback",
+      "native": "Native notification",
+      "unsupported": "Unsupported agent version - will not be delivered"
+    },
+    "confirm": {
+      "text": "This message will be sent to {{count}} devices. Review the exact card below.",
+      "send": "Send to {{count}} devices"
+    },
+    "result": {
+      "summary": "{{queued}} queued, {{failed}} failed",
+      "queued": "Queued",
+      "failed": "Failed"
+    },
+    "actions": {
+      "send": "Send message",
+      "sending": "Sending...",
+      "cancel": "Cancel",
+      "back": "Back",
+      "close": "Close"
+    },
+    "errors": {
+      "send_failed": "The message could not be sent. Try again.",
+      "agent_unsupported": "The agent on this device does not support messages yet.",
+      "no_permission": "You do not have permission to message this device.",
+      "offline_rejected": "The device is offline and the message was not queued.",
+      "rate_limited": "Too many messages sent recently. Try again later.",
+      "cap_exceeded": "This send is larger than the allowed limit.",
+      "feature_disabled": "Endpoint messaging is not enabled for this organization.",
+      "queue_failed": "The message could not be queued for this device."
+    }
   }
 }

@@ -4157,5 +4157,70 @@
       "dismissed": "Descartada",
       "unknown": "Desconocido"
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Enviar mensaje a los usuarios",
+    "sendAction": "Enviar mensaje",
+    "fields": {
+      "title": "Título",
+      "body": "Mensaje",
+      "severity": "Gravedad",
+      "requiresAck": "Requerir confirmación",
+      "expiry": "Vence"
+    },
+    "severity": {
+      "info": "Información",
+      "warning": "Advertencia",
+      "critical": "Crítico"
+    },
+    "expiry": {
+      "h1": "1 hora",
+      "h4": "4 horas",
+      "h24": "24 horas",
+      "h72": "72 horas",
+      "untilClosed": "Hasta que se cierre (máx. 7 días)"
+    },
+    "preview": {
+      "heading": "Vista previa",
+      "sender": "De su empresa",
+      "footer": "Enviado por su proveedor de TI",
+      "acknowledge": "Confirmar"
+    },
+    "recipients": "Destinatarios: {{count}} dispositivos",
+    "columns": {
+      "device": "Dispositivo",
+      "delivery": "Entrega"
+    },
+    "capability": {
+      "assist_card": "Tarjeta de Assist (sesión de consola) o notificación nativa de respaldo",
+      "native": "Notificación nativa",
+      "unsupported": "Versión del agente no compatible: no se entregará"
+    },
+    "confirm": {
+      "text": "Este mensaje se enviará a {{count}} dispositivos. Revise la tarjeta exacta a continuación.",
+      "send": "Enviar a {{count}} dispositivos"
+    },
+    "result": {
+      "summary": "{{queued}} en cola, {{failed}} con error",
+      "queued": "En cola",
+      "failed": "Con error"
+    },
+    "actions": {
+      "send": "Enviar mensaje",
+      "sending": "Enviando...",
+      "cancel": "Cancelar",
+      "back": "Atrás",
+      "close": "Cerrar"
+    },
+    "errors": {
+      "send_failed": "No se pudo enviar el mensaje. Inténtelo de nuevo.",
+      "agent_unsupported": "El agente de este dispositivo aún no admite mensajes.",
+      "no_permission": "No tiene permiso para enviar mensajes a este dispositivo.",
+      "offline_rejected": "El dispositivo está sin conexión y el mensaje no se puso en cola.",
+      "rate_limited": "Se enviaron demasiados mensajes recientemente. Inténtelo más tarde.",
+      "cap_exceeded": "Este envío supera el límite permitido.",
+      "feature_disabled": "La mensajería de endpoints no está habilitada para esta organización.",
+      "queue_failed": "No se pudo poner el mensaje en cola para este dispositivo."
+    }
   }
 }

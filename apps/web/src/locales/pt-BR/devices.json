@@ -4157,5 +4157,70 @@
       "dismissed": "Descartada",
       "unknown": "Desconhecido"
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Enviar mensagem aos usuários",
+    "sendAction": "Enviar mensagem",
+    "fields": {
+      "title": "Título",
+      "body": "Mensagem",
+      "severity": "Gravidade",
+      "requiresAck": "Exigir confirmação",
+      "expiry": "Expira"
+    },
+    "severity": {
+      "info": "Informação",
+      "warning": "Aviso",
+      "critical": "Crítico"
+    },
+    "expiry": {
+      "h1": "1 hora",
+      "h4": "4 horas",
+      "h24": "24 horas",
+      "h72": "72 horas",
+      "untilClosed": "Até ser fechada (máx. 7 dias)"
+    },
+    "preview": {
+      "heading": "Pré-visualização",
+      "sender": "Da sua empresa",
+      "footer": "Enviado pelo seu provedor de TI",
+      "acknowledge": "Confirmar"
+    },
+    "recipients": "Destinatários: {{count}} dispositivos",
+    "columns": {
+      "device": "Dispositivo",
+      "delivery": "Entrega"
+    },
+    "capability": {
+      "assist_card": "Cartão do Assist (sessão de console) ou notificação nativa de reserva",
+      "native": "Notificação nativa",
+      "unsupported": "Versão do agente sem suporte - não será entregue"
+    },
+    "confirm": {
+      "text": "Esta mensagem será enviada a {{count}} dispositivos. Revise o cartão exato abaixo.",
+      "send": "Enviar para {{count}} dispositivos"
+    },
+    "result": {
+      "summary": "{{queued}} na fila, {{failed}} com falha",
+      "queued": "Na fila",
+      "failed": "Falhou"
+    },
+    "actions": {
+      "send": "Enviar mensagem",
+      "sending": "Enviando...",
+      "cancel": "Cancelar",
+      "back": "Voltar",
+      "close": "Fechar"
+    },
+    "errors": {
+      "send_failed": "Não foi possível enviar a mensagem. Tente novamente.",
+      "agent_unsupported": "O agente deste dispositivo ainda não oferece suporte a mensagens.",
+      "no_permission": "Você não tem permissão para enviar mensagens a este dispositivo.",
+      "offline_rejected": "O dispositivo está offline e a mensagem não foi colocada na fila.",
+      "rate_limited": "Muitas mensagens enviadas recentemente. Tente novamente mais tarde.",
+      "cap_exceeded": "Este envio excede o limite permitido.",
+      "feature_disabled": "A mensagem para endpoints não está habilitada para esta organização.",
+      "queue_failed": "Não foi possível colocar a mensagem na fila para este dispositivo."
+    }
   }
 }

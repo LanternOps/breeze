@@ -22,7 +22,8 @@
       "archive": "Archive",
       "merge": "Merge",
       "restore": "Restore",
-      "retry": "Try again"
+      "retry": "Try again",
+      "sendMessage": "Send message"
     },
     "tabs": {
       "overview": "Overview",

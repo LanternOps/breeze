@@ -4145,7 +4145,7 @@
       "high": "Hoch",
       "medium": "Mittel",
       "low": "Niedrig",
-      "info": "Info",
+      "info": "Information",
       "unknown": "Unbekannt"
     },
     "detectionStatus": {
@@ -4156,6 +4156,71 @@
       "false_positive": "Fehlalarm",
       "dismissed": "Verworfen",
       "unknown": "Unbekannt"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Nachricht an Benutzer senden",
+    "sendAction": "Nachricht senden",
+    "fields": {
+      "title": "Titel",
+      "body": "Nachricht",
+      "severity": "Dringlichkeit",
+      "requiresAck": "Bestätigung erforderlich",
+      "expiry": "Läuft ab"
+    },
+    "severity": {
+      "info": "Information",
+      "warning": "Warnung",
+      "critical": "Kritisch"
+    },
+    "expiry": {
+      "h1": "1 Stunde",
+      "h4": "4 Stunden",
+      "h24": "24 Stunden",
+      "h72": "72 Stunden",
+      "untilClosed": "Bis zum Schließen (max. 7 Tage)"
+    },
+    "preview": {
+      "heading": "Vorschau",
+      "sender": "Von Ihrem Unternehmen",
+      "footer": "Gesendet von Ihrem IT-Dienstleister",
+      "acknowledge": "Bestätigen"
+    },
+    "recipients": "Empfänger: {{count}} Geräte",
+    "columns": {
+      "device": "Gerät",
+      "delivery": "Zustellung"
+    },
+    "capability": {
+      "assist_card": "Assist-Karte (Konsolensitzung) oder native Benachrichtigung als Alternative",
+      "native": "Native Benachrichtigung",
+      "unsupported": "Nicht unterstützte Agent-Version - wird nicht zugestellt"
+    },
+    "confirm": {
+      "text": "Diese Nachricht wird an {{count}} Geräte gesendet. Prüfen Sie die Karte unten.",
+      "send": "An {{count}} Geräte senden"
+    },
+    "result": {
+      "summary": "{{queued}} in Warteschlange, {{failed}} fehlgeschlagen",
+      "queued": "In Warteschlange",
+      "failed": "Fehlgeschlagen"
+    },
+    "actions": {
+      "send": "Nachricht senden",
+      "sending": "Wird gesendet...",
+      "cancel": "Abbrechen",
+      "back": "Zurück",
+      "close": "Schließen"
+    },
+    "errors": {
+      "send_failed": "Die Nachricht konnte nicht gesendet werden. Versuchen Sie es erneut.",
+      "agent_unsupported": "Der Agent auf diesem Gerät unterstützt noch keine Nachrichten.",
+      "no_permission": "Sie haben keine Berechtigung, diesem Gerät Nachrichten zu senden.",
+      "offline_rejected": "Das Gerät ist offline und die Nachricht wurde nicht eingereiht.",
+      "rate_limited": "Zu viele Nachrichten in letzter Zeit. Versuchen Sie es später erneut.",
+      "cap_exceeded": "Dieser Versand überschreitet das zulässige Limit.",
+      "feature_disabled": "Endpunkt-Nachrichten sind für diese Organisation nicht aktiviert.",
+      "queue_failed": "Die Nachricht konnte für dieses Gerät nicht eingereiht werden."
     }
   }
 }

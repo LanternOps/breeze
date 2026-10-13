@@ -5918,7 +5918,8 @@
       "title": "Adres"
     },
     "actions": {
-      "saveChanges": "Değişiklikleri kaydet"
+      "saveChanges": "Değişiklikleri kaydet",
+      "sendMessage": "Mesaj gönder"
     },
     "policies": {
       "assignedTitle": "Atanan Politikalar",

@@ -22,7 +22,8 @@
       "archive": "Arquivar",
       "merge": "Mesclar",
       "restore": "Restaurar",
-      "retry": "Tentar novamente"
+      "retry": "Tentar novamente",
+      "sendMessage": "Enviar mensagem"
     },
     "tabs": {
       "overview": "Visão geral",

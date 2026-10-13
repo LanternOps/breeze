@@ -4157,5 +4157,70 @@
       "dismissed": "Yoksayıldı",
       "unknown": "Bilinmiyor"
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Kullanıcılara mesaj gönder",
+    "sendAction": "Mesaj gönder",
+    "fields": {
+      "title": "Başlık",
+      "body": "Mesaj",
+      "severity": "Önem düzeyi",
+      "requiresAck": "Onay gerektir",
+      "expiry": "Son kullanma"
+    },
+    "severity": {
+      "info": "Bilgi",
+      "warning": "Uyarı",
+      "critical": "Kritik"
+    },
+    "expiry": {
+      "h1": "1 saat",
+      "h4": "4 saat",
+      "h24": "24 saat",
+      "h72": "72 saat",
+      "untilClosed": "Kapatılana kadar (en fazla 7 gün)"
+    },
+    "preview": {
+      "heading": "Önizleme",
+      "sender": "Şirketinizden",
+      "footer": "BT sağlayıcınız tarafından gönderildi",
+      "acknowledge": "Onayla"
+    },
+    "recipients": "Alıcılar: {{count}} cihaz",
+    "columns": {
+      "device": "Cihaz",
+      "delivery": "Teslimat"
+    },
+    "capability": {
+      "assist_card": "Assist kartı (konsol oturumu) veya yedek olarak yerel bildirim",
+      "native": "Yerel bildirim",
+      "unsupported": "Desteklenmeyen aracı sürümü - teslim edilmeyecek"
+    },
+    "confirm": {
+      "text": "Bu mesaj {{count}} cihaza gönderilecek. Aşağıdaki kartı kontrol edin.",
+      "send": "{{count}} cihaza gönder"
+    },
+    "result": {
+      "summary": "{{queued}} kuyrukta, {{failed}} başarısız",
+      "queued": "Kuyrukta",
+      "failed": "Başarısız"
+    },
+    "actions": {
+      "send": "Mesaj gönder",
+      "sending": "Gönderiliyor...",
+      "cancel": "İptal",
+      "back": "Geri",
+      "close": "Kapat"
+    },
+    "errors": {
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz mesajları desteklemiyor.",
+      "no_permission": "Bu cihaza mesaj gönderme izniniz yok.",
+      "offline_rejected": "Cihaz çevrimdışı ve mesaj kuyruğa alınmadı.",
+      "rate_limited": "Yakın zamanda çok fazla mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "cap_exceeded": "Bu gönderim izin verilen sınırı aşıyor.",
+      "feature_disabled": "Bu kuruluş için uç nokta mesajlaşması etkin değil.",
+      "queue_failed": "Mesaj bu cihaz için kuyruğa alınamadı."
+    }
   }
 }

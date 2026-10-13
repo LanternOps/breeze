@@ -2947,6 +2947,17 @@ export default function DeviceList({
                 </button>
                 <button
                   type="button"
+                  data-testid="bulk-send-message"
+                  onClick={() => handleBulkAction("send-message")}
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("endpointMessages.sendAction")}
+                  {agentOnlySuffix}
+                </button>
+                <button
+                  type="button"
                   onClick={() => handleBulkAction("run-script")}
                   disabled={agentOnlyDisabled}
                   title={agentOnlyTitle}

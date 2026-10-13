@@ -2149,7 +2149,7 @@
     "severity": {
       "critical": "Critico",
       "error": "Errore",
-      "info": "Info",
+      "info": "Informazione",
       "warning": "Avviso"
     },
     "showOffenders": "Mostra servizi e componenti problematici",
@@ -4145,7 +4145,7 @@
       "high": "Alta",
       "medium": "Media",
       "low": "Bassa",
-      "info": "Info",
+      "info": "Informazione",
       "unknown": "Sconosciuta"
     },
     "detectionStatus": {
@@ -4156,6 +4156,71 @@
       "false_positive": "Falso positivo",
       "dismissed": "Ignorato",
       "unknown": "Sconosciuto"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Invia messaggio agli utenti",
+    "sendAction": "Invia messaggio",
+    "fields": {
+      "title": "Titolo",
+      "body": "Messaggio",
+      "severity": "Gravità",
+      "requiresAck": "Richiedi conferma di lettura",
+      "expiry": "Scade"
+    },
+    "severity": {
+      "info": "Informazione",
+      "warning": "Avviso",
+      "critical": "Critico"
+    },
+    "expiry": {
+      "h1": "1 ora",
+      "h4": "4 ore",
+      "h24": "24 ore",
+      "h72": "72 ore",
+      "untilClosed": "Fino alla chiusura (max 7 giorni)"
+    },
+    "preview": {
+      "heading": "Anteprima",
+      "sender": "Dalla tua azienda",
+      "footer": "Inviato dal tuo fornitore IT",
+      "acknowledge": "Conferma"
+    },
+    "recipients": "Destinatari: {{count}} dispositivi",
+    "columns": {
+      "device": "Dispositivo",
+      "delivery": "Consegna"
+    },
+    "capability": {
+      "assist_card": "Scheda Assist (sessione console) o notifica nativa di riserva",
+      "native": "Notifica nativa",
+      "unsupported": "Versione agente non supportata - non verrà consegnato"
+    },
+    "confirm": {
+      "text": "Questo messaggio verrà inviato a {{count}} dispositivi. Controlla la scheda esatta qui sotto.",
+      "send": "Invia a {{count}} dispositivi"
+    },
+    "result": {
+      "summary": "{{queued}} in coda, {{failed}} non riusciti",
+      "queued": "In coda",
+      "failed": "Non riuscito"
+    },
+    "actions": {
+      "send": "Invia messaggio",
+      "sending": "Invio...",
+      "cancel": "Annulla",
+      "back": "Indietro",
+      "close": "Chiudi"
+    },
+    "errors": {
+      "send_failed": "Impossibile inviare il messaggio. Riprova.",
+      "agent_unsupported": "L'agente su questo dispositivo non supporta ancora i messaggi.",
+      "no_permission": "Non hai l'autorizzazione per inviare messaggi a questo dispositivo.",
+      "offline_rejected": "Il dispositivo è offline e il messaggio non è stato messo in coda.",
+      "rate_limited": "Troppi messaggi inviati di recente. Riprova più tardi.",
+      "cap_exceeded": "Questo invio supera il limite consentito.",
+      "feature_disabled": "I messaggi agli endpoint non sono abilitati per questa organizzazione.",
+      "queue_failed": "Impossibile mettere in coda il messaggio per questo dispositivo."
     }
   }
 }

@@ -19,6 +19,8 @@ export interface OrgRecordHeaderProps {
   onArchive?: () => void;
   /** Merge is a partner-scope operation; system-scope sessions do not get it. */
   onMerge?: () => void;
+  /** Opens the endpoint-message dialog targeting every device in the org. */
+  onSendMessage?: () => void;
 }
 
 /**
@@ -40,6 +42,7 @@ export default function OrgRecordHeader({
   onOpenSettings,
   onArchive,
   onMerge,
+  onSendMessage,
 }: OrgRecordHeaderProps) {
   const { t } = useTranslation('organizations');
   const { t: tSettings } = useTranslation('settings');
@@ -143,6 +146,16 @@ export default function OrgRecordHeader({
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               {t('orgRecord.actions.workHere')}
+            </button>
+          )}
+          {!archived && onSendMessage && (
+            <button
+              type="button"
+              data-testid="org-record-send-message"
+              onClick={onSendMessage}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            >
+              {t('orgRecord.actions.sendMessage')}
             </button>
           )}
           <button

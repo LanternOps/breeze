@@ -5913,7 +5913,8 @@
       "title": "Address"
     },
     "actions": {
-      "saveChanges": "Save changes"
+      "saveChanges": "Save changes",
+      "sendMessage": "Send message"
     },
     "policies": {
       "assignedTitle": "Assigned Policies",
