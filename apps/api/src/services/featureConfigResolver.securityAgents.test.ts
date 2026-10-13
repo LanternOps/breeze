@@ -89,7 +89,7 @@ describe('resolveSecurityAgentsLinkForDevice (#6960)', () => {
   });
 
   it('resolves an unparseable stored blob as no agents (install nothing)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
     queue(...HIERARCHY, [winnerRow('link-1', { version: 1, agents: [{ vendor: 'huntress', enabled: true, apiKey: 'x' }] })]);
     const r = await resolveSecurityAgentsLinkForDevice('dev-1');
     expect(r?.inlineSettings).toEqual({ version: 1, agents: [] });

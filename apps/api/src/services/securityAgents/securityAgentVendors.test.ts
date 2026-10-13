@@ -32,6 +32,10 @@ describe('security agent vendor registry (#6960)', () => {
     }
   });
 
+  it('each record carries the key it is registered under', () => {
+    for (const key of SECURITY_AGENT_VENDOR_KEYS) expect(getVendor(key).key).toBe(key);
+  });
+
   it('getVendor throws on an unknown key rather than returning undefined', () => {
     expect(() => getVendor('acme' as never)).toThrow();
   });

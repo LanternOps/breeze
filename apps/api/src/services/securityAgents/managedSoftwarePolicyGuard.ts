@@ -19,8 +19,10 @@ export type ManagedSoftwarePolicyRefusal = {
   configPolicyId: string | null;
 };
 
+// `managedByLinkId` is REQUIRED (not optional) so a caller that selected a
+// column subset without it fails to compile instead of silently skipping the 409.
 export async function managedSoftwarePolicyRefusal(
-  policy: { managedByLinkId?: string | null },
+  policy: { managedByLinkId: string | null },
 ): Promise<ManagedSoftwarePolicyRefusal | null> {
   if (!policy.managedByLinkId) return null;
   const [link] = await db
@@ -31,7 +33,9 @@ export async function managedSoftwarePolicyRefusal(
   return {
     error:
       'This software policy is managed by a configuration policy (Security Agents) and is read-only here. '
-      + 'Change it from that configuration policy.',
+      + (link
+        ? 'Change it from that configuration policy.'
+        : 'Its configuration policy is not visible to you; ask an administrator who manages it.'),
     code: MANAGED_SOFTWARE_POLICY_READ_ONLY_CODE,
     configPolicyId: link?.configPolicyId ?? null,
   };

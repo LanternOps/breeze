@@ -1085,6 +1085,8 @@ export type ResolvedSecurityAgentsLink = {
  * field the device reports about itself is not a valid target here: the same
  * field-provenance rule resolveEffectiveConfig applies to its display.
  */
+const warnedUnparseableSecurityAgentsLinks = new Set<string>();
+
 export async function resolveSecurityAgentsLinkForDevice(
   deviceId: string
 ): Promise<ResolvedSecurityAgentsLink | null> {
@@ -1134,10 +1136,16 @@ export async function resolveSecurityAgentsLinkForDevice(
 
   const winner = sortByHierarchy(rows)[0]!;
   const parsed = securityAgentsInlineSettingsSchema.safeParse(winner.inlineSettings);
-  if (!parsed.success) {
-    console.warn('[featureConfigResolver] security_agents link has unparseable settings; resolving as no agents', {
+  if (!parsed.success && !warnedUnparseableSecurityAgentsLinks.has(winner.linkId)) {
+    // Once per link per process: a bad partner-wide link would otherwise log
+    // for every device it reaches. The write path refuses such blobs, so this
+    // means a direct DB edit or a schema change; the policy id lets an operator
+    // find and re-save it.
+    warnedUnparseableSecurityAgentsLinks.add(winner.linkId);
+    console.error('[featureConfigResolver] security_agents link has unparseable settings; resolving as no agents', {
       linkId: winner.linkId,
-      deviceId,
+      configPolicyId: winner.sourcePolicyId,
+      issue: parsed.error.issues[0]?.message,
     });
   }
   return {

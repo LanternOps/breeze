@@ -16,7 +16,7 @@ import {
   systemProtectionInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
-import { checkSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -191,6 +191,13 @@ function warrantyConsentRefusal(err: unknown): string | null {
       error: `${err.message} Edit them with manage_update_rings, and link the ring with featurePolicyId.`,
       code: err.code,
     });
+  }
+  // #6960: the service backstop's refusal is a fixed, coded message; left to
+  // safeHandler it would reach the model as the generic tool error.
+  if (err instanceof SecurityAgentsLinkWriteError) {
+    return err.code === 'security_agents_execute_required'
+      ? JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE })
+      : JSON.stringify({ error: err.message, code: err.code });
   }
   if (!(err instanceof WarrantyConsentError)) return null;
   return JSON.stringify({

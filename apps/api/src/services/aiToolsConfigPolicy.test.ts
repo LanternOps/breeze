@@ -1893,6 +1893,16 @@ describe('manage_policy_feature_link security_agents (#6960)', () => {
     expect((call[6] as { securityAgentsArmAuthorized?: boolean } | undefined)?.securityAgentsArmAuthorized).not.toBe(true);
   });
 
+  it('maps a service-backstop refusal to a readable result, not the generic tool error', async () => {
+    const { SecurityAgentsLinkWriteError } = await import('./securityAgents/securityAgentsLinkWrite');
+    vi.mocked(addFeatureLink).mockRejectedValue(new SecurityAgentsLinkWriteError({
+      status: 400,
+      body: { error: 'Security agent huntress cannot be enabled yet.', code: 'vendor_not_enableable', vendors: ['huntress'] },
+    }));
+    const out = await add({ inlineSettings: DISABLED });
+    expect(out).toEqual({ error: 'Security agent huntress cannot be enabled yet.', code: 'vendor_not_enableable' });
+  });
+
   it('update: refuses enabled:true and a featurePolicyId on an existing security_agents link', async () => {
     const tools = toolsWithPolicy();
     mockSelectRows([{ featureType: 'security_agents' }]);

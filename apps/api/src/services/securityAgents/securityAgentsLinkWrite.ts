@@ -4,7 +4,7 @@ import {
   type SecurityAgentsInlineSettings,
 } from '@breeze/shared/validators';
 import { describeFirstZodIssue } from '../../lib/zodIssues';
-import { getVendor } from './securityAgentVendors';
+import { getVendor, type VendorKey } from './securityAgentVendors';
 
 /**
  * The single write-time check for a `security_agents` feature link (#6960),
@@ -35,7 +35,7 @@ export type SecurityAgentsLinkWriteCode =
 
 export type SecurityAgentsLinkWriteRefusal = {
   status: 400 | 403;
-  body: { error: string; code: SecurityAgentsLinkWriteCode; vendors?: string[] };
+  body: { error: string; code: SecurityAgentsLinkWriteCode; vendors?: VendorKey[] };
 };
 
 export const SECURITY_AGENTS_EXECUTE_REQUIRED_MESSAGE =

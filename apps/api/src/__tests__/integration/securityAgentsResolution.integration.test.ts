@@ -213,6 +213,19 @@ describe('security_agents resolution — live Postgres (#6960)', () => {
 });
 
 describe('managed_by_link_id lifecycle — live Postgres (#6960)', () => {
+  it('deleting only the security_agents link removes the generated policy, not the config policy', async () => {
+    const f = await seed();
+    await withSystemDbAccessContext(async () => {
+      await db.delete(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, f.l1Id));
+      expect(await db.select({ id: softwarePolicies.id }).from(softwarePolicies).where(eq(softwarePolicies.id, f.mspId))).toEqual([]);
+      expect(await db.select({ id: configurationPolicies.id }).from(configurationPolicies).where(eq(configurationPolicies.id, f.cpSaId)))
+        .toEqual([{ id: f.cpSaId }]);
+      // The customer policy is untouched.
+      expect(await db.select({ id: softwarePolicies.id }).from(softwarePolicies).where(eq(softwarePolicies.id, f.cspId)))
+        .toEqual([{ id: f.cspId }]);
+    });
+  });
+
   it('deleting the owning config policy removes the generated policy and detaches its deployments', async () => {
     const { mspId, deploymentId, cpId, cleanupIds } = await withSystemDbAccessContext(async () => {
       const sfx = Math.random().toString(36).slice(2, 10);
