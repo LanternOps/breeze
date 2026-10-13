@@ -17,6 +17,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
+	"github.com/breeze-rmm/agent/internal/updater"
+	"github.com/breeze-rmm/agent/internal/watchdoginstall"
 )
 
 const (
@@ -28,6 +30,18 @@ const (
 )
 
 var sourceCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// unsupportedPlatformError keeps the first-install message text unchanged
+// while matching watchdoginstall.ErrUnsupportedOS, so the failure classifies
+// as unsupported_os instead of unknown.
+type unsupportedPlatformError struct{ msg string }
+
+func (e *unsupportedPlatformError) Error() string { return e.msg }
+
+func (e *unsupportedPlatformError) Is(target error) bool {
+	return target == watchdoginstall.ErrUnsupportedOS
+}
+
 var firstInstallVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]*$`)
 
 type firstInstallManifest struct {
@@ -115,10 +129,10 @@ func firstInstallAssetName(component, goos, goarch string) (string, error) {
 		return "", fmt.Errorf("unsupported first-install component %q", component)
 	}
 	if goos != "windows" && goos != "linux" && goos != "darwin" {
-		return "", fmt.Errorf("unsupported first-install OS %q", goos)
+		return "", &unsupportedPlatformError{msg: fmt.Sprintf("unsupported first-install OS %q", goos)}
 	}
 	if goarch != "amd64" && goarch != "arm64" {
-		return "", fmt.Errorf("unsupported first-install architecture %q", goarch)
+		return "", &unsupportedPlatformError{msg: fmt.Sprintf("unsupported first-install architecture %q", goarch)}
 	}
 	if component == "desktop-helper" && goos != "darwin" {
 		return "", fmt.Errorf("desktop helper first-install bootstrap is only supported on darwin")
@@ -227,7 +241,7 @@ func fetchFirstInstallBytes(client *http.Client, rawURL, label string, max int64
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: status %d", label, resp.StatusCode)
+		return nil, updater.HTTPStatusErrorf(resp.StatusCode, "fetch %s: status %d", label, resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 	if err != nil {
@@ -514,7 +528,7 @@ func downloadVerifiedFirstInstallFile(client *http.Client, rawURL, destPath stri
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch release artifact: status %d", resp.StatusCode)
+		return updater.HTTPStatusErrorf(resp.StatusCode, "fetch release artifact: status %d", resp.StatusCode)
 	}
 	if resp.ContentLength >= 0 && resp.ContentLength != asset.Size {
 		return fmt.Errorf("release artifact content length does not match signed size")

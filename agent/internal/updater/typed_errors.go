@@ -73,6 +73,13 @@ func httpStatusErrorf(code int, format string, args ...any) error {
 	return &HTTPStatusError{Code: code, msg: fmt.Sprintf(format, args...)}
 }
 
+// HTTPStatusErrorf builds an *HTTPStatusError for callers outside this package
+// that fetch release artifacts themselves (the pre-enrollment first-install
+// path), so watchdoginstall.Classify can type their non-200 responses.
+func HTTPStatusErrorf(code int, format string, args ...any) error {
+	return httpStatusErrorf(code, format, args...)
+}
+
 // VerifyStagedBinarySignature runs the same staged-binary code-signature gate
 // replaceBinary applies (macOS `codesign --verify`; a no-op elsewhere). Callers
 // that execute a downloaded artifact themselves, rather than installing it via
