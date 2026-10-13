@@ -69,8 +69,11 @@ export const EDR_ACTIONS_DISABLED_REASON = 'Response actions are disabled on thi
 export interface EdrActionActor {
   /** Caller identity: RLS context + org reach. */
   auth: AuthContext;
-  /** Site axis (and, for AI agent runs, the run's frozen devices). */
-  restriction: EdrSiteRestriction;
+  /**
+   * Site axis (`EdrSiteRestriction`; for AI agent runs ∩ the run's frozen
+   * devices). Acting needs a device in `allowedDeviceIds` when restricted.
+   */
+  restriction: { allowedDeviceIds: string[] | null; allowedSiteIds: string[] | null };
   requestedVia: Extract<EdrActionRequestedVia, 'ui' | 'ai' | 'api'>;
   /** `users.id` or null — passed EXPLICITLY by the caller, never derived here. */
   requestedBy: string | null;

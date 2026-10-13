@@ -210,6 +210,7 @@ export const TOOL_TIERS = {
   get_edr_status: 1,
   list_edr_detections: 1,
   s1_isolate_device: 3,
+  edr_endpoint_action: 3,
   s1_threat_action: 3,
   sync_huntress_data: 2,
   execute_command: 3,
@@ -1815,6 +1816,18 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('list_edr_detections', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'edr_endpoint_action',
+      registryDescription('edr_endpoint_action'),
+      {
+        deviceId: uuid,
+        action: z.enum(['isolate', 'unisolate', 'scan']),
+        connectionId: uuid.optional(),
+        reason: z.string().max(500).optional(),
+      },
+      makeHandler('edr_endpoint_action', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

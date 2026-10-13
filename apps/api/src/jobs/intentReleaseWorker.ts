@@ -900,6 +900,15 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   's1_threat_action:kill',
   's1_threat_action:quarantine',
   's1_threat_action:rollback',
+  // edr_actions.requested_by (db/schema/edrProviders.ts) — one dispatch site
+  // (dispatchEdrAction) serves every action, so every key the agent lane can
+  // mint is listed, Tier-2 scan/update_agent included (the agentTier2 lane
+  // mints a supervised intent). #8167 W03.
+  'edr_endpoint_action:isolate',
+  'edr_endpoint_action:unisolate',
+  'edr_endpoint_action:scan',
+  'edr_endpoint_action:update_agent',
+  'edr_endpoint_action:kill_process',
 ]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
