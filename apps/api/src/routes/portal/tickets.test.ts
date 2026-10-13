@@ -1811,7 +1811,20 @@ describe('portal ticket routes never carry ticket-link data (#8596)', () => {
     vi.clearAllMocks();
     rigProjectingDb();
     createTicketMock.mockResolvedValue({ ...CREATED_TICKET, ticketType: 'incident', links: DECOY_LINKS });
-    listTicketFormsForOrgMock.mockResolvedValue([]);
+    // The forms route maps each form to a slim shape: the decoy proves it does
+    // not pass a service row through wholesale.
+    listTicketFormsForOrgMock.mockResolvedValue([{
+      id: 'f-1', name: 'Hardware', description: null, categoryId: null, fields: [], defaultPriority: null,
+      titleTemplate: 'x', links: DECOY_LINKS,
+    }]);
+    // GET /tickets/usage returns the aggregator payload as-is, so a decoy here
+    // would only test the mock; that module (services/portal/supportUsage.ts)
+    // is held by the static scan below. The walk still covers what the route
+    // itself adds around it.
+    supportUsageForOrgMock.mockResolvedValue({
+      month: '2026-10', timezone: 'UTC', totals: { minutes: 30, hours: 0.5 },
+      tickets: [{ id: TICKET_ID, ticketNumber: 'T-1', subject: 'Printer', minutes: 30 }],
+    });
     portalCommentMutableMock.mockResolvedValue({ ok: true });
     editTicketCommentMock.mockResolvedValue({ id: COMMENT_ID, content: 'edited', links: DECOY_LINKS });
     deleteTicketCommentMock.mockResolvedValue({ id: COMMENT_ID, links: DECOY_LINKS });
@@ -1827,6 +1840,7 @@ describe('portal ticket routes never carry ticket-link data (#8596)', () => {
     ['PATCH /tickets/:id/comments/:commentId', (app) => app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, { method: 'PATCH', headers: JSON_AUTH, body: JSON.stringify({ content: 'edited' }) })],
     ['DELETE /tickets/:id/comments/:commentId', (app) => app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, { method: 'DELETE', headers: AUTH })],
     ['GET /tickets/forms', (app) => app.request('/tickets/forms', { headers: AUTH })],
+    ['GET /tickets/usage', (app) => app.request('/tickets/usage?month=2026-10', { headers: AUTH })],
   ];
 
   it.each(routes)('%s: no link-shaped key anywhere in the response', async (_name, run) => {
