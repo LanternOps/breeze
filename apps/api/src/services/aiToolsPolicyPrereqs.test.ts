@@ -462,14 +462,14 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(JSON.parse(output).ring.appRules).toEqual(rules);
   });
 
-  it('manage_update_rings create/update do not write appRules yet (#8184 W01: read-only)', async () => {
+  it('manage_update_rings create/update persist appRules (#8184)', async () => {
     const appRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
     mockInsertReturns({ id: RING_ID, name: 'Ring A' });
     const tool = getTool();
     const createOutput = await tool.handler({ action: 'create', name: 'Ring A', appRules }, makeAuth());
     expect(JSON.parse(createOutput).success).toBe(true);
     const createdValues = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
-    expect(createdValues).not.toHaveProperty('appRules');
+    expect(createdValues.appRules).toEqual(appRules);
 
     vi.clearAllMocks();
     mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
@@ -477,7 +477,33 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     const updateOutput = await tool.handler({ action: 'update', ringId: RING_ID, name: 'Ring B', appRules }, makeAuth());
     expect(JSON.parse(updateOutput).success).toBe(true);
     const updatedValues = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
-    expect(updatedValues).not.toHaveProperty('appRules');
+    expect(updatedValues.appRules).toEqual(appRules);
+  });
+
+  it('manage_update_rings update omitting appRules leaves the column untouched (#8184)', async () => {
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    mockUpdate();
+    const tool = getTool();
+    const out = await tool.handler({ action: 'update', ringId: RING_ID, name: 'Ring B' }, makeAuth());
+    expect(JSON.parse(out).success).toBe(true);
+    expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0]).not.toHaveProperty('appRules');
+  });
+
+  it('manage_update_rings rejects duplicate appRules on create and update (#8184)', async () => {
+    vi.clearAllMocks();
+    const appRules = [
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'mozilla.firefox', action: 'block' }
+    ];
+    const tool = getTool();
+    const createOutput = await tool.handler({ action: 'create', name: 'Ring A', appRules }, makeAuth());
+    expect(JSON.parse(createOutput).error).toMatch(/duplicate application rule/i);
+    expect(insertMock).not.toHaveBeenCalled();
+
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    const updateOutput = await tool.handler({ action: 'update', ringId: RING_ID, appRules }, makeAuth());
+    expect(JSON.parse(updateOutput).error).toMatch(/duplicate application rule/i);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });
 

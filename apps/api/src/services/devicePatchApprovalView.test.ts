@@ -161,6 +161,25 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     expect(view.byPatchId.get(P1)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
   });
 
+  it('reports every patch as excluded (ring_reference_invalid) when the policy links an unresolvable ring (#8186)', async () => {
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue({
+      configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
+      featurePolicyId: RING, sourcePolicyId: 'cp-1', inherited: false,
+      settings: { sources: ['os'], autoApprove: false, autoApproveSeverities: [], autoApproveDeferralDays: 0, apps: [] },
+      ring: {
+        classification: 'missing_target', valid: false, ringId: null, ringName: null,
+        categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules: [],
+      },
+    } as never);
+    mockEvaluatorReads([row({ patchId: P1 })], [{ patchId: P1, status: 'approved', ringId: null }]);
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.evaluation).toEqual({ available: true, ring: null });
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'ring_reference_invalid', holdUntil: null });
+  });
+
   it('mirrors the scheduled job on superseded patches (it does not exclude them)', async () => {
     mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 });
     mockEvaluatorReads([row({ patchId: P1, supersededBy: 'KB-newer' })]);

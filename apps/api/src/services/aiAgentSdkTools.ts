@@ -2281,8 +2281,6 @@ export function buildBreezeSdkTools(
         deferUntil: z.string().optional(),
         notes: z.string().max(1000).optional(),
         configPolicyId: uuid.optional(),
-        autoApprove: z.boolean().optional(),
-        autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
         scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
         scheduleTime: z.string().optional(),
         rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
@@ -2802,6 +2800,15 @@ export function buildBreezeSdkTools(
         // `patch_policies.sources` is deprecated (#3150) — never advertised to
         // the model; the handler ignores it and `get` strips it from responses.
         autoApprove: z.record(z.string(), z.unknown()).optional(),
+        appRules: z.array(z.object({
+          source: z.enum(['third_party', 'custom']),
+          packageId: z.string().min(1).max(256),
+          action: z.enum(['block', 'pin']),
+          pinnedVersion: z.string().min(1).max(64).optional(),
+          displayName: z.string().max(255).optional(),
+        })).max(200).optional().describe(
+          'Per-app block/pin rules on the ring. pin requires pinnedVersion. Rules override manual approvals in scheduled patch jobs. On update this replaces the whole list.'
+        ),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },

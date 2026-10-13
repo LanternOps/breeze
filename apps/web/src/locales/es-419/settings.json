@@ -2892,6 +2892,7 @@
           "blocked_by_app_rule": "Bloqueada por una regla de aplicación",
           "awaiting_manual_approval": "En espera de aprobación manual",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
+          "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
         },
         "failureClasses": {

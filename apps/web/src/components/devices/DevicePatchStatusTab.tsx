@@ -380,7 +380,9 @@ function getEffectiveApprovalBadge(
         ? t('devicePatchStatusTab.approval.excludedSourceTitle')
         : effective.reason === 'blocked_by_app_rule'
           ? t('devicePatchStatusTab.approval.excludedAppRuleTitle')
-          : t('devicePatchStatusTab.approval.excludedCategoryTitle', { ring });
+          : effective.reason === 'ring_reference_invalid'
+            ? t('devicePatchStatusTab.approval.excludedRingReferenceTitle')
+            : t('devicePatchStatusTab.approval.excludedCategoryTitle', { ring });
       return { label: t('devicePatchStatusTab.approval.excluded'), className: APPROVAL_BADGE_CLASS.muted, title };
     }
     case 'needs_approval':

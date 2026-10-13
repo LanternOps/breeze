@@ -73,7 +73,11 @@ import {
   type WarrantyHpCmslConsent,
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
-import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
+import {
+  assertNoPolicyApprovalEdits,
+  normalizePatchInlineSettings,
+  tryNormalizePatchInlineSettings,
+} from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
@@ -1841,6 +1845,12 @@ export async function addFeatureLink(
 
   if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
 
+  // #8186: approval and app rules live on the Update Ring. A new link has
+  // nothing stored, so any app rule or autoApprove: true is an edit.
+  if (featureType === 'patch' && inlineSettings !== undefined && inlineSettings !== null) {
+    assertNoPolicyApprovalEdits(null, inlineSettings);
+  }
+
   const normalizedAutomation = featureType === 'automation'
     ? await normalizeConfigPolicyAutomationSettings(inlineSettings)
     : null;
@@ -1947,6 +1957,13 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'pam' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       pamInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // #8186: before any write — a changed app-rule list or a newly enabled
+    // policy auto-approve belongs on the Update Ring; an unchanged round-trip
+    // from a client that loaded this link passes.
+    if (existing.featureType === 'patch' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      assertNoPolicyApprovalEdits(existing.inlineSettings, updates.inlineSettings);
     }
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {

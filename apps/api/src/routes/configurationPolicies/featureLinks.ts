@@ -57,6 +57,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+import { PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
@@ -459,6 +460,10 @@ featureLinkRoutes.post(
       if (error instanceof BackupDestinationNotInOrgError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
@@ -739,6 +744,10 @@ featureLinkRoutes.patch(
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {

@@ -2892,6 +2892,7 @@
           "blocked_by_app_rule": "Bloquée par une règle d'application",
           "awaiting_manual_approval": "En attente d'approbation manuelle",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
+          "ring_reference_invalid": "L'anneau de mise à jour de la stratégie est invalide",
           "device_not_in_org": "Appareil absent de cette organisation"
         },
         "failureClasses": {

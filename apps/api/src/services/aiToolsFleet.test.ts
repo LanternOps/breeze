@@ -771,7 +771,15 @@ describe('manage_patches handler', () => {
   it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
-    expect(result.error).toContain('configuration policies');
+    expect(result.error).toContain('manage_update_rings');
+    expect(result.error).toContain('manage_policy_feature_link');
+    expect(result.error).not.toMatch(/auto-approval rules on a policy/i);
+  });
+
+  it('setup_auto_approval no longer advertises policy auto-approve fields', () => {
+    const props = tool.definition.input_schema.properties as Record<string, unknown>;
+    expect(props.autoApprove).toBeUndefined();
+    expect(props.autoApproveSeverities).toBeUndefined();
   });
 
   it('list requires org context (never returns the unscoped global catalog)', async () => {

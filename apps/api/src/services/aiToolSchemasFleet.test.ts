@@ -401,8 +401,6 @@ describe('manage_patches setup_auto_approval schema', () => {
     expect(parse('manage_patches', {
       action: 'setup_auto_approval',
       configPolicyId: TEST_UUID,
-      autoApprove: true,
-      autoApproveSeverities: ['critical', 'important'],
       scheduleFrequency: 'weekly',
       scheduleTime: '03:00',
       rebootPolicy: 'if_required',
@@ -424,9 +422,15 @@ describe('manage_patches setup_auto_approval schema', () => {
     expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '23:59' }).success).toBe(true);
   });
 
-  it('rejects invalid autoApproveSeverities values', () => {
-    expect(parse('manage_patches', { action: 'setup_auto_approval', autoApproveSeverities: ['unknown'] }).success).toBe(false);
-    expect(parse('manage_patches', { action: 'setup_auto_approval', autoApproveSeverities: ['critical', 'catastrophic'] }).success).toBe(false);
+  it('no longer declares policy-level autoApprove / autoApproveSeverities (moved to Update Rings)', () => {
+    const r = parse('manage_patches', {
+      action: 'setup_auto_approval',
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+    }) as { success: boolean; data?: Record<string, unknown> };
+    expect(r.success).toBe(true);
+    expect(r.data).not.toHaveProperty('autoApprove');
+    expect(r.data).not.toHaveProperty('autoApproveSeverities');
   });
 
   it('rejects invalid rebootPolicy', () => {

@@ -1968,6 +1968,7 @@
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule in the patch policy holds this patch, so scheduled patch runs skip it.",
+      "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
       "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",

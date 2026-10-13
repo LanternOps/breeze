@@ -2892,6 +2892,7 @@
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {

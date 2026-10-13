@@ -166,12 +166,134 @@ describe('automation feature link reference authorization', () => {
   });
 });
 
+const PATCH_INPUT_NO_APPROVAL = {
+  ...PATCH_INPUT,
+  autoApprove: false,
+  autoApproveSeverities: [],
+  apps: [],
+};
+
+describe('patch feature link writes reject approval-rule edits (#8186)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function txWithStoredPatchLink(storedInline: unknown) {
+    const update = vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'link-1' }])) })),
+      })),
+    }));
+    const tx: any = {
+      select: vi.fn(() => selectLimitRows([
+        { id: 'link-1', configPolicyId: 'policy-1', featureType: 'patch', featurePolicyId: null, inlineSettings: storedInline },
+      ])),
+      update,
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve([])) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return tx;
+  }
+
+  const moved = { status: 400, code: 'APPROVAL_RULES_MOVED_TO_RING', message: expect.stringContaining('Update Ring') };
+
+  it('rejects an ADDED app rule with APPROVAL_RULES_MOVED_TO_RING and writes nothing', async () => {
+    const tx = txWithStoredPatchLink(PATCH_INPUT_NO_APPROVAL);
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { ...PATCH_INPUT_NO_APPROVAL, apps: [{ source: 'third_party', packageId: 'Zoom.Zoom', action: 'block' }] },
+    }, 'policy-1')).rejects.toMatchObject(moved);
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(tx.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects a REMOVED or CHANGED app rule', async () => {
+    txWithStoredPatchLink(PATCH_INPUT);
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { ...PATCH_INPUT, apps: [PATCH_INPUT.apps[0]] },
+    }, 'policy-1')).rejects.toMatchObject(moved);
+    txWithStoredPatchLink(PATCH_INPUT);
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: {
+        ...PATCH_INPUT,
+        apps: [PATCH_INPUT.apps[0], { source: 'third_party', packageId: '7zip.7zip', action: 'pin', pinnedVersion: '24.00' }],
+      },
+    }, 'policy-1')).rejects.toMatchObject(moved);
+  });
+
+  it('accepts the stored list re-sent in another order and case (a stale tab saving other fields)', async () => {
+    const tx = txWithStoredPatchLink(PATCH_INPUT);
+    const updated = await updateFeatureLink('link-1', {
+      inlineSettings: {
+        ...PATCH_INPUT,
+        scheduleTime: '04:00',
+        apps: [
+          { source: 'custom', packageId: '7ZIP.7zip', action: 'pin', pinnedVersion: '23.01' },
+          { source: 'third_party', packageId: 'mozilla.firefox', action: 'block', displayName: 'Firefox' },
+        ],
+      },
+    }, 'policy-1');
+    expect(updated).not.toBeNull();
+    expect(tx.update).toHaveBeenCalled();
+  });
+
+  it('accepts an update that omits apps and autoApprove entirely', async () => {
+    txWithStoredPatchLink(PATCH_INPUT);
+    const { apps: _apps, autoApprove: _aa, autoApproveSeverities: _sev, ...rest } = PATCH_INPUT;
+    await expect(updateFeatureLink('link-1', { inlineSettings: rest }, 'policy-1')).resolves.not.toBeNull();
+  });
+
+  it('accepts the empty list a client loaded from a stored document that does not validate', async () => {
+    // The read path hands such a document back with apps: [] (schema defaults).
+    txWithStoredPatchLink({ ...PATCH_INPUT_NO_APPROVAL, scheduleTime: '2:00', apps: PATCH_INPUT.apps });
+    await expect(updateFeatureLink('link-1', { inlineSettings: PATCH_INPUT_NO_APPROVAL }, 'policy-1'))
+      .resolves.not.toBeNull();
+  });
+
+  it('rejects newly setting autoApprove: true, accepts it when already stored', async () => {
+    txWithStoredPatchLink(PATCH_INPUT_NO_APPROVAL);
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] },
+    }, 'policy-1')).rejects.toMatchObject(moved);
+
+    txWithStoredPatchLink({ ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] });
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] },
+    }, 'policy-1')).resolves.not.toBeNull();
+  });
+
+  it('addFeatureLink rejects any app rule or autoApprove: true before opening a transaction', async () => {
+    await expect(addFeatureLink('policy-1', 'patch', null, { ...PATCH_INPUT_NO_APPROVAL, apps: PATCH_INPUT.apps }))
+      .rejects.toMatchObject(moved);
+    await expect(addFeatureLink('policy-1', 'patch', null, { ...PATCH_INPUT_NO_APPROVAL, autoApprove: true, autoApproveSeverities: ['critical'] }))
+      .rejects.toMatchObject(moved);
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('does not apply to other feature types', async () => {
+    const tx: any = {
+      select: vi.fn(() => selectLimitRows([
+        { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: {} },
+      ])),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'link-pam' }])) })) })) })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve([])) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    await expect(updateFeatureLink('link-pam', { inlineSettings: { uacInterceptionEnabled: false } }, 'policy-1'))
+      .resolves.not.toBeNull();
+  });
+});
+
 describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('persists apps and autoApproveDeferralDays in JSONB on save and returns them from listFeatureLinks', async () => {
+  // #8186: a NEW patch link can no longer carry approval rules (they live on
+  // the Update Ring), so the add half of this round-trip saves none; the read
+  // half still merges the JSON-only fields from the stored mirror.
+  it('persists autoApproveDeferralDays in JSONB on save and returns the JSON-only fields from listFeatureLinks', async () => {
     // --- Save path: addFeatureLink ---
     let storedJsonb: any;
     let normalizedRowValues: any;
@@ -208,11 +330,14 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    const link = await addFeatureLink('policy-1', 'patch', null, PATCH_INPUT);
+    const link = await addFeatureLink('policy-1', 'patch', null, PATCH_INPUT_NO_APPROVAL);
 
     // The JSONB mirror must keep the JSON-only fields...
-    expect(storedJsonb.apps).toEqual(PATCH_INPUT.apps);
+    expect(storedJsonb.apps).toEqual([]);
     expect(storedJsonb.autoApproveDeferralDays).toBe(7);
+    // Simulate a link migrated before #8186 that still carries inline rules,
+    // so the read half proves the merge.
+    (link as any).inlineSettings = { ...(link as any).inlineSettings, apps: PATCH_INPUT.apps };
     // ...while the normalized table (which has no columns for them) does not get them
     expect(normalizedRowValues.featureLinkId).toBe('link-1');
     expect(normalizedRowValues.apps).toBeUndefined();
@@ -248,14 +373,14 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
 
     // Relational fields still come from the normalized row
     expect(settings.sources).toEqual(['os', 'third_party']);
-    expect(settings.autoApprove).toBe(true);
-    expect(settings.autoApproveSeverities).toEqual(['critical']);
+    expect(settings.autoApprove).toBe(false);
+    expect(settings.autoApproveSeverities).toEqual([]);
     expect(settings.scheduleFrequency).toBe('daily');
     expect(settings.scheduleTime).toBe('03:30');
     expect(settings.rebootPolicy).toBe('never');
   });
 
-  it('updateFeatureLink keeps apps and autoApproveDeferralDays in the JSONB write', async () => {
+  it('updateFeatureLink keeps apps and autoApproveDeferralDays in the JSONB write (unchanged round-trip)', async () => {
     let setValues: any;
     const tx = {
       select: vi.fn(() =>
@@ -265,7 +390,8 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
             configPolicyId: 'policy-1',
             featureType: 'patch',
             featurePolicyId: null,
-            inlineSettings: {},
+            // #8186: a stale Patch tab re-sends what it loaded; that is accepted.
+            inlineSettings: PATCH_INPUT,
           },
         ])
       ),

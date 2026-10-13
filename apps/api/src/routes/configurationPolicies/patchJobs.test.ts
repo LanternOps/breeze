@@ -350,8 +350,9 @@ describe('configurationPolicies patchJob routes', () => {
         ringId: RING_ID_FOR_SNAPSHOT,
         sources: ['third_party'],
         policyAutoApprove: { enabled: true, severities: ['critical'], deferralDays: 5 },
-        apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
-        // #8184: the manual route snapshots ring rules under their own key.
+        // #8186: the legacy key mirrors the RING rules (for executors that
+        // predate ringAppRules); the policy's inline Firefox block is gone.
+        apps: [{ source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' }],
         ringAppRules: [{ source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' }],
       });
       expect(writeRouteAudit).toHaveBeenCalled();
@@ -930,12 +931,15 @@ describe('configurationPolicies patchJob routes', () => {
       // New keys sourced from the requested policy (it is also the winning one)
       expect(json.isWinning).toBe(true);
       expect(json.effective.settings.autoApproveDeferralDays).toBe(5);
-      expect(json.effective.settings.apps).toEqual(appRules);
+      // #8186: effective app rules come from the ring; this policy has none,
+      // so its stale inline list is not reported as effective.
+      expect(json.effective.settings.apps).toEqual([]);
     });
 
     it('loads the winning policy config when it differs from the requested policy', async () => {
       const winningPolicyId = '88888888-8888-8888-8888-888888888888';
       const winningApps = [{ source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' }];
+      const winningRingRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
       loadPolicyLocalPatchConfigMock.mockImplementation(async (configPolicyId: string) => {
         if (configPolicyId === POLICY_ID) {
@@ -966,6 +970,7 @@ describe('configurationPolicies patchJob routes', () => {
             categories: [],
             excludeCategories: [],
             autoApprove: {},
+            appRules: winningRingRules,
           },
         });
       });
@@ -984,7 +989,8 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.effective.configPolicyId).toBe(winningPolicyId);
       // New keys must come from the *winning* policy's local config
       expect(json.effective.settings.autoApproveDeferralDays).toBe(9);
-      expect(json.effective.settings.apps).toEqual(winningApps);
+      // #8186: the winning policy's RING rules, not its stale inline list.
+      expect(json.effective.settings.apps).toEqual(winningRingRules);
       expect(json.effective.approvalRing.ringId).toBe('ring-w');
       expect(json.effective.approvalRing.ringName).toBe('Winning Ring');
       // Requested policy's own config is still returned unchanged
