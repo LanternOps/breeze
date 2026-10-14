@@ -57,6 +57,16 @@ describe('TrustPageView', () => {
     expect(screen.getByText('Security policy').tagName).toBe('SPAN');
     expect(screen.queryByText('Download')).toBeNull();
   });
+  it('I12: a partner-home page (org slug null) links documents to the partner-home document route', () => {
+    render(<TrustPageView partnerSlug="nw" orgSlug={null} card={null} initial={initial as never} />);
+    expect(screen.getByRole('link', { name: /Security policy/ })).toHaveAttribute('href', '/api/v1/trust/public/nw/documents/0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6d');
+    expect(screen.getByText('Download')).toBeInTheDocument();
+  });
+  it('a preview never links documents, even when a partner slug is known', () => {
+    render(<TrustPageView partnerSlug="nw" orgSlug={null} card={null} previewToken="t" initial={initial as never} />);
+    expect(screen.getByText('Security policy').tagName).toBe('SPAN');
+    expect(screen.queryByText('Download')).toBeNull();
+  });
   it('stale → "Verification paused" banner and muted pills', () => {
     render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, stale: true, lastEvaluatedAt: '2026-10-11T00:00:00.000Z' } as never} />);
     expect(screen.getByText(/Verification paused since/)).toBeInTheDocument();
@@ -65,6 +75,8 @@ describe('TrustPageView', () => {
   it('hides the footer badge when unbranded, hides documents section when empty', () => {
     render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: { ...payload, documents: [], footer: { poweredByBreeze: false, frameworkAttributions: [] } } } as never} />);
     expect(screen.queryByText(/Powered by Breeze/)).toBeNull();
+    // The non-certification disclaimer is not branding: it renders on unbranded pages too.
+    expect(screen.getByText(/Not a SOC 2, ISO or CIS attestation/)).toBeInTheDocument();
     expect(screen.queryByTestId('trust-documents')).toBeNull();
   });
   it('fetches client-side when no initial data, shows the generic error on 404', async () => {

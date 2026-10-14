@@ -62,6 +62,7 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
           TRUST_RESTRICTED: tr('errors.trustRestricted'),
           SLUG_INVALID: message || tr('errors.slugInvalid'),
           INTRO_TOO_LONG: tr('errors.introTooLong'),
+          PARTNER_HOME_INTERNAL_ONLY: tr('errors.partnerHomeInternalOnly'),
         } as Record<string, string>)[code],
       });
       onPublished(data.page);

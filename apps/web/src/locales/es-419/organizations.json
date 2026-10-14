@@ -234,7 +234,9 @@
         "trustRestricted": "La publicación se habilita cuando su cuenta pasa a ser de confianza.",
         "slugInvalid": "La dirección de la página no es válida. Corrija el slug en la configuración de la organización.",
         "introTooLong": "La introducción es demasiado larga.",
-        "partnerWideRequired": "Solo los administradores de todo el socio pueden cambiar la página del socio."
+        "partnerWideRequired": "Solo los administradores de todo el socio pueden cambiar la página del socio.",
+        "partnerHomeInternalOnly": "Solo tu propia organización (interna) puede ser la página del socio.",
+        "partnerHomeUnpublishFirst": "Esta página está publicada sin una autorización del cliente registrada. Anula la publicación antes de desactivar la página del socio."
       },
       "controls": {
         "republishBanner": "Los cambios se aplican a la página pública cuando vuelva a publicar.",

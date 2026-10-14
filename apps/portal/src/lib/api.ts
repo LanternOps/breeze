@@ -1609,4 +1609,6 @@ export interface TrustCard { title: string; orgName: string; logoUrl: string | n
 export interface TrustPageResponse { payload: TrustPagePublicPayload; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
 
 export const trustBadgePath = (p: string, o: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/badge.svg`);
-export const trustDocumentPath = (p: string, o: string, id: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/documents/${encodeURIComponent(id)}`);
+/** `o` null = the partner-home page, which has its own document route (/trust/public/:partnerSlug/documents/:id). */
+export const trustDocumentPath = (p: string, o: string | null, id: string): PublicApiPath =>
+  publicApiPath(`/trust/public/${encodeURIComponent(p)}${o ? `/${encodeURIComponent(o)}` : ''}/documents/${encodeURIComponent(id)}`);

@@ -147,6 +147,8 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
         friendly: (code) => ({
           MFA_REQUIRED: tr('errors.mfaRequired'),
           PARTNER_WIDE_REQUIRED: tr('errors.partnerWideRequired'),
+          PARTNER_HOME_INTERNAL_ONLY: tr('errors.partnerHomeInternalOnly'),
+          PARTNER_HOME_UNPUBLISH_FIRST: tr('errors.partnerHomeUnpublishFirst'),
         } as Record<string, string>)[code],
       });
       onReload();

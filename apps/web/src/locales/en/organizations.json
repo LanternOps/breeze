@@ -234,7 +234,9 @@
         "trustRestricted": "Publishing opens once your account is trusted.",
         "slugInvalid": "The page address is not valid. Fix the slug in organization settings.",
         "introTooLong": "The introduction is too long.",
-        "partnerWideRequired": "Only partner-wide administrators can change the partner page."
+        "partnerWideRequired": "Only partner-wide administrators can change the partner page.",
+        "partnerHomeInternalOnly": "Only your own (internal) organization can be the partner page.",
+        "partnerHomeUnpublishFirst": "This page is live without a recorded customer authorization. Unpublish it before turning off the partner page setting."
       },
       "controls": {
         "republishBanner": "Changes apply to the public page when you publish again.",

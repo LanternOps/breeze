@@ -234,7 +234,9 @@
         "trustRestricted": "La publication s'ouvre dès que votre compte est approuvé.",
         "slugInvalid": "L'adresse de la page n'est pas valide. Corrigez le slug dans les paramètres de l'organisation.",
         "introTooLong": "L'introduction est trop longue.",
-        "partnerWideRequired": "Seuls les administrateurs de l'ensemble du partenaire peuvent modifier la page du partenaire."
+        "partnerWideRequired": "Seuls les administrateurs de l'ensemble du partenaire peuvent modifier la page du partenaire.",
+        "partnerHomeInternalOnly": "Seule votre propre organisation (interne) peut être la page du partenaire.",
+        "partnerHomeUnpublishFirst": "Cette page est publiée sans autorisation client enregistrée. Dépubliez-la avant de désactiver la page du partenaire."
       },
       "controls": {
         "republishBanner": "Les modifications s'appliquent à la page publique lors de votre prochaine publication.",

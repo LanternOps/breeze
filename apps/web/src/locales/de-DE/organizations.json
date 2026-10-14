@@ -234,7 +234,9 @@
         "trustRestricted": "Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
         "slugInvalid": "Die Seitenadresse ist ungültig. Korrigieren Sie den Slug in den Organisationseinstellungen.",
         "introTooLong": "Die Einleitung ist zu lang.",
-        "partnerWideRequired": "Nur partnerweite Administratoren können die Partnerseite ändern."
+        "partnerWideRequired": "Nur partnerweite Administratoren können die Partnerseite ändern.",
+        "partnerHomeInternalOnly": "Nur Ihre eigene (interne) Organisation kann die Partnerseite sein.",
+        "partnerHomeUnpublishFirst": "Diese Seite ist ohne erfasste Kundengenehmigung veröffentlicht. Heben Sie die Veröffentlichung auf, bevor Sie die Partnerseite deaktivieren."
       },
       "controls": {
         "republishBanner": "Änderungen werden auf der öffentlichen Seite wirksam, sobald Sie erneut veröffentlichen.",

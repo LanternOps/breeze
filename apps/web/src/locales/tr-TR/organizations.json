@@ -234,7 +234,9 @@
         "trustRestricted": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
         "slugInvalid": "Sayfa adresi geçerli değil. Slug değerini kuruluş ayarlarında düzeltin.",
         "introTooLong": "Giriş metni çok uzun.",
-        "partnerWideRequired": "İş ortağı sayfasını yalnızca iş ortağı genelindeki yöneticiler değiştirebilir."
+        "partnerWideRequired": "İş ortağı sayfasını yalnızca iş ortağı genelindeki yöneticiler değiştirebilir.",
+        "partnerHomeInternalOnly": "Yalnızca kendi (dahili) kuruluşunuz iş ortağı sayfası olabilir.",
+        "partnerHomeUnpublishFirst": "Bu sayfa kayıtlı bir müşteri yetkisi olmadan yayında. İş ortağı sayfası ayarını kapatmadan önce yayından kaldırın."
       },
       "controls": {
         "republishBanner": "Değişiklikler, yeniden yayımladığınızda herkese açık sayfaya uygulanır.",

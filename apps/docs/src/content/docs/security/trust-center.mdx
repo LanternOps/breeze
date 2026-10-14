@@ -2,7 +2,7 @@
 title: Trust Center
 description: Publish a public, telemetry-backed security page for each customer organization, with controls evaluated from live Breeze data.
 sidebar:
-  order: 6
+  order: 7
   label: Trust Center
 ---
 
@@ -37,7 +37,7 @@ The rules are fixed and shown on the public page:
 - A control is evaluated only when at least **80%** of eligible units were assessed (the coverage floor). Below that, it reads **Not assessed**, never 0%.
 - A control reads Met at **95%** or higher, Needs attention at **80%** or higher, and Not met otherwise.
 
-Controls are re-evaluated every hour while a page is published, and again when you publish.
+Controls are re-evaluated every hour while a page is published, and again when you publish. The hourly refresh re-reads the evidence only: your page settings, introduction, contact details and document list stay as they were at the last publish. Edits you save in the Trust Center tab reach the public page when you publish again. Removing a document from the page still takes it off the public page at the next refresh.
 
 ## Who can publish
 
@@ -47,7 +47,7 @@ To publish or unpublish you need the `organizations:write` permission and a sess
 
 ### Customer authorization
 
-When you publish a customer's page you must confirm that the customer authorized it and record who gave that authorization (name and role). Breeze stores the attestation with the date. A partner's own page needs no customer authorization.
+When you publish a customer's page you must confirm that the customer authorized it and record who gave that authorization (name and role). Breeze stores the attestation with the date. A partner's own page needs no customer authorization, so only your own internal organization can be marked as the partner page.
 
 ## Framework references
 
@@ -63,8 +63,6 @@ Unpublishing takes effect immediately: the public link stops working and the bad
 
 ## Self-hosting
 
-Nothing to configure. Trust pages are served under `/portal/trust/...`, which your existing reverse-proxy rule for `/portal` already covers. The public API lives under `/api/v1/trust/`.
+Nothing to configure. Trust pages are served under `/portal/trust/...`, which your existing reverse-proxy rule for `/portal` already covers. The public API lives under `/api/v1/trust/`. Proxies that already forward `X-Forwarded-Proto` and `X-Forwarded-Host` (Caddy's default) need nothing; if yours strips them, canonical URLs fall back to the internal origin.
 
 `PARTNER_TRUST_MODE` applies only to hosted installs; self-hosted installs skip the trust gate.
-
-Make sure your proxy sets `X-Forwarded-Proto` and `X-Forwarded-Host` so canonical URLs render with the public scheme and host.

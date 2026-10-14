@@ -30,7 +30,8 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
   }
   const { payload, stale, lastEvaluatedAt } = data;
   const groups = groupControlsByCategory(payload.controls);
-  const docHref = (id: string) => (partnerSlug && orgSlug ? trustDocumentPath(partnerSlug, orgSlug, id) : undefined);
+  // Published pages link documents (org page or partner-home page); a preview never does.
+  const docHref = (id: string) => (!previewToken && partnerSlug ? trustDocumentPath(partnerSlug, orgSlug, id) : undefined);
 
   return (
     <article className="space-y-8" data-testid="trust-page">
@@ -101,7 +102,8 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
       )}
 
       <footer className="space-y-2 text-xs text-muted-foreground">
-        {payload.footer.poweredByBreeze && <p>Powered by Breeze RMM · continuously verified telemetry. Not a SOC 2, ISO or CIS attestation.</p>}
+        {payload.footer.poweredByBreeze && <p>Powered by Breeze RMM · continuously verified telemetry.</p>}
+        <p>Not a SOC 2, ISO or CIS attestation.</p>
         {payload.footer.frameworkAttributions.map((fw) => <p key={fw}>{FRAMEWORK_META[fw].attribution}</p>)}
       </footer>
     </article>

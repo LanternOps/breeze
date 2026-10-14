@@ -6,6 +6,8 @@ describe('trust api paths', () => {
   it('builds encoded public paths', () => {
     expect(trustBadgePath('nw', 'acme')).toBe('/api/v1/trust/public/nw/acme/badge.svg');
     expect(trustDocumentPath('nw', 'acme', 'd1')).toBe('/api/v1/trust/public/nw/acme/documents/d1');
+    // I12: a partner-home page (no org slug) has its own document route.
+    expect(trustDocumentPath('nw', null, 'd1')).toBe('/api/v1/trust/public/nw/documents/d1');
   });
   it('card and page hit the right endpoints without an auth redirect', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status: 200 }));

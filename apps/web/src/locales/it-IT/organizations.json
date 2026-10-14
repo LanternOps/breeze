@@ -234,7 +234,9 @@
         "trustRestricted": "La pubblicazione si apre non appena il tuo account viene considerato attendibile.",
         "slugInvalid": "L'indirizzo della pagina non è valido. Correggi lo slug nelle impostazioni dell'organizzazione.",
         "introTooLong": "L'introduzione è troppo lunga.",
-        "partnerWideRequired": "Solo gli amministratori a livello di partner possono modificare la pagina del partner."
+        "partnerWideRequired": "Solo gli amministratori a livello di partner possono modificare la pagina del partner.",
+        "partnerHomeInternalOnly": "Solo la tua organizzazione (interna) può essere la pagina del partner.",
+        "partnerHomeUnpublishFirst": "Questa pagina è pubblicata senza un'autorizzazione del cliente registrata. Annulla la pubblicazione prima di disattivare la pagina del partner."
       },
       "controls": {
         "republishBanner": "Le modifiche vengono applicate alla pagina pubblica quando pubblichi di nuovo.",

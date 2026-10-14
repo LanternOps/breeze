@@ -47,6 +47,7 @@ describe('TrustPublishDialog', () => {
     ['TRUST_PROBATION', 403, /opens once your account is trusted/],
     ['TRUST_RESTRICTED', 403, /opens once your account is trusted/],
     ['SLUG_INVALID', 422, /address is not valid/],
+    ['PARTNER_HOME_INTERNAL_ONLY', 422, /own \(internal\) organization/],
     ['INTRO_TOO_LONG', 422, /too long/],
   ])('maps %s to friendly copy', async (code, status, re) => {
     api.publishTrustPage.mockResolvedValue(json({ error: 'The page address is not valid', code }, status));
