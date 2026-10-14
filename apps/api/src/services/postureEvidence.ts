@@ -41,6 +41,7 @@ import {
   type SecurityProductEvidence
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
+import { loadBackupsVerifiedEvidence, loadM365MfaEvidence } from './postureEvidenceNetNew';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
@@ -354,6 +355,7 @@ export async function loadPostureEvidence(
     const orgWide = includeOrgWide ? await loadOrgWide() : null;
     const out = empty(orgWide, org);
     if (orgWide) applyOrgWide(out.controls, orgWide, asOf);
+    if (includeOrgWide) out.controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
     return out;
   }
 
@@ -454,6 +456,11 @@ export async function loadPostureEvidence(
     .from(devicePatches)
     .where(and(eq(devicePatches.orgId, orgId), inArray(devicePatches.deviceId, deviceIds)));
   const patchScannedDevices = new Set(patchRowDevices.map((r) => r.deviceId));
+
+  // 19 (unrestricted only) + 20/21 — net-new readers. Appended last: the positional
+  // db.select mocks in the loader/report tests depend on query order.
+  if (includeOrgWide) controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
+  controls.backups_verified = await loadBackupsVerifiedEvidence(orgId, deviceIds, asOf, policy.maxSecurityStatusAgeDays);
 
   let reporting = 0; // devices reporting a security_status row
   let unprotected = 0;

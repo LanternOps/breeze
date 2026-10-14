@@ -119,11 +119,25 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.identity_provider).toMatchObject({ eligible: 0, assessed: 0 });
   });
 
+  it('net-new readers (queries 19–21): empty → both controls zero; a rollup row populates mfa_registered_m365 (unrestricted only)', async () => {
+    const empty = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(empty.controls.mfa_registered_m365).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
+    expect(empty.controls.backups_verified).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
+
+    mockQueries({ 18: [{ usersTotal: 10, usersMfaRegistered: 9, usersMfaUnknown: 0, adminsWithoutMfa: 0, computedAt: recent }] });
+    const withRollup = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(withRollup.controls.mfa_registered_m365).toMatchObject({ eligible: 10, assessed: 10, passing: 9, gate: true });
+
+    mockQueries({ 18: [{ usersTotal: 10, usersMfaRegistered: 9, usersMfaUnknown: 0, adminsWithoutMfa: 0, computedAt: recent }] });
+    const restricted = await loadPostureEvidence({ version: 1, kind: 'restricted', orgId: ORG, siteIds: ['site-a'] }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(restricted.controls.mfa_registered_m365).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
+  });
+
   it('zero devices → every device control zero, org-wide still loaded', async () => {
     // No device reads (3–6, 17, 18) run for zero devices: the org-wide reads follow slot 2 directly.
     mockQueries({ 2: [], 3: [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'success' }], 4: [{ isActive: true, provider: 's3', encryption: true }], 5: [], 6: [{ status: 'active' }], 7: [], 8: [{ uacInterceptionEnabled: true }], 9: [{ id: 'r1' }], 10: [], 11: [{ overallScore: 82 }] });
     const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(11);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(12); // +1: the M365 MFA rollup read (unrestricted only)
     expect(ev.deviceCount).toBe(0);
     expect(ev.controls.disk_encryption).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
     expect(ev.controls.identity_provider).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
@@ -142,20 +156,20 @@ describe('loadPostureEvidence', () => {
     it('without the callback no edr_endpoints query is issued', async () => {
       await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
       // 1–14, 16, 17, 18 — exactly the 17 positional reads, nothing between slots 6 and 7.
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(17);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // +2: M365 rollup + backup_jobs device set
     });
 
     it('a callback returning false reads no EDR evidence either', async () => {
       const allowed = vi.fn(async () => false);
       await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF, { edrEvidenceAllowed: allowed });
       expect(allowed).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(17);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // +2: M365 rollup + backup_jobs device set
     });
 
     it('with the callback allowing it, a healthy endpoint counts the device as managed and protected', async () => {
       mockQueries({}, { edrSlot: [{ deviceId: 'd3' }] });
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF, { edrEvidenceAllowed: async () => true });
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(18);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20); // +2: M365 rollup + backup_jobs device set
       const d3 = ev.devices.find((d) => d.id === 'd3')!;
       expect(d3.managed).toEqual(['Managed endpoint protection']);
       expect(d3.protection).toBe('protected');

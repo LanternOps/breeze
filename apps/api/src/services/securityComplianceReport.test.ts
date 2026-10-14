@@ -159,6 +159,7 @@ describe('generateSecurityCompliancePostureReport', () => {
       [], // huntress_agents
       [], // outstanding device patches
       [], // patch-assessed device set
+      [], // backup_jobs device set (backups_verified; no M365 read when restricted)
     ];
     const select = vi.mocked(db.select);
     select.mockReset();
