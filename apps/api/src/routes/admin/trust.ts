@@ -117,7 +117,15 @@ async function changeTrustState(
   }
 
   const action = next === 'trusted' ? 'admin:promote' : 'admin:restrict';
-  await setTrustState(partnerId, next, action, auth.user.id, { reason });
+  // CAS on the state this handler loaded: if an auto-promotion, another
+  // admin, or a lapse (#8714) moved the row in between, the write affects
+  // zero rows and setTrustState returns false with no audit row, no publish
+  // and no partner email. The admin refreshes the queue and decides again
+  // against the current state.
+  const landed = await setTrustState(partnerId, next, action, auth.user.id, { reason }, { expectedFrom: current.trustState });
+  if (!landed) {
+    return c.json({ error: 'trust state changed since the queue was loaded; refresh and retry' }, 409);
+  }
   return c.json({ success: true, trustState: next });
 }
 
