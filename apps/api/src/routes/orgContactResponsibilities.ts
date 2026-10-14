@@ -8,7 +8,7 @@ import { requirePermission, requireScope, type AuthContext } from '../middleware
 import { PERMISSIONS } from '../services/permissions';
 import { CONTACT_ROLES } from '../services/contacts/types';
 import { resolveContactResponsibility } from '../services/contacts/responsibilities';
-import { canReachContactSite, resolveAccessibleOrg } from './orgContacts';
+import { resolveAccessibleOrg } from './orgContacts';
 
 /**
  * Read-only "who to contact" (spec 2026-10-06 contact-responsibility-scope, §14 follow-up).
@@ -17,7 +17,7 @@ import { canReachContactSite, resolveAccessibleOrg } from './orgContacts';
  * canonical resolver (Device Group > Site > Organization). No writes.
  *
  * Gate matches the contacts CRUD: ORGS_READ. Site reach is re-asserted with
- * canReachContactSite, and every not-found/not-reachable case returns 404 so the
+ * auth.canAccessSite, and every not-found/not-reachable case returns 404 so the
  * response is not an existence oracle.
  */
 
@@ -64,7 +64,7 @@ export function registerOrgContactResponsibilitiesRoutes(orgRoutes: Hono) {
         targetSiteId = siteId;
       }
 
-      if (!canReachContactSite(auth, targetSiteId)) return c.json({ error: 'Site not found' }, 404);
+      if (!(auth.canAccessSite?.(targetSiteId) ?? true)) return c.json({ error: 'Site not found' }, 404);
 
       const resolved = [];
       for (const role of CONTACT_ROLES) {

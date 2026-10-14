@@ -78,8 +78,8 @@ export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId }:
         <ul className="mt-4 divide-y">
           {items.map((responsibility) => (
             <li key={responsibility.role} className="py-3">
-              <p className="text-sm font-medium">{t(`roles.${responsibility.role}`)}</p>
-              <p className="text-xs text-muted-foreground">{t(`scope.${responsibility.level}`)}</p>
+              <p className="text-sm font-medium">{t(/* i18n-dynamic */ `roles.${responsibility.role}`)}</p>
+              <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `scope.${responsibility.level}`)}</p>
               <ul className="mt-2 space-y-1">
                 {responsibility.contacts.map((contact) => (
                   <li key={contact.contactId} className="text-sm">
