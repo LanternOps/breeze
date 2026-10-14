@@ -33,6 +33,11 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Trust Center W1 (#8768): publish/unpublish/preview/partner-home are the public-exposure
+  // mutations; the sections (Task 16) add their own entries.
+  'src/components/trustCenter/TrustCenterTab.tsx',
+  'src/components/trustCenter/TrustStatusCard.tsx',
+  'src/components/trustCenter/TrustPublishDialog.tsx',
   // Caller verification W04 (#6354): technician client + the three components that mutate through it.
   'src/lib/api/callerVerification.ts',
   'src/components/callerVerification/VerifyCallerModal.tsx',
@@ -926,7 +931,8 @@ describe('no silent mutations in targeted set', () => {
     // Caller verification W04 (#6354) adds lib/api/callerVerification.ts and
     // callerVerification/{VerifyCallerModal,ContactVerificationDrawer,CallerVerificationPolicyForm}.tsx: 225 → 229.
     // Endpoint messaging W1 (#8741) adds lib/endpointMessages.ts and endpointMessages/SendMessageDialog.tsx: 229 → 231.
-    expect(absoluteFiles.length).toBe(231);
+    // Trust Center W1 (#8768) adds TrustCenterTab, TrustStatusCard, TrustPublishDialog: 231 → 234.
+    expect(absoluteFiles.length).toBe(234);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

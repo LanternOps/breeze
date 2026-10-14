@@ -34,6 +34,7 @@
       "billing": "Contracts & Billing",
       "service": "Service",
       "documents": "Documents",
+      "trust": "Trust Center",
       "activity": "Activity"
     },
     "comingSoon": {
@@ -151,6 +152,97 @@
         "invoices": "Invoices",
         "quotes": "Quotes",
         "agreements": "Agreements"
+      }
+    },
+    "trust": {
+      "title": "Trust Center",
+      "subtitle": "A public page showing this organization's security posture, generated from live Breeze telemetry.",
+      "loading": "Loading Trust Center…",
+      "loadFailed": "Could not load the Trust Center page.",
+      "retry": "Try again",
+      "status": {
+        "unpublished": "Unpublished",
+        "published": "Published {{date}}",
+        "publicUrl": "Public page",
+        "copy": "Copy link",
+        "copied": "Link copied",
+        "copyFailed": "Could not copy the link.",
+        "lastEvaluated": "Controls last evaluated {{date}}"
+      },
+      "publish": {
+        "button": "Publish",
+        "republish": "Publish update",
+        "title": "Publish Trust Center page",
+        "intro": "This makes the page visible to anyone with the link{{indexable}}. Controls are evaluated again when you publish.",
+        "indexableSuffix": ", and search engines may index it",
+        "attestationCheckbox": "The customer has authorized publication of this page",
+        "authorizedBy": "Authorized by (name, role)",
+        "authorizedByPlaceholder": "Jane Doe, COO",
+        "recorded": "Authorized by {{name}} on {{date}}",
+        "change": "Change",
+        "partnerHomeNote": "This is the partner's own page, so no customer authorization is needed.",
+        "confirm": "Publish",
+        "publishing": "Publishing…",
+        "cancel": "Cancel",
+        "success": "Trust Center page published.",
+        "failed": "Could not publish the Trust Center page.",
+        "disabledNoWrite": "You need permission to edit organizations to publish.",
+        "disabledSlug": "Fix the page address before publishing."
+      },
+      "unpublish": {
+        "button": "Unpublish",
+        "title": "Unpublish Trust Center page",
+        "message": "The public link will stop working immediately and the badge will go dark. You can publish again at any time.",
+        "confirm": "Unpublish",
+        "success": "Trust Center page unpublished.",
+        "failed": "Could not unpublish the Trust Center page."
+      },
+      "preview": {
+        "button": "Preview",
+        "failed": "Could not open the preview.",
+        "popupBlocked": "Your browser blocked the preview window. Allow pop-ups for this site and try again."
+      },
+      "partnerHome": {
+        "label": "Use as the partner's own Trust Center page",
+        "description": "Shows this page at your partner address instead of a customer address. It needs no customer authorization.",
+        "success": "Partner page setting saved.",
+        "failed": "Could not change the partner page setting."
+      },
+      "slug": {
+        "warningTitle": "This page's address is not valid yet",
+        "openSettings": "Edit in organization settings",
+        "partner_slug": "The partner slug is not valid for a public address.",
+        "org_slug": "The organization slug is not valid for a public address.",
+        "unknown": "The page address has a problem ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Publishing is not available yet: {{reason}}",
+        "readOnly": "You can view this page but need permission to edit organizations to change or publish it."
+      },
+      "errors": {
+        "revisionMismatch": "This page changed since you loaded it. Reload and try again.",
+        "authorizationRequired": "Record who authorized publication.",
+        "mfaRequired": "Publishing requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "trustProbation": "Publishing opens once your account is trusted.",
+        "trustRestricted": "Publishing opens once your account is trusted.",
+        "slugInvalid": "The page address is not valid. Fix the slug in organization settings.",
+        "introTooLong": "The introduction is too long.",
+        "partnerWideRequired": "Only partner-wide administrators can change the partner page."
+      },
+      "sections": {
+        "controlsHeading": "Security controls",
+        "contentHeading": "Page content",
+        "documentsHeading": "Documents"
+      },
+      "badge": {
+        "title": "Badge",
+        "description": "Embed a live status badge on your website. It links to the public page.",
+        "unpublishedNote": "The badge shows once the page is published.",
+        "snippet": "Badge HTML",
+        "alt": "Security posture badge",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet."
       }
     },
     "documents": {
