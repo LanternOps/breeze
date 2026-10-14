@@ -43,6 +43,8 @@ export const serviceCatalogs = pgTable('service_catalogs', {
 
 export const serviceCatalogItems = pgTable('service_catalog_items', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // Typing only: the database has no single-column FK here. Integrity comes from the two
+  // composite FKs (catalog_id, partner_id) / (catalog_id, org_id), both ON DELETE CASCADE.
   catalogId: uuid('catalog_id').notNull().references(() => serviceCatalogs.id),
   partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
