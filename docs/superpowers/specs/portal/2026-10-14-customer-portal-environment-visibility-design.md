@@ -1,7 +1,7 @@
 ---
 title: Customer Portal Environment Visibility — controlled, customer-safe infrastructure views
 issue: LanternOps/breeze discussion #8775
-status: draft (direction accepted in discussion #8775; Portuguese working draft for review)
+status: draft (direction accepted in discussion #8775; English working draft for review)
 depends_on:
   - LanternOps/breeze discussion #5438
   - LanternOps/breeze discussion #7450
@@ -13,116 +13,116 @@ depends_on:
 
 # Customer Portal Environment Visibility (CPEV)
 
-## 1. Status e origem
+## 1. Status and origin
 
-Esta specification consolida a direção aceita na Discussion #8775 como continuação, e não substituição, das decisões já estabelecidas em #5438 e #7450.
+This specification consolidates the direction accepted in Discussion #8775 as a continuation of, not a replacement for, the decisions already established in #5438 and #7450.
 
-**Confirmado pelo mantenedor — #8775:**
+**Confirmed by the maintainer — #8775:**
 
-- uma opção explícita por família de dados, por organização e desligada por padrão;
-- topology e observed location exigem opt-in próprio e ficam fora de qualquer comportamento de "Enable all";
-- cada wave deve possuir uma allowlist explícita de campos;
-- nenhum passthrough de registros internos e nenhum blob `jsonb`;
-- nenhum credential, management IP ou internal hostname, salvo campo explicitamente listado e justificado;
-- CPEV-W1 deve se limitar a dados já existentes, já descobertos/registrados e já org-scoped.
+- an explicit option per data family, per organization, and off by default;
+- topology and observed location require their own opt-in and are excluded from any "Enable all" behavior;
+- each wave must have an explicit field allowlist;
+- no passthrough of internal records and no `jsonb` blobs;
+- no credentials, management IPs, or internal hostnames, unless they are an explicitly listed and justified field;
+- CPEV-W1 must be limited to data that already exists, is already discovered/registered, and is already org-scoped.
 
-**Confirmado pelo mantenedor — #5438:** Network Visibility é read-only, org-scoped, fail-closed, usa contrato discriminado para `ok` / `no_data` / `not_enabled`, não fabrica zero quando a informação não existe e não expõe SNMP raw, credenciais, monitor configuration ou `jsonb` interno.
+**Confirmed by the maintainer — #5438:** Network Visibility is read-only, org-scoped, and fail-closed, uses a discriminated contract for `ok` / `no_data` / `not_enabled`, does not fabricate zero when the information does not exist, and does not expose raw SNMP, credentials, monitor configuration, or internal `jsonb`.
 
-**Confirmado pelo mantenedor — #7450 / PR #7642:** o Portal segue o padrão de uma flag por família, com famílias de maior sensibilidade deliberadamente fora de "Enable all"; o contrato público deve selecionar colunas explicitamente e testes devem provar que campos excluídos não escapam.
+**Confirmed by the maintainer — #7450 / PR #7642:** the Portal follows the one-flag-per-family pattern, with higher-sensitivity families deliberately excluded from "Enable all"; the public contract must select columns explicitly, and tests must prove that excluded fields do not escape.
 
-Esta specification define o contrato de visibilidade e a divisão das waves. Ela não autoriza implementação automática das sete waves. Cada wave continua pequena, revisável e implementada separadamente.
+This specification defines the visibility contract and the division into waves. It does not authorize automatic implementation of all seven waves. Each wave remains small, reviewable, and implemented separately.
 
-## 2. Problema
+## 2. Problem
 
-Breeze já mantém ou está consolidando uma visão estruturada do ambiente do cliente: descoberta de ativos, reachability, monitoramento, placement físico, topology, presence/location e circuitos. Esses modelos foram construídos prioritariamente para o operador MSP e contêm dados que não devem atravessar a fronteira do Customer Portal.
+Breeze already maintains, or is consolidating, a structured view of the customer's environment: asset discovery, reachability, monitoring, physical placement, topology, presence/location, and circuits. These models were built primarily for the MSP operator and contain data that must not cross the Customer Portal boundary.
 
-O problema não é falta de dados. É falta de uma camada explícita de projeção customer-safe que permita ao MSP escolher, por organização, quais partes do ambiente o cliente pode visualizar.
+The problem is not a lack of data. It is the lack of an explicit customer-safe projection layer that allows the MSP to choose, per organization, which parts of the environment the customer may view.
 
-O Portal deve responder:
+The Portal must answer:
 
-> O que está acontecendo no meu ambiente?
+> What is happening in my environment?
 
-Ele não deve responder:
+It must not answer:
 
-> Como meu MSP descobriu, inferiu, configurou ou está diagnosticando esse ambiente?
+> How did my MSP discover, infer, configure, or diagnose this environment?
 
-## 3. Objetivos
+## 3. Goals
 
-CPEV deve:
+CPEV must:
 
-1. expor apenas projeções read-only e customer-safe;
-2. reutilizar dados e classificações canônicas existentes, sem criar algoritmos paralelos no Portal;
-3. derivar a organização exclusivamente da autenticação do Portal;
-4. manter toda capacidade desligada por padrão quando depender de nova flag;
-5. permitir controle por organização e por família de dados;
-6. definir allowlists fechadas, campo por campo, antes da implementação de cada wave;
-7. preservar os estados `no_data` / `not_enabled` quando ausência e desabilitação forem semanticamente diferentes de zero;
-8. impedir vazamento de credenciais, configuração operacional, evidência bruta, payloads livres e metadados de inferência;
-9. reutilizar os serviços/read models canônicos de reachability, topology e presence em vez de recalcular o mesmo significado no Portal;
-10. manter o Customer Portal como superfície de visibilidade, não de operação de infraestrutura.
+1. expose only read-only, customer-safe projections;
+2. reuse existing canonical data and classifications, without creating parallel algorithms in the Portal;
+3. derive the organization exclusively from Portal authentication;
+4. keep every capability off by default when it depends on a new flag;
+5. allow control per organization and per data family;
+6. define closed, field-by-field allowlists before implementing each wave;
+7. preserve the `no_data` / `not_enabled` states when absence and disablement are semantically different from zero;
+8. prevent leakage of credentials, operational configuration, raw evidence, free-form payloads, and inference metadata;
+9. reuse the canonical reachability, topology, and presence services/read models instead of recomputing the same meaning in the Portal;
+10. keep the Customer Portal a visibility surface, not an infrastructure operations surface.
 
-## 4. Non-goals globais
+## 4. Global non-goals
 
-CPEV não inclui:
+CPEV does not include:
 
-- edição de topology;
-- alteração do site atribuído de um device;
-- movimento automático de devices;
-- edição ou provisionamento de circuits;
-- alteração de monitor, threshold, template ou polling;
-- execução de ações SNMP;
-- credenciais SNMP ou outras credenciais;
-- raw OIDs ou raw SNMP payloads;
+- topology editing;
+- changing the assigned site of a device;
+- automatic movement of devices;
+- editing or provisioning circuits;
+- changing monitors, thresholds, templates, or polling;
+- executing SNMP actions;
+- SNMP credentials or other credentials;
+- raw OIDs or raw SNMP payloads;
 - raw discovery payloads/evidence;
-- fingerprints, gateway MAC evidence ou neighbour evidence;
+- fingerprints, gateway MAC evidence, or neighbour evidence;
 - collector internals;
 - debug/execution metadata;
-- Portal-specific inference de reachability, topology ou location;
-- cópia da technician console para o cliente.
+- Portal-specific inference of reachability, topology, or location;
+- copying the technician console to the customer.
 
-## 5. Modelo de controle de visibilidade
+## 5. Visibility control model
 
-### 5.1 Regra geral
+### 5.1 General rule
 
-Cada família exposta por CPEV deve ter um gate explícito, por organização, com default `false`, seguindo `portal_branding` e o padrão atual do Portal.
+Each family exposed by CPEV must have an explicit gate, per organization, with default `false`, following `portal_branding` and the current Portal pattern.
 
-Uma linha ausente, `false` ou `null` deve falhar fechada.
+A missing, `false`, or `null` row must fail closed.
 
-### 5.2 Matriz de famílias e flags
+### 5.2 Family and flag matrix
 
-| Família | Waves | Flag | Estado da decisão | "Enable all" |
+| Family | Waves | Flag | Decision status | "Enable all" |
 |---|---:|---|---|---|
-| Network | W2, W3 | `enableNetworkVisibility` / `enable_network_visibility` | **Existente e confirmado no código** | segue comportamento existente |
-| Placement | W1 | `enablePhysicalPlacement` / `enable_physical_placement` | **Nome proposto nesta spec; flag nova** | proposta: pode entrar somente após revisão explícita de sensibilidade |
-| Monitoring / SNMP detail | W4 | **TBD: nova flag dedicada da família de monitoring** | família exigida pelo mantenedor; nome ainda não definido | proposta: fora de "Enable all" até decisão do mantenedor |
-| Topology | W5 | `enableNetworkTopology` / `enable_network_topology` | **Nome proposto nesta spec; flag nova** | **fora de "Enable all" — obrigatório** |
-| Observed location | W6 | `enableObservedLocation` / `enable_observed_location` | **Nome proposto nesta spec; flag nova** | **fora de "Enable all" — obrigatório** |
-| Circuits | W7 | `enableCircuitVisibility` / `enable_circuit_visibility` | **Nome proposto nesta spec; depende da fundação de circuits** | proposta: fora de "Enable all" até revisão da wave |
+| Network | W2, W3 | `enableNetworkVisibility` / `enable_network_visibility` | **Existing and confirmed in code** | follows existing behavior |
+| Placement | W1 | `enablePhysicalPlacement` / `enable_physical_placement` | **Name proposed in this spec; new flag** | proposed: may be included only after explicit sensitivity review |
+| Monitoring / SNMP detail | W4 | **TBD: new dedicated monitoring-family flag** | family required by the maintainer; name not yet defined | proposed: outside "Enable all" until the maintainer decides |
+| Topology | W5 | `enableNetworkTopology` / `enable_network_topology` | **Name proposed in this spec; new flag** | **outside "Enable all" — mandatory** |
+| Observed location | W6 | `enableObservedLocation` / `enable_observed_location` | **Name proposed in this spec; new flag** | **outside "Enable all" — mandatory** |
+| Circuits | W7 | `enableCircuitVisibility` / `enable_circuit_visibility` | **Name proposed in this spec; depends on the circuits foundation** | proposed: outside "Enable all" until the wave is reviewed |
 
-`enableNetworkAlerts` continua sendo a flag existente para o enrichment de alert/ticket dos assets de Network Visibility. Ela não deve ser reutilizada como gate de Advanced SNMP; alertas e SNMP são contratos distintos e têm sensibilidades distintas.
+`enableNetworkAlerts` remains the existing flag for alert/ticket enrichment of Network Visibility assets. It must not be reused as the gate for Advanced SNMP; alerts and SNMP are distinct contracts with distinct sensitivities.
 
-**Decisão ainda necessária:** os nomes das novas flags são sugestões desta specification. A exigência confirmada é o isolamento por família e o opt-in por organização, não esses nomes específicos.
+**Decision still needed:** the names of the new flags are suggestions of this specification. What is confirmed as required is per-family isolation and per-organization opt-in, not these specific names.
 
-## 6. Regra de exposição de campos
+## 6. Field exposure rule
 
-Para toda wave:
+For every wave:
 
-- o read model do Portal seleciona somente campos explicitamente listados;
-- nenhum `select()` irrestrito de uma tabela interna pode formar o DTO público;
-- `json`, `jsonb`, `bytea`, free text operacional e containers abertos são excluídos por padrão;
-- IDs internos são omitidos quando não são necessários para navegação/estabilidade do contrato;
-- campos necessários apenas para joins, autorização ou inferência podem ser lidos pelo backend e ainda assim não aparecem no DTO;
-- contract tests devem semear campos sensíveis nos registros de origem e provar que eles não aparecem na resposta serializada.
+- the Portal read model selects only explicitly listed fields;
+- no unrestricted `select()` of an internal table may form the public DTO;
+- `json`, `jsonb`, `bytea`, operational free text, and open containers are excluded by default;
+- internal IDs are omitted when they are not needed for navigation/contract stability;
+- fields needed only for joins, authorization, or inference may be read by the backend and still not appear in the DTO;
+- contract tests must seed sensitive fields in the source records and prove that they do not appear in the serialized response.
 
 ## 7. CPEV-W1 — Physical Placement Visibility
 
-### 7.1 Objetivo
+### 7.1 Goal
 
-Expor ao cliente a localização física estruturada de um ativo já conhecido pelo Breeze, sem expor a mecânica de authority/reconciliation de placement.
+Expose to the customer the structured physical location of an asset already known to Breeze, without exposing the placement authority/reconciliation mechanics.
 
-### 7.2 Estado atual confirmado no código
+### 7.2 Current state confirmed in code
 
-`asset_physical_placements` já existe e é org-scoped. Seu conteúdo de placement é exatamente:
+`asset_physical_placements` already exists and is org-scoped. Its placement content is exactly:
 
 ```text
 room
@@ -131,23 +131,23 @@ rackUnit
 heightU
 ```
 
-O modelo aceita como subject um managed `device` ou um `discovered_asset`. O site **não é armazenado** no placement; ele é derivado do subject atual. Quando um discovered asset está linked a um managed device elegível, o managed device se torna a authority de placement.
+The model accepts as subject a managed `device` or a `discovered_asset`. The site is **not stored** in the placement; it is derived from the current subject. When a discovered asset is linked to an eligible managed device, the managed device becomes the placement authority.
 
-Isso significa que o Portal não deve criar outra regra de authority e não deve copiar `site_id` para uma nova estrutura.
+This means the Portal must not create another authority rule and must not copy `site_id` into a new structure.
 
 ### 7.3 Flag
 
-Nova flag por organização, default `false`:
+New per-organization flag, default `false`:
 
 ```text
 enablePhysicalPlacement
 ```
 
-Nome sujeito à aprovação do mantenedor.
+Name subject to maintainer approval.
 
-### 7.4 Customer-safe DTO proposto
+### 7.4 Proposed customer-safe DTO
 
-A projeção deve ser um bloco opcional do asset detail:
+The projection must be an optional block of the asset detail:
 
 ```ts
 physicalPlacement?: {
@@ -159,19 +159,19 @@ physicalPlacement?: {
 }
 ```
 
-**Allowlist exata W1:**
+**Exact W1 allowlist:**
 
-| Campo público | Fonte | Regra |
+| Public field | Source | Rule |
 |---|---|---|
-| `siteName` | site live do subject/authority | nome customer-safe; não copiar `site_id` para o contrato se não for necessário |
-| `room` | `asset_physical_placements.room` | direto, nullable |
-| `rack` | `asset_physical_placements.rack` | direto, nullable |
-| `rackUnit` | `asset_physical_placements.rack_unit` | inteiro 1..100 ou null |
-| `heightU` | `asset_physical_placements.height_u` | inteiro 1..100 ou null |
+| `siteName` | live site of the subject/authority | customer-safe name; do not copy `site_id` into the contract if not necessary |
+| `room` | `asset_physical_placements.room` | direct, nullable |
+| `rack` | `asset_physical_placements.rack` | direct, nullable |
+| `rackUnit` | `asset_physical_placements.rack_unit` | integer 1..100 or null |
+| `heightU` | `asset_physical_placements.height_u` | integer 1..100 or null |
 
-### 7.5 Campos explicitamente excluídos W1
+### 7.5 Fields explicitly excluded from W1
 
-Não expor:
+Do not expose:
 
 ```text
 asset_physical_placements.id
@@ -184,59 +184,59 @@ authority kind
 linked/unlinked state
 reconciliation outcome
 placement conflict state
-internal subject identifiers adicionais
+additional internal subject identifiers
 ```
 
-O backend pode usar os IDs para joins e autorização, mas eles não fazem parte do bloco customer-safe de placement.
+The backend may use the IDs for joins and authorization, but they are not part of the customer-safe placement block.
 
-### 7.6 Comportamento
+### 7.6 Behavior
 
-- flag off ou ausente: nenhum placement é exposto;
-- flag on e placement ausente: bloco omitido; não fabricar strings como `Unknown`;
-- flag on e placement existente: retornar somente a allowlist;
-- a resolução de authority deve reutilizar `resolvePlacementAuthority()` e `readPlacement()` ou uma composição equivalente que preserve exatamente suas regras, não uma segunda implementação;
-- W1 é exclusivamente leitura no Portal.
+- flag off or absent: no placement is exposed;
+- flag on and placement absent: block omitted; do not fabricate strings such as `Unknown`;
+- flag on and placement present: return only the allowlist;
+- authority resolution must reuse `resolvePlacementAuthority()` and `readPlacement()` or an equivalent composition that preserves their rules exactly, not a second implementation;
+- W1 is read-only in the Portal.
 
-### 7.7 Acceptance criteria W1
+### 7.7 W1 acceptance criteria
 
-1. Organização A nunca recebe placement de B.
-2. O orgId é derivado de `portalAuth`, nunca de query/body autoritativo.
-3. Managed device e discovered asset linked não produzem placements conflitantes no Portal; a authority canônica é respeitada.
-4. O site exibido é o live site da authority, não um valor duplicado no placement.
-5. Flag ausente/false não expõe nenhum dos cinco campos públicos.
-6. Campos internos e timestamps de administração não aparecem na resposta.
-7. Teste real de banco cobre isolamento cross-org.
-8. Contract test prova a ausência dos campos excluídos.
+1. Organization A never receives B's placement.
+2. The orgId is derived from `portalAuth`, never from an authoritative query/body.
+3. A managed device and a linked discovered asset do not produce conflicting placements in the Portal; the canonical authority is respected.
+4. The displayed site is the authority's live site, not a value duplicated in the placement.
+5. Flag absent/false exposes none of the five public fields.
+6. Internal fields and administrative timestamps do not appear in the response.
+7. A real database test covers cross-org isolation.
+8. A contract test proves the absence of the excluded fields.
 
 ## 8. CPEV-W2 — Network Site Health
 
-### 8.1 Objetivo
+### 8.1 Goal
 
-Fornecer uma agregação por site dos sinais customer-safe já usados por Network Visibility, sem criar um novo health score.
+Provide a per-site aggregation of the customer-safe signals already used by Network Visibility, without creating a new health score.
 
 ### 8.2 Flag
 
-Usa a flag existente:
+Uses the existing flag:
 
 ```text
 enableNetworkVisibility
 ```
 
-Alert enrichment adicional continua condicionado a `enableNetworkAlerts`.
+Additional alert enrichment remains conditioned on `enableNetworkAlerts`.
 
-### 8.3 Fontes canônicas confirmadas
+### 8.3 Confirmed canonical sources
 
-A implementação atual de Network Visibility já usa:
+The current Network Visibility implementation already uses:
 
-- `discovered_assets` para inventário;
-- `loadReachability()` para estado de reachability — não `discovered_assets.isOnline` como autoridade;
-- `network_monitor_results` org-scoped para resultado de monitor;
-- `network_monitors` como definição, inclusive partner-wide, sem usar o `lastStatus` compartilhado como estado específico da organização;
-- `networkSites()` para sites com ativos visíveis e não dismissed.
+- `discovered_assets` for inventory;
+- `loadReachability()` for reachability state — not `discovered_assets.isOnline` as the authority;
+- org-scoped `network_monitor_results` for monitor results;
+- `network_monitors` as the definition, including partner-wide, without using the shared `lastStatus` as organization-specific state;
+- `networkSites()` for sites with visible, non-dismissed assets.
 
-### 8.4 Allowlist W2
+### 8.4 W2 allowlist
 
-Por site:
+Per site:
 
 ```text
 siteName
@@ -248,22 +248,22 @@ snmpDevicesPolling
 monitorsDown
 ```
 
-Quando `enableNetworkAlerts=true`, podem ser acrescentados:
+When `enableNetworkAlerts=true`, the following may be added:
 
 ```text
 activeAlertCount
 highestAlertSeverity
 ```
 
-`highestAlertSeverity` fica limitado a:
+`highestAlertSeverity` is limited to:
 
 ```text
 critical | high | medium | low | info | null
 ```
 
-`lastValidObservationAt` **não entra na allowlist inicial** até existir uma única fonte canônica e inequívoca para o agregado por site. Não deve ser sintetizado de timestamps heterogêneos.
+`lastValidObservationAt` is **not in the initial allowlist** until a single, canonical, unambiguous source exists for the per-site aggregate. It must not be synthesized from heterogeneous timestamps.
 
-### 8.5 Excluir W2
+### 8.5 W2 exclusions
 
 - monitor IDs/configuration;
 - polling interval;
@@ -273,20 +273,20 @@ critical | high | medium | low | info | null
 - alert-rule configuration;
 - ticket internals;
 - discovery evidence;
-- SNMP credentials ou raw metrics;
-- qualquer site-health score inventado pela wave.
+- SNMP credentials or raw metrics;
+- any site-health score invented by the wave.
 
 ## 9. CPEV-W3 — Network Asset Detail
 
-### 9.1 Objetivo
+### 9.1 Goal
 
-Estabilizar uma projeção customer-facing de um único network asset que possa compor blocos de waves aprovadas posteriormente.
+Stabilize a customer-facing projection of a single network asset that can compose blocks from waves approved later.
 
 ### 9.2 Flag
 
-Usa `enableNetworkVisibility`.
+Uses `enableNetworkVisibility`.
 
-### 9.3 Allowlist base W3 — já suportada pelo contrato atual
+### 9.3 W3 base allowlist — already supported by the current contract
 
 ```text
 id
@@ -303,15 +303,15 @@ model
 siteName
 ```
 
-`onlineState` mantém a semântica existente:
+`onlineState` keeps the existing semantics:
 
 ```text
 online | offline | null
 ```
 
-onde `null` significa unverified e nunca é convertido em offline.
+where `null` means unverified and is never converted to offline.
 
-Quando `enableNetworkAlerts=true`, o contrato pode incluir os campos opcionais já existentes:
+When `enableNetworkAlerts=true`, the contract may include the already-existing optional fields:
 
 ```text
 activeAlertCount
@@ -319,7 +319,7 @@ highestAlertSeverity
 openTicketCount
 ```
 
-### 9.4 Excluir W3
+### 9.4 W3 exclusions
 
 - raw fingerprints;
 - open ports;
@@ -331,21 +331,21 @@ openTicketCount
 - raw SNMP state/OIDs;
 - inference/debug metadata.
 
-W3 pode compor `physicalPlacement`, `snmp`, `observedLocation` e relações topology somente quando as respectivas flags estiverem habilitadas e cada bloco seguir sua própria allowlist.
+W3 may compose `physicalPlacement`, `snmp`, `observedLocation`, and topology relationships only when the respective flags are enabled and each block follows its own allowlist.
 
 ## 10. CPEV-W4 — Advanced SNMP Visibility
 
-### 10.1 Estado
+### 10.1 Status
 
-A ideia já apareceu na spec aprovada de Advanced Portal Visibility como opção on-hold. #8775 apresenta um caso concreto, mas o mantenedor ainda não aprovou a reativação nem o nome da flag. Portanto W4 permanece **outline / decisão pendente**, não requisito de implementação.
+The idea has already appeared in the approved Advanced Portal Visibility spec as an on-hold option. #8775 presents a concrete case, but the maintainer has not yet approved reactivating it or the flag name. Therefore W4 remains an **outline / pending decision**, not an implementation requirement.
 
 ### 10.2 Gate
 
-Usar uma flag dedicada da família de monitoring, default `false`. Até decisão explícita, ela deve permanecer fora de "Enable all".
+Use a dedicated monitoring-family flag, default `false`. Until an explicit decision, it must remain outside "Enable all".
 
-### 10.3 Allowlist candidata W4
+### 10.3 W4 candidate allowlist
 
-Se a wave for reativada, limitar a projeção a dados derivados de OIDs/MIBs padrão revisados:
+If the wave is reactivated, limit the projection to data derived from reviewed standard OIDs/MIBs:
 
 ```text
 pollingState
@@ -362,9 +362,9 @@ printerSupplies[].percentRemaining
 pageCount
 ```
 
-`pollingState` deve ser um enum customer-safe e não a linha interna de polling.
+`pollingState` must be a customer-safe enum and not the internal polling row.
 
-### 10.4 Nunca expor W4
+### 10.4 Never expose in W4
 
 ```text
 community
@@ -384,25 +384,25 @@ error/backoff internals
 monitor rules
 ```
 
-A implementação futura deve ter uma allowlist fixa de OIDs no backend e serializar somente os campos públicos acima; o OID em si nunca atravessa o contrato.
+The future implementation must have a fixed OID allowlist in the backend and serialize only the public fields above; the OID itself never crosses the contract.
 
 ## 11. CPEV-W5 — Customer-safe Network Topology
 
-### 11.1 Estado
+### 11.1 Status
 
-Outline. A wave deve consumir os read models canônicos de topology e reduzir o resultado; não pode construir um segundo topology engine para o Portal.
+Outline. The wave must consume the canonical topology read models and reduce the result; it cannot build a second topology engine for the Portal.
 
 ### 11.2 Flag
 
-Nova flag independente, default `false`, obrigatoriamente fora de "Enable all":
+New independent flag, default `false`, mandatorily outside "Enable all":
 
 ```text
 enableNetworkTopology
 ```
 
-Nome proposto.
+Proposed name.
 
-### 11.3 Allowlist inicial candidata W5
+### 11.3 W5 initial candidate allowlist
 
 Nodes:
 
@@ -424,9 +424,9 @@ targetId
 relationshipType
 ```
 
-`relationshipType` deve usar um enum customer-safe explicitamente revisado pela wave; não deve repassar os kinds internos automaticamente.
+`relationshipType` must use a customer-safe enum explicitly reviewed by the wave; it must not automatically pass through the internal kinds.
 
-### 11.4 Excluir W5
+### 11.4 W5 exclusions
 
 - raw topology node attributes;
 - raw relationship attributes;
@@ -441,27 +441,27 @@ relationshipType
 - debug attributes;
 - raw interface configuration.
 
-A necessidade de `id`, `sourceId` e `targetId` é funcional para renderizar relações; esses IDs devem ser os mínimos estáveis já autorizados pela projeção e não abrir acesso a endpoints internos adicionais.
+The need for `id`, `sourceId`, and `targetId` is functional, to render relationships; these IDs must be the minimum stable ones already authorized by the projection and must not open access to additional internal endpoints.
 
 ## 12. CPEV-W6 — Observed Location Visibility
 
-### 12.1 Estado atual confirmado
+### 12.1 Confirmed current state
 
-Breeze já possui um read model próprio de presence/location. O estado canônico distingue `home`, `visiting`, `unrecognized`, `ambiguous`, `stale` e `unknown` e mantém assignment separado de observation. O modelo também contém `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions e histórico — esses dados são operacionais e não são apropriados para passthrough ao Portal.
+Breeze already has its own presence/location read model. The canonical state distinguishes `home`, `visiting`, `unrecognized`, `ambiguous`, `stale`, and `unknown`, and keeps assignment separate from observation. The model also contains `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions, and history — this data is operational and is not appropriate for passthrough to the Portal.
 
 ### 12.2 Flag
 
-Nova flag independente, default `false`, obrigatoriamente fora de "Enable all":
+New independent flag, default `false`, mandatorily outside "Enable all":
 
 ```text
 enableObservedLocation
 ```
 
-Nome proposto.
+Proposed name.
 
-### 12.3 Contrato customer-safe W6
+### 12.3 W6 customer-safe contract
 
-A projeção pública deve ser opcional:
+The public projection must be optional:
 
 ```ts
 observedLocation?:
@@ -469,19 +469,19 @@ observedLocation?:
   | { kind: 'external_network' };
 ```
 
-### 12.4 Regra de mapeamento
+### 12.4 Mapping rule
 
-**Confirmado pela spec de presence:** `home` e `visiting` são estados positivos baseados em regras canônicas, enquanto ausência de match não prova que o device está fora de rede corporativa.
+**Confirmed by the presence spec:** `home` and `visiting` are positive states based on canonical rules, whereas the absence of a match does not prove that the device is outside the corporate network.
 
-Portanto:
+Therefore:
 
-- `home` → `corporate_network` com o nome do assigned/current corporate site aplicável;
-- `visiting` → `corporate_network` com o customer-safe nome do matched site, somente quando essa informação está autorizada;
-- `unrecognized`, `ambiguous`, `stale`, `unknown` → **campo omitido**, por enquanto.
+- `home` → `corporate_network` with the name of the applicable assigned/current corporate site;
+- `visiting` → `corporate_network` with the customer-safe name of the matched site, only when that information is authorized;
+- `unrecognized`, `ambiguous`, `stale`, `unknown` → **field omitted**, for now.
 
-`external_network` permanece **sem fonte autorizada** nesta specification. Ele não pode ser derivado de `unrecognized` nem de ausência de corporate match.
+`external_network` remains **without an authorized source** in this specification. It cannot be derived from `unrecognized` or from the absence of a corporate match.
 
-### 12.5 Excluir W6
+### 12.5 W6 exclusions
 
 ```text
 reason
@@ -494,7 +494,7 @@ declaredBy
 declarationIds
 observerDeviceIds
 evidence
-observedAt/freshUntil quando usados como diagnóstico interno
+observedAt/freshUntil when used as internal diagnostics
 coverageReason
 fingerprintVersion
 suggestedSiteId
@@ -505,27 +505,27 @@ daily presence rows
 assignment-confirmation internals
 ```
 
-Se no futuro um sinal positivo e canônico de external network for aprovado, ele deve ser adicionado primeiro ao modelo canônico e só depois mapeado para `external_network`; não deve nascer como heuristic exclusiva do Portal.
+If a positive, canonical external-network signal is approved in the future, it must first be added to the canonical model and only then mapped to `external_network`; it must not be born as a Portal-exclusive heuristic.
 
 ## 13. CPEV-W7 — WAN / Circuit Visibility
 
-### 13.1 Estado
+### 13.1 Status
 
-Deferred até a fundação WAN/circuits estar estável em `upstream/main`. A spec de Physical Placement and Circuits já define circuits como customer data org-owned e separa service metadata de operational health. No Portal contract deve anteceder uma implementação canônica estável.
+Deferred until the WAN/circuits foundation is stable in `upstream/main`. The Physical Placement and Circuits spec already defines circuits as org-owned customer data and separates service metadata from operational health. The Portal contract must not precede a stable canonical implementation.
 
 ### 13.2 Flag
 
-Nova flag por organização, default `false`:
+New per-organization flag, default `false`:
 
 ```text
 enableCircuitVisibility
 ```
 
-Nome proposto.
+Proposed name.
 
-### 13.3 Allowlist candidata W7
+### 13.3 W7 candidate allowlist
 
-Quando a fundação estiver estável, a wave pode avaliar:
+When the foundation is stable, the wave may evaluate:
 
 ```text
 provider
@@ -537,15 +537,15 @@ primarySiteName
 servedSiteNames[]
 ```
 
-Os nomes públicos finais devem refletir os campos reais da implementação canônica naquele momento; nenhum campo futuro deve ser criado apenas para satisfazer esta outline.
+The final public names must reflect the actual fields of the canonical implementation at that time; no future field should be created merely to satisfy this outline.
 
 ### 13.4 Operational status
 
-Não expor `up`, `down` ou `degraded` com base em existência, reassociation ou administrative state de circuit.
+Do not expose `up`, `down`, or `degraded` based on the existence, reassociation, or administrative state of a circuit.
 
-Status operacional só pode entrar quando houver uma relação de monitoring autoritativa e revisada. `servedSiteNames` descreve associação/impacto potencial e não prova outage de site.
+Operational status may only be included when there is an authoritative, reviewed monitoring relationship. `servedSiteNames` describes association/potential impact and does not prove a site outage.
 
-### 13.5 Excluir W7
+### 13.5 W7 exclusions
 
 - credentials;
 - provisioning details;
@@ -554,47 +554,47 @@ Status operacional só pode entrar quando houver uma relação de monitoring aut
 - raw interface configuration;
 - provider API internals;
 - troubleshooting evidence;
-- inferred outage sem fonte de monitoring autoritativa.
+- inferred outage without an authoritative monitoring source.
 
-## 14. Organização, autorização e tenancy
+## 14. Organization, authorization, and tenancy
 
-### 14.1 Regra de request
+### 14.1 Request rule
 
-Toda rota CPEV deve:
+Every CPEV route must:
 
-1. autenticar via Portal;
-2. derivar `orgId` de `portalAuth`;
-3. ignorar/rejeitar qualquer tentativa do cliente de escolher outra organização como contexto autoritativo;
-4. executar leitura sob o mesmo `withDbAccessContext` / organization scope usado pelos read models do Portal;
-5. preservar RLS como defesa obrigatória de banco, não apenas filtro de aplicação.
+1. authenticate via the Portal;
+2. derive `orgId` from `portalAuth`;
+3. ignore/reject any client attempt to choose another organization as the authoritative context;
+4. execute the read under the same `withDbAccessContext` / organization scope used by the Portal read models;
+5. preserve RLS as a mandatory database defense, not merely an application filter.
 
-### 14.2 IDs de site e asset em filtros
+### 14.2 Site and asset IDs in filters
 
-Quando uma rota aceitar `siteId` ou `assetId`, o valor funciona apenas como selector dentro da organização autenticada. Ele nunca altera o contexto de organização.
+When a route accepts `siteId` or `assetId`, the value works only as a selector within the authenticated organization. It never changes the organization context.
 
-Um ID pertencente a outro org deve resultar em ausência/denial segundo o padrão da rota, nunca em dados cross-tenant.
+An ID belonging to another org must result in absence/denial according to the route's pattern, never in cross-tenant data.
 
-## 15. Segurança e prevenção de field leakage
+## 15. Security and field leakage prevention
 
-Cada wave deve possuir:
+Each wave must have:
 
-1. teste de flag ausente / false / true;
-2. teste de org isolation A→A, A↛B, B↛A;
-3. teste com registros de origem deliberadamente preenchidos com valores sensíveis;
-4. assertion sobre a resposta serializada provando que campos proibidos não aparecem;
-5. teste de `no_data` onde aplicável;
-6. teste que impeça `ok` com zeros fabricados quando a fonte é indisponível;
-7. teste de auth-derived org scope, incluindo tentativa de forged org/site/asset ID quando aplicável;
-8. teste de comportamento de "Enable all" para flags que devem permanecer fora;
-9. real-Postgres integration test para qualquer read model cuja garantia dependa de RLS/joins org-scoped.
+1. a flag absent / false / true test;
+2. an org isolation test A→A, A↛B, B↛A;
+3. a test with source records deliberately populated with sensitive values;
+4. an assertion on the serialized response proving that forbidden fields do not appear;
+5. a `no_data` test where applicable;
+6. a test that prevents `ok` with fabricated zeros when the source is unavailable;
+7. an auth-derived org scope test, including an attempt at a forged org/site/asset ID where applicable;
+8. a test of "Enable all" behavior for flags that must remain outside it;
+9. a real-Postgres integration test for any read model whose guarantee depends on RLS/org-scoped joins.
 
-Nenhum teste deve depender apenas de TypeScript para provar ausência de segredo; a resposta serializada é o boundary que deve ser verificado.
+No test should rely only on TypeScript to prove the absence of a secret; the serialized response is the boundary that must be verified.
 
-## 16. Impacto de UI
+## 16. UI impact
 
 ### 16.1 Customer Portal
 
-A arquitetura alvo pode compor:
+The target architecture may compose:
 
 ```text
 Network
@@ -610,17 +610,17 @@ Network
 └── WAN / Circuits (W7)
 ```
 
-Blocos dependentes de flags devem desaparecer completamente quando desabilitados. O frontend não deve receber dados sensíveis para depois escondê-los visualmente.
+Flag-dependent blocks must disappear completely when disabled. The frontend must not receive sensitive data only to hide it visually afterward.
 
 ### 16.2 MSP / default web console
 
-O MSP continua configurando visibilidade no home existente de Portal settings para a organização. Esta spec não cria uma segunda área de configuração.
+The MSP continues to configure visibility in the existing home of Portal settings for the organization. This spec does not create a second configuration area.
 
-Qualquer nova setting deve cumprir a regra do projeto “one concept, one home” e documentar home, level, resolver e número de locais de configuração na PR de implementação.
+Any new setting must comply with the project's "one concept, one home" rule and document the home, level, resolver, and number of configuration places in the implementation PR.
 
-## 17. Sequenciamento
+## 17. Sequencing
 
-O agrupamento aprovado para especificação permanece:
+The grouping approved for specification remains:
 
 ```text
 CPEV-W1 — Physical Placement
@@ -634,99 +634,99 @@ CPEV-W6 — Observed Location
 CPEV-W7 — WAN / Circuits
 ```
 
-Recomendação desta specification:
+Recommendation of this specification:
 
-- **W1:** pronta para virar issue/implementation wave depois da revisão desta spec;
-- **W2:** fonte canônica suficiente para uma spec de implementação detalhada;
-- **W3:** grande parte da allowlist já existe no contrato atual; detalhar endpoint/UX em wave própria;
-- **W4:** aguardar decisão explícita sobre reativação e nome/gate da família de monitoring;
-- **W5:** detalhar enum de relationships antes de implementar;
-- **W6:** corporate network pode usar presence canônico; `external_network` continua bloqueado por falta de sinal positivo autorizado;
-- **W7:** aguardar a fundação de circuits estabilizar em `main`.
+- **W1:** ready to become an issue/implementation wave after review of this spec;
+- **W2:** canonical source sufficient for a detailed implementation spec;
+- **W3:** much of the allowlist already exists in the current contract; detail the endpoint/UX in its own wave;
+- **W4:** await an explicit decision on reactivation and on the name/gate of the monitoring family;
+- **W5:** detail the relationships enum before implementing;
+- **W6:** corporate network can use canonical presence; `external_network` remains blocked for lack of an authorized positive signal;
+- **W7:** await the circuits foundation to stabilize in `main`.
 
-As waves não devem ser implementadas em uma única PR.
+The waves must not be implemented in a single PR.
 
-## 18. Acceptance criteria da feature CPEV
+## 18. CPEV feature acceptance criteria
 
-CPEV está coerente com a direção aprovada quando:
+CPEV is consistent with the approved direction when:
 
-- [ ] cada família tem gate por organização e default off quando novo;
-- [ ] topology e observed location estão fora de "Enable all";
-- [ ] todas as respostas públicas possuem allowlists fechadas;
-- [ ] nenhum credential, raw OID, raw `jsonb`, evidence ou debug metadata atravessa o boundary;
-- [ ] org scope vem de Portal auth;
-- [ ] tests provam cross-tenant isolation e ausência de fields sensíveis;
-- [ ] W1 usa a authority de placement já existente e deriva site do subject live;
-- [ ] W2/W3 reutilizam reachability e monitor-result semantics existentes;
-- [ ] W5 não cria um topology engine paralelo;
-- [ ] W6 não transforma “sem match corporativo” em external network;
-- [ ] W7 não transforma metadata administrativa de circuit em health operacional;
-- [ ] não há mutations de infraestrutura a partir dessas surfaces do Portal.
+- [ ] each family has a per-organization gate and default off when new;
+- [ ] topology and observed location are outside "Enable all";
+- [ ] all public responses have closed allowlists;
+- [ ] no credential, raw OID, raw `jsonb`, evidence, or debug metadata crosses the boundary;
+- [ ] org scope comes from Portal auth;
+- [ ] tests prove cross-tenant isolation and the absence of sensitive fields;
+- [ ] W1 uses the existing placement authority and derives the site from the live subject;
+- [ ] W2/W3 reuse the existing reachability and monitor-result semantics;
+- [ ] W5 does not create a parallel topology engine;
+- [ ] W6 does not turn "no corporate match" into external network;
+- [ ] W7 does not turn administrative circuit metadata into operational health;
+- [ ] there are no infrastructure mutations from these Portal surfaces.
 
-## 19. Decisões abertas
+## 19. Open decisions
 
-### Q1 — Nomes finais das flags novas
+### Q1 — Final names of the new flags
 
-Os nomes `enablePhysicalPlacement`, `enableNetworkTopology`, `enableObservedLocation` e `enableCircuitVisibility` são sugestões. A exigência confirmada é uma flag independente por família, não esses nomes.
+The names `enablePhysicalPlacement`, `enableNetworkTopology`, `enableObservedLocation`, and `enableCircuitVisibility` are suggestions. What is confirmed as required is an independent flag per family, not these names.
 
-### Q2 — Placement e "Enable all"
+### Q2 — Placement and "Enable all"
 
-O mantenedor exigiu explicitamente que topology e observed location fiquem fora de "Enable all". Não houve decisão equivalente para placement. Esta spec não transforma essa ausência em requisito; a sensibilidade de placement deve ser decidida na revisão.
+The maintainer explicitly required that topology and observed location stay outside "Enable all". There was no equivalent decision for placement. This spec does not turn that absence into a requirement; the sensitivity of placement must be decided in review.
 
 ### Q3 — Monitoring / Advanced SNMP
 
-A reativação continua pendente. Se aprovada, W4 precisa de uma nova flag dedicada; `enableNetworkAlerts` não deve ser reutilizada.
+Reactivation remains pending. If approved, W4 needs a new dedicated flag; `enableNetworkAlerts` must not be reused.
 
 ### Q4 — External network
 
-Hoje o presence engine prova corporate `home`/`visiting`, mas `unrecognized` não prova external. Até existir um sinal positivo canônico, `external_network` deve ser omitido.
+Today the presence engine proves corporate `home`/`visiting`, but `unrecognized` does not prove external. Until a canonical positive signal exists, `external_network` must be omitted.
 
 ### Q5 — Topology relationship enum
 
-W5 precisa definir em sua wave spec a lista de relationship types customer-safe. Reutilizar todos os internal kinds automaticamente é proibido.
+W5 must define, in its wave spec, the list of customer-safe relationship types. Automatically reusing all internal kinds is prohibited.
 
-### Q6 — Circuit fields finais
+### Q6 — Final circuit fields
 
-W7 só congela seu contrato após a implementação canônica de circuits estar estável em `upstream/main`.
+W7 only freezes its contract after the canonical circuits implementation is stable in `upstream/main`.
 
-## 20. Rastreabilidade das decisões
+## 20. Decision traceability
 
-### Confirmado no código
+### Confirmed in code
 
-- `enableNetworkVisibility` existe em `portal_branding` e integra `PORTAL_VISIBILITY_FLAG_KEYS`.
-- Network Visibility deriva reachability por serviço canônico, mantém `not_enabled`/`no_data` e seleciona explicitamente os campos do asset.
-- `NetworkAssetRowDto` já expõe identificação, reachability, inventory básico, site e enrichments opcionais de alert/ticket.
-- `asset_physical_placements` já existe, é org-scoped e armazena somente room/rack/U/height além de IDs/timestamps internos.
-- placement deriva o site live do subject e possui regra canônica de authority para discovered asset linked a device.
-- presence/location já existe como read model separado com estados positivos e inconclusivos, além de evidence interna que não deve ser passada ao Portal.
+- `enableNetworkVisibility` exists in `portal_branding` and is part of `PORTAL_VISIBILITY_FLAG_KEYS`.
+- Network Visibility derives reachability through a canonical service, maintains `not_enabled`/`no_data`, and explicitly selects the asset fields.
+- `NetworkAssetRowDto` already exposes identification, reachability, basic inventory, site, and optional alert/ticket enrichments.
+- `asset_physical_placements` already exists, is org-scoped, and stores only room/rack/U/height besides internal IDs/timestamps.
+- placement derives the live site from the subject and has a canonical authority rule for a discovered asset linked to a device.
+- presence/location already exists as a separate read model with positive and inconclusive states, plus internal evidence that must not be passed to the Portal.
 
-### Confirmado na spec existente
+### Confirmed in the existing spec
 
-- Advanced Portal Visibility exige closed field lists e mantém dados mais sensíveis fora de "Enable all".
-- Physical Placement and Circuits mantém site fora do row de placement e trata circuit metadata como administrativo, não health.
-- Topology site location mantém assignment administrativo separado de observed presence e afirma que unmatched evidence não é absence.
+- Advanced Portal Visibility requires closed field lists and keeps more sensitive data outside "Enable all".
+- Physical Placement and Circuits keeps the site out of the placement row and treats circuit metadata as administrative, not health.
+- Topology site location keeps administrative assignment separate from observed presence and states that unmatched evidence is not absence.
 
-### Confirmado pelo mantenedor
+### Confirmed by the maintainer
 
-- #8775 foi aceita como spec continuando #5438/#7450.
-- opt-in por família, por organização e default off.
-- topology e observed location fora de "Enable all".
-- field allowlists exatas por wave.
-- sem passthrough interno/jsonb; sem credentials, management IPs ou internal hostnames não justificados.
-- W1 limitada à fundação já existente e org-scoped.
+- #8775 was accepted as a spec continuing #5438/#7450.
+- opt-in per family, per organization, and default off.
+- topology and observed location outside "Enable all".
+- exact field allowlists per wave.
+- no internal/jsonb passthrough; no unjustified credentials, management IPs, or internal hostnames.
+- W1 limited to the existing, org-scoped foundation.
 
-### Inferências deliberadamente evitadas
+### Inferences deliberately avoided
 
-- ausência de corporate match não significa external network;
-- circuit administrative state não significa link health;
-- shared monitor definition/status não significa resultado de uma organização;
-- placement row não é uma nova fonte de site assignment;
-- topology internal relationship não é automaticamente customer-safe.
+- absence of a corporate match does not mean external network;
+- circuit administrative state does not mean link health;
+- a shared monitor definition/status does not mean one organization's result;
+- a placement row is not a new source of site assignment;
+- an internal topology relationship is not automatically customer-safe.
 
-### Sugestões desta specification
+### Suggestions of this specification
 
-- nomes das flags novas;
-- manter W4 e W7 fora de "Enable all" até revisão específica;
-- DTO mínimo de placement W1;
-- allowlist inicial dos nodes/edges W5;
-- omitir `external_network` até existir sinal positivo canônico.
+- names of the new flags;
+- keeping W4 and W7 outside "Enable all" until specific review;
+- minimal W1 placement DTO;
+- initial W5 nodes/edges allowlist;
+- omitting `external_network` until a canonical positive signal exists.
