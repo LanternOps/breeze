@@ -87,6 +87,18 @@ describe('buildTrustPagePayload', () => {
     expect(payloadSha256(a)).toBe(payloadSha256(b));
     expect(payloadSha256({ ...a, introHtml: '<p>Changed</p>' })).not.toBe(payloadSha256(a));
   });
+  it('sha256 ignores control evidenceAsOf (moves with every check-in) but not a control status change', () => {
+    const base = input().assessments;
+    const target = base.find((x) => x.id === 'disk_encryption')!;
+    expect(target.status).toBe('met');
+    const moved = base.map((x) => ({ ...x, evidenceAsOf: x.id === 'disk_encryption' ? '2026-10-13T11:59:00.000Z' : '2026-10-13T11:30:00.000Z' }));
+    const a = buildTrustPagePayload(input());
+    const b = buildTrustPagePayload(input({ assessments: moved }));
+    expect(b.controls.find((c) => c.id === 'disk_encryption')!.evidenceAsOf).not.toBe(a.controls.find((c) => c.id === 'disk_encryption')!.evidenceAsOf);
+    expect(payloadSha256(b)).toBe(payloadSha256(a));
+    const flipped = base.map((x) => (x.id === 'disk_encryption' ? { ...x, status: 'not_met' as const } : x));
+    expect(payloadSha256(buildTrustPagePayload(input({ assessments: flipped })))).not.toBe(payloadSha256(a));
+  });
 });
 
 describe('builder robustness', () => {

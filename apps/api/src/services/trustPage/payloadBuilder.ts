@@ -108,7 +108,11 @@ function stable(v: unknown): unknown {
 }
 export function payloadSha256(payload: TrustPagePublicPayload): string {
   // snapshotId/generatedAt change every build; exclude them so identical evidence dedupes (spec §7 "Refresh").
-  const { snapshotId: _s, generatedAt: _g, ...rest } = payload;
-  return createHash('sha256').update(JSON.stringify(stable(rest))).digest('hex');
+  // Control evidenceAsOf is excluded too: device evidence timestamps move with every check-in, so hashing them
+  // would make the hourly refresh insert a snapshot per page per hour. The page-level lastEvaluatedAt (served
+  // outside the payload) carries freshness; a status, count or percent change still changes the hash.
+  const { snapshotId: _s, generatedAt: _g, controls, ...rest } = payload;
+  const substance = { ...rest, controls: controls.map(({ evidenceAsOf: _e, ...c }) => c) };
+  return createHash('sha256').update(JSON.stringify(stable(substance))).digest('hex');
 }
 export { FRAMEWORK_META };

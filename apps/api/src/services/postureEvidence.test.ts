@@ -69,6 +69,10 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.identity_provider).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
     expect(ev.controls.dns_filtering).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
     expect(ev.controls.privileged_access).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
+    // Org-wide configuration facts carry no fabricated evidence time (spec: snapshot time is not evidence time).
+    expect(ev.controls.identity_provider.newestEvidenceAt).toBeNull();
+    expect(ev.controls.dns_filtering.newestEvidenceAt).toBeNull();
+    expect(ev.controls.privileged_access.newestEvidenceAt).toBeNull();
     expect(ev.controls.disk_encryption.newestEvidenceAt).toBe(recent.toISOString());
     // every device is assessed; d1/d2 checked in 2h ago (inside 24h), d3 never.
     expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 2, newestEvidenceAt: recent.toISOString() });
@@ -215,6 +219,9 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.disk_encryption).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
     expect(ev.controls.identity_provider).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
     expect(ev.controls.dns_filtering).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
+    expect(ev.controls.identity_provider.newestEvidenceAt).toBeNull();
+    expect(ev.controls.dns_filtering.newestEvidenceAt).toBeNull();
+    expect(ev.controls.privileged_access.newestEvidenceAt).toBeNull();
     expect(ev.report.orgWide?.postureRow).toEqual({ overallScore: 82 });
   });
 
