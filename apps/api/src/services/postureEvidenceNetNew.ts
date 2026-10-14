@@ -27,8 +27,11 @@ export async function loadM365MfaEvidence(orgId: string, asOf: Date, maxAgeDays:
   };
 }
 
-/** Breeze-managed backups only: a passed integrity check or test restore inside the window.
- *  Third-party provider "last success" is NOT a verification (spec §19.8). */
+/** Breeze-managed backups only (spec §19.8, Ruling 22): every device with a
+ *  Breeze backup job is eligible AND assessed — Breeze knows whether it was
+ *  verified; passing = a passed integrity check or test restore inside the
+ *  window. An unverified backup reads Not met, never Not assessed.
+ *  Third-party provider "last success" is NOT a verification. */
 export async function loadBackupsVerifiedEvidence(orgId: string, deviceIds: string[], asOf: Date, maxAgeDays: number): Promise<ControlEvidence> {
   if (deviceIds.length === 0) return zero();
   const jobDevices = await db.select({ deviceId: backupJobs.deviceId }).from(backupJobs)
@@ -41,21 +44,14 @@ export async function loadBackupsVerifiedEvidence(orgId: string, deviceIds: stri
       verificationType: backupVerifications.verificationType, completedAt: backupVerifications.completedAt,
     }).from(backupVerifications)
     .where(and(eq(backupVerifications.orgId, orgId), inArray(backupVerifications.deviceId, [...eligibleIds]), gte(backupVerifications.startedAt, windowStart)));
-  const byDevice = new Map<string, { passed: boolean; newest: Date }>();
+  const passedDevices = new Set<string>();
+  let newest: string | null = null;
   for (const r of rows) {
     if (!r.completedAt || r.completedAt < windowStart) continue;
     if (r.verificationType !== 'integrity' && r.verificationType !== 'test_restore') continue;
-    const cur = byDevice.get(r.deviceId);
-    const passed = (cur?.passed ?? false) || r.status === 'passed';
-    const newest = cur && cur.newest > r.completedAt ? cur.newest : r.completedAt;
-    byDevice.set(r.deviceId, { passed, newest });
-  }
-  let newest: string | null = null;
-  let passing = 0;
-  for (const v of byDevice.values()) {
-    if (v.passed) passing += 1;
-    const n = v.newest.toISOString();
+    if (r.status === 'passed') passedDevices.add(r.deviceId);
+    const n = r.completedAt.toISOString();
     if (!newest || n > newest) newest = n;
   }
-  return { eligible: eligibleIds.size, assessed: byDevice.size, passing, aggregatePct: null, newestEvidenceAt: newest };
+  return { eligible: eligibleIds.size, assessed: eligibleIds.size, passing: passedDevices.size, aggregatePct: null, newestEvidenceAt: newest };
 }

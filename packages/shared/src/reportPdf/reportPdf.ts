@@ -688,6 +688,55 @@ export function buildPostureBackupMetric(controls: PostureControls, products: Po
   } satisfies Metric;
 }
 
+/**
+ * Ruling 23: a coverage % is over ASSESSED devices, so it must not take a
+ * pass colour when the not-assessed share exceeds 20% (mirrors the trust page
+ * coverage floor). Every unknown count here is deviceCount − assessed, so
+ * unknown / (unknown + assessed) = unknown / deviceCount.
+ */
+const NOT_ASSESSED_SHARE_MAX = 0.2;
+function coverageShareStatus(base: MetricStatus, unknown: number | undefined, deviceCount: number): MetricStatus {
+  if (base === 'na' || unknown == null || unknown <= 0 || deviceCount <= 0) return base;
+  return unknown / deviceCount > NOT_ASSESSED_SHARE_MAX ? 'na' : base;
+}
+
+/** The posture cover's control-coverage grid, column-major (left: device
+ *  protection & hygiene; right: access, identity & network). Pure; exported for tests. */
+export function buildPostureCoverageMetrics(summary: PostureSummary): Metric[] {
+  const c = summary.controls ?? {};
+  const deviceCount = summary.deviceCount ?? 0;
+  const protectionMetrics: Metric[] = [
+    { label: 'Managed EDR coverage', value: withNotAssessed(pctStr(c.edrCoveragePct), c.edrUnknownCount), status: coverageShareStatus(pctStatus(c.edrCoveragePct), c.edrUnknownCount, deviceCount), target: '>=90%' },
+    { label: 'AV + real-time protection', value: withNotAssessed(pctStr(c.anyAvCoveragePct), c.anyAvUnknownCount), status: coverageShareStatus(pctStatus(c.anyAvCoveragePct), c.anyAvUnknownCount, deviceCount), target: '>=95%' },
+    {
+      label: 'Unprotected devices',
+      value: String(c.unprotectedCount ?? 0),
+      status: (c.unprotectedCount ?? 0) > 0 ? 'bad' : 'good',
+      target: 'none', // "0" beside a value of 0 read as a duplicated numeral
+    },
+    { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
+    { label: 'Disk encryption', value: withNotAssessed(pctStr(c.encryptionPct), c.encryptionUnknownCount), status: coverageShareStatus(pctStatus(c.encryptionPct), c.encryptionUnknownCount, deviceCount), target: '>=90%' },
+    { label: 'Patch current (no critical pending)', value: withNotAssessed(pctStr(c.patchCurrentPct), c.patchUnknownCount), status: coverageShareStatus(pctStatus(c.patchCurrentPct, 90, 70), c.patchUnknownCount, deviceCount), target: '>=90%' },
+  ];
+  if (c.cisIncluded !== false) {
+    const cisVal =
+      c.cisAvgPassRate == null
+        ? 'Not assessed'
+        : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
+    protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
+  }
+  const backupMetric = buildPostureBackupMetric(c, summary.securityProducts ?? []);
+  const accessMetrics: Metric[] = [
+    { label: 'Host firewall', value: withNotAssessed(pctStr(c.firewallPct), c.firewallUnknownCount), status: coverageShareStatus(pctStatus(c.firewallPct), c.firewallUnknownCount, deviceCount), target: '>=95%' },
+    { label: 'Password complexity', value: withNotAssessed(pctStr(c.passwordComplexityPct), c.passwordUnknownCount), status: coverageShareStatus(pctStatus(c.passwordComplexityPct), c.passwordUnknownCount, deviceCount), target: '>=90%' },
+    { label: 'Local-admin exposure', value: withNotAssessed(pctStr(c.localAdminExposurePct), c.localAdminUnknownCount), status: coverageShareStatus(pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), c.localAdminUnknownCount, deviceCount), target: '<=10%' },
+    { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
+    backupMetric,
+    { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
+  ];
+  return [...protectionMetrics, ...accessMetrics];
+}
+
 type PostureAggregates = { criticalCount: number; unprotectedCount: number };
 
 function renderPostureCover(
@@ -744,36 +793,7 @@ function renderPostureCover(
   drawLegend(doc, ccHeadingY); // color key, right-aligned to the heading
   // Left column: device protection & hygiene. Right column: access, identity
   // & network. The grid fills column-major, so array order = reading order.
-  const protectionMetrics: Metric[] = [
-    { label: 'Managed EDR coverage', value: withNotAssessed(pctStr(c.edrCoveragePct), c.edrUnknownCount), status: pctStatus(c.edrCoveragePct), target: '>=90%' },
-    { label: 'AV + real-time protection', value: withNotAssessed(pctStr(c.anyAvCoveragePct), c.anyAvUnknownCount), status: pctStatus(c.anyAvCoveragePct), target: '>=95%' },
-    {
-      label: 'Unprotected devices',
-      value: String(c.unprotectedCount ?? 0),
-      status: (c.unprotectedCount ?? 0) > 0 ? 'bad' : 'good',
-      target: 'none', // "0" beside a value of 0 read as a duplicated numeral
-    },
-    { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
-    { label: 'Disk encryption', value: withNotAssessed(pctStr(c.encryptionPct), c.encryptionUnknownCount), status: pctStatus(c.encryptionPct), target: '>=90%' },
-    { label: 'Patch current (no critical pending)', value: withNotAssessed(pctStr(c.patchCurrentPct), c.patchUnknownCount), status: pctStatus(c.patchCurrentPct, 90, 70), target: '>=90%' },
-  ];
-  if (c.cisIncluded !== false) {
-    const cisVal =
-      c.cisAvgPassRate == null
-        ? 'Not assessed'
-        : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
-    protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
-  }
-  const backupMetric = buildPostureBackupMetric(c, summary.securityProducts ?? []);
-  const accessMetrics: Metric[] = [
-    { label: 'Host firewall', value: withNotAssessed(pctStr(c.firewallPct), c.firewallUnknownCount), status: pctStatus(c.firewallPct), target: '>=95%' },
-    { label: 'Password complexity', value: withNotAssessed(pctStr(c.passwordComplexityPct), c.passwordUnknownCount), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
-    { label: 'Local-admin exposure', value: withNotAssessed(pctStr(c.localAdminExposurePct), c.localAdminUnknownCount), status: pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), target: '<=10%' },
-    { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
-    backupMetric,
-    { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
-  ];
-  y = drawMetricGrid(doc, [...protectionMetrics, ...accessMetrics], y);
+  y = drawMetricGrid(doc, buildPostureCoverageMetrics(summary), y);
 
   y = drawSectionHeading(doc, 'Privileged access (PAM)', y + 2.5);
   const pamMetrics: Metric[] = [

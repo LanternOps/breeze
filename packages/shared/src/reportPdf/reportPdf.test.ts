@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPostureBackupMetric, buildReportPdf } from './reportPdf';
+import { buildPostureBackupMetric, buildReportPdf, buildPostureCoverageMetrics } from './reportPdf';
 import type { PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 import type { FleetDesignReportSummary, FleetDesignSubmission } from '../types/fleetDesign';
@@ -210,6 +210,36 @@ describe('buildReportPdf in Node (no DOM)', () => {
       '70% \u00b7 6 not assessed', '60% \u00b7 7 not assessed', '10% \u00b7 8 not assessed']) {
       expect(text).toContain(v);
     }
+  });
+
+  // Ruling 23: a % over assessed devices must not read green when more than
+  // 20% of the fleet was not assessed (mirrors the trust page coverage floor).
+  describe('coverage-share status (Ruling 23)', () => {
+    const base = (over: Partial<PostureSummary['controls']>, deviceCount = 100): PostureSummary => ({
+      ...postureSummary, deviceCount, controls: { ...postureSummary.controls, ...over },
+    });
+    const statusOf = (s: PostureSummary, label: string) => buildPostureCoverageMetrics(s).find((m) => m.label === label)?.status;
+
+    it('100 devices, 20 assessed, 19 with EDR → na, not good', () => {
+      expect(statusOf(base({ edrCoveragePct: 95, edrUnknownCount: 80 }), 'Managed EDR coverage')).toBe('na');
+    });
+    it('exactly 20% unknown keeps the percentage status; 21% is na', () => {
+      expect(statusOf(base({ encryptionPct: 95, encryptionUnknownCount: 20 }), 'Disk encryption')).toBe('good');
+      expect(statusOf(base({ encryptionPct: 95, encryptionUnknownCount: 21 }), 'Disk encryption')).toBe('na');
+    });
+    it.each([
+      ['Managed EDR coverage', { edrCoveragePct: 100, edrUnknownCount: 50 }],
+      ['AV + real-time protection', { anyAvCoveragePct: 100, anyAvUnknownCount: 50 }],
+      ['Disk encryption', { encryptionPct: 100, encryptionUnknownCount: 50 }],
+      ['Patch current (no critical pending)', { patchCurrentPct: 100, patchUnknownCount: 50 }],
+      ['Host firewall', { firewallPct: 100, firewallUnknownCount: 50 }],
+      ['Password complexity', { passwordComplexityPct: 100, passwordUnknownCount: 50 }],
+      ['Local-admin exposure', { localAdminExposurePct: 0, localAdminUnknownCount: 50 }],
+    ] as const)('%s goes na above the 20%% unknown share', (label, over) => {
+      expect(statusOf(base(over), label)).toBe('na');
+      const zeroUnknown = Object.fromEntries(Object.entries(over).map(([k, v]) => [k, k.endsWith('UnknownCount') ? 0 : v]));
+      expect(statusOf(base(zeroUnknown), label)).toBe('good');
+    });
   });
 
   it('adds no suffix when an unknown count is zero or absent', () => {

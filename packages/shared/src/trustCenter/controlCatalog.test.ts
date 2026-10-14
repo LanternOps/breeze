@@ -30,6 +30,10 @@ describe('trust control catalog', () => {
     }
   });
 
+  it('names the CIS version the crosswalk was transcribed from (v8.1)', () => {
+    expect(FRAMEWORK_META.cis_v8.name).toBe('CIS Critical Security Controls v8.1');
+  });
+
   it('crosswalk labels are Breeze paraphrases, never framework-verbatim markers, and every framework has meta', () => {
     for (const fw of TRUST_FRAMEWORKS) {
       expect(FRAMEWORK_META[fw].name.length).toBeGreaterThan(2);

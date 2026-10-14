@@ -31,7 +31,7 @@ describe('loadM365MfaEvidence', () => {
 
 describe('loadBackupsVerifiedEvidence', () => {
   beforeEach(() => vi.mocked(db.select).mockReset());
-  it('eligible = devices with a Breeze backup job; passing = passed verification inside the window', async () => {
+  it('eligible = assessed = devices with a Breeze backup job; passing = passed verification inside the window (Ruling 22)', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([{ deviceId: 'd1' }, { deviceId: 'd2' }, { deviceId: 'd3' }]))
       .mockReturnValueOnce(selectChain([
@@ -40,7 +40,7 @@ describe('loadBackupsVerifiedEvidence', () => {
         { deviceId: 'd3', status: 'passed', verificationType: 'integrity', completedAt: new Date('2026-08-01T00:00:00.000Z') },
       ]));
     expect(await loadBackupsVerifiedEvidence(ORG, ['d1', 'd2', 'd3', 'd4'], AS_OF, 30))
-      .toEqual({ eligible: 3, assessed: 2, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-11T00:00:00.000Z' });
+      .toEqual({ eligible: 3, assessed: 3, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-11T00:00:00.000Z' });
   });
   it('guards: failed+passed on one device passes; non-integrity/test_restore types and null completedAt are ignored', async () => {
     vi.mocked(db.select)
@@ -49,13 +49,18 @@ describe('loadBackupsVerifiedEvidence', () => {
         // (a) d1: passed, then a LATER failed row must not overwrite the pass -> passing
         { deviceId: 'd1', status: 'passed', verificationType: 'test_restore', completedAt: new Date('2026-10-05T00:00:00.000Z') },
         { deviceId: 'd1', status: 'failed', verificationType: 'integrity', completedAt: new Date('2026-10-08T00:00:00.000Z') },
-        // (b) d2: passed but wrong type -> not assessed
+        // (b) d2: passed but wrong type -> assessed (has a job), not passing
         { deviceId: 'd2', status: 'passed', verificationType: 'metadata', completedAt: new Date('2026-10-12T00:00:00.000Z') },
-        // (c) d3: still running -> skipped
+        // (c) d3: still running -> assessed, not passing
         { deviceId: 'd3', status: 'passed', verificationType: 'integrity', completedAt: null },
       ]));
     expect(await loadBackupsVerifiedEvidence(ORG, ['d1', 'd2', 'd3'], AS_OF, 30))
-      .toEqual({ eligible: 3, assessed: 1, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-08T00:00:00.000Z' });
+      .toEqual({ eligible: 3, assessed: 3, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-08T00:00:00.000Z' });
+  });
+  it('a job with no verification at all is assessed and not passing (Not met, never Not assessed)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([{ deviceId: 'd1' }])).mockReturnValueOnce(selectChain([]));
+    expect(await loadBackupsVerifiedEvidence(ORG, ['d1'], AS_OF, 30))
+      .toEqual({ eligible: 1, assessed: 1, passing: 0, aggregatePct: null, newestEvidenceAt: null });
   });
   it('provider-only org (no Breeze jobs) → eligible 0 → not assessed upstream', async () => {
     vi.mocked(db.select).mockReturnValueOnce(selectChain([])).mockReturnValueOnce(selectChain([]));

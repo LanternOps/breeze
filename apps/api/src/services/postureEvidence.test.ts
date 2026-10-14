@@ -104,13 +104,86 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
   });
 
-  it('a stale security_status row is not assessed for encryption/firewall but still counts as EDR evidence', async () => {
+  it('a stale security_status row is not assessed for encryption/firewall; EDR/AV assessment then rests on the agent row or check-in', async () => {
     const old = new Date('2026-08-01T00:00:00.000Z');
     mockQueries({ 3: [{ deviceId: 'd1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: null, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: old }] });
     const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
     expect(ev.controls.disk_encryption.assessed).toBe(0);
     expect(ev.controls.endpoint_protection.assessed).toBeGreaterThanOrEqual(1);
     expect(ev.devices.find((d) => d.id === 'd1')?.statusFresh).toBe(false);
+  });
+
+  describe('per-device evidence age (spec §19 item 18: every device control)', () => {
+    const DAY = 86400000;
+    const old = new Date(AS_OF.getTime() - 31 * DAY);
+    const atCutoff = new Date(AS_OF.getTime() - 30 * DAY);
+    const staleRow = (deviceId: string) => ({ deviceId, provider: 'windows_defender', realTimeProtection: true, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 }, updatedAt: old });
+
+    it('a stale status row assesses no status-derived control (password, least privilege, definitions, EDR/AV on its own)', async () => {
+      mockQueries({
+        2: [{ id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: null }],
+        3: [staleRow('d1')], 5: [], 6: [], 16: [], 17: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      for (const id of ['password_policy', 'least_privilege', 'definitions_current', 'disk_encryption', 'host_firewall', 'edr_coverage', 'endpoint_protection'] as const) {
+        expect(ev.controls[id], id).toMatchObject({ eligible: 1, assessed: 0, passing: 0 });
+      }
+      expect(ev.report.edrUnknown).toBe(1);
+      expect(ev.report.anyAvUnknown).toBe(1);
+    });
+
+    it('a status row exactly at the cutoff day is still fresh for every status-derived control', async () => {
+      mockQueries({
+        2: [{ id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: null }],
+        3: [{ ...staleRow('d1'), updatedAt: atCutoff }], 5: [], 6: [], 16: [], 17: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      for (const id of ['password_policy', 'least_privilege', 'definitions_current', 'edr_coverage', 'endpoint_protection'] as const) {
+        expect(ev.controls[id].assessed, id).toBe(1);
+      }
+    });
+
+    it('an invalid status-row timestamp counts as stale', async () => {
+      mockQueries({
+        2: [{ id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: null }],
+        3: [{ ...staleRow('d1'), updatedAt: new Date('not a date') }], 5: [], 6: [], 16: [], 17: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.password_policy.assessed).toBe(0);
+      expect(ev.controls.edr_coverage.assessed).toBe(0);
+    });
+
+    it('patch currency is assessed only from device_patches evidence inside the window (max of updatedAt / lastCheckedAt)', async () => {
+      mockQueries({
+        2: [
+          { id: 'fresh-check', hostname: 'a', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+          { id: 'stale', hostname: 'b', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+          { id: 'fresh-upd', hostname: 'c', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+        ],
+        // mockQueries keys past 14 are shifted by the mocked slot 15: key 16 = cis (17), key 17 = patch set (18).
+        3: [], 5: [], 6: [{ deviceId: 'fresh-check', severity: 'critical' }], 16: [],
+        17: [
+          { deviceId: 'fresh-check', updatedAt: old, lastCheckedAt: recent },
+          { deviceId: 'stale', updatedAt: old, lastCheckedAt: old },
+          { deviceId: 'stale', updatedAt: old, lastCheckedAt: null },
+          { deviceId: 'fresh-upd', updatedAt: recent, lastCheckedAt: null },
+        ],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.os_patch_currency).toMatchObject({ eligible: 3, assessed: 2, passing: 1, newestEvidenceAt: recent.toISOString() });
+      expect(ev.devices.find((d) => d.id === 'stale')?.patchAssessed).toBe(false);
+    });
+
+    it('a CIS scan older than the window is not assessed and leaves the aggregate out', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, checkedAt: old }, { deviceId: 'd2', passedChecks: 5, totalChecks: 10, checkedAt: recent }],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline).toMatchObject({ eligible: 3, assessed: 1, aggregatePct: 50 });
+      expect(ev.report.cisAssessedCount).toBe(1);
+      expect(ev.devices.find((d) => d.id === 'd1')?.cisPassRate).toBeNull();
+    });
   });
 
   it('restricted scope omits org-wide evidence and filters devices by site', async () => {

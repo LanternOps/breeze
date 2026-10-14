@@ -486,6 +486,18 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(c.patchUnknownCount).toBe(1); // dev-3 unscanned
   });
 
+  it('password/local-admin unknown counts include devices with no status row (Ruling 23: deviceCount − assessed)', async () => {
+    mockGeneratorQueries({
+      2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }, { id: 'silent', hostname: 's', osType: 'windows', siteName: 'S' }],
+      3: [{ deviceId: 'd', provider: 'other', realTimeProtection: false, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }],
+      4: [],
+      5: []
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    expect(c.passwordUnknownCount).toBe(2);
+    expect(c.localAdminUnknownCount).toBe(2);
+  });
+
   it('treats missing per-device data as explicit unknown, never pass/fail (C1/M1/M2)', async () => {
     mockGeneratorQueries({
       2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
@@ -755,7 +767,7 @@ describe('generateSecurityCompliancePostureReport', () => {
       expect(c.unprotectedCount).toBe(0);
     });
 
-    it('custom-age row (line 232): a 10-day-old Defender row with RTP on remains protected', async () => {
+    it('custom-age row (line 232): a 10-day-old Defender row with RTP on remains protected but is not AV-coverage evidence', async () => {
       const tenDaysAgo = new Date(Date.now() - 10 * 86400000);
       mockGeneratorQueries({
         2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
@@ -765,12 +777,16 @@ describe('generateSecurityCompliancePostureReport', () => {
         4: [],
         5: [],
       });
-      // maxSecurityStatusAgeDays: 7 makes this row "stale" for enc/fw, but
-      // protection ignores freshness entirely.
+      // maxSecurityStatusAgeDays: 7 makes this row "stale". The protection
+      // classification (unprotectedCount) ignores freshness, but since spec
+      // §19 item 18 a stale row is no longer EVIDENCE for the AV coverage
+      // denominator: with no agent row and no check-in the device is an
+      // explicit unknown (was: anyAvCoveragePct 100).
       const r = await generateSecurityCompliancePostureReport(ORG, { maxSecurityStatusAgeDays: 7 });
       const c = (r.summary as any).controls;
       expect(c.unprotectedCount).toBe(0);
-      expect(c.anyAvCoveragePct).toBe(100);
+      expect(c.anyAvCoveragePct).toBeNull();
+      expect(c.anyAvUnknownCount).toBe(1);
     });
 
     it('assessed/stale rows (lines 254-255): a no-row device is unknown → unprotected bucket', async () => {

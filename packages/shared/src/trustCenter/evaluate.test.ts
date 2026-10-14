@@ -81,6 +81,12 @@ describe('evaluateTrustControls', () => {
     expect(a).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry', evidenceAsOf: stale });
   });
 
+  it('an unparseable newestEvidenceAt counts as stale → insufficient_telemetry', () => {
+    const a = byId(evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence({ disk_encryption: { eligible: 10, assessed: 10, passing: 10, newestEvidenceAt: 'not-a-date' } }), DEFAULT_TRUST_EVALUATION_POLICY, AS_OF), 'disk_encryption');
+    // evidenceAsOf is nulled: the payload contract requires an ISO date or null.
+    expect(a).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry', percent: null, evidenceAsOf: null });
+  });
+
   it('never emits a percent for a not_assessed control', () => {
     const out = evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence(), DEFAULT_TRUST_EVALUATION_POLICY, AS_OF);
     expect(out.every((a) => a.status !== 'not_assessed' || a.percent === null)).toBe(true);

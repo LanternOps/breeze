@@ -1,9 +1,15 @@
-// Sources (verify at implementation time, record the version you checked):
-//   cis_v8          — CIS Critical Security Controls v8.1 (cisecurity.org/controls). Licensed CC BY-NC-ND 4.0;
-//                     identifiers + Breeze's own labels only, attribution rendered (spec §5.5, §18.13).
-//   essential_eight — ACSC Essential Eight (cyber.gov.au), CC BY 4.0.
-//   cyber_essentials— NCSC Cyber Essentials requirements v3.2, Open Government Licence; name is a trademark.
-//   nist_csf_2      — NIST CSF 2.0 (nist.gov), public domain.
+// Sources — version cited and date recorded (header written in the final fix wave, 2026-10-14;
+// "recorded" = transcribed at implementation, not independently re-verified since):
+//   cis_v8          — CIS Critical Security Controls v8.1 (cisecurity.org/controls), as cited by spec §5.5.
+//                     Licensed CC BY-NC-ND 4.0; identifiers + Breeze's own labels only, attribution
+//                     rendered (spec §5.5, §18.13). Safeguard refs and IG tiers were transcribed at
+//                     implementation (2026-10-13) and cross-checked in review the same day against the
+//                     v8 safeguard numbering; NOT yet re-verified line-by-line against the published
+//                     v8.1 PDF — that confirmation is the W2 GA licensing step.
+//   essential_eight — ACSC Essential Eight (cyber.gov.au), CC BY 4.0. Strategy names, recorded 2026-10-13.
+//   cyber_essentials— NCSC Cyber Essentials requirements v3.2, Open Government Licence; name is a
+//                     trademark. Five technical control themes, recorded 2026-10-13.
+//   nist_csf_2      — NIST CSF 2.0 (nist.gov, Feb 2024), public domain. Subcategory ids, recorded 2026-10-13.
 import type { TrustFramework } from './types';
 export { TRUST_FRAMEWORKS } from './types';
 
@@ -13,7 +19,7 @@ export const FRAMEWORK_META: Record<TrustFramework, {
   name: string; shortName: string; sourceUrl: string; safeguardTotal: number; attribution: string;
 }> = {
   cis_v8: {
-    name: 'CIS Critical Security Controls v8', shortName: 'CIS v8',
+    name: 'CIS Critical Security Controls v8.1', shortName: 'CIS v8',
     sourceUrl: 'https://www.cisecurity.org/controls', safeguardTotal: 153,
     attribution: 'CIS Controls® are a registered trademark of the Center for Internet Security, Inc. Safeguard identifiers are referenced with Breeze\'s own descriptions; see cisecurity.org/controls for the current text.',
   },

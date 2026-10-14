@@ -40,6 +40,8 @@ function evaluateOne(def: TrustControlDefinition, e: ControlEvidence, policy: Tr
 
   if (e.newestEvidenceAt) {
     const ageMs = asOf.getTime() - new Date(e.newestEvidenceAt).getTime();
+    // An unparseable timestamp is not evidence of freshness (spec §19 item 18).
+    if (!Number.isFinite(ageMs)) return notAssessed(def, { ...e, newestEvidenceAt: null }, 'insufficient_telemetry');
     if (ageMs > policy.evidenceMaxAgeDays * 86_400_000) return notAssessed(def, e, 'insufficient_telemetry');
   }
   if (def.metric !== 'boolean' && pct(e.assessed, e.eligible) < policy.coverageFloorPct) {

@@ -160,6 +160,28 @@ export interface PostureEvidence {
 const daysAgo = (asOf: Date, d: Date | null | undefined): number | null =>
   d ? Math.floor((asOf.getTime() - new Date(d).getTime()) / 86400000) : null;
 const isString = (value: unknown): value is string => typeof value === 'string';
+/**
+ * Per-device evidence age (spec §5.4 `assessed`, §19 item 18): evidence older
+ * than maxDays is not evidence. An unparseable timestamp is stale. A null one
+ * fails open as fresh: every column read here is NOT NULL in the schema
+ * (security_status.updated_at, device_patches.updated_at,
+ * cis_baseline_results.checked_at), so null is a legacy/edge row only.
+ */
+const withinDays = (asOf: Date, d: Date | null | undefined, maxDays: number): boolean => {
+  if (d == null) return true;
+  const age = daysAgo(asOf, d);
+  return age != null && Number.isFinite(age) && age <= maxDays;
+};
+const newestDate = (...ds: Array<Date | null | undefined>): Date | null => {
+  let best: Date | null = null;
+  for (const d of ds) {
+    if (!d) continue;
+    const t = new Date(d).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (!best || t > best.getTime()) best = new Date(t);
+  }
+  return best;
+};
 const iso = (d: Date | null | undefined): string | null => (d ? new Date(d).toISOString() : null);
 const newer = (a: string | null, d: Date | null | undefined): string | null => {
   const b = iso(d);
@@ -428,7 +450,10 @@ export async function loadPostureEvidence(
 
   // 17 cis — hardening pass-rate per device (latest scan), optional via policy.includeCis.
   // Uses the result's aggregate columns directly — no findings-jsonb parsing needed.
+  // Only a scan inside the evidence-age window counts; a device whose LATEST
+  // scan is stale is not assessed (an older scan is staler still).
   const cisByDevice = new Map<string, { pct: number; checkedAt: Date | null }>();
+  const cisSeen = new Set<string>();
   if (policy.includeCis) {
     const cisRows = await db
       .select({
@@ -441,7 +466,9 @@ export async function loadPostureEvidence(
       .where(and(eq(cisBaselineResults.orgId, orgId), inArray(cisBaselineResults.deviceId, deviceIds)))
       .orderBy(desc(cisBaselineResults.checkedAt));
     for (const r of cisRows) {
-      if (cisByDevice.has(r.deviceId)) continue; // desc order → first seen is the latest scan
+      if (cisSeen.has(r.deviceId)) continue; // desc order → first seen is the latest scan
+      cisSeen.add(r.deviceId);
+      if (!withinDays(asOf, r.checkedAt, policy.maxSecurityStatusAgeDays)) continue;
       cisByDevice.set(r.deviceId, {
         pct: r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0,
         checkedAt: r.checkedAt ?? null,
@@ -450,13 +477,24 @@ export async function loadPostureEvidence(
   }
 
   // 18 Patch-assessed set: a device counts toward patch currency only if it has at
-  // least one device_patches row (any status). Absence of patch data is "unknown",
-  // never silently scored as "current". (db.select — selectDistinct isn't mocked.)
+  // least one device_patches row (any status) whose newest of updatedAt /
+  // lastCheckedAt is inside the evidence-age window. Absence of (recent) patch
+  // data is "unknown", never silently scored as "current". (db.select —
+  // selectDistinct isn't mocked.)
   const patchRowDevices = await db
-    .select({ deviceId: devicePatches.deviceId })
+    .select({ deviceId: devicePatches.deviceId, updatedAt: devicePatches.updatedAt, lastCheckedAt: devicePatches.lastCheckedAt })
     .from(devicePatches)
     .where(and(eq(devicePatches.orgId, orgId), inArray(devicePatches.deviceId, deviceIds)));
-  const patchScannedDevices = new Set(patchRowDevices.map((r) => r.deviceId));
+  const patchEvidenceAt = new Map<string, Date | null>();
+  const patchScannedDevices = new Set<string>();
+  for (const r of patchRowDevices) {
+    const at = newestDate(r.updatedAt, r.lastCheckedAt);
+    const rowFresh = at ? withinDays(asOf, at, policy.maxSecurityStatusAgeDays) : r.updatedAt == null && r.lastCheckedAt == null;
+    if (!rowFresh) continue;
+    patchScannedDevices.add(r.deviceId);
+    const prev = patchEvidenceAt.get(r.deviceId) ?? null;
+    patchEvidenceAt.set(r.deviceId, newestDate(prev, at));
+  }
 
   // 19 (unrestricted only) + 20/21 — net-new readers. Appended last: the positional
   // db.select mocks in the loader/report tests depend on query order.
@@ -507,25 +545,25 @@ export async function loadPostureEvidence(
     // here, so preserve that public contract.
     if (protection !== 'protected') unprotected += 1;
 
+    // Firewall/encryption are live device states that stop updating when a device
+    // goes offline, so a row older than the cutoff is treated as unknown rather
+    // than counted as a current pass/fail. The same age gate applies to every
+    // status-derived control (spec §19 item 18).
+    const ssFresh = Boolean(ss) && withinDays(asOf, ss?.updatedAt, policy.maxSecurityStatusAgeDays);
+
     // Spec §19.7: a device is ASSESSED for EDR/AV when Breeze has any evidence
-    // about it — a status row, an agent row, or a recent check-in.
+    // about it — a FRESH status row, an agent row, or a recent check-in.
     const lastSeenAt = d.lastSeenAt ?? null;
-    const seenRecently = lastSeenAt ? new Date(lastSeenAt).getTime() >= evidenceCutoff : false;
-    const epAssessed = Boolean(ss) || isManaged || seenRecently;
-    const epEvidenceAt = ss?.updatedAt ?? lastSeenAt;
+    const lastSeenMs = lastSeenAt ? new Date(lastSeenAt).getTime() : NaN;
+    const seenRecently = Number.isFinite(lastSeenMs) && lastSeenMs >= evidenceCutoff;
+    const epAssessed = ssFresh || isManaged || seenRecently;
+    const epEvidenceAt = ssFresh ? ss!.updatedAt : lastSeenAt;
     if (!epAssessed) {
       edrUnknown += 1;
       anyAvUnknown += 1;
     }
     bump(controls.edr_coverage, epAssessed, isManaged, epEvidenceAt);
     bump(controls.endpoint_protection, epAssessed, protection === 'protected', epEvidenceAt);
-
-    // Firewall/encryption are live device states that stop updating when a device
-    // goes offline, so a row older than the cutoff is treated as unknown rather
-    // than counted as a current pass/fail. (updatedAt is NOT NULL in schema; a
-    // null age can only be a legacy/edge row, which we fail-open as fresh.)
-    const ssAgeDays = ss ? daysAgo(asOf, ss.updatedAt) : null;
-    const ssFresh = Boolean(ss) && (ssAgeDays == null || ssAgeDays <= policy.maxSecurityStatusAgeDays);
 
     const enc = ss?.encryptionStatus ?? 'unknown';
     bump(controls.disk_encryption, ssFresh && enc !== 'unknown', enc === 'encrypted', ss?.updatedAt);
@@ -536,28 +574,28 @@ export async function loadPostureEvidence(
       ss?.updatedAt,
     );
     const pw = ss ? passwordComplexityResult(ss.passwordPolicySummary, policy.minPasswordLength) : null;
-    bump(controls.password_policy, pw !== null, pw === true, ss?.updatedAt);
+    bump(controls.password_policy, ssFresh && pw !== null, pw === true, ss?.updatedAt);
     const admins = ss ? localAdminCount(ss.localAdminSummary) : null;
     // passing = within the limit; the report's exposure is assessed - passing.
-    bump(controls.least_privilege, admins != null, admins != null && admins <= policy.maxLocalAdmins, ss?.updatedAt);
+    bump(controls.least_privilege, ssFresh && admins != null, admins != null && admins <= policy.maxLocalAdmins, ss?.updatedAt);
 
     const pend = pendingByDevice.get(d.id) ?? { total: 0, critical: 0 };
     const patchAssessed = patchScannedDevices.has(d.id);
-    bump(controls.os_patch_currency, patchAssessed, pend.critical === 0, lastSeenAt);
+    bump(controls.os_patch_currency, patchAssessed, pend.critical === 0, patchEvidenceAt.get(d.id) ?? lastSeenAt);
 
     // AV definitions currency honors maxAvDefinitionsAgeDays, over native-AV
     // devices that report a definitions date (managed-EDR-only devices have none).
     const avAge = ss ? daysAgo(asOf, ss.definitionsDate) : null;
     bump(
       controls.definitions_current,
-      hasNativeAv && avAge != null,
+      ssFresh && hasNativeAv && avAge != null,
       avAge != null && avAge <= policy.maxAvDefinitionsAgeDays,
       ss?.definitionsDate,
     );
 
     const cis = cisByDevice.get(d.id);
     // Informational only: the evaluator scores pass_rate from aggregatePct.
-    bump(controls.hardening_baseline, Boolean(cis), Boolean(cis && cis.pct >= 95), cis?.checkedAt);
+    bump(controls.hardening_baseline, Boolean(cis), Boolean(cis && cis.pct >= 95), cis?.checkedAt); // cisByDevice holds fresh scans only
 
     // Continuous monitoring: every eligible device is assessed; passing = checked in within the window.
     bump(
