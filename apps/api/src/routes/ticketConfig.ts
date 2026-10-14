@@ -6,6 +6,7 @@ import { authMiddleware, requireScope, requirePermission } from '../middleware/a
 import type { AuthContext } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import {
+  ERROR_CODES,
   createTicketStatusSchema, updateTicketStatusSchema, reorderTicketStatusesSchema,
   prioritySettingsSchema,
   createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema
@@ -53,7 +54,7 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
 // admins or wildcard-permission roles only.
 function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s: number) => Response }): string | Response {
   const auth = c.get('auth') as AuthContext;
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   return auth.partnerId;
 }
 
@@ -69,7 +70,7 @@ const adminMiddleware = async (c: Context, next: Next) => {
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
   const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);
-  if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role' }, 403);
+  if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role', code: ERROR_CODES.ACCESS_DENIED }, 403);
   return next();
 };
 
