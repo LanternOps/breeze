@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '@/components/shared/Dialog';
 import { formatDate } from '@/lib/dateTimeFormat';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { publishTrustPage, type TrustPageDraft } from '@/lib/api/trustPage';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 
@@ -13,6 +13,8 @@ interface Props {
   orgFetch: OrgFetch;
   page: TrustPageDraft;
   onPublished: (page: TrustPageDraft) => void;
+  /** Re-read the page (fresh publicationRevision) after a 409 REVISION_MISMATCH. */
+  onStale: () => Promise<void>;
 }
 
 /**
@@ -20,7 +22,7 @@ interface Props {
  * customer authorized publication; once recorded it is shown and reused (with a
  * Change link). The partner's own page needs none.
  */
-export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, onPublished }: Props) {
+export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, onPublished, onStale }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
@@ -66,6 +68,12 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
       onClose();
     } catch (err) {
       handleActionError(err, tr('publish.failed'));
+      if (err instanceof ActionError && err.code === 'REVISION_MISMATCH') {
+        // Retrying with the same stale revision would 409 forever: refresh the
+        // page state, then close so the next attempt carries the new revision.
+        try { await onStale(); } catch (reloadErr) { console.error('[TrustPublishDialog] reload after stale revision failed', reloadErr); }
+        onClose();
+      }
     } finally {
       setBusy(false);
     }

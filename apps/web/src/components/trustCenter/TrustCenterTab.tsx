@@ -74,7 +74,7 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
         state={page}
         canWrite={canWrite}
         onPageChange={onPageChange}
-        onReload={() => void load()}
+        onReload={load}
       />
       {/* Task 16 mount points: TrustControlsSection, TrustContentSection, TrustDocumentsSection. */}
       <TrustBadgeSnippet publicPath={page.publicPath} badgePath={page.badgePath} published={page.page.publishedAt !== null} />

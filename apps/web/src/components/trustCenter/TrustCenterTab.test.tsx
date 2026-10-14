@@ -73,4 +73,27 @@ describe('TrustCenterTab', () => {
     await waitFor(() => expect(api.setPartnerHome).toHaveBeenCalledWith(orgFetch, 'o1', true));
     await waitFor(() => expect(screen.queryByTestId('trust-partner-home-switch')).toBeNull());
   });
+  it('after a stale-revision 409 the retry sends the refreshed revision', async () => {
+    api.getTrustPage.mockResolvedValueOnce(state({ isPartnerHome: true })).mockResolvedValue(state({ isPartnerHome: true, publicationRevision: 4 }));
+    api.publishTrustPage
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'stale', code: 'REVISION_MISMATCH' }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { page: state({ publishedAt: new Date().toISOString() }).page, snapshotId: 's' } }), { status: 200 }));
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    fireEvent.click(await screen.findByTestId('trust-publish'));
+    fireEvent.click(screen.getByTestId('trust-publish-confirm'));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3 }));
+    await waitFor(() => expect(screen.queryByTestId('trust-publish-confirm')).toBeNull());
+    fireEvent.click(screen.getByTestId('trust-publish'));
+    fireEvent.click(screen.getByTestId('trust-publish-confirm'));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenLastCalledWith(orgFetch, 'o1', { expectedRevision: 4 }));
+  });
+  it('a read-only user clicking the buttons triggers no request', async () => {
+    perms.canWrite = false;
+    api.getTrustPage.mockResolvedValue(state({ publishedAt: '2026-10-01T00:00:00Z' }));
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    for (const id of ['trust-publish', 'trust-unpublish', 'trust-preview', 'trust-partner-home-switch']) fireEvent.click(await screen.findByTestId(id));
+    expect(screen.queryByTestId('trust-publish-dialog')).toBeNull();
+    expect(screen.queryByTestId('trust-unpublish-confirm')).toBeNull();
+    for (const k of ['publishTrustPage', 'unpublishTrustPage', 'createPreviewToken', 'setPartnerHome']) expect(api[k as 'publishTrustPage']).not.toHaveBeenCalled();
+  });
 });

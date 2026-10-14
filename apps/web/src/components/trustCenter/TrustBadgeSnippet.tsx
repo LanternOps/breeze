@@ -3,6 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { showToast } from '@/components/shared/Toast';
 import { trustPublicUrl } from '@/lib/api/trustPage';
 
+/** Escape text for interpolation into an HTML attribute value. */
+export function escapeHtmlAttr(v: string): string {
+  return v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 interface Props {
   publicPath: string;
   badgePath: string;
@@ -16,7 +21,7 @@ export default function TrustBadgeSnippet({ publicPath, badgePath, published }: 
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.badge.${key}`, vars ?? {}),
     [t],
   );
-  const snippet = `<a href="${trustPublicUrl(publicPath)}"><img src="${trustPublicUrl(badgePath)}" alt="${tr('alt')}"></a>`;
+  const snippet = `<a href="${trustPublicUrl(publicPath)}"><img src="${trustPublicUrl(badgePath)}" alt="${escapeHtmlAttr(tr('alt'))}"></a>`;
 
   const copy = async () => {
     try {

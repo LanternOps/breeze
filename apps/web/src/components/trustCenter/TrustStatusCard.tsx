@@ -27,7 +27,7 @@ interface Props {
   /** Replace the draft after a mutation that returned the new page. */
   onPageChange: (page: TrustPageDraft) => void;
   /** Re-read the whole state (for mutations whose response is not the page). */
-  onReload: () => void;
+  onReload: () => Promise<void>;
 }
 
 export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPageChange, onReload }: Props) {
@@ -55,6 +55,15 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
       ? tr('publish.disabledSlug')
       : canPublish.reason ?? undefined;
 
+  const openPublish = () => {
+    if (!canWrite) return;
+    setPublishOpen(true);
+  };
+  const openUnpublish = () => {
+    if (!canWrite) return;
+    setUnpublishOpen(true);
+  };
+
   const copyUrl = async () => {
     try {
       await navigator.clipboard.writeText(url);
@@ -66,6 +75,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
   };
 
   const preview = async () => {
+    if (!canWrite) return;
     // Open the window synchronously (inside the click) so the popup blocker
     // allows it; point it at the preview once the token is minted.
     const win = window.open('about:blank', '_blank');
@@ -90,6 +100,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
   };
 
   const unpublish = async () => {
+    if (!canWrite) return;
     setBusy(true);
     try {
       const data = await runAction({
@@ -113,6 +124,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
   };
 
   const togglePartnerHome = async () => {
+    if (!canWrite) return;
     setBusy(true);
     try {
       await runAction({
@@ -218,7 +230,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
           type="button"
           disabled={publishDisabled || busy}
           title={publishHint}
-          onClick={() => setPublishOpen(true)}
+          onClick={openPublish}
           className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="trust-publish"
         >
@@ -228,7 +240,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
           <button
             type="button"
             disabled={!canWrite || busy}
-            onClick={() => setUnpublishOpen(true)}
+            onClick={openUnpublish}
             className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             data-testid="trust-unpublish"
           >
@@ -253,6 +265,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
         orgFetch={orgFetch}
         page={page}
         onPublished={onPageChange}
+        onStale={onReload}
       />
       <ConfirmDialog
         open={unpublishOpen}
