@@ -704,6 +704,42 @@ describe('snapshot routes', () => {
     );
   });
 
+  it('applies provider immutability under the snapshot\'s recorded key root (#7081)', async () => {
+    const prefixed = { keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot(prefixed)]))
+      .mockReturnValueOnce(chainMock([makeSnapshot(prefixed)]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'backups', region: 'us-east-1' } }]));
+    updateMock.mockReturnValueOnce(chainMock([makeSnapshot({ ...prefixed, isImmutable: true, immutabilityEnforcement: 'provider' })]));
+    checkBackupProviderCapabilitiesMock.mockResolvedValueOnce({ objectLock: { supported: true, error: null } });
+    applyBackupSnapshotImmutabilityMock.mockResolvedValueOnce({ enforcement: 'provider', objectCount: 2 });
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/immutability`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'Regulatory lock', immutableDays: 30, enforcement: 'provider' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(applyBackupSnapshotImmutabilityMock).toHaveBeenCalledWith(expect.objectContaining({
+      snapshotId: 'provider-snap-1',
+      keyLayout: 'prefixed_flat',
+      keyPrefix: 'msp/acme',
+    }));
+  });
+
+  it('keeps the layout manifest key LOGICAL for a prefixed snapshot (#7081)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ snapshotId: 'snap-ext-9', layoutManifest: { disks: [] }, keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' }),
+    ]));
+    const res = await app.request('/backup/snapshots', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Built from the snapshot id alone; the key root never reaches the response.
+    expect(body.data[0].layoutManifestKey).toBe('backups/snap-ext-9/layout.json');
+    expect(JSON.stringify(body.data[0])).not.toContain('msp/acme');
+  });
+
   it('rejects attempts to shorten an existing immutability window', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([
