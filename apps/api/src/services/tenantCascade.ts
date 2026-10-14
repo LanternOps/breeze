@@ -874,6 +874,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_scans',
   // service_deliverable_* : evidence -> occurrences -> deliverables (children first);
   // localeCompare puts '_e' < '_o' < 's', so alphabetical order IS FK order here.
+  'service_catalog_items',
+  'service_catalogs',
   'service_deliverable_evidence',
   'service_deliverable_occurrences',
   'service_deliverables',

@@ -1133,6 +1133,8 @@ const REPOINT_TABLES: readonly string[] = [
   "sensitive_data_findings",
   "sensitive_data_policies",
   "sensitive_data_scans",
+  "service_catalog_items",
+  "service_catalogs",
   "service_deliverable_evidence",
   "service_deliverable_occurrences",
   "service_principals",

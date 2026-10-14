@@ -484,6 +484,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'service_catalogs',
+  'service_catalog_items',
   'billing_payment_settings',
   // caller_verification_policies (#6354 W01): org XOR partner via
   // caller_verification_policies_one_owner_chk; SELECT-only partner-wide branch
