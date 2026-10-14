@@ -35,7 +35,7 @@ const partnerGlobalDeniedMessage = 'Full partner organization access is required
 
 const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
-    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+    return c.json({ error: partnerGlobalDeniedMessage, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   return next();
 };
@@ -66,7 +66,7 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
 const adminMiddleware = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext;
   if (!canManagePartnerWidePolicies(auth)) {
-    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+    return c.json({ error: partnerGlobalDeniedMessage, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
   const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);

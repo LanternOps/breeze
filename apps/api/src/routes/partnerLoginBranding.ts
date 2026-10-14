@@ -66,7 +66,7 @@ partnerLoginBrandingRoutes.put(
     const auth = c.get('auth') as AuthContext;
     if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 400);
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     const body = c.req.valid('json');
