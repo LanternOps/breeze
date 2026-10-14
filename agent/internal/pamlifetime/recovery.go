@@ -2,14 +2,13 @@ package pamlifetime
 
 import (
 	"context"
-
-	"github.com/breeze-rmm/agent/internal/elevaccount"
 )
 
 // Missing-account recovery needs independent evidence: a deleted account can
 // leave a running token behind, including after a crash before BindProcess.
 // Platforms without these probes must retain the normal fail-closed path.
 type absentAccountRecoveryPrimitives interface {
+	VerifyElevationAccountAbsent(context.Context) (bool, error)
 	VerifyJobAbsent(context.Context, string) (bool, error)
 	VerifyNoOrphanedAccountToken(context.Context) (bool, error)
 }
@@ -19,9 +18,11 @@ func (m *lifecycleManager) recoverAbsentAccountEntry(ctx context.Context, entry 
 	if !supported || m.store.LoadError() != nil {
 		return Result{}, false
 	}
-	// This error is produced only by the elevation account's own SID lookup.
-	// Other scan failures are never an absence proof.
-	if _, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName); !elevaccount.IsAccountAbsent(err) {
+	// Account lookup alone selects the recovery path; it does not prove token
+	// absence. Existing accounts take the normal path without first performing
+	// an extra full-process scan just to discover that recovery is unnecessary.
+	accountAbsent, err := probes.VerifyElevationAccountAbsent(ctx)
+	if err != nil || !accountAbsent {
 		return Result{}, false
 	}
 	bootID, err := m.currentBootID(ctx)
@@ -64,7 +65,7 @@ func (m *lifecycleManager) recoverAbsentAccountEntry(ctx context.Context, entry 
 	}
 	// Recheck the SID after the probes so concurrent account provisioning cannot
 	// turn missing-account evidence into a claim about a newly created account.
-	if _, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName); !elevaccount.IsAccountAbsent(err) {
+	if absent, err := probes.VerifyElevationAccountAbsent(ctx); err != nil || !absent {
 		return Result{}, false
 	}
 	if err := m.store.MarkReconciledClean(entry.ActuationID, entry.Generation); err != nil {

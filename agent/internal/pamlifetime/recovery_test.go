@@ -3,6 +3,7 @@ package pamlifetime
 import (
 	"context"
 	"errors"
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,11 +11,27 @@ import (
 
 type recoveryWindows struct {
 	*fakeWindowsPrimitives
-	jobAbsent bool
-	jobErr    error
-	orphan    bool
-	orphanErr error
-	probedJob string
+	jobAbsent      bool
+	jobErr         error
+	orphan         bool
+	orphanErr      error
+	probedJob      string
+	accountLookups int
+	tokenScans     int
+	orphanScans    int
+}
+
+func (w *recoveryWindows) VerifyElevationAccountAbsent(context.Context) (bool, error) {
+	w.accountLookups++
+	if elevaccount.IsAccountAbsent(w.privilegedTokenErr) {
+		return true, nil
+	}
+	return false, w.privilegedTokenErr
+}
+
+func (w *recoveryWindows) VerifyNoPrivilegedToken(ctx context.Context, name string) (bool, error) {
+	w.tokenScans++
+	return w.fakeWindowsPrimitives.VerifyNoPrivilegedToken(ctx, name)
 }
 
 func (w *recoveryWindows) VerifyJobAbsent(_ context.Context, name string) (bool, error) {
@@ -22,7 +39,51 @@ func (w *recoveryWindows) VerifyJobAbsent(_ context.Context, name string) (bool,
 	return w.jobAbsent, w.jobErr
 }
 func (w *recoveryWindows) VerifyNoOrphanedAccountToken(context.Context) (bool, error) {
+	w.orphanScans++
 	return w.orphan, w.orphanErr
+}
+
+func TestReconciliationScansExistingAccountTokensOnlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		lookupErr   error
+		wantClean   bool
+		wantScans   int
+		wantOrphans int
+	}{
+		{"existing account", nil, true, 1, 0},
+		{"absent account", unresolvableAccountErr(), true, 0, 1},
+		{"unknown account lookup", errors.New("account lookup access denied"), false, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var order []string
+			win := &recoveryWindows{fakeWindowsPrimitives: &fakeWindowsPrimitives{
+				order: &order, privilegedTokenErr: tc.lookupErr,
+			}, jobAbsent: true}
+			store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+			if _, err := store.PrepareApply(validApply(1)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.BindProcess(testActuationID, 1, crashedIdentity); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.PrepareCleanup(validCleanup(2)); err != nil {
+				t.Fatal(err)
+			}
+			win.identityGone = true
+			manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order}, nil)
+			results := manager.Reconcile(context.Background())
+			if manager.Available() != tc.wantClean || len(results) != 1 || verifiedCleanupOutcome(results[0]) != tc.wantClean {
+				t.Fatalf("reconcile = %+v, available %v", results, manager.Available())
+			}
+			if win.tokenScans != tc.wantScans || win.orphanScans != tc.wantOrphans {
+				t.Fatalf("token/orphan scans = %d/%d, want %d/%d", win.tokenScans, win.orphanScans, tc.wantScans, tc.wantOrphans)
+			}
+			if win.accountLookups == 0 {
+				t.Fatal("recovery skipped account lookup")
+			}
+		})
+	}
 }
 
 func TestReconcileAbsentAccountRecovery(t *testing.T) {
