@@ -42,6 +42,21 @@ describe('loadBackupsVerifiedEvidence', () => {
     expect(await loadBackupsVerifiedEvidence(ORG, ['d1', 'd2', 'd3', 'd4'], AS_OF, 30))
       .toEqual({ eligible: 3, assessed: 2, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-11T00:00:00.000Z' });
   });
+  it('guards: failed+passed on one device passes; non-integrity/test_restore types and null completedAt are ignored', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ deviceId: 'd1' }, { deviceId: 'd2' }, { deviceId: 'd3' }]))
+      .mockReturnValueOnce(selectChain([
+        // (a) d1: failed then passed in window -> passing
+        { deviceId: 'd1', status: 'failed', verificationType: 'integrity', completedAt: new Date('2026-10-05T00:00:00.000Z') },
+        { deviceId: 'd1', status: 'passed', verificationType: 'test_restore', completedAt: new Date('2026-10-08T00:00:00.000Z') },
+        // (b) d2: passed but wrong type -> not assessed
+        { deviceId: 'd2', status: 'passed', verificationType: 'metadata', completedAt: new Date('2026-10-12T00:00:00.000Z') },
+        // (c) d3: still running -> skipped
+        { deviceId: 'd3', status: 'passed', verificationType: 'integrity', completedAt: null },
+      ]));
+    expect(await loadBackupsVerifiedEvidence(ORG, ['d1', 'd2', 'd3'], AS_OF, 30))
+      .toEqual({ eligible: 3, assessed: 1, passing: 1, aggregatePct: null, newestEvidenceAt: '2026-10-08T00:00:00.000Z' });
+  });
   it('provider-only org (no Breeze jobs) → eligible 0 → not assessed upstream', async () => {
     vi.mocked(db.select).mockReturnValueOnce(selectChain([])).mockReturnValueOnce(selectChain([]));
     expect(await loadBackupsVerifiedEvidence(ORG, ['d1'], AS_OF, 30)).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });

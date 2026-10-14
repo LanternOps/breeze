@@ -355,6 +355,7 @@ export async function loadPostureEvidence(
     const orgWide = includeOrgWide ? await loadOrgWide() : null;
     const out = empty(orgWide, org);
     if (orgWide) applyOrgWide(out.controls, orgWide, asOf);
+    // maxSecurityStatusAgeDays IS the evidence-age window (spec §5.4); windowDays is the elevation-activity window.
     if (includeOrgWide) out.controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
     return out;
   }
@@ -459,6 +460,7 @@ export async function loadPostureEvidence(
 
   // 19 (unrestricted only) + 20/21 — net-new readers. Appended last: the positional
   // db.select mocks in the loader/report tests depend on query order.
+  // maxSecurityStatusAgeDays IS the evidence-age window (spec §5.4); windowDays is the elevation-activity window.
   if (includeOrgWide) controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
   controls.backups_verified = await loadBackupsVerifiedEvidence(orgId, deviceIds, asOf, policy.maxSecurityStatusAgeDays);
 
