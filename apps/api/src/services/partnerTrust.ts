@@ -7,7 +7,7 @@ import { partnerForDevice, partnerForOrg, readTrust, writeTrust } from './partne
 import { getRedis } from './redis';
 import { tryAutoPromote } from './partnerTrustPromotion';
 
-export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain';
+export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain' | 'trust_page_publish';
 export type TrustDenyCode = 'TRUST_PROBATION' | 'TRUST_RESTRICTED';
 export type GateDecision =
   | { allow: true; shadowDenied?: { code: TrustDenyCode; reason: string } }
@@ -445,6 +445,15 @@ export async function setTrustState(
     );
   } catch (error) {
     console.warn('[partnerTrust] Failed to publish trust-state change:', error);
+  }
+  // Trust Center (spec §9 "Trust and entitlement"): restricting a partner hides every page it
+  // publishes within the second via the live predicate; the serving-set is an admission filter
+  // and is refreshed here so misses stay DB-free.
+  try {
+    const { refreshServingForPartner } = await import('./trustPage/servingSet');
+    await refreshServingForPartner(partnerId);
+  } catch (error) {
+    console.warn('[partnerTrust] trust page serving-set refresh failed:', error);
   }
   await createAuditLog({
     orgId: null,
