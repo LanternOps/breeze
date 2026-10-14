@@ -1062,6 +1062,25 @@ else
   CONFIG_DIR="/etc/breeze"
 fi
 BINARY_NAME="breeze-agent"
+# The macOS .pkg installs the agent to /Library/Breeze/bin or /usr/local/bin
+# (agent/installer/macos/install-location.sh, #7211), so enrollment must use
+# the binary it actually installed (#8778).
+MACOS_TRUSTED_BIN_DIR="/Library/Breeze/bin"
+
+# resolve_macos_agent_bin: print the agent binary the .pkg installed. Mirrors
+# choose_bin_dir in install-location.sh: an agent already in the trusted dir
+# stays there (so it wins over a leftover pre-relocation copy), otherwise the
+# package used /usr/local/bin. Fails when neither holds an executable agent.
+resolve_macos_agent_bin() {
+  local p
+  for p in "\$MACOS_TRUSTED_BIN_DIR/\$BINARY_NAME" "\$INSTALL_DIR/\$BINARY_NAME"; do
+    if [[ -f "\$p" && ! -L "\$p" && -x "\$p" ]]; then
+      echo "\$p"
+      return 0
+    fi
+  done
+  return 1
+}
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
 PKG_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}/pkg"
 VERSION_METADATA_URL="\${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=\${OS}&arch=\${ARCH}&component=agent"
@@ -1259,8 +1278,10 @@ if [[ "\$OS" == "darwin" ]]; then
   # read a process's argv (e.g. /proc/*/cmdline on Linux, ps on macOS), but
   # not another user's environment. Scoped with a VAR=value prefix so it only
   # applies to this one invocation, never exported into this shell.
+  MACOS_AGENT_BIN="\$(resolve_macos_agent_bin)" || \
+    fatal "The package installed, but no breeze-agent was found in \$MACOS_TRUSTED_BIN_DIR or \$INSTALL_DIR."
   if ! BREEZE_AGENT_ENROLLMENT_KEY="\$BREEZE_ENROLL_TOKEN" BREEZE_AGENT_ENROLLMENT_SECRET="\$BREEZE_ENROLLMENT_SECRET" \
-      "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
+      "\$MACOS_AGENT_BIN" "\${ENROLL_ARGS[@]}"; then
     fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
   fi
   success "Agent enrolled successfully"
