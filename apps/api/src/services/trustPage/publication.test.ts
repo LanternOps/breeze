@@ -69,6 +69,13 @@ describe('validatePublishSlugs', () => {
     try { validatePublishSlugs('nw', 'Acme Dental'); } catch (e) { expect(e).toMatchObject({ status: 422, code: 'SLUG_INVALID' }); expect((e as Error).message).toMatch(/organization slug/); }
     expect(() => validatePublishSlugs('nw', 'acme-dental')).not.toThrow();
   });
+  it('rejects the reserved partner slug "preview" (collides with the public preview-token route)', () => {
+    let caught: unknown;
+    try { validatePublishSlugs('preview', 'acme'); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(TrustPageError);
+    expect(caught).toMatchObject({ status: 422, code: 'SLUG_INVALID' });
+    expect((caught as Error).message).toMatch(/reserved/);
+  });
 });
 
 describe('publishTrustPage guards', () => {

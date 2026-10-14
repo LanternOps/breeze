@@ -181,6 +181,13 @@ describe('badge, documents, preview', () => {
     expect(preview.verifyTrustPreviewToken).toHaveBeenCalledWith('some-token-value');
     expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
   });
+  it('reserved partner slug "preview" never reaches the serving set (card, payload, partner-home)', async () => {
+    await expectGeneric404(await app.request('/trust/public/preview/acme'));
+    await expectGeneric404(await app.request('/trust/public/preview'));
+    await expectGeneric404(await app.request('/trust/card/preview/acme'));
+    await expectGeneric404(await app.request('/trust/card/preview'));
+    expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
+  });
   it('preview: valid token but page gone → generic 404', async () => {
     dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
     await expectGeneric404(await app.request('/trust/public/preview/good'));

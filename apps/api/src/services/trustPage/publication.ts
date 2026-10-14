@@ -17,6 +17,7 @@ import type { OrgDocumentView } from '../orgDocumentService';
 import { isEdrVisibilityEnabled } from '../portal/edrVisibility';
 import { buildTrustPagePayload, payloadSha256 } from './payloadBuilder';
 import { addServing, cacheSnapshotPayload, removeServing, trustServingMember } from './servingSet';
+import { TRUST_RESERVED_PARTNER_SLUGS } from './resolve';
 
 export class TrustPageError extends Error {
   constructor(message: string, public readonly status: 400 | 403 | 404 | 409 | 422, public readonly code: string) {
@@ -28,6 +29,9 @@ export class TrustPageError extends Error {
 export function validatePublishSlugs(partnerSlug: string, orgSlug: string): void {
   if (!TRUST_SLUG_RE.test(partnerSlug)) {
     throw new TrustPageError(`The partner slug "${partnerSlug}" is not URL-safe (lowercase letters, digits and hyphens, max 63). Fix it in partner settings before publishing.`, 422, 'SLUG_INVALID');
+  }
+  if (TRUST_RESERVED_PARTNER_SLUGS.has(partnerSlug)) {
+    throw new TrustPageError(`The partner slug "${partnerSlug}" is reserved for trust page URLs. Change it in partner settings before publishing.`, 422, 'SLUG_INVALID');
   }
   if (!TRUST_SLUG_RE.test(orgSlug)) {
     throw new TrustPageError(`The organization slug "${orgSlug}" is not URL-safe (lowercase letters, digits and hyphens, max 63). Fix it in the organization settings before publishing.`, 422, 'SLUG_INVALID');

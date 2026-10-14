@@ -6,8 +6,15 @@ import { TRUST_SLUG_RE, type TrustPagePublicPayload } from '@breeze/shared';
 
 export { livePublicationPredicate } from './predicate';
 
+/**
+ * Partner slugs that can never address a trust page: `preview` is the path segment of the public
+ * preview-token route (/trust/public/preview/:token), which is registered ahead of the slug routes.
+ */
+export const TRUST_RESERVED_PARTNER_SLUGS: ReadonlySet<string> = new Set(['preview']);
+
 export function parseTrustSlugs(partnerSlug: string, orgSlug?: string): { partnerSlug: string; orgSlug: string | null } | null {
   if (typeof partnerSlug !== 'string' || !TRUST_SLUG_RE.test(partnerSlug)) return null;
+  if (TRUST_RESERVED_PARTNER_SLUGS.has(partnerSlug)) return null;
   if (orgSlug === undefined) return { partnerSlug, orgSlug: null };
   if (typeof orgSlug !== 'string' || !TRUST_SLUG_RE.test(orgSlug)) return null;
   return { partnerSlug, orgSlug };

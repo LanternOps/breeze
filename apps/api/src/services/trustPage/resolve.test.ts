@@ -23,6 +23,8 @@ describe('parseTrustSlugs', () => {
     expect(parseTrustSlugs('NW', 'acme')).toBeNull();          // Review Focus 1
     expect(parseTrustSlugs('nw', 'Acme')).toBeNull();
     expect(parseTrustSlugs('x'.repeat(64), 'acme')).toBeNull();
+    expect(parseTrustSlugs('preview', 'acme')).toBeNull();       // reserved: collides with /public/preview/:token
+    expect(parseTrustSlugs('preview')).toBeNull();
     expect(parseTrustSlugs('nw', '')).toBeNull();
     expect(parseTrustSlugs('../etc', 'acme')).toBeNull();
   });
