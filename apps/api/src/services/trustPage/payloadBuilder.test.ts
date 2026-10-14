@@ -89,7 +89,34 @@ describe('buildTrustPagePayload', () => {
   });
 });
 
+describe('builder robustness', () => {
+  it('a max-length entity-heavy intro builds (sanitized expansion stays inside the payload bound)', () => {
+    const p = buildTrustPagePayload(input({ page: page({ introHtml: '&'.repeat(5000) }) }));
+    expect(p.introHtml).not.toBeNull();
+    expect(p.introHtml!.length).toBeLessThanOrEqual(40_000);
+  });
+  it('an intro that expands past the bound is omitted, not thrown', () => {
+    const p = buildTrustPagePayload(input({ page: page({ introHtml: '&'.repeat(20_000) }) }));
+    expect(p.introHtml).toBeNull();
+  });
+  it('an over-long websiteUrl is dropped, not thrown', () => {
+    const p = buildTrustPagePayload(input({ page: page({ websiteUrl: 'https://a.example/' + 'x'.repeat(3000) }) }));
+    expect(p.org.websiteUrl).toBeNull();
+  });
+  it('hash ignores snapshotId/generatedAt and key order', () => {
+    const a = buildTrustPagePayload(input());
+    const b = buildTrustPagePayload(input({ snapshotId: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a99', generatedAt: new Date('2026-10-14T00:00:00.000Z') }));
+    expect(payloadSha256(a)).toBe(payloadSha256(b));
+    const rev = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).reverse()) as T;
+    const c = { ...JSON.parse(JSON.stringify(a)), org: rev(a.org), summary: rev(a.summary) };
+    expect(payloadSha256(c)).toBe(payloadSha256(a));
+  });
+});
+
 describe('sanitizeIntro', () => {
+  it.each(['<p><br></p>', '<p>&nbsp;</p>', '<p> </p>'])('visually empty %s -> null', (h) => {
+    expect(sanitizeIntro(h)).toBeNull();
+  });
   it('strips scripts, javascript: links, tables and inline styles; keeps the flow subset', () => {
     const out = sanitizeIntro('<p style="color:red">Hi <a href="javascript:alert(1)">x</a> <a href="https://ok.example">ok</a></p><script>1</script><table><tr><td>t</td></tr></table><h3>H</h3>');
     expect(out).not.toMatch(/script|javascript:|style=|<table|<td/);

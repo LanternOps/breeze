@@ -43,7 +43,8 @@ describe('trustPagePublicPayloadSchema', () => {
   it('bounds documents at 20 and intro at 5000 chars', () => {
     const doc = { id: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c', title: 'Policy', category: 'policy', contentType: 'application/pdf', byteSize: 10, updatedAt: '2026-10-01T00:00:00.000Z', visibility: 'public' };
     expect(trustPagePublicPayloadSchema.safeParse({ ...payload, documents: Array.from({ length: 21 }, () => doc) }).success).toBe(false);
-    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, introHtml: 'x'.repeat(20_001) }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, introHtml: 'x'.repeat(40_001) }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, introHtml: 'x'.repeat(40_000) }).success).toBe(true);
   });
 });
 

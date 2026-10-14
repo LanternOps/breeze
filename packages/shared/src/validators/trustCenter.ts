@@ -76,7 +76,7 @@ export const trustPagePublicPayloadSchema = z.strictObject({
     logoUrl: logoUrl.nullable(),
     websiteUrl: httpsUrl.nullable(),
   }).nullable(),
-  introHtml: z.string().max(TRUST_INTRO_MAX_CHARS * 4).nullable(), // sanitized HTML may expand entities
+  introHtml: z.string().max(TRUST_INTRO_MAX_CHARS * 8).nullable(), // sanitized HTML expands up to ~6x (entities, anchor attributes); 8x bounds the worst case
   summary: z.strictObject({
     catalogTotal: z.number().int().positive(),
     controlsShown: z.number().int().min(0),
