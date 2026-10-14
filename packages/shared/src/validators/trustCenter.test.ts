@@ -1,7 +1,7 @@
 // packages/shared/src/validators/trustCenter.test.ts
 import { describe, expect, it } from 'vitest';
 import {
-  TRUST_SLUG_RE, trustPageDocumentsUpdateSchema, trustPagePublicPayloadSchema, trustPagePublishSchema, trustPageUpdateSchema,
+  TRUST_SLUG_RE, trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublicPayloadSchema, trustPagePublishSchema, trustPageUpdateSchema,
 } from './trustCenter';
 
 const control = {
@@ -64,5 +64,64 @@ describe('editor inputs', () => {
     expect(trustPagePublishSchema.safeParse({}).success).toBe(false);
     expect(trustPagePublishSchema.parse({ expectedRevision: 3 })).toEqual({ expectedRevision: 3 });
     expect(trustPagePublishSchema.safeParse({ expectedRevision: 3, authorization: { authorizedBy: '' } }).success).toBe(false);
+  });
+});
+
+type Mut = (p: any) => void;
+describe('strictness at every nesting level', () => {
+  const docEntry = { id: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c', title: 'Policy', category: 'policy', contentType: 'application/pdf', byteSize: 10, updatedAt: '2026-10-01T00:00:00.000Z', visibility: 'public' };
+  const full = { ...payload, documents: [docEntry] };
+  it('baseline full payload is valid', () => {
+    expect(trustPagePublicPayloadSchema.safeParse(full).success).toBe(true);
+  });
+  it.each<[string, Mut]>([
+    ['top', (p) => { p.__extra = 1; }],
+    ['org', (p) => { p.org.__extra = 1; }],
+    ['managedBy', (p) => { p.managedBy.__extra = 1; }],
+    ['summary', (p) => { p.summary.__extra = 1; }],
+    ['methodology', (p) => { p.methodology.__extra = 1; }],
+    ['methodology.thresholds', (p) => { p.methodology.thresholds.__extra = 1; }],
+    ['controls[]', (p) => { p.controls[0].__extra = 1; }],
+    ['controls[].frameworkRefs[]', (p) => { p.controls[0].frameworkRefs[0].__extra = 1; }],
+    ['documents[]', (p) => { p.documents[0].__extra = 1; }],
+    ['footer', (p) => { p.footer.__extra = 1; }],
+  ])('rejects an unknown key at %s', (_name, mutate) => {
+    const p = structuredClone(full);
+    mutate(p);
+    expect(trustPagePublicPayloadSchema.safeParse(p).success).toBe(false);
+  });
+
+  const id = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c';
+  it.each<[string, any, any]>([
+    ['trustPageUpdateSchema', trustPageUpdateSchema, { showPercentages: true }],
+    ['trustPageDocumentsUpdateSchema', trustPageDocumentsUpdateSchema, { documents: [] }],
+    ['trustPageDocumentsUpdateSchema entry', trustPageDocumentsUpdateSchema, { documents: [{ documentId: id, visibility: 'public', disclosureConfirmed: true, __extra: 1 }] }],
+    ['trustPagePublishSchema', trustPagePublishSchema, { expectedRevision: 1 }],
+    ['trustPagePublishSchema.authorization', trustPagePublishSchema, { expectedRevision: 1, authorization: { authorizedBy: 'Todd H', __extra: 1 } }],
+    ['trustPagePartnerHomeSchema', trustPagePartnerHomeSchema, { isPartnerHome: true }],
+  ])('%s rejects unknown keys', (name, schema, input) => {
+    if (!name.includes('entry') && !name.includes('authorization')) {
+      expect(schema.safeParse(input).success).toBe(true);
+      expect(schema.safeParse({ ...input, __extra: 1 }).success).toBe(false);
+    } else {
+      expect(schema.safeParse(input).success).toBe(false);
+    }
+  });
+});
+
+describe('control superRefine rules', () => {
+  it('rejects not_assessed with a null reason', () => {
+    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, controls: [{ ...control, status: 'not_assessed', reason: null, percent: null }] }).success).toBe(false);
+  });
+  it('rejects a reason on a met control', () => {
+    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, controls: [{ ...control, status: 'met', reason: 'no_data' }] }).success).toBe(false);
+  });
+  it('accepts a valid not_assessed control', () => {
+    expect(trustPagePublicPayloadSchema.safeParse({ ...payload, controls: [{ ...control, status: 'not_assessed', reason: 'no_data', percent: null }] }).success).toBe(true);
+  });
+  it('documents update rejects duplicate document ids', () => {
+    const id = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c';
+    const d = { documentId: id, visibility: 'public', disclosureConfirmed: true };
+    expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [d, d] }).success).toBe(false);
   });
 });
