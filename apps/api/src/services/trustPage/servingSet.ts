@@ -26,12 +26,12 @@ export async function isServing(member: string): Promise<boolean | null> {
     return (await redis.sismember(TRUST_SERVING_SET_KEY, member)) === 1;
   } catch (err) { console.warn('[trustPage] serving-set read failed', err); return null; }
 }
+// Never writes the built marker: only a full rebuild may claim the set is complete (after data loss a partial add must not turn other partners' pages into 404s).
 export async function addServing(members: string[]): Promise<void> {
   const redis = getRedis();
   if (!redis || members.length === 0) return;
   try {
     await redis.sadd(TRUST_SERVING_SET_KEY, ...members);
-    await redis.set(TRUST_SERVING_BUILT_KEY, '1');
   } catch (err) { console.warn('[trustPage] serving-set add failed', err); }
 }
 export async function removeServing(members: string[]): Promise<void> {

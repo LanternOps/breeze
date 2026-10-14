@@ -44,11 +44,15 @@ const r = () => redisMock.client as unknown as ReturnType<typeof fakeRedis>;
 
 describe('serving set', () => {
   beforeEach(() => { redisMock.client = fakeRedis() as never; dbRows.rows = []; });
+  const markBuilt = () => r().set(TRUST_SERVING_BUILT_KEY, '1');
   it('builds members and round-trips add/is/remove', async () => {
     expect(trustServingMember('nw', 'acme')).toBe('nw/acme');
     expect(trustServingMember('nw', 'ACME')).toBe('nw/acme');
     expect(trustServingMember('nw')).toBe('nw');
     await addServing(['nw/acme']);
+    expect(r().set).not.toHaveBeenCalled();
+    expect(await isServing('nw/acme')).toBeNull(); // add alone never claims completeness
+    await markBuilt();
     expect(await isServing('nw/acme')).toBe(true);
     expect(await isServing('nw/other')).toBe(false);
     await removeServing(['nw/acme']);
@@ -106,7 +110,7 @@ describe('serving set', () => {
     r()._set.add('nw/acme'); // member present but marker never written (Redis lost data / never built)
     expect(await isServing('nw/acme')).toBeNull();
     expect(await isServing('nw/zzz')).toBeNull();
-    await addServing(['nw/acme']);
+    await markBuilt();
     expect(await isServing('nw/zzz')).toBe(false);
     expect(await isServing('nw/acme')).toBe(true);
   });
