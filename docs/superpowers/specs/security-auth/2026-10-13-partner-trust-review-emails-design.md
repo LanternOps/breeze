@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13
 **Issue:** LanternOps/breeze#8713
-**Status:** Draft, awaiting review
+**Status:** Approved 2026-10-13 (§9 defaults accepted)
 **Scope:** hosted SaaS only (`PARTNER_TRUST_MODE=enforce`); self-hosted installs resolve the trust mode to `off` and never send these emails
 **Builds on:** `2026-09-02-partner-trust-probation-design.md` (capability gate, `setTrustState`, trust queue, evidence card)
 
