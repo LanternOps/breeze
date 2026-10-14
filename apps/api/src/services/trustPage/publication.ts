@@ -75,6 +75,34 @@ export async function loadPublicDocumentsForPage(page: TrustPageRow): Promise<Or
   }));
 }
 
+export interface LinkedDocumentForEditor {
+  documentId: string; visibility: 'public' | 'gated'; disclosureConfirmedAt: string | null; sortOrder: number;
+  title: string | null; category: string | null; contentType: string | null; byteSize: number | null;
+  supersededByDocumentId: string | null; deleted: boolean;
+}
+
+/** Every linked document with its current state (editor view): soft-deleted/missing and superseded rows are kept, flagged. */
+export async function loadLinkedDocumentsForEditor(page: TrustPageRow): Promise<LinkedDocumentForEditor[]> {
+  const successor = alias(orgDocuments, 'successor');
+  const rows = await db.select({
+    documentId: trustPageDocuments.documentId, visibility: trustPageDocuments.visibility,
+    disclosureConfirmedAt: trustPageDocuments.disclosureConfirmedAt, sortOrder: trustPageDocuments.sortOrder,
+    docId: orgDocuments.id, deletedAt: orgDocuments.deletedAt, title: orgDocuments.title, category: orgDocuments.category,
+    contentType: orgDocuments.contentType, byteSize: orgDocuments.byteSize, supersededByDocumentId: successor.id,
+  })
+    .from(trustPageDocuments)
+    .leftJoin(orgDocuments, and(eq(orgDocuments.id, trustPageDocuments.documentId), eq(orgDocuments.orgId, trustPageDocuments.orgId)))
+    .leftJoin(successor, and(eq(successor.supersedesDocumentId, orgDocuments.id), eq(successor.orgId, orgDocuments.orgId)))
+    .where(eq(trustPageDocuments.trustPageId, page.id))
+    .orderBy(asc(trustPageDocuments.sortOrder), asc(trustPageDocuments.createdAt));
+  return rows.map((r) => ({
+    documentId: r.documentId, visibility: r.visibility, disclosureConfirmedAt: r.disclosureConfirmedAt?.toISOString() ?? null,
+    sortOrder: r.sortOrder, title: r.title ?? null, category: r.category ?? null, contentType: r.contentType ?? null,
+    byteSize: r.byteSize ?? null, supersededByDocumentId: r.supersededByDocumentId ?? null,
+    deleted: r.docId == null || r.deletedAt != null,
+  }));
+}
+
 export interface SnapshotBuild { snapshotId: string; payload: TrustPagePublicPayload; sha256: string; deviceCount: number; generatedAt: Date }
 
 /**

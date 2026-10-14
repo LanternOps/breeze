@@ -46,12 +46,25 @@ describe('trust page routes', () => {
   beforeEach(() => { intro.override = null; dbm.rows = []; dbm.values = []; dbm.tx = 0; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
 
   it('GET creates the draft and reports slug validity and publish eligibility', async () => {
-    dbm.rows.push([{ orgSlug: 'Acme Dental', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
+    const linked = { documentId: 'd1', visibility: 'gated', disclosureConfirmedAt: new Date('2026-10-01T00:00:00Z'), sortOrder: 2, docId: 'd1', deletedAt: null, title: 'SOC 2', category: 'compliance', contentType: 'application/pdf', byteSize: 1234, supersededByDocumentId: null };
+    dbm.rows.push([{ orgSlug: 'Acme Dental', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }], [linked]);
     const res = await app.request(`/orgs/${ORG}/trust-page`, { headers: H() });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.slugs).toMatchObject({ valid: false });
     expect(body.data.publicPath).toMatch(/^\/portal\/trust\/nw\//);
+    expect(body.data.documents[0]).toEqual({
+      documentId: 'd1', visibility: 'gated', disclosureConfirmedAt: '2026-10-01T00:00:00.000Z', sortOrder: 2,
+      title: 'SOC 2', category: 'compliance', contentType: 'application/pdf', byteSize: 1234,
+      supersededByDocumentId: null, deleted: false,
+    });
+  });
+  it('GET flags a linked document with no org_documents row as deleted', async () => {
+    dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }],
+      [{ documentId: 'd2', visibility: 'public', disclosureConfirmedAt: null, sortOrder: 0, docId: null, deletedAt: null, title: null, category: null, contentType: null, byteSize: null, supersededByDocumentId: null }]);
+    const res = await app.request(`/orgs/${ORG}/trust-page`, { headers: H() });
+    const body = await res.json();
+    expect(body.data.documents[0]).toMatchObject({ documentId: 'd2', deleted: true, title: null, disclosureConfirmedAt: null, supersededByDocumentId: null });
   });
   it('404s an org outside the caller\'s access', async () => {
     const res = await app.request(`/orgs/${OTHER}/trust-page`, { headers: H() });

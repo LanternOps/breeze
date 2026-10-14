@@ -13,7 +13,7 @@ import { requireCapability, evaluateCapabilityContinuationForState } from '../se
 import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
-  ensureTrustPage, publishTrustPage, unpublishTrustPage, TrustPageError,
+  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, TrustPageError,
 } from '../services/trustPage/publication';
 import { isEdrVisibilityEnabled } from '../services/portal/edrVisibility';
 import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
@@ -70,8 +70,9 @@ trustPageRoutes.get('/:orgId/trust-page', scopes, orgRead, zValidator('param', o
   try {
     const auth = c.get('auth') as AuthContext;
     const page = await ensureTrustPage(orgId, auth.user.id);
+    const documents = await loadLinkedDocumentsForEditor(page);
     const gate = evaluateCapabilityContinuationForState('trust_page_publish', { partnerId: ctx.partnerId }, { trustState: ctx.trustState, probationEnrollments: ctx.probationEnrollments });
-    return c.json({ data: { page, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: gate.allow ? { allowed: true, reason: null } : { allowed: false, reason: gate.reason } } });
+    return c.json({ data: { page, documents, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: gate.allow ? { allowed: true, reason: null } : { allowed: false, reason: gate.reason } } });
   } catch (err) { return handleError(c, err); }
 });
 
