@@ -256,6 +256,9 @@ All new tables are shape 1 (`org_id NOT NULL`, policy `breeze_has_org_access(org
 | website_url | text null | https only |
 | intro_markdown | text null | ≤ 5,000 chars |
 | hidden_control_ids | text[] default '{}' | catalog ids |
+| publication_authorized_by | varchar(200) null | who at the customer authorized publication (free text); required by the publish route when `is_partner_home = false` |
+| publication_authorized_at | timestamptz null | set with the above; cleared when the org changes ownership (merge survivor keeps its own) |
+| publication_authorized_by_user_id | uuid null | the Breeze user who recorded the attestation; set null on user delete |
 | last_evaluated_at | timestamptz null | |
 | created_by_user_id / updated_by_user_id | uuid null | set null on user delete |
 | created_at / updated_at | timestamptz | |
@@ -304,7 +307,7 @@ Authenticated (`/api/v1/orgs/:orgId/trust-page`, existing org-management permiss
 | GET | `/` | draft + publication state + `publicationRevision` + public URL + slug validity |
 | PUT | `/` | update draft (Zod `trustPageUpdateSchema`), returns new revision |
 | PUT | `/documents` | replace document list (id, visibility, order, disclosure confirmation) |
-| POST | `/publish` | body `{ expectedRevision }`; trust-gate, slug validation, build, one transaction flips `is_current` + `published_at` + revision; serving-set add |
+| POST | `/publish` | body `{ expectedRevision, authorization?: { authorizedBy } }`; trust-gate, slug validation, **publication authorization attestation** (a customer page cannot publish without `publication_authorized_by`; the partner-home page needs none, the MSP is publishing its own data), build, one transaction flips `is_current` + `published_at` + revision; serving-set add |
 | POST | `/unpublish` | one transaction clears `published_at` + bumps revision; serving-set remove |
 | POST | `/partner-home` | set/clear (partner scope required) |
 | POST | `/preview-token` | 15-minute preview JWT |
@@ -327,6 +330,7 @@ Public (no auth; system context; resolve query includes the liveness predicate a
 Organization detail → **Trust Center** tab (hash state, repo convention). Components under `apps/web/src/components/trust/`:
 
 - **Status card**: Unpublished / Published <date> · public URL (copy) · Preview · Publish/Unpublish · partner-home toggle (partner scope) · slug warning when invalid · trust-state notice when the partner cannot publish.
+- **Publication authorization**: on first publish of a customer page the Publish dialog requires a checkbox ("The customer has authorized publication of this page") and an "Authorized by" field (name and role at the customer). Stored on `trust_pages`, written to `audit_logs`, shown on the status card afterwards with a "Change" action. Same pattern as document disclosure confirmation (§12): Breeze is publishing the customer's security data on the MSP's say-so, and the record of who said so is cheap and durable.
 - **Controls**: the catalog with live pills exactly as the public sees them, show/hide per control, and the percentages / device-count / managed-by / indexable toggles. The pill component is shared with the portal page (`packages/shared` React component), so the editor is the preview.
 - **Content**: intro rich text (the existing `RichTextEditor`, flow subset), security contact, website URL.
 - **Documents**: pick from the org library (`policy`, `report`, `evidence` first), mark public with an explicit "approved for public release" confirmation, reorder. "Upload" links to the library.
@@ -383,7 +387,9 @@ W2: `gated` visibility → "Request access" → email verification (magic link, 
 
 Certification language or any "compliant with" / "meets IG1" wording (§5.5); verbatim framework text; the posture score or any overall grade; device, vulnerability or patch detail; custom domains (#3282), new top-level paths, per-feature domain fields; a partner-level *aggregate* page across customer orgs (leaks customer aggregates; §18.8); portal-side editing in W1; an entitlement framework; visitor language negotiation in W1.
 
-## 18. Decisions needed (defaults chosen; override any)
+## 18. Decisions (all defaults approved by Todd, 2026-10-13)
+
+Approved as written below, plus the publication authorization attestation (§9, §10, §11) raised under decision 9.
 
 1. **Audience ranking.** Default: insurer questions first, then due diligence, then audit.
 2. **Declared controls (W2).** Default: allowed, labeled "declared by <MSP>", expire after 365 days, reminder at 30 days. Reopens the parked backup-evidence question. A "no" removes W2's first item and keeps subprocessors telemetry-only.
