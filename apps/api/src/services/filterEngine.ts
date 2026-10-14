@@ -2,6 +2,7 @@ import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNot
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
@@ -577,12 +578,20 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     return applyOperator(latest, operator, value);
   }
   if (fieldInfo.table === 'groups') {
-    // Membership test against device_group_memberships.
-    if (operator === 'equals') {
-      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${sqlValue(value)})`;
-    }
-    if (operator === 'in' && Array.isArray(value)) {
-      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ANY(${value}))`;
+    // Membership test against device_group_memberships. group_id is a uuid
+    // column, so a value that is not a UUID (a group NAME saved into a filter,
+    // #8760) can match no row: drop it here rather than let Postgres raise
+    // 22P02 and fail the whole filter.
+    const ids = (Array.isArray(value) ? value : [value])
+      .filter((v): v is string => typeof v === 'string' && PG_UUID_REGEX.test(v));
+    if (operator === 'equals' || (operator === 'in' && Array.isArray(value))) {
+      if (ids.length === 0) return sql`FALSE`;
+      // Explicit IN list, not `= ANY(${value})`: postgres.js binds a JS array
+      // as a row tuple, so a one-element list reached Postgres as a bare string
+      // and failed with "malformed array literal" (#8760). Same reason as the
+      // `in` case in applyOperator below.
+      const items = ids.map((id) => sqlValue(id));
+      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} IN (${sql.join(items, sql`, `)}))`;
     }
     throw new Error(`Unsupported operator for groupId: ${operator}`);
   }
