@@ -1,6 +1,6 @@
 ---
 title: Trust Center — public security-posture pages for organizations
-issue: (to file on approval; parent `feature` issue + wave sub-issues via feature-lifecycle)
+tracking_issue: LanternOps/breeze#8768 (waves: W01 #8769, W02 #8770, W03 #8771)
 status: approved 2026-10-13 (all §18 defaults); plan-time amendments recorded in §19. Plan: docs/superpowers/plans/2026-10-13-trust-center-w1.md
 depends_on: LanternOps/breeze#3282 (platform custom domains) — W3 only
 related: #4562 (portal visibility), #5784 (evidence reports), specs/reports/2026-06-29-security-compliance-posture-report.md, specs/reports/2026-07-14-posture-backup-evidence-design.md (parked), #3281, #3229, #3967

@@ -1,7 +1,7 @@
 ---
 title: Trust Center W1 — publishable page (implementation plan)
 spec: docs/superpowers/specs/trust-center/2026-10-12-trust-center-design.md
-tracking_issue: (added by register_feature)
+tracking_issue: LanternOps/breeze#8768 (this plan = wave W01, sub-issue #8769)
 status: ready for Todd's review; execution method to be chosen
 ---
 
@@ -2116,7 +2116,7 @@ git commit -m "feat(api): M365 MFA registration and verified-backup evidence rea
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-**PR A1 ends here.** Open the PR (`Part of #<w1-subissue>`), run `gh workflow run CI --ref <branch>` if stacked, and request review before starting Task 7 on a stacked branch.
+**PR A1 ends here.** Open the PR (`Part of #8769`), run `gh workflow run CI --ref <branch>` if stacked, and request review before starting Task 7 on a stacked branch.
 
 ---
 
