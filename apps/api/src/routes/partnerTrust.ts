@@ -5,6 +5,7 @@ import { partners } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { createAuditLog } from '../services/auditService';
 import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
+import { sendTrustReviewReceivedEmail } from '../services/partnerTrustPartnerMail';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 export const partnerTrustRoutes = new Hono();
@@ -58,6 +59,19 @@ partnerTrustRoutes.post('/request-review', async (c) => {
     // Best-effort: the review request itself already succeeded (audit row
     // written above) — a notification failure must never fail the request.
     console.warn('[PartnerTrust] Failed to send evidence card for review request', {
+      partnerId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // Partner-facing confirmation (#8713). Sits after the UPDATE … RETURNING
+  // and the audit row, so it fires once per accepted request and never on
+  // the 24h-cooldown 429 above. The sender never throws; the guard below is
+  // belt-and-braces so this route's contract does not depend on that.
+  try {
+    await sendTrustReviewReceivedEmail({ partnerId, requestedByUserId: auth.user.id });
+  } catch (error) {
+    console.warn('[PartnerTrust] Failed to send review-received email', {
       partnerId,
       error: error instanceof Error ? error.message : String(error),
     });

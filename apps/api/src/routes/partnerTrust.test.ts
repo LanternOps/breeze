@@ -30,6 +30,10 @@ vi.mock('../services/partnerTrustEvidenceCard', () => ({
   sendEvidenceCard: vi.fn(async () => undefined),
 }));
 
+vi.mock('../services/partnerTrustPartnerMail', () => ({
+  sendTrustReviewReceivedEmail: vi.fn(async () => 1),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
   requireScope: vi.fn((...scopes: string[]) => async (c: any, next: () => Promise<void>) => {
@@ -44,6 +48,7 @@ import { Hono } from 'hono';
 import { partnerTrustRoutes } from './partnerTrust';
 import { createAuditLog } from '../services/auditService';
 import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
+import { sendTrustReviewReceivedEmail } from '../services/partnerTrustPartnerMail';
 
 const auth = {
   scope: 'partner',
@@ -146,6 +151,7 @@ describe('partner trust routes', () => {
     expect(dbSpies.update).not.toHaveBeenCalled();
     expect(createAuditLog).not.toHaveBeenCalled();
     expect(sendEvidenceCard).not.toHaveBeenCalled();
+    expect(sendTrustReviewReceivedEmail).not.toHaveBeenCalled();
   });
 
   it('requests review, audits it, and sends the evidence card for the partner', async () => {
@@ -171,6 +177,29 @@ describe('partner trust routes', () => {
     expect(sendEvidenceCard).toHaveBeenCalledWith(auth.partnerId, 'review_requested');
   });
 
+  it('emails the partner that the review request was received, once, with the requester id', async () => {
+    const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    expect(sendTrustReviewReceivedEmail).toHaveBeenCalledTimes(1);
+    expect(sendTrustReviewReceivedEmail).toHaveBeenCalledWith({
+      partnerId: auth.partnerId,
+      requestedByUserId: auth.user.id,
+    });
+    // After the audit row: the email confirms a request that is already recorded.
+    expect(vi.mocked(createAuditLog).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(sendTrustReviewReceivedEmail).mock.invocationCallOrder[0]!);
+  });
+
+  it('still returns 200 when the partner email rejects (the sender never throws, but the route must not depend on that)', async () => {
+    vi.mocked(sendTrustReviewReceivedEmail).mockRejectedValueOnce(new Error('smtp down'));
+
+    const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ requested: true });
+  });
+
   it('returns 429 when a review was requested within 24 hours', async () => {
     state.reviewUpdate = null;
     const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
@@ -178,6 +207,7 @@ describe('partner trust routes', () => {
     expect(response.status).toBe(429);
     expect(createAuditLog).not.toHaveBeenCalled();
     expect(sendEvidenceCard).not.toHaveBeenCalled();
+    expect(sendTrustReviewReceivedEmail).not.toHaveBeenCalled();
   });
 
   it('returns the trust checklist and meeting URL', async () => {
