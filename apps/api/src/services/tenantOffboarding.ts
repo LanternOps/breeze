@@ -5,10 +5,9 @@ import {
   devices,
   organizations,
   partners,
-  partnerUsers,
-  roles,
   users,
 } from '../db/schema';
+import { listActivePartnerAdmins } from './partnerAdminRecipients';
 import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
 import {
@@ -2046,23 +2045,8 @@ export async function sweepOffboardingTenants(
           continue;
         }
 
-        const recipients = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({ email: users.email })
-              .from(partnerUsers)
-              .innerJoin(users, eq(partnerUsers.userId, users.id))
-              .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-              .where(
-                and(
-                  eq(partnerUsers.partnerId, org.partnerId),
-                  eq(roles.name, 'Partner Admin'),
-                  eq(users.status, 'active')
-                )
-              )
-          )
-        );
-        const emails = [...new Set(recipients.map((recipient) => recipient.email).filter(Boolean))];
+        const recipients = await listActivePartnerAdmins(org.partnerId);
+        const emails = recipients.map((recipient) => recipient.email);
         if (emails.length === 0) {
           console.warn(
             `[tenantOffboarding] no active Partner Admin recipients for org ${org.id}; `
