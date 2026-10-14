@@ -298,6 +298,7 @@ const EXEMPT: Record<string, string> = {
   'services/brainDeviceContext.ts': 'request path: all queries gated by auth.orgCondition from the request\'s auth context',
   'services/callerVerification/gate.ts': 'request path: single id+orgId device check inside a per-request gate flow',
   'services/callerVerification/service.ts': 'request path: device/contact reads scoped via actor and reachable contacts on request paths',
+  'services/circuits.ts': 'request path: site-gated circuit writes and reads; devices and discovered assets are read by id only to label a termination, nothing is selected to act on',
   'services/commandResultHandlers.ts': 'agent self-service: result handlers keyed to the device resolved by the agent transport',
   'services/customFields/import/resolveDevice.ts': 'request path: system-scope read bounded by the caller\'s request-time accessibleOrgIds/site reach',
   'services/customFields/queries.ts': 'request path: per-device reads and writes with the device supplied by the request route',

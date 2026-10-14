@@ -354,6 +354,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'catalog/enrich.ts': { exempt: 'internal_plumbing', note: "AI copy-polish endpoint backing the catalog UI; the AI can draft copy and call manage_catalog directly. From #6795." },
   'catalog/pricing.ts': { tools: ['manage_catalog'] },
   'changes.ts': { tools: ['query_change_log'] },
+  'circuits.ts': { exempt: 'internal_plumbing', note: 'Circuits CRUD, termination and served sites (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   'cisHardening.ts': { tools: ['get_cis_compliance', 'get_cis_device_report', 'apply_cis_remediation'] },
   'clientAi/admin.ts': { exempt: 'addin_surface' },
   'clientAi/adminOrgs.ts': { exempt: 'addin_surface' },
@@ -697,6 +698,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/mutations.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   // Shared permission middleware and response/error wrappers register no endpoints.
   'topology/operations.ts': { exempt: 'internal_plumbing' },
+  'topology/interfaceRole.ts': { exempt: 'internal_plumbing', note: 'WAN role mutation on a topology interface (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   // Topology monitoring policy CRUD has no registered AI tool.
   'topology/policies.ts': { gap: '#6778' },
   'topology/presence.ts': { exempt: 'internal_plumbing', note: 'Site-gated presentation read of observed device location (site location W2, #7886). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP topology evidence unchanged, and aiPresenceIsolation.test.ts pins that no AI module reads presence.' },

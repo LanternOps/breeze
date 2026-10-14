@@ -50,7 +50,7 @@ const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource
 const scopes = requireScope('organization', 'partner', 'system');
 
 /** Topology write access to one site, using the same boundary as the topology routes. */
-export async function assertTopologySiteWrite(c: Context, siteId: string): Promise<void> {
+async function assertTopologySiteWrite(c: Context, siteId: string): Promise<void> {
   const auth = c.get('auth') as AuthContext;
   let permissions = c.get('permissions') as UserPermissions | undefined;
   if (!permissions) {
