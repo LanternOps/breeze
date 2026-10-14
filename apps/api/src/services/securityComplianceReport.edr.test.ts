@@ -96,8 +96,10 @@ describe('posture report: EDR coverage', () => {
     expect(rows['pc-2']).toMatchObject({ protectionManaged: false, protection: 'No data' });
     const summary = result.summary as any;
     expect(summary.controls.unprotectedCount).toBe(1);
-    expect(summary.controls.edrCoveragePct).toBe(50);
-    expect(summary.controls.anyAvCoveragePct).toBe(50);
+    // Over assessed devices (spec §19.7): pc-2 has no evidence at all → 1 of 1.
+    expect(summary.controls.edrCoveragePct).toBe(100);
+    expect(summary.controls.anyAvCoveragePct).toBe(100);
+    expect(summary.controls.edrUnknownCount).toBe(1);
   });
 
   it('emits generic EDR product evidence, never the vendor name', async () => {
@@ -120,7 +122,9 @@ describe('posture report: EDR coverage', () => {
     const result = await run();
     const summary = result.summary as any;
     expect(summary.securityProducts).toEqual([]);
-    expect(summary.controls.edrCoveragePct).toBe(0);
+    // Neither device has any evidence → nothing assessed → N/A, not 0% (spec §19.7).
+    expect(summary.controls.edrCoveragePct).toBeNull();
+    expect(summary.controls.edrUnknownCount).toBe(2);
     expect(summary.controls.unprotectedCount).toBe(2);
     expect(JSON.stringify(result)).not.toContain('Managed endpoint protection');
   });

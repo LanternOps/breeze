@@ -134,7 +134,6 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',
   'services/reportSeries/targets.ts': 'report: multi-org series target orgs (org-level report definitions, not devices; hidden org types excluded)',
-  'services/securityComplianceReport.ts': 'report: security compliance',
   'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
   'services/timeSuggestionService.ts': 'billing: time suggestions',

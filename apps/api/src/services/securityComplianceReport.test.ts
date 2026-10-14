@@ -192,7 +192,11 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(byHost['pc-1'].protection).toMatch(/Huntress/i);
     expect(byHost['pc-2'].protectionManaged).toBe(false);
 
-    expect((r.summary as any).controls.edrCoveragePct).toBe(33);
+    // EDR/AV denominators are the assessed devices (spec §19.7): pc-3 has no
+    // status row, agent row or check-in, so it is unknown, not a failure.
+    expect((r.summary as any).controls.edrCoveragePct).toBe(50);
+    expect((r.summary as any).controls.edrUnknownCount).toBe(1);
+    expect((r.summary as any).controls.anyAvUnknownCount).toBe(1);
     expect((r.summary as any).controls.unprotectedCount).toBe(2);
   });
 
@@ -207,8 +211,10 @@ describe('generateSecurityCompliancePostureReport', () => {
     const r = await generateSecurityCompliancePostureReport(ORG, { sites: [] });
     const c = (r.summary as any).controls;
     // Before the fix, elastic_defend normalized to 'other' → dev-2 would be
-    // unprotected (anyAv 33%). Recognized as native AV it joins dev-1 in coverage.
-    expect(c.anyAvCoveragePct).toBe(67);
+    // unprotected. Recognized as native AV it joins dev-1 in coverage; dev-3
+    // (no evidence) is unknown and out of the assessed denominator (spec §19.7).
+    expect(c.anyAvCoveragePct).toBe(100);
+    expect(c.anyAvUnknownCount).toBe(1);
     expect(c.unprotectedCount).toBe(1);
     const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
     expect(byHost['pc-2'].protection).toMatch(/Elastic Defend/i);
@@ -591,7 +597,7 @@ describe('generateSecurityCompliancePostureReport', () => {
     mockGeneratorQueries({}, { noPartner: true });
     const r = await generateSecurityCompliancePostureReport(ORG, {});
     expect((r.summary as any).postureScore).toBe(82); // posture query still aligned
-    expect((r.summary as any).controls.edrCoveragePct).toBe(33); // unchanged from base fixture
+    expect((r.summary as any).controls.edrCoveragePct).toBe(50); // unchanged from base fixture (1 of 2 assessed)
   });
 
   it('lists active security products', async () => {
@@ -694,9 +700,10 @@ describe('generateSecurityCompliancePostureReport', () => {
     it('base Defender/other rows (lines 71-72): Huntress-managed + other/RTP-off + no-row', async () => {
       // dev-1 Huntress-managed (protected); dev-2 provider 'other' (unprotected);
       // dev-3 no status row (unknown → unprotected bucket).
+      // EDR/AV over assessed devices (spec §19.7): dev-3 has no evidence → 1 of 2.
       expect(await protectionSlice({})).toEqual({
-        edrCoveragePct: 33,
-        anyAvCoveragePct: 33,
+        edrCoveragePct: 50,
+        anyAvCoveragePct: 50,
         unprotectedCount: 2,
         rows: [
           { hostname: 'pc-1', protectionManaged: true, realTimeProtection: true },
@@ -712,8 +719,9 @@ describe('generateSecurityCompliancePostureReport', () => {
           { deviceId: 'dev-2', provider: 'elastic_defend', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
         ]
       })).toEqual({
-        edrCoveragePct: 33,
-        anyAvCoveragePct: 67,
+        // over assessed devices (spec §19.7): dev-3 has no evidence.
+        edrCoveragePct: 50,
+        anyAvCoveragePct: 100,
         unprotectedCount: 1,
         rows: [
           { hostname: 'pc-1', protectionManaged: true, realTimeProtection: null },
@@ -779,8 +787,9 @@ describe('generateSecurityCompliancePostureReport', () => {
         4: [],
         5: [],
       })).toEqual({
+        // over assessed devices (spec §19.7): pc-n has no evidence → 2 of 2.
         edrCoveragePct: 0,
-        anyAvCoveragePct: 67,
+        anyAvCoveragePct: 100,
         unprotectedCount: 1,
         rows: [
           { hostname: 'pc-a', protectionManaged: false, realTimeProtection: true },
