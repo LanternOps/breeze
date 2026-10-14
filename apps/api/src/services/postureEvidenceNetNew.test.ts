@@ -46,9 +46,9 @@ describe('loadBackupsVerifiedEvidence', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([{ deviceId: 'd1' }, { deviceId: 'd2' }, { deviceId: 'd3' }]))
       .mockReturnValueOnce(selectChain([
-        // (a) d1: failed then passed in window -> passing
-        { deviceId: 'd1', status: 'failed', verificationType: 'integrity', completedAt: new Date('2026-10-05T00:00:00.000Z') },
-        { deviceId: 'd1', status: 'passed', verificationType: 'test_restore', completedAt: new Date('2026-10-08T00:00:00.000Z') },
+        // (a) d1: passed, then a LATER failed row must not overwrite the pass -> passing
+        { deviceId: 'd1', status: 'passed', verificationType: 'test_restore', completedAt: new Date('2026-10-05T00:00:00.000Z') },
+        { deviceId: 'd1', status: 'failed', verificationType: 'integrity', completedAt: new Date('2026-10-08T00:00:00.000Z') },
         // (b) d2: passed but wrong type -> not assessed
         { deviceId: 'd2', status: 'passed', verificationType: 'metadata', completedAt: new Date('2026-10-12T00:00:00.000Z') },
         // (c) d3: still running -> skipped
