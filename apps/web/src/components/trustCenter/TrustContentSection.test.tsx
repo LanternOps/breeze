@@ -40,5 +40,16 @@ describe('TrustContentSection', () => {
     expect(screen.getByTestId('trust-content-counter')).toHaveTextContent('9 / 5,000');
     expect(screen.getByTestId('trust-content-contact')).toBeDisabled();
     expect(screen.getByTestId('trust-content-save')).toBeDisabled();
+    expect(screen.getByTestId('trust-content-intro-wrap')).toHaveAttribute('inert');
+  });
+  it('editable render is not inert', () => {
+    mount();
+    expect(screen.getByTestId('trust-content-intro-wrap')).not.toHaveAttribute('inert');
+  });
+  it('blocks Save and shows the too-long message past 5,000 characters', () => {
+    mount();
+    fireEvent.change(screen.getByTestId('trust-content-intro'), { target: { value: 'x'.repeat(5001) } });
+    expect(screen.getByTestId('trust-content-intro-error')).toHaveTextContent('too long');
+    expect(screen.getByTestId('trust-content-save')).toBeDisabled();
   });
 });

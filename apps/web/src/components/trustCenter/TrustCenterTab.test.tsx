@@ -13,7 +13,7 @@ import TrustCenterTab from './TrustCenterTab';
 const state = (over: Record<string, unknown> = {}) => ({
   page: { id: 'pg', orgId: 'o1', isPartnerHome: false, publishedAt: null, publicationRevision: 3, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, securityContactEmail: null, websiteUrl: null, introHtml: null, hiddenControlIds: [], publicationAuthorizedBy: null, publicationAuthorizedAt: null, lastEvaluatedAt: null, ...over },
   publicPath: '/portal/trust/nw/acme', badgePath: '/api/v1/trust/public/nw/acme/badge.svg',
-  slugs: { partnerSlug: 'nw', orgSlug: 'acme', valid: true, problems: [] }, canPublish: { allowed: true, reason: null },
+  slugs: { partnerSlug: 'nw', orgSlug: 'acme', valid: true, problems: [] }, canPublish: { allowed: true, reason: null }, documents: [],
 });
 const controls = { assessments: [], catalog: [], evaluatedAt: new Date().toISOString(), deviceCount: 0 };
 const orgFetch = vi.fn() as never;

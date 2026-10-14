@@ -229,21 +229,6 @@
         "introTooLong": "The introduction is too long.",
         "partnerWideRequired": "Only partner-wide administrators can change the partner page."
       },
-      "sections": {
-        "controlsHeading": "Security controls",
-        "contentHeading": "Page content",
-        "documentsHeading": "Documents"
-      },
-      "badge": {
-        "title": "Badge",
-        "description": "Embed a live status badge on your website. It links to the public page.",
-        "unpublishedNote": "The badge shows once the page is published.",
-        "snippet": "Badge HTML",
-        "alt": "Security posture badge",
-        "copy": "Copy snippet",
-        "copied": "Snippet copied",
-        "copyFailed": "Could not copy the snippet."
-      },
       "controls": {
         "republishBanner": "Changes apply to the public page when you publish again.",
         "saveFailed": "Could not save the change.",
@@ -301,6 +286,21 @@
         "disclosureMessage": "\"{{title}}\" will be visible to anyone with the public page link.",
         "disclosureCheckbox": "I confirm this document is approved for public release",
         "disclosureConfirm": "Add document"
+      },
+      "sections": {
+        "controlsHeading": "Security controls",
+        "contentHeading": "Page content",
+        "documentsHeading": "Documents"
+      },
+      "badge": {
+        "title": "Badge",
+        "description": "Embed a live status badge on your website. It links to the public page.",
+        "unpublishedNote": "The badge shows once the page is published.",
+        "snippet": "Badge HTML",
+        "alt": "Security posture badge",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet."
       }
     },
     "documents": {
@@ -393,18 +393,9 @@
       "restore": "Restore",
       "restoring": "Restoring…"
     },
-    "rowMenu": {
-      "label": "Actions for {{name}}"
-    },
-    "search": {
-      "label": "Search organizations, contacts and emails"
-    },
-    "lens": {
-      "label": "Lens",
-      "setup": "Setup",
-      "account": "Account",
-      "both": "Both"
-    },
+    "rowMenu": { "label": "Actions for {{name}}" },
+    "search": { "label": "Search organizations, contacts and emails" },
+    "lens": { "label": "Lens", "setup": "Setup", "account": "Account", "both": "Both" },
     "filters": {
       "label": "Filter",
       "all": "All",
@@ -415,20 +406,8 @@
       "archived": "Archived",
       "unlinked": "Unlinked"
     },
-    "sort": {
-      "label": "Sort",
-      "manual": "Manual order",
-      "name": "A to Z",
-      "tickets": "Open tickets"
-    },
-    "columns": {
-      "organization": "Organization",
-      "setup": "Setup",
-      "account": "Account data",
-      "tickets": "Open tickets",
-      "actions": "Row actions",
-      "integrations": "Integrations"
-    },
+    "sort": { "label": "Sort", "manual": "Manual order", "name": "A to Z", "tickets": "Open tickets" },
+    "columns": { "organization": "Organization", "setup": "Setup", "account": "Account data", "tickets": "Open tickets", "actions": "Row actions", "integrations": "Integrations" },
     "band": {
       "label": "Account readiness",
       "all": "Accounts",
@@ -475,10 +454,7 @@
       "backup": "Open backup for {{orgName}}"
     },
     "integrations": {
-      "system": {
-        "psa": "PSA",
-        "dns_filter": "DNS filter"
-      },
+      "system": { "psa": "PSA", "dns_filter": "DNS filter" },
       "state": {
         "linked": "Linked",
         "pending": "Pending",
@@ -514,11 +490,7 @@
         "openSettings": "Open {{system}} settings"
       }
     },
-    "tickets": {
-      "open": "{{count}} open",
-      "awaiting": "{{count}} awaiting customer",
-      "sla": "{{count}} SLA breached"
-    },
+    "tickets": { "open": "{{count}} open", "awaiting": "{{count}} awaiting customer", "sla": "{{count}} SLA breached" },
     "meta": {
       "workspace": "Workspace",
       "devices_one": "{{count}} device",

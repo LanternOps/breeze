@@ -14,6 +14,12 @@ describe('trustPage client', () => {
     expect(g).toHaveBeenCalledWith('/orgs/o1/trust-page/controls');
   });
 
+  it('getTrustPage passes the linked documents through', async () => {
+    const documents = [{ documentId: 'd1', visibility: 'public', disclosureConfirmedAt: '2026-10-01T00:00:00Z', sortOrder: 0, title: 'Policy', category: 'policy', contentType: 'application/pdf', byteSize: 1, supersededByDocumentId: null, deleted: false }];
+    const f = vi.fn(async () => ok({ data: { page: { id: 'pg' }, documents } }));
+    expect((await api.getTrustPage(f, 'o1')).documents).toEqual(documents);
+  });
+
   it('throws an ActionError on a failed read', async () => {
     const f = vi.fn(async () => new Response(JSON.stringify({ error: 'nope', code: 'X' }), { status: 403 }));
     await expect(api.getTrustPage(f, 'o1')).rejects.toMatchObject({ status: 403, code: 'X' });

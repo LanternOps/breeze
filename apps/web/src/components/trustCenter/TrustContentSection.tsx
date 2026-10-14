@@ -47,7 +47,8 @@ export default function TrustContentSection({ orgId, orgFetch, page, canWrite, o
   const emailInvalid = emailTrim !== '' && !EMAIL_RE.test(emailTrim);
   const websiteInvalid = websiteTrim !== '' && !isHttpsUrl(websiteTrim);
   const introLength = intro.length;
-  const invalid = emailInvalid || websiteInvalid;
+  const introTooLong = introLength > TRUST_INTRO_MAX_CHARS;
+  const invalid = emailInvalid || websiteInvalid || introTooLong;
 
   const save = async () => {
     if (!canWrite || invalid) return;
@@ -75,7 +76,8 @@ export default function TrustContentSection({ orgId, orgFetch, page, canWrite, o
     <section className="space-y-4 rounded-lg border bg-card p-4" data-testid="trust-content-section">
       <h3 className="text-base font-semibold">{tr('sections.contentHeading')}</h3>
 
-      <div className={canWrite ? '' : 'pointer-events-none opacity-60'} aria-disabled={!canWrite}>
+      {/* `inert` removes the editor from focus/typing; pointer-events alone would not. */}
+      <div className={canWrite ? '' : 'opacity-60'} aria-disabled={!canWrite} inert={!canWrite} data-testid="trust-content-intro-wrap">
         <div className="mb-1 text-sm font-medium">{tr('content.introLabel')}</div>
         <RichTextEditor value={intro} onChange={setIntro} ariaLabel={tr('content.introLabel')} testId="trust-content-intro" />
         <div
@@ -84,6 +86,7 @@ export default function TrustContentSection({ orgId, orgFetch, page, canWrite, o
         >
           {introLength.toLocaleString('en-US')} / {TRUST_INTRO_MAX_CHARS.toLocaleString('en-US')}
         </div>
+        {introTooLong && <p className="mt-1 text-xs text-destructive" data-testid="trust-content-intro-error">{tr('errors.introTooLong')}</p>}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">

@@ -31,6 +31,19 @@ export interface TrustPageDraft {
   lastEvaluatedAt: string | null;
 }
 
+export interface TrustLinkedDocument {
+  documentId: string;
+  visibility: 'public';
+  disclosureConfirmedAt: string | null;
+  sortOrder: number;
+  title: string;
+  category: string;
+  contentType: string;
+  byteSize: number;
+  supersededByDocumentId: string | null;
+  deleted: boolean;
+}
+
 export interface TrustPageState {
   page: TrustPageDraft;
   /** Base-relative public path, e.g. `/portal/trust/nw/acme`. */
@@ -39,6 +52,8 @@ export interface TrustPageState {
   badgePath: string;
   slugs: { partnerSlug: string; orgSlug: string; valid: boolean; problems: string[] };
   canPublish: { allowed: boolean; reason: string | null };
+  /** Linked documents in display order (editor view; includes superseded/deleted rows). */
+  documents: TrustLinkedDocument[];
 }
 
 export interface TrustControlsState {

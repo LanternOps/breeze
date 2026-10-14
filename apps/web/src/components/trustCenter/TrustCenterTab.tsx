@@ -81,8 +81,7 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
       />
       <TrustControlsSection orgId={orgId} orgFetch={orgFetch} state={page} controls={state.controls} canWrite={canWrite} onReload={load} />
       <TrustContentSection orgId={orgId} orgFetch={orgFetch} page={page.page} canWrite={canWrite} onReload={load} />
-      {/* W1 follow-up: the GET state carries no linked documents (A2 lacks a read endpoint), so links start empty. */}
-      <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} initialLinks={[]} onReload={load} />
+      <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} documents={page.documents} onReload={load} />
       <TrustBadgeSnippet publicPath={page.publicPath} badgePath={page.badgePath} published={page.page.publishedAt !== null} />
     </div>
   );

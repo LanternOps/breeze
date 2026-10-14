@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TRUST_DOCUMENTS_MAX } from '@breeze/shared';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { listOrgDocuments, type OrgDocument } from '@/lib/api/orgDocuments';
-import { updateTrustDocuments } from '@/lib/api/trustPage';
+import { updateTrustDocuments, type TrustLinkedDocument } from '@/lib/api/trustPage';
 import { handleActionError, runAction } from '@/lib/runAction';
 
 export interface LinkedTrustDocument {
@@ -12,6 +12,8 @@ export interface LinkedTrustDocument {
   /** Remembered so a superseded/missing link can still be named. */
   title: string;
   disclosureConfirmed: boolean;
+  /** Server says the row is superseded or deleted. */
+  unavailable?: boolean;
 }
 
 const PRIORITY: Record<string, number> = { policy: 0, report: 1, evidence: 2 };
@@ -20,13 +22,12 @@ interface Props {
   orgId: string;
   orgFetch: OrgFetch;
   canWrite: boolean;
-  // W1 follow-up: GET links from API (A2 lacks a read endpoint). Until then the
-  // tab passes [] and the section tracks links for the current session only.
-  initialLinks: LinkedTrustDocument[];
+  /** Server-saved links; the local list re-seeds whenever these change. */
+  documents: TrustLinkedDocument[];
   onReload: () => Promise<void>;
 }
 
-export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, initialLinks, onReload }: Props) {
+export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, documents, onReload }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
@@ -34,7 +35,25 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, initi
   );
   const [library, setLibrary] = useState<OrgDocument[] | null>(null);
   const [libraryFailed, setLibraryFailed] = useState(false);
-  const [links, setLinks] = useState<LinkedTrustDocument[]>(initialLinks);
+  const serverLinks = useMemo<LinkedTrustDocument[]>(
+    () => [...documents].sort((a, b) => a.sortOrder - b.sortOrder).map((d) => ({
+      documentId: d.documentId,
+      title: d.title,
+      disclosureConfirmed: d.disclosureConfirmedAt !== null,
+      unavailable: d.supersededByDocumentId !== null || d.deleted,
+    })),
+    [documents],
+  );
+  const [links, setLinks] = useState<LinkedTrustDocument[]>(serverLinks);
+  // Re-seed only when the SAVED list actually changes, so an unrelated reload
+  // (e.g. a controls toggle) does not discard unsaved edits here.
+  const signature = JSON.stringify(serverLinks);
+  const seeded = useRef(signature);
+  useEffect(() => {
+    if (seeded.current === signature) return;
+    seeded.current = signature;
+    setLinks(serverLinks);
+  }, [signature, serverLinks]);
   const [pending, setPending] = useState<OrgDocument | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -163,7 +182,7 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, initi
             <ul className="divide-y rounded-md border">
               {links.map((l, i) => {
                 const row = libraryById.get(l.documentId);
-                const unavailable = library !== null && (!row || row.supersededByDocumentId !== null);
+                const unavailable = l.unavailable === true || (library !== null && (!row || row.supersededByDocumentId !== null));
                 return (
                   <li key={l.documentId} className="flex items-center justify-between gap-2 p-2 text-sm" data-testid={`trust-doc-linked-${l.documentId}`}>
                     <div className="min-w-0">
