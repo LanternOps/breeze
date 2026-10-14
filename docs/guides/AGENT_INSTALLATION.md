@@ -288,7 +288,7 @@ sudo launchctl list | grep breeze
 
 | Type | Location |
 |------|----------|
-| Binary | `/Library/Breeze/bin/breeze-agent` or `/usr/local/bin/breeze-agent` (the `.pkg` chooses; see `agent/installer/macos/install-location.sh`) |
+| Binary | `/usr/local/bin/breeze-agent` |
 | Configuration | `/Library/Application Support/Breeze/agent.yaml` |
 | Logs | `/var/log/breeze/` |
 | Data | `/var/lib/breeze/` |
