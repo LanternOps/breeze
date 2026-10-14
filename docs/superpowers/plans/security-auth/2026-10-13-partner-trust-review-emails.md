@@ -1142,9 +1142,9 @@ In `apps/api/src/routes/admin/trust.ts`, replace the body of `changeTrustState` 
 ```ts
   const action = next === 'trusted' ? 'admin:promote' : 'admin:restrict';
   // CAS on the state this handler loaded: if an auto-promotion, another
-  // operator, or a lapse (#8714) moved the row in between, the write affects
+  // admin, or a lapse (#8714) moved the row in between, the write affects
   // zero rows and setTrustState returns false with no audit row, no publish
-  // and no partner email. The operator refreshes the queue and decides again
+  // and no partner email. The admin refreshes the queue and decides again
   // against the current state.
   const landed = await setTrustState(partnerId, next, action, auth.user.id, { reason }, { expectedFrom: current.trustState });
   if (!landed) {
@@ -1317,4 +1317,4 @@ Expected: `grep exit=1` (no matches). The spec and this plan state those as bare
 
 - [ ] **Step 6: Open the PR**
 
-Push the branch and open a PR against `main` with `Closes #8713`. Body sections: what changed (the five commits), the spec link, "no web change: the 409 toasts through `runAction`", the Settings rule-9 line is not applicable (no setting added), and the test commands from Steps 1–3 with their results. End with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+Push the branch and open a PR against `main` with `Closes #8713`. Body sections: what changed (the six commits), the spec link, "no web change: the 409 toasts through `runAction`", the Settings rule-9 line is not applicable (no setting added), and the test commands from Steps 1–3 with their results. End with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
