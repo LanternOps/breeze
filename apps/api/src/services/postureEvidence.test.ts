@@ -6,7 +6,8 @@ vi.mock('./securityComplianceReportBackupProviders', () => ({ loadBackupProvider
 vi.mock('./authenticatorPolicy', async (orig) => ({ ...(await orig<typeof import('./authenticatorPolicy')>()), loadPartnerPolicy: vi.fn(async () => null) }));
 
 import { db } from '../db';
-import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY } from './postureEvidence';
+import { loadPostureEvidence, postureEvidencePolicyFromReportConfig, TRUST_PAGE_EVIDENCE_POLICY } from './postureEvidence';
+import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 
 function selectChain(rows: unknown) {
   const p: any = Promise.resolve(rows);
@@ -69,7 +70,38 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.dns_filtering).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
     expect(ev.controls.privileged_access).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
     expect(ev.controls.disk_encryption.newestEvidenceAt).toBe(recent.toISOString());
+    // every device is assessed; d1/d2 checked in 2h ago (inside 24h), d3 never.
+    expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 2, newestEvidenceAt: recent.toISOString() });
     expect(ev.report.orgWide?.postureRow).toEqual({ overallScore: 82 });
+  });
+
+  it('the trust-page policy IS the report default configuration', () => {
+    expect(TRUST_PAGE_EVIDENCE_POLICY).toEqual(postureEvidencePolicyFromReportConfig(securityCompliancePostureConfigSchema.parse({})));
+  });
+
+  it('a recent check-in alone makes a device assessed for EDR/AV; the 30-day cutoff is inclusive', async () => {
+    const DAY = 86400000;
+    const atCutoff = new Date(AS_OF.getTime() - 30 * DAY);
+    const pastCutoff = new Date(AS_OF.getTime() - 30 * DAY - 1);
+    mockQueries({
+      2: [
+        { id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+        { id: 'in', hostname: 'pc-in', osType: 'windows', siteName: 'HQ', lastSeenAt: atCutoff },
+        { id: 'out', hostname: 'pc-out', osType: 'windows', siteName: 'HQ', lastSeenAt: pastCutoff },
+      ],
+      3: [{ deviceId: 'd1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: recent }],
+      5: [],
+    });
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    // 'in' has no status/agent row but checked in exactly at the cutoff → assessed, failing.
+    // 'out' checked in 1ms past it → unknown.
+    expect(ev.controls.edr_coverage).toMatchObject({ eligible: 3, assessed: 2, passing: 0 });
+    expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
+    expect(ev.report.edrUnknown).toBe(1);
+    expect(ev.report.anyAvUnknown).toBe(1);
+    expect(ev.report.unprotected).toBe(2);
+    // Neither is inside the 24h monitoring window.
+    expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
   });
 
   it('a stale security_status row is not assessed for encryption/firewall but still counts as EDR evidence', async () => {

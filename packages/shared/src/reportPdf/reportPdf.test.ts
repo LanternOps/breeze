@@ -188,6 +188,40 @@ describe('buildReportPdf in Node (no DOM)', () => {
     expect(text).toContain('200 devices, 1 with real-time protection on');
   });
 
+  // Ruling 7: a coverage % over ASSESSED devices must disclose the devices
+  // it leaves out, or "EDR 100%" reads as whole-fleet coverage.
+  it('appends " · N not assessed" to each control value whose unknown count is positive', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      deviceCount: 10,
+      controls: {
+        edrCoveragePct: 100, edrUnknownCount: 5,
+        anyAvCoveragePct: 80, anyAvUnknownCount: 4,
+        unprotectedCount: 1,
+        encryptionPct: 50, encryptionUnknownCount: 3,
+        firewallPct: 90, firewallUnknownCount: 2,
+        patchCurrentPct: 70, patchUnknownCount: 6,
+        passwordComplexityPct: 60, passwordUnknownCount: 7,
+        localAdminExposurePct: 10, localAdminUnknownCount: 8,
+      },
+    };
+    const text = pdfCommandText(buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary }));
+    for (const v of ['100% \u00b7 5 not assessed', '80% \u00b7 4 not assessed', '50% \u00b7 3 not assessed', '90% \u00b7 2 not assessed',
+      '70% \u00b7 6 not assessed', '60% \u00b7 7 not assessed', '10% \u00b7 8 not assessed']) {
+      expect(text).toContain(v);
+    }
+  });
+
+  it('adds no suffix when an unknown count is zero or absent', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      controls: { ...postureSummary.controls, edrUnknownCount: 0, encryptionUnknownCount: 0 },
+    };
+    const text = pdfCommandText(buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary }));
+    expect(text).not.toContain('not assessed');
+    expect(text).toContain('50%');
+  });
+
   it('words a backup product\'s active subset as successful backups, not real-time protection (#6012)', () => {
     const summary: PostureSummary = {
       ...postureSummary,

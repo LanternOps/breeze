@@ -632,6 +632,9 @@ function drawLegend(doc: jsPDF, y: number): void {
 const yesNo = (v: boolean | undefined): string => (v ? 'Yes' : 'No');
 const boolStatus = (v: boolean | undefined): MetricStatus => (v === undefined ? 'na' : v ? 'good' : 'bad');
 const pctStr = (v: number | null | undefined): string => (v == null ? 'N/A' : `${v}%`);
+/** A control % is over ASSESSED devices; disclose the in-scope devices it leaves out. */
+const withNotAssessed = (value: string, unknown: number | undefined): string =>
+  unknown != null && unknown > 0 ? `${value} \u00b7 ${unknown} not assessed` : value;
 function pctStatus(v: number | null | undefined, good = 90, warn = 60): MetricStatus {
   if (v == null) return 'na';
   if (v >= good) return 'good';
@@ -742,8 +745,8 @@ function renderPostureCover(
   // Left column: device protection & hygiene. Right column: access, identity
   // & network. The grid fills column-major, so array order = reading order.
   const protectionMetrics: Metric[] = [
-    { label: 'Managed EDR coverage', value: pctStr(c.edrCoveragePct), status: pctStatus(c.edrCoveragePct), target: '>=90%' },
-    { label: 'AV + real-time protection', value: pctStr(c.anyAvCoveragePct), status: pctStatus(c.anyAvCoveragePct), target: '>=95%' },
+    { label: 'Managed EDR coverage', value: withNotAssessed(pctStr(c.edrCoveragePct), c.edrUnknownCount), status: pctStatus(c.edrCoveragePct), target: '>=90%' },
+    { label: 'AV + real-time protection', value: withNotAssessed(pctStr(c.anyAvCoveragePct), c.anyAvUnknownCount), status: pctStatus(c.anyAvCoveragePct), target: '>=95%' },
     {
       label: 'Unprotected devices',
       value: String(c.unprotectedCount ?? 0),
@@ -751,8 +754,8 @@ function renderPostureCover(
       target: 'none', // "0" beside a value of 0 read as a duplicated numeral
     },
     { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
-    { label: 'Disk encryption', value: pctStr(c.encryptionPct), status: pctStatus(c.encryptionPct), target: '>=90%' },
-    { label: 'Patch current (no critical pending)', value: pctStr(c.patchCurrentPct), status: pctStatus(c.patchCurrentPct, 90, 70), target: '>=90%' },
+    { label: 'Disk encryption', value: withNotAssessed(pctStr(c.encryptionPct), c.encryptionUnknownCount), status: pctStatus(c.encryptionPct), target: '>=90%' },
+    { label: 'Patch current (no critical pending)', value: withNotAssessed(pctStr(c.patchCurrentPct), c.patchUnknownCount), status: pctStatus(c.patchCurrentPct, 90, 70), target: '>=90%' },
   ];
   if (c.cisIncluded !== false) {
     const cisVal =
@@ -763,9 +766,9 @@ function renderPostureCover(
   }
   const backupMetric = buildPostureBackupMetric(c, summary.securityProducts ?? []);
   const accessMetrics: Metric[] = [
-    { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
-    { label: 'Password complexity', value: pctStr(c.passwordComplexityPct), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
-    { label: 'Local-admin exposure', value: pctStr(c.localAdminExposurePct), status: pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), target: '<=10%' },
+    { label: 'Host firewall', value: withNotAssessed(pctStr(c.firewallPct), c.firewallUnknownCount), status: pctStatus(c.firewallPct), target: '>=95%' },
+    { label: 'Password complexity', value: withNotAssessed(pctStr(c.passwordComplexityPct), c.passwordUnknownCount), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
+    { label: 'Local-admin exposure', value: withNotAssessed(pctStr(c.localAdminExposurePct), c.localAdminUnknownCount), status: pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), target: '<=10%' },
     { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
     backupMetric,
     { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
