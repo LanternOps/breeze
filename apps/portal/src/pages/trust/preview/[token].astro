@@ -5,6 +5,6 @@ import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
 import TrustPageView from '../../../components/trust/TrustPageView';
 const { token } = Astro.params;
 ---
-<TrustPageLayout title="Trust page preview" description="Unpublished preview." canonicalPath={`/trust/preview/${token}`} indexable={false}>
+<TrustPageLayout title="Trust page preview" description="Unpublished preview." canonicalPath="/trust/preview" indexable={false}>
   <TrustPageView previewToken={token!} partnerSlug={null} orgSlug={null} card={null} client:load />
 </TrustPageLayout>

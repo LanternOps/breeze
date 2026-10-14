@@ -156,7 +156,14 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Referrer-Policy', 'no-referrer');
   } else if (pathname.startsWith('/trust/')) {
-    headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+    // Only a fully loaded card page is shareable-cacheable; 404s and the degraded
+    // shell (card fetch failed) must not be pinned in shared caches.
+    headers.set(
+      'Cache-Control',
+      response.status === 200 && context.locals.trustCacheable === true
+        ? 'public, max-age=300, stale-while-revalidate=600'
+        : 'no-store'
+    );
   }
 
   // #3906 — dev only: Astro hardcodes a few dev-server URLs straight into the

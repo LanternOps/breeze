@@ -15,4 +15,8 @@ describe('TrustPageLayout', () => {
     expect(src).not.toMatch(/style="/);
     expect(src).toMatch(/withBase\('\/favicon\.svg'\)/);
   });
+  it('derives the canonical origin from the forwarded headers, never Astro.url.origin', () => {
+    expect(src).toMatch(/publicOriginFor\(Astro\.request, Astro\.url\)/);
+    expect(src).not.toMatch(/Astro\.url\.origin/);
+  });
 });

@@ -7,6 +7,7 @@ import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
+import { publicOriginFor } from '../lib/publicOrigin';
 
 interface Props {
   title: string;
@@ -20,7 +21,7 @@ const { title, description, canonicalPath, indexable, accent, imageUrl } = Astro
 const accentCss = buildDocAccentCss(accent);
 const cspNonce = Astro.locals.cspNonce;
 const robots = indexable ? 'index,follow' : 'noindex,nofollow';
-const canonical = new URL(withBase(canonicalPath), Astro.url.origin).toString();
+const canonical = new URL(withBase(canonicalPath), publicOriginFor(Astro.request, Astro.url)).toString();
 ---
 <!DOCTYPE html>
 <html lang="en">

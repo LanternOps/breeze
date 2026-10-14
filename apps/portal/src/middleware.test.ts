@@ -157,16 +157,29 @@ it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/retu
   },
 );
 
-it('/trust/<p>/<o> is anonymous and cacheable; previews are no-store/noindex', async () => {
+it('/trust/<p>/<o> is public-cacheable only for a loaded 200; 404s, degraded shells and previews are no-store', async () => {
   const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  const runWith = async (path: string, response: Response, trustCacheable: boolean) => {
+    const context = contextFor(path, { signedIn: false });
+    if (trustCacheable) (context.locals as { trustCacheable?: boolean }).trustCacheable = true;
+    const out = await onRequest(context as never, () => Promise.resolve(response));
+    if (!(out instanceof Response)) throw new Error('no Response');
+    return out;
+  };
+  const html = () => new Response('<html>page</html>', { headers: { 'Content-Type': 'text/html' } });
   try {
-    const page = await run(contextFor('/trust/nw/acme', { signedIn: false }));
+    const page = await runWith('/trust/nw/acme', html(), true);
     expect(page.status).toBe(200);
     expect(page.headers.get('Cache-Control')).toBe('public, max-age=300, stale-while-revalidate=600');
     expect(page.headers.get('X-Frame-Options')).toBe('DENY');
-    expect(fetchMock).not.toHaveBeenCalled();   // middleware itself fetches nothing for public pages
+    const notFound = await runWith('/trust/nw/acme', new Response('Not Found', { status: 404 }), true);
+    expect(notFound.headers.get('Cache-Control')).toBe('no-store');
+    const degraded = await runWith('/trust/nw/acme', html(), false);
+    expect(degraded.headers.get('Cache-Control')).toBe('no-store');
     const preview = await run(contextFor('/trust/preview/abc', { signedIn: false }));
     expect(preview.headers.get('Cache-Control')).toBe('no-store');
     expect(preview.headers.get('X-Robots-Tag')).toBe('noindex, nofollow, noarchive');
+    expect(preview.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(fetchMock).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });
