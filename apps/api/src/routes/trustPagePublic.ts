@@ -10,7 +10,9 @@ import { Readable } from 'node:stream';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { orgDocuments, trustPageDocuments, trustPages } from '../db/schema';
+import { orgDocuments, partners, trustPageDocuments, trustPages } from '../db/schema';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import { buildPublicLinkLiveOrgPredicate } from '../services/publicLinkOrgGate';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
@@ -29,7 +31,8 @@ const GENERIC_404 = { error: 'Not found', code: 'NOT_FOUND' } as const;
 const documentIdSchema = z.string().guid();
 const MAX_PREVIEW_TOKEN_LEN = 4096;
 
-const notFound = (c: Context) => c.json(GENERIC_404, 404);
+// A 404 is never cacheable: a page published a minute later must not stay hidden behind a proxy cache (I9).
+const notFound = (c: Context) => { c.header('Cache-Control', 'no-store'); return c.json(GENERIC_404, 404); };
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 const isStale = (lastEvaluatedAt: Date | null) => !lastEvaluatedAt || Date.now() - lastEvaluatedAt.getTime() > STALE_AFTER_MS;
 function publicHeaders(c: Context, r: { searchIndexable: boolean }, cache: string) {
@@ -91,9 +94,15 @@ trustPagePublicRoutes.get('/public/preview/:token', async (c) => {
   const claims = await verifyTrustPreviewToken(token);
   if (!claims) return notFound(c);
   const built = await sys(async () => {
-    const [page] = await db.select().from(trustPages).where(and(eq(trustPages.id, claims.pageId), eq(trustPages.orgId, claims.orgId))).limit(1);
-    if (!page) return null;
-    return buildSnapshotForPage(page, { publishedAt: page.publishedAt ?? new Date() });
+    // I10: a preview is a fresh render, so it applies the same org/partner liveness as the public resolve, and a
+    // RESTRICTED partner cannot hand out fresh pages through it (probation may preview; it cannot publish).
+    const [row] = await db.select({ page: trustPages, trustState: partners.trustState }).from(trustPages)
+      .innerJoin(partners, eq(partners.id, trustPages.partnerId))
+      .where(and(eq(trustPages.id, claims.pageId), eq(trustPages.orgId, claims.orgId), buildPublicLinkLiveOrgPredicate(trustPages.orgId)))
+      .limit(1);
+    if (!row) return null;
+    if (partnerTrustMode() !== 'off' && row.trustState === 'restricted') return null;
+    return buildSnapshotForPage(row.page, { publishedAt: row.page.publishedAt ?? new Date(), config: 'draft' }); // preview shows the draft
   });
   if (!built) return notFound(c);
   return c.json({ data: { payload: built.payload, lastEvaluatedAt: null, stale: false, preview: true } });
@@ -127,9 +136,7 @@ trustPagePublicRoutes.get('/public/:partnerSlug/:orgSlug/badge.svg', async (c) =
 });
 
 // ---- documents: live link check; stream through the API (no presigned URLs, per routes/orgDocuments.ts)
-trustPagePublicRoutes.get('/public/:partnerSlug/:orgSlug/documents/:documentId', async (c) => {
-  const partnerSlug = c.req.param('partnerSlug'); const orgSlug = c.req.param('orgSlug');
-  const documentId = c.req.param('documentId');
+async function documentRoute(c: Context, partnerSlug: string, orgSlug: string | undefined, documentId: string) {
   if (!documentIdSchema.safeParse(documentId).success) return notFound(c);
   // Rate limit BEFORE any db context (#1105 tripwire). Fails closed when Redis is down — downloads are not critical.
   const limit = await rateLimiter(getRedis(), `trust-doc:${rateLimitIpKey(getTrustedClientIp(c, 'unknown'))}`, 20, 60);
@@ -161,4 +168,14 @@ trustPagePublicRoutes.get('/public/:partnerSlug/:orgSlug/documents/:documentId',
   const length = opened.contentLength ?? row.byteSize; if (typeof length === 'number') headers['Content-Length'] = String(length);
   if (Buffer.isBuffer(opened.body)) return c.body(new Uint8Array(opened.body), 200, headers);
   return c.body(Readable.toWeb(opened.body) as ReadableStream, 200, headers);
-});
+}
+trustPagePublicRoutes.get('/public/:partnerSlug/:orgSlug/documents/:documentId', (c) =>
+  documentRoute(c, c.req.param('partnerSlug'), c.req.param('orgSlug'), c.req.param('documentId')));
+// Partner-home page documents (I12): same checks; admission resolves the page via is_partner_home.
+trustPagePublicRoutes.get('/public/:partnerSlug/documents/:documentId', (c) =>
+  documentRoute(c, c.req.param('partnerSlug'), undefined, c.req.param('documentId')));
+
+// ---- catch-alls, registered LAST (I9): an unmatched path under either prefix gets the same generic, uncacheable
+// 404 here instead of falling through to other routers (and, for /card, past the rate limiter's exemption).
+trustPagePublicRoutes.all('/card/*', (c) => notFound(c));
+trustPagePublicRoutes.all('/public/*', (c) => notFound(c));

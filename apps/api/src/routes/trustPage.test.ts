@@ -24,15 +24,19 @@ vi.mock('../services/trustPage/payloadBuilder', async (orig) => {
   const real = await orig<typeof import('../services/trustPage/payloadBuilder')>();
   return { ...real, sanitizeIntro: (s: string) => intro.override ?? real.sanitizeIntro(s) };
 });
+const trustMode = vi.hoisted(() => ({ value: 'off' as 'off' | 'shadow' | 'enforce' }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
 const auditMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: auditMock }));
 const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], values: [] as unknown[], tx: 0 }));
-vi.mock('../services/trustPage/servingSet', () => ({ refreshServingForPartner: vi.fn(async () => {}) }));
+const servingMock = vi.hoisted(() => ({ scheduleServingRefreshForPartner: vi.fn() }));
+vi.mock('../services/trustPage/servingSet', () => servingMock);
 vi.mock('../db', () => {
   const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.values = vi.fn((v: unknown) => { dbm.values.push(v); return c; }); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
   return { db: Object.assign(chain(), { transaction: async (fn: any) => { dbm.tx++; return fn(chain()); } }), runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
 });
 import { authMiddleware } from '../middleware/auth';
+import { db } from '../db';
 import { createTrustPreviewToken } from '../services/trustPage/previewToken';
 import { trustPageRoutes } from './trustPage';
 
@@ -43,7 +47,31 @@ const app = new Hono(); app.use('*', authMiddleware); app.route('/orgs', trustPa
 const H = (extra: Record<string, string> = {}) => ({ authorization: 'Bearer t', 'x-allow': 'organizations:read,organizations:write', 'content-type': 'application/json', ...extra });
 
 describe('trust page routes', () => {
-  beforeEach(() => { intro.override = null; dbm.rows = []; dbm.values = []; dbm.tx = 0; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+
+  it.each([
+    ['shadow', 'probation', { allowed: false, reason: 'probation_default_deny' }],
+    ['enforce', 'probation', { allowed: false, reason: 'probation_default_deny' }],
+    ['shadow', 'restricted', { allowed: false, reason: 'restricted' }],
+    ['shadow', 'trusted', { allowed: true, reason: null }],
+    ['off', 'probation', { allowed: true, reason: null }],
+  ] as const)('Ruling 24: GET canPublish in %s mode for a %s partner follows the publish rule', async (mode, trustState, expected) => {
+    trustMode.value = mode;
+    dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState, deletedAt: null }], []);
+    const res = await app.request(`/orgs/${ORG}/trust-page`, { headers: H() });
+    expect((await res.json()).data.canPublish).toEqual(expected);
+  });
+
+  it('I13: PUT stores the SANITIZED intro (hostile markup never reaches the row)', async () => {
+    dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }], [{ ...PAGE, publicationRevision: 1 }]);
+    const hostile = '<p onclick="steal()">Hello <a href="javascript:alert(1)">x</a></p><img src=x onerror=alert(1)><script>alert(1)</script>';
+    const res = await app.request(`/orgs/${ORG}/trust-page`, { method: 'PUT', headers: H(), body: JSON.stringify({ introHtml: hostile }) });
+    expect(res.status).toBe(200);
+    const setCalls = vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set).mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const stored = setCalls.find((v) => 'introHtml' in v)?.introHtml as string;
+    expect(stored).toContain('Hello');
+    for (const bad of ['onclick', 'onerror', '<script', 'javascript:', '<img']) expect(stored).not.toContain(bad);
+  });
 
   it('GET creates the draft and reports slug validity and publish eligibility', async () => {
     const linked = { documentId: 'd1', visibility: 'gated', disclosureConfirmedAt: new Date('2026-10-01T00:00:00Z'), sortOrder: 2, docId: 'd1', deletedAt: null, title: 'SOC 2', category: 'compliance', contentType: 'application/pdf', byteSize: 1234, supersededByDocumentId: null };
@@ -106,7 +134,7 @@ describe('trust page routes', () => {
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.publish', details: expect.objectContaining({ snapshotId: 's1', publicationRevision: 1 }) }));
   });
   it('partner-home needs MFA and partner-wide admin, then moves the flag and audits', async () => {
-    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null };
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', deletedAt: null, orgType: 'internal' };
     const body = JSON.stringify({ isPartnerHome: true });
     dbm.rows.push([ctxRow]);
     expect((await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-org-access': 'all' }), body })).status).toBe(403); // no MFA
@@ -116,6 +144,42 @@ describe('trust page routes', () => {
     const ok = await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-mfa': '1', 'x-org-access': 'all' }), body });
     expect(ok.status).toBe(200);
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.partner_home', details: expect.objectContaining({ isPartnerHome: true, previousPageId: 'other' }) }));
+    expect(servingMock.scheduleServingRefreshForPartner).toHaveBeenCalledWith('p1', 'trust_page.partner_home');
+  });
+  describe('partner-home rules (Ruling 25)', () => {
+    const req = (isPartnerHome: boolean) => app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-mfa': '1', 'x-org-access': 'all' }), body: JSON.stringify({ isPartnerHome }) });
+    it.each(['customer', 'quick_support', 'unassigned_pool'])('setting it on a %s org is 422 PARTNER_HOME_INTERNAL_ONLY and writes nothing', async (orgType) => {
+      dbm.rows = [[{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null, orgType }]];
+      const res = await req(true);
+      expect(res.status).toBe(422);
+      expect((await res.json()).code).toBe('PARTNER_HOME_INTERNAL_ONLY');
+      expect(dbm.tx).toBe(0);
+      expect(auditMock).not.toHaveBeenCalled();
+    });
+    it('clearing it on a PUBLISHED page with no attestation is 422 PARTNER_HOME_UNPUBLISH_FIRST', async () => {
+      svc.ensureTrustPage.mockResolvedValueOnce({ ...PAGE, isPartnerHome: true, publishedAt: new Date(), publicationAuthorizedBy: null });
+      dbm.rows = [[{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null, orgType: 'internal' }]];
+      const res = await req(false);
+      expect(res.status).toBe(422);
+      expect((await res.json()).code).toBe('PARTNER_HOME_UNPUBLISH_FIRST');
+      expect(dbm.tx).toBe(0);
+    });
+    it.each([
+      ['an unpublished page', { publishedAt: null, publicationAuthorizedBy: null }],
+      ['a published page that carries an attestation', { publishedAt: new Date(), publicationAuthorizedBy: 'Jane Doe, COO' }],
+    ])('clearing it on %s is allowed (even if the org is no longer internal)', async (_label, over) => {
+      svc.ensureTrustPage.mockResolvedValueOnce({ ...PAGE, isPartnerHome: true, ...over });
+      dbm.rows = [[{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null, orgType: 'customer' }], [], [], [], [{ ...PAGE }]];
+      const res = await req(false);
+      expect(res.status).toBe(200);
+      expect(dbm.tx).toBe(1);
+    });
+  });
+  it('I10: minting a preview token needs organizations:write', async () => {
+    dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
+    const res = await app.request(`/orgs/${ORG}/trust-page/preview-token`, { method: 'POST', headers: H({ 'x-allow': 'organizations:read' }) });
+    expect(res.status).toBe(403);
+    expect(createTrustPreviewToken).not.toHaveBeenCalled();
   });
   it('preview-token returns a token and path', async () => {
     dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
@@ -144,7 +208,7 @@ describe('trust page routes', () => {
       expect(dbm.tx).toBe(0);
     });
     it('replaces links with confirmation stamps, audits added/removed/confirmed, returns the new revision', async () => {
-      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ ids: [D1, 'old-doc'] }], [], [], [], [{ publicationRevision: 5 }]];
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }, { documentId: 'old-doc', disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }], [], [], [], [{ publicationRevision: 5 }]];
       const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: true }, { documentId: D2, visibility: 'public', disclosureConfirmed: true }]);
       expect(res.status).toBe(200);
       expect((await res.json()).data.publicationRevision).toBe(5);
@@ -159,6 +223,19 @@ describe('trust page routes', () => {
         action: 'trust_page.documents.update',
         details: expect.objectContaining({ added: [D2], removed: ['old-doc'], confirmed: 2, publicationRevision: 5 }),
       }));
+    });
+    it('I7: a reorder keeps the ORIGINAL confirmation stamp of an already-linked confirmed document', async () => {
+      const T0 = new Date('2026-10-01T09:00:00.000Z');
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' }], [], [], [], [{ publicationRevision: 6 }]];
+      const res = await put([{ documentId: D2, visibility: 'public', disclosureConfirmed: true }, { documentId: D1, visibility: 'public', disclosureConfirmed: true }]);
+      expect(res.status).toBe(200);
+      const rows = dbm.values[0] as Array<Record<string, unknown>>;
+      const d1 = rows.find((r) => r.documentId === D1)!;
+      const d2 = rows.find((r) => r.documentId === D2)!;
+      expect(d1).toMatchObject({ sortOrder: 1, disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' });
+      expect(d2.disclosureConfirmedAt).toBeInstanceOf(Date);
+      expect((d2.disclosureConfirmedAt as Date).getTime()).not.toBe(T0.getTime());
+      expect(d2.disclosureConfirmedByUserId).toBe('u1');
     });
   });
 

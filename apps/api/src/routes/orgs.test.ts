@@ -10,6 +10,8 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
 }));
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+const trustServing = vi.hoisted(() => ({ scheduleServingRefreshForPartner: vi.fn() }));
+vi.mock('../services/trustPage/servingSet', () => trustServing);
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
@@ -5707,6 +5709,54 @@ describe('org routes', () => {
       } as any)
       .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 4 }]));
   };
+
+  // Ruling 26 (I11): a slug or status change can make public trust pages appear or vanish; the serving
+  // set (Redis admission filter) is refreshed for the partner after the write commits.
+  describe('trust page serving-set refresh on slug/status changes', () => {
+    const updateReturning = (row: Record<string, unknown>) => vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([row]) }) }),
+    } as any);
+    const req = (path: string, method: string, body?: unknown) => app.request(path, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+    it('org PATCH with a status change schedules a refresh for the org\'s partner', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      updateReturning({ id: 'org-1', name: 'O', status: 'suspended', partnerId: 'partner-9' });
+      expect((await req('/orgs/organizations/org-1', 'PATCH', { status: 'suspended' })).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith('partner-9', 'organization.update');
+    });
+    it('org PATCH of the name only does not touch the serving set', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      updateReturning({ id: 'org-1', name: 'Updated', partnerId: 'partner-123' });
+      expect((await req('/orgs/organizations/org-1', 'PATCH', { name: 'Updated' })).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).not.toHaveBeenCalled();
+    });
+    it('org DELETE schedules a refresh', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      updateReturning({ id: 'org-1', partnerId: 'partner-123' });
+      expect((await req('/orgs/organizations/org-1', 'DELETE')).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith('partner-123', 'organization.delete');
+    });
+    it.each([
+      [{ slug: 'northwind-it' }],
+      [{ status: 'suspended' }],
+    ])('partner PATCH %j schedules a refresh for that partner', async (body) => {
+      updateReturning({ id: 'partner-1', name: 'P', settings: {}, ...body });
+      expect((await req('/orgs/partners/partner-1', 'PATCH', body)).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith('partner-1', 'partner.update');
+    });
+    it('partner PATCH of the name only does not touch the serving set', async () => {
+      updateReturning({ id: 'partner-1', name: 'Updated' });
+      expect((await req('/orgs/partners/partner-1', 'PATCH', { name: 'Updated' })).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).not.toHaveBeenCalled();
+    });
+    it('partner DELETE schedules a refresh', async () => {
+      updateReturning({ id: 'partner-1' });
+      expect((await req('/orgs/partners/partner-1', 'DELETE')).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith('partner-1', 'partner.delete');
+    });
+  });
 
   describe('GET /orgs/sites', () => {
     // The list also runs a 4th grouped query for removedDeviceCount (#7471);

@@ -32,7 +32,9 @@ export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: st
     : sql`lower(${organizations.slug}) = ${orgSlug}`;
   const [row] = await db.select({
       pageId: trustPages.id, orgId: trustPages.orgId, partnerId: trustPages.partnerId, publishedAt: trustPages.publishedAt,
-      searchIndexable: trustPages.searchIndexable, lastEvaluatedAt: trustPages.lastEvaluatedAt,
+      // Frozen at publish (Ruling 20): the draft column only takes effect on the next publish. No config → noindex.
+      searchIndexable: sql<boolean>`coalesce((${trustPages.publishedConfig} ->> 'searchIndexable')::boolean, false)`,
+      lastEvaluatedAt: trustPages.lastEvaluatedAt,
       snapshotId: trustPageSnapshots.id, payload: trustPageSnapshots.payload,
     })
     .from(trustPages)

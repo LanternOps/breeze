@@ -2,7 +2,7 @@
 // through the live resolve; a miss answers 404 without touching Postgres.
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, trustPages } from '../../db/schema';
 import { getRedis } from '../redis';
 import { livePublicationPredicate } from './predicate';
@@ -11,19 +11,35 @@ import type { TrustPagePublicPayload } from '@breeze/shared';
 export const TRUST_SERVING_SET_KEY = 'trust:serving';
 /** Present once the set has been built/seeded. Absent => Redis lost data (or never built): the set cannot be trusted to say "not published". */
 export const TRUST_SERVING_BUILT_KEY = 'trust:serving:built';
+/**
+ * Permanent member written by every full rebuild and never removed: a built set therefore always EXISTS, and
+ * its absence means the set was evicted/lost (or recreated by a partial SADD) even when the marker survived
+ * (I8). Underscores can never match TRUST_SLUG_RE, so no real member collides.
+ */
+export const TRUST_SERVING_SENTINEL = '__built__';
 const SNAPSHOT_TTL_SECONDS = 3600;
 const snapshotKey = (id: string) => `trust:snapshot:${id}`;
 
 export const trustServingMember = (partnerSlug: string, orgSlug?: string): string =>
   orgSlug ? `${partnerSlug}/${orgSlug.toLowerCase()}` : partnerSlug;
 
-/** true/false only when the set is known-built; null (fall through to the live resolve) when Redis is unavailable, errors, or the built marker is missing. */
+/**
+ * true/false only when the set is known-built; null (fall through to the live resolve) when Redis is
+ * unavailable, errors, the built marker is missing, or the set itself is gone (evicted while the marker
+ * survived, or recreated by a partial add — detected by the missing sentinel).
+ */
 export async function isServing(member: string): Promise<boolean | null> {
   const redis = getRedis();
   if (!redis) return null;
   try {
-    if ((await redis.exists(TRUST_SERVING_BUILT_KEY)) !== 1) return null;
-    return (await redis.sismember(TRUST_SERVING_SET_KEY, member)) === 1;
+    // Issued together (one round trip on a pipelining connection).
+    const [built, intact, present] = await Promise.all([
+      redis.exists(TRUST_SERVING_BUILT_KEY),
+      redis.sismember(TRUST_SERVING_SET_KEY, TRUST_SERVING_SENTINEL),
+      redis.sismember(TRUST_SERVING_SET_KEY, member),
+    ]);
+    if (built !== 1 || intact !== 1) return null;
+    return present === 1;
   } catch (err) { console.warn('[trustPage] serving-set read failed', err); return null; }
 }
 // Never writes the built marker: only a full rebuild may claim the set is complete (after data loss a partial add must not turn other partners' pages into 404s).
@@ -93,6 +109,22 @@ export async function refreshServingForPartner(partnerId: string): Promise<void>
   } catch (err) { console.warn('[trustPage] serving-set refresh failed', err); }
 }
 
+/**
+ * Ruling 26 (I11): an org/partner slug or status change can make trust pages appear or vanish. Refreshing
+ * inside the request would read the PRE-change rows (the request's write is not committed yet, and the
+ * refresh reads on its own system context), so this runs only after the outermost transaction COMMITS, outside
+ * any context. Best-effort: a failure is logged and the hourly full rebuild repairs the set.
+ */
+export function scheduleServingRefreshForPartner(partnerId: string, reason: string): void {
+  runAfterDbContextCommit(`trustPage.servingRefresh:${reason}`, async () => {
+    try {
+      await refreshServingForPartner(partnerId);
+    } catch (err) {
+      console.warn('[trustPage] serving-set refresh after a tenant change failed; the hourly rebuild will repair it', { partnerId, reason }, err);
+    }
+  });
+}
+
 /** Full rebuild (hourly worker): swap atomically so readers never see an empty set. */
 export async function replaceServingSet(members: string[]): Promise<void> {
   const redis = getRedis();
@@ -100,9 +132,8 @@ export async function replaceServingSet(members: string[]): Promise<void> {
   const tmp = `${TRUST_SERVING_SET_KEY}:rebuild:${randomUUID()}`;
   try {
     const multi = redis.multi();
-    if (members.length) multi.sadd(tmp, ...members); else multi.sadd(tmp, '__empty__');
+    multi.sadd(tmp, TRUST_SERVING_SENTINEL, ...members);
     multi.rename(tmp, TRUST_SERVING_SET_KEY);
-    if (!members.length) multi.srem(TRUST_SERVING_SET_KEY, '__empty__');
     multi.set(TRUST_SERVING_BUILT_KEY, '1');
     const results = await multi.exec();
     if (results?.some(([err]) => err)) console.warn('[trustPage] serving-set rebuild had failing commands', results.map(([err]) => err?.message ?? null));

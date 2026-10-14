@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 const redisMock = vi.hoisted(() => ({ client: null as null | Record<string, ReturnType<typeof vi.fn> | Set<string>> }));
 vi.mock('../redis', () => ({ getRedis: () => redisMock.client }));
+const afterCommit = vi.hoisted(() => [] as Array<() => unknown>);
 const dbRows = vi.hoisted(() => ({ rows: [] as unknown[], slugRows: [] as unknown[] }));
 vi.mock('../../db', () => {
   const where = () => Object.assign(Promise.resolve(dbRows.rows), { limit: async () => dbRows.slugRows });
@@ -9,9 +10,10 @@ vi.mock('../../db', () => {
   return {
     db: { select: () => ({ from: () => ({ ...join, where }) }) },
     runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { afterCommit.push(work); },
   };
 });
-import { addServing, isServing, refreshServingForPartner, removeServing, rebuildServingSetFromDb, replaceServingSet, trustServingMember, cacheSnapshotPayload, readCachedSnapshotPayload, TRUST_SERVING_SET_KEY, TRUST_SERVING_BUILT_KEY } from './servingSet';
+import { addServing, isServing, refreshServingForPartner, removeServing, rebuildServingSetFromDb, scheduleServingRefreshForPartner, replaceServingSet, trustServingMember, cacheSnapshotPayload, readCachedSnapshotPayload, TRUST_SERVING_SET_KEY, TRUST_SERVING_BUILT_KEY, TRUST_SERVING_SENTINEL } from './servingSet';
 
 function fakeRedis() {
   const set = new Set<string>(); const kv = new Map<string, string>();
@@ -44,7 +46,8 @@ const r = () => redisMock.client as unknown as ReturnType<typeof fakeRedis>;
 
 describe('serving set', () => {
   beforeEach(() => { redisMock.client = fakeRedis() as never; dbRows.rows = []; });
-  const markBuilt = () => r().set(TRUST_SERVING_BUILT_KEY, '1');
+  // A full build writes the marker AND keeps the sentinel member in the set (replaceServingSet).
+  const markBuilt = async () => { r()._set.add(TRUST_SERVING_SENTINEL); await r().set(TRUST_SERVING_BUILT_KEY, '1'); };
   it('builds members and round-trips add/is/remove', async () => {
     expect(trustServingMember('nw', 'acme')).toBe('nw/acme');
     expect(trustServingMember('nw', 'ACME')).toBe('nw/acme');
@@ -83,12 +86,13 @@ describe('serving set', () => {
   it('replaceServingSet swaps via a temp key inside MULTI, with a sentinel for the empty set', async () => {
     await replaceServingSet(['a/b', 'a']);
     expect(r()._ops[0]?.[0]).toBe('sadd');
-    expect(r()._ops[0]?.slice(2)).toEqual(['a/b', 'a']);
+    expect(r()._ops[0]?.slice(2)).toEqual([TRUST_SERVING_SENTINEL, 'a/b', 'a']);
     expect(r()._ops[1]).toEqual(['rename', r()._ops[0]?.[1], TRUST_SERVING_SET_KEY]);
     r()._ops.length = 0;
     await replaceServingSet([]);
-    expect(r()._ops.map((o) => o[0])).toEqual(['sadd', 'rename', 'srem', 'set']);
-    expect(r()._ops[2]).toEqual(['srem', TRUST_SERVING_SET_KEY, '__empty__']);
+    // I8: the sentinel is never removed, so a built set always exists; only eviction makes it vanish.
+    expect(r()._ops.map((o) => o[0])).toEqual(['sadd', 'rename', 'set']);
+    expect(r()._ops[0]?.slice(2)).toEqual([TRUST_SERVING_SENTINEL]);
   });
   it('replaceServingSet writes the built marker in the same MULTI', async () => {
     await replaceServingSet(['a']);
@@ -114,13 +118,30 @@ describe('serving set', () => {
     expect(await isServing('nw/zzz')).toBe(false);
     expect(await isServing('nw/acme')).toBe(true);
   });
+  it('I8: marker present but the set evicted → null (fall through), never "nothing is published"', async () => {
+    await markBuilt();
+    r()._set.clear(); // Redis evicted trust:serving; the marker survived
+    expect(await isServing('nw/acme')).toBeNull();
+    // A publish after the eviction recreates the set with ONE member and no sentinel: still not trustworthy.
+    await addServing(['nw/new']);
+    expect(await isServing('nw/other')).toBeNull();
+    expect(await isServing('nw/new')).toBeNull();
+  });
+  it('I8: removing the last published member keeps the set (sentinel) → false, not null', async () => {
+    await markBuilt();
+    await addServing(['nw/acme']);
+    await removeServing(['nw/acme']);
+    expect(await isServing('nw/acme')).toBe(false);
+    await refreshServingForPartner('p1');
+    expect(r()._set.has(TRUST_SERVING_SENTINEL)).toBe(true);
+  });
   it('rebuildServingSetFromDb builds partner-home and org members from one query and returns the count', async () => {
     dbRows.rows = [
       { partnerSlug: 'nw', orgSlug: 'Acme', isPartnerHome: true },
       { partnerSlug: 'nw', orgSlug: 'beta', isPartnerHome: false },
     ];
     expect(await rebuildServingSetFromDb()).toBe(3);
-    expect(r()._ops[0]).toEqual(['sadd', expect.stringContaining('trust:serving:rebuild:'), 'nw/acme', 'nw', 'nw/beta']);
+    expect(r()._ops[0]).toEqual(['sadd', expect.stringContaining('trust:serving:rebuild:'), TRUST_SERVING_SENTINEL, 'nw/acme', 'nw', 'nw/beta']);
     expect(r()._ops.at(-1)).toEqual(['set', TRUST_SERVING_BUILT_KEY, '1']);
   });
   it('refreshServingForPartner with no live pages removes that partner\'s stale members via the slug lookup', async () => {
@@ -129,6 +150,22 @@ describe('serving set', () => {
     dbRows.slugRows = [{ slug: 'nw' }];
     await refreshServingForPartner('p1');
     expect([...r()._set]).toEqual(['other/keep']);
+  });
+  it('Ruling 26: scheduleServingRefreshForPartner defers the refresh to after COMMIT and swallows its failure', async () => {
+    afterCommit.length = 0;
+    await addServing(['nw/old', 'other/keep']);
+    dbRows.rows = []; dbRows.slugRows = [{ slug: 'nw' }];
+    scheduleServingRefreshForPartner('p1', 'test');
+    expect([...r()._set].sort()).toEqual(['nw/old', 'other/keep']); // nothing ran inside the transaction
+    expect(afterCommit).toHaveLength(1);
+    await afterCommit[0]!();
+    expect([...r()._set]).toEqual(['other/keep']);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r().smembers.mockRejectedValueOnce(new Error('boom'));
+    r().smembers.mockRejectedValueOnce(new Error('boom'));
+    scheduleServingRefreshForPartner('p1', 'test');
+    await expect(Promise.resolve(afterCommit[1]!())).resolves.toBeUndefined();
+    warn.mockRestore();
   });
   it('caches a payload for an hour and reads it back', async () => {
     await cacheSnapshotPayload('s1', { schemaVersion: 1 } as never);

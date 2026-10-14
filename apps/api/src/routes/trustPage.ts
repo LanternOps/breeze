@@ -9,11 +9,12 @@ import { orgDocuments, organizations, partners, trustPageDocuments, trustPages }
 import { PERMISSIONS } from '../services/permissions';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
-import { requireCapability, evaluateCapabilityContinuationForState } from '../services/partnerTrust';
+import { requireCapability } from '../services/partnerTrust';
 import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
-  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, TrustPageError,
+  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, trustPublishDecision, TrustPageError,
+  PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
 } from '../services/trustPage/publication';
 import { isEdrVisibilityEnabled } from '../services/portal/edrVisibility';
 import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
@@ -31,14 +32,14 @@ const orgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.OR
 const orgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const orgParam = z.object({ orgId: z.string().guid() });
 
-interface OrgCtx { orgId: string; orgSlug: string; partnerSlug: string; partnerId: string; trustState: 'probation' | 'trusted' | 'restricted'; probationEnrollments: number }
+interface OrgCtx { orgId: string; orgSlug: string; orgType: string | null; partnerSlug: string; partnerId: string; trustState: 'probation' | 'trusted' | 'restricted'; probationEnrollments: number }
 async function resolveAccessibleOrg(c: Context, orgId: string): Promise<OrgCtx | null> {
   const auth = c.get('auth') as AuthContext;
   if (auth.scope === 'partner' && !auth.canAccessOrg(orgId)) return null;
-  const [row] = await db.select({ orgSlug: organizations.slug, partnerSlug: partners.slug, partnerId: partners.id, trustState: partners.trustState, probationEnrollments: partners.probationEnrollments, deletedAt: organizations.deletedAt })
+  const [row] = await db.select({ orgSlug: organizations.slug, orgType: organizations.type, partnerSlug: partners.slug, partnerId: partners.id, trustState: partners.trustState, probationEnrollments: partners.probationEnrollments, deletedAt: organizations.deletedAt })
     .from(organizations).innerJoin(partners, eq(partners.id, organizations.partnerId)).where(eq(organizations.id, orgId)).limit(1);
   if (!row || row.deletedAt) return null;
-  return { orgId, orgSlug: row.orgSlug, partnerSlug: row.partnerSlug, partnerId: row.partnerId, trustState: row.trustState, probationEnrollments: row.probationEnrollments ?? 0 };
+  return { orgId, orgSlug: row.orgSlug, orgType: row.orgType ?? null, partnerSlug: row.partnerSlug, partnerId: row.partnerId, trustState: row.trustState, probationEnrollments: row.probationEnrollments ?? 0 };
 }
 const notFound = (c: Context) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 function handleError(c: Context, err: unknown): Response {
@@ -71,8 +72,8 @@ trustPageRoutes.get('/:orgId/trust-page', scopes, orgRead, zValidator('param', o
     const auth = c.get('auth') as AuthContext;
     const page = await ensureTrustPage(orgId, auth.user.id);
     const documents = await loadLinkedDocumentsForEditor(page);
-    const gate = evaluateCapabilityContinuationForState('trust_page_publish', { partnerId: ctx.partnerId }, { trustState: ctx.trustState, probationEnrollments: ctx.probationEnrollments });
-    return c.json({ data: { page, documents, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: gate.allow ? { allowed: true, reason: null } : { allowed: false, reason: gate.reason } } });
+    // Ruling 24: the same rule POST /publish applies (shadow = enforce), never the shadow-allowing continuation gate.
+    return c.json({ data: { page, documents, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: trustPublishDecision(ctx.trustState) } });
   } catch (err) { return handleError(c, err); }
 });
 
@@ -121,19 +122,30 @@ trustPageRoutes.put('/:orgId/trust-page/documents', scopes, orgWrite, zValidator
       const missing = ids.filter((id) => !liveIds.has(id));
       if (missing.length) return c.json({ error: 'One or more documents are deleted, superseded or not in this organization.', code: 'DOCUMENT_UNAVAILABLE', details: { documentIds: missing } }, 422);
     }
-    const [before] = await db.select({ ids: sql<string[]>`coalesce(array_agg(${trustPageDocuments.documentId}), '{}')` }).from(trustPageDocuments).where(eq(trustPageDocuments.trustPageId, page.id));
+    const beforeRows = await db.select({
+      documentId: trustPageDocuments.documentId, disclosureConfirmedAt: trustPageDocuments.disclosureConfirmedAt,
+      disclosureConfirmedByUserId: trustPageDocuments.disclosureConfirmedByUserId,
+    }).from(trustPageDocuments).where(eq(trustPageDocuments.trustPageId, page.id));
+    // I7: an already-linked, already-confirmed document keeps WHO confirmed it and WHEN — a reorder or an
+    // unrelated add must not re-stamp the disclosure provenance.
+    const priorConfirmation = new Map(beforeRows.filter((r) => r.disclosureConfirmedAt).map((r) => [r.documentId, r]));
+    const now = new Date();
     await db.transaction(async (tx) => {
       await tx.delete(trustPageDocuments).where(eq(trustPageDocuments.trustPageId, page.id));
       if (documents.length) {
-        await tx.insert(trustPageDocuments).values(documents.map((d, i) => ({
-          trustPageId: page.id, documentId: d.documentId, orgId, visibility: d.visibility, sortOrder: i,
-          disclosureConfirmedAt: d.disclosureConfirmed ? new Date() : null, disclosureConfirmedByUserId: d.disclosureConfirmed ? auth.user.id : null,
-        })));
+        await tx.insert(trustPageDocuments).values(documents.map((d, i) => {
+          const prior = d.disclosureConfirmed ? priorConfirmation.get(d.documentId) : undefined;
+          return {
+            trustPageId: page.id, documentId: d.documentId, orgId, visibility: d.visibility, sortOrder: i,
+            disclosureConfirmedAt: d.disclosureConfirmed ? (prior?.disclosureConfirmedAt ?? now) : null,
+            disclosureConfirmedByUserId: d.disclosureConfirmed ? (prior ? prior.disclosureConfirmedByUserId : auth.user.id) : null,
+          };
+        }));
       }
       await tx.update(trustPages).set({ publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
     });
     const [{ publicationRevision } = { publicationRevision: page.publicationRevision + 1 }] = await db.select({ publicationRevision: trustPages.publicationRevision }).from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
-    const after = new Set(ids); const prev = new Set(before?.ids ?? []);
+    const after = new Set(ids); const prev = new Set(beforeRows.map((r) => r.documentId));
     await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), confirmed: documents.filter((d) => d.disclosureConfirmed).length, publicationRevision });
     return c.json({ data: { documents, publicationRevision } });
   } catch (err) { return handleError(c, err); }
@@ -172,23 +184,33 @@ trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, requir
   const ctx = await resolveAccessibleOrg(c, orgId);
   if (!ctx) return notFound(c);
   const { isPartnerHome } = c.req.valid('json');
+  // Ruling 25: the attestation-exempt partner home must be the MSP's OWN (internal) org.
+  if (isPartnerHome && ctx.orgType !== 'internal') {
+    return c.json({ error: PARTNER_HOME_INTERNAL_ONLY_MESSAGE, code: 'PARTNER_HOME_INTERNAL_ONLY' }, 422);
+  }
   try {
     const page = await ensureTrustPage(orgId, auth.user.id);
+    if (!isPartnerHome && page.isPartnerHome && page.publishedAt && !page.publicationAuthorizedBy) {
+      // Clearing the flag would leave a live customer-shaped page that was never attested.
+      return c.json({ error: 'This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', code: 'PARTNER_HOME_UNPUBLISH_FIRST' }, 422);
+    }
     const previous = await db.transaction(async (tx) => {
       const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId }).from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1);
       if (isPartnerHome) await tx.update(trustPages).set({ isPartnerHome: false, updatedAt: new Date() }).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true)));
       await tx.update(trustPages).set({ isPartnerHome, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
       return prev ?? null;
     });
-    const { refreshServingForPartner } = await import('../services/trustPage/servingSet');
-    await refreshServingForPartner(ctx.partnerId);
+    // After COMMIT: a refresh inside the request would read the pre-change flag (its own system context
+    // cannot see this request's uncommitted write).
+    const { scheduleServingRefreshForPartner } = await import('../services/trustPage/servingSet');
+    scheduleServingRefreshForPartner(ctx.partnerId, 'trust_page.partner_home');
     await audit(c, orgId, 'trust_page.partner_home', page.id, { isPartnerHome, previousPageId: previous?.id ?? null });
     const [updated] = await db.select().from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
     return c.json({ data: { page: updated } });
   } catch (err) { return handleError(c, err); }
 });
 
-trustPageRoutes.post('/:orgId/trust-page/preview-token', scopes, orgRead, zValidator('param', orgParam), async (c) => {
+trustPageRoutes.post('/:orgId/trust-page/preview-token', scopes, orgWrite, zValidator('param', orgParam), async (c) => {
   const { orgId } = c.req.valid('param');
   const ctx = await resolveAccessibleOrg(c, orgId);
   if (!ctx) return notFound(c);

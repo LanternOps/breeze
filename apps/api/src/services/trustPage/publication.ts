@@ -2,8 +2,8 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import {
-  DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_SLUG_RE,
-  evaluateTrustControls, type TrustPagePublicPayload,
+  DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_DOCUMENTS_MAX, TRUST_SLUG_RE,
+  evaluateTrustControls, trustPublishedConfigSchema, type TrustPagePublicPayload, type TrustPublishedConfig,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -103,13 +103,37 @@ export async function loadLinkedDocumentsForEditor(page: TrustPageRow): Promise<
   }));
 }
 
-export interface SnapshotBuild { snapshotId: string; payload: TrustPagePublicPayload; sha256: string; deviceCount: number; generatedAt: Date }
+export interface SnapshotBuild {
+  snapshotId: string; payload: TrustPagePublicPayload; sha256: string; deviceCount: number; generatedAt: Date;
+  /** The publication config the payload was built from (publish freezes exactly this). */
+  config: TrustPublishedConfig;
+}
+
+/**
+ * Where the publication settings come from (Ruling 20):
+ *  - 'draft'  — the trust_pages draft columns + every live public link (publish, preview);
+ *  - a frozen TrustPublishedConfig — published_config (the hourly refresh): evidence and live links are
+ *    re-read, but documents are the frozen ids ∩ live public/confirmed/not-superseded links, in frozen order.
+ */
+export type SnapshotConfigSource = 'draft' | TrustPublishedConfig;
+
+function draftSettings(page: TrustPageRow): Omit<TrustPublishedConfig, 'documentIds'> {
+  return {
+    hiddenControlIds: [...page.hiddenControlIds] as TrustPublishedConfig['hiddenControlIds'],
+    showPercentages: page.showPercentages, showDeviceCount: page.showDeviceCount, showManagedBy: page.showManagedBy,
+    searchIndexable: page.searchIndexable, introHtml: page.introHtml ?? null, websiteUrl: page.websiteUrl ?? null,
+    securityContactEmail: page.securityContactEmail ?? null,
+  };
+}
 
 /**
  * loader → evaluator → documents → builder. Runs in the CALLER's db context (route: user RLS; worker: system).
  * A ZodError from the builder's final schema parse is a builder bug and propagates.
  */
-export async function buildSnapshotForPage(page: TrustPageRow, opts: { publishedAt?: Date } = {}): Promise<SnapshotBuild> {
+export async function buildSnapshotForPage(
+  page: TrustPageRow,
+  opts: { publishedAt?: Date; config: SnapshotConfigSource },
+): Promise<SnapshotBuild> {
   const generatedAt = new Date();
   const [ctx] = await db.select({
     orgName: organizations.name, partnerName: partners.name, partnerSettings: partners.settings,
@@ -126,11 +150,23 @@ export async function buildSnapshotForPage(page: TrustPageRow, opts: { published
     { edrEvidenceAllowed: () => isEdrVisibilityEnabled(page.orgId) },
   );
   const assessments = evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence.controls, DEFAULT_TRUST_EVALUATION_POLICY, generatedAt);
-  const documents = await loadPublicDocumentsForPage(page);
+  const liveDocuments = await loadPublicDocumentsForPage(page);
+  let config: TrustPublishedConfig;
+  let documents: OrgDocumentView[];
+  if (opts.config === 'draft') {
+    documents = liveDocuments.slice(0, TRUST_DOCUMENTS_MAX);
+    config = { ...draftSettings(page), documentIds: documents.map((d) => d.id) };
+  } else {
+    config = opts.config;
+    const live = new Map(liveDocuments.map((d) => [d.id, d]));
+    documents = config.documentIds.map((id) => live.get(id)).filter((d): d is OrgDocumentView => Boolean(d));
+  }
   const snapshotId = randomUUID();
   const payload = buildTrustPagePayload({
     snapshotId, generatedAt, publishedAt: opts.publishedAt ?? page.publishedAt ?? generatedAt,
-    page, org: { name: ctx.orgName },
+    // The builder reads the publication settings off the page; overlay the chosen config.
+    page: { ...page, ...config, hiddenControlIds: [...config.hiddenControlIds] },
+    org: { name: ctx.orgName },
     partner: { name: ctx.partnerName, settings: ctx.partnerSettings, billingWebsite: ctx.billingWebsite, trustPageUnbranded: ctx.trustPageUnbranded },
     orgBrand: brand ?? null, assessments, deviceCount: evidence.deviceCount, documents,
     policy: {
@@ -140,16 +176,28 @@ export async function buildSnapshotForPage(page: TrustPageRow, opts: { published
       thresholds: DEFAULT_TRUST_EVALUATION_POLICY.thresholds,
     },
   });
-  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt };
+  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config };
 }
 
-/** Shadow mode counts as enforce for this surface (matches the public predicate). */
+/**
+ * The publish trust rule, pure (Ruling 24). Shadow mode counts as enforce for this surface (matches the public
+ * predicate). GET /trust-page reports `canPublish` from THIS, so the button is never enabled into a 403.
+ * Reasons reuse the partnerTrust reason codes the editor already translates.
+ */
+export function trustPublishDecision(state: PartnerTrustState): { allowed: true; reason: null } | { allowed: false; reason: 'restricted' | 'probation_default_deny' } {
+  if (partnerTrustMode() === 'off' || state === 'trusted') return { allowed: true, reason: null };
+  return { allowed: false, reason: state === 'restricted' ? 'restricted' : 'probation_default_deny' };
+}
+
 function trustDenial(state: PartnerTrustState): TrustPageError | null {
-  if (partnerTrustMode() === 'off' || state === 'trusted') return null;
-  return state === 'restricted'
+  const d = trustPublishDecision(state);
+  if (d.allowed) return null;
+  return d.reason === 'restricted'
     ? new TrustPageError('Publishing is unavailable for this account.', 403, 'TRUST_RESTRICTED')
     : new TrustPageError('Publishing opens once your account is trusted.', 403, 'TRUST_PROBATION');
 }
+
+export const PARTNER_HOME_INTERNAL_ONLY_MESSAGE = 'Only your own (internal) organization can be the partner home page.';
 
 /**
  * One transaction: lock the page row, demote the previous current snapshot, insert the new current one, stamp
@@ -165,13 +213,20 @@ export async function publishTrustPage(args: {
   validatePublishSlugs(args.partnerSlug, args.orgSlug);
   const [page] = await db.select().from(trustPages).where(eq(trustPages.orgId, args.orgId)).limit(1);
   if (!page) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
+  if (page.isPartnerHome) {
+    // Ruling 25: the attestation exemption is for the MSP's own page only — re-checked here because the
+    // org's type can change after the flag was set.
+    const [org] = await db.select({ type: organizations.type }).from(organizations).where(eq(organizations.id, page.orgId)).limit(1);
+    if (org?.type !== 'internal') throw new TrustPageError(PARTNER_HOME_INTERNAL_ONLY_MESSAGE, 422, 'PARTNER_HOME_INTERNAL_ONLY');
+  }
   const suppliedAuthorizedBy = args.authorization?.authorizedBy?.trim() || null;
   const authorizedBy = suppliedAuthorizedBy ?? page.publicationAuthorizedBy;
   if (!page.isPartnerHome && !authorizedBy) {
     throw new TrustPageError('Record who at the customer authorized publication before publishing.', 422, 'AUTHORIZATION_REQUIRED');
   }
   const publishedAt = page.publishedAt ?? new Date();
-  const built = await buildSnapshotForPage({ ...page, publishedAt }, { publishedAt });
+  // Built from the DRAFT; the same config is frozen below (a PUT racing this bumps the revision → 409).
+  const built = await buildSnapshotForPage({ ...page, publishedAt }, { publishedAt, config: 'draft' });
   const nextRevision = args.expectedRevision + 1;
 
   const result = await db.transaction(async (tx) => {
@@ -187,6 +242,7 @@ export async function publishTrustPage(args: {
     const now = new Date();
     const [updated] = await tx.update(trustPages).set({
       publishedAt, publicationRevision: nextRevision, lastEvaluatedAt: built.generatedAt,
+      publishedConfig: built.config,
       updatedAt: now, updatedByUserId: args.actorUserId,
       ...(suppliedAuthorizedBy
         ? { publicationAuthorizedBy: suppliedAuthorizedBy, publicationAuthorizedAt: now, publicationAuthorizedByUserId: args.actorUserId }
@@ -219,17 +275,25 @@ export async function unpublishTrustPage(args: {
 }
 
 /**
- * Worker path (system context). Inserts a new current snapshot only when the content hash changed and the
+ * Worker path (system context). Builds from the FROZEN published_config (Ruling 20) — draft edits never reach
+ * the public page without a publish. Inserts a new current snapshot only when the content hash changed and the
  * revision is unchanged (a racing publish wins); always stamps last_evaluated_at when it still owns the revision.
+ * A published page without a valid published_config (only possible for a page published before the column
+ * existed, which never shipped) is left untouched rather than rebuilt from the draft.
  */
 export async function refreshPublishedPage(pageId: string): Promise<{ rebuilt: boolean; snapshotId: string | null }> {
   const { outcome, built } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [page] = await db.select().from(trustPages)
       .where(and(eq(trustPages.id, pageId), sql`${trustPages.publishedAt} IS NOT NULL`)).limit(1);
     if (!page) return { outcome: { rebuilt: false, snapshotId: null }, built: null };
+    const frozen = trustPublishedConfigSchema.safeParse(page.publishedConfig);
+    if (!frozen.success) {
+      console.warn('[trustPage] published page has no valid published_config; refresh skipped (republish to repair)', { pageId: page.id });
+      return { outcome: { rebuilt: false, snapshotId: null }, built: null };
+    }
     const [current] = await db.select({ id: trustPageSnapshots.id, sha: trustPageSnapshots.payloadSha256 }).from(trustPageSnapshots)
       .where(and(eq(trustPageSnapshots.trustPageId, page.id), eq(trustPageSnapshots.isCurrent, true))).limit(1);
-    const snapshot = await buildSnapshotForPage(page);
+    const snapshot = await buildSnapshotForPage(page, { config: frozen.data });
     const rev = page.publicationRevision;
     const txOutcome = await db.transaction(async (tx) => {
       const [locked] = await tx.select({ rev: trustPages.publicationRevision, publishedAt: trustPages.publishedAt }).from(trustPages)

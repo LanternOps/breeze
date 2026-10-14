@@ -12,7 +12,7 @@ function page(over: Partial<BuildPayloadInput['page']> = {}): BuildPayloadInput[
     securityContactEmail: 'security@acme.example', websiteUrl: 'https://acme.example',
     introHtml: '<p>Hi</p>', hiddenControlIds: [],
     publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: AS_OF, publicationAuthorizedByUserId: null,
-    lastEvaluatedAt: AS_OF, createdByUserId: null, updatedByUserId: null, createdAt: AS_OF, updatedAt: AS_OF,
+    lastEvaluatedAt: AS_OF, publishedConfig: null, createdByUserId: null, updatedByUserId: null, createdAt: AS_OF, updatedAt: AS_OF,
     ...over,
   } as BuildPayloadInput['page'];
 }
@@ -110,6 +110,14 @@ describe('builder robustness', () => {
   it('an intro that expands past the bound is omitted, not thrown', () => {
     const p = buildTrustPagePayload(input({ page: page({ introHtml: '&'.repeat(20_000) }) }));
     expect(p.introHtml).toBeNull();
+  });
+  it('I13: a hostile page.introHtml (stored before any sanitizer change) is sanitized on the snapshot path; the PARSED payload carries none of it', () => {
+    const hostile = '<p onclick="steal()">Welcome <a href="javascript:alert(1)" onmouseover="x()">link</a></p><img src=x onerror=alert(1)><script>alert(1)</script><iframe src="https://evil.example"></iframe>';
+    const p = buildTrustPagePayload(input({ page: page({ introHtml: hostile }) }));
+    expect(p.introHtml).toContain('Welcome');
+    for (const bad of ['onclick', 'onerror', 'onmouseover', '<script', 'javascript:', '<img', '<iframe', 'alert(1)']) {
+      expect(p.introHtml ?? '').not.toContain(bad);
+    }
   });
   it('an over-long websiteUrl is dropped, not thrown', () => {
     const p = buildTrustPagePayload(input({ page: page({ websiteUrl: 'https://a.example/' + 'x'.repeat(3000) }) }));

@@ -14,6 +14,9 @@ vi.mock('../db', () => ({ db: { select: dbSelect }, runOutsideDbContext: (fn: an
 const preview = vi.hoisted(() => ({ verifyTrustPreviewToken: vi.fn(async (t: string) => (t === 'good' ? { pageId: 'pg', orgId: 'o' } : null)) }));
 vi.mock('../services/trustPage/previewToken', () => preview);
 vi.mock('../services/trustPage/publication', () => ({ buildSnapshotForPage: vi.fn(async () => ({ payload: { schemaVersion: 1, controls: [] }, snapshotId: 's', sha256: 'x', deviceCount: 0, generatedAt: new Date() })) }));
+const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'enforce' }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { trustPagePublicRoutes } from './trustPagePublic';
 
 const DOC_ID = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6d';
@@ -23,6 +26,9 @@ const app = new Hono(); app.route('/trust', trustPagePublicRoutes);
 const GENERIC = { error: 'Not found', code: 'NOT_FOUND' };
 const docRow = () => ({ from: () => ({ innerJoin: () => ({ leftJoin: () => ({ where: () => ({ limit: async () => [{ storageBackend: 'db', storageKey: null, data: Buffer.from('pdf'), contentType: 'application/pdf', originalFilename: 'p.pdf', byteSize: 3 }] }) }) }) }) });
 const docNone = () => ({ from: () => ({ innerJoin: () => ({ leftJoin: () => ({ where: () => ({ limit: async () => [] }) }) }) }) });
+
+/** Preview page lookup: trust_pages ⋈ partners, gated by the liveness predicate. Records each where() argument. */
+const previewRows = (rows: unknown[], wheres: unknown[] = []) => ({ from: () => ({ innerJoin: () => ({ where: (w: unknown) => { wheres.push(w); return { limit: async () => rows }; } }) }) });
 
 async function expectGeneric404(res: Response) {
   expect(res.status).toBe(404);
@@ -172,7 +178,7 @@ describe('badge, documents, preview', () => {
   });
   it('preview: invalid token → 404; valid → fresh draft payload, no-store', async () => {
     await expectGeneric404(await app.request('/trust/public/preview/bad'));
-    dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'pg', orgId: 'o', publishedAt: null }] }) }) });
+    dbSelect.mockReturnValue(previewRows([{ page: { id: 'pg', orgId: 'o', publishedAt: null }, trustState: 'trusted' }]));
     const res = await app.request('/trust/public/preview/good');
     expect(res.status).toBe(200); expect(res.headers.get('Cache-Control')).toBe('no-store'); expect((await res.json()).data.preview).toBe(true);
   });
@@ -188,8 +194,72 @@ describe('badge, documents, preview', () => {
     await expectGeneric404(await app.request('/trust/card/preview'));
     expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
   });
-  it('preview: valid token but page gone → generic 404', async () => {
-    dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+  it('preview: valid token but page gone (or org/partner not live) → generic 404', async () => {
+    dbSelect.mockReturnValue(previewRows([]));
     await expectGeneric404(await app.request('/trust/public/preview/good'));
+  });
+  it('I10: the preview render applies the org/partner liveness predicate', async () => {
+    const wheres: unknown[] = [];
+    dbSelect.mockReturnValue(previewRows([{ page: { id: 'pg', orgId: 'o', publishedAt: null }, trustState: 'trusted' }], wheres));
+    expect((await app.request('/trust/public/preview/good')).status).toBe(200);
+    const sqlText = new PgDialect().sqlToQuery(wheres[0] as never).sql;
+    expect(sqlText).toContain('public_link_live_org');
+    expect(sqlText).toContain('public_link_live_partner');
+  });
+  it('I10: a restricted partner gets the generic 404 for a fresh preview; probation is allowed', async () => {
+    dbSelect.mockReturnValue(previewRows([{ page: { id: 'pg', orgId: 'o', publishedAt: null }, trustState: 'restricted' }]));
+    const denied = await app.request('/trust/public/preview/good');
+    await expectGeneric404(denied);
+    expect(denied.headers.get('Cache-Control')).toBe('no-store');
+    dbSelect.mockReturnValue(previewRows([{ page: { id: 'pg', orgId: 'o', publishedAt: null }, trustState: 'probation' }]));
+    expect((await app.request('/trust/public/preview/good')).status).toBe(200);
+  });
+  it('I10: self-hosted (trust mode off) never reads trust_state for the preview', async () => {
+    trustMode.value = 'off';
+    dbSelect.mockReturnValue(previewRows([{ page: { id: 'pg', orgId: 'o', publishedAt: null }, trustState: 'restricted' }]));
+    expect((await app.request('/trust/public/preview/good')).status).toBe(200);
+    trustMode.value = 'enforce';
+  });
+  it('I12: a partner-home page document downloads via /public/:partnerSlug/documents/:id', async () => {
+    dbSelect.mockReturnValue(docRow());
+    const hit = await app.request(`/trust/public/nw/documents/${DOC_ID}`);
+    expect(hit.status).toBe(200);
+    expect(resolve.resolvePublishedTrustPage).toHaveBeenCalledWith('nw', null);
+    expect(hit.headers.get('Content-Disposition')).toMatch(/^attachment/);
+    expect(await hit.text()).toBe('pdf');
+  });
+  it('I12: the partner-home document route applies the same checks (unlinked id → no SQL; limiter first; malformed id)', async () => {
+    await expectGeneric404(await app.request('/trust/public/nw/documents/00000000-0000-4000-8000-000000000000'));
+    expect(dbSelect).not.toHaveBeenCalled();
+    await expectGeneric404(await app.request('/trust/public/nw/documents/not-a-uuid'));
+    limiter.rateLimiter.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+    expect((await app.request(`/trust/public/nw/documents/${DOC_ID}`)).status).toBe(429);
+    serving.isServing.mockResolvedValue(false);
+    await expectGeneric404(await app.request(`/trust/public/nw/documents/${DOC_ID}`));
+  });
+});
+
+describe('unmatched paths (I9)', () => {
+  beforeEach(() => { vi.clearAllMocks(); redis.client = {}; serving.isServing.mockResolvedValue(true); resolve.resolvePublishedTrustPage.mockResolvedValue(RESOLVED); });
+  it.each([
+    ['GET', '/trust/card/nw/acme/extra'],
+    ['GET', '/trust/card/nw/acme/extra/more'],
+    ['GET', '/trust/public/nw/acme/whatever'],
+    ['GET', '/trust/public/nw/acme/documents/x/y'],
+    ['POST', '/trust/public/nw/acme'],
+    ['DELETE', '/trust/card/nw'],
+  ])('%s %s → the generic 404, no-store, nothing else, no admission', async (method, path) => {
+    const res = await app.request(path, { method });
+    await expectGeneric404(res);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('X-Robots-Tag')).toBeNull();
+    expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
+    expect(dbSelect).not.toHaveBeenCalled();
+  });
+  it('an ordinary miss 404 is no-store too (never cached by a proxy)', async () => {
+    serving.isServing.mockResolvedValue(false);
+    const res = await app.request('/trust/card/nw/acme');
+    await expectGeneric404(res);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
   });
 });
