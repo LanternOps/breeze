@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { portalApi, trustDocumentPath, type TrustCard, type TrustPageResponse } from '@/lib/api';
 import { FRAMEWORK_META, type TrustPagePublicControl } from '@breeze/shared';
 import { TrustStatusPill } from './TrustStatusPill';
-import { coverageNote, controlCopy, frameworkChip, groupControlsByCategory, NOT_ASSESSED_REASON_COPY, relativeTime } from './trustPageFormat';
+import { coverageNote, controlCopy, frameworkChip, groupControlsByCategory, notAssessedReasonCopy, relativeTime } from './trustPageFormat';
 
 interface Props { partnerSlug: string | null; orgSlug: string | null; card: TrustCard | null; previewToken?: string; initial?: TrustPageResponse | null }
 
@@ -61,7 +61,7 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
           <div key={g.category}>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{g.label}</h2>
             <ul className="divide-y rounded-lg border bg-card">
-              {g.controls.map((c) => <ControlRow key={c.id} control={c} />)}
+              {g.controls.map((c) => <ControlRow key={c.id} control={c} coverageFloorPct={payload.methodology.coverageFloorPct} />)}
             </ul>
           </div>
         ))}
@@ -85,8 +85,8 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
           <ul className="divide-y rounded-lg border bg-card">
             {payload.documents.map((d) => (
               <li key={d.id} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-                <div><a className="font-medium hover:underline" href={docHref(d.id)}>{d.title}</a><p className="text-xs text-muted-foreground">{d.category} · {(d.byteSize / 1024).toFixed(0)} KB · {new Date(d.updatedAt).toLocaleDateString('en-US')}</p></div>
-                <a className="text-xs doc-accent-text hover:underline" href={docHref(d.id)}>Download</a>
+                <div>{docHref(d.id) ? <a className="font-medium hover:underline" href={docHref(d.id)}>{d.title}</a> : <span className="font-medium">{d.title}</span>}<p className="text-xs text-muted-foreground">{d.category} · {(d.byteSize / 1024).toFixed(0)} KB · {new Date(d.updatedAt).toLocaleDateString('en-US')}</p></div>
+                {docHref(d.id) && <a className="text-xs doc-accent-text hover:underline" href={docHref(d.id)}>Download</a>}
               </li>
             ))}
           </ul>
@@ -108,7 +108,7 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
   );
 }
 
-function ControlRow({ control }: { control: TrustPagePublicControl }) {
+function ControlRow({ control, coverageFloorPct }: { control: TrustPagePublicControl; coverageFloorPct: number }) {
   const copy = controlCopy(control.id);
   const note = coverageNote(control);
   return (
@@ -116,7 +116,7 @@ function ControlRow({ control }: { control: TrustPagePublicControl }) {
       <div className="min-w-0 flex-1">
         <p className="font-medium">{copy.title} <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">Continuously verified</span></p>
         <p className="text-sm text-muted-foreground">{copy.description}</p>
-        {control.status === 'not_assessed' && control.reason && <p className="mt-1 text-xs text-muted-foreground">{NOT_ASSESSED_REASON_COPY[control.reason]}</p>}
+        {control.status === 'not_assessed' && control.reason && <p className="mt-1 text-xs text-muted-foreground">{notAssessedReasonCopy(control.reason, { coverageFloorPct, unit: control.unit })}</p>}
         <p className="mt-1 flex flex-wrap gap-1">{control.frameworkRefs.map((r) => <span key={`${r.framework}:${r.ref}`} className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">{frameworkChip(r)}</span>)}</p>
       </div>
       <div className="text-right">

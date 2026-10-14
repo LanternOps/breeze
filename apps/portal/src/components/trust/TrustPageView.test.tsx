@@ -45,9 +45,17 @@ describe('TrustPageView', () => {
     expect(screen.getByText(/CIS Controls® are a registered trademark/)).toBeInTheDocument();
     expect(screen.getByText(/security@acme.example/)).toBeInTheDocument();
   });
-  it('renders the sanitized intro HTML and never a raw script', () => {
+  it('renders server-sanitized intro HTML', () => {
     render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: { ...payload, introHtml: '<p>Hi</p>' } } as never} />);
     expect(screen.getByText('Hi')).toBeInTheDocument();
+    expect(screen.getByText('Hi').parentElement!.innerHTML).toBe('<p>Hi</p>');
+  });
+  it('not-assessed users control says users; preview mode shows document titles as plain text', () => {
+    const users = { ...payload.controls[2], status: 'not_assessed', reason: 'insufficient_telemetry', percent: null, assessed: null, eligible: null };
+    render(<TrustPageView partnerSlug={null} orgSlug={null} card={null} previewToken="t" initial={{ ...initial, payload: { ...payload, controls: [users] } } as never} />);
+    expect(within(screen.getByTestId('trust-control-mfa_registered_m365')).getByText(/eligible users reported/)).toBeInTheDocument();
+    expect(screen.getByText('Security policy').tagName).toBe('SPAN');
+    expect(screen.queryByText('Download')).toBeNull();
   });
   it('stale → "Verification paused" banner and muted pills', () => {
     render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, stale: true, lastEvaluatedAt: '2026-10-11T00:00:00.000Z' } as never} />);

@@ -63,8 +63,18 @@ export function statusLabel(status: TrustControlStatus): string {
   return trustStatusLabel(status);
 }
 
-export const NOT_ASSESSED_REASON_COPY: Record<TrustNotAssessedReason, string> = {
-  insufficient_telemetry: 'Fewer than 80% of eligible devices reported inside the evidence window',
-  no_data: 'No evidence has been collected for this control yet',
-  not_applicable: 'This control does not apply to this environment',
-};
+const UNIT_NOUN: Record<TrustPagePublicControl['unit'], string> = { devices: 'devices', users: 'users', org: 'sources' };
+
+export function notAssessedReasonCopy(
+  reason: TrustNotAssessedReason,
+  ctx: { coverageFloorPct: number; unit: TrustPagePublicControl['unit'] },
+): string {
+  switch (reason) {
+    case 'insufficient_telemetry':
+      return `Fewer than ${ctx.coverageFloorPct}% of eligible ${UNIT_NOUN[ctx.unit]} reported inside the evidence window`;
+    case 'no_data':
+      return 'No evidence has been collected for this control yet';
+    case 'not_applicable':
+      return 'This control does not apply to this environment';
+  }
+}

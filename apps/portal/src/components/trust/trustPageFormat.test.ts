@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coverageNote, frameworkChip, groupControlsByCategory, relativeTime } from './trustPageFormat';
+import { notAssessedReasonCopy, coverageNote, frameworkChip, groupControlsByCategory, relativeTime } from './trustPageFormat';
 const ctl = (over: Record<string, unknown>) => ({ id: 'disk_encryption', category: 'data_protection', source: 'telemetry', unit: 'devices', status: 'met', reason: null, percent: null, assessed: null, eligible: null, evidenceAsOf: null, frameworkRefs: [], ...over }) as never;
 describe('trustPageFormat', () => {
   it('groups in canonical category order and drops empty categories', () => {
@@ -20,5 +20,10 @@ describe('trustPageFormat', () => {
     const now = new Date('2026-10-13T12:00:00Z');
     expect(relativeTime('2026-10-13T10:00:00Z', now)).toBe('2 hours ago');
     expect(relativeTime(null, now)).toBe('never');
+  });
+  it('not-assessed copy follows the floor and unit', () => {
+    expect(notAssessedReasonCopy('insufficient_telemetry', { coverageFloorPct: 80, unit: 'devices' })).toBe('Fewer than 80% of eligible devices reported inside the evidence window');
+    expect(notAssessedReasonCopy('insufficient_telemetry', { coverageFloorPct: 90, unit: 'users' })).toBe('Fewer than 90% of eligible users reported inside the evidence window');
+    expect(notAssessedReasonCopy('insufficient_telemetry', { coverageFloorPct: 80, unit: 'org' })).toMatch(/eligible sources/);
   });
 });
