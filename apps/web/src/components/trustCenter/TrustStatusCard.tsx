@@ -30,6 +30,18 @@ interface Props {
   onReload: () => Promise<void>;
 }
 
+const KNOWN_GATE_REASONS = new Set([
+  'probation_default_deny',
+  'probation_enrollment_cap',
+  'restricted',
+  'partner_unresolved',
+]);
+
+/** Translation sub-key (under status.gate) for an API trust-gate reason code. */
+export function gateReasonKey(reason: string | null | undefined): string {
+  return reason && KNOWN_GATE_REASONS.has(reason) ? reason : 'generic';
+}
+
 export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPageChange, onReload }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
@@ -49,11 +61,12 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
   const url = trustPublicUrl(state.publicPath);
   const gateOk = slugs.valid && canPublish.allowed;
   const publishDisabled = !canWrite || !gateOk;
+  const gateReasonText = canPublish.reason ? tr(`status.gate.${gateReasonKey(canPublish.reason)}`) : undefined;
   const publishHint = !canWrite
     ? tr('publish.disabledNoWrite')
     : !slugs.valid
       ? tr('publish.disabledSlug')
-      : canPublish.reason ?? undefined;
+      : gateReasonText;
 
   const openPublish = () => {
     if (!canWrite) return;
@@ -196,7 +209,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
 
       {!canPublish.allowed && canPublish.reason && (
         <p className="rounded-md border bg-muted/40 p-3 text-sm" data-testid="trust-gate-notice">
-          {tr('notice.cannotPublish', { reason: canPublish.reason })}
+          {tr('notice.cannotPublish', { reason: gateReasonText })}
         </p>
       )}
       {!canWrite && <p className="text-xs text-muted-foreground">{tr('notice.readOnly')}</p>}

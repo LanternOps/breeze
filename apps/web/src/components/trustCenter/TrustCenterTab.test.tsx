@@ -43,10 +43,10 @@ describe('TrustCenterTab', () => {
     expect(screen.getByText(/organization slug/i)).toBeInTheDocument();
   });
   it('disables Publish and shows the API reason when the trust gate denies', async () => {
-    api.getTrustPage.mockResolvedValue({ ...state(), canPublish: { allowed: false, reason: 'Account is on probation' } });
+    api.getTrustPage.mockResolvedValue({ ...state(), canPublish: { allowed: false, reason: 'probation_default_deny' } });
     render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
     expect(await screen.findByTestId('trust-publish')).toBeDisabled();
-    expect(screen.getByText(/Account is on probation/)).toBeInTheDocument();
+    expect(screen.getByText(/still in its trial period/)).toBeInTheDocument();
   });
   it('disables every mutation button without organizations:write', async () => {
     perms.canWrite = false;

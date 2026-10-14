@@ -167,7 +167,14 @@
         "copy": "Copy link",
         "copied": "Link copied",
         "copyFailed": "Could not copy the link.",
-        "lastEvaluated": "Controls last evaluated {{date}}"
+        "lastEvaluated": "Controls last evaluated {{date}}",
+        "gate": {
+          "probation_default_deny": "Your account is still in its trial period. Publishing opens once your account is trusted.",
+          "probation_enrollment_cap": "Your account has reached the limit for its trial period. Publishing opens once your account is trusted.",
+          "restricted": "Your account is restricted, so publishing is turned off.",
+          "partner_unresolved": "We could not determine the partner account for this organization.",
+          "generic": "Publishing is turned off for this account right now."
+        }
       },
       "publish": {
         "button": "Publish",
@@ -216,7 +223,7 @@
         "unknown": "The page address has a problem ({{problem}})."
       },
       "notice": {
-        "cannotPublish": "Publishing is not available yet: {{reason}}",
+        "cannotPublish": "Publishing is not available yet. {{reason}}",
         "readOnly": "You can view this page but need permission to edit organizations to change or publish it."
       },
       "errors": {

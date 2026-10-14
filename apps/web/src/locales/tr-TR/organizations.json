@@ -34,6 +34,7 @@
       "billing": "Sözleşmeler ve Faturalandırma",
       "service": "Hizmet",
       "documents": "Belgeler",
+      "trust": "Güven Merkezi",
       "activity": "Etkinlik"
     },
     "comingSoon": {
@@ -151,6 +152,162 @@
         "invoices": "Faturalar",
         "quotes": "Alıntılar",
         "agreements": "Anlaşmalar"
+      }
+    },
+    "trust": {
+      "title": "Güven Merkezi",
+      "subtitle": "Bu kuruluşun güvenlik duruşunu gösteren, Breeze'in canlı telemetrisinden oluşturulan herkese açık bir sayfa.",
+      "loading": "Güven Merkezi yükleniyor…",
+      "loadFailed": "Güven Merkezi sayfası yüklenemedi.",
+      "retry": "Tekrar dene",
+      "status": {
+        "unpublished": "Yayımlanmadı",
+        "published": "{{date}} tarihinde yayımlandı",
+        "publicUrl": "Herkese açık sayfa",
+        "copy": "Bağlantıyı kopyala",
+        "copied": "Bağlantı kopyalandı",
+        "copyFailed": "Bağlantı kopyalanamadı.",
+        "lastEvaluated": "Kontroller en son {{date}} tarihinde değerlendirildi",
+        "gate": {
+          "probation_default_deny": "Hesabınız hâlâ deneme döneminde. Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+          "probation_enrollment_cap": "Hesabınız deneme döneminin sınırına ulaştı. Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+          "restricted": "Hesabınız kısıtlanmış olduğundan yayımlama kapalı.",
+          "partner_unresolved": "Bu kuruluşun iş ortağı hesabı belirlenemedi.",
+          "generic": "Bu hesap için yayımlama şu anda kapalı."
+        }
+      },
+      "publish": {
+        "button": "Yayımla",
+        "republish": "Güncellemeyi yayımla",
+        "title": "Güven Merkezi sayfasını yayımla",
+        "intro": "Bu işlem, sayfayı bağlantıya sahip herkese görünür yapar{{indexable}}. Kontroller yayımlarken yeniden değerlendirilir.",
+        "indexableSuffix": " ve arama motorları dizine ekleyebilir",
+        "attestationCheckbox": "Müşteri bu sayfanın yayımlanmasına izin verdi",
+        "authorizedBy": "Yetkilendiren (ad, görev)",
+        "authorizedByPlaceholder": "Ayşe Yılmaz, operasyon direktörü",
+        "recorded": "{{name}} tarafından {{date}} tarihinde yetkilendirildi",
+        "change": "Değiştir",
+        "partnerHomeNote": "Bu, iş ortağının kendi sayfasıdır; bu nedenle müşteri yetkisi gerekmez.",
+        "confirm": "Yayımla",
+        "publishing": "Yayımlanıyor…",
+        "cancel": "İptal",
+        "success": "Güven Merkezi sayfası yayımlandı.",
+        "failed": "Güven Merkezi sayfası yayımlanamadı.",
+        "disabledNoWrite": "Yayımlamak için kuruluşları düzenleme izni gerekir.",
+        "disabledSlug": "Yayımlamadan önce sayfa adresini düzeltin."
+      },
+      "unpublish": {
+        "button": "Yayından kaldır",
+        "title": "Güven Merkezi sayfasını yayından kaldır",
+        "message": "Herkese açık bağlantı hemen çalışmayı durdurur ve rozet devre dışı kalır. İstediğiniz zaman yeniden yayımlayabilirsiniz.",
+        "confirm": "Yayından kaldır",
+        "success": "Güven Merkezi sayfası yayından kaldırıldı.",
+        "failed": "Güven Merkezi sayfası yayından kaldırılamadı."
+      },
+      "preview": {
+        "button": "Önizleme",
+        "failed": "Önizleme açılamadı.",
+        "popupBlocked": "Tarayıcınız önizleme penceresini engelledi. Bu site için açılır pencerelere izin verip tekrar deneyin."
+      },
+      "partnerHome": {
+        "label": "İş ortağının kendi Güven Merkezi sayfası olarak kullan",
+        "description": "Bu sayfayı bir müşteri adresi yerine iş ortağı adresinde gösterir. Müşteri yetkisi gerektirmez.",
+        "success": "İş ortağı sayfası ayarı kaydedildi.",
+        "failed": "İş ortağı sayfası ayarı değiştirilemedi."
+      },
+      "slug": {
+        "warningTitle": "Bu sayfanın adresi henüz geçerli değil",
+        "openSettings": "Kuruluş ayarlarında düzenle",
+        "partner_slug": "İş ortağı slug değeri herkese açık bir adres için geçerli değil.",
+        "org_slug": "Kuruluş slug değeri herkese açık bir adres için geçerli değil.",
+        "unknown": "Sayfa adresinde bir sorun var ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Yayımlama henüz kullanılamıyor. {{reason}}",
+        "readOnly": "Bu sayfayı görüntüleyebilirsiniz, ancak değiştirmek veya yayımlamak için kuruluşları düzenleme izni gerekir."
+      },
+      "errors": {
+        "revisionMismatch": "Bu sayfa siz yükledikten sonra değişti. Yenileyip tekrar deneyin.",
+        "authorizationRequired": "Yayımlamayı kimin yetkilendirdiğini kaydedin.",
+        "mfaRequired": "Yayımlamak için çok faktörlü kimlik doğrulama gerekir. Profilinizin güvenlik ayarlarında MFA'yı etkinleştirin ve tekrar deneyin.",
+        "trustProbation": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+        "trustRestricted": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+        "slugInvalid": "Sayfa adresi geçerli değil. Slug değerini kuruluş ayarlarında düzeltin.",
+        "introTooLong": "Giriş metni çok uzun.",
+        "partnerWideRequired": "İş ortağı sayfasını yalnızca iş ortağı genelindeki yöneticiler değiştirebilir."
+      },
+      "controls": {
+        "republishBanner": "Değişiklikler, yeniden yayımladığınızda herkese açık sayfaya uygulanır.",
+        "saveFailed": "Değişiklik kaydedilemedi.",
+        "unavailable": "Kontrol sonuçları şu anda kullanılamıyor.",
+        "assessedCount": "{{eligible}} içinden {{assessed}} değerlendirildi",
+        "shown": "Gösteriliyor",
+        "hidden": "Gizli",
+        "toggles": {
+          "showPercentages": {
+            "label": "Yüzdeleri göster",
+            "description": "Herkese açık sayfada her kontrolün yüzdesini gösterir."
+          },
+          "showDeviceCount": {
+            "label": "Cihaz sayısını göster",
+            "description": "Kaç cihazın kapsandığını gösterir."
+          },
+          "showManagedBy": {
+            "label": "“Yöneten” bilgisini göster",
+            "description": "Şirketinizi yönetim hizmetini sağlayan sağlayıcı olarak belirtir."
+          },
+          "searchIndexable": {
+            "label": "Arama motorlarına izin ver",
+            "description": "Arama motorlarının herkese açık sayfayı dizine eklemesine izin verir."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Giriş",
+        "contactLabel": "Güvenlik iletişim e-postası",
+        "contactInvalid": "Geçerli bir e-posta adresi girin.",
+        "websiteLabel": "Web sitesi",
+        "websiteInvalid": "https:// ile başlayan tam bir adres girin.",
+        "save": "İçeriği kaydet",
+        "saved": "İçerik kaydedildi.",
+        "saveFailed": "İçerik kaydedilemedi."
+      },
+      "documents": {
+        "description": "Herkese açık sayfada paylaşmayı seçtiğiniz belgeler. Yalnızca açıkça onayladığınız belgeler gösterilir.",
+        "upload": "Belge yükle",
+        "library": "Belge kitaplığı",
+        "libraryEmpty": "Başka belge yok.",
+        "libraryFailed": "Belge kitaplığı yüklenemedi.",
+        "add": "Ekle",
+        "linked": "Herkese açık sayfada ({{max}} içinden {{count}})",
+        "linkedEmpty": "Seçili belge yok.",
+        "remove": "Kaldır",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "superseded": "Yerine yenisi geçti — daha yeni sürümü yeniden bağlayın",
+        "save": "Belgeleri kaydet",
+        "saved": "Belgeler kaydedildi.",
+        "saveFailed": "Belgeler kaydedilemedi.",
+        "unavailable": "Bu belgeler artık kullanılamıyor: {{titles}}. Kaldırın veya yeniden bağlayın.",
+        "disclosureTitle": "Bu belge yayımlansın mı?",
+        "disclosureMessage": "“{{title}}”, herkese açık sayfa bağlantısına sahip herkese görünür olacak.",
+        "disclosureCheckbox": "Bu belgenin herkese açık yayın için onaylandığını doğruluyorum",
+        "disclosureConfirm": "Belgeyi ekle"
+      },
+      "sections": {
+        "controlsHeading": "Güvenlik kontrolleri",
+        "contentHeading": "Sayfa içeriği",
+        "documentsHeading": "Belgeler"
+      },
+      "badge": {
+        "title": "Rozet",
+        "description": "Web sitenize canlı bir durum rozeti ekleyin. Rozet herkese açık sayfaya bağlanır.",
+        "unpublishedNote": "Rozet, sayfa yayımlandığında görünür.",
+        "snippet": "Rozet HTML'si",
+        "alt": "Güvenlik duruşu rozeti",
+        "copy": "Parçayı kopyala",
+        "copied": "Parça kopyalandı",
+        "copyFailed": "Parça kopyalanamadı."
       }
     },
     "documents": {

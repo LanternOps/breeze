@@ -34,6 +34,7 @@
       "billing": "Contratos e faturamento",
       "service": "Serviço",
       "documents": "Documentos",
+      "trust": "Central de Confiança",
       "activity": "Atividade"
     },
     "comingSoon": {
@@ -151,6 +152,162 @@
         "invoices": "Faturas",
         "quotes": "Cotações",
         "agreements": "Acordos"
+      }
+    },
+    "trust": {
+      "title": "Central de Confiança",
+      "subtitle": "Uma página pública com a postura de segurança desta organização, gerada a partir da telemetria ao vivo do Breeze.",
+      "loading": "Carregando a Central de Confiança…",
+      "loadFailed": "Não foi possível carregar a página da Central de Confiança.",
+      "retry": "Tentar novamente",
+      "status": {
+        "unpublished": "Não publicada",
+        "published": "Publicada em {{date}}",
+        "publicUrl": "Página pública",
+        "copy": "Copiar link",
+        "copied": "Link copiado",
+        "copyFailed": "Não foi possível copiar o link.",
+        "lastEvaluated": "Controles avaliados pela última vez em {{date}}",
+        "gate": {
+          "probation_default_deny": "Sua conta ainda está no período de avaliação. A publicação é liberada quando a conta passa a ser confiável.",
+          "probation_enrollment_cap": "Sua conta atingiu o limite do período de avaliação. A publicação é liberada quando a conta passa a ser confiável.",
+          "restricted": "Sua conta está restrita, por isso a publicação está desativada.",
+          "partner_unresolved": "Não foi possível identificar a conta de parceiro desta organização.",
+          "generic": "A publicação está desativada para esta conta no momento."
+        }
+      },
+      "publish": {
+        "button": "Publicar",
+        "republish": "Publicar atualização",
+        "title": "Publicar página da Central de Confiança",
+        "intro": "Isso torna a página visível para qualquer pessoa com o link{{indexable}}. Os controles são avaliados novamente ao publicar.",
+        "indexableSuffix": " e os mecanismos de busca podem indexá-la",
+        "attestationCheckbox": "O cliente autorizou a publicação desta página",
+        "authorizedBy": "Autorizado por (nome, cargo)",
+        "authorizedByPlaceholder": "Maria Silva, diretora de operações",
+        "recorded": "Autorizado por {{name}} em {{date}}",
+        "change": "Alterar",
+        "partnerHomeNote": "Esta é a página do próprio parceiro, portanto não é necessária autorização do cliente.",
+        "confirm": "Publicar",
+        "publishing": "Publicando…",
+        "cancel": "Cancelar",
+        "success": "Página da Central de Confiança publicada.",
+        "failed": "Não foi possível publicar a página da Central de Confiança.",
+        "disabledNoWrite": "Você precisa de permissão para editar organizações para publicar.",
+        "disabledSlug": "Corrija o endereço da página antes de publicar."
+      },
+      "unpublish": {
+        "button": "Cancelar publicação",
+        "title": "Cancelar a publicação da página da Central de Confiança",
+        "message": "O link público deixará de funcionar imediatamente e o selo ficará apagado. Você pode publicar novamente a qualquer momento.",
+        "confirm": "Cancelar publicação",
+        "success": "Publicação da página da Central de Confiança cancelada.",
+        "failed": "Não foi possível cancelar a publicação da página da Central de Confiança."
+      },
+      "preview": {
+        "button": "Pré-visualizar",
+        "failed": "Não foi possível abrir a pré-visualização.",
+        "popupBlocked": "Seu navegador bloqueou a janela de pré-visualização. Permita pop-ups neste site e tente novamente."
+      },
+      "partnerHome": {
+        "label": "Usar como a página própria da Central de Confiança do parceiro",
+        "description": "Exibe esta página no endereço do parceiro em vez de um endereço de cliente. Não exige autorização do cliente.",
+        "success": "Configuração da página do parceiro salva.",
+        "failed": "Não foi possível alterar a configuração da página do parceiro."
+      },
+      "slug": {
+        "warningTitle": "O endereço desta página ainda não é válido",
+        "openSettings": "Editar nas configurações da organização",
+        "partner_slug": "O slug do parceiro não é válido para um endereço público.",
+        "org_slug": "O slug da organização não é válido para um endereço público.",
+        "unknown": "O endereço da página tem um problema ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "A publicação ainda não está disponível. {{reason}}",
+        "readOnly": "Você pode ver esta página, mas precisa de permissão para editar organizações para alterá-la ou publicá-la."
+      },
+      "errors": {
+        "revisionMismatch": "Esta página foi alterada desde que você a carregou. Recarregue e tente novamente.",
+        "authorizationRequired": "Registre quem autorizou a publicação.",
+        "mfaRequired": "A publicação exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
+        "trustProbation": "A publicação é liberada quando sua conta passa a ser confiável.",
+        "trustRestricted": "A publicação é liberada quando sua conta passa a ser confiável.",
+        "slugInvalid": "O endereço da página não é válido. Corrija o slug nas configurações da organização.",
+        "introTooLong": "A introdução é longa demais.",
+        "partnerWideRequired": "Somente administradores com acesso a todo o parceiro podem alterar a página do parceiro."
+      },
+      "controls": {
+        "republishBanner": "As alterações são aplicadas à página pública quando você publicar novamente.",
+        "saveFailed": "Não foi possível salvar a alteração.",
+        "unavailable": "Os resultados dos controles não estão disponíveis no momento.",
+        "assessedCount": "{{assessed}} de {{eligible}} avaliados",
+        "shown": "Exibido",
+        "hidden": "Oculto",
+        "toggles": {
+          "showPercentages": {
+            "label": "Mostrar percentuais",
+            "description": "Exibe o percentual de cada controle na página pública."
+          },
+          "showDeviceCount": {
+            "label": "Mostrar quantidade de dispositivos",
+            "description": "Exibe quantos dispositivos estão cobertos."
+          },
+          "showManagedBy": {
+            "label": "Mostrar “Gerenciado por”",
+            "description": "Indica sua empresa como o provedor responsável pela gestão."
+          },
+          "searchIndexable": {
+            "label": "Permitir mecanismos de busca",
+            "description": "Permite que os mecanismos de busca indexem a página pública."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introdução",
+        "contactLabel": "E-mail de contato de segurança",
+        "contactInvalid": "Informe um endereço de e-mail válido.",
+        "websiteLabel": "Site",
+        "websiteInvalid": "Informe um endereço completo com https://.",
+        "save": "Salvar conteúdo",
+        "saved": "Conteúdo salvo.",
+        "saveFailed": "Não foi possível salvar o conteúdo."
+      },
+      "documents": {
+        "description": "Documentos que você escolhe compartilhar na página pública. Somente os documentos que você aprova explicitamente são exibidos.",
+        "upload": "Enviar um documento",
+        "library": "Biblioteca de documentos",
+        "libraryEmpty": "Não há mais documentos disponíveis.",
+        "libraryFailed": "Não foi possível carregar a biblioteca de documentos.",
+        "add": "Adicionar",
+        "linked": "Na página pública ({{count}} de {{max}})",
+        "linkedEmpty": "Nenhum documento selecionado.",
+        "remove": "Remover",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "superseded": "Substituído — vincule novamente a versão mais recente",
+        "save": "Salvar documentos",
+        "saved": "Documentos salvos.",
+        "saveFailed": "Não foi possível salvar os documentos.",
+        "unavailable": "Estes documentos não estão mais disponíveis: {{titles}}. Remova-os ou vincule-os novamente.",
+        "disclosureTitle": "Publicar este documento?",
+        "disclosureMessage": "“{{title}}” ficará visível para qualquer pessoa com o link da página pública.",
+        "disclosureCheckbox": "Confirmo que este documento está aprovado para divulgação pública",
+        "disclosureConfirm": "Adicionar documento"
+      },
+      "sections": {
+        "controlsHeading": "Controles de segurança",
+        "contentHeading": "Conteúdo da página",
+        "documentsHeading": "Documentos"
+      },
+      "badge": {
+        "title": "Selo",
+        "description": "Incorpore um selo de status ao vivo no seu site. Ele leva à página pública.",
+        "unpublishedNote": "O selo aparece quando a página é publicada.",
+        "snippet": "HTML do selo",
+        "alt": "Selo de postura de segurança",
+        "copy": "Copiar trecho",
+        "copied": "Trecho copiado",
+        "copyFailed": "Não foi possível copiar o trecho."
       }
     },
     "documents": {
