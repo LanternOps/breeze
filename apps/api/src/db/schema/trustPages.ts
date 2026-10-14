@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { pgTable, pgEnum, uuid, varchar, text, integer, char, boolean, timestamp, jsonb, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import type { TrustPagePublicPayload, TrustPublishedConfig } from '@breeze/shared';
 
 export const trustPageDocumentVisibilityEnum = pgEnum('trust_page_document_visibility', ['public', 'gated']);
 
@@ -32,6 +32,8 @@ export const trustPages = pgTable('trust_pages', {
   publicationAuthorizedAt: timestamp('publication_authorized_at', { withTimezone: true }),
   publicationAuthorizedByUserId: uuid('publication_authorized_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   lastEvaluatedAt: timestamp('last_evaluated_at', { withTimezone: true }),
+  /** Frozen at publish; the refresh builds from this, not the draft columns (spec §19 item 17). */
+  publishedConfig: jsonb('published_config').$type<TrustPublishedConfig>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

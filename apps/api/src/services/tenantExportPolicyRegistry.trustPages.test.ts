@@ -38,6 +38,12 @@ describe('trust center export policy', () => {
     expect(payload?.openContainerReviewed).toBe(true);
   });
 
+  it('excludes the jsonb frozen publication config as an open container', () => {
+    const cfg = getTenantExportPolicyRegistry()['trust_pages']?.columns['published_config'];
+    expect(cfg?.decision).toBe('exclude');
+    expect(cfg?.openContainerReviewed).toBe(true);
+  });
+
   it('includes payload_sha256 as a reviewed integrity digest', () => {
     const digest = getTenantExportPolicyRegistry()['trust_page_snapshots']?.columns['payload_sha256'];
     expect(digest?.decision).toBe('include');

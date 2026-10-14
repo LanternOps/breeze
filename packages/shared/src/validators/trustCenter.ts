@@ -7,6 +7,13 @@ export const trustSlugSchema = z.string().min(1).max(63).regex(TRUST_SLUG_RE);
 
 export const TRUST_INTRO_MAX_CHARS = 5000;
 export const TRUST_DOCUMENTS_MAX = 20;
+/**
+ * Upper bound on a SANITIZED, stored intro: the sanitizer can expand the
+ * editor's raw input (entities, anchor attributes) up to ~6x; 8x bounds the
+ * worst case. Mirrored by the trust_pages_intro_len_chk CHECK in
+ * migrations/2026-12-28-120100-trust-pages.sql — change both together.
+ */
+export const TRUST_INTRO_STORED_MAX_CHARS = TRUST_INTRO_MAX_CHARS * 8;
 
 const httpsUrl = z.string().trim().max(2048).refine((v) => /^https:\/\/[^\s/$.?#].[^\s]*$/i.test(v), 'https URL required');
 const isoDate = z.string().datetime({ offset: true });
@@ -128,3 +135,23 @@ export const trustPagePublishSchema = z.strictObject({
   authorization: z.strictObject({ authorizedBy: z.string().trim().min(2).max(200) }).optional(),
 });
 export const trustPagePartnerHomeSchema = z.strictObject({ isPartnerHome: z.boolean() });
+
+/**
+ * The publication config frozen onto trust_pages.published_config at publish
+ * (spec §19 item 17). The hourly refresh rebuilds from THIS, not the draft
+ * columns, so draft edits reach the public page only through another publish.
+ * Evidence and live document links are still re-read on refresh: the public
+ * documents are documentIds ∩ live/public/confirmed/not-superseded links.
+ */
+export const trustPublishedConfigSchema = z.strictObject({
+  hiddenControlIds: z.array(telemetryControlIdSchema).max(TELEMETRY_CONTROL_IDS.length),
+  showPercentages: z.boolean(),
+  showDeviceCount: z.boolean(),
+  showManagedBy: z.boolean(),
+  searchIndexable: z.boolean(),
+  introHtml: z.string().max(TRUST_INTRO_STORED_MAX_CHARS).nullable(),
+  websiteUrl: z.string().max(2048).nullable(),
+  securityContactEmail: z.string().max(320).nullable(),
+  documentIds: z.array(z.string().guid()).max(TRUST_DOCUMENTS_MAX),
+});
+export type TrustPublishedConfig = z.infer<typeof trustPublishedConfigSchema>;

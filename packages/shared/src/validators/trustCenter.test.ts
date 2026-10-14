@@ -1,7 +1,7 @@
 // packages/shared/src/validators/trustCenter.test.ts
 import { describe, expect, it } from 'vitest';
 import {
-  TRUST_SLUG_RE, trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublicPayloadSchema, trustPagePublishSchema, trustPageUpdateSchema,
+  TRUST_INTRO_MAX_CHARS, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, trustPageDocumentsUpdateSchema, trustPublishedConfigSchema, trustPagePartnerHomeSchema, trustPagePublicPayloadSchema, trustPagePublishSchema, trustPageUpdateSchema,
 } from './trustCenter';
 
 const control = {
@@ -123,5 +123,31 @@ describe('control superRefine rules', () => {
     const id = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c';
     const d = { documentId: id, visibility: 'public', disclosureConfirmed: true };
     expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [d, d] }).success).toBe(false);
+  });
+});
+
+describe('trustPublishedConfigSchema (frozen publication config, Ruling 20)', () => {
+  const cfg = {
+    hiddenControlIds: ['dns_filtering'], showPercentages: true, showDeviceCount: false, showManagedBy: true,
+    searchIndexable: false, introHtml: '<p>Hi</p>', websiteUrl: 'https://acme.example', securityContactEmail: 'security@acme.example',
+    documentIds: ['0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c'],
+  };
+  it('accepts a complete config', () => {
+    expect(trustPublishedConfigSchema.parse(cfg)).toEqual(cfg);
+  });
+  it('is strict and requires every field', () => {
+    expect(trustPublishedConfigSchema.safeParse({ ...cfg, extra: 1 }).success).toBe(false);
+    const { documentIds: _d, ...missing } = cfg;
+    expect(trustPublishedConfigSchema.safeParse(missing).success).toBe(false);
+  });
+  it('accepts nullable content fields and bounds the stored intro and documents', () => {
+    expect(trustPublishedConfigSchema.safeParse({ ...cfg, introHtml: null, websiteUrl: null, securityContactEmail: null }).success).toBe(true);
+    expect(trustPublishedConfigSchema.safeParse({ ...cfg, introHtml: 'x'.repeat(TRUST_INTRO_STORED_MAX_CHARS + 1) }).success).toBe(false);
+    expect(trustPublishedConfigSchema.safeParse({ ...cfg, documentIds: Array.from({ length: 21 }, () => cfg.documentIds[0]) }).success).toBe(false);
+    expect(trustPublishedConfigSchema.safeParse({ ...cfg, hiddenControlIds: ['not_a_control'] }).success).toBe(false);
+  });
+  it('stored intro cap is 8x the editor cap (mirrored by the trust_pages CHECK)', () => {
+    expect(TRUST_INTRO_STORED_MAX_CHARS).toBe(TRUST_INTRO_MAX_CHARS * 8);
+    expect(TRUST_INTRO_STORED_MAX_CHARS).toBe(40_000);
   });
 });

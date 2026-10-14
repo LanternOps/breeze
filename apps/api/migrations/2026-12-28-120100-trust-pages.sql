@@ -45,10 +45,18 @@ DO $$ BEGIN
     DEFERRABLE INITIALLY IMMEDIATE;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-DO $$ BEGIN
-  ALTER TABLE trust_pages ADD CONSTRAINT trust_pages_intro_len_chk
-    CHECK (intro_html IS NULL OR length(intro_html) <= 20000);
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Frozen publication config (spec §19 item 17): written by publish, read by the
+-- hourly refresh, so draft edits never reach the public page without a publish.
+-- ADD COLUMN IF NOT EXISTS so a database that ran an earlier draft of this
+-- (unshipped) file converges.
+ALTER TABLE trust_pages ADD COLUMN IF NOT EXISTS published_config JSONB;
+
+-- Bounds the SANITIZED intro: TRUST_INTRO_STORED_MAX_CHARS = TRUST_INTRO_MAX_CHARS * 8
+-- = 40,000 (packages/shared/src/validators/trustCenter.ts) — change both together.
+-- Drop + re-add so a database holding the earlier 20,000 bound converges.
+ALTER TABLE trust_pages DROP CONSTRAINT IF EXISTS trust_pages_intro_len_chk;
+ALTER TABLE trust_pages ADD CONSTRAINT trust_pages_intro_len_chk
+  CHECK (intro_html IS NULL OR length(intro_html) <= 40000);
 
 -- Target for the children's composite FKs.
 CREATE UNIQUE INDEX IF NOT EXISTS trust_pages_id_org_uq ON trust_pages (id, org_id);
