@@ -243,6 +243,64 @@
         "copy": "Copy snippet",
         "copied": "Snippet copied",
         "copyFailed": "Could not copy the snippet."
+      },
+      "controls": {
+        "republishBanner": "Changes apply to the public page when you publish again.",
+        "saveFailed": "Could not save the change.",
+        "unavailable": "Control results are unavailable right now.",
+        "assessedCount": "{{assessed}} of {{eligible}} assessed",
+        "shown": "Shown",
+        "hidden": "Hidden",
+        "toggles": {
+          "showPercentages": {
+            "label": "Show percentages",
+            "description": "Display the percentage for each control on the public page."
+          },
+          "showDeviceCount": {
+            "label": "Show device count",
+            "description": "Display how many devices are covered."
+          },
+          "showManagedBy": {
+            "label": "Show \"Managed by\"",
+            "description": "Name your company as the managing provider."
+          },
+          "searchIndexable": {
+            "label": "Allow search engines",
+            "description": "Let search engines index the public page."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introduction",
+        "contactLabel": "Security contact email",
+        "contactInvalid": "Enter a valid email address.",
+        "websiteLabel": "Website",
+        "websiteInvalid": "Enter a full https:// address.",
+        "save": "Save content",
+        "saved": "Content saved.",
+        "saveFailed": "Could not save the content."
+      },
+      "documents": {
+        "description": "Documents you choose to share on the public page. Only documents you explicitly approve are shown.",
+        "upload": "Upload a document",
+        "library": "Document library",
+        "libraryEmpty": "No more documents available.",
+        "libraryFailed": "Could not load the document library.",
+        "add": "Add",
+        "linked": "On the public page ({{count}} of {{max}})",
+        "linkedEmpty": "No documents selected.",
+        "remove": "Remove",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "superseded": "Superseded — relink the newer version",
+        "save": "Save documents",
+        "saved": "Documents saved.",
+        "saveFailed": "Could not save the documents.",
+        "unavailable": "These documents are no longer available: {{titles}}. Remove or relink them.",
+        "disclosureTitle": "Publish this document?",
+        "disclosureMessage": "\"{{title}}\" will be visible to anyone with the public page link.",
+        "disclosureCheckbox": "I confirm this document is approved for public release",
+        "disclosureConfirm": "Add document"
       }
     },
     "documents": {
@@ -335,9 +393,18 @@
       "restore": "Restore",
       "restoring": "Restoring…"
     },
-    "rowMenu": { "label": "Actions for {{name}}" },
-    "search": { "label": "Search organizations, contacts and emails" },
-    "lens": { "label": "Lens", "setup": "Setup", "account": "Account", "both": "Both" },
+    "rowMenu": {
+      "label": "Actions for {{name}}"
+    },
+    "search": {
+      "label": "Search organizations, contacts and emails"
+    },
+    "lens": {
+      "label": "Lens",
+      "setup": "Setup",
+      "account": "Account",
+      "both": "Both"
+    },
     "filters": {
       "label": "Filter",
       "all": "All",
@@ -348,8 +415,20 @@
       "archived": "Archived",
       "unlinked": "Unlinked"
     },
-    "sort": { "label": "Sort", "manual": "Manual order", "name": "A to Z", "tickets": "Open tickets" },
-    "columns": { "organization": "Organization", "setup": "Setup", "account": "Account data", "tickets": "Open tickets", "actions": "Row actions", "integrations": "Integrations" },
+    "sort": {
+      "label": "Sort",
+      "manual": "Manual order",
+      "name": "A to Z",
+      "tickets": "Open tickets"
+    },
+    "columns": {
+      "organization": "Organization",
+      "setup": "Setup",
+      "account": "Account data",
+      "tickets": "Open tickets",
+      "actions": "Row actions",
+      "integrations": "Integrations"
+    },
     "band": {
       "label": "Account readiness",
       "all": "Accounts",
@@ -396,7 +475,10 @@
       "backup": "Open backup for {{orgName}}"
     },
     "integrations": {
-      "system": { "psa": "PSA", "dns_filter": "DNS filter" },
+      "system": {
+        "psa": "PSA",
+        "dns_filter": "DNS filter"
+      },
       "state": {
         "linked": "Linked",
         "pending": "Pending",
@@ -432,7 +514,11 @@
         "openSettings": "Open {{system}} settings"
       }
     },
-    "tickets": { "open": "{{count}} open", "awaiting": "{{count}} awaiting customer", "sla": "{{count}} SLA breached" },
+    "tickets": {
+      "open": "{{count}} open",
+      "awaiting": "{{count}} awaiting customer",
+      "sla": "{{count}} SLA breached"
+    },
     "meta": {
       "workspace": "Workspace",
       "devices_one": "{{count}} device",

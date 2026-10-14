@@ -4,6 +4,9 @@ import { getTrustControls, getTrustPage, type TrustControlsState, type TrustPage
 import { usePermissions } from '@/lib/permissions';
 import { useLatest, type OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import TrustBadgeSnippet from './TrustBadgeSnippet';
+import TrustContentSection from './TrustContentSection';
+import TrustControlsSection from './TrustControlsSection';
+import TrustDocumentsSection from './TrustDocumentsSection';
 import TrustStatusCard from './TrustStatusCard';
 
 type LoadState = { failed: true } | { page: TrustPageState; controls: TrustControlsState | null } | null;
@@ -76,7 +79,10 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
         onPageChange={onPageChange}
         onReload={load}
       />
-      {/* Task 16 mount points: TrustControlsSection, TrustContentSection, TrustDocumentsSection. */}
+      <TrustControlsSection orgId={orgId} orgFetch={orgFetch} state={page} controls={state.controls} canWrite={canWrite} onReload={load} />
+      <TrustContentSection orgId={orgId} orgFetch={orgFetch} page={page.page} canWrite={canWrite} onReload={load} />
+      {/* W1 follow-up: the GET state carries no linked documents (A2 lacks a read endpoint), so links start empty. */}
+      <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} initialLinks={[]} onReload={load} />
       <TrustBadgeSnippet publicPath={page.publicPath} badgePath={page.badgePath} published={page.page.publishedAt !== null} />
     </div>
   );
