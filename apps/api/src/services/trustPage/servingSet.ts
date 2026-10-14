@@ -1,0 +1,94 @@
+// Admission filter, not an authority (spec trust-center §7): a hit still goes
+// through the live resolve; a miss answers 404 without touching Postgres.
+import { and, eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { organizations, partners, trustPages } from '../../db/schema';
+import { getRedis } from '../redis';
+import { livePublicationPredicate } from './predicate';
+import type { TrustPagePublicPayload } from '@breeze/shared';
+
+export const TRUST_SERVING_SET_KEY = 'trust:serving';
+const SNAPSHOT_TTL_SECONDS = 3600;
+const snapshotKey = (id: string) => `trust:snapshot:${id}`;
+
+export const trustServingMember = (partnerSlug: string, orgSlug?: string): string =>
+  orgSlug ? `${partnerSlug}/${orgSlug.toLowerCase()}` : partnerSlug;
+
+export async function isServing(member: string): Promise<boolean | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try { return (await redis.sismember(TRUST_SERVING_SET_KEY, member)) === 1; }
+  catch (err) { console.warn('[trustPage] serving-set read failed', err); return null; }
+}
+export async function addServing(members: string[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis || members.length === 0) return;
+  try { await redis.sadd(TRUST_SERVING_SET_KEY, ...members); } catch (err) { console.warn('[trustPage] serving-set add failed', err); }
+}
+export async function removeServing(members: string[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis || members.length === 0) return;
+  try { await redis.srem(TRUST_SERVING_SET_KEY, ...members); } catch (err) { console.warn('[trustPage] serving-set remove failed', err); }
+}
+
+/** Members a partner SHOULD have right now, computed from the tables (system context). */
+async function liveMembersForPartner(partnerId: string): Promise<{ members: string[]; partnerSlug: string | null }> {
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({ partnerSlug: partners.slug, orgSlug: organizations.slug, isPartnerHome: trustPages.isPartnerHome })
+      .from(trustPages)
+      .innerJoin(organizations, eq(organizations.id, trustPages.orgId))
+      .innerJoin(partners, eq(partners.id, trustPages.partnerId))
+      .where(and(eq(trustPages.partnerId, partnerId), livePublicationPredicate())),
+  ));
+  const members = new Set<string>();
+  let partnerSlug: string | null = null;
+  for (const r of rows as Array<{ partnerSlug: string; orgSlug: string; isPartnerHome: boolean }>) {
+    partnerSlug = r.partnerSlug;
+    members.add(trustServingMember(r.partnerSlug, r.orgSlug));
+    if (r.isPartnerHome) members.add(trustServingMember(r.partnerSlug));
+  }
+  return { members: [...members], partnerSlug };
+}
+
+/** Called by publish/unpublish, trust-state changes and the hourly refresh. */
+export async function refreshServingForPartner(partnerId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const { members, partnerSlug } = await liveMembersForPartner(partnerId);
+  try {
+    const existing = await redis.smembers(TRUST_SERVING_SET_KEY);
+    // We only know the partner's slug when it has a live page; otherwise fall back to the DB slug lookup.
+    const slug = partnerSlug ?? (await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
+      (await db.select({ slug: partners.slug }).from(partners).where(eq(partners.id, partnerId)).limit(1))[0]?.slug ?? null)));
+    if (slug) {
+      const stale = existing.filter((m) => (m === slug || m.startsWith(`${slug}/`)) && !members.includes(m));
+      if (stale.length) await redis.srem(TRUST_SERVING_SET_KEY, ...stale);
+    }
+    if (members.length) await redis.sadd(TRUST_SERVING_SET_KEY, ...members);
+  } catch (err) { console.warn('[trustPage] serving-set refresh failed', err); }
+}
+
+/** Full rebuild (hourly worker): swap atomically so readers never see an empty set. */
+export async function replaceServingSet(members: string[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const tmp = `${TRUST_SERVING_SET_KEY}:rebuild:${Date.now()}`;
+  try {
+    const multi = redis.multi();
+    if (members.length) multi.sadd(tmp, ...members); else multi.sadd(tmp, '__empty__');
+    multi.rename(tmp, TRUST_SERVING_SET_KEY);
+    if (!members.length) multi.srem(TRUST_SERVING_SET_KEY, '__empty__');
+    await multi.exec();
+  } catch (err) { console.warn('[trustPage] serving-set rebuild failed', err); }
+}
+
+export async function cacheSnapshotPayload(snapshotId: string, payload: TrustPagePublicPayload): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try { await redis.setex(snapshotKey(snapshotId), SNAPSHOT_TTL_SECONDS, JSON.stringify(payload)); } catch { /* cache only */ }
+}
+export async function readCachedSnapshotPayload(snapshotId: string): Promise<TrustPagePublicPayload | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try { const raw = await redis.get(snapshotKey(snapshotId)); return raw ? (JSON.parse(raw) as TrustPagePublicPayload) : null; } catch { return null; }
+}
