@@ -78,6 +78,7 @@ import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
 import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
+import { trustPageRoutes } from './routes/trustPage';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -850,6 +851,7 @@ api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
 api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', trustPageRoutes); // /orgs/:orgId/trust-page/* (Trust Center W1)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);

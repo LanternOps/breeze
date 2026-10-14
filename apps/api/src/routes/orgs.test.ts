@@ -1586,6 +1586,63 @@ describe('org routes', () => {
       expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
+    // trustPageUnbranded — operator-only flag, mirrors aiForOfficeEnabled.
+    it('passes trustPageUnbranded: true through to the db update payload (system scope)', async () => {
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', trustPageUnbranded: true }]) }) };
+        })
+      } as any);
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trustPageUnbranded: true })
+      });
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.trustPageUnbranded).toBe(true);
+    });
+
+    it('rejects a non-boolean trustPageUnbranded value with 400 (schema guard)', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trustPageUnbranded: 'yes' })
+      });
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not let a partner-scope user set trustPageUnbranded via /partners/me (schema isolation)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      let capturedUpdateData: any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }]) }) };
+        })
+      } as any);
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trustPageUnbranded: true })
+      });
+      // Zod strips the unknown key (same as aiForOfficeEnabled): 200, but never written.
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData?.trustPageUnbranded).toBeUndefined();
+    });
+
     describe('contact.website scheme allowlist', () => {
       // The website is rendered as a link in branded PDFs, invoices and email
       // footers, so an unvalidated scheme here is stored XSS that fires for
