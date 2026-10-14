@@ -7,8 +7,9 @@
  *   - closes `expired` windows (`ends_at <= now()`);
  *   - closes `principal_inactive` windows (principal disabled, expired, or
  *     without tickets:write) and `opener_inactive` windows (opener no longer
- *     an active partner-wide admin of the partner, or either of the opener's
- *     epochs moved since the window opened);
+ *     an active partner-wide admin of the partner, their partner role no
+ *     longer grants organizations.write and tickets.write, or either of the
+ *     opener's epochs moved since the window opened);
  *   - publishes `migration.window_closed` once per org for every closed
  *     window whose summary is not out yet, and retries it until it is.
  *

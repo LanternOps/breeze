@@ -713,7 +713,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_anomaly_incidents',
   'metric_rollups',
   'metric_rollups_default',
-  // migration_window_orgs (#8313, 2026-12-23-110000): partner-axis, but its
+  // migration_window_orgs (#8313, 2026-12-25-120000): partner-axis, but its
   // org_id names an org a migration window may import into, so erasing the
   // org drops it from every window. It references organizations (deleted
   // last) and migration_windows (a partner table, not in this list).

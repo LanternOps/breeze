@@ -328,7 +328,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Policy: breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // Functional forge: customerEmailDomainsRls.integration.test.ts.
   ['customer_email_domains', 'partner_id'],
-  // Ticket migration windows (#8313, 2026-12-23-110000): partner-axis grants
+  // Ticket migration windows (#8313, 2026-12-25-120000): partner-axis grants
   // of import mode to one keyless principal across chosen orgs. Policy:
   // breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // migration_window_orgs also carries a non-tenancy org_id and is in

@@ -3,7 +3,7 @@
  * unprivileged `breeze_app` role (setup.ts), so RLS and the composite FKs are
  * really in force.
  *
- * Migration under test: 2026-12-23-110000-migration-windows.sql
+ * Migration under test: 2026-12-25-120000-migration-windows.sql
  *
  * Proves:
  *   - open: owner-only, keyless principal with tickets:write, active orgs of
@@ -18,7 +18,11 @@
  *     holder of FOR SHARE, and a FOR SHARE taken during a close sees it closed;
  *   - close: per-org counts, frozen summary, partner-level audit row;
  *   - the sweep closes on every condition and publishes one
- *     `migration.window_closed` per org, exactly once.
+ *     `migration.window_closed` per org, exactly once;
+ *   - #8486 review: open refuses an opener the sweep would not keep (a
+ *     system-scope owner with no partner membership, a role without the open
+ *     permissions), and the sweep closes a window whose opener's role lost
+ *     them; a wildcard grant counts.
  */
 import './setup';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -38,6 +42,8 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import {
   auditLogs,
   migrationWindowOrgs,
+  permissions,
+  rolePermissions,
   migrationWindows,
   organizations,
   partnerServicePrincipalKeys,
@@ -54,7 +60,7 @@ import {
 } from '../../services/migrationWindows';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { Database } from '../../db';
-import { assignUserToPartner, createOrganization, createPartner, createRole, createUser } from './db-utils';
+import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -62,18 +68,36 @@ const DAY = 86_400_000;
 let seq = 0;
 const uniq = (p: string) => `${p}-${Date.now()}-${seq++}`;
 
-async function partnerAdmin(partnerId: string, orgAccess: 'all' | 'selected' = 'all') {
+const OPEN_PERMISSIONS = [
+  { resource: 'organizations', action: 'write' },
+  { resource: 'tickets', action: 'write' },
+];
+
+async function partnerAdmin(
+  partnerId: string,
+  orgAccess: 'all' | 'selected' = 'all',
+  grants: Array<{ resource: string; action: string }> = OPEN_PERMISSIONS,
+) {
   const user = await createUser({ partnerId, orgId: null, email: `${uniq('mw')}@example.test` });
   const role = await createRole({ scope: 'partner', partnerId });
-  await assignUserToPartner(user.id, partnerId, role.id, orgAccess);
-  return user;
+  await grantRolePermissions(role!.id, grants);
+  await assignUserToPartner(user.id, partnerId, role!.id, orgAccess);
+  return { ...user, roleId: role!.id };
 }
 
-async function seed() {
+/** Drops one permission from a role, as a role edit in the staff UI would. */
+async function revokeRolePermission(roleId: string, resource: string, action: string) {
+  const [perm] = await getTestDb().select({ id: permissions.id }).from(permissions)
+    .where(and(eq(permissions.resource, resource), eq(permissions.action, action)));
+  await getTestDb().delete(rolePermissions)
+    .where(and(eq(rolePermissions.roleId, roleId), eq(rolePermissions.permissionId, perm!.id)));
+}
+
+async function seed(ownerGrants: Array<{ resource: string; action: string }> = OPEN_PERMISSIONS) {
   const partner = await createPartner();
   const orgA = await createOrganization({ partnerId: partner.id });
   const orgB = await createOrganization({ partnerId: partner.id });
-  const owner = await partnerAdmin(partner.id);
+  const owner = await partnerAdmin(partner.id, 'all', ownerGrants);
   const [principal] = await getTestDb().insert(partnerServicePrincipals).values({
     partnerId: partner.id,
     name: uniq('Import'),
@@ -391,5 +415,73 @@ describe('migration windows (real Postgres, as breeze_app)', () => {
     const before = ours();
     await sweepMigrationWindows(new Date());
     expect(ours()).toBe(before);
+  });
+  runDb('#8486 review: open refuses an owner the sweep would not keep; nothing is written', async () => {
+    // A system-scope owner: a principal it created, but no partner membership.
+    const fx = await seed();
+    const systemOwner = await createUser({ partnerId: fx.partner.id, orgId: null, email: `${uniq('sys')}@example.test` });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, systemOwner.id));
+    await getTestDb().update(partnerServicePrincipals).set({ createdBy: systemOwner.id })
+      .where(eq(partnerServicePrincipals.id, fx.principal.id));
+    await expect(open(fx, {}, systemOwner.id))
+      .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED', status: 403 });
+
+    // A partner owner whose role lacks tickets.write, and one whose role lacks organizations.write.
+    for (const grants of [[{ resource: 'organizations', action: 'write' }], [{ resource: 'tickets', action: 'write' }]]) {
+      const other = await seed(grants);
+      await expect(open(other)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED', status: 403 });
+      expect(await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.partnerId, other.partner.id))).toEqual([]);
+    }
+    // An owner without all-org access.
+    const selected = await seed();
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'selected' })
+      .where(and(eq(partnerUsers.userId, selected.owner.id), eq(partnerUsers.partnerId, selected.partner.id)));
+    await expect(open(selected)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED' });
+
+    expect(await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.partnerId, fx.partner.id))).toEqual([]);
+    // A wildcard grant qualifies, as it does for hasPermission(), also split
+    // across the two axes.
+    const wildcard = await seed([{ resource: '*', action: '*' }]);
+    await expect(open(wildcard)).resolves.toMatchObject({ status: 'open' });
+    const anyWrite = await seed([{ resource: '*', action: 'write' }]);
+    await expect(open(anyWrite)).resolves.toMatchObject({ status: 'open' });
+  });
+
+  runDb('#8486 review: an opener on a global system role (the seeded Partner Admin shape) opens, and the sweep keeps the window', async () => {
+    const fx = await seed();
+    // is_system, partner_id NULL, org_id NULL: readable under the partner
+    // context only through the system-role branch of the roles and
+    // role_permissions policies.
+    const systemRole = await createRole({ scope: 'partner', isSystem: true, name: uniq('System Partner Admin') });
+    await grantRolePermissions(systemRole!.id, [{ resource: '*', action: '*' }]);
+    await getTestDb().update(partnerUsers).set({ roleId: systemRole!.id })
+      .where(and(eq(partnerUsers.userId, fx.owner.id), eq(partnerUsers.partnerId, fx.partner.id)));
+    const window = await open(fx);
+    expect(window).toMatchObject({ status: 'open' });
+    await sweepMigrationWindows(new Date());
+    const [row] = await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.id, window.id));
+    expect(row).toMatchObject({ status: 'open' });
+  });
+
+  runDb('#8486 review: the sweep closes a window whose opener lost a permission opening needs, and keeps a wildcard opener', async () => {
+    const lostTickets = await seed();
+    const lostOrgs = await seed();
+    const wildcard = await seed([{ resource: '*', action: '*' }]);
+    const windows = {
+      lostTickets: await open(lostTickets),
+      lostOrgs: await open(lostOrgs),
+      wildcard: await open(wildcard),
+    };
+    await revokeRolePermission(lostTickets.owner.roleId, 'tickets', 'write');
+    await revokeRolePermission(lostOrgs.owner.roleId, 'organizations', 'write');
+
+    await sweepMigrationWindows(new Date());
+
+    const statusOf = async (id: string) => (await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.id, id)))[0]!;
+    expect(await statusOf(windows.lostTickets.id)).toMatchObject({ status: 'closed', closedReason: 'opener_inactive', closedBy: null });
+    expect(await statusOf(windows.lostOrgs.id)).toMatchObject({ status: 'closed', closedReason: 'opener_inactive' });
+    expect(await statusOf(windows.wildcard.id)).toMatchObject({ status: 'open' });
+    const events = published.filter((e) => e.payload.windowId === windows.lostTickets.id);
+    expect(events.map((e) => e.payload.closedReason)).toEqual(['opener_inactive', 'opener_inactive']);
   });
 });

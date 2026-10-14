@@ -6,7 +6,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(),
 }));
 
-import { closingReason, resolveWritesPerHour, validateWindowSpan } from './migrationWindows';
+import { MIGRATION_WINDOW_OPENER_PERMISSIONS, closingReason, resolveWritesPerHour, validateWindowSpan } from './migrationWindows';
 import { migrationWindowLimits } from './migrationWindowLimits';
 
 const NOW = new Date('2030-01-01T12:00:00.000Z');
@@ -24,6 +24,7 @@ const healthy = {
   snapshotCredentialEpoch: 7,
   snapshotMfaEpoch: 2,
   openerIsPartnerWideAdmin: true,
+  openerHoldsOpenPermissions: true,
 };
 
 describe('closingReason — every condition that ends a window (spec §3.1)', () => {
@@ -49,6 +50,8 @@ describe('closingReason — every condition that ends a window (spec §3.1)', ()
     ['no longer active', { openerStatus: 'disabled' }],
     ['deleted (no user row)', { openerStatus: null, openerCredentialEpoch: null, openerMfaEpoch: null }],
     ['no longer a partner-wide admin', { openerIsPartnerWideAdmin: false }],
+    // #8486 review: a role downgrade that drops what opening needs.
+    ['downgraded to a role without the open permissions', { openerHoldsOpenPermissions: false }],
     ['past a password change (credential_epoch moved)', { openerCredentialEpoch: 8 }],
     ['past an MFA change (mfa_epoch moved)', { openerMfaEpoch: 3 }],
   ])('closes when the opener is %s', (_label, patch) => {
@@ -57,6 +60,15 @@ describe('closingReason — every condition that ends a window (spec §3.1)', ()
 
   it('reports expiry first when several conditions hold', () => {
     expect(closingReason({ ...healthy, endsAt: NOW, principalStatus: 'disabled', openerStatus: 'disabled' }, NOW)).toBe('expired');
+  });
+});
+
+describe('the permissions an opener needs and keeps needing (spec §3.1, §3.3)', () => {
+  it('are organizations.write (the route gate) and what the delegation table requires for tickets:write', () => {
+    expect([...MIGRATION_WINDOW_OPENER_PERMISSIONS]).toEqual([
+      { resource: 'organizations', action: 'write' },
+      { resource: 'tickets', action: 'write' },
+    ]);
   });
 });
 
