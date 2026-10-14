@@ -154,7 +154,10 @@ vi.mock('../services/edrProviders/persist', () => ({
   isDeadlockError: m.isDeadlockError,
   clearExpiredTenantDenials: m.clearExpiredTenantDenials,
 }));
-vi.mock('../services/edrProviders/actionStatus', () => ({ pollEdrActionStatus: m.pollEdrActionStatus }));
+vi.mock('../services/edrProviders/actionStatus', () => ({
+  pollEdrActionStatus: m.pollEdrActionStatus,
+  EDR_ACTION_UNKNOWN_GIVEUP_MS: 30 * 60_000,
+}));
 vi.mock('../services/edrProviders/mapping', () => ({ autoMapEdrTenants: m.autoMapEdrTenants }));
 vi.mock('../services/edrProviders/alerts', () => ({
   evaluateEdrAlerts: (...a: unknown[]) => { events.push(`alerts@${contextDepth}`); return m.evaluateEdrAlerts(...a); },
