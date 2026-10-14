@@ -12,6 +12,7 @@ import {
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { classifyDeviceProtection } from './protection';
+import { edrEndpointProtectedSql, isEdrVisibilityEnabled } from './edrVisibility';
 import { sqlTimestamp } from './sqlTimestamp';
 
 export async function enrichedDevicesForOrg(
@@ -19,6 +20,9 @@ export async function enrichedDevicesForOrg(
   args: { page: number; limit: number; timezone: string },
 ) {
   const offset = (args.page - 1) * args.limit;
+  // #8166: same flag-gated EDR leg as the security page, so both portal views
+  // classify a device identically. Flag off: no EDR column is even selected.
+  const edrVisible = await isEdrVisibilityEnabled(orgId);
   const [countRows, rows] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -54,6 +58,7 @@ export async function enrichedDevicesForOrg(
           where ${huntressAgents.orgId} = ${orgId}
             and ${huntressAgents.deviceId} = ${devices.id}
         )`,
+        ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId) } : {}),
         encryption: securityStatus.encryptionStatus,
         lastBackupAt: sql<Date | string | null>`(
           select max(${backupJobs.completedAt})
@@ -120,6 +125,7 @@ export async function enrichedDevicesForOrg(
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
+      hasEdrEndpoint: edrVisible && (row as { hasEdrEndpoint?: boolean }).hasEdrEndpoint === true,
     }),
     encryption: row.encryption,
     lastBackupAt: formatTimestamp(row.lastBackupAt),

@@ -1,8 +1,14 @@
 package heartbeat
 
 import (
+	"compress/gzip"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,5 +189,88 @@ func TestHandleSetLogLevelReportsAppliedAndPersisted(t *testing.T) {
 	o, ok, err := logging.ReadLevelOverride(overridePath, time.Now())
 	if err != nil || !ok || o.Level != "debug" {
 		t.Fatalf("override file not written: ok=%v err=%v o=%+v", ok, err, o)
+	}
+}
+
+// #8610 canary: a successful raise above the base level emits exactly one
+// Info line, which ships at the raised level, so W5 can tell "logs not
+// arriving" from "nothing to say". Persisted and in-memory-only paths alike;
+// no line when the level is not actually raised.
+func TestHandleSetLogLevelCanaryLine(t *testing.T) {
+	cases := []struct {
+		name     string
+		base     string // shipper MinLevel; "" means warn
+		level    string
+		persist  bool
+		wantLine int
+	}{
+		{"debug persisted", "", "debug", true, 1},
+		{"info persisted", "", "info", true, 1},
+		{"debug in memory only", "", "debug", false, 1},
+		{"info in memory only", "", "info", false, 1},
+		{"same as base", "", "warn", true, 0},
+		{"lowered", "", "error", true, 0},
+		{"lowered in memory only", "", "error", false, 0},
+		// Base error, raised to warn: the Info canary is below the warn
+		// shipping floor, so it must carry ShipAlways to ship at all.
+		{"base error raised to warn persisted", "error", "warn", true, 1},
+		{"base error raised to warn in memory only", "error", "warn", false, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var shippedMu sync.Mutex
+			var shipped strings.Builder
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if zr, err := gzip.NewReader(r.Body); err == nil {
+					b, _ := io.ReadAll(zr)
+					shippedMu.Lock()
+					shipped.Write(b)
+					shippedMu.Unlock()
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			buf := &syncBuffer{}
+			logging.Init("text", "debug", buf)
+			t.Cleanup(func() { logging.Init("text", "info", nil) })
+			overridePath := ""
+			if tc.persist {
+				overridePath = filepath.Join(t.TempDir(), logging.LevelOverrideFileName)
+			}
+			base := tc.base
+			if base == "" {
+				base = "warn"
+			}
+			logging.InitShipper(logging.ShipperConfig{
+				ServerURL:         func() string { return srv.URL },
+				AgentID:           "test-agent",
+				AuthToken:         secmem.NewSecureString("test-token"),
+				MinLevel:          base,
+				LevelOverridePath: overridePath,
+			})
+			t.Cleanup(logging.StopShipper)
+
+			result := handleSetLogLevel(nil, Command{
+				ID:      "cmd-canary",
+				Type:    tools.CmdSetLogLevel,
+				Payload: map[string]any{"level": tc.level, "durationMinutes": 30},
+			})
+			if result.Status != "completed" {
+				t.Fatalf("status %s (%s)", result.Status, result.Error)
+			}
+			if got := strings.Count(buf.String(), "log shipping level raised"); got != tc.wantLine {
+				t.Fatalf("canary lines = %d, want %d; log:\n%s", got, tc.wantLine, buf.String())
+			}
+			// The line must actually ship at the raised level (W5 keys on it
+			// in agent_logs, not in the local log). StopShipper drains.
+			logging.StopShipper()
+			shippedMu.Lock()
+			gotShipped := strings.Count(shipped.String(), "log shipping level raised")
+			shippedMu.Unlock()
+			if gotShipped != tc.wantLine {
+				t.Fatalf("shipped canary lines = %d, want %d", gotShipped, tc.wantLine)
+			}
+		})
 	}
 }

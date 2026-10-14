@@ -98,8 +98,8 @@ const ORG_B = "22222222-2222-4222-8222-222222222222";
 const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 const REQUIRED_GRANTS = [
-  ["204e0828-b5ca-4ad8-b9f3-f32a958e7cc4", "User.ReadWrite.All"],
-  ["56760768-b641-451f-8906-e1b8ab31bca7", "User-PasswordProfile.ReadWrite.All"],
+  ["741f803b-c850-494e-b5df-cde7c675a1ca", "User.ReadWrite.All"],
+  ["cc117bb9-00cf-4eb8-b580-ea2a878fe8f7", "User-PasswordProfile.ReadWrite.All"],
 ].map(([appRoleId, value]) => ({
   resourceApplicationId: GRAPH_APP_ID,
   appRoleId,
@@ -111,7 +111,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
     profile: {
       id: "customer-graph-actions",
       displayName: "Customer Graph Actions",
-      manifestVersion: 1,
+      manifestVersion: 2,
       requiredGrants: REQUIRED_GRANTS,
     },
     onboardingEnabled: true,
@@ -128,8 +128,8 @@ function connection(overrides: Record<string, unknown> = {}) {
     displayName: "Northwind Tenant",
     status: "active",
     grantHealth: "active",
-    manifestVersion: 1,
-    currentManifestVersion: 1,
+    manifestVersion: 2,
+    currentManifestVersion: 2,
     observedGrants: REQUIRED_GRANTS,
     missingGrants: [],
     unexpectedGrants: [],
@@ -274,7 +274,7 @@ describe("M365CustomerGraphActionsCard", () => {
     render(<M365CustomerGraphActionsCard />);
 
     expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
-    expect(screen.getByText("Manifest version 1")).toBeInTheDocument();
+    expect(screen.getByText("Manifest version 2")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Required permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Observed permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Missing permissions" })).toBeInTheDocument();

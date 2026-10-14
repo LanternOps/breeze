@@ -12,7 +12,7 @@ afterEach(cleanup);
 it('renders a collapsed roster with a count chip, expands to networks and devices, and selects a device', async () => {
   const onSelect = vi.fn();
   render(<TopologySiteRoster siteName="Main Office" roster={[undeclared]} nodesById={nodes} onSelect={onSelect} />);
-  const toggle = screen.getByRole('button', { name: /Other \/ unidentified networks \(2\)/ });
+  const toggle = screen.getByRole('button', { name: /Devices not on this site's networks \(2\)/ });
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByText('10.1.5.0/24 via 10.1.5.1')).toBeNull();
   await userEvent.click(toggle);
@@ -27,7 +27,7 @@ it('renders a collapsed roster with a count chip, expands to networks and device
 it('counts distinct devices across entries and words an unidentified entry as not identified', async () => {
   const unidentified: RosterNetwork = { groupId: 'g2', prefix: null, gatewayAddresses: [], kind: 'unidentified', memberNodeIds: [D2, D3] };
   render(<TopologySiteRoster siteName="Main Office" roster={[undeclared, unidentified]} nodesById={nodes} onSelect={vi.fn()} />);
-  const toggle = screen.getByRole('button', { name: /Other \/ unidentified networks \(3\)/ });
+  const toggle = screen.getByRole('button', { name: /Devices not on this site's networks \(3\)/ });
   await userEvent.click(toggle);
   expect(screen.getByText('Network not identified')).toBeInTheDocument();
   expect(screen.getByText('10.1.5.0/24 via 10.1.5.1')).toBeInTheDocument();
@@ -36,7 +36,7 @@ it('counts distinct devices across entries and words an unidentified entry as no
 
 it('shows just the prefix when the network reports no gateway, and renders nothing for an empty roster', async () => {
   const { rerender } = render(<TopologySiteRoster siteName="Main Office" roster={[{ ...undeclared, gatewayAddresses: [] }]} nodesById={nodes} onSelect={vi.fn()} />);
-  await userEvent.click(screen.getByRole('button', { name: /Other \/ unidentified networks/ }));
+  await userEvent.click(screen.getByRole('button', { name: /Devices not on this site's networks/ }));
   expect(screen.getByText('10.1.5.0/24')).toBeInTheDocument();
   rerender(<TopologySiteRoster siteName="Main Office" roster={[]} nodesById={nodes} onSelect={vi.fn()} />);
   expect(screen.queryByTestId('topology-site-roster')).toBeNull();

@@ -226,3 +226,36 @@ export function demoDiscoveryProfiles(): DemoDiscoveryProfile[] {
     { name: 'Lakeside LAN sweep', siteId: DEMO_LAKESIDE_SITE_ID, subnets: [SECOND_LAN.prefix] },
   ];
 }
+
+export type DemoPresenceDayRow = {
+  hostname: string; assigned: 'main' | 'lakeside'; state: 'home' | 'visiting' | 'stale'; matched: 'main' | 'lakeside' | null;
+  day: string; firstObservedAt: string; lastObservedAt: string;
+};
+
+/**
+ * SYNTHETIC DEMO HISTORY (site location W3). In production the daily presence summaries are prospective: they start
+ * on the deploy day and nothing backfills them. A fresh demo would therefore need a week of real time before a
+ * wrong-site suggestion could appear, so the seed inserts this fabricated history and re-evaluates.
+ *  - DESKTOP-HD7K2QF and WIN-HD4M8T2C9 (assigned to Main Office): 9 days of 10-hour Lakeside visits, each followed
+ *    by a stale night that reaches the next morning (powered off overnight), ending yesterday. With the evaluator's
+ *    own row for today this is eligible (S§10.2).
+ *  - LAPTOP-LOV-01 (assigned to Lakeside): 3 mixed days (Main Office visits and a day at home), never eligible.
+ * Rows only; no device is moved by any of this.
+ */
+export function demoPresenceHistory(now: Date): DemoPresenceDayRow[] {
+  const at = (ms: number) => new Date(ms).toISOString();
+  const row = (hostname: string, assigned: DemoPresenceDayRow['assigned'], state: DemoPresenceDayRow['state'], matched: DemoPresenceDayRow['matched'],
+    from: number, to: number): DemoPresenceDayRow => ({ hostname, assigned, state, matched, day: at(from).slice(0, 10), firstObservedAt: at(from), lastObservedAt: at(to) });
+  const t = now.getTime();
+  const rows: DemoPresenceDayRow[] = [];
+  for (const hostname of ['DESKTOP-HD7K2QF', 'WIN-HD4M8T2C9']) {
+    for (let k = 9; k >= 1; k--) {
+      rows.push(row(hostname, 'main', 'visiting', 'lakeside', t - k * DAY - 10 * HOUR, t - k * DAY));
+      rows.push(row(hostname, 'main', 'stale', null, t - k * DAY, t - (k - 1) * DAY - 10 * HOUR));
+    }
+  }
+  rows.push(row('LAPTOP-LOV-01', 'lakeside', 'visiting', 'main', t - 3 * DAY - 9 * HOUR, t - 3 * DAY - 2 * HOUR));
+  rows.push(row('LAPTOP-LOV-01', 'lakeside', 'home', null, t - 2 * DAY - 9 * HOUR, t - 2 * DAY - 2 * HOUR));
+  rows.push(row('LAPTOP-LOV-01', 'lakeside', 'visiting', 'main', t - 1 * DAY - 9 * HOUR, t - 1 * DAY - 2 * HOUR));
+  return rows;
+}

@@ -45,7 +45,7 @@ export default function ConversionLedger({ orgId, policyId, sourceTable, revisio
     {error && <button onClick={() => void load()}>{t('common:actions.retry')}</button>}
     {!loading && !error && rows.length === 0 && <p>{t('monitoring:conversion.ledger.empty')}</p>}
     <ul>{rows.map((row) => <li key={row.id}>
-      <p>{row.sourceName} · {formatDateTime(row.convertedAt)} · {row.convertedByName ?? row.convertedBy ?? t('monitoring:conversion.ledger.system')}</p>
+      <p>{row.sourceName} · {formatDateTime(row.convertedAt)} · {row.convertedBy === null ? t('monitoring:conversion.ledger.system') : (row.convertedByName ?? t('monitoring:conversion.ledger.unknownUser'))}</p>
       <ul>{row.outputs.map((output) => <li key={`${output.monitorId}:${output.role}`}>
         <a href={`/alerts/monitors/${output.monitorId}`}>{output.monitorName ?? output.monitorId}</a> · {output.role}
       </li>)}</ul>

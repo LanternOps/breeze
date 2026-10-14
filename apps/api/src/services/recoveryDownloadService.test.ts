@@ -23,6 +23,10 @@ vi.mock('node:fs', async () => {
 });
 
 const resolveSnapshotProviderConfigMock = vi.fn();
+const loadOriginKeyRootsMock = vi.hoisted(() => vi.fn());
+vi.mock('./backupOriginKeyRoots', () => ({
+  loadOriginKeyRoots: (...args: unknown[]) => loadOriginKeyRootsMock(...args),
+}));
 // FIFO queue of rows returned by successive `db.select().from().where().limit()`
 // calls, in call order. `getAuthenticatedRecoveryDownloadTarget` always issues
 // the lineage select first; for an external-reference download,
@@ -86,6 +90,7 @@ import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadService';
+import { normalizeStorageIdentity } from './backupStorageIdentity';
 
 // The identity normalizeStorageIdentity() derives for providerConfig
 // { path: '/var/backups' } — i.e. the pinned identity a snapshot written to
@@ -853,5 +858,114 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       if (result.unavailable) throw new Error('unreachable');
       await expect(readAll(result.stream as unknown as NodeJS.ReadableStream)).rejects.toThrow();
     });
+  });
+});
+
+// #7081: a snapshot's objects are read under its recorded key root. A
+// prefixed_flat snapshot ignores helper-reported metadata.storagePrefix and
+// origin_storage_prefix entirely; external refs resolve through the origin's
+// recorded root, which must equal the snapshot's own (I4).
+describe('snapshot key root (#7081)', () => {
+  const PREFIX = 'msp/acme';
+  const s3Config = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret', prefix: 'ignored-config-prefix' };
+  const IDENTITY = normalizeStorageIdentity('s3', s3Config);
+  const tokenRow = {
+    id: 'token-root',
+    orgId: 'org-1',
+    deviceId: 'device-1',
+    snapshotId: 'snapshot-db-root',
+    status: 'authenticated' as const,
+    authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+    expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+    negotiatedCapabilities: ['snapshot-file-membership-v1'],
+  };
+  const presignedKey = () => {
+    expect(getSignedUrlMock).toHaveBeenCalledTimes(1);
+    const [, command] = (getSignedUrlMock.mock.calls[0] as unknown) as [unknown, { input: { Key: string } }];
+    return command.input.Key;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadOriginKeyRootsMock.mockReset();
+    lineageRows.length = 0;
+    lineageRows.push([{ orgId: 'org-1', deviceId: 'device-1', keyLayout: 'prefixed_flat', keyPrefix: PREFIX }]);
+    resolveSnapshotProviderConfigMock.mockResolvedValue({
+      snapshot: {
+        snapshotId: 'snap-own',
+        storageIdentity: IDENTITY,
+        // Helper-reported; never consulted for a prefixed_flat snapshot.
+        metadata: { storagePrefix: 'evil/snapshots/snap-own' },
+      },
+      providerType: 's3',
+      providerConfig: s3Config,
+    });
+  });
+
+  it('presigns the snapshot\'s own keys under its recorded root, ignoring metadata.storagePrefix', async () => {
+    const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-own/files/x');
+    expect(result.unavailable).toBe(false);
+    expect(presignedKey()).toBe(`${PREFIX}/snapshots/snap-own/files/x`);
+    expect(loadOriginKeyRootsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['without a prefix', { keyLayout: 'prefixed_flat', keyPrefix: null }],
+    ['with a prefix that is not in normalized form', { keyLayout: 'prefixed_flat', keyPrefix: '/msp/acme/' }],
+    ['with a legacy layout carrying a prefix', { keyLayout: 'legacy_flat', keyPrefix: PREFIX }],
+  ])('refuses a snapshot whose recorded root is unreadable (%s), before loading provider credentials', async (_name, pair) => {
+    lineageRows[0] = [{ orgId: 'org-1', deviceId: 'device-1', ...pair }];
+    const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-own/files/x');
+    expect(result).toEqual({
+      unavailable: true,
+      reason: 'This backup was written in a storage format this server version cannot read.',
+    });
+    expect(resolveSnapshotProviderConfigMock).not.toHaveBeenCalled();
+  });
+
+  function authorizeExternal() {
+    lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
+    lineageRows.push([{ id: 'file-row-1' }]); // membership
+    lineageRows.push([{
+      originOrgId: 'org-1',
+      originDeviceId: 'device-1',
+      originStorageIdentity: IDENTITY,
+      // Never used for a prefixed_flat snapshot.
+      originStoragePrefix: 'evil',
+    }]);
+  }
+
+  it('serves an external ref under the origin\'s recorded root when it equals the own root', async () => {
+    authorizeExternal();
+    loadOriginKeyRootsMock.mockResolvedValue(new Map([['snap-origin', { layout: 'prefixed_flat', prefix: PREFIX }]]));
+    const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-origin/files/a');
+    expect(result.unavailable).toBe(false);
+    expect(presignedKey()).toBe(`${PREFIX}/snapshots/snap-origin/files/a`);
+    expect(loadOriginKeyRootsMock).toHaveBeenCalledWith({ orgId: 'org-1', storageIdentity: IDENTITY, originSnapshotIds: ['snap-origin'] });
+  });
+
+  it.each([
+    ['under another root', new Map([['snap-origin', { layout: 'legacy_flat', prefix: null }]])],
+    ['with no recorded root left', new Map()],
+  ])('refuses an external ref whose origin is %s', async (_name, roots) => {
+    authorizeExternal();
+    loadOriginKeyRootsMock.mockResolvedValue(roots);
+    const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-origin/files/a');
+    expect(result).toEqual({
+      unavailable: true,
+      reason: 'Requested path references an object this recovery is not authorized to read.',
+    });
+    expect(getSignedUrlMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a prefixed snapshot on a non-S3 destination', async () => {
+    resolveSnapshotProviderConfigMock.mockResolvedValue({
+      snapshot: { snapshotId: 'snap-own', storageIdentity: 'local::/var/backups', metadata: {} },
+      providerType: 'local',
+      providerConfig: { path: '/var/backups' },
+    });
+    const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-own/files/x');
+    expect(result).toMatchObject({ unavailable: true });
+    expect(statMock).not.toHaveBeenCalled();
   });
 });

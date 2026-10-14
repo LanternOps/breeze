@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "This policy only controls whether devices capture elevation prompts. Verdicts (auto-approve, deny, require approval), the request queue, and audit history are managed in the",
         "privilegedAccessConsole": "Privileged Access console"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Application Rules",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Block specific applications from automated patching, or pin them to a maximum version.",
-        "blocked": "Blocked",
-        "pinned": "Pinned",
-        "maxVersion": "Max version",
-        "pinnedApplicationsNeedAVersion": "Pinned applications need a version.",
-        "addApplication": "Add application",
-        "searchCatalogAndDetectedApplications": "Search catalog and detected applications...",
-        "searching": "Searching...",
-        "catalog": "catalog",
-        "couldnTLoadApplicationsYouCanStill": "Couldn't load applications — you can still add by package ID below.",
-        "noMatches": "No matches.",
-        "orEnterAPackageIDManually": "Or enter a package ID manually",
-        "block": "block",
-        "pin": "pin",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Remove rule for {{application}}"
-      },
       "patchTab": {
         "daily": "Daily",
         "weekly": "Weekly",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Save Changes",
         "createRing": "Create Ring",
-        "thirdPartyRingHint": "Auto-approval rules for third-party updates are configured on the linked Update Ring."
+        "thirdPartyRingHint": "Auto-approval rules for third-party updates are configured on the linked Update Ring.",
+        "ringOwnsApprovalHint": "Auto-approval and application rules are set on the linked Update Ring.",
+        "noRingManualApprovalHint": "No ring linked — patches install only after manual approval.",
+        "unavailableRingOption": "Unavailable ring",
+        "ringInvalidTitle": "The linked Update Ring is no longer available.",
+        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
+        "ringInvalidLegacyRules": "This policy still carries application rules from before they moved to rings ({{rules}}). The ring you choose must already have exactly these rules — add them to it first.",
+        "approvalRulesMovedToRing": "Auto-approval and application rules are now set on the Update Ring. Edit them on the linked ring. If this page was open before the update, reload it and save again."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",
@@ -1116,6 +1104,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "Findings appear in the Vulnerabilities dashboard",
         "thisPolicyOnlyControlsWhetherDevicesAre": "This policy only controls whether devices are scanned. Detected CVEs, risk scores, and remediation actions are managed in the",
         "vulnerabilitiesConsole": "Vulnerabilities console"
+      },
+      "systemProtectionTab": {
+        "title": "System Protection",
+        "description": "Attempt a Windows System Restore checkpoint before patching, scripts, and software installs",
+        "beforePatching": "Before patch installs",
+        "beforePatchingHelp": "Attempt a checkpoint before installing operating system updates.",
+        "beforeScripts": "Before scripts",
+        "beforeScriptsHelp": "Attempt a checkpoint before running a script on the device.",
+        "beforeSoftwareInstall": "Before software installs",
+        "beforeSoftwareInstallHelp": "Attempt a checkpoint before installing or updating software.",
+        "labelPrefix": "Checkpoint label prefix",
+        "labelPrefixHelp": "Shown at the start of each restore point's description in Windows. Up to 64 characters.",
+        "platformDefaultNote": "No policy is assigned. Platform default: a checkpoint is attempted before patch installs only.",
+        "legacyAgentWarning": "Turning this off only takes effect on agents that report System Restore support. Older agents will continue to attempt a checkpoint before patch installs.",
+        "aboutTitle": "About System Restore",
+        "aboutBody": "Applies to Windows devices only. System Restore covers system files, the registry, installed programs and settings. It is not a backup and does not cover personal files. Windows limits restore-point creation to once every 24 hours by default, and a created point can later be removed by Windows or become unusable."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",

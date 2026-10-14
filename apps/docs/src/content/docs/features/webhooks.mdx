@@ -138,6 +138,14 @@ Ticket events are published from the ticketing transactional outbox with **id-on
 | `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
 | `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
 
+### Migration Window Events
+
+A ticket migration window lets a partner admin import ticket history from another system without notifying anyone or firing per-ticket events. Nothing the import writes produces a ticket event. When the window closes, each organization in it gets one summary event.
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
+
 ### Other Events
 
 | Event | Description |

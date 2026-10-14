@@ -231,6 +231,14 @@ type Config struct {
 	// facts can never disagree. See manifestdelegation.go.
 	ManifestDelegationEpoch uint64 `mapstructure:"manifest_delegation_epoch" yaml:"manifest_delegation_epoch"`
 
+	// OwnershipEpoch is the device's PAM ownership epoch as last asserted by
+	// the server in a signed identity assertion v2 (#8202 W4), 0 when none was
+	// ever received. It moves with org_id/site_id: written only by
+	// PersistServerIdentity (never lowered) and enrollment, preserved from disk
+	// by every other save, and reported on each heartbeat so the server can
+	// record which epoch's identity this process has loaded.
+	OwnershipEpoch uint64 `mapstructure:"ownership_epoch" yaml:"ownership_epoch"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
@@ -967,9 +975,9 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 		return err
 	}
 
-	orgID, siteID := cfg.OrgID, cfg.SiteID
+	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
 	if identity == identityFromDisk {
-		orgID, siteID = resolveOrgSiteForSave(cfgPath, orgID, siteID)
+		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
 	}
 
 	viper.Set("agent_id", cfg.AgentID)
@@ -977,6 +985,7 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
+	viper.Set("ownership_epoch", ownershipEpoch)
 	viper.Set("device_id", cfg.DeviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)

@@ -1,6 +1,6 @@
 // Sourced from the shared Zod enums so the UI can't drift from the validators.
-import type { TicketStatus, TicketPriority, TicketAttachmentMeta } from '@breeze/shared';
-export type { TicketStatus, TicketPriority, TicketAttachmentMeta };
+import type { TicketStatus, TicketPriority, TicketAttachmentMeta, TicketType } from '@breeze/shared';
+export type { TicketStatus, TicketPriority, TicketAttachmentMeta, TicketType };
 
 export interface TicketSummary {
   id: string;
@@ -12,6 +12,8 @@ export interface TicketSummary {
   statusName?: string | null;
   statusColor?: string | null;
   priority: TicketPriority;
+  // #7900. Optional so older payloads/fixtures read as incident (the DB default).
+  ticketType?: TicketType;
   source: string;
   orgId: string;
   orgName: string | null;
@@ -61,6 +63,8 @@ export interface TicketDetail extends TicketSummary {
   // submitterName/Email are the display name + reply address (also set for
   // free-text requesters that have no portal account).
   submittedBy: string | null;
+  // org contact the ticket is for (caller verification keys on it); absent on older APIs.
+  requesterContactId?: string | null;
   submitterName: string | null;
   submitterEmail: string | null;
   pendingReason: string | null;

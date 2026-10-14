@@ -243,7 +243,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           preparedForName={invoice.billToName ?? undefined}
         />
 
-        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} />
+        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} lineGrouping={invoice.lineGrouping ?? 'entry'} />
 
         <InvoiceTotals currency={currency} subtotal={invoice.subtotal ?? 0} taxTotal={invoice.taxTotal ?? 0} taxPct={taxPct}
           total={invoice.total ?? 0} amountPaid={invoice.amountPaid ?? 0} balance={invoice.balance ?? 0} paid={isPaid}

@@ -124,6 +124,7 @@ const complianceActions = new Set([
   'policy.evaluate',
   'automation.policy.evaluate',
   'script.execute',
+  'script.execute_group_target',
   'organization.update'
 ]);
 
@@ -133,11 +134,14 @@ const dataChangeActions = new Set([
   'device.delete',
   'device.update',
   'device.site_move',
+  'device.site_assignment_confirmed',
+  'device.site_assignment_unconfirmed',
   'policy.update',
   'policy.evaluate',
   'automation.policy.evaluate',
   'policy.create',
   'script.execute',
+  'script.execute_group_target',
   'organization.update'
 ]);
 const exportActions = new Set(['data.export']);

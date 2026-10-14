@@ -1330,6 +1330,30 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     expect(await query(sql`SELECT 1 FROM devices WHERE id = ${f.deviceL}::uuid`)).toHaveLength(1);
   }, 180_000);
 
+  it('an un-actuated elevation request follows its device into the survivor epoch (#8204)', async () => {
+    // Not PAM evidence (no actuation), so it is repointed like before W2 —
+    // but its epoch anchor must land on the device's NEW survivor epoch, which
+    // only works if the device moves no later than the request.
+    const [request] = await query<{ id: string }>(sql`
+      INSERT INTO elevation_requests (org_id, site_id, partner_id, device_id, flow_type, subject_username,
+        reason, target_executable_path, target_executable_hash, status)
+      VALUES (${f.loser}::uuid, ${f.siteL}::uuid, ${f.partner}::uuid, ${f.deviceL}::uuid, 'uac_intercept',
+        'fixture-user', 'pending at merge', 'C:\\Program Files\\Fixture\\fixture.exe', ${'a'.repeat(64)}, 'pending')
+      RETURNING id`);
+
+    await orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser,
+      survivorOrgId: f.survivor,
+      partnerId: f.partner,
+      performedBy: f.actor,
+      performedByEmail: f.actorEmail,
+    });
+
+    expect(await query(sql`
+      SELECT org_id::text AS org_id, device_epoch FROM elevation_requests WHERE id = ${request!.id}::uuid`))
+      .toEqual([{ org_id: f.survivor, device_epoch: 2 }]);
+  }, 180_000);
+
   it('rolls the entire merge back and unfences the loser when a policy throws mid-walk', async () => {
     // Fail on the THIRD table of the MOVE pass that actually re-tenants rows —
     // not a fixed table name, and deliberately not the resolve pass. By then

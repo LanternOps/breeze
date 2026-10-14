@@ -18,8 +18,15 @@ import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketApprovalRail from './TicketApprovalRail';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
+import TicketLinksCard from './TicketLinksCard';
+import TicketTypeChip from './TicketTypeChip';
+import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
+import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
+import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -161,6 +168,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
+  // Bumped when the caller-verification modal reports a change so the header
+  // badge re-reads the server's ticket freshness projection.
+  const [callerRevision, setCallerRevision] = useState(0);
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
@@ -205,6 +215,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
+  // #7900: type edits and link add/remove need tickets:write (UX only; the API re-checks).
+  const canWrite = can('tickets', 'write');
   // GET /orgs/organizations returns the full org row for partner/system scope,
   // which carries currency_code (wave 1); the parts card needs it for catalog
   // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
@@ -694,6 +706,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
         }),
         errorFallback: t('ticketWorkbench.move.failed'),
+        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
+        friendly: approvalFriendly(t),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setMoveBlocked(null);
@@ -1141,6 +1155,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
             </>
           )}
+          {ticket.requesterContactId && (
+            // Both render nothing (and fetch nothing) unless the server's
+            // caller-verification flag is on.
+            <>
+              <TicketVerificationBadge orgId={ticket.orgId} ticketId={ticket.id} revision={callerRevision} />
+              <CallerVerificationEntry
+                orgId={ticket.orgId}
+                initialContactId={ticket.requesterContactId}
+                lockContact
+                ticketId={ticket.id}
+                hash="caller-verification"
+                onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
+              />
+            </>
+          )}
           {slaState(ticket).kind !== 'none' && (
             // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
             <>
@@ -1181,6 +1210,29 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             >
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
+          )}
+          {canWrite ? (
+            <select
+              value={ticket.ticketType ?? 'incident'}
+              onChange={(e) => {
+                const ticketType = e.target.value;
+                if (!isTicketType(ticketType) || ticketType === (ticket.ticketType ?? 'incident')) return;
+                void runAction({
+                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ ticketType }) }),
+                  errorFallback: t('ticketWorkbench.toast.typeUpdateFailed'),
+                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+                }).then(() => afterMutation({ ticketType })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+              }}
+              className="rounded-md border bg-background px-2 py-1 text-xs font-medium text-foreground"
+              data-testid="ticket-workbench-type"
+              aria-label={t('ticketWorkbench.typeLabel')}
+            >
+              {TICKET_TYPE_ORDER.map((type) => (
+                <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
+              ))}
+            </select>
+          ) : (
+            <TicketTypeChip type={ticket.ticketType} testId="ticket-workbench-type-chip" />
           )}
           <select
             value={ticket.priority}
@@ -1658,6 +1710,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}
@@ -1680,6 +1733,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketApprovalRail ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>

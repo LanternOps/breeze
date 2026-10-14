@@ -704,7 +704,7 @@ describe('updateRings routes', () => {
       expect(updateFields).not.toHaveProperty('sources');
     });
 
-    it('PATCH does not write appRules yet (#8184 W01: read-only) — the DB update never sees it', async () => {
+    const patchRing = (row: Record<string, unknown>) => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -714,24 +714,56 @@ describe('updateRings routes', () => {
       } as any);
       const setMock = vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([makeRing()])
+          returning: vi.fn().mockResolvedValue([makeRing(row)])
         })
       });
       vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
-
-      const res = await app.request(`/update-rings/${RING_ID}`, {
+      return { setMock };
+    };
+    const patch = (body: Record<string, unknown>) =>
+      app.request(`/update-rings/${RING_ID}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({
-          name: 'Renamed',
-          appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]
-        })
+        body: JSON.stringify(body)
       });
+
+    it('PATCH persists appRules (#8184)', async () => {
+      const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      const { setMock } = patchRing({ appRules: rules });
+
+      const res = await patch({ name: 'Renamed', appRules: rules });
 
       expect(res.status).toBe(200);
       const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
       expect(updateFields.name).toBe('Renamed');
-      expect(updateFields).not.toHaveProperty('appRules');
+      expect(updateFields.appRules).toEqual(rules);
+      expect((await res.json()).appRules).toEqual(rules);
+    });
+
+    it('PATCH can clear appRules with an empty array (#8184)', async () => {
+      const { setMock } = patchRing({ appRules: [] });
+      const res = await patch({ appRules: [] });
+      expect(res.status).toBe(200);
+      expect((setMock.mock.calls[0]![0] as Record<string, unknown>).appRules).toEqual([]);
+    });
+
+    it('PATCH omitting appRules leaves the column untouched (#8184)', async () => {
+      const { setMock } = patchRing({});
+      const res = await patch({ name: 'Renamed' });
+      expect(res.status).toBe(200);
+      expect(setMock.mock.calls[0]![0]).not.toHaveProperty('appRules');
+    });
+
+    it('PATCH rejects duplicate appRules (same canonical key) with 400 (#8184)', async () => {
+      vi.mocked(db.update).mockClear();
+      const res = await patch({
+        appRules: [
+          { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+          { source: 'custom', packageId: 'mozilla.firefox', action: 'block' }
+        ]
+      });
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
   });
 

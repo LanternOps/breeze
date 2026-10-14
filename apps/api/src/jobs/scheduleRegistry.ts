@@ -150,6 +150,9 @@ export const JOB_SCHEDULES = {
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
   'ai-invocation-retention': '13 18 * * *',
+  // #4120: daily fold of expired llm_egress_events rows into daily rollups.
+  // Hour 18 daily (≡3 mod 5) lane held 8/13/28/33/48; :38 was free.
+  'llm-egress-retention': '38 18 * * *',
   // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
   // the evidence-window's day has fully closed, same lane as its sibling
   // retention slot below (same queue/worker — Deviation #10).
@@ -182,6 +185,11 @@ export const JOB_SCHEDULES = {
   // never pruned). Hour 20 was entirely free; :03 keeps it in the
   // daily = 3 (mod 5) lane.
   'monitor-episode-retention': '3 20 * * *',
+  // #8164 (EDR provider framework, W02) — daily prune of terminal
+  // edr_detections rows (resolved/dismissed/false_positive/mitigated) past 180
+  // days; open/in_progress/unknown are never pruned. Hour 20 held :03 and :27;
+  // :08 keeps the daily = 3 (mod 5) lane.
+  'edr-detection-retention': '8 20 * * *',
   // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from

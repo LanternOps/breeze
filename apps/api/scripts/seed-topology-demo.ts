@@ -27,6 +27,10 @@
  *  - Main Office (#topology/site/<DEMO_SITE_ID>): 10.1.5.0/24 and 192.168.1.0/24 appear
  *    only in the "Other / unidentified networks" roster, not as declared network cards;
  *  - Lakeside (#topology/site/<DEMO_LAKESIDE_SITE_ID>): its own 10.1.5.0/24 card.
+ * Site location W3: after the first presence evaluation the seed inserts SYNTHETIC daily presence history
+ * (demoPresenceHistory) and evaluates again, so Main Office's roster shows "Probably assigned to the wrong site" for
+ * the two desktops (with "Move to Lakeside" / "Keep at Main Office") and the travelling laptop shows no suggestion.
+ * Production history is prospective only; nothing here moves a device.
  *
  * Options: --interval=<seconds> (keep-fresh cadence, default 60)
  *          --partner-email=<email> (partner user whose partner owns the demo org; default admin@breeze.local)
@@ -53,7 +57,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   DAY, DEMO_LAKESIDE_SITE_ID, DEMO_LAKESIDE_SITE_NAME, DEMO_ORG_ID, DEMO_ORG_NAME, DEMO_ORG_SLUG, DEMO_SITE_ID, DEMO_SITE_NAME, HOME_LAN, HOUR,
-  MAIN_LAN, SECOND_LAN, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins, demoMac,
+  MAIN_LAN, SECOND_LAN, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins, demoMac, demoPresenceHistory,
   type DemoAsset, type DemoDevice,
 } from './seed-topology-demo.lib';
 
@@ -74,6 +78,7 @@ const { sql } = await import('drizzle-orm');
 const { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } = await import('../src/db');
 const { networkContextFullSchema } = await import('@breeze/shared');
 const { resolveTopologyFlags, withResolvedTopologyFlags } = await import('../src/services/topology/flags');
+const { invalidateAgentOrgSettingsCaches } = await import('../src/services/agentOrgSettingsCache');
 const { topologyHeartbeat } = await import('../src/services/topology/heartbeat');
 const { importLegacyTopologySite } = await import('../src/services/topology/legacyImport');
 const { reconcileTopologySite } = await import('../src/services/topology/reconcile');
@@ -82,6 +87,7 @@ const { topologyContextDigest, topologySectionDigest } = await import('../src/se
 const { registerTopologyPhysicalAuthorities } = await import('../src/services/topology/physicalAuthorities');
 const { retryableTopologyTransaction } = await import('../src/services/topology/transactionRetry');
 const { cascadeDeleteOrg } = await import('../src/services/tenantCascade');
+const { evaluateOrgPresence } = await import('../src/services/topology/presenceEvaluator');
 type NetworkContextFull = import('@breeze/shared').NetworkContextFull;
 type Scope = { orgId: string; siteId: string };
 type Scopes = { main: Scope; lakeside: Scope };
@@ -136,6 +142,8 @@ async function resetDemo(owner: { userId: string; email: string; partnerId: stri
   log(`erasing previous demo org ${existing.orgId} through cascadeDeleteOrg…`);
   // Stop the API's topology workers from re-dirtying the site mid-erasure.
   await system(() => db.execute(sql`UPDATE organizations SET settings=COALESCE(settings,'{}'::jsonb)-'topologyFeatureFlags' WHERE id=${existing.orgId}::uuid`), 'demo flags off');
+  // W05 (#8144): running API instances drop their cached topology flags for this org now.
+  invalidateAgentOrgSettingsCaches(existing.orgId);
   await retrying('erase demo org', () => cascadeDeleteOrg(existing.orgId, owner.userId, owner.email));
 }
 
@@ -214,6 +222,7 @@ async function seedInventory(partnerId: string, devices: DemoDevice[], assets: D
 async function enableTopology(scope: Scope) {
   await system(() => db.execute(sql`UPDATE organizations
     SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{topologyFeatureFlags}',${JSON.stringify(FLAGS)}::jsonb,true) WHERE id=${scope.orgId}::uuid`), 'demo flags on');
+  invalidateAgentOrgSettingsCaches(scope.orgId);
   for (let pass = 0; pass < 50; pass++) {
     const result = await retrying('legacy import', () => system(
       () => withResolvedTopologyFlags({ orgId: scope.orgId, flags: resolvedFlags }, () => importLegacyTopologySite(scope, { batchSize: 200 })), 'demo legacy import'));
@@ -393,7 +402,38 @@ async function seed() {
   }
   await summary(scopes.main);
   await summary(scopes.lakeside);
+  await seedPresenceHistory(orgId, deviceIds, devices);
   return scope;
+}
+
+/** W3: evaluate, insert the synthetic day history, evaluate again (the second pass computes the suggestions). */
+async function seedPresenceHistory(orgId: string, deviceIds: Map<string, string>, devices: DemoDevice[]) {
+  const first = await evaluateOrgPresence(orgId);
+  const siteOf = { main: DEMO_SITE_ID, lakeside: DEMO_LAKESIDE_SITE_ID } as const;
+  const rows = demoPresenceHistory(new Date());
+  await system(async () => {
+    for (const r of rows) {
+      const key = devices.find((d) => d.hostname === r.hostname)?.key;
+      const deviceId = key ? deviceIds.get(key) : undefined;
+      if (!deviceId) throw new Error(`presence history: no demo device ${r.hostname}`);
+      const matched = r.matched ? siteOf[r.matched] : null;
+      await db.execute(sql`INSERT INTO topology_device_presence_days (org_id, device_id, day, assigned_site_id, state, matched_site_id, match_key,
+          first_observed_at, last_observed_at)
+        VALUES (${orgId}::uuid, ${deviceId}::uuid, ${r.day}::date, ${siteOf[r.assigned]}::uuid, ${r.state}, ${matched}::uuid,
+          ${`${r.state}:${matched ?? '-'}`}, ${r.firstObservedAt}::timestamptz, ${r.lastObservedAt}::timestamptz)
+        ON CONFLICT (device_id, day, assigned_site_id, match_key) DO NOTHING`);
+    }
+  }, 'demo presence history');
+  const second = await evaluateOrgPresence(orgId);
+  const suggested = await system(() => db.execute<{ hostname: string; days: number }>(sql`SELECT d.hostname, p.suggestion_days AS days
+    FROM topology_device_presence p JOIN devices d ON d.id = p.device_id WHERE p.org_id = ${orgId}::uuid AND p.suggested_site_id IS NOT NULL
+    ORDER BY d.hostname`), 'demo suggestions');
+  log(`presence: evaluated ${first.status}/${second.status} (coverage ${second.coverage}); ${rows.length} synthetic day rows; `
+    + `suggestions: ${suggested.map((r) => `${r.hostname} (${r.days} days)`).join(', ') || 'none'}`);
+  // The demo exists to show the suggestions: fail loudly rather than leave a demo that looks seeded but shows none.
+  if (second.status !== 'evaluated' || suggested.length !== 2) {
+    throw new Error(`presence demo: expected 2 suggestions after evaluation, got ${suggested.length} (status ${second.status}, coverage ${second.coverage})`);
+  }
 }
 
 // -------------------------------------------------------------- keep fresh ---

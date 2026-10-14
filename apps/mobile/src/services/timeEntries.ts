@@ -13,7 +13,7 @@ import { coreRequest } from './api';
  * from `CreateTimeEntryInput` — rates are never computed on the phone.
  */
 
-export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract';
+export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
 
 /**
  * #8211 — where an entry came from. The server returns all three on every
@@ -129,7 +129,8 @@ interface ErrorPayload {
 /**
  * Time-entry errors that reach the phone include ENTRY_RUNNING (409),
  * NO_RUNNING_TIMER (404), ENTRY_BILLED (409), APPROVED_IMMUTABLE,
- * NOT_OWN_ENTRY, and ADMIN_REQUIRED.
+ * NOT_OWN_ENTRY, ADMIN_REQUIRED, and APPROVAL_REQUIRED (409, a billable timer
+ * START refused by the customer-approval gate — #8196).
  */
 function asTimeEntryError(error: unknown): TimeEntryError {
   if (error instanceof TimeEntryError) return error;
@@ -199,6 +200,8 @@ export async function startTimer(input: {
   description?: string;
   /** See WorkTypeChoice. Timers are priced at START (§3.7). */
   workTypeId?: string | null;
+  /** #8196 — `false` for the "log as non-billable" retry after a 409 APPROVAL_REQUIRED. */
+  isBillable?: boolean;
   /** #8211 — a site-visit start. A ticket's org wins on the server; the site must belong to the org. */
   orgId?: string;
   siteId?: string;

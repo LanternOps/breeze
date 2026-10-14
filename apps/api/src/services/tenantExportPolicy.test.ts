@@ -341,6 +341,12 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports software_policies.managed_by_link_id (#6960): a plain row identifier, no secret', () => {
+    expect(CORE_TENANT_EXPORT_POLICY.software_policies!.columns.managed_by_link_id).toMatchObject({
+      decision: 'include',
+    });
+  });
+
   it('exports deployment dependency fingerprints as reviewed integrity provenance', () => {
     expect(
       CORE_TENANT_EXPORT_POLICY.software_deployments!.columns.dependency_fingerprint,

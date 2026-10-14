@@ -322,7 +322,8 @@
       "automatic": "É preferido um agente online deste site com um endereço em uma das sub-redes.",
       "pinned": "As varreduras são executadas somente a partir deste agente. Se ele estiver offline, a varredura falha em vez de usar outro agente.",
       "loadError": "Não foi possível carregar os agentes deste site. A seleção automática continua disponível."
-    }
+    },
+    "subnetTopologyNote": "As sub-redes aqui também identificam as redes deste site no mapa de topologia."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "O intervalo da varredura deve ser de 1 a 168 horas.",
       "selectSite": "Selecione um local antes de salvar."
     },
-    "configuredCount": "{{count}} linhas de base configuradas"
+    "configuredCount": "{{count}} linhas de base configuradas",
+    "subnetTopologyNote": "As sub-redes aqui também identificam as redes deste site no mapa de topologia."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Reconhecer evento",

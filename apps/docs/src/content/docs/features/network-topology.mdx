@@ -80,6 +80,55 @@ Grey **schematic** elements are placeholders. They explain missing evidence; the
 
 ---
 
+## Assigned site and observed location
+
+Every device belongs to one site: its **assigned site**, which you set on the device. Policies, maintenance windows, alert routing and reports follow the assigned site. The topology map also shows where each device is **observed**: which site's network it reports. The two can differ. For example, a laptop can be assigned to Lakeside while it sits on the Main Office network for the day.
+
+Breeze never changes a device's site because of where it is observed. When the two disagree for long enough, it suggests a move, and a technician decides.
+
+### Declare each site's networks
+
+A site's networks are the exact IPv4 prefixes in its enabled [discovery profiles](/features/discovery/) and network baselines, such as `10.1.5.0/24`. Breeze matches prefixes exactly, so a broad entry like `10.0.0.0/8` never matches a device's `10.1.5.0/24` network. Ranges, single addresses, IPv6 entries and unparsable text are ignored; the map says how many entries it ignored. A prefix declared by two sites is ambiguous and identifies neither.
+
+A declared network identifies a site only once that site's own devices confirm it: devices assigned to the site report the same gateway on that network. Common home-router ranges, such as `192.168.0.0/24` and `192.168.1.0/24`, need more: the gateway MAC address the device itself sees must match the one at least two of the site's other devices see. Otherwise the device is treated as on an unidentified network.
+
+If a site declares no networks, its map is unchanged, with a hint to declare them.
+
+### What the map shows
+
+- **Networks that are not this site's.** When a site declares its networks, cards for other networks move off the map into **Devices not on this site's networks**, below it. That list has up to three sections: **Observed at other sites** (devices on another site's declared network), **Other / unidentified networks** (networks no site has declared or confirmed, such as a home network) and **Location unknown** (no recent report, or Breeze can't currently tell). Turn on **Show other networks on the map** to draw them on the map again.
+- **Visitors.** A device assigned to another site that is on one of this site's networks appears in that network's card as a dashed tile marked **Visiting**, with "Assigned to `<site>`". The card says "+N visiting". Visitors are for display only: you can't pin them, run diagnostics on them or expand them.
+- **Nothing about sites you can't see.** If you can't access the site a device is observed at, it appears as on an unidentified network, exactly as if no site had declared that network. If you can't access a visitor's assigned site, the visitor isn't shown or counted. The same applies to site-limited API keys.
+
+Locations refresh about every minute while the map is open. Breeze re-evaluates each organisation at least hourly, and sooner after a declaration, a device move or a new topology snapshot.
+
+### Wrong-site suggestions
+
+When a device keeps reporting another site's network, the assigned site's list shows **Probably assigned to the wrong site**. For example: "Reported Lakeside's network (10.1.5.0/24) on 9 days between 14 Sep and 2 Oct. No Main Office-network observations during that time." On the suggested site, the visitor tile is marked **Move suggested**, and the site header says how many devices assigned to other sites have reported the network for 7 or more days, with **Review**.
+
+A suggestion appears only when all of these are true:
+
+- On at least 7 different days in the last 30, the device reported the other site's network, and the first and last of those reports are at least 7 days apart.
+- Since that started, it hasn't reported its assigned site's network or a third site's, and it hasn't been on an ambiguous network.
+- Breeze has no unexplained gap of more than 36 hours in that time. A device that is switched off, for example over a weekend, does not break the run. A gap caused by Breeze being unable to evaluate the site does.
+- The other site's network is still confirmed and declared by that site only, and the device is on it now.
+- Nobody has chosen **Keep at `<site>`** for the device.
+
+History starts when this feature is deployed, so the first suggestions can appear after about a week. Daily summaries are kept for 35 days.
+
+A long secondment can look like a wrong assignment, which is why the copy says "probably" and a person decides.
+
+### Act on a suggestion
+
+These actions need **Devices — Write** and multi-factor authentication. **Move** also needs access to both sites; **Keep** needs access to the device's site. Without **Devices — Write**, you see the suggestion but no actions.
+
+- **Move to `<site>`.** You confirm a summary of what moving changes: "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to `<device>`. Breeze will not move it back automatically." The move uses the same checks as changing the site on the device page. If someone else moved the device first, you're asked to reload. The audit log records `device.site_move` with the evidence Breeze held: the matched site, network, gateway, number of days and date range. The evidence comes from the server, never from the browser. If the suggestion lapsed before you confirmed (for example, the device was confirmed or moved by someone else, or the evidence went stale), the move still happens and the audit records `suggestionState: not_eligible`.
+- **Keep at `<site>`.** This dismisses the suggestion and records that the assignment is correct. Nothing moves. The entry then shows "Site assignment confirmed on `<date>` · Suggestions off", with **Turn on** to allow suggestions again. A confirmation doesn't expire. It's cleared automatically when the device moves to another site or organisation. Both actions are audited (`device.site_assignment_confirmed` and `device.site_assignment_unconfirmed`).
+
+Location, visitors and suggestions are display only. AI and MCP tools don't read them.
+
+---
+
 ## Physical discovery
 
 ### What Breeze collects
@@ -439,6 +488,8 @@ These tools only work with an API key restricted to **exactly one site**. Organi
 - **No PoE state or per-port rates from UniFi.** For port traffic, use SNMP port measurement.
 - **An interrupted collection is retried whole.** If a device's report fails to upload, nothing from that attempt is kept, and the gap appears in the coverage panel.
 - **No editors yet for manual cables, monitoring policies or templates.** Use the API or configuration templates.
+- **Observed location is only as good as the declared networks.** A site that declares nothing gets no visitors or suggestions. A site needs at least one correctly assigned device reporting each of its declared networks before that network can identify it. Proxy ARP, virtual router MACs (VRRP/HSRP), cloned router configurations and spoofing can produce misleading matches, so Breeze never calls a match verified.
+- **A full-tunnel VPN that lands on the home site's network is ignored.** Tunnel interfaces never count as being on a network. Split-tunnel devices are placed by their physical LAN.
 
 ---
 
@@ -462,3 +513,12 @@ All paths are under `/topology/sites/:siteId`. The Site Map endpoints are listed
 | GET | `/impact` | Possible impact for a node or connection |
 | GET | `/changes` | Recent changes (a window of up to 24 hours) |
 | POST | `/diagnostic-runs` | Start a diagnostic, including `trace_route` with `{trace: {maxHops, probesPerHop}}` |
+| GET | `/presence` | Observed location for the site: its devices not on its own networks, visitors from other sites and wrong-site suggestions. Filtered to the sites you can access; `authority: false` (presentation only) |
+
+Device endpoints used by wrong-site suggestions (under `/devices/:id`, `devices:write` and MFA):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| PATCH | `/devices/:id` | Move a device: `{siteId, expectedSiteId, siteMoveTrigger: 'topology_suggestion'}`. Returns 409 `device_site_changed` if the device is no longer at `expectedSiteId`. Client-supplied `evidence` is rejected. |
+| PUT | `/devices/:id/site-assignment-confirmation` | **Keep at `<site>`**: confirm the assignment and turn suggestions off. Returns `{confirmedAt}` |
+| DELETE | `/devices/:id/site-assignment-confirmation` | **Turn on** suggestions again. Returns `{confirmedAt: null}` |

@@ -38,15 +38,20 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
   });
 
   it('classifies capability-granting/execution-bearing feature types as execution_gated', () => {
-    for (const ft of ['pam', 'software_policy', 'automation', 'remote_access', 'helper', 'onedrive_helper', 'maintenance'] as const) {
+    for (const ft of ['pam', 'software_policy', 'automation', 'remote_access', 'helper', 'onedrive_helper', 'maintenance', 'security_agents'] as const) {
       expect(CONFIG_POLICY_FEATURE_TRUST_TIER[ft]).toBe('execution_gated');
       expect(isExecutionGatedFeatureType(ft)).toBe(true);
       expect(EXECUTION_GATED_FEATURE_TYPES.has(ft)).toBe(true);
     }
   });
 
+  it('security_agents (#6960) is canonical and execution_gated: it arms installs of third-party agents', () => {
+    expect(CONFIG_FEATURE_TYPES).toContain('security_agents');
+    expect(CONFIG_POLICY_FEATURE_TRUST_TIER.security_agents).toBe('execution_gated');
+  });
+
   it('classifies protective/restrictive feature types as protective (never gated)', () => {
-    for (const ft of ['security', 'peripheral_control', 'compliance', 'vulnerability', 'event_log', 'sensitive_data', 'device_lifecycle', 'monitors', 'hardware_monitoring', 'warranty', 'time_sync', 'workload_inventory'] as const) {
+    for (const ft of ['security', 'peripheral_control', 'compliance', 'vulnerability', 'event_log', 'sensitive_data', 'device_lifecycle', 'monitors', 'hardware_monitoring', 'warranty', 'time_sync', 'workload_inventory', 'system_protection'] as const) {
       expect(CONFIG_POLICY_FEATURE_TRUST_TIER[ft]).toBe('protective');
       expect(isExecutionGatedFeatureType(ft)).toBe(false);
     }

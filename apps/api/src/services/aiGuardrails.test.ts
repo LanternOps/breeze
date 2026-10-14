@@ -188,6 +188,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_tickets', 'log_time_entry'],
       ['manage_tickets', 'start_timer'],
       ['manage_tickets', 'stop_timer'],
+      ['manage_tickets', 'update_time_entry'],
       ['file_operations', 'list'],
     ];
 
@@ -858,8 +859,8 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
     }
   });
 
-  it('log_time_entry/start_timer/stop_timer resolve to Tier 2 (auto-execute + audit)', () => {
-    for (const action of ['log_time_entry', 'start_timer', 'stop_timer']) {
+  it('log_time_entry/start_timer/stop_timer/update_time_entry resolve to Tier 2 (auto-execute + audit)', () => {
+    for (const action of ['log_time_entry', 'start_timer', 'stop_timer', 'update_time_entry']) {
       const result = checkGuardrails('manage_tickets', { action });
       expect(result.tier).toBe(2);
       expect(result.allowed).toBe(true);

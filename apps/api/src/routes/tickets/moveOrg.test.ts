@@ -114,6 +114,7 @@ import { ticketsRoutes } from './index';
 import { TicketServiceError } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_B_ID  = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
@@ -213,6 +214,16 @@ describe('POST /tickets/:id/move-org', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toHaveProperty('error');
+  });
+
+  it('409s with code + details when the ticket has a pending customer approval request (#4617)', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    moveTicketOrgMock.mockRejectedValue(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }));
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ orgId: ORG_B_ID }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 1 } });
   });
 
   it('409s with code + details when the ticket carries block-drawn time (#8181)', async () => {

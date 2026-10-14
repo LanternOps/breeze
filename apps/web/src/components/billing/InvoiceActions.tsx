@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import { Loader2 } from 'lucide-react';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -142,6 +143,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
             body: JSON.stringify(opts ?? {}),
           }),
           errorFallback: stableT('invoiceActions.issueSendError'),
+          friendly: approvalFriendly(stableT), // 409 SOURCE_AWAITING_APPROVAL (#8196)
           onUnauthorized: UNAUTHORIZED,
         });
         if (result?.data?.reason === 'notice_queued') {
@@ -156,6 +158,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
           request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
           errorFallback: stableT('invoiceActions.issueError'),
           successMessage: stableT('invoiceActions.issueSuccess'),
+          friendly: approvalFriendly(stableT), // 409 SOURCE_AWAITING_APPROVAL (#8196)
           onUnauthorized: UNAUTHORIZED,
         });
       }

@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Esta política controla apenas se os dispositivos capturam solicitações de elevação. As decisões (aprovar automaticamente, negar ou exigir aprovação), a fila de solicitações e o histórico de auditoria são gerenciados no",
         "privilegedAccessConsole": "console de Acesso Privilegiado"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Regras de aplicativos",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloqueie aplicativos específicos da aplicação automática de patches ou fixe-os em uma versão máxima.",
-        "blocked": "Bloqueado",
-        "pinned": "Fixado",
-        "maxVersion": "Versão máxima",
-        "pinnedApplicationsNeedAVersion": "Aplicativos fixados precisam de uma versão.",
-        "addApplication": "Adicionar aplicativo",
-        "searchCatalogAndDetectedApplications": "Pesquisar no catálogo e nos aplicativos detectados...",
-        "searching": "Pesquisando...",
-        "catalog": "catálogo",
-        "couldnTLoadApplicationsYouCanStill": "Não foi possível carregar os aplicativos — você ainda pode adicionar um pelo ID do pacote abaixo.",
-        "noMatches": "Nenhuma correspondência.",
-        "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
-        "block": "block",
-        "pin": "pin",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Remover regra de {{application}}"
-      },
       "patchTab": {
         "daily": "Diário",
         "weekly": "Semanal",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Salvar alterações",
         "createRing": "Criar anel",
-        "thirdPartyRingHint": "As regras de aprovação automática para atualizações de terceiros são configuradas no anel de atualização vinculado."
+        "thirdPartyRingHint": "As regras de aprovação automática para atualizações de terceiros são configuradas no anel de atualização vinculado.",
+        "ringOwnsApprovalHint": "A aprovação automática e as regras de aplicativo são definidas no anel de atualização vinculado.",
+        "noRingManualApprovalHint": "Nenhum anel vinculado — os patches só são instalados após aprovação manual.",
+        "unavailableRingOption": "Anel indisponível",
+        "ringInvalidTitle": "O anel de atualização vinculado não está mais disponível.",
+        "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
+        "ringInvalidLegacyRules": "Esta política ainda tem regras de aplicativo de antes de elas passarem para os anéis ({{rules}}). O anel escolhido já deve ter exatamente essas regras — adicione-as a ele primeiro.",
+        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",
@@ -1116,6 +1104,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "As descobertas aparecem no painel Vulnerabilidades",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Esta política controla apenas se os dispositivos são verificados. Os CVEs detectados, as pontuações de risco e as ações de correção são gerenciados no",
         "vulnerabilitiesConsole": "console de Vulnerabilidades"
+      },
+      "systemProtectionTab": {
+        "title": "Proteção do sistema",
+        "description": "Tentar um ponto de restauração do Windows antes de patches, scripts e instalações de software",
+        "beforePatching": "Antes de instalar patches",
+        "beforePatchingHelp": "Tentar um ponto de restauração antes de instalar atualizações do sistema operacional.",
+        "beforeScripts": "Antes de scripts",
+        "beforeScriptsHelp": "Tentar um ponto de restauração antes de executar um script no dispositivo.",
+        "beforeSoftwareInstall": "Antes de instalar software",
+        "beforeSoftwareInstallHelp": "Tentar um ponto de restauração antes de instalar ou atualizar software.",
+        "labelPrefix": "Prefixo do rótulo",
+        "labelPrefixHelp": "Exibido no início da descrição de cada ponto de restauração no Windows. Até 64 caracteres.",
+        "platformDefaultNote": "Nenhuma política atribuída. Padrão da plataforma: um ponto de restauração é tentado apenas antes de instalar patches.",
+        "legacyAgentWarning": "Desativar esta opção só tem efeito em agentes que informam suporte à Restauração do Sistema. Agentes mais antigos continuarão tentando um ponto de restauração antes de instalar patches.",
+        "aboutTitle": "Sobre a Restauração do Sistema",
+        "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Os alertas de garantia são opcionais: dispositivos sem uma política de garantia atribuída nunca geram alertas. Os limites abaixo se aplicam somente à cobertura por prazo determinado — assinaturas ativas do AppleCare são renovadas em vez de expirar, portanto seus alertas de vencimento são sempre suprimidos.",

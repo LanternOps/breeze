@@ -23,6 +23,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
+import RestorePointInline from '../restorePoints/RestorePointInline';
+import type { RestorePointBadgeOutcome } from '../restorePoints/RestorePointBadge';
 
 type PatchResult = {
   id?: string;
@@ -41,6 +43,8 @@ type HistoryResult = {
   scannedCount?: number;
   pendingCount?: number;
   rebootRequired?: boolean;
+  // #4759 W08: the System Restore outcome the agent reported, stored verbatim on the command result.
+  restorePoint?: RestorePointBadgeOutcome;
   results?: PatchResult[];
   errorMessage?: string;
 };
@@ -579,6 +583,7 @@ function HistoryDetail({ entry, t }: { entry: PatchHistoryEntry; t: TFunction<'p
             <p className="text-sm font-medium text-yellow-800">{t('patchInstallHistory.detail.yes')}</p>
           </div>
         )}
+        <RestorePointInline outcome={result?.restorePoint} />
         <div className="rounded-md border bg-card p-3">
           <p className="text-xs font-medium text-muted-foreground">{t('patchInstallHistory.detail.started')}</p>
           <p className="text-sm font-medium">{formatAbsoluteDate(entry.createdAt, t)}</p>

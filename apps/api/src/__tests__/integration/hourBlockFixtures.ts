@@ -4,11 +4,14 @@
  * suite seeds the block line directly, the way contractLineAllowance does.
  * setup.ts TRUNCATEs before every test: seed per test.
  */
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  contractBillingPeriods, contractLines, contracts, organizations, partners, timeEntries, users,
+  contractBillingPeriods, contractLines, contracts, organizations, partners, portalBranding, tickets, timeEntries, users,
 } from '../../db/schema';
+import { createOrganization } from './db-utils';
+import { getTestDb } from './setup';
 import type { ContractActorT } from '../../services/contractService';
 import type { TimeEntryActor } from '../../services/timeEntryService';
 
@@ -65,7 +68,7 @@ export async function seedBlockFixture(o: {
  *  `minutes` also stamps `minimumMinutes` so time_entries_billable_minutes_chk holds. */
 export async function seedEntry(f: BlockFixture, e: {
   minutes: number; endedAt: string; billableMinutes?: number | null; isBillable?: boolean;
-  billingStatus?: 'not_billed' | 'no_charge' | 'billed' | 'contract'; isApproved?: boolean;
+  billingStatus?: 'not_billed' | 'no_charge' | 'billed' | 'contract' | 'awaiting_approval'; isApproved?: boolean;
   hourlyRate?: string | null; currencyCode?: string; ticketId?: string | null;
 }): Promise<string> {
   const ended = new Date(e.endedAt);
@@ -99,4 +102,134 @@ export async function entryState(id: string) {
     billingStatus: timeEntries.billingStatus, contractLineId: timeEntries.contractLineId,
   }).from(timeEntries).where(eq(timeEntries.id, id)));
   return r!;
+}
+
+// ---------------------------------------------------------------------------
+// Block hours W04 — multi-org seeding for the portal and alert suites. Seeds
+// through the admin test connection (RLS does not interfere with seeding).
+// ---------------------------------------------------------------------------
+
+export interface FixtureEntry {
+  minutes: number;
+  /** YYYY-MM-DD in December 2026 unless overridden; the entry starts 09:00 UTC. */
+  day?: string;
+  approved?: boolean;
+  billable?: boolean;
+  /** 'contract' entries are inserted already drawn by the block line. */
+  status?: 'not_billed' | 'contract' | 'billed';
+}
+
+export interface SeedBlockOrgArgs {
+  partnerId: string;
+  technicianId: string;
+  contractStatus?: 'active' | 'paused' | 'draft';
+  alertPct?: number | null;
+  retired?: boolean;
+  archived?: boolean;
+  enableHourBlock?: boolean;
+  includedHours?: string;      // default '10.00'
+  overageRate?: string;        // default '150.00'
+  createdBy?: string | null;
+  rolloverPolicy?: 'none' | 'carry_forward';   // default 'none'
+  entries?: FixtureEntry[];
+}
+
+export interface SeededBlockOrg {
+  orgId: string;
+  contractId: string;
+  lineId: string;
+  ticketId: string;
+}
+
+/**
+ * One org with an advance-billed monthly contract starting 2026-12-01 and ONE
+ * hour_block line whose first period is 2026-12-01 (so the open period for
+ * asOf = 2026-12-20 is [2026-12-01, 2027-01-01)).
+ */
+export async function seedBlockOrg(args: SeedBlockOrgArgs): Promise<SeededBlockOrg> {
+  const admin = getTestDb();
+  const org = await createOrganization({ partnerId: args.partnerId });
+
+  if (args.archived) {
+    await admin
+      .update(organizations)
+      .set({ status: 'archived', archivedAt: new Date() })
+      .where(eq(organizations.id, org.id));
+  }
+
+  const [contract] = await admin
+    .insert(contracts)
+    .values({
+      partnerId: args.partnerId,
+      orgId: org.id,
+      name: `Block contract ${randomUUID().slice(0, 8)}`,
+      status: args.contractStatus ?? 'active',
+      billingTiming: 'advance',
+      intervalMonths: 1,
+      startDate: '2026-12-01',
+      nextBillingAt: '2027-01-01',
+      currencyCode: 'USD',
+      createdBy: args.createdBy ?? null,
+    })
+    .returning({ id: contracts.id });
+  if (!contract) throw new Error('contract insert failed');
+
+  const [line] = await admin
+    .insert(contractLines)
+    .values({
+      contractId: contract.id,
+      orgId: org.id,
+      lineType: 'hour_block',
+      description: 'Support hours',
+      unitPrice: '1000.00',
+      includedQuantity: args.includedHours ?? '10.00',
+      overageMode: 'bill',
+      overageUnitPrice: args.overageRate ?? '150.00',
+      rolloverPolicy: args.rolloverPolicy ?? 'none',
+      hourBlockAlertPct: args.alertPct === undefined ? 80 : args.alertPct,
+      hourBlockFirstPeriodStart: '2026-12-01',
+      hourBlockRetiredAt: args.retired ? new Date('2026-12-05T00:00:00Z') : null,
+    })
+    .returning({ id: contractLines.id });
+  if (!line) throw new Error('contract line insert failed');
+
+  const [ticket] = await admin
+    .insert(tickets)
+    .values({
+      orgId: org.id,
+      partnerId: args.partnerId,
+      ticketNumber: `HB-${randomUUID()}`,
+      subject: 'Block fixture',
+    })
+    .returning({ id: tickets.id });
+  if (!ticket) throw new Error('ticket insert failed');
+
+  for (const entry of args.entries ?? []) {
+    const startedAt = new Date(`${entry.day ?? '2026-12-10'}T09:00:00Z`);
+    const status = entry.status ?? 'not_billed';
+    await admin.insert(timeEntries).values({
+      partnerId: args.partnerId,
+      orgId: org.id,
+      ticketId: ticket.id,
+      userId: args.technicianId,
+      startedAt,
+      endedAt: new Date(startedAt.getTime() + entry.minutes * 60_000),
+      durationMinutes: entry.minutes,
+      isBillable: entry.billable ?? true,
+      billingStatus: status,
+      isApproved: entry.approved ?? true,
+      currencyCode: 'USD',
+      ...(status === 'contract' ? { contractLineId: line.id } : {}),
+    });
+  }
+
+  if (args.enableHourBlock !== undefined) {
+    await admin.insert(portalBranding).values({
+      orgId: org.id,
+      enableSupportUsage: true,
+      enableHourBlock: args.enableHourBlock,
+    });
+  }
+
+  return { orgId: org.id, contractId: contract.id, lineId: line.id, ticketId: ticket.id };
 }

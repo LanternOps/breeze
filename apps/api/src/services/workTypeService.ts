@@ -53,13 +53,13 @@ export async function listWorkTypes(
 export async function createWorkType(
   caller: WorkTypeCaller,
   partnerId: string,
-  input: { name: string; sortOrder?: number },
+  input: { name: string; sortOrder?: number; isAfterHours?: boolean },
 ): Promise<WorkType> {
   assertPartnerWideWriter(caller);
   try {
     const [row] = await db
       .insert(workTypes)
-      .values({ partnerId, name: input.name, sortOrder: input.sortOrder ?? 0 })
+      .values({ partnerId, name: input.name, sortOrder: input.sortOrder ?? 0, isAfterHours: input.isAfterHours ?? false })
       .returning();
     if (!row) throw new Error('Failed to create work type');
     return row;
@@ -76,13 +76,15 @@ export async function updateWorkType(
   caller: WorkTypeCaller,
   id: string,
   partnerId: string,
-  input: { name?: string; sortOrder?: number; isActive?: boolean },
+  input: { name?: string; sortOrder?: number; isActive?: boolean; isAfterHours?: boolean },
 ): Promise<WorkType> {
   assertPartnerWideWriter(caller);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) set.name = input.name;
   if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
   if (input.isActive !== undefined) set.isActive = input.isActive;
+  // #4617: takes effect for entries written from now on; the gate reads it at write time.
+  if (input.isAfterHours !== undefined) set.isAfterHours = input.isAfterHours;
   try {
     const [row] = await db
       .update(workTypes)

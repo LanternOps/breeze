@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
@@ -251,6 +252,12 @@ export const devices = pgTable('devices', {
   // advanced by exactly +1 on every org_id change; a caller-written change is
   // refused with 42501. Never set it from app code.
   ownershipEpoch: integer('ownership_epoch').notNull().default(1),
+  // PAM ownership epochs W4 (#8206): the ownership epoch whose identity the
+  // agent has loaded, as last reported on a heartbeat (signed identity
+  // assertion v2). Written only by the heartbeat route, monotonically and never
+  // above ownershipEpoch. PAM dispatch requires it to equal ownershipEpoch;
+  // NULL counts as acknowledged only at ownershipEpoch = 1.
+  agentIdentityEpochAck: integer('agent_identity_epoch_ack'),
   // Revocation-lease capability. 1 = this agent build renews a per-session
   // revocation lease over the command WebSocket and stops the desktop stream
   // when the lease is revoked or expires past its grace window. 0 (default,
@@ -339,6 +346,22 @@ export const devices = pgTable('devices', {
   // the current episode began.
   helperInstallIssue: varchar('helper_install_issue', { length: 50 }),
   helperInstallIssueSince: timestamp('helper_install_issue_since', { withTimezone: true }),
+  // #8620 — agent-reported watchdog install health (#8618 / #7583). NULL =
+  // not reported. State and error class are closed vocabularies (see
+  // services/watchdogInstallHealth); written by the heartbeat ONLY on a
+  // transition. `since` is the server-clock time of the last state change.
+  watchdogInstallState: varchar('watchdog_install_state', { length: 20 }),
+  watchdogInstallErrorClass: varchar('watchdog_install_error_class', { length: 20 }),
+  watchdogInstallSince: timestamp('watchdog_install_since', { withTimezone: true }),
+  // #8608 — agent-reported log-shipping health (#8406). Classified per beat by
+  // services/logShippingHealth and written ONLY on a state change. NULL state =
+  // unknown (old agent / field absent), never healthy and never failing.
+  // 'failing' episodes are timed on the server receive clock via
+  // logShippingFailureStartedAt; the "sustained" verdict is derived at read time.
+  // lastError is a closed vocabulary (never raw error text), shown only while failing.
+  logShippingState: varchar('log_shipping_state', { length: 16 }),
+  logShippingFailureStartedAt: timestamp('log_shipping_failure_started_at', { withTimezone: true }),
+  logShippingLastError: varchar('log_shipping_last_error', { length: 200 }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
@@ -353,12 +376,19 @@ export const devices = pgTable('devices', {
   // silently extend itself. NULL on a decommissioned row means "removal time
   // unknown" and the purge job treats that as NEVER PURGE (fail closed).
   decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
+  // Topology site location W3 (#7887, spec S§11): "Keep at <site>" — a technician confirmed this
+  // assignment, so no wrong-site suggestion is computed. Cleared by the
+  // breeze_devices_site_assignment_confirmation_reset trigger on any site/org change; no expiry.
+  siteAssignmentConfirmedAt: timestamp('site_assignment_confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => ({
   idOrgSiteUnique: uniqueIndex('devices_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
+  logShippingFailingIdx: index('devices_log_shipping_failing_idx')
+    .on(table.logShippingFailureStartedAt)
+    .where(sql`log_shipping_failure_started_at IS NOT NULL`),
 }));
 
 // Linked device profiles for multi-boot systems (#2138). One row per physical

@@ -914,6 +914,7 @@
     "diskCleanup": "Disk Temizleme",
     "diskUsageAnalysisAndCleanup": "Disk kullanım analizi ve temizleme",
     "bootPerf": "Önyükleme Performansı",
+    "systemRestore": "Sistem Geri Yükleme",
     "startupTimeAndBootProcessAnalysis": "Başlatma süresi ve önyükleme süreci analizi",
     "backup": "Yedekleme",
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
@@ -947,7 +948,9 @@
       "management": "Yönetim",
       "history": "Geçmiş ve Ağ",
       "extensions": "Uzantılar"
-    }
+    },
+    "workloads": "İş yükleri",
+    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -1362,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunucu bu cihaza yüklenecek bir Breeze Assist sürümü sunmadı, bu nedenle yüklenmemiş olarak kalıyor. Bu cihazın platformu için yayımlanmış bir Breeze Assist derlemesi olup olmadığını kontrol edin.",
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
+    },
+    "watchdogInstall": {
+      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede `breeze-agent service install --watchdog` komutunu çalıştırın.",
+      "unsupported": "Otomatik watchdog kurulumu bu ana makinede desteklenmiyor ({{since}} tarihinden beri).",
+      "reason": {
+        "network": "indirme adresine ulaşılamadı",
+        "server": "sunucu indirmeyi reddetti",
+        "policy": "indirme ağ ilkesi tarafından engellendi",
+        "signature": "indirilen watchdog imza doğrulamasından geçemedi",
+        "checksum": "indirilen watchdog bütünlük denetiminden geçemedi",
+        "devBuild": "bu bir geliştirme sürümüdür",
+        "unsupportedOs": "bu işletim sistemi desteklenmiyor",
+        "installCmd": "kurulum komutu başarısız oldu",
+        "locked": "başka bir kurulum zaten devam ediyordu",
+        "unknown": "tanınmayan bir hata oluştu"
+      }
+    },
+    "logShipping": {
+      "label": "Günlük gönderimi",
+      "state": {
+        "healthy": "Sağlıklı",
+        "quiet": "Sessiz",
+        "failing": "Başarısız"
+      },
+      "tooltip": {
+        "healthy": "Aracı günlüklerini normal şekilde gönderiyor.",
+        "quiet": "Aracı yakın zamanda gönderim denemesi yapmadı, bildirilecek bir şey yok.",
+        "failing": "Günlük gönderimi {{since}} tarihinden beri başarısız. Neden: {{reason}}"
+      },
+      "reason": {
+        "http": "Sunucu HTTP {{status}} döndürdü",
+        "timeout": "İstek zaman aşımına uğradı",
+        "dns": "Sunucu adı çözümlenemedi",
+        "connectionRefused": "Bağlantı reddedildi",
+        "tls": "Güvenli bağlantı başarısız oldu",
+        "authRejected": "Sunucu aracı kimlik bilgilerini reddetti",
+        "urlUnresolved": "Sunucu adresi belirlenemedi",
+        "other": "Başka bir gönderim hatası",
+        "unspecified": "Belirtilmemiş"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Seviye yükseltme sonrası günlükler",
+      "text": "Günlük seviyesi yükseltildiğinden beri günlük alınmadı ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1828,7 +1875,11 @@
       "description": "Bekleyen ve yüklü güncellemeler",
       "installed": "{{count}} kuruldu",
       "pending": "{{count}} beklemede",
-      "title": "Yama Uyumluluğu"
+      "title": "Yama Uyumluluğu",
+      "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesBehind_one": "{{count}} kapsayıcı imajı güncel değil",
+      "imagesBehind_other": "{{count}} kapsayıcı imajı güncel değil"
     },
     "confirm": {
       "install": "Yükle",
@@ -1940,7 +1991,8 @@
       "excluded": "İlke tarafından hariç tutuldu",
       "excludedSourceTitle": "Yama ilkesinin kaynakları bu yamayı kapsamıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
-      "excludedAppRuleTitle": "Yama ilkesindeki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
       "pending": "Onay bekliyor",
       "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",
       "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",
@@ -2312,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} güncellemeler mevcut"
   },
   "deviceUserIdleStat": {
+    "active": "Aktif",
+    "asOf": "{{time}} itibarıyla",
     "label": "Kullanıcı Boşta",
+    "locked": "Kilitli",
     "retryAria": "Bekleme durumu yüklenemedi — tekrar deneyin",
-    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın"
+    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın",
+    "unknown": "Bilinmiyor"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -2631,7 +2687,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterChipBar": {
@@ -2700,7 +2757,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterHelpPopover": {
@@ -2786,7 +2844,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterValueEditor": {
@@ -3402,6 +3461,7 @@
     "ariaLabel": "Hızlı ekleme filtreleri",
     "chips": {
       "critical": "Kritik",
+      "logShippingFailing": "Günlük gönderimi başarısız",
       "lowDisk": "Düşük Disk",
       "needsPatches": "Yamalara İhtiyaç Var",
       "notSeen7d": "7 gündür görülmedi",
@@ -3969,6 +4029,215 @@
       "pdc_emulator": "Etki alanı PDC öykünücüsü",
       "forest_root_pdc_emulator": "Orman kökü PDC öykünücüsü",
       "unknown": "Bilinmiyor"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Bu cihazın iş yükleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "agentTooOld": "Aracı çok eski — iş yüklerini bildirmesi için aracıyı güncelleyin.",
+    "noRuntimes": "Bu cihazda kapsayıcı veya VM çalışma zamanı algılanmadı.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Sürüm {{version}}",
+    "versionUnknown": "Sürüm bilinmiyor",
+    "detection": {
+      "absent": "Yüklü değil",
+      "unknown": "Algılama sonuçsuz"
+    },
+    "status": {
+      "ok": "Toplanıyor",
+      "disabled": "Toplama kapalı — bir yapılandırma ilkesinde İş yükü envanterini etkinleştirin",
+      "unavailable": "Çalışma zamanı çalışmıyor",
+      "permission_denied": "İzin reddedildi",
+      "error": "Toplama başarısız oldu",
+      "unsupported": "Bu cihazda desteklenmiyor"
+    },
+    "detectOnly": "Yalnızca algılandı — bu çalışma zamanının iş yükleri listelenmez.",
+    "counts": "{{total}} iş yükü · {{running}} çalışıyor · {{stopped}} durdu",
+    "partial": "Kısmi anlık görüntü — bazı ayrıntılar okunamadı, bu nedenle toplananlar gösteriliyor.",
+    "truncated": "Çalışma zamanının bildirdiği {{observed}} iş yükünden {{reported}} tanesi gösteriliyor.",
+    "lastError": "Son hata: {{error}}",
+    "lastCollected": "Son toplama {{time}}",
+    "empty": "Bildirilen iş yükü yok.",
+    "columns": {
+      "name": "Ad",
+      "state": "Durum",
+      "image": "İmaj / konuk OS",
+      "compose": "Compose projesi",
+      "started": "Başlangıç",
+      "imageStatus": "İmaj durumu"
+    },
+    "states": {
+      "running": "Çalışıyor",
+      "stopped": "Durdu",
+      "paused": "Duraklatıldı",
+      "restarting": "Yeniden başlatılıyor",
+      "other": "Diğer"
+    },
+    "policy": {
+      "title": "İş yükü envanteri",
+      "description": "Kapsayıcı ve VM ana makinelerindeki kapsayıcıları ve sanal makineleri listele",
+      "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
+      "enabled": "İş yüklerini listele",
+      "runtimesHeading": "Listelenecek çalışma zamanları",
+      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "interval": "Toplama aralığı (dakika)",
+      "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
+    },
+    "imageStatus": {
+      "behind": "Güncel değil",
+      "current": "Güncel",
+      "pinned": "Sabitlenmiş",
+      "local": "Yerel derleme",
+      "not_found": "Etiket bulunamadı",
+      "not_checked": "Denetlenmedi"
+    },
+    "imageStatusReason": {
+      "pending": "Henüz denetlenmedi",
+      "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
+      "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
+      "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
+      "current": "Kayıt defteriyle eşleşiyor",
+      "pinned": "Bir özete sabitlenmiş — karşılaştırılacak bir şey yok",
+      "local": "Yerel olarak derlenmiş — kayıt defteri özeti yok",
+      "not_found": "Etiket artık kayıt defterinde yok"
+    },
+    "imageFilter": {
+      "label": "İmaj durumu",
+      "all": "Tümü",
+      "empty": "Bu imaj durumuyla eşleşen iş yükü yok."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Diğer EDR sağlayıcıları",
+    "loadError": "Bazı EDR sağlayıcı verileri yüklenemedi.",
+    "duplicateNotice": "İki konsol tarafından bağlandı: bu cihaz birden fazla {{provider}} bağlantısında görünüyor.",
+    "openDetections": "Açık tespitler",
+    "coverageHeading": "Kapsam eksik olabilir",
+    "fields": {
+      "health": "Sağlık",
+      "status": "Durum",
+      "isolation": "İzolasyon",
+      "agentVersion": "Ajan sürümü",
+      "lastSeen": "Son görülme"
+    },
+    "health": {
+      "healthy": "Sağlıklı",
+      "degraded": "Düşük performanslı",
+      "unhealthy": "Sağlıksız",
+      "unknown": "Bilinmiyor"
+    },
+    "online": {
+      "online": "Çevrimiçi",
+      "offline": "Çevrimdışı",
+      "unknown": "Bilinmiyor"
+    },
+    "isolation": {
+      "isolated": "İzole",
+      "not_isolated": "İzole değil",
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi",
+      "unknown": "Bilinmiyor"
+    },
+    "detectionStatus": {
+      "open": "Açık",
+      "in_progress": "Devam ediyor",
+      "mitigated": "Hafifletildi",
+      "resolved": "Çözüldü",
+      "false_positive": "Yanlış pozitif",
+      "dismissed": "Yoksayıldı",
+      "unknown": "Bilinmiyor"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Kullanıcılara mesaj gönder",
+    "sendAction": "Mesaj gönder",
+    "fields": {
+      "title": "Başlık",
+      "body": "Mesaj",
+      "severity": "Önem düzeyi",
+      "requiresAck": "Onay gerektir",
+      "expiry": "Son kullanma"
+    },
+    "severity": {
+      "info": "Bilgi",
+      "warning": "Uyarı",
+      "critical": "Kritik"
+    },
+    "expiry": {
+      "h1": "1 saat",
+      "h4": "4 saat",
+      "h24": "24 saat",
+      "h72": "72 saat",
+      "untilClosed": "Kapatılana kadar (en fazla 7 gün)"
+    },
+    "preview": {
+      "heading": "Önizleme",
+      "sender": "Şirketinizden",
+      "footer": "BT sağlayıcınız tarafından gönderildi",
+      "acknowledge": "Onayla"
+    },
+    "recipients": "Alıcılar: {{count}} cihaz",
+    "columns": {
+      "device": "Cihaz",
+      "delivery": "Teslimat"
+    },
+    "capability": {
+      "assist_card": "Assist kartı (konsol oturumu) veya yedek olarak yerel bildirim",
+      "native": "Yerel bildirim",
+      "unsupported": "Desteklenmeyen aracı sürümü - teslim edilmeyecek"
+    },
+    "confirm": {
+      "text": "Bu mesaj {{count}} cihaza gönderilecek. Aşağıdaki kartı kontrol edin.",
+      "send": "{{count}} cihaza gönder"
+    },
+    "result": {
+      "summary": "{{queued}} kuyrukta, {{failed}} başarısız",
+      "queued": "Kuyrukta",
+      "failed": "Başarısız"
+    },
+    "actions": {
+      "send": "Mesaj gönder",
+      "sending": "Gönderiliyor...",
+      "cancel": "İptal",
+      "back": "Geri",
+      "close": "Kapat"
+    },
+    "errors": {
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz mesajları desteklemiyor.",
+      "no_permission": "Bu cihaza mesaj gönderme izniniz yok.",
+      "offline_rejected": "Cihaz çevrimdışı ve mesaj kuyruğa alınmadı.",
+      "rate_limited": "Yakın zamanda çok fazla mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "cap_exceeded": "Bu gönderim izin verilen sınırı aşıyor.",
+      "feature_disabled": "Bu kuruluş için uç nokta mesajlaşması etkin değil.",
+      "queue_failed": "Mesaj bu cihaz için kuyruğa alınamadı.",
+      "in_progress": "Bu mesaj zaten gönderiliyor. Biraz bekleyin, ardından sonucu kontrol edin.",
+      "unavailable": "Mesaj gönderimi geçici olarak kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+      "no_devices_resolved": "Bu seçimle eşleşen cihaz bulunamadı.",
+      "idempotency_conflict": "Bu mesaj kimliği daha önce farklı bir mesaj için kullanıldı. Mesajı düzenleyip yeniden gönderin."
+    },
+    "issues": {
+      "html": "Mesaj gövdesinde HTML kullanılamaz.",
+      "images": "Mesaj gövdesinde görsel kullanılamaz.",
+      "httpsLinks": "Mesaj gövdesindeki bağlantılar https kullanmalıdır.",
+      "referenceLinks": "Referans tarzı bağlantılara izin verilmez. Bunun yerine satır içi bağlantılar kullanın.",
+      "titleHtml": "Başlıkta HTML kullanılamaz.",
+      "titleLinks": "Başlıkta bağlantı kullanılamaz.",
+      "invalid": "Mesaj izin verilmeyen içerik barındırıyor."
     }
   }
 }

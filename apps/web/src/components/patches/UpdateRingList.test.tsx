@@ -83,3 +83,28 @@ describe('UpdateRingList auto-approve column', () => {
     expect(screen.getByText('No update rings found.').getAttribute('colspan')).toBe('9');
   });
 });
+
+describe('UpdateRingList application-rules badge (#8187)', () => {
+  it('shows the rule count when a ring carries application rules, and nothing otherwise', () => {
+    render(
+      <UpdateRingList
+        rings={[
+          makeRing({
+            id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            name: 'Ring A',
+            appRules: [
+              { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+              { source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin', pinnedVersion: '3.0.20' },
+            ],
+          }),
+          makeRing({ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: 'Ring B', ringOrder: 2, appRules: [] }),
+        ]}
+      />
+    );
+    const badges = screen.getAllByTestId('ring-app-rules-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('2 app rules');
+    const rowA = screen.getByText('Ring A').closest('tr')!;
+    expect(within(rowA).getByTestId('ring-app-rules-badge')).toBeInTheDocument();
+  });
+});

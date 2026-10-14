@@ -86,7 +86,9 @@
       "failedInstalls_one": "{{count}} failed install",
       "failedInstalls_other": "{{count}} failed installs",
       "critical": "{{count}} critical",
-      "reboot": "{{count}} reboot"
+      "reboot": "{{count}} reboot",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked"
     },
     "filters": {
       "allDevices": "All Devices ({{count}})",
@@ -568,7 +570,26 @@
     "badges": {
       "manual": "Manual",
       "os": "OS: {{severities}}",
-      "thirdParty": "3rd-party apps"
+      "thirdParty": "3rd-party apps",
+      "appRules_one": "{{count}} app rule",
+      "appRules_other": "{{count}} app rules"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Application Rules",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Block specific applications from automated patching, or pin them to a maximum version.",
+    "blocked": "Blocked",
+    "pinned": "Pinned",
+    "maxVersion": "Max version",
+    "pinnedApplicationsNeedAVersion": "Pinned applications need a version.",
+    "addApplication": "Add application",
+    "searchCatalogAndDetectedApplications": "Search catalog and detected applications...",
+    "searching": "Searching...",
+    "catalog": "catalog",
+    "couldnTLoadApplicationsYouCanStill": "Couldn't load applications — you can still add by package ID below.",
+    "noMatches": "No matches.",
+    "orEnterAPackageIDManually": "Or enter a package ID manually",
+    "removeRuleFor": "Remove rule for {{application}}",
+    "scopeNote": "These rules apply to every device whose configuration policy links this ring."
   }
 }

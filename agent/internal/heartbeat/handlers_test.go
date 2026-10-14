@@ -97,6 +97,8 @@ var allCommandTypes = []string{
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
+	// caller_verify.go (#6354 W02)
+	cmdCallerVerify,
 
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,

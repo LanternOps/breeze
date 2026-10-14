@@ -163,6 +163,11 @@ export const CommandTypes = {
   REFRESH_INVENTORY: 'refresh_inventory',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
+
+  // User-session messaging (#8293). The agent has handled notify_user for a
+  // while; registering it here is what makes it queueable. Partner-trust gated
+  // (GATED_COMMAND_TYPES), never a lifecycle type: it carries operator content.
+  NOTIFY_USER: 'notify_user',
   // Backup
   BACKUP_RUN: 'backup_run',
   BACKUP_STOP: 'backup_stop',
@@ -212,6 +217,10 @@ export const CommandTypes = {
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',
+
+  // Caller verification (#6354 W02): a short, interactive confirmation card
+  // for the explicitly selected console user. Never queued (see LIVE).
+  CALLER_VERIFY: 'caller_verify',
 } as const;
 
 

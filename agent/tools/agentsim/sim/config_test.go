@@ -82,6 +82,36 @@ func TestValidateRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsAStormThatOverrunsTheWindow(t *testing.T) {
+	c := validConfig()
+	c.Duration, c.Warmup = 5*time.Minute, 0
+	c.Storm = &Scenario{Name: "x", Events: []Event{{Name: "e", At: Duration{3 * time.Minute}, Recovery: Duration{3 * time.Minute},
+		Start: []Action{{Internal: ActionDropSockets}}}}}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "storm") {
+		t.Fatalf("want a storm-fit error, got %v", err)
+	}
+}
+
+func TestValidateStormAndScrapeFields(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"legacy fraction":  {func(c *Config) { c.LegacyRetryFraction = 1.5 }, "--legacy-retry-fraction"},
+		"scrape interval":  {func(c *Config) { c.ScrapeToken, c.ScrapeInterval = "tok", 100*ms }, "--scrape-interval"},
+		"timeline step":    {func(c *Config) { c.Timeline, c.TimelineStep = true, 0 }, "timeline step"},
+		"negative gate":    {func(c *Config) { c.Gates.LostPct = -1 }, "--gate-lost-pct"},
+		"scrape url shape": {func(c *Config) { c.ScrapeToken, c.ScrapeURL = "tok", "ftp://x" }, "--scrape-url"},
+	} {
+		c := validConfig()
+		tc.mutate(&c)
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Validate() = %v, want error containing %q", name, err, tc.want)
+		}
+	}
+}
+
 func TestValidateRejectsDurationInsideRampAndWarmup(t *testing.T) {
 	c := validConfig()
 	c.Agents, c.RampPerSecond, c.Warmup = 600, 5, 90*time.Second // ramp 120 s + warmup 90 s

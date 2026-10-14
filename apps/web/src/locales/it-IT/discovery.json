@@ -322,7 +322,8 @@
       "automatic": "Viene preferito un agente online di questa sede con un indirizzo in una delle subnet.",
       "pinned": "Le scansioni vengono eseguite solo da questo agente. Se è offline, la scansione non riesce invece di usare un altro agente.",
       "loadError": "Impossibile caricare gli agenti di questa sede. La selezione automatica è ancora disponibile."
-    }
+    },
+    "subnetTopologyNote": "Le sottoreti indicate qui identificano anche le reti di questa sede nella mappa della topologia."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "L'intervallo di scansione deve essere compreso tra 1 e 168 ore.",
       "selectSite": "Seleziona un sito prima di salvare."
     },
-    "configuredCount": "{{count}} baseline configurate"
+    "configuredCount": "{{count}} baseline configurate",
+    "subnetTopologyNote": "Le sottoreti indicate qui identificano anche le reti di questa sede nella mappa della topologia."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Conferma evento",

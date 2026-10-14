@@ -368,6 +368,14 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_task_events') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ai_operator_task_events FROM breeze_app;
         END IF;
+        -- ai_operator_plan_approval_effects (Recipe Library E4, #6169,
+        -- 2026-12-23-190000): an approved effect set is evidence of what a
+        -- human authorized. UPDATE only — DELETE stays so the task cascade
+        -- and org erasure can reap it without an admin connection; a BEFORE
+        -- UPDATE trigger backs this up for every role.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_plan_approval_effects') THEN
+          REVOKE UPDATE ON TABLE ai_operator_plan_approval_effects FROM breeze_app;
+        END IF;
         -- ai_invocations (AI model registry W02, #7600, 2026-11-14-100300):
         -- append-only invocation ledger. Org erasure and retention delete it as
         -- breeze_audit_admin with breeze.allow_audit_retention='1'. The

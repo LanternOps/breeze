@@ -1,11 +1,13 @@
 import { useTranslation } from 'react-i18next';
-import type { GraphResponse } from '@breeze/shared';
+import type { GraphResponse, PresenceVisitor } from '@breeze/shared';
 import type { TopologySelection } from './topologyPresentation';
 import { isDecommissioned, topologyHealthLabel } from './topologyPresentation';
 import type { HiddenConnection } from './topologyApi';
 const RELATIONSHIP_KINDS = new Set(['physical_link', 'attachment', 'network_member', 'default_route', 'egress_path']);
-export default function TopologyList({ graph, onSelect, search = '', hidden }: {
+export default function TopologyList({ graph, onSelect, search = '', hidden, visitors = [] }: {
   graph: GraphResponse; onSelect: (selection: TopologySelection) => void; search?: string;
+  /** Devices assigned to other sites that this map draws as visitors (site location W2). Each row carries its text alternative. */
+  visitors?: readonly PresenceVisitor[];
   /** Connections hidden from this view (D17): listed with their reason and restorable by editors. */
   hidden?: { items: HiddenConnection[]; canEdit: boolean; onRestore: (item: HiddenConnection) => void; error?: string };
 }) {
@@ -44,7 +46,9 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
       <thead className="sticky top-0 bg-muted"><tr><th className="p-3">{t('name')}</th><th className="p-3">{t('grouped.addresses')}</th><th className="p-3">{t('grouped.networks')}</th><th className="p-3">{t('grouped.declaredColumn')}</th><th className="p-3">{t('role')}</th><th className="p-3">{t('health')}</th></tr></thead>
       <tbody>{nodes.map((node) => <tr key={node.id} data-testid={`topology-node-kind-${'kind' in node ? node.kind : 'schematic'}`} className="border-t"><td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" data-testid={`topology-node-${node.id}`} onClick={() => onSelect({ kind: 'node', id: node.id })}>{node.label}</button>
         {'inventory' in node && isDecommissioned(node) && <span data-testid={`topology-node-decommissioned-${node.id}`} className="ml-2 rounded border px-1.5 py-0.5 text-xs text-muted-foreground">{t('grouped.decommissioned')}</span>}
-        {reportersOf.has(node.id) && <span className="block text-xs text-muted-foreground">{t('grouped.reportedByDevices', { reporters: reportersOf.get(node.id)!.join(', ') })}</span>}</td><td className="p-3">{'inventory' in node ? node.inventory?.addresses.slice(0, 2).join(', ') : ''}</td><td className="p-3">{networkOf.get(node.id) ?? ''}</td><td className="p-3" data-testid={`topology-declared-${node.id}`}>{declaredText('group' in node ? node.group?.declaration?.state : undefined)}</td><td className="p-3">{node.role ?? ('kind' in node ? node.kind : t('schematic'))}</td><td className="p-3">{'health' in node ? t(/* i18n-dynamic */ `healthStatus.${node.health.status}`, { defaultValue: topologyHealthLabel(node.health.status, node.health.reasons) }) : t('notIdentified')}</td></tr>)}</tbody>
+        {reportersOf.has(node.id) && <span className="block text-xs text-muted-foreground">{t('grouped.reportedByDevices', { reporters: reportersOf.get(node.id)!.join(', ') })}</span>}</td><td className="p-3">{'inventory' in node ? node.inventory?.addresses.slice(0, 2).join(', ') : ''}</td><td className="p-3">{networkOf.get(node.id) ?? ''}</td><td className="p-3" data-testid={`topology-declared-${node.id}`}>{declaredText('group' in node ? node.group?.declaration?.state : undefined)}</td><td className="p-3">{node.role ?? ('kind' in node ? node.kind : t('schematic'))}</td><td className="p-3">{'health' in node ? t(/* i18n-dynamic */ `healthStatus.${node.health.status}`, { defaultValue: topologyHealthLabel(node.health.status, node.health.reasons) }) : t('notIdentified')}</td></tr>)}
+        {visitors.map((visitor) => <tr key={visitor.id} data-testid="topology-node-kind-visitor" className="border-t"><td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" data-testid={`topology-node-${visitor.id}`} onClick={() => onSelect({ kind: 'node', id: visitor.id })}>{visitor.label}</button>
+          <span className="block text-xs text-muted-foreground">{t('grouped.crossSite.visitorAlt', { site: visitor.assignedSite.name })}</span></td><td className="p-3"></td><td className="p-3">{visitor.network.prefix}</td><td className="p-3">{'\u2014'}</td><td className="p-3">{'\u2014'}</td><td className="p-3">{t('notIdentified')}</td></tr>)}</tbody>
     </table>
     <table className="mt-6 w-full text-left text-sm">
       <caption className="p-3 text-left font-medium">{t('connections')}</caption>

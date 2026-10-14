@@ -7,7 +7,30 @@ import {
   getCapsLockState,
   keyNameModeFor,
   resolveKeyUpName,
+  extendedKeyFields,
 } from './keymap';
+
+describe('extendedKeyFields (W2c key codes, #8239)', () => {
+  const ev = (code: string, numLock: boolean) =>
+    ({ code, getModifierState: (k: string) => k === 'NumLock' && numLock }) as unknown as KeyboardEvent;
+
+  it('adds nothing when the agent did not advertise key codes', () => {
+    expect(extendedKeyFields(ev('KeyA', true), false)).toEqual({});
+  });
+
+  it('adds code and numLock when enabled', () => {
+    expect(extendedKeyFields(ev('Numpad1', true), true)).toEqual({ code: 'Numpad1', numLock: true });
+    expect(extendedKeyFields(ev('KeyA', false), true)).toEqual({ code: 'KeyA', numLock: false });
+  });
+
+  it('omits code for a remapped modifier so the remap is not bypassed', () => {
+    expect(extendedKeyFields(ev('ControlLeft', false), true, { omitCode: true })).toEqual({ numLock: false });
+  });
+
+  it('omits an empty code and tolerates events without getModifierState', () => {
+    expect(extendedKeyFields({ code: '' } as KeyboardEvent, true)).toEqual({ numLock: false });
+  });
+});
 
 describe('keymap', () => {
   it('maps known KeyboardEvent.code values', () => {

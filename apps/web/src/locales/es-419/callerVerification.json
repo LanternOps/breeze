@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Revisa una solicitud de soporte", "loading": "Cargando solicitud…", "hello": "Hola, {{name}}",
+  "request": "{{technician}}, de {{partner}}, quiere:",
+  "reset_password": "Restablecer la contraseña de {{target}}", "disable_user": "Deshabilitar la cuenta de {{target}}",
+  "any": "Confirmar una solicitud de soporte para {{target}}", "target": "la cuenta indicada", "provider": "tu proveedor de soporte",
+  "reverse": "Código de la solicitud", "choose": "Toca el número que te indique tu técnico. Nunca leas un código en voz alta.",
+  "notMe": "No soy yo", "caution": "Toca un número solo si estás hablando por teléfono con {{technician}} en este momento. Si tienes dudas, cuelga y llama a {{partner}} al número que ya tienes.",
+  "expires": "Vence en {{seconds}} segundos", "expired": "Esta solicitud no está disponible o ya venció.",
+  "received": "Recibimos tu respuesta.", "failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
+  "loadFailed": "No se pudo cargar la solicitud. Inténtalo de nuevo.", "retry": "Intentar de nuevo", "sending": "Enviando…"
+} }

@@ -17,6 +17,8 @@ it('exports every fixed cross-wave service entry point', async () => {
     'attestDestination', 'computeTier', 'start', 'createAdministrative', 'cancel', 'attest', 'get', 'listForContact',
     'methodsForContact', 'freshForTicket', 'applyDecision', 'requireCallerVerification', 'isCallerVerificationEnabled',
     'handleRejection', 'fenceOverride', 'withSubjectLocks',
+    // W03
+    'fetchTargetMailboxes', 'withMailboxReader',
   ]) {
     expect(typeof api[name as keyof typeof api], name).toBe('function');
   }

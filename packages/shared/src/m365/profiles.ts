@@ -187,7 +187,7 @@ export const M365_PERMISSION_PROFILES = {
   },
   'customer-graph-actions': {
     id: 'customer-graph-actions',
-    version: 1,
+    version: 2, // v2 (#8648): v1 pinned delegated scope IDs, not application role IDs
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-actions',
@@ -205,12 +205,12 @@ export const M365_PERMISSION_PROFILES = {
     applicationPermissionAssignments: [
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
-        appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4',
+        appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca',
         value: 'User.ReadWrite.All',
       },
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
-        appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7',
+        appRoleId: 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7',
         value: 'User-PasswordProfile.ReadWrite.All',
       },
     ],

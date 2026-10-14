@@ -21,7 +21,7 @@ import {
   isEtagFresh,
   portalFinancialMutationGuard,
 } from './helpers';
-import { getCustomerInvoice, markViewed, toCustomerInvoiceLine } from '../../services/invoiceService';
+import { getCustomerInvoice, markViewed, projectCustomerInvoiceLine } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
@@ -202,7 +202,10 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
 
   return c.json({
     invoice: result.invoice,
-    lines: result.lines.map(toCustomerInvoiceLine),
+    // Re-project the exact safe keyset (defense in depth over the service).
+    // Not toCustomerInvoiceLine: getCustomerInvoice already applied the #8604
+    // toggles from the frozen columns, and re-running it would apply defaults.
+    lines: result.lines.map(projectCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
     autopayStatus: customerAutopay.status,

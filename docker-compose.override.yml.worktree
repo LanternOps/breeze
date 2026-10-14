@@ -44,7 +44,9 @@ services:
     environment:
       CADDY_SITE_ADDRESS: ":80"
     ports: !override
-      - "0:80"
+      # #8718 — random host port by default; BREEZE_WT_CADDY_PORT pins it so a
+      # `docker restart` of caddy (storm socket-drop) keeps the same address.
+      - "${BREEZE_WT_CADDY_PORT:-0}:80"
 
   portal:
     image: breeze-portal:dev

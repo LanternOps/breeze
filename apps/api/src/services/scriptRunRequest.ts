@@ -15,7 +15,7 @@
  * importers (and its co-located schema test) keep their import path.
  */
 import { z } from 'zod';
-import { scriptParametersSchema } from '@breeze/shared';
+import { scriptParametersSchema, scriptRunGroupTargetSchema } from '@breeze/shared';
 
 export const executeScriptSchema = z
   .object({
@@ -26,9 +26,16 @@ export const executeScriptSchema = z
     // would launch hundreds of concurrent transactions against a pool sized
     // for far fewer while this request also holds a connection, the same
     // pool-starvation shape that has caused prior production incidents.
+    //
+    // Exactly one of `deviceIds` / `target` (refine below). A `target` is
+    // resolved server-side to concrete device ids (`resolveScriptRunTargets`)
+    // and held to the same 500 cap AFTER resolution — never truncated.
     deviceIds: z.array(z.string().guid()).min(1).max(500, {
       message: 'Cannot target more than 500 devices in a single script execution',
-    }),
+    }).optional(),
+    // #8598 — one or more saved device groups, resolved at execution time from
+    // materialized membership. Request-shaped only: nothing stores the group id.
+    target: scriptRunGroupTargetSchema.optional(),
     // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared) —
     // accepts string/number/boolean values, canonicalized to strings once at
     // dispatch (scriptDispatch.ts). The 64KB cap is kept ON TOP of the
@@ -67,11 +74,17 @@ export const executeScriptSchema = z
     // (amended during execution after the Task 6 session-0 finding).
     targetSessionId: z.number().int().min(1).max(65535).optional(),
   })
+  .refine((d) => (d.deviceIds != null) !== (d.target != null), {
+    message: 'Provide exactly one of deviceIds or target',
+    path: ['target'],
+  })
   .refine((d) => d.targetSessionId == null || d.runAs === 'user', {
     message: 'targetSessionId requires runAs=user',
     path: ['targetSessionId'],
   })
-  .refine((d) => d.targetSessionId == null || d.deviceIds.length === 1, {
+  // A group target never qualifies, even one that resolves to a single device:
+  // the session id was chosen for a specific device the caller named.
+  .refine((d) => d.targetSessionId == null || (d.target == null && d.deviceIds?.length === 1), {
     message: 'targetSessionId requires exactly one device',
     path: ['targetSessionId'],
   });

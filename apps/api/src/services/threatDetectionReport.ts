@@ -42,6 +42,8 @@ import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } f
 import { db } from '../db';
 import {
   devices,
+  edrDetections,
+  edrEndpoints,
   huntressAgents,
   huntressIncidents,
   huntressIntegrations,
@@ -54,8 +56,14 @@ import type {
   ThreatIncidentRow,
   ThreatSourceStatus,
 } from '@breeze/shared';
-import { countBy, coverageGapLine, resolutionStats } from '@breeze/shared';
+import {
+  countBy,
+  coverageGapLine,
+  EDR_OPEN_DETECTION_STATUSES,
+  resolutionStats,
+} from '@breeze/shared';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from './huntressConstants';
+import { edrReportEvidenceAllowed } from './portal/edrVisibility';
 import {
   assertReportExecutionPreflight,
   type EvidenceRunContext,
@@ -175,6 +183,69 @@ function emptySummary(
   } satisfies ThreatDetectionSummary;
 }
 
+type EdrCoverage = {
+  edrEndpoints: number;
+  edrDetections: { open: number; bySeverity: Record<string, number> };
+};
+
+/**
+ * EDR provider framework (#8164) coverage, from the ORG-axis `edr_endpoints` /
+ * `edr_detections` only (the partner-axis connection tables are invisible to an
+ * org-scoped context and are never read). Returns `null` when the org has no
+ * EDR coverage, so the caller adds NOTHING to a no-EDR org's snapshot.
+ *
+ * Site scope is pushed into each query through its own LEFT JOIN on
+ * `devices` — an endpoint or detection with no linked device is unattributable
+ * and drops out under a site predicate, the same rule as Huntress rows.
+ * Detections are counted open-only and never include `detached_at` tombstones
+ * (a tenant remap detaches history rather than moving it across customers).
+ */
+async function loadEdrCoverage(orgId: string, filter: SiteFilter): Promise<EdrCoverage | null> {
+  const [endpointRow] = await db
+    .select({ total: count() })
+    .from(edrEndpoints)
+    .leftJoin(devices, eq(edrEndpoints.breezeDeviceId, devices.id))
+    .where(and(eq(edrEndpoints.orgId, orgId), ...sitePredicates(filter)));
+  const endpointTotal = Number(endpointRow?.total ?? 0);
+
+  const severityRows = (await db
+    .select({ severity: edrDetections.severity, total: count() })
+    .from(edrDetections)
+    .leftJoin(devices, eq(edrDetections.breezeDeviceId, devices.id))
+    .where(and(
+      eq(edrDetections.orgId, orgId),
+      isNull(edrDetections.detachedAt),
+      inArray(edrDetections.status, [...EDR_OPEN_DETECTION_STATUSES]),
+      ...sitePredicates(filter),
+    ))
+    .groupBy(edrDetections.severity)) as Array<{ severity: string | null; total: number | string }>;
+
+  const totals = new Map<string, number>();
+  for (const r of severityRows) {
+    const key = r.severity && r.severity.trim() !== '' ? r.severity : 'unknown';
+    totals.set(key, (totals.get(key) ?? 0) + Number(r.total ?? 0));
+  }
+  const open = [...totals.values()].reduce((a, b) => a + b, 0);
+  if (endpointTotal === 0 && open === 0) return null;
+
+  // countBy owns the severity ordering (critical before low, unknown last).
+  const bySeverity: Record<string, number> = {};
+  for (const bucket of Object.keys(countBy([...totals.keys()].map((severity) => ({ severity })), 'severity'))) {
+    bySeverity[bucket] = totals.get(bucket) as number;
+  }
+  return { edrEndpoints: endpointTotal, edrDetections: { open, bySeverity } };
+}
+
+/** Folds EDR coverage into a summary; a no-op (same object) when there is none. */
+function withEdr<T extends ThreatDetectionSummary>(summary: T, edr: EdrCoverage | null): T {
+  if (!edr) return summary;
+  return {
+    ...summary,
+    agentCoverage: { ...summary.agentCoverage!, edrEndpoints: edr.edrEndpoints },
+    edrDetections: edr.edrDetections,
+  };
+}
+
 type WindowIncident = {
   id: string;
   deviceId: string | null;
@@ -257,6 +328,9 @@ export async function generateThreatDetectionReport(
     configSites: cfg.sites,
     authoritySites: restrictedScope ? restrictedScope.siteIds : null,
   };
+  // A portal (customer self-service) run honours the strict portal EDR flag.
+  const includeEdr = await edrReportEvidenceAllowed(orgId, authority);
+  const edrCoverageFor = () => (includeEdr ? loadEdrCoverage(orgId, filter) : Promise.resolve(null));
 
   const [orgRow] = await db
     .select({ id: organizations.id, name: organizations.name, partnerId: organizations.partnerId })
@@ -329,28 +403,32 @@ export async function generateThreatDetectionReport(
         return { ...gap, coverage: { ...gap.coverage, note }, dataGaps: [note] };
       })()
       : gap;
+    // An org with EDR coverage but no Huntress is NOT a data gap: its EDR
+    // fields are real. Huntress-derived values above stay unmeasured (null).
+    const edr = orgMissing ? null : await edrCoverageFor();
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: summary as unknown as Record<string, unknown>,
+      summary: withEdr(summary, edr) as unknown as Record<string, unknown>,
     };
   }
 
   const lastSyncAt = isoOrNull(integration.lastSyncAt);
   if (!lastSyncAt) {
+    const neverSynced = emptySummary(orgId, orgName, generatedAt, {
+      ...baseCoverage,
+      sourceStatus: 'never_synced',
+      lastSyncAt: null,
+      lastSyncStatus: integration.lastSyncStatus ?? null,
+      unattributableExcluded: 0,
+      withheld: 0,
+    }, deviceRows.length);
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgId, orgName, generatedAt, {
-        ...baseCoverage,
-        sourceStatus: 'never_synced',
-        lastSyncAt: null,
-        lastSyncStatus: integration.lastSyncStatus ?? null,
-        unattributableExcluded: 0,
-        withheld: 0,
-      }, deviceRows.length) as unknown as Record<string, unknown>,
+      summary: withEdr(neverSynced, await edrCoverageFor()) as unknown as Record<string, unknown>,
     };
   }
 
@@ -551,7 +629,9 @@ export async function generateThreatDetectionReport(
   };
   coverage.note = coverageGapLine(coverage);
 
-  const summary: ThreatDetectionSummary = {
+  // Last query on this path so the Huntress query order is untouched.
+  const edr = await edrCoverageFor();
+  const summary: ThreatDetectionSummary = withEdr({
     orgId,
     orgName,
     generatedAt,
@@ -568,7 +648,7 @@ export async function generateThreatDetectionReport(
     },
     rows: [...visibleRows, ...carriedInRows],
     dataGaps: coverage.note ? [coverage.note] : [],
-  } satisfies ThreatDetectionSummary;
+  } satisfies ThreatDetectionSummary, edr);
 
   return {
     rows: visibleRows as unknown as Record<string, unknown>[],

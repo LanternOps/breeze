@@ -1000,6 +1000,8 @@
     "codeExpires": "Expires at {{time}}",
     "overdueNotice": "No check-in yet — look at the recovery console.",
     "fileIndexPreparing": "Preparing file index for cross-snapshot references…",
+    "snapshotsLoadFailed": "Could not load snapshots. Reload the page to try again.",
+    "noSnapshots": "No bare-metal restorable snapshots yet. A whole-machine backup marked bare-metal restorable is required.",
     "statusFailed": "Recovery failed",
     "statusRefused": "Recovery refused",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Restoring",
       "validated": "Validated",
       "rebooted": "Rebooted",
-      "checked_in": "Checked in"
+      "checked_in": "Checked in",
+      "completed": "Completed"
     }
   },
   "backupHealth": {

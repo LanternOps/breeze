@@ -78,8 +78,13 @@ describe('ad-hoc assembly holds block-covered time (real DB) #8181', () => {
       VALUES (${ticketId}, ${f.partnerId}, ${f.orgId}, ${`HB-${ticketId}`}, 'Block hold', 'manual')`);
     const held = await seedEntry(f, { minutes: 30, endedAt: '2026-07-20T12:00:00Z', ticketId });
     const before = await seedEntry(f, { minutes: 60, endedAt: '2026-06-20T12:00:00Z', ticketId });
-    const r = await withSystemDbAccessContext(() => gatherTicketBillables(ticketId, 'USD', new Date('2026-07-25T00:00:00Z')));
-    expect(r.included.map((l) => l.sourceId)).toEqual([before]);
+    // #8603: started 02:30Z on Jun 21 = 22:30 Jun 20 in New York.
+    const evening = await seedEntry(f, { minutes: 60, endedAt: '2026-06-21T03:30:00Z', ticketId });
+    const r = await withSystemDbAccessContext(() => gatherTicketBillables(ticketId, 'USD', new Date('2026-07-25T00:00:00Z'), 'America/New_York'));
+    expect(r.included.map((l) => l.sourceId).sort()).toEqual([before, evening].sort());
+    // The ticket gatherer selects started_at and dates lines in the partner zone;
+    // the held entry never becomes a line, so it never gets a date.
+    expect(Object.fromEntries(r.included.map((l) => [l.sourceId, l.workDate]))).toEqual({ [before]: '2026-06-20', [evening]: '2026-06-20' });
     expect(r.included.map((l) => l.sourceId)).not.toContain(held);
     expect(r.heldForHourBlock).toEqual({ count: 1, hours: 0.5 });
   });

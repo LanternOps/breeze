@@ -30,10 +30,29 @@ var forbiddenTokens = []string{
 	"podman run", "podman rm", "podman stop", "podman pull",
 }
 
-// execAllowedFiles lists the source files allowed to import os/exec. This wave
-// has none; a later driver adds its runner file here in the same change that
-// adds the import, which makes the review of that change explicit.
-var execAllowedFiles = map[string]bool{}
+// execAllowedFiles lists the source files allowed to import os/exec. runner.go
+// is the package's only process runner; it refuses any command outside
+// allowedCommand (a fixed PowerShell Get-VM script, `pvesh get` of the local
+// node's qemu/lxc lists), which TestAllowedCommandAcceptsOnlyTheFixedReadOnlyCommands
+// pins. Adding a file here needs the same kind of argv allowlist.
+var execAllowedFiles = map[string]bool{"runner.go": true}
+
+// Every exec in the package goes through runReadOnly: no other file may build
+// a command, whatever it imports.
+func TestOnlyTheRunnerBuildsCommands(t *testing.T) {
+	seen := false
+	for name, src := range packageSources(t) {
+		if strings.Contains(src, "exec.Command") {
+			if name != "runner.go" {
+				t.Errorf("%s builds a command outside runner.go", name)
+			}
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("found no exec.Command in runner.go; the guard is vacuous")
+	}
+}
 
 func packageSources(t *testing.T) map[string]string {
 	t.Helper()

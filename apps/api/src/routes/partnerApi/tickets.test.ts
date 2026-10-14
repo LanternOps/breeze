@@ -80,7 +80,7 @@ function ticketRow(id: string, changeXid: string, overrides: Record<string, unkn
   return {
     id, orgId: ORG_ID, ticketNumber: 'ABC123', internalNumber: 'T-2026-0001',
     subject: 'Printer offline', description: 'The accounting printer is offline',
-    status: 'open', statusId: null, priority: 'normal', source: 'api', workKind: 'support',
+    status: 'open', statusId: null, priority: 'normal', source: 'api', workKind: 'support', ticketType: 'incident',
     categoryId: null, assignedTo: null, deviceId: null,
     requesterContactId: null, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@example.com',
     tags: ['printer'],
@@ -326,4 +326,14 @@ describe('partner tickets read surface', () => {
     const foreign = await request(`/tickets/${TICKET_B}/comments?cursor=garbage`);
     expect(foreign.status).toBe(404);
   });
+
+  // #7900 / #8592 W01: additive field on the read model.
+  it('feed records carry ticketType', async () => {
+    selectResults = [[ticketRow(TICKET_A, '900', { ticketType: 'service_request' })]];
+    const res = await request('/tickets');
+    expect(res.status).toBe(200);
+    const body = partnerTicketFeedEnvelopeSchema.parse(await res.json());
+    expect(body.data[0]).toMatchObject({ id: TICKET_A, ticketType: 'service_request' });
+  });
 });
+

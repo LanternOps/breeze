@@ -26,7 +26,7 @@ export type StartOutcome =
   | { ok: 'local'; timer: LocalTimer }
   | {
       ok: false;
-      reason: 'already-running' | 'denied' | 'forbidden' | 'unknown';
+      reason: 'already-running' | 'denied' | 'forbidden' | 'approval-required' | 'unknown';
       message: string;
       denial?: TimeEntryDenial;
     };
@@ -52,6 +52,7 @@ export interface StartDeps {
   startTimer: (input: {
     ticketId?: string;
     workTypeId?: string | null;
+    isBillable?: boolean;
     orgId?: string;
     siteId?: string;
     source?: 'timer' | 'location';
@@ -127,7 +128,7 @@ export async function startForTicket(
   // category's default work type. `null` = the technician chose none. The
   // choice rides on the local timer so an offline start still carries it into
   // the `create` its stop queues.
-  options: { workTypeId?: string | null } = {}
+  options: { workTypeId?: string | null; isBillable?: false } = {}
 ): Promise<StartOutcome> {
   return startWith({ ticketId }, deps, options);
 }
@@ -152,6 +153,7 @@ export async function startForSite(
 
 /** The server's verdicts that the org or site is gone / not ours: a cached site list is stale. */
 const SITE_REFUSAL_CODES = new Set(['ORG_DENIED', 'SITE_DENIED', 'SITE_ORG_MISMATCH', 'ORG_MISMATCH']);
+export const APPROVAL_REQUIRED_PROMPT = 'Approval required. Log as non-billable?';
 const SITE_REFUSED =
   'That site is no longer available to you. The list of sites will refresh.';
 
@@ -163,9 +165,11 @@ async function startWith(
     source?: 'location';
   },
   deps: StartDeps,
-  options: { workTypeId?: string | null }
+  options: { workTypeId?: string | null; isBillable?: false }
 ): Promise<StartOutcome> {
   const { ticketId } = target;
+  // Only ever `false`: the retry after the approval gate refused a billable start.
+  const billable = options.isBillable === false ? { isBillable: false as const } : {};
   const workType = options.workTypeId !== undefined ? { workTypeId: options.workTypeId } : {};
   const provenance = {
     ...(target.orgId !== undefined ? { orgId: target.orgId } : {}),
@@ -211,6 +215,7 @@ async function startWith(
     const entry = await deps.startTimer({
       ...(ticketId === null ? {} : { ticketId }),
       ...workType,
+      ...billable,
       ...provenance,
     });
     // The server's stamp is authoritative from here on.
@@ -242,6 +247,13 @@ async function startWith(
         // to stop something first would send them after a phantom.
         message: 'Another timer change landed first. Try again.',
       };
+    }
+
+    if (code === 'APPROVAL_REQUIRED' && getStatus(error) === 409) {
+      // The gate refuses only a billable START (#8196). Nothing was created, so
+      // nothing may keep ticking locally; the screen offers the non-billable retry.
+      await deps.clearLocalTimer().catch(() => undefined);
+      return { ok: false, reason: 'approval-required', message: APPROVAL_REQUIRED_PROMPT };
     }
 
     const status = getStatus(error);

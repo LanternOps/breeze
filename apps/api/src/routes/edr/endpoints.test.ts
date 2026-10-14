@@ -208,6 +208,16 @@ describe('EDR endpoint routes', () => {
       gates.permission = true;
       expect((await app.request('/edr/endpoints')).status).toBe(403);
     });
+
+    // #8166: the device panel reads only the rows linked to one device.
+    it('?deviceId narrows to that device, still under the org scope; malformed is a 400', async () => {
+      const res = await app.request(`/edr/endpoints?orgId=${ORG_ID}&deviceId=${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      const text = flatten(dbState.capturedListWhere[0]);
+      expect(text).toContain(DEVICE_ID);
+      expect(text).toContain(ORG_ID);
+      expect((await app.request('/edr/endpoints?deviceId=nope')).status).toBe(400);
+    });
   });
 
   describe('PUT /edr/endpoints/:id/link', () => {

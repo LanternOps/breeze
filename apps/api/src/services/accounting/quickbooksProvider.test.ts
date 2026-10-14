@@ -397,6 +397,93 @@ describe('upsertItem', () => {
 describe('pushInvoice', () => {
   const taxConn = conn({ defaultTaxCodeRef: 'TXC1' });
 
+  // #8605 W04 oracle (captured on the pre-W04 code): a line with no service
+  // date sends its description verbatim (no trim, no rewrite, multi-byte text
+  // untouched, up to and including QuickBooks' 4000-character limit) and no
+  // ServiceDate key at all.
+  describe('description and service date baseline (#8605 oracle)', () => {
+    const AT_CAP = `${'a'.repeat(3969)} — 0.50 h worked, 1.00 h billed`; // exactly 4000
+    it.each<[string, string]>([
+      ['plain', 'Onsite support — 0.50 h worked, 1.00 h billed'],
+      ['emoji', 'Fixed the 🖨️ queue 😀 — 0.50 h worked, 1.00 h billed'],
+      ['CJK', 'サーバーの再起動と確認 — 2.50 h worked, 2.00 h billed'],
+      ['leading/trailing spaces kept', '  Labor  '],
+      ['exactly at the 4000 cap', AT_CAP],
+    ])('%s', async (_name, description) => {
+      expect(AT_CAP).toHaveLength(4000);
+      const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '0', TotalAmt: 107.0, TxnTaxDetail: { TotalTax: 7.0 } } });
+      await quickbooksProvider.pushInvoice(taxConn, invoicePayload({ lines: [line({ description })] }), []);
+      const body = JSON.parse(String(lastFetchInit(fetchMock).body));
+      expect(body.Line[0].Description).toBe(description);
+      expect(body.Line[0].SalesItemLineDetail).not.toHaveProperty('ServiceDate');
+    });
+  });
+
+  // #8605 W04: Intuit's Invoice reference — SalesItemLineDetail.ServiceDate
+  // (optional Date, "Date when the service is performed"); SalesItemLine
+  // Description "max character: Max 4000 chars".
+  describe('service date and description cap (#8605)', () => {
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const send = async (l: Record<string, unknown>) => {
+      const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '0', TotalAmt: 107.0, TxnTaxDetail: { TotalTax: 7.0 } } });
+      await quickbooksProvider.pushInvoice(taxConn, invoicePayload({ lines: [line(l as never)] }), []);
+      return JSON.parse(String(lastFetchInit(fetchMock).body)).Line[0];
+    };
+
+    it('maps serviceDate to SalesItemLineDetail.ServiceDate and keeps the date out of the description', async () => {
+      const sent = await send({ description: 'Labor — 0.50 h worked, 1.00 h billed', descriptionSuffix: ' — 0.50 h worked, 1.00 h billed', serviceDate: '2026-09-16' });
+      expect(sent.SalesItemLineDetail.ServiceDate).toBe('2026-09-16');
+      expect(sent.Description).toBe('Labor — 0.50 h worked, 1.00 h billed');
+    });
+
+    it('a re-push (sparse update) carries the ServiceDate too', async () => {
+      const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '4' } });
+      await quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+        mapping: { remoteEntityId: '310', remoteSyncToken: '3' },
+        lines: [line({ serviceDate: '2026-09-16' } as never)],
+      }), []);
+      const body = JSON.parse(String(lastFetchInit(fetchMock).body));
+      expect(body).toMatchObject({ sparse: true, Id: '310', SyncToken: '3' });
+      expect(body.Line[0].SalesItemLineDetail.ServiceDate).toBe('2026-09-16');
+    });
+
+    it('sends no ServiceDate key for a null serviceDate', async () => {
+      const sent = await send({ description: 'Patch cable', serviceDate: null });
+      expect(sent.SalesItemLineDetail).not.toHaveProperty('ServiceDate');
+    });
+
+    it('caps a 4500-character description at 4000, keeping the worked-vs-billed suffix whole', async () => {
+      const suffix = ' — 0.50 h worked, 1.00 h billed';
+      const sent = await send({ description: `${'x'.repeat(4500)}${suffix}`, descriptionSuffix: suffix });
+      expect(sent.Description).toHaveLength(4000);
+      expect(sent.Description.endsWith(suffix)).toBe(true);
+      expect(sent.Description.startsWith('x'.repeat(4000 - suffix.length))).toBe(true);
+    });
+
+    it('caps emoji text without splitting a surrogate pair, suffix intact', async () => {
+      const suffix = ' — 0.50 h worked, 1.00 h billed';
+      const sent = await send({ description: `${'😀'.repeat(3000)}${suffix}`, descriptionSuffix: suffix });
+      expect(sent.Description.length).toBeLessThanOrEqual(4000);
+      expect(sent.Description.length).toBeGreaterThanOrEqual(3999);
+      expect(LONE_SURROGATE.test(sent.Description)).toBe(false);
+      expect(sent.Description.endsWith(suffix)).toBe(true);
+    });
+
+    it('caps CJK text at 4000', async () => {
+      const sent = await send({ description: '再起動'.repeat(1500) });
+      expect(sent.Description).toBe('再起動'.repeat(1500).slice(0, 4000));
+    });
+
+    // The one intentional change for partners with the date off: an
+    // over-limit description used to be sent whole (QuickBooks rejects it);
+    // it is now truncated to the documented 4000 characters.
+    it('date-off partner: an over-limit description with no suffix is truncated to 4000 instead of sent whole', async () => {
+      const sent = await send({ description: 'y'.repeat(4500) });
+      expect(sent.Description).toBe('y'.repeat(4000));
+      expect(sent.SalesItemLineDetail).not.toHaveProperty('ServiceDate');
+    });
+  });
+
   it('POSTs a create body with DocNumber, CustomerRef, per-line SalesItemLineDetail and TxnTaxDetail override', async () => {
     const fetchMock = mockFetchJsonOnce({
       Invoice: { Id: '310', SyncToken: '0', DocNumber: 'INV-2026-0042', TotalAmt: 107.0, TxnTaxDetail: { TotalTax: 7.0 } },

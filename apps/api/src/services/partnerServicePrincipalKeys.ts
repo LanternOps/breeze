@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../db';
-import { partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
+import { migrationWindows, partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
 import { PARTNER_SERVICE_PRINCIPAL_OWNER_REQUIRED_MESSAGE } from './partnerServicePrincipalDelegation';
 
 export type PartnerServicePrincipalKeyErrorCode =
@@ -12,7 +12,8 @@ export type PartnerServicePrincipalKeyErrorCode =
   | 'invalid_expiry'
   | 'conflict'
   | 'not_owner'
-  | 'session_stale';
+  | 'session_stale'
+  | 'MIGRATION_WINDOW_ACTIVE';
 
 const ERROR_STATUS: Record<PartnerServicePrincipalKeyErrorCode, 400 | 401 | 403 | 404 | 409> = {
   not_found: 404,
@@ -23,6 +24,7 @@ const ERROR_STATUS: Record<PartnerServicePrincipalKeyErrorCode, 400 | 401 | 403 
   conflict: 409,
   not_owner: 403,
   session_stale: 401,
+  MIGRATION_WINDOW_ACTIVE: 409,
 };
 
 /**
@@ -65,6 +67,14 @@ function generatePartnerServicePrincipalKey(): {
  * bounds the key on the MCP endpoint and whose credential state the key is
  * bound to, so a key minted by anyone else would carry authority they may not
  * hold. Other admins can still revoke keys and disable the principal.
+ *
+ * While a migration window is open for the principal (#8313) no key can be
+ * issued or rotated for it: import mode stays unreachable through the API and
+ * an import's rows stay apart from any live integration's. The principal row
+ * is locked FOR UPDATE, and opening a window locks the same row before it
+ * checks for an active key (services/migrationWindows.ts), so the two can
+ * never both pass. Keys have no re-enable state (active → revoked only), so
+ * issue and rotate are the only ways to give the principal a key.
  */
 async function assertPrincipalCanIssue(
   tx: Database,
@@ -84,7 +94,8 @@ async function assertPrincipalCanIssue(
       eq(partnerServicePrincipals.id, partnerServicePrincipalId),
       eq(partnerServicePrincipals.partnerId, partnerId),
     ))
-    .limit(1);
+    .limit(1)
+    .for('update');
 
   if (!principal) {
     throw new PartnerServicePrincipalKeyError('not_found', 'Service principal not found');
@@ -97,6 +108,21 @@ async function assertPrincipalCanIssue(
   }
   if (principal.expiresAt && principal.expiresAt.getTime() <= Date.now()) {
     throw new PartnerServicePrincipalKeyError('expired', 'Service principal has expired');
+  }
+  const [openWindow] = await tx
+    .select({ id: migrationWindows.id })
+    .from(migrationWindows)
+    .where(and(
+      eq(migrationWindows.partnerServicePrincipalId, partnerServicePrincipalId),
+      eq(migrationWindows.partnerId, partnerId),
+      eq(migrationWindows.status, 'open'),
+    ))
+    .limit(1);
+  if (openWindow) {
+    throw new PartnerServicePrincipalKeyError(
+      'MIGRATION_WINDOW_ACTIVE',
+      'A migration window is open for this service principal; no key can be issued or rotated until it closes',
+    );
   }
 }
 

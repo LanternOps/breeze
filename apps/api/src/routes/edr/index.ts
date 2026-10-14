@@ -4,6 +4,7 @@ import { edrProviderCatalogRoutes } from './providers';
 import { edrConnectionRoutes } from './connections';
 import { edrTenantRoutes } from './tenants';
 import { edrEndpointRoutes } from './endpoints';
+import { edrDetectionRoutes } from './detections';
 
 /**
  * `/edr/*` hub (#8164 W01b). Each sub-router carries its own path prefix and
@@ -19,3 +20,4 @@ edrRoutes.route('/', edrProviderCatalogRoutes);
 edrRoutes.route('/', edrConnectionRoutes);
 edrRoutes.route('/', edrTenantRoutes);
 edrRoutes.route('/', edrEndpointRoutes);
+edrRoutes.route('/', edrDetectionRoutes);

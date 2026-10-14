@@ -914,6 +914,7 @@
     "diskCleanup": "Disk Cleanup",
     "diskUsageAnalysisAndCleanup": "Disk usage analysis and cleanup",
     "bootPerf": "Boot Perf",
+    "systemRestore": "System Restore",
     "startupTimeAndBootProcessAnalysis": "Startup time and boot process analysis",
     "backup": "Backup",
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
@@ -947,7 +948,9 @@
       "management": "Management",
       "history": "History & Network",
       "extensions": "Extensions"
-    }
+    },
+    "workloads": "Workloads",
+    "workloadsTitle": "Containers and virtual machines on this host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -1362,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
+    },
+    "watchdogInstall": {
+      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run `breeze-agent service install --watchdog` on the host to retry.",
+      "unsupported": "Automatic watchdog install is not supported on this host (since {{since}}).",
+      "reason": {
+        "network": "the download could not be reached",
+        "server": "the server refused the download",
+        "policy": "the download was blocked by network policy",
+        "signature": "the downloaded watchdog failed signature verification",
+        "checksum": "the downloaded watchdog failed its integrity check",
+        "devBuild": "this is a development build",
+        "unsupportedOs": "this operating system is not supported",
+        "installCmd": "the install command failed",
+        "locked": "another install was already in progress",
+        "unknown": "an unrecognized error occurred"
+      }
+    },
+    "logShipping": {
+      "label": "Log shipping",
+      "state": {
+        "healthy": "Healthy",
+        "quiet": "Quiet",
+        "failing": "Failing"
+      },
+      "tooltip": {
+        "healthy": "The agent is uploading its logs normally.",
+        "quiet": "The agent has made no recent upload attempts, so there is nothing to report.",
+        "failing": "Log uploads have been failing since {{since}}. Reason: {{reason}}"
+      },
+      "reason": {
+        "http": "The server returned HTTP {{status}}",
+        "timeout": "The request timed out",
+        "dns": "The server name could not be resolved",
+        "connectionRefused": "The connection was refused",
+        "tls": "The secure connection failed",
+        "authRejected": "The server rejected the agent credentials",
+        "urlUnresolved": "The server address could not be determined",
+        "other": "Another upload error",
+        "unspecified": "Unspecified"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Logs after level raise",
+      "text": "No logs received since the log level was raised ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1828,7 +1875,11 @@
       "description": "Pending vs installed updates",
       "installed": "{{count}} installed",
       "pending": "{{count}} pending",
-      "title": "Patch Compliance"
+      "title": "Patch Compliance",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked",
+      "imagesBehind_one": "{{count}} container image behind",
+      "imagesBehind_other": "{{count}} container images behind"
     },
     "confirm": {
       "install": "Install",
@@ -1940,7 +1991,8 @@
       "excluded": "Excluded by policy",
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
-      "excludedAppRuleTitle": "An app block or pin rule in the patch policy holds this patch, so scheduled patch runs skip it.",
+      "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
+      "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
       "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",
@@ -2312,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} updates available"
   },
   "deviceUserIdleStat": {
+    "active": "Active",
+    "asOf": "as of {{time}}",
     "label": "User Idle",
+    "locked": "Locked",
     "retryAria": "Couldn't load idle status — retry",
-    "retryTitle": "Couldn't load idle status — click to retry"
+    "retryTitle": "Couldn't load idle status — click to retry",
+    "unknown": "Unknown"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -2631,7 +2687,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterChipBar": {
@@ -2700,7 +2757,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterHelpPopover": {
@@ -2786,7 +2844,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterValueEditor": {
@@ -3402,6 +3461,7 @@
     "ariaLabel": "Quick-add filters",
     "chips": {
       "critical": "Critical",
+      "logShippingFailing": "Log Shipping Failing",
       "lowDisk": "Low Disk",
       "needsPatches": "Needs Patches",
       "notSeen7d": "Not seen 7d",
@@ -3969,6 +4029,215 @@
       "pdc_emulator": "Domain PDC emulator",
       "forest_root_pdc_emulator": "Forest-root PDC emulator",
       "unknown": "Unknown"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Couldn't load workloads for this device.",
+    "retry": "Retry",
+    "agentTooOld": "Agent too old — update the agent to report workloads.",
+    "noRuntimes": "No container or VM runtime detected on this device.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version unknown",
+    "detection": {
+      "absent": "Not installed",
+      "unknown": "Detection inconclusive"
+    },
+    "status": {
+      "ok": "Collecting",
+      "disabled": "Collection is off — enable Workload inventory in a configuration policy",
+      "unavailable": "Runtime not running",
+      "permission_denied": "Permission denied",
+      "error": "Collection failed",
+      "unsupported": "Not supported on this device"
+    },
+    "detectOnly": "Detected only — workloads for this runtime are not listed.",
+    "counts": "{{total}} workloads · {{running}} running · {{stopped}} stopped",
+    "partial": "Partial snapshot — some details could not be read, so this shows what was collected.",
+    "truncated": "Showing {{reported}} of {{observed}} workloads the runtime reported.",
+    "lastError": "Last error: {{error}}",
+    "lastCollected": "Last collected {{time}}",
+    "empty": "No workloads reported.",
+    "columns": {
+      "name": "Name",
+      "state": "State",
+      "image": "Image / guest OS",
+      "compose": "Compose project",
+      "started": "Started",
+      "imageStatus": "Image status"
+    },
+    "states": {
+      "running": "Running",
+      "stopped": "Stopped",
+      "paused": "Paused",
+      "restarting": "Restarting",
+      "other": "Other"
+    },
+    "policy": {
+      "title": "Workload inventory",
+      "description": "List the containers and virtual machines on container and VM hosts",
+      "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
+      "enabled": "List workloads",
+      "runtimesHeading": "Runtimes to list",
+      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "interval": "Collection interval (minutes)",
+      "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Behind",
+      "current": "Up to date",
+      "pinned": "Pinned",
+      "local": "Local build",
+      "not_found": "Tag not found",
+      "not_checked": "Not checked"
+    },
+    "imageStatusReason": {
+      "pending": "Not checked yet",
+      "private": "Private registry — credentials required",
+      "unsupported_registry": "Registry not supported",
+      "error": "Registry check failed — will retry",
+      "behind": "A newer image is published for this tag",
+      "current": "Matches the registry",
+      "pinned": "Pinned to a digest — nothing to compare",
+      "local": "Built locally — no registry digest",
+      "not_found": "The tag no longer exists in the registry"
+    },
+    "imageFilter": {
+      "label": "Image status",
+      "all": "All",
+      "empty": "No workloads match this image status."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Other EDR providers",
+    "loadError": "Some EDR provider data could not be loaded.",
+    "duplicateNotice": "Linked by two consoles: this device appears in more than one {{provider}} connection.",
+    "openDetections": "Open detections",
+    "coverageHeading": "Coverage may be incomplete",
+    "fields": {
+      "health": "Health",
+      "status": "Status",
+      "isolation": "Isolation",
+      "agentVersion": "Agent version",
+      "lastSeen": "Last seen"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "unhealthy": "Unhealthy",
+      "unknown": "Unknown"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Unknown"
+    },
+    "isolation": {
+      "isolated": "Isolated",
+      "not_isolated": "Not isolated",
+      "pending": "Pending",
+      "unknown": "Unknown"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info",
+      "unknown": "Unknown"
+    },
+    "detectionStatus": {
+      "open": "Open",
+      "in_progress": "In progress",
+      "mitigated": "Mitigated",
+      "resolved": "Resolved",
+      "false_positive": "False positive",
+      "dismissed": "Dismissed",
+      "unknown": "Unknown"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Send message to users",
+    "sendAction": "Send message",
+    "fields": {
+      "title": "Title",
+      "body": "Message",
+      "severity": "Severity",
+      "requiresAck": "Require acknowledgement",
+      "expiry": "Expires"
+    },
+    "severity": {
+      "info": "Info",
+      "warning": "Warning",
+      "critical": "Critical"
+    },
+    "expiry": {
+      "h1": "1 hour",
+      "h4": "4 hours",
+      "h24": "24 hours",
+      "h72": "72 hours",
+      "untilClosed": "Until closed (max 7 days)"
+    },
+    "preview": {
+      "heading": "Preview",
+      "sender": "From your company",
+      "footer": "Sent by your IT provider",
+      "acknowledge": "Acknowledge"
+    },
+    "recipients": "Recipients: {{count}} devices",
+    "columns": {
+      "device": "Device",
+      "delivery": "Delivery"
+    },
+    "capability": {
+      "assist_card": "Assist card (console session) or native fallback",
+      "native": "Native notification",
+      "unsupported": "Unsupported agent version - will not be delivered"
+    },
+    "confirm": {
+      "text": "This message will be sent to {{count}} devices. Review the exact card below.",
+      "send": "Send to {{count}} devices"
+    },
+    "result": {
+      "summary": "{{queued}} queued, {{failed}} failed",
+      "queued": "Queued",
+      "failed": "Failed"
+    },
+    "actions": {
+      "send": "Send message",
+      "sending": "Sending...",
+      "cancel": "Cancel",
+      "back": "Back",
+      "close": "Close"
+    },
+    "errors": {
+      "send_failed": "The message could not be sent. Try again.",
+      "agent_unsupported": "The agent on this device does not support messages yet.",
+      "no_permission": "You do not have permission to message this device.",
+      "offline_rejected": "The device is offline and the message was not queued.",
+      "rate_limited": "Too many messages sent recently. Try again later.",
+      "cap_exceeded": "This send is larger than the allowed limit.",
+      "feature_disabled": "Endpoint messaging is not enabled for this organization.",
+      "queue_failed": "The message could not be queued for this device.",
+      "in_progress": "This message is already being sent. Wait a moment, then check the result.",
+      "unavailable": "Message sending is temporarily unavailable. Try again shortly.",
+      "no_devices_resolved": "No devices matched this selection.",
+      "idempotency_conflict": "This message ID was already used for a different message. Edit the message and send again."
+    },
+    "issues": {
+      "html": "HTML is not allowed in the message body.",
+      "images": "Images are not allowed in the message body.",
+      "httpsLinks": "Links in the message body must use https.",
+      "referenceLinks": "Reference-style links are not allowed. Use inline links instead.",
+      "titleHtml": "HTML is not allowed in the title.",
+      "titleLinks": "Links are not allowed in the title.",
+      "invalid": "The message contains content that is not allowed."
     }
   }
 }

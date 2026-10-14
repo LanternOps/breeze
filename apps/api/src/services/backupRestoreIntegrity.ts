@@ -36,6 +36,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
+import { attestedKeyLayoutFor } from './backupKeyLayout';
 
 export const RESTORE_INTEGRITY_FORMAT = 1;
 
@@ -102,7 +103,9 @@ function boundToSnapshot(snapshot: IntegritySnapshotInput, attestation: Integrit
     && snapshot.jobId === attestation.jobId
     && snapshot.snapshotId === attestation.providerSnapshotId
     && snapshot.storageIdentity === attestation.storageIdentity
-    && snapshot.keyLayout === attestation.keyLayout
+    // The attestation describes the LOGICAL key layout the helper wrote
+    // (#7081 I6): every readable layout attests as legacy_flat.
+    && attestedKeyLayoutFor(snapshot.keyLayout) === attestation.keyLayout
     && attestation.manifestKey === controlObjectKey(attestation.providerSnapshotId, 'manifest');
 }
 

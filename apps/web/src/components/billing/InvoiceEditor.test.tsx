@@ -73,6 +73,122 @@ describe('InvoiceEditor', () => {
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
   });
 
+  describe('time entry line detail override (#8604)', () => {
+    const patches = () => fetchMock.mock.calls
+      .filter((c) => c[0] === '/invoices/inv-1' && (c[1] as RequestInit)?.method === 'PATCH')
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string));
+
+    it('PATCHes just the changed field; "Billing default" sends null', async () => {
+      const onChanged = vi.fn();
+      render(<InvoiceEditor detail={draft([manualLine], { lineShowDate: null })} onChanged={onChanged} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      const date = screen.getByTestId('invoice-line-detail-show-date') as HTMLSelectElement;
+      expect(date.value).toBe('');
+      fireEvent.change(date, { target: { value: 'show' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowDate: true }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      fireEvent.change(screen.getByTestId('invoice-line-detail-show-note'), { target: { value: 'hide' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowNote: false }));
+      fireEvent.change(screen.getByTestId('invoice-line-detail-grouping'), { target: { value: 'day' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineGrouping: 'day' }));
+    });
+
+    it('reflects stored overrides and sends null when choosing the billing default', async () => {
+      render(<InvoiceEditor detail={draft([manualLine], { lineShowDate: true, lineShowWorkedTime: false, lineGrouping: 'day' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect((screen.getByTestId('invoice-line-detail-show-date') as HTMLSelectElement).value).toBe('show');
+      expect((screen.getByTestId('invoice-line-detail-show-worked-time') as HTMLSelectElement).value).toBe('hide');
+      expect((screen.getByTestId('invoice-line-detail-grouping') as HTMLSelectElement).value).toBe('day');
+      fireEvent.change(screen.getByTestId('invoice-line-detail-show-date'), { target: { value: '' } });
+      await waitFor(() => expect(patches()).toContainEqual({ lineShowDate: null }));
+    });
+
+    it('is not offered on an issued invoice (frozen at issue)', async () => {
+      render(<InvoiceEditor detail={draft([manualLine], { status: 'sent' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-line-detail-show-date')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('invoice-line-detail-grouping')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('refresh from time entries (#8606)', () => {
+    const timeLine: InvoiceDetail['lines'][number] = {
+      ...manualLine, id: 'line-t', sourceType: 'time_entry', description: 'Replaced toner', quantity: '1.50', unitPrice: '100.00', lineTotal: '150.00',
+    };
+    const refreshCalls = () => fetchMock.mock.calls.filter((c) => c[0] === '/invoices/inv-1/refresh-time-lines');
+
+    it('POSTs the refresh, reloads the draft and shows a result summary', async () => {
+      const onChanged = vi.fn();
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') {
+          return json({ data: { invoiceId: 'inv-1', summary: { refreshed: 2, unchanged: 1, skipped: 1, quantityDrifted: 1 }, lines: [] } });
+        }
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine])} onChanged={onChanged} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      await waitFor(() => expect(screen.getByTestId('invoice-refresh-time-lines-summary')).toBeInTheDocument());
+      expect(refreshCalls()).toHaveLength(1);
+      expect((refreshCalls()[0]![1] as RequestInit).method).toBe('POST');
+      expect(onChanged).toHaveBeenCalled();
+      const summary = screen.getByTestId('invoice-refresh-time-lines-summary').textContent ?? '';
+      expect(summary).toContain('2');
+      expect(screen.getByTestId('invoice-refresh-time-lines-drifted')).toBeInTheDocument();
+      expect(screen.getByTestId('invoice-refresh-time-lines-skipped')).toBeInTheDocument();
+    });
+
+    it('names the lines that will block Issue (billed elsewhere) and the drifted lines', async () => {
+      const second = { ...timeLine, id: 'line-u', description: 'Swapped fuser' };
+      const third = { ...timeLine, id: 'line-v', description: 'Network check' };
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') {
+          return json({ data: {
+            invoiceId: 'inv-1', summary: { refreshed: 0, unchanged: 0, skipped: 1, quantityDrifted: 1 },
+            lines: [
+              { lineId: 'line-u', status: 'skipped', reason: 'billed_elsewhere' },
+              { lineId: 'line-v', status: 'quantityDrifted', lineQuantity: '1.00', entryQuantity: '2.00' },
+              { lineId: 'line-t', status: 'unchanged' },
+            ],
+          } });
+        }
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine, second, third])} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      const blocked = await screen.findByTestId('invoice-refresh-time-lines-billed-elsewhere');
+      expect(blocked.textContent).toContain('Swapped fuser');
+      expect(screen.getByTestId('invoice-refresh-time-lines-drifted').textContent).toContain('Network check');
+      // The only skip is the billed-elsewhere one, so no generic skipped note.
+      expect(screen.queryByTestId('invoice-refresh-time-lines-skipped')).not.toBeInTheDocument();
+    });
+
+    it('toasts the server error when the refresh fails and shows no summary', async () => {
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/invoices/inv-1/refresh-time-lines') return json({ error: 'Invoice is not a draft', code: 'NOT_A_DRAFT' }, false, 409);
+        if (input.startsWith('/catalog')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      render(<InvoiceEditor detail={draft([timeLine])} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByTestId('invoice-refresh-time-lines'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.queryByTestId('invoice-refresh-time-lines-summary')).not.toBeInTheDocument();
+    });
+
+    it('is not offered on an issued invoice', async () => {
+      render(<InvoiceEditor detail={draft([timeLine], { status: 'sent' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-refresh-time-lines')).not.toBeInTheDocument();
+    });
+
+    it('is not offered on a draft with no time-entry lines', async () => {
+      render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoice-refresh-time-lines')).not.toBeInTheDocument();
+    });
+  });
+
   it('links the Bill To name to its organization record (#5075 W03)', async () => {
     render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());

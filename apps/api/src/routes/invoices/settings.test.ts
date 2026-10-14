@@ -192,6 +192,25 @@ describe('billing settings routes', () => {
     expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({ invoiceDeviceAppendix: true });
   });
 
+  it('#8604: PATCH /partner/billing-settings round-trips the line itemization defaults', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      invoiceLineGrouping: 'day', invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: false,
+    }));
+    expect(res.status).toBe(200);
+    expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({
+      invoiceLineGrouping: 'day', invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: false,
+    });
+  });
+
+  it('#8604: an unknown line grouping is a 400, never silently dropped', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceLineGrouping: 'week',
+    }));
+    expect(res.status).toBe(400);
+    expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+  });
+
   it('#6635: PATCH /partner/billing-settings round-trips notifyCustomerOnBehalfAcceptance', async () => {
     const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
       currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, notifyCustomerOnBehalfAcceptance: true,

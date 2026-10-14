@@ -1771,7 +1771,8 @@
       "saveNotes": "No se pudieron guardar notas.",
       "saveTerms": "No se pudieron guardar los términos.",
       "updateLine": "No se pudo actualizar la línea.",
-      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
+      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual.",
+      "saveLineDetail": "No se pudo actualizar cómo se imprimen los registros de tiempo"
     },
     "fields": {
       "descriptionOptional": "Descripción (opcional)",
@@ -1838,6 +1839,35 @@
     "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas",
     "unsavedField": {
       "lines": "Líneas"
+    },
+    "lineDetail": {
+      "default": "Predeterminado de facturación",
+      "grouping": "Diseño",
+      "groupingDay": "Agrupar por día",
+      "groupingEntry": "Una fila por registro",
+      "help": "Reemplaza tu valor predeterminado de facturación solo en este borrador.",
+      "hide": "Ocultar",
+      "show": "Mostrar",
+      "showDate": "Fecha de trabajo",
+      "showNote": "Nota del técnico",
+      "showWorkedTime": "Tiempo trabajado vs. facturado",
+      "title": "Líneas de registro de tiempo"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
+      "billedElsewhere_one": "{{count}} línea bloqueará la emisión: su registro de tiempo se facturó en otra factura. Elimínala antes de emitir:",
+      "billedElsewhere_other": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
+      "button": "Actualizar desde registros de tiempo",
+      "drifted": "{{count}} líneas sin cambios: el tiempo facturado de sus registros ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "drifted_one": "{{count}} línea sin cambios: el tiempo facturado de su registro ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "drifted_other": "{{count}} líneas sin cambios: el tiempo facturado de sus registros ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "error": "No se pudo actualizar desde los registros de tiempo",
+      "help": "Actualiza notas, fechas trabajadas y aprobación desde los registros de tiempo. Las cantidades, los precios y las descripciones editadas a mano nunca cambian.",
+      "running": "Actualizando…",
+      "skipped": "{{count}} líneas omitidas: sus registros de tiempo se facturaron en otra factura, se eliminaron o ya no son facturables en este borrador.",
+      "skipped_one": "{{count}} línea omitida: su registro de tiempo se facturó en otra factura, se eliminó o ya no es facturable en este borrador.",
+      "skipped_other": "{{count}} líneas omitidas: sus registros de tiempo se facturaron en otra factura, se eliminaron o ya no son facturables en este borrador.",
+      "summary": "Actualizadas: {{refreshed}} · Ya al día: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2115,7 @@
     "empty": "Esta factura aún no tiene ninguna partida.",
     "fallbackTitle": "Factura",
     "issued": "Emitido",
+    "laborLine": "Mano de obra",
     "preview": {
       "description": "Esto es lo que su cliente ve en su factura.",
       "downloadError": "No se pudo descargar la factura PDF.",
@@ -2354,7 +2385,15 @@
       "prefixInvalid": "Ingresa un prefijo de 1 a 12 caracteres.",
       "taxRateInvalid": "Ingresa una tasa de impuesto de 0 a 100.",
       "termsDaysInvalid": "Ingresa un número entero de días de 0 a 365.",
-      "title": "Valores predeterminados de facturación"
+      "title": "Valores predeterminados de facturación",
+      "lineDetailTitle": "Líneas de registro de tiempo en las facturas",
+      "lineDetailHelp": "Elige qué ven los clientes de los registros de tiempo. Un borrador de factura puede reemplazar esto; la elección se congela al emitir la factura.",
+      "lineShowDate": "Mostrar la fecha de trabajo",
+      "lineShowNote": "Mostrar la nota del técnico",
+      "lineShowWorkedTime": "Mostrar tiempo trabajado vs. facturado",
+      "lineGrouping": "Diseño",
+      "lineGroupingEntry": "Una fila por registro",
+      "lineGroupingDay": "Agrupar por día"
     },
     "loadError": "No se pudo cargar la configuración de facturación.",
     "loading": "Cargando configuración de facturación...",

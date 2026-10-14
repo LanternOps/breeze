@@ -17,6 +17,7 @@ import {
   decideWriteBrokering,
   helperStorageIdentity,
   isAllowedWriteListPrefix,
+  resolveMintKeyRoot,
   urlExpiresIn,
   writeDeleteDecision,
   type ResumeTargetView,
@@ -336,5 +337,18 @@ describe('urlExpiresIn', () => {
     expect(urlExpiresIn(new Date('2026-11-08T12:05:00.250Z'), now)).toBe(300);
     expect(urlExpiresIn(new Date('2026-11-08T12:05:00.000Z'), now)).toBe(299);
     expect(urlExpiresIn(new Date('2026-11-08T11:59:00Z'), now)).toBe(0);
+  });
+});
+
+// #7081 W01 is behaviour-neutral: no code path records prefixed_flat until the
+// writer is switched on, whatever the destination's prefix.
+describe('resolveMintKeyRoot (writer off)', () => {
+  it.each([
+    ['s3', { bucket: 'b', prefix: 'msp/acme' }],
+    ['s3', { bucket: 'b', prefix: 'a//b' }],
+    ['s3', { bucket: 'b' }],
+    ['local', { path: '/x' }],
+  ])('%s %j -> legacy_flat', (provider, config) => {
+    expect(resolveMintKeyRoot(provider, config)).toEqual({ ok: true, root: { layout: 'legacy_flat', prefix: null } });
   });
 });

@@ -325,6 +325,34 @@ describe('ScriptsPage post-run navigation (#4886)', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
+  it('does not navigate or close the modal when a fully admitted run carries warnings', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) return makeJsonResponse({ data: [baseScript] });
+      if (url === '/orgs/sites') return makeJsonResponse({ data: [] });
+      if (url === '/scripts/script-1') return makeJsonResponse(baseScript);
+      if (url === '/scripts/script-1/execute') {
+        return makeJsonResponse({
+          requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-1' }],
+          warnings: ['GROUP_REFUSED:group-2'],
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptsPage />);
+    await screen.findByText('Run Cleanup Temp Files');
+    fireEvent.click(screen.getByText('Run Cleanup Temp Files'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/execute')).toBe(true));
+    await waitFor(() => expect(screen.getByText('Confirm Execute')).toBeTruthy());
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
   it('keeps partial admission results on the page when one target is suppressed', async () => {
     const { navigateTo } = await import('@/lib/navigation');
     let scriptsFetchCount = 0;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { getTableName } from 'drizzle-orm';
-import { PgTable } from 'drizzle-orm/pg-core';
+import { PgDialect, PgTable } from 'drizzle-orm/pg-core';
 
 // ---------------------------------------------------------------------------
 // Mocks for the behavior suite (hoisted above all imports). The static
@@ -109,6 +109,7 @@ import * as schema from '../../db/schema';
 import {
   coreRoutes,
   getDeviceCascadeDeleteTables,
+  DEVICE_CASCADE_DELETE_PREDICATES,
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -209,6 +210,42 @@ describe('device hard-delete table coverage contract', () => {
     expect(deviceCascadeDeleteTables.indexOf('remediation_suggestions')).toBeLessThan(
       deviceCascadeDeleteTables.indexOf('metric_anomalies'),
     );
+  });
+
+  it('every exact-epoch predicate table is also a cascade table (PAM ownership epochs W2, #8204)', () => {
+    const keys = [...DEVICE_CASCADE_DELETE_PREDICATES.keys()];
+    expect(keys.sort()).toEqual([
+      'device_ownership_epoch_closures',
+      'device_ownership_epochs',
+      'elevation_requests',
+      'pam_actuation_results',
+      'pam_actuations',
+    ]);
+    expect(keys.filter((t) => !deviceCascadeDeleteTables.includes(t))).toEqual([]);
+  });
+
+  it('deletes the PAM chain children-first and the epoch row last (#8204)', () => {
+    // Every chain FK targets the epoch row (elevation_requests' with NO ACTION),
+    // and results FK the actuation, so any other order raises 23503.
+    const order = [
+      'pam_actuation_results',
+      'pam_actuations',
+      'elevation_requests',
+      'device_ownership_epoch_closures',
+      'device_ownership_epochs',
+    ].map((t) => deviceCascadeDeleteTables.indexOf(t));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it('exact-epoch predicates match the live device ownership, never device_id alone (#8204)', () => {
+    const dialect = new PgDialect();
+    for (const [table, predicate] of DEVICE_CASCADE_DELETE_PREDICATES) {
+      const q = dialect.sqlToQuery(predicate({ deviceId: 'd', orgId: 'o', ownershipEpoch: 3 }));
+      const epochColumn = table.startsWith('device_ownership_epoch') ? '"epoch"' : '"device_epoch"';
+      expect(q.sql, table).toContain(`(device_id, org_id, ${epochColumn})`);
+      expect(q.params, table).toEqual(['d', 'o', 3]);
+    }
   });
 
   it('includes every table whose linked_device_id FK references devices.id', () => {

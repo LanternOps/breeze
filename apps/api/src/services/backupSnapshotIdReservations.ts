@@ -30,6 +30,7 @@ import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
+import { snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 
 /** The unique violation every ownership refusal is reported under. */
 export const SNAPSHOT_ID_RESERVATION_CONSTRAINT = 'backup_snapshot_id_reservations_pkey';
@@ -75,9 +76,21 @@ export type SnapshotIdReservation = typeof backupSnapshotIdReservations.$inferSe
  * the caller's transaction usable; it is retried once with a new id.
  */
 export async function reserveNewSnapshotId(
-  input: { orgId: string; deviceId: string; configId: string; storageIdentity: string; jobId: string },
+  input: {
+    orgId: string;
+    deviceId: string;
+    configId: string;
+    storageIdentity: string;
+    jobId: string;
+    /** Key root the id's objects are written under; immutable once reserved (#7081). */
+    keyRoot: SnapshotKeyRoot;
+  },
   opts: { now?: Date; random?: (n: number) => Buffer } = {},
 ): Promise<string> {
+  // Only a root readers can read is ever recorded.
+  if (!snapshotKeyRootOf({ keyLayout: input.keyRoot.layout, keyPrefix: input.keyRoot.prefix })) {
+    throw new Error('reserveNewSnapshotId: refusing to record an unreadable key root');
+  }
   for (let attempt = 0; ; attempt++) {
     const snapshotId = mintSnapshotId(opts.now ?? new Date(), opts.random ?? randomBytes);
     try {
@@ -92,6 +105,8 @@ export async function reserveNewSnapshotId(
           state: 'reserved',
           currentJobId: input.jobId,
           writeGeneration: 1,
+          keyLayout: input.keyRoot.layout,
+          keyPrefix: input.keyRoot.prefix,
         }),
       );
       return snapshotId;
@@ -203,6 +218,24 @@ export async function loadReservation(
     .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
     .limit(1);
   const [row] = opts.forUpdate ? await query.for('update') : await query;
+  return row ?? null;
+}
+
+/**
+ * The (key_layout, key_prefix) pair recorded on an id's reservation (#7081),
+ * verbatim — validate it with snapshotKeyRootOf. Null when no reservation is
+ * visible in the caller's context. Publication copies it onto the snapshot
+ * row; the backup_snapshots insert trigger refuses a row that does not carry
+ * it.
+ */
+export async function loadReservationKeyRoot(
+  snapshotId: string,
+): Promise<{ keyLayout: string; keyPrefix: string | null } | null> {
+  const [row] = await db
+    .select({ keyLayout: backupSnapshotIdReservations.keyLayout, keyPrefix: backupSnapshotIdReservations.keyPrefix })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
   return row ?? null;
 }
 

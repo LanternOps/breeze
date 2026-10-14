@@ -1771,7 +1771,8 @@
       "saveNotes": "Could not save notes.",
       "saveTerms": "Could not save terms.",
       "updateLine": "Could not update line.",
-      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
+      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
+      "saveLineDetail": "Couldn't update how time entries print"
     },
     "fields": {
       "descriptionOptional": "Description (optional)",
@@ -1838,6 +1839,35 @@
     "linesScrollAria": "Invoice lines — scroll sideways for more columns",
     "unsavedField": {
       "lines": "Line items"
+    },
+    "lineDetail": {
+      "default": "Billing default",
+      "grouping": "Layout",
+      "groupingDay": "Group by day",
+      "groupingEntry": "One row per entry",
+      "help": "Overrides your billing default for this draft only.",
+      "hide": "Hide",
+      "show": "Show",
+      "showDate": "Date worked",
+      "showNote": "Technician's note",
+      "showWorkedTime": "Worked vs billed time",
+      "title": "Time entry lines"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
+      "billedElsewhere_one": "{{count}} line will block Issue: its time entry was billed on another invoice. Remove it before issuing:",
+      "billedElsewhere_other": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
+      "button": "Refresh from time entries",
+      "drifted": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_one": "{{count}} line left unchanged: its time entry's billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_other": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "error": "Couldn't refresh from time entries",
+      "help": "Updates notes, dates worked and approval from the source time entries. Quantities, prices and descriptions you edited by hand never change.",
+      "running": "Refreshing…",
+      "skipped": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "skipped_one": "{{count}} line skipped: its time entry was billed elsewhere, removed, or is no longer billable on this draft.",
+      "skipped_other": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "summary": "Refreshed: {{refreshed}} · Already current: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2115,7 @@
     "empty": "This invoice doesn’t have any line items yet.",
     "fallbackTitle": "Invoice",
     "issued": "Issued",
+    "laborLine": "Labor",
     "preview": {
       "description": "This is what your customer sees on their invoice.",
       "downloadError": "Could not download the invoice PDF.",
@@ -2354,7 +2385,15 @@
       "prefixInvalid": "Enter a prefix of 1 to 12 characters.",
       "taxRateInvalid": "Enter a tax rate from 0 to 100.",
       "termsDaysInvalid": "Enter a whole number of days from 0 to 365.",
-      "title": "Billing defaults"
+      "title": "Billing defaults",
+      "lineDetailTitle": "Time entry lines on invoices",
+      "lineDetailHelp": "Choose what customers see for time entries. A draft invoice can override this; the choice is frozen when the invoice is issued.",
+      "lineShowDate": "Show the date worked",
+      "lineShowNote": "Show the technician's note",
+      "lineShowWorkedTime": "Show worked vs billed time",
+      "lineGrouping": "Layout",
+      "lineGroupingEntry": "One row per entry",
+      "lineGroupingDay": "Group by day"
     },
     "loadError": "Billing settings failed to load.",
     "loading": "Loading billing settings…",
