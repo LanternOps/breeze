@@ -21,7 +21,7 @@ import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
 import { createTrustPreviewToken, TRUST_PREVIEW_TTL_SECONDS } from '../services/trustPage/previewToken';
 import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY } from '../services/postureEvidence';
 import {
-  DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_INTRO_MAX_CHARS, TRUST_SLUG_RE, evaluateTrustControls,
+  DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, evaluateTrustControls,
   trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublishSchema, trustPageUpdateSchema,
 } from '@breeze/shared';
 
@@ -88,7 +88,7 @@ trustPageRoutes.put('/:orgId/trust-page', scopes, orgWrite, zValidator('param', 
     const patch: Partial<typeof trustPages.$inferInsert> = { updatedAt: new Date(), updatedByUserId: auth.user.id, publicationRevision: sql`${trustPages.publicationRevision} + 1` as never };
     if (body.introHtml !== undefined) {
       const intro = body.introHtml === null ? null : sanitizeIntro(body.introHtml);
-      if (intro !== null && intro.length > TRUST_INTRO_MAX_CHARS * 8) {
+      if (intro !== null && intro.length > TRUST_INTRO_STORED_MAX_CHARS) {
         return c.json({ error: 'The intro is too long after formatting; shorten it.', code: 'INTRO_TOO_LONG' }, 422);
       }
       patch.introHtml = intro;

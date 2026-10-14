@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   FRAMEWORK_META, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_FRAMEWORKS,
-  TRUST_INTRO_MAX_CHARS, trustPagePublicPayloadSchema, type TrustControlAssessment, type TrustFramework, type TrustPagePublicPayload,
+  TRUST_INTRO_STORED_MAX_CHARS, trustPagePublicPayloadSchema, type TrustControlAssessment, type TrustFramework, type TrustPagePublicPayload,
 } from '@breeze/shared';
 import type { TrustPageRow } from '../../db/schema/trustPages';
 import { resolveDocumentBrand } from '../partnerDocumentBrand';
@@ -35,7 +35,7 @@ export function sanitizeIntro(html: string | null | undefined): string | null {
   const text = out.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim();
   if (text.length === 0) return null;
   // Sanitized HTML can expand (entities, anchor attributes); never let a publisher-controlled intro throw the builder.
-  if (out.length > TRUST_INTRO_MAX_CHARS * 8) {
+  if (out.length > TRUST_INTRO_STORED_MAX_CHARS) {
     console.warn('[trustPage] intro exceeded payload bound after sanitization; omitted');
     return null;
   }
