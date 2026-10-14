@@ -29,8 +29,9 @@ export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: st
       snapshotId: trustPageSnapshots.id, payload: trustPageSnapshots.payload,
     })
     .from(trustPages)
-    .innerJoin(organizations, eq(organizations.id, trustPages.orgId))
     .innerJoin(partners, eq(partners.id, trustPages.partnerId))
+    // partner_id correlation lets lower(slug) use organizations_partner_slug_uniq (partner_id, lower(slug)).
+    .innerJoin(organizations, and(eq(organizations.id, trustPages.orgId), eq(organizations.partnerId, partners.id)))
     .leftJoin(trustPageSnapshots, and(eq(trustPageSnapshots.trustPageId, trustPages.id), eq(trustPageSnapshots.isCurrent, true)))
     .where(and(eq(partners.slug, partnerSlug), target, livePublicationPredicate()))
     .limit(1);
