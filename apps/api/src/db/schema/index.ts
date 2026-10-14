@@ -216,3 +216,4 @@ export * from './autopay';
 export * from './autopaySetupAttempts';
 export * from './deviceOwnershipEpochs';
 export * from './assetPhysicalPlacements';
+export * from './circuits';
