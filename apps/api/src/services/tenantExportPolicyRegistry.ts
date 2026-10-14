@@ -979,6 +979,22 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "topology_view_exclusions": tablePolicy("org_id", {"included":["id","org_id","site_id","relationship_id","view","reason","created_by","revoked_at","revoked_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_layout": tablePolicy("org_id", {"included":["id","org_id","site_id","node_type","node_id","x","y","pinned","updated_by","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_manual_nodes": tablePolicy("org_id", {"included":["id","org_id","site_id","label","role","notes","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Trust Center W1: `payload` (the published public snapshot) is jsonb ->
+  // excludedOpen by rule; payload_sha256 is a content digest, reviewedIncluded
+  // (org_documents.sha256 precedent).
+  "trust_page_documents": tablePolicy("org_id", {
+    included: ["trust_page_id", "document_id", "org_id", "visibility", "disclosure_confirmed_at", "disclosure_confirmed_by_user_id", "sort_order", "created_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
+  "trust_page_snapshots": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "catalog_version", "publication_revision", "is_current", "generated_at"],
+    reviewedIncluded: ["payload_sha256"], excludedSensitive: [],
+    excludedOpen: ["payload"],
+  }),
+  "trust_pages": tablePolicy("org_id", {
+    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
   "tunnel_allowlists": tablePolicy("org_id", {"included":["id","org_id","site_id","direction","pattern","description","enabled","source","discovered_asset_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "tunnel_sessions": tablePolicy("org_id", {"included":["id","device_id","user_id","org_id","type","status","target_host","target_port","scheme","skip_tls_verify","source_ip","bytes_sent","bytes_recv","started_at","ended_at","duration_seconds","error_message","created_at","last_activity_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "unifi_clients": tablePolicy("org_id", {"included":["id","collector_id","org_id","site_id","mac","hostname","ip_address","connected_device_id","uplink_port_idx","is_wired","ssid","vlan","signal_dbm","tx_bytes","rx_bytes","uptime_seconds","discovered_asset_id","is_stale","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["raw"]}),

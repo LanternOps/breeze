@@ -1048,6 +1048,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_site_template_bindings',
   'topology_telemetry_arms',
   'topology_view_exclusions',
+  // trust_page_* : documents/snapshots -> trust_pages (children first);
+  // localeCompare puts '_' before 's', so alphabetical order IS FK order here.
+  'trust_page_documents',
+  'trust_page_snapshots',
+  'trust_pages',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',
