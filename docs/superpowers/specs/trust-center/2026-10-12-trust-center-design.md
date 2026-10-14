@@ -1,7 +1,7 @@
 ---
 title: Trust Center — public security-posture pages for organizations
 issue: (to file on approval; parent `feature` issue + wave sub-issues via feature-lifecycle)
-status: draft, for Todd's review. Product calls are stated as defaults in §18.
+status: approved 2026-10-13 (all §18 defaults); plan-time amendments recorded in §19. Plan: docs/superpowers/plans/2026-10-13-trust-center-w1.md
 depends_on: LanternOps/breeze#3282 (platform custom domains) — W3 only
 related: #4562 (portal visibility), #5784 (evidence reports), specs/reports/2026-06-29-security-compliance-posture-report.md, specs/reports/2026-07-14-posture-backup-evidence-design.md (parked), #3281, #3229, #3967
 reviewed_by: advisor + codex gpt-6-astra xhigh (read-only), 2026-10-12 — both concur on the architecture; their refinements are folded in and marked "(review)".
@@ -90,7 +90,7 @@ Code-defined, `packages/shared/src/trustCenter/controlCatalog.ts`, versioned by 
 | `mfa_registered_m365` | Identity & access | `m365_posture_rollups.users_mfa_registered / users_total`; `met` also requires `admins_without_mfa = 0`. Titled "MFA registered (Microsoft 365)"; registration is not enforcement (review) — enforcement via `m365_ca_policies` is a separate W2 control | coverage |
 | `privileged_access` | Identity & access | `privilegedAccess.activePamRules > 0 OR mfaStepUpEnforced` | boolean |
 | `disk_encryption` | Data protection | `encryptionPct` | coverage |
-| `backups_verified` | Data protection | devices with a successful `backup_verifications` restore point inside the org's RPO window / backup-protected devices; `not_assessed` when backups are not configured or no device is protected. Titled "Backups verified restorable", never "backups configured" (review) | coverage |
+| `backups_verified` | Data protection | devices with a Breeze `backup_jobs` row (eligible) that have a `backup_verifications` row with `status = 'passed'` and type `integrity` or `test_restore` completed inside the evidence window (passing); `not_assessed / no_data` when no device has a Breeze backup job. Third-party-provider "last success" is not a verification and does not count (§19.8). Titled "Backups verified restorable", never "backups configured" (review) | coverage |
 | `dns_filtering` | Monitoring | `dnsFilteringActive` | boolean |
 | `continuous_monitoring` | Monitoring | devices with agent check-in ≤ 24 h / managed devices | coverage |
 
@@ -116,7 +116,7 @@ export function evaluateTrustControls(
 
 The report keeps `assertReportExecutionPreflight` and its `OrgReportExecutionAuthority`; those are report-execution concerns. The snapshot worker runs under `systemReportAuthorityFor(orgId)` (org-wide, unrestricted, the #5784 managed-evidence authority) inside `withSystemDbAccessContext` for one org at a time — it never forges a user or portal-user authority (review). Restricted-site scoping does not apply to a trust page: it is always org-wide.
 
-`PostureEvidence` carries counts, not percentages, so the evaluator owns the denominator rule below. The report switches to the same loader in the same PR so the two cannot drift.
+`PostureEvidence` carries counts, not percentages, so the evaluator owns the denominator rule below. The report switches to the same loader in the same PR so the two cannot drift. §19.6–7: eligible devices exclude `status = 'decommissioned'` (as the posture worker does), and the report's EDR / endpoint-protection percentages become `passing / assessed` with new `edrUnknownCount` / `anyAvUnknownCount`, where a device is assessed when Breeze holds any evidence about it (a `security_status` row, an EDR agent row, or a check-in inside the evidence window). Both callers read the same counts, so principle 3 holds exactly.
 
 Three controls have **no loader in the report today** and are net-new evidence readers added alongside the extraction (size the W1 plan accordingly): `mfa_registered_m365` (reads `m365_posture_rollups`), `backups_verified` (joins `backup_verifications` to backup-protected devices and the org's RPO), and `continuous_monitoring` (device last-check-in). The report may surface them later; W1 does not require it.
 
@@ -180,7 +180,8 @@ The snapshot payload is the whole public exposure. Closed schema `trustPagePubli
     id: string; category: string; source: 'telemetry';
     status: 'met' | 'attention' | 'not_met' | 'not_assessed';
     reason: 'insufficient_telemetry' | 'no_data' | 'not_applicable' | null;   // only with not_assessed
-    percent: number | null; coverageNote: string | null;                        // null unless show_percentages
+    percent: number | null; assessed: number | null; eligible: number | null;   // null unless show_percentages (§19.13: numbers, not a coverageNote string)
+    unit: 'devices' | 'users' | 'org';
     evidenceAsOf: string | null;
     frameworkRefs: Array<{ framework: 'cis_v8' | 'essential_eight' | 'cyber_essentials' | 'nist_csf_2'; ref: string }>;  // ids only; labels resolve from the shared crosswalk (§5.5)
   }>,
@@ -196,8 +197,8 @@ Contract test `trustPagePublicPayload.contract.test.ts`: builder output validate
 Builder-enforced rules:
 
 - Hidden controls are omitted from `controls`; `summary.catalogTotal` always states the full catalog size so curation is visible.
-- `percent`, `coverageNote`, `deviceCount` are `null` unless opted in.
-- Intro: ≤ 5,000 chars of source, rendered with `marked`, sanitized by `services/richTextSanitize.ts` using `RICH_TEXT_FLOW_TAGS` (no tables, no media, `http(s)` links only). Existing API dependencies.
+- `percent`, `assessed`, `eligible`, `deviceCount` are `null` unless opted in.
+- Intro: ≤ 5,000 chars of sanitized HTML from the existing TipTap `RichTextEditor`, sanitized on PUT and again at build time by `sanitizeFlowRichTextHtml` (`RICH_TEXT_FLOW_TAGS`: no tables, no media, `http(s)` links only). §19.3 replaced the Markdown path: the web has no Markdown editor and the portal no Markdown renderer.
 - `documents` ≤ 20, each a live `org_documents` row (`deleted_at IS NULL`, not superseded) linked with `visibility = 'public'` and `disclosure_confirmed_at` set.
 
 ## 7. Publishing model: snapshots and a live pointer
@@ -317,8 +318,8 @@ Public (no auth; system context; resolve query includes the liveness predicate a
 
 | Method | Path | Bucket | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/trust/public/:partnerSlug/:orgSlug/card` | skip-prefix; serving-set gate, DB-free on miss | SSR header + OG metadata |
-| GET | `/api/v1/trust/public/:partnerSlug/card` | skip-prefix | partner-home card |
+| GET | `/api/v1/trust/card/:partnerSlug/:orgSlug` | skip-prefix `/api/v1/trust/card/`; serving-set gate, DB-free on miss; 503 when Redis is unavailable (§19.1–2) | SSR header + OG metadata |
+| GET | `/api/v1/trust/card/:partnerSlug` | skip-prefix | partner-home card |
 | GET | `/api/v1/trust/public/:partnerSlug/:orgSlug` | isolated 120/min/IP | payload + `lastEvaluatedAt` + `stale` |
 | GET | `/api/v1/trust/public/:partnerSlug` | isolated | partner-home payload |
 | GET | `/api/v1/trust/public/:partnerSlug/:orgSlug/badge.svg` | isolated | badge |
@@ -389,7 +390,7 @@ Certification language or any "compliant with" / "meets IG1" wording (§5.5); ve
 
 ## 18. Decisions (all defaults approved by Todd, 2026-10-13)
 
-Approved as written below, plus the publication authorization attestation (§9, §10, §11) raised under decision 9.
+Approved as written below, plus the publication authorization attestation (§9, §10, §11) raised under decision 9. Plan-time amendments that change text in this document are listed in §19 and were made after approval; they are implementation facts, not new product decisions, except where marked.
 
 1. **Audience ranking.** Default: insurer questions first, then due diligence, then audit.
 2. **Declared controls (W2).** Default: allowed, labeled "declared by <MSP>", expire after 365 days, reminder at 30 days. Reopens the parked backup-evidence question. A "no" removes W2's first item and keeps subprocessors telemetry-only.
@@ -404,3 +405,24 @@ Approved as written below, plus the publication authorization attestation (§9, 
 11. **Publish gate = partner `trusted`.** Default: yes. Probation partners see "publishing opens once your account is trusted".
 12. **Badge without counts.** Default: yes ("verified by Breeze · updated <date>"). Alternative: show "N controls met" and accept that it is over a curated set.
 13. **Framework crosswalk and CIS licensing (§5.5).** Default: W1 ships chips with identifiers, Breeze's own labels and a CIS attribution line; W2's framework view defaults to CIS v8 only, with Essential Eight and Cyber Essentials suggested by partner country; W2 GA waits for written CIS confirmation or a SecureSuite vendor membership. Alternative: drop CIS v8 and lead with NIST CSF 2.0 (public domain), which insurers reference less often. Todd owns the CIS contact; it is an outward-facing action and is not taken by the plan.
+
+## 19. Plan-time amendments (2026-10-13)
+
+Found while writing `docs/superpowers/plans/2026-10-13-trust-center-w1.md` against the code. Each changes text above; the plan carries the detail.
+
+1. **Card path** is `/api/v1/trust/card/:partnerSlug[/:orgSlug]`: `registerGlobalRateLimitSkipPrefix` matches prefixes only. Payload, badge, documents and preview stay under `/api/v1/trust/public/` (§8, §10).
+2. **Redis unavailable:** the unlimited card endpoint answers 503 + `Retry-After: 30` rather than touching Postgres; the rate-limited payload/badge/document endpoints skip the serving-set and resolve live (§7, §13).
+3. **Intro is sanitized HTML** from the existing TipTap editor, not Markdown (§4, §6, §13).
+4. **Portal renders English in W1.** `apps/portal` has no i18n runtime at all (confirmed), so the §18.7 fallback applies: the catalog carries English `title`/`description` used by the public page and the editor; portal i18n and per-control translations are a W2 item (§14).
+5. **No shared React pill** (`packages/shared` has no React): shared exports `trustStatusPillRole`; each app renders its own pill (§11).
+6. **Eligible devices exclude decommissioned devices.** The report inherits this (§5.3, §5.4).
+7. **Report denominators for EDR / endpoint protection** become `passing / assessed` with unknown counts, so page and PDF agree exactly (§5.3, §5.4, principle 3).
+8. **`backups_verified` is strict:** Breeze-verified restore points only (§5.2).
+9. **Merge:** `trust_pages` custom executor deletes the loser's page (children cascade) and clears the survivor's `last_evaluated_at`; children are registered as plain repoint (§9).
+10. **Publish requires MFA** (`requireMfa()`), and partner-home set/clear requires `canManagePartnerWidePolicies` (§10).
+11. **Self-hosted:** when `partnerTrustMode() === 'off'` neither publish nor the public resolve checks `trust_state` (§9 Trust and entitlement).
+12. **Editor tab visibility** is `organizations:read`; every mutation requires `organizations:write` (§11, §18.9).
+13. **Payload `coverageNote` replaced by `assessed` / `eligible` / `unit` numbers** so W2 can localize (§6).
+14. **`trust_page_unbranded` is API-only in W1** (`PATCH /orgs/partners/:id`, system scope + MFA), exactly like `aiForOfficeEnabled`, which also has no admin UI (§9, §18.3).
+15. **Hourly slot** `'11 * * * *'` (the ≡2 mod 5 lane is full; the schedule contract test decides) (§7).
+16. **W1 editing is partner/system scope only**: the org record page refuses org-scoped sign-ins and the routes use `requireScope('partner', 'system')` (§11).
