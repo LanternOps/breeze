@@ -19,6 +19,8 @@ status: ready for Todd's review; execution method to be chosen
 
 ## Global Constraints
 
+- Zod ids follow repo usage: `z.string().guid()` (195 uses) rather than `.uuid()`; keep `z.string().email()` / `.datetime({ offset: true })` as the validators directory already does.
+
 - Every new table is tenancy **shape 1**: `org_id NOT NULL`, RLS enabled + forced + four `breeze_org_isolation_*` policies **in the creating migration**; registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY` in the same PR (`docs/agents/tenancy-rls.md`).
 - Every composite FK that references an `org_id` column is `DEFERRABLE INITIALLY IMMEDIATE`. The `(org_id, partner_id) → organizations(id, partner_id)` FK is declared deferrable too (repo precedent).
 - Migrations are hand-written, idempotent, no inner `BEGIN`/`COMMIT`, named to sort after `2026-12-18-100000-partner-api-idempotency-keys.sql` (re-check with the README command before committing). DDL-only files need no `set_config('breeze.scope', ...)`.
@@ -873,7 +875,7 @@ export const trustPagePublicControlSchema = z.strictObject({
 });
 
 export const trustPagePublicDocumentSchema = z.strictObject({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   title: z.string().min(1).max(200),
   category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']),
   contentType: z.string().min(1).max(255),
@@ -884,7 +886,7 @@ export const trustPagePublicDocumentSchema = z.strictObject({
 
 export const trustPagePublicPayloadSchema = z.strictObject({
   schemaVersion: z.literal(1),
-  snapshotId: z.string().uuid(),
+  snapshotId: z.string().guid(),
   generatedAt: isoDate,
   publishedAt: isoDate,
   org: z.strictObject({
@@ -938,7 +940,7 @@ export type TrustPageUpdateInput = z.infer<typeof trustPageUpdateSchema>;
 
 export const trustPageDocumentsUpdateSchema = z.strictObject({
   documents: z.array(z.strictObject({
-    documentId: z.string().uuid(),
+    documentId: z.string().guid(),
     visibility: z.literal('public'),
     disclosureConfirmed: z.boolean(),
   })).max(TRUST_DOCUMENTS_MAX),
@@ -1449,6 +1451,7 @@ export interface PostureEvidence {
     orgWide: OrgWideEvidence | null;       // null when scope is restricted
     backupProviders: { evidence: SecurityProductEvidence[]; coveredDeviceCount: number };
     vulnByDevice: Map<string, { critical: number; high: number }>;
+    productEvidence: SecurityProductEvidence[];   // the report's security-product inventory input, assembled here
   };
 }
 export async function loadPostureEvidence(scope: OrgAxisLiveSiteScopeV1, policy: PostureEvidencePolicy, asOf: Date): Promise<PostureEvidence>;
@@ -1574,7 +1577,8 @@ import type { securityCompliancePostureConfigSchema } from './reportConfigSchema
 import type { OrgAxisLiveSiteScopeV1 } from './siteScope';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
-import type { SecurityProductEvidence } from './securityComplianceReportProducts';
+import { categoryForEndpointProvider, prettySecurityProvider, type SecurityProductEvidence } from './securityComplianceReportProducts';
+// prettyDnsProvider is a local helper in securityComplianceReport.ts today — move it here and export it for the report.
 import { classifyDeviceProtection } from './portal/protection';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { emptyControlEvidence, type ControlEvidence, type PostureControlEvidence } from '@breeze/shared';
@@ -1639,6 +1643,7 @@ export interface PostureEvidence {
     orgWide: OrgWideEvidence | null;
     backupProviders: { evidence: SecurityProductEvidence[]; coveredDeviceCount: number };
     vulnByDevice: Map<string, { critical: number; high: number }>;
+    productEvidence: SecurityProductEvidence[];   // the report's security-product inventory input, assembled here
   };
 }
 
@@ -1691,7 +1696,8 @@ export async function loadPostureEvidence(
   const empty = (orgWide: OrgWideEvidence | null, org: PostureEvidence['org']): PostureEvidence => ({
     asOf: asOf.toISOString(), org, scopeKind: scope.kind, deviceCount: 0, devices: [], controls,
     report: { reporting: 0, unprotected: 0, cisIncluded: policy.includeCis, cisAssessedCount: 0, edrUnknown: 0, anyAvUnknown: 0,
-      orgWide, backupProviders: { evidence: [], coveredDeviceCount: 0 }, vulnByDevice: new Map() },
+      orgWide, backupProviders: { evidence: [], coveredDeviceCount: 0 }, vulnByDevice: new Map(),
+      productEvidence: orgWide ? orgWideProductEvidence(orgWide, []) : [] },
   });
 
   if (scope.kind === 'restricted' && scope.siteIds.length === 0) return empty(null, null);
@@ -1857,10 +1863,33 @@ export async function loadPostureEvidence(
 
   if (orgWide) applyOrgWide(controls, orgWide, asOf);
 
+  // Security-product inventory input — moved verbatim from the report (its L534-568).
+  const productEvidence: SecurityProductEvidence[] = [];
+  if (huntressDevices.size > 0) productEvidence.push({ product: 'Huntress', category: 'mdr', active: true, lastSyncStatus: null, deviceIds: huntressDevices });
+  if (s1Devices.size > 0) productEvidence.push({ product: 'SentinelOne', category: 'edr', active: true, lastSyncStatus: null, deviceIds: s1Devices });
+  for (const row of ssRows) {
+    if (row.provider === 'other') continue;
+    productEvidence.push({ product: prettySecurityProvider(row.provider), category: categoryForEndpointProvider(row.provider), active: row.realTimeProtection === true, lastSyncStatus: null, deviceIds: [row.deviceId] });
+  }
+  if (orgWide) productEvidence.push(...orgWideProductEvidence(orgWide, backupProviders.evidence));
+
   return {
     asOf: asOf.toISOString(), org, scopeKind: scope.kind, deviceCount: deviceRows.length, devices: rows, controls,
-    report: { reporting, unprotected, cisIncluded: policy.includeCis, cisAssessedCount: cisByDevice.size, edrUnknown, anyAvUnknown, orgWide, backupProviders, vulnByDevice },
+    report: { reporting, unprotected, cisIncluded: policy.includeCis, cisAssessedCount: cisByDevice.size, edrUnknown, anyAvUnknown, orgWide, backupProviders, vulnByDevice, productEvidence },
   };
+}
+
+function orgWideProductEvidence(w: OrgWideEvidence, providerEvidence: SecurityProductEvidence[]): SecurityProductEvidence[] {
+  const out: SecurityProductEvidence[] = [];
+  const dnsSyncStatus = w.dns?.lastSyncStatus ?? null;
+  const dnsActive = Boolean(w.dns) && dnsSyncStatus !== 'error';
+  if (w.dns) out.push({ product: prettyDnsProvider(w.dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
+  if (w.backup) out.push({ product: `Backup (${w.backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  if (w.c2c) out.push({ product: `SaaS backup (${w.c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  out.push(...providerEvidence);
+  if (w.m365) out.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
+  if (w.google) out.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
+  return out;
 }
 
 function applyOrgWide(controls: PostureControlEvidence, w: OrgWideEvidence, asOf: Date): void {
@@ -1888,7 +1917,7 @@ Note on `hardening_baseline.passing`: the pass/attention status comes from `aggr
   const elevationsDenied = w?.elevationRows.filter((e) => e.deniedByUserId != null).length ?? 0;
   const dnsSyncStatus = w?.dns?.lastSyncStatus ?? null;
   const dnsActive = Boolean(w?.dns) && dnsSyncStatus !== 'error';
-  const securityProducts = buildSecurityProductInventory(/* unchanged arguments, now sourced from evidence.devices / evidence.report.backupProviders */);
+  const securityProducts = buildSecurityProductInventory(evidence.report.productEvidence);
 
   const rows = evidence.devices.map((d) => {
     const vuln = evidence.report.vulnByDevice.get(d.id) ?? { critical: 0, high: 0 };
@@ -1941,7 +1970,7 @@ Keep `privilegedAccess`, `securityProducts`, `postureScore` exactly as today, so
 
 Run: `cd apps/api && npx vitest run src/services/postureEvidence.test.ts src/services/securityComplianceReport.test.ts src/__tests__/parkedFanout.contract.test.ts src/services/reportRegistry.test.ts src/routes/reports.test.ts`
 
-Expected failures are only assertions on `edrCoveragePct` / `anyAvCoveragePct` (new denominator: assessed instead of deviceCount) and assertions that enumerate the `controls` keys (two new keys). Rule for each: recompute with `passing / assessed` where assessed = devices with a status row, an agent row, or `lastSeenAt` within 30 days (fixtures have no `lastSeenAt`, so assessed = devices with a status row or agent row), and add `edrUnknownCount`/`anyAvUnknownCount` expectations. Any other failure is a regression in the extraction: fix the loader, not the test.
+Expected failures are only (a) assertions on `edrCoveragePct` / `anyAvCoveragePct` (new denominator: assessed instead of deviceCount), (b) assertions that enumerate the `controls` keys (two new keys), and (c) zero-device cases (slot 2 overridden with `[]`): the loader now issues the org-wide queries 7–16 for zero devices, so positional fixtures after slot 2 shift; re-sequence those fixtures rather than changing the loader. Rule for each: recompute with `passing / assessed` where assessed = devices with a status row, an agent row, or `lastSeenAt` within 30 days (fixtures have no `lastSeenAt`, so assessed = devices with a status row or agent row), and add `edrUnknownCount`/`anyAvUnknownCount` expectations. Any other failure is a regression in the extraction: fix the loader, not the test.
 
 Then: `pnpm --filter @breeze/api test:integration src/__tests__/integration/securityComplianceReport.integration.test.ts src/__tests__/integration/patchSeverityOverlayReaders.integration.test.ts` (test stack up) → PASS.
 
@@ -2064,8 +2093,8 @@ export async function loadM365MfaEvidence(orgId: string, asOf: Date, maxAgeDays:
  *  Third-party provider "last success" is NOT a verification (spec §19.8). */
 export async function loadBackupsVerifiedEvidence(orgId: string, deviceIds: string[], asOf: Date, maxAgeDays: number): Promise<ControlEvidence> {
   if (deviceIds.length === 0) return zero();
-  const jobDevices = await db.selectDistinct({ deviceId: backupJobs.deviceId }).from(backupJobs)
-    .where(and(eq(backupJobs.orgId, orgId), inArray(backupJobs.deviceId, deviceIds)));
+  const jobDevices = await db.select({ deviceId: backupJobs.deviceId }).from(backupJobs)
+    .where(and(eq(backupJobs.orgId, orgId), inArray(backupJobs.deviceId, deviceIds))).groupBy(backupJobs.deviceId);
   const eligibleIds = new Set(jobDevices.map((r) => r.deviceId).filter((v): v is string => typeof v === 'string'));
   if (eligibleIds.size === 0) return zero();
   const windowStart = new Date(asOf.getTime() - maxAgeDays * 86400000);
@@ -2093,7 +2122,7 @@ export async function loadBackupsVerifiedEvidence(orgId: string, deviceIds: stri
   return { eligible: eligibleIds.size, assessed: byDevice.size, passing, aggregatePct: null, newestEvidenceAt: newest };
 }
 ```
-If `db.selectDistinct` is unavailable in this Drizzle version, use `db.select(...).groupBy(backupJobs.deviceId)` (the test chain supports `groupBy`).
+(`groupBy` rather than `selectDistinct` so the positional test chain, which only stubs `select`, keeps working.)
 
 - [ ] **Step 3: Wire into the loader** — in `postureEvidence.ts`, after query 18 and before the per-device loop:
 ```ts
@@ -2214,11 +2243,13 @@ describe('buildTrustPagePayload', () => {
     expect(q.managedBy).toBeNull();
     expect(q.footer.poweredByBreeze).toBe(false);
   });
-  it('drops an http: logo and an http: website rather than failing', () => {
+  it('an http: org logo or non-hex colour falls back to the partner brand; an http: website is dropped', () => {
     const p = buildTrustPagePayload(input({ orgBrand: { logoUrl: 'http://cdn.example/x.png', primaryColor: 'red' }, page: page({ websiteUrl: 'http://acme.example' }) }));
-    expect(p.org.logoUrl).toBeNull();
+    expect(p.org.logoUrl).toBe('https://cdn.example/nw.png');
     expect(p.org.primaryColor).toBe('#123456');
     expect(p.org.websiteUrl).toBeNull();
+    const q = buildTrustPagePayload(input({ orgBrand: { logoUrl: 'http://x', primaryColor: null }, partner: { ...input().partner, settings: {} } }));
+    expect(q.org.logoUrl).toBeNull();
   });
   it('zero devices: every device control not_assessed, org controls still evaluated, deviceCount null even when opted in', () => {
     const p = buildTrustPagePayload(input({ deviceCount: 0, page: page({ showDeviceCount: true }), assessments: evaluateTrustControls(TRUST_CONTROL_CATALOG, emptyControlEvidence(), DEFAULT_TRUST_EVALUATION_POLICY, AS_OF) }));
@@ -2362,8 +2393,9 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
     publishedAt: input.publishedAt.toISOString(),
     org: {
       name: input.org.name,
-      logoUrl: logo(brand.logoUrl),
-      primaryColor: hex(brand.primaryColor),
+      // Org row wins field by field; an unusable org value (http:, non-hex) falls back to the partner's.
+      logoUrl: logo(brand.logoUrl) ?? logo(partnerBrand.logoUrl),
+      primaryColor: hex(brand.primaryColor) ?? hex(partnerBrand.primaryColor),
       websiteUrl: https(page.websiteUrl),
       securityContactEmail: page.securityContactEmail?.trim() || null,
     },
@@ -3012,9 +3044,12 @@ export async function refreshPublishedPage(pageId: string): Promise<{ rebuilt: b
       await tx.update(trustPages).set({ lastEvaluatedAt: built.generatedAt }).where(eq(trustPages.id, page.id));
       return { rebuilt: true, snapshotId: built.snapshotId };
     });
+    return { outcome, built };
+  })).then(async ({ outcome, built }) => {
+    // Redis after the DB context closes (#1105 discipline; SETEX is not tripwired but keep the shape uniform).
     if (outcome.rebuilt) await cacheSnapshotPayload(built.snapshotId, built.payload);
     return outcome;
-  }));
+  });
 }
 ```
 `portalBranding` is exported from `db/schema/portal.ts`; `ORG_DOCUMENT_META_COLUMNS` from `db/schema/orgDocuments.ts` (both reachable through the schema barrel). If `.for('update')` is not available on the select builder in this Drizzle version, use `tx.execute(sql\`SELECT publication_revision FROM trust_pages WHERE id = ${page.id} FOR UPDATE\`)`.
@@ -3544,7 +3579,7 @@ describe('badge, documents, preview', () => {
     const res = await app.request('/trust/public/nw/acme/badge.svg');
     expect(res.headers.get('Content-Type')).toMatch(/image\/svg\+xml/);
     const svg = await res.text();
-    expect(svg).toMatch(/verified by Breeze/); expect(svg).not.toMatch(/9|15/);
+    expect(svg).toMatch(/verified by Breeze/); expect(svg).not.toMatch(/\b9 met\b|of 15\b|controls/);
     expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600');
   });
   it('document download refuses an unlinked id and streams a linked one', async () => {
@@ -4559,7 +4594,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - [ ] **Step 1: API** — `pnpm --filter @breeze/api test` (full unit), then with the test stack up: `pnpm --filter @breeze/api test:integration` for the trust, cascade, merge, export, report integration suites listed in Tasks 4, 5 and 9, `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`, `pnpm --filter @breeze/api db:check-drift`. Typecheck with the 12 GB heap and check the exit code.
 - [ ] **Step 2: Shared / portal / web** — `cd packages/shared && npx vitest run && npx tsc --noEmit`; `cd apps/portal && npx vitest run && npx astro check`; `cd apps/web && npx vitest run` (full; `orgMerge.test.ts`-style "full suite only" traps exist on the web side too) and the web typecheck.
-- [ ] **Step 3: E2E** (worktree stack; seed has no posture data, so assert structure, not green pills):
+- [ ] **Step 3: E2E** (worktree stack; seed has no posture data, so assert structure, not green pills). `POST /publish` is behind `requireMfa()`: before writing the spec, check how the existing MFA-gated E2E flows satisfy it for the seeded admin (grep `requireMfa` callers' specs in `e2e-tests/tests`) and reuse that step-up helper, or the spec fails at the first click.
 
 ```ts
 // e2e-tests/tests/trust-center.spec.ts
