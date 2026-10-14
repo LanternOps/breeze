@@ -735,6 +735,16 @@ describe('filterEngine workload inventory fields (W04)', () => {
     expect(q.sql).not.toMatch(/exists/i);
   });
 
+  // #8760 review: a bare `${value}` bound the JS array as a row tuple and
+  // Postgres 500'd with "text[] && record". Bind a real text[] instead.
+  it('tags hasAny/hasAll bind an ARRAY[...]::text[] of one param per element', () => {
+    const any = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAny', value: ['a', 'b'] }));
+    expect(any.sql).toMatch(/"tags" && ARRAY\[\$\d::text, \$\d::text\]::text\[\]/);
+    expect(any.params).toEqual(['a', 'b']);
+    const all = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAll', value: ['a'] }));
+    expect(all.sql).toMatch(/"tags" @> ARRAY\[\$\d::text\]::text\[\]/);
+  });
+
   it('workloadRuntimes hasAny/hasAll compile to array overlap/containment on the column', () => {
     const any = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'hasAny', value: ['docker', 'podman'] }));
     expect(any.sql).toMatch(/"workload_runtimes"(::text\[\])? && /i);

@@ -598,6 +598,12 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   throw new Error(`Unsupported table: ${fieldInfo.table}`);
 }
 
+function sqlTextArray(values: readonly unknown[]): SQL {
+  return values.length === 0
+    ? sql`ARRAY[]::text[]`
+    : sql`ARRAY[${sql.join(values.map((v) => sql`${sqlValue(v)}::text`), sql`, `)}]::text[]`;
+}
+
 // Build a SQL predicate applying an operator to a column expression. The
 // expression may be a plain device column or a correlated subquery (related
 // tables / latest-metric), so this stays purely about operator semantics.
@@ -656,14 +662,18 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
         return sql`${columnRef} NOT IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "notIn" operator');
+    // A bare `${value}` here bound the JS array as a row tuple `($1, $2)`, and
+    // Postgres 500'd with "operator does not exist: text[] && record" (#8760
+    // review). Bind a real text[] built from one parameter per element, the
+    // same pattern as sqlUuidArray.
     case 'hasAny':
       if (Array.isArray(value)) {
-        return sql`${columnRef} && ${value}`;
+        return sql`${columnRef} && ${sqlTextArray(value)}`;
       }
       throw new Error('Value must be array for "hasAny" operator');
     case 'hasAll':
       if (Array.isArray(value)) {
-        return sql`${columnRef} @> ${value}`;
+        return sql`${columnRef} @> ${sqlTextArray(value)}`;
       }
       throw new Error('Value must be array for "hasAll" operator');
     case 'isEmpty':

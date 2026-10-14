@@ -37,12 +37,19 @@ describe('groupId filter against Postgres (#8760)', () => {
       ]);
     });
 
+    // idsOnly runs evaluateFilter; the default preview runs
+    // evaluateFilterWithPreview. Both must work, so every case runs through both.
     const preview = async (operator: string, value: unknown) => {
-      const res = await client.post('/filters/preview', {
-        conditions: { operator: 'AND', conditions: [{ field: 'groupId', operator, value }] },
-        idsOnly: true,
-      });
-      return { status: res.status, data: res.status === 200 ? (await res.json()).data : undefined };
+      const conditions = { operator: 'AND', conditions: [{ field: 'groupId', operator, value }] };
+      const ids = await client.post('/filters/preview', { conditions, idsOnly: true });
+      const full = await client.post('/filters/preview', { conditions });
+      expect(full.status).toBe(ids.status);
+      if (ids.status !== 200) return { status: ids.status, data: undefined };
+      const idsData = (await ids.json()).data;
+      const fullData = (await full.json()).data;
+      expect(fullData.totalCount).toBe(idsData.totalCount);
+      expect(new Set(fullData.devices.map((d: { id: string }) => d.id))).toEqual(new Set(idsData.deviceIds));
+      return { status: ids.status, data: idsData };
     };
 
     // The Groups page "View devices" link sends exactly this shape.
@@ -66,5 +73,33 @@ describe('groupId filter against Postgres (#8760)', () => {
     const nameInList = await preview('in', ['Cash Registers', groupId]);
     expect(nameInList.status).toBe(200);
     expect(nameInList.data.deviceIds).toEqual([member]);
+  });
+
+  runDb('tags hasAny and hasAll bind a real text[] (#8760 review)', async () => {
+    const app = new Hono().route('/filters', filterRoutes);
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+    const orgId = client.env.organization.id;
+    const site = await createSite({ orgId });
+    const both = randomUUID();
+    const one = randomUUID();
+    await withSystemDbAccessContext(() => db.insert(devices).values([
+      { id: both, tags: ['idf-1', 'pos'] }, { id: one, tags: ['idf-1'] },
+    ].map((d, i) => ({
+      ...d, orgId, siteId: site.id, agentId: d.id, hostname: `tag-filter-${i}`,
+      status: 'online' as const, osType: 'windows' as const, osVersion: 'test',
+      architecture: 'x86_64', agentVersion: 'test',
+    }))));
+    const run = async (operator: string, value: string[]) => {
+      const res = await client.post('/filters/preview', {
+        conditions: { operator: 'AND', conditions: [{ field: 'tags', operator, value }] },
+        idsOnly: true,
+      });
+      expect(res.status).toBe(200);
+      return new Set((await res.json()).data.deviceIds);
+    };
+    expect(await run('hasAny', ['idf-1', 'nope'])).toEqual(new Set([both, one]));
+    expect(await run('hasAny', ['pos'])).toEqual(new Set([both]));
+    expect(await run('hasAll', ['idf-1', 'pos'])).toEqual(new Set([both]));
+    expect(await run('hasAll', ['idf-1'])).toEqual(new Set([both, one]));
   });
 });
