@@ -156,3 +156,17 @@ it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/retu
     } finally { vi.unstubAllGlobals(); }
   },
 );
+
+it('/trust/<p>/<o> is anonymous and cacheable; previews are no-store/noindex', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    const page = await run(contextFor('/trust/nw/acme', { signedIn: false }));
+    expect(page.status).toBe(200);
+    expect(page.headers.get('Cache-Control')).toBe('public, max-age=300, stale-while-revalidate=600');
+    expect(page.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(fetchMock).not.toHaveBeenCalled();   // middleware itself fetches nothing for public pages
+    const preview = await run(contextFor('/trust/preview/abc', { signedIn: false }));
+    expect(preview.headers.get('Cache-Control')).toBe('no-store');
+    expect(preview.headers.get('X-Robots-Tag')).toBe('noindex, nofollow, noarchive');
+  } finally { vi.unstubAllGlobals(); }
+});

@@ -1,0 +1,20 @@
+---
+// PUBLIC. SSR fetches only the small card (DB-free on a miss; exempt from the IP limiter because
+// the portal container's requests share one IP) for <title>/OG/header. The body loads client-side
+// from the visitor's own IP (spec trust-center §8 "SSR vs client rendering").
+import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
+import TrustPageView from '../../../components/trust/TrustPageView';
+import { portalApi } from '../../../lib/api';
+import { buildServerApiConfig } from '../../../lib/server';
+
+const { partnerSlug, orgSlug } = Astro.params;
+const res = await portalApi.getTrustCard(partnerSlug!, orgSlug!, { ...buildServerApiConfig(Astro.request), timeoutMs: 3000 });
+const card = res.data?.data ?? null;
+if (!card && res.statusCode === 404) return new Response('Not Found', { status: 404 });
+// 503 (Redis blip) or network error: render the generic shell; the island still loads the page.
+const title = card?.title ?? 'Security posture';
+const description = card ? `${card.summaryLine}. Continuously verified by Breeze RMM telemetry; not a certification.` : 'Security posture page.';
+---
+<TrustPageLayout title={title} description={description} canonicalPath={`/trust/${partnerSlug}/${orgSlug}`} indexable={card?.searchIndexable ?? false} accent={card?.primaryColor} imageUrl={card?.logoUrl}>
+  <TrustPageView partnerSlug={partnerSlug!} orgSlug={orgSlug!} card={card} client:load />
+</TrustPageLayout>

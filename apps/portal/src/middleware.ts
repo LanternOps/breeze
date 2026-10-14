@@ -147,6 +147,18 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('Cache-Control', 'no-store');
   }
 
+  // Public trust pages (spec trust-center §8): shareable and cacheable, unlike token pages. The
+  // layout owns the robots meta from the page's search_indexable flag; the header mirrors the
+  // conservative default so a crawler that ignores meta still gets noindex unless the page opted in
+  // (the API sets X-Robots-Tag on the data itself). Previews are drafts: never cached, never indexed.
+  if (pathname.startsWith('/trust/preview/')) {
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/')) {
+    headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+  }
+
   // #3906 — dev only: Astro hardcodes a few dev-server URLs straight into the
   // rendered HTML (`/@vite/client`, the island's `component-url` / `renderer-url` /
   // `before-hydration-url`, the `/src/styles/*` stylesheet). Vite's `base` — which

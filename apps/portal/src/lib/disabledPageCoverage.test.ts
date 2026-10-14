@@ -195,6 +195,10 @@ const UNAUTHENTICATED_PAGES = new Set([
   // Emailed payment capability; GET renders, explicit POST confirms.
   'autopay/[token]/confirm.astro',
   'autopay/return.astro',
+  // Trust pages are public by design (spec trust-center §8); the preview token is the capability.
+  'trust/[partnerSlug]/index.astro',
+  'trust/[partnerSlug]/[orgSlug].astro',
+  'trust/preview/[token].astro',
 ]);
 
 /** src/pages-relative file → the route the middleware sees (base stripped). */
