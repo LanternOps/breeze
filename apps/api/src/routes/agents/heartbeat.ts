@@ -284,7 +284,11 @@ export function resetWatchdogRestartLogCacheForTests(): void {
 const IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
 let identitySyncNoSigningKeyWarned = false;
 let identityAssertionFailureReportedAt = 0;
-let identityDeviceMismatchReportedAt = 0;
+// #8623 — device-id mismatches are rate-limited per device, not fleet-wide:
+// one noisy agent must not hide another's copied agent.yaml. In-memory per API
+// instance like watchdogRestartLogCache, and bounded the same way.
+const IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX = 10_000;
+const identityDeviceMismatchReportedAt = new Map<string, number>();
 
 function warnIdentitySyncWithoutSigningKey(): void {
   if (identitySyncNoSigningKeyWarned) return;
@@ -304,14 +308,41 @@ function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
   captureException(err);
 }
 
+/**
+ * #8623 — whether a device-id mismatch on this device may be logged now, and
+ * if so records that it was. Keyed by the row the credential belongs to (the
+ * authenticated device), not by the reported id, which the agent chooses.
+ *
+ * Bounded: the map is kept in the order devices were last logged, so a full
+ * map first drops the entries older than the interval (they no longer hold
+ * anything back) and, if every entry is recent, the one logged longest ago.
+ * Either way the cost of being full is an extra warning, never a hidden one.
+ * Exported for unit tests.
+ */
+export function claimIdentityDeviceMismatchWarning(rowDeviceId: string, nowMs: number): boolean {
+  const last = identityDeviceMismatchReportedAt.get(rowDeviceId);
+  if (last !== undefined && nowMs - last < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return false;
+  identityDeviceMismatchReportedAt.delete(rowDeviceId);
+  if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {
+    for (const [deviceId, loggedAt] of identityDeviceMismatchReportedAt) {
+      if (nowMs - loggedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) break;
+      identityDeviceMismatchReportedAt.delete(deviceId);
+    }
+    if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {
+      const oldest = identityDeviceMismatchReportedAt.keys().next().value;
+      if (oldest !== undefined) identityDeviceMismatchReportedAt.delete(oldest);
+    }
+  }
+  identityDeviceMismatchReportedAt.set(rowDeviceId, nowMs);
+  return true;
+}
+
 // #8382 — the agent reported a device id other than the row its credential
 // belongs to. Never synced (a device id does not change through this path),
 // but not silent either: it can mean an agent.yaml copied from another device.
-// Rate-limited like the signing failures above.
+// Rate-limited per device (#8623).
 function warnIdentityDeviceMismatch(agentId: string, reportedDeviceId: string, rowDeviceId: string): void {
-  const now = Date.now();
-  if (now - identityDeviceMismatchReportedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return;
-  identityDeviceMismatchReportedAt = now;
+  if (!claimIdentityDeviceMismatchWarning(rowDeviceId, Date.now())) return;
   console.warn(
     '[heartbeat] Agent reported a device id that is not the device its credential belongs to; no identity '
     + 'assertion is sent. A copied agent.yaml can cause this (#8382).',
@@ -322,7 +353,11 @@ function warnIdentityDeviceMismatch(agentId: string, reportedDeviceId: string, r
 export function resetIdentitySyncLogStateForTests(): void {
   identitySyncNoSigningKeyWarned = false;
   identityAssertionFailureReportedAt = 0;
-  identityDeviceMismatchReportedAt = 0;
+  identityDeviceMismatchReportedAt.clear();
+}
+
+export function identityDeviceMismatchLogSizeForTests(): number {
+  return identityDeviceMismatchReportedAt.size;
 }
 
 export function watchdogRestartLogCacheSizeForTests(): number {
