@@ -27,6 +27,12 @@ describe('trust_pages merge executor', () => {
     expect(out.moved).toBe(0);
     expect(executed.statements[0]).toMatch(/DELETE FROM trust_pages/);
     expect(executed.statements[1]).toMatch(/UPDATE trust_pages/);
+    // A loser/survivor swap would delete the survivor's public page: pin which
+    // org id each statement binds.
+    expect(executed.statements[0]).toContain(LOSER);
+    expect(executed.statements[0]).not.toContain(SURVIVOR);
+    expect(executed.statements[1]).toContain(SURVIVOR);
+    expect(executed.statements[1]).not.toContain(LOSER);
     expect(out.notes.join(' ')).toMatch(/retired/);
   });
 
