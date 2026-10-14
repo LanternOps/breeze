@@ -1,4 +1,5 @@
 // apps/api/src/services/partnerTrustPartnerMail.test.ts
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Queued select-chain db mock (services/emailDomains/statusMail.test.ts pattern).
@@ -43,6 +44,7 @@ vi.mock('./partnerAdminRecipients', () => ({ listActivePartnerAdmins }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
 vi.mock('./sentry', () => ({ captureException }));
 
+import { db } from '../db';
 import { MAIL_PURPOSES } from './emailDomains/mailPurposes';
 import {
   buildTrustApprovedTemplate,
@@ -151,6 +153,20 @@ describe('sendTrustReviewReceivedEmail', () => {
     expect(envelope.to).toEqual(['admin@acme.test', 'ops@acme.test']);
     expect(envelope.subject).toBe('We received your review request');
     expect(listActivePartnerAdmins).toHaveBeenCalledWith(PARTNER_ID);
+  });
+
+  it('looks the requester up by id AND active status', async () => {
+    dbResults.push([ACTIVE_PARTNER]);
+    dbResults.push([{ email: 'owner@acme.test' }]);
+    await sendTrustReviewReceivedEmail({ partnerId: PARTNER_ID, requestedByUserId: REQUESTER_ID });
+
+    // Second `where` on the shared chain is the requester lookup (the first is
+    // the partner row). Compile it: the queued mock ignores arguments.
+    const where = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[1]![0];
+    const { sql, params } = new PgDialect().sqlToQuery(where as never);
+    expect(sql).toContain('"users"."id"');
+    expect(sql).toContain('"users"."status"');
+    expect(params).toEqual([REQUESTER_ID, 'active']);
   });
 
   it('includes the requester even when no Partner Admin exists', async () => {
