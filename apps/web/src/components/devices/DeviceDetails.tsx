@@ -90,6 +90,7 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
 import ExtensionSlotHost, {
   useExtensionSlotDescriptors,
@@ -771,6 +772,7 @@ export default function DeviceDetails({
 
   return (
     <div className="space-y-6">
+      <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-4">
