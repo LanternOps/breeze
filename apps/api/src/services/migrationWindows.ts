@@ -32,7 +32,8 @@ import { notHiddenOrgType } from './unassignedPool/visibility';
  *
  * This module owns the window's lifecycle: open (owner-only, step-up bound),
  * close (admin or sweep), the sweep, and the one summary event per org. Import
- * mode itself — the write-time check and the writer — is wave 1b.
+ * mode itself — the write-time check and the writer — lives in
+ * services/ticketImport/ (wave 1b).
  *
  * Every function runs in the caller's DB context except the sweep, which
  * opens one system transaction per window. Closing locks the window FOR
@@ -52,13 +53,18 @@ export type MigrationWindowErrorCode =
   | 'MIGRATION_WINDOW_INVALID_SPAN'
   | 'MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR'
   | 'SESSION_STALE'
-  | 'STEP_UP_REQUIRED';
+  | 'STEP_UP_REQUIRED'
+  // Import writes (wave 1b, spec §4.4–§4.7, services/ticketImport/).
+  | 'MIGRATION_WINDOW_NOT_OPEN'
+  | 'MIGRATION_WINDOW_RATE_LIMITED'
+  | 'MIGRATION_SOURCE_ID_IN_USE'
+  | 'MIGRATION_IMPORT_INVALID';
 
 export class MigrationWindowError extends Error {
   constructor(
     public readonly code: MigrationWindowErrorCode,
     message: string,
-    public readonly status: 400 | 401 | 403 | 404 | 409,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 429,
     public readonly details?: Record<string, unknown>,
   ) {
     super(message);
