@@ -397,6 +397,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Hourly trust-page snapshot refresh + serving-set self-heal + snapshot prune.
+    name: 'trustPageSnapshotWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/trustPageSnapshotWorker');
+      return { init: m.initializeTrustPageSnapshotWorker, shutdown: m.shutdownTrustPageSnapshotWorker };
+    },
+  },
+  {
     name: 'reliabilityWorker',
     placement: 'global',
     load: async () => {

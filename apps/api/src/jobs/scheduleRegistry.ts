@@ -211,6 +211,9 @@ export const JOB_SCHEDULES = {
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
+  // Runs 4 minutes after `security-posture-scan` (:07) so the hourly trust-page
+  // refresh sees the posture evidence that scan just wrote.
+  'trust-page-snapshot': '11 * * * *',
   // Share the :12 lane on alternate six-hour slots; no coarse collision.
   'script-verify-reconcile': '12 0,6,12,18 * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
