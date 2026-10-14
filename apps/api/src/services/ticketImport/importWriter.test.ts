@@ -184,6 +184,6 @@ describe('importTicket', () => {
   it('refuses to run inside a DB context (it opens its own transactions and charges Redis between them)', async () => {
     const { getCurrentDbAccessContext } = await import('../../db');
     vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({ scope: 'system' } as never);
-    await expect(importTicket('w-1', ticket())).rejects.toThrow(/outside any DB context/);
+    await expect(importTicket('w-1', ticket(), { partnerId: 'p-1' })).rejects.toThrow(/outside any DB context/);
   });
 });

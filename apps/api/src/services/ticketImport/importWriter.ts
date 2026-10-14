@@ -62,11 +62,12 @@ export type ImportTicketOptions = {
   /** Comments per transaction, 1..100 (tests use a smaller one). */
   chunkSize?: number;
   /**
-   * The partner the caller acts for. When given, a window of any other
-   * partner is refused as not found. Step 3's worker passes the partner it
-   * authenticated, so a job can only write through its own partner's window.
+   * The partner the caller acts for. A window of any other partner is
+   * refused as not found, so a job can only write through its own partner's
+   * window. Required: the window is read by id in system scope, and this is
+   * what binds that read to the caller.
    */
-  partnerId?: string;
+  partnerId: string;
 };
 
 type WriteScope = {
@@ -406,7 +407,7 @@ function inSourceOrder(comments: readonly ImportedComment[]): ImportedComment[] 
 export async function importTicket(
   windowId: string,
   input: ImportedTicket,
-  options: ImportTicketOptions = {},
+  options: ImportTicketOptions,
 ): Promise<ImportTicketResult> {
   if (getCurrentDbAccessContext()) {
     throw new Error('importTicket opens its own transactions; call it outside any DB context');
@@ -414,7 +415,7 @@ export async function importTicket(
   const chunkSize = Math.min(IMPORT_COMMENT_CHUNK_SIZE, Math.max(1, Math.floor(options.chunkSize ?? IMPORT_COMMENT_CHUNK_SIZE)));
   const t = parseImportedTicket(input);
   const descriptor = await readWindowDescriptor(windowId);
-  if (options.partnerId !== undefined && options.partnerId !== descriptor.partnerId) {
+  if (options.partnerId !== descriptor.partnerId) {
     throw new MigrationWindowError('MIGRATION_WINDOW_NOT_OPEN', 'The migration window is not open', 409, { reason: 'not_found' });
   }
   const context = windowWriteContext(descriptor);

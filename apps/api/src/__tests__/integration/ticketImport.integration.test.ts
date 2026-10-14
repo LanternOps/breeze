@@ -200,7 +200,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const window = await openWindow(fx);
     const ticket = source(fx);
 
-    const result = await importTicket(window.id, ticket);
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
     expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0 });
 
     const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
@@ -262,7 +262,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await bucketSize(window.id)).toBe(8);
 
     // A second run resumes and finds nothing to do: no write, no charge.
-    const again = await importTicket(window.id, ticket);
+    const again = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
     expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0 });
     expect(await bucketSize(window.id)).toBe(8);
     expect(await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, result.ticketId))).toHaveLength(rows.length);
@@ -289,7 +289,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     chargeHook.before = async (call) => {
       if (call === 3) await closeWindow(fx, first.id);
     };
-    await expect(importTicket(first.id, ticket, { chunkSize: 2 }))
+    await expect(importTicket(first.id, ticket, { chunkSize: 2, partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_NOT_OPEN', status: 409 });
     chargeHook.before = null;
 
@@ -301,7 +301,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(written.map((c) => c.importSourceId).sort()).toEqual(comments.slice(0, 2).map((c) => c.sourceId).sort());
 
     const second = await openWindow(fx);
-    const resumed = await importTicket(second.id, ticket, { chunkSize: 2 });
+    const resumed = await importTicket(second.id, ticket, { chunkSize: 2, partnerId: fx.partner.id });
     expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0 });
     const all = await getTestDb().select().from(ticketComments)
       .where(and(eq(ticketComments.ticketId, partial!.id), sql`${ticketComments.importSourceId} IS NOT NULL`));
@@ -326,21 +326,21 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     await admin.insert(ticketExternalRefs).values({
       ticketId: live!.id, orgId: fx.orgA.id, partnerId: fx.partner.id, partnerServicePrincipalId: fx.principal.id, externalId: 'LIVE-1',
     });
-    await expect(importTicket(window.id, source(fx, { sourceId: 'LIVE-1' })))
+    await expect(importTicket(window.id, source(fx, { sourceId: 'LIVE-1' }), { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket' } });
 
     // A deleted imported ticket.
-    const deleted = await importTicket(window.id, source(fx, { comments: [] }));
+    const deleted = await importTicket(window.id, source(fx, { comments: [] }), { partnerId: fx.partner.id });
     await admin.update(tickets).set({ deletedAt: new Date() }).where(eq(tickets.id, deleted.ticketId));
     const deletedSource = await admin.select({ externalId: ticketExternalRefs.externalId }).from(ticketExternalRefs)
       .where(eq(ticketExternalRefs.ticketId, deleted.ticketId));
-    await expect(importTicket(window.id, source(fx, { sourceId: deletedSource[0]!.externalId, comments: [] })))
+    await expect(importTicket(window.id, source(fx, { sourceId: deletedSource[0]!.externalId, comments: [] }), { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', details: { reason: 'deleted' } });
 
     // An imported ticket moved to an org of the partner that is not in the
     // window: RLS hides its ref, so the writer tries a create, the ref index
     // refuses it, and the create is rolled back.
-    const moved = await importTicket(window.id, source(fx, { comments: [] }));
+    const moved = await importTicket(window.id, source(fx, { comments: [] }), { partnerId: fx.partner.id });
     await admin.transaction(async (tx) => {
       await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
       await tx.update(tickets).set({ orgId: fx.orgOutside.id }).where(eq(tickets.id, moved.ticketId));
@@ -348,7 +348,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     });
     const [movedRef] = await admin.select().from(ticketExternalRefs).where(eq(ticketExternalRefs.ticketId, moved.ticketId));
     const before = await admin.select({ id: tickets.id }).from(tickets).where(eq(tickets.orgId, fx.orgA.id));
-    await expect(importTicket(window.id, source(fx, { sourceId: movedRef!.externalId, comments: [] })))
+    await expect(importTicket(window.id, source(fx, { sourceId: movedRef!.externalId, comments: [] }), { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', details: { reason: 'held_elsewhere' } });
     expect(await admin.select({ id: tickets.id }).from(tickets).where(eq(tickets.orgId, fx.orgA.id))).toHaveLength(before.length);
   });
@@ -357,7 +357,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const fx = await seed();
     const window = await openWindow(fx);
     const other = await seed();
-    await expect(importTicket(window.id, source(fx, { orgId: other.orgA.id })))
+    await expect(importTicket(window.id, source(fx, { orgId: other.orgA.id }), { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_ORG_NOT_ALLOWED', status: 403 });
     // A caller acting for another partner cannot write through this window.
     await expect(importTicket(window.id, source(fx), { partnerId: other.partner.id }))
@@ -380,7 +380,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const fx = await seed();
     const window = await openWindow(fx);
     const number = `ZM-${Date.now()}`;
-    const imported = await importTicket(window.id, source(fx, { sourceNumber: number, subject: 'Unrelated subject', comments: [] }));
+    const imported = await importTicket(window.id, source(fx, { sourceNumber: number, subject: 'Unrelated subject', comments: [] }), { partnerId: fx.partner.id });
     const search = (term: string, orgIds: string[]) => withDbAccessContext(fx.ownerContext(), () => db
       .select({ id: tickets.id }).from(tickets)
       .where(and(inArray(tickets.orgId, orgIds), ticketSearchCondition(term, orgIds))));
@@ -396,7 +396,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const window = await openWindow(fx, { writesPerHour: 600 });
     // Spend the hour.
     await rateLimiter(getRedis(), migrationWindowRateKey(window.id), 600, 3600, 599);
-    await expect(importTicket(window.id, source(fx, { comments: [] })))
+    await expect(importTicket(window.id, source(fx, { comments: [] }), { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', status: 429, details: { retryAfterSeconds: expect.any(Number) } });
     expect(await bucketSize(window.id)).toBe(599);
     expect(await getTestDb().select().from(tickets).where(eq(tickets.migrationWindowId, window.id))).toEqual([]);
@@ -407,8 +407,8 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const first = await openWindow(fx);
     const userEdited = source(fx, { comments: [], finalStatus: 'open', resolvedAt: undefined, closedAt: undefined });
     const userReassigned = source(fx, { comments: [], finalStatus: 'open', resolvedAt: undefined, closedAt: undefined });
-    const a = await importTicket(first.id, userEdited);
-    const b = await importTicket(first.id, userReassigned);
+    const a = await importTicket(first.id, userEdited, { partnerId: fx.partner.id });
+    const b = await importTicket(first.id, userReassigned, { partnerId: fx.partner.id });
     await closeWindow(fx, first.id);
 
     // Between the passes, technicians work in Breeze: one retitles ticket A,
@@ -423,8 +423,8 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     // The delta pass: the source changed subject, priority, tags and assignee.
     const second = await openWindow(fx);
     const delta = { subject: 'Changed in the source', priority: 'high' as const, tags: ['printer', 'vip'], assigneeUserId: fx.agent.id, updatedAt: minutes(500) };
-    const ra = await importTicket(second.id, { ...userEdited, ...delta });
-    const rb = await importTicket(second.id, { ...userReassigned, ...delta });
+    const ra = await importTicket(second.id, { ...userEdited, ...delta }, { partnerId: fx.partner.id });
+    const rb = await importTicket(second.id, { ...userReassigned, ...delta }, { partnerId: fx.partner.id });
 
     // A: subject is the user's; priority, tags and assignee follow the source.
     expect(ra).toMatchObject({ outcome: 'resumed', fieldsUpdated: 3 });
@@ -462,7 +462,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       if (call !== 3) return;
       await getTestDb().update(tickets).set({ deletedAt: new Date() }).where(eq(tickets.migrationWindowId, window.id));
     };
-    await expect(importTicket(window.id, ticket, { chunkSize: 2 }))
+    await expect(importTicket(window.id, ticket, { chunkSize: 2, partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', details: { reason: 'deleted' } });
     chargeHook.before = null;
     const [deleted] = await getTestDb().select().from(tickets).where(eq(tickets.migrationWindowId, window.id));
@@ -473,7 +473,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     // Zammad has only close_at: the note survives through a resolve at the close time.
     const closeOnly = await importTicket(window.id, source(fx, {
       comments: [], assigneeUserId: undefined, resolvedAt: undefined, closedAt: minutes(260), resolutionNote: 'Replaced the fuser.',
-    }));
+    }), { partnerId: fx.partner.id });
     const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, closeOnly.ticketId));
     expect(row).toMatchObject({ status: 'closed', resolutionNote: 'Replaced the fuser.', resolvedAt: minutes(260), closedAt: minutes(260) });
   });
