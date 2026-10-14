@@ -8,7 +8,7 @@ import { requirePermission, requireScope, type AuthContext } from '../middleware
 import { PERMISSIONS } from '../services/permissions';
 import { CONTACT_ROLES } from '../services/contacts/types';
 import { resolveContactResponsibility } from '../services/contacts/responsibilities';
-import { resolveAccessibleOrg } from './orgContacts';
+import { canReachContactSite, resolveAccessibleOrg } from './orgContacts';
 
 /**
  * Read-only "who to contact" (spec 2026-10-06 contact-responsibility-scope, §14 follow-up).
@@ -84,6 +84,7 @@ export function registerOrgContactResponsibilitiesRoutes(orgRoutes: Hono) {
         : await db
             .select({
               id: contacts.id,
+              siteId: contacts.siteId,
               name: contacts.name,
               email: contacts.email,
               phone: contacts.phone,
@@ -100,7 +101,8 @@ export function registerOrgContactResponsibilitiesRoutes(orgRoutes: Hono) {
           level: r.level,
           contacts: r.assignments.flatMap((a) => {
             const detail = byId.get(a.contactId);
-            if (!detail) return [];
+            // A contact homed at a site the caller cannot reach is hidden, as in orgContacts.
+            if (!detail || !canReachContactSite(auth, detail.siteId)) return [];
             return [{
               contactId: a.contactId,
               name: detail.name,

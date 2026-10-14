@@ -7,6 +7,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+const canMock = vi.fn((_resource: string, _action: string) => true);
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: canMock }),
+}));
+
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -17,6 +22,8 @@ function jsonResponse(body: unknown, status = 200) {
 describe('ContactResponsibilitiesCard', () => {
   beforeEach(() => {
     vi.mocked(fetchWithAuth).mockReset();
+    canMock.mockReset();
+    canMock.mockReturnValue(true);
   });
 
   it('requests the site-scoped resolution and renders responsible contacts with their scope', async () => {
@@ -40,6 +47,17 @@ describe('ContactResponsibilitiesCard', () => {
     );
     expect(screen.getByText('This site')).toBeTruthy();
     expect(screen.getByText('Primary')).toBeTruthy();
+    expect(screen.getByTestId('contact-responsibilities-card')).toBeTruthy();
+  });
+
+  it('renders nothing and does not fetch without organizations:read', async () => {
+    canMock.mockReturnValue(false);
+
+    const { container } = render(<ContactResponsibilitiesCard orgId={ORG_ID} siteId={SITE_ID} />);
+
+    expect(container.firstChild).toBeNull();
+    expect(canMock).toHaveBeenCalledWith('organizations', 'read');
+    expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
   it('uses the deviceId query when rendered for a device', async () => {

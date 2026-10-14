@@ -7,9 +7,10 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { orgRoutes } from '../../routes/orgs';
-import { contactRoles, contacts, deviceGroupMemberships, deviceGroups } from '../../db/schema';
+import { contactRoles, contacts, deviceGroupMemberships, deviceGroups, organizationUsers } from '../../db/schema';
 import { createDevice, createIntegrationTestClient, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -80,6 +81,36 @@ describe('GET /orgs/organizations/:id/contact-responsibilities', () => {
     const plainEscalation = (await plain.json()).responsibilities.find((r: { role: string }) => r.role === 'escalation');
     expect(plainEscalation.level).toBe('site');
     expect(plainEscalation.contacts.map((c: { contactId: string }) => c.contactId)).toEqual([siteContact.id]);
+  });
+
+  runDb('hides contacts homed at a site the caller cannot reach, but keeps org-wide ones', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'organization' });
+    const orgId = client.env.organization.id;
+    const allowedSite = await createSite({ orgId });
+    const otherSite = await createSite({ orgId });
+    await getTestDb().update(organizationUsers)
+      .set({ siteIds: [allowedSite.id] })
+      .where(eq(organizationUsers.userId, client.env.user.id));
+
+    const [hidden] = await getTestDb().insert(contacts)
+      .values({ orgId, name: 'Homed at other site', roles: [], siteId: otherSite.id, email: 'hidden@example.com' }).returning();
+    const [visible] = await getTestDb().insert(contacts)
+      .values({ orgId, name: 'Org-wide', roles: [], email: 'visible@example.com' }).returning();
+    await getTestDb().insert(contactRoles).values([
+      { contactId: hidden!.id, orgId, role: 'billing' },
+      { contactId: visible!.id, orgId, role: 'technical' },
+    ]);
+
+    const res = await client.get(`/orgs/organizations/${orgId}/contact-responsibilities?siteId=${allowedSite.id}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const roles = body.responsibilities.map((r: { role: string }) => r.role);
+    expect(roles).toEqual(['technical']);
+    expect(JSON.stringify(body)).not.toContain('hidden@example.com');
+    expect(JSON.stringify(body)).not.toContain('Homed at other site');
+    expect(body.responsibilities[0].contacts).toEqual([
+      expect.objectContaining({ contactId: visible!.id, email: 'visible@example.com' }),
+    ]);
   });
 
   runDb('returns an empty list when nothing is assigned', async () => {

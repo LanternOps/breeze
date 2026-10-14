@@ -772,7 +772,6 @@ export default function DeviceDetails({
 
   return (
     <div className="space-y-6">
-      <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-4">
@@ -855,6 +854,7 @@ export default function DeviceDetails({
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
+            <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — side by side on ≥xl (stacked and wrapping below,
                 since the Activity rail narrows this card at lg). Stats are

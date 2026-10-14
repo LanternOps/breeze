@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 
 type ResponsibilityScope = 'device_group' | 'site' | 'organization';
 
@@ -34,11 +35,14 @@ type Props = {
  */
 export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId }: Props) {
   const { t } = useTranslation('contactResponsibilities');
+  const { can } = usePermissions();
+  // The route is gated on organizations:read; without it the card would only ever show an error.
+  const canRead = can('organizations', 'read');
   const [items, setItems] = useState<Responsibility[] | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!orgId || (!siteId && !deviceId)) return;
+    if (!canRead || !orgId || (!siteId && !deviceId)) return;
     let cancelled = false;
     setItems(null);
     setFailed(false);
@@ -59,10 +63,12 @@ export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId }:
     return () => {
       cancelled = true;
     };
-  }, [orgId, siteId, deviceId]);
+  }, [canRead, orgId, siteId, deviceId]);
+
+  if (!canRead) return null;
 
   return (
-    <section className="rounded-lg border bg-card p-6 shadow-xs" aria-labelledby="contact-responsibilities-title">
+    <section data-testid="contact-responsibilities-card" className="rounded-lg border bg-card p-6 shadow-xs" aria-labelledby="contact-responsibilities-title">
       <h2 id="contact-responsibilities-title" className="text-lg font-semibold">
         {t('title')}
       </h2>
