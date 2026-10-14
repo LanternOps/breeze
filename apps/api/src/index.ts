@@ -20,7 +20,7 @@ import { requestPathLogger } from './middleware/requestPathLogger';
 import { agentAdmission } from './middleware/agentAdmission';
 import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
-import { globalRateLimit } from './middleware/globalRateLimit';
+import { globalRateLimit, registerGlobalRateLimitSkipPrefix } from './middleware/globalRateLimit';
 import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
 import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
@@ -79,6 +79,7 @@ import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
 import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
 import { trustPageRoutes } from './routes/trustPage';
+import { trustPagePublicRoutes } from './routes/trustPagePublic';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -768,6 +769,13 @@ api.use('*', async (c, next) => {
 
 api.route('/auth', authRoutes);
 api.route('/config', configRoutes);
+// Public trust pages (Trust Center W1, no auth). Mounted before every root-mounted
+// router so no `.use('*')` auth middleware can run ahead of these unauthenticated
+// GETs. /trust/card/* is skip-listed from the global limiter (portal SSR shares one
+// IP) and is DB-free on a serving-set miss; /trust/public/* has its own isolated
+// 'trustpublic' bucket. Unrelated to /partner/trust (partnerTrustRoutes).
+registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
+api.route('/trust', trustPagePublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);

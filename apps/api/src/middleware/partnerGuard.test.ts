@@ -310,6 +310,15 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     ['/api/v1/partner/me', true],
     ['/api/v1/agents/abc', true],
     ['/api/v1/internal/synthetic/x', true],
+    // public trust pages (spec trust-center §13): GETs must never trigger staff account activation
+    ['/api/v1/trust/card/nw/acme', true],
+    ['/api/v1/trust/card/nw', true],
+    ['/api/v1/trust/public/nw/acme', true],
+    ['/api/v1/trust/public/preview/tok', true],
+    ['/api/v1/trust/public/nw/acme/documents/x', true],
+    ['/api/v1/trust', false],
+    ['/api/v1/trust/cardx', false],
+    ['/api/v1/partner/trust/x', false],
     // ordinary guarded paths
     ['/api/v1/devices', false],
     ['/api/v1/accounting/quickbooks', false],
