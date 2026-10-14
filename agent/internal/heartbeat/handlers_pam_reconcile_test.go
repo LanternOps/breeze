@@ -76,10 +76,13 @@ func TestPamReconciliationSerializesStartupResetAndPolicy(t *testing.T) {
 				h.ReconcilePAMLifetime(context.Background())
 			}()
 			select {
+			case <-policyDone:
+			case <-time.After(time.Second):
+				t.Fatal("heartbeat policy update blocked behind reconciliation")
+			}
+			select {
 			case <-manager.entered:
 				t.Error("startup overlapped an existing reconciliation")
-			case <-policyDone:
-				t.Error("policy update overlapped an existing reconciliation")
 			case <-time.After(50 * time.Millisecond):
 			}
 			close(manager.release)

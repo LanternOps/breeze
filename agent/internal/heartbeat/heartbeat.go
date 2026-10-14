@@ -810,7 +810,10 @@ type Heartbeat struct {
 	statePath                   string
 	pamLifetimeManager          pamlifetime.Manager
 	pamPolicyMu                 sync.Mutex
-	pamPolicyEnabled            bool         // latest desired policy, guarded by pamPolicyMu
+	pamPolicyDesiredMu          sync.Mutex   // never held across lifecycle or account operations
+	pamPolicyEnabled            bool         // latest desired policy, guarded by pamPolicyDesiredMu
+	pamPolicyRevision           uint64       // guarded by pamPolicyDesiredMu
+	pamPolicyAppliedRevision    uint64       // guarded by pamPolicyDesiredMu
 	pamAccountProvisioned       atomic.Bool  // never rotate an account retained by reconciliation or repeated heartbeats
 	pamProvisionAccountFn       func() error // test seam; production uses elevaccount on Windows
 	pamReconciled               atomic.Bool
@@ -1608,8 +1611,15 @@ func (h *Heartbeat) SetStatePath(path string) {
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
 	h.pamPolicyMu.Lock()
-	defer h.pamPolicyMu.Unlock()
-	return h.reconcilePAMLifetimeLocked(ctx)
+	defer h.finishPAMPolicyOperation()
+	results := h.reconcilePAMLifetimeLocked(ctx)
+	h.pamPolicyDesiredMu.Lock()
+	hasPolicy := h.pamPolicyRevision != 0
+	h.pamPolicyDesiredMu.Unlock()
+	if hasPolicy {
+		h.applyLatestPAMPolicyLocked()
+	}
+	return results
 }
 
 // Startup reconciliation and recovery share the policy lock. In particular,
@@ -5584,24 +5594,73 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 // "keep the current state" — only HeartbeatResponse.RetainState expresses
 // that, and applyPAMDecision handles it before calling here (#8258).
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
-	h.pamPolicyMu.Lock()
-	defer h.pamPolicyMu.Unlock()
+	h.pamPolicyDesiredMu.Lock()
 	h.pamPolicyEnabled = enabled != nil && *enabled
-	h.handleUACInterceptionLocked(h.pamPolicyEnabled)
+	h.pamPolicyRevision++
+	if !h.pamPolicyEnabled {
+		// Both UAC capture and apply-command admission consult this flag.
+		// Close them immediately, even while an older enable is provisioning.
+		h.uacInterceptionEnabled.Store(false)
+	}
+	h.pamPolicyDesiredMu.Unlock()
+	if !h.pamPolicyMu.TryLock() {
+		// The operation holder applies the latest desired policy after its
+		// work, before atomically releasing the operation lock.
+		return
+	}
+	defer h.finishPAMPolicyOperation()
+	h.applyLatestPAMPolicyLocked()
+}
+
+func (h *Heartbeat) applyLatestPAMPolicyLocked() {
+	for {
+		h.pamPolicyDesiredMu.Lock()
+		on := h.pamPolicyEnabled
+		h.pamPolicyDesiredMu.Unlock()
+		h.handleUACInterceptionLocked(on)
+		h.pamPolicyDesiredMu.Lock()
+		// Repeated heartbeats with the same desired value need no additional
+		// work. Retry only when the effective policy changed during an operation.
+		unchanged := h.pamPolicyEnabled == on
+		if unchanged {
+			h.pamPolicyAppliedRevision = h.pamPolicyRevision
+		}
+		h.pamPolicyDesiredMu.Unlock()
+		if unchanged {
+			return
+		}
+	}
+}
+
+// Release atomically with the last desired-state check. A heartbeat either
+// records its change before this check (and is applied here), or records it
+// after release and can acquire the operation lock itself. Never perform OS
+// operations while holding the short desired-state mutex.
+func (h *Heartbeat) finishPAMPolicyOperation() {
+	for {
+		h.pamPolicyDesiredMu.Lock()
+		if h.pamPolicyRevision == h.pamPolicyAppliedRevision {
+			h.pamPolicyMu.Unlock()
+			h.pamPolicyDesiredMu.Unlock()
+			return
+		}
+		h.pamPolicyDesiredMu.Unlock()
+		h.applyLatestPAMPolicyLocked()
+	}
 }
 
 // reconcileAndReapplyPAMPolicy retries verified cleanup without erasing the
 // ledger or bypassing pending evidence. Policy updates serialize with the reset.
 func (h *Heartbeat) reconcileAndReapplyPAMPolicy(ctx context.Context) []pamlifetime.Result {
 	h.pamPolicyMu.Lock()
-	defer h.pamPolicyMu.Unlock()
+	defer h.finishPAMPolicyOperation()
 	return h.reconcileAndReapplyPAMPolicyLocked(ctx)
 }
 
 func (h *Heartbeat) reconcileAndReapplyPAMPolicyLocked(ctx context.Context) []pamlifetime.Result {
 	h.uacInterceptionEnabled.Store(false)
 	results := h.reconcilePAMLifetimeLocked(ctx)
-	h.handleUACInterceptionLocked(h.pamPolicyEnabled)
+	h.applyLatestPAMPolicyLocked()
 	return results
 }
 
@@ -5664,7 +5723,13 @@ func (h *Heartbeat) handleUACInterceptionLocked(on bool) {
 		log.Error("PAM enable rejected because lifecycle verification remains unavailable")
 		return
 	}
+	h.pamPolicyDesiredMu.Lock()
+	if !h.pamPolicyEnabled {
+		h.pamPolicyDesiredMu.Unlock()
+		return // a newer disable must never publish stale capture/admission
+	}
 	prev := h.uacInterceptionEnabled.Swap(true)
+	h.pamPolicyDesiredMu.Unlock()
 	if prev != on {
 		log.Info("UAC interception enabled by configuration policy")
 	}

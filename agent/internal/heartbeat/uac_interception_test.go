@@ -5,11 +5,119 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 )
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestPolicyRevocationBetweenFinalApplyAndUnlockIsNotLost(t *testing.T) {
+	manager := &fakePamLifetimeManager{available: true}
+	h := readyPamApplyTestHeartbeat(manager, nil)
+	h.handleUACInterception(boolPtr(true))
+	h.pamPolicyMu.Lock()
+	h.applyLatestPAMPolicyLocked()
+	// Deterministically place a new heartbeat in the final-check/unlock gap.
+	h.handleUACInterception(boolPtr(false))
+	if h.IsUACInterceptionEnabled() {
+		t.Fatal("revocation did not immediately close capture and apply admission")
+	}
+	h.finishPAMPolicyOperation()
+	calls := manager.setEnabledCalls
+	if len(calls) == 0 || calls[len(calls)-1] {
+		t.Fatalf("operation returned with manager enabled after revocation: %v", calls)
+	}
+	if !h.pamPolicyMu.TryLock() {
+		t.Fatal("operation lock was not released")
+	}
+	h.pamPolicyMu.Unlock()
+}
+
+func TestPolicyUpdatesDoNotWaitForPAMOperationsAndKeepNewestValue(t *testing.T) {
+	for _, operation := range []string{"provision", "reset"} {
+		for _, updates := range []struct {
+			name   string
+			values []*bool
+			want   bool
+		}{
+			{"disable wins", []*bool{boolPtr(true), boolPtr(false)}, false},
+			{"enable wins", []*bool{boolPtr(false), boolPtr(true)}, true},
+			{"absent field disables", []*bool{boolPtr(true), nil}, false},
+		} {
+			t.Run(operation+"/"+updates.name, func(t *testing.T) {
+				started, release := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(release) }) }
+				defer unblock()
+				manager := &blockingPamReconcileManager{
+					fakePamLifetimeManager: fakePamLifetimeManager{available: true},
+					entered:                make(chan struct{}, 1), release: release,
+				}
+				h := readyPamApplyTestHeartbeat(manager, nil)
+				h.uacInterceptionEnabled.Store(false)
+				h.pamProvisionAccountFn = func() error {
+					if operation == "provision" {
+						close(started)
+						<-release
+					}
+					return nil
+				}
+				if operation == "reset" {
+					h.handleUACInterception(boolPtr(true))
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if operation == "provision" {
+						h.handleUACInterception(boolPtr(true))
+					} else {
+						h.reconcileAndReapplyPAMPolicy(context.Background())
+					}
+				}()
+				var entered <-chan struct{} = started
+				if operation == "reset" {
+					entered = manager.entered
+				}
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("PAM operation did not start")
+				}
+				for _, value := range updates.values {
+					updated := make(chan struct{})
+					go func() { h.handleUACInterception(value); close(updated) }()
+					select {
+					case <-updated:
+					case <-time.After(time.Second):
+						t.Fatal("heartbeat waited for PAM operation")
+					}
+					if value == nil || !*value {
+						if h.IsUACInterceptionEnabled() {
+							t.Fatal("disable left capture enabled")
+						}
+						if got := handlePamApplyV2(h, pamApplyV2TestCommand("blocked")); got.Status != "failed" {
+							t.Fatalf("disable admitted an apply command: %+v", got)
+						}
+					}
+				}
+				unblock()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("PAM operation failed to finish")
+				}
+				if h.IsUACInterceptionEnabled() != updates.want {
+					t.Fatal("stale policy overwrote newest desired value")
+				}
+				calls := manager.setEnabledCalls
+				if len(calls) == 0 || calls[len(calls)-1] != updates.want {
+					t.Fatalf("manager retained stale policy: %v, want %v", calls, updates.want)
+				}
+			})
+		}
+	}
+}
 
 type accountAbsencePamManager struct {
 	fakePamLifetimeManager

@@ -39,7 +39,7 @@ func handlePamReconcileV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !h.pamPolicyMu.TryLock() {
 		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
 	}
-	defer h.pamPolicyMu.Unlock()
+	defer h.finishPAMPolicyOperation()
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	defer cancel()
 	results := h.reconcileAndReapplyPAMPolicyLocked(ctx)
