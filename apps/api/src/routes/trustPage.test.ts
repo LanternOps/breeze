@@ -26,12 +26,14 @@ vi.mock('../services/trustPage/payloadBuilder', async (orig) => {
 });
 const auditMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: auditMock }));
-const dbm = vi.hoisted(() => ({ rows: [] as unknown[][] }));
+const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], values: [] as unknown[], tx: 0 }));
+vi.mock('../services/trustPage/servingSet', () => ({ refreshServingForPartner: vi.fn(async () => {}) }));
 vi.mock('../db', () => {
-  const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
-  return { db: Object.assign(chain(), { transaction: async (fn: any) => fn(chain()) }), runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
+  const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.values = vi.fn((v: unknown) => { dbm.values.push(v); return c; }); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
+  return { db: Object.assign(chain(), { transaction: async (fn: any) => { dbm.tx++; return fn(chain()); } }), runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
 });
 import { authMiddleware } from '../middleware/auth';
+import { createTrustPreviewToken } from '../services/trustPage/previewToken';
 import { trustPageRoutes } from './trustPage';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -41,7 +43,7 @@ const app = new Hono(); app.use('*', authMiddleware); app.route('/orgs', trustPa
 const H = (extra: Record<string, string> = {}) => ({ authorization: 'Bearer t', 'x-allow': 'organizations:read,organizations:write', 'content-type': 'application/json', ...extra });
 
 describe('trust page routes', () => {
-  beforeEach(() => { intro.override = null; dbm.rows = []; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+  beforeEach(() => { intro.override = null; dbm.rows = []; dbm.values = []; dbm.tx = 0; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
 
   it('GET creates the draft and reports slug validity and publish eligibility', async () => {
     dbm.rows.push([{ orgSlug: 'Acme Dental', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
@@ -90,14 +92,83 @@ describe('trust page routes', () => {
     expect(ok.status).toBe(200);
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.publish', details: expect.objectContaining({ snapshotId: 's1', publicationRevision: 1 }) }));
   });
-  it('partner-home needs partner-wide admin', async () => {
-    dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
-    const res = await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-org-access': 'selected' }), body: JSON.stringify({ isPartnerHome: true }) });
-    expect(res.status).toBe(403);
+  it('partner-home needs MFA and partner-wide admin, then moves the flag and audits', async () => {
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null };
+    const body = JSON.stringify({ isPartnerHome: true });
+    dbm.rows.push([ctxRow]);
+    expect((await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-org-access': 'all' }), body })).status).toBe(403); // no MFA
+    dbm.rows.push([ctxRow]);
+    expect((await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-mfa': '1', 'x-org-access': 'selected' }), body })).status).toBe(403);
+    dbm.rows = [[ctxRow], [{ id: 'other', orgId: 'x' }], [], [{ ...PAGE, isPartnerHome: true }]];
+    const ok = await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-mfa': '1', 'x-org-access': 'all' }), body });
+    expect(ok.status).toBe(200);
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.partner_home', details: expect.objectContaining({ isPartnerHome: true, previousPageId: 'other' }) }));
   });
   it('preview-token returns a token and path', async () => {
     dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
     const res = await app.request(`/orgs/${ORG}/trust-page/preview-token`, { method: 'POST', headers: H() });
     expect(await res.json()).toEqual({ data: { token: 'tok', expiresInSeconds: 900, previewPath: '/trust/preview/tok' } });
+  });
+
+  describe('documents PUT', () => {
+    const D1 = '33333333-3333-4333-8333-333333333333';
+    const D2 = '44444444-4444-4444-8444-444444444444';
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null };
+    const put = (documents: unknown[]) => app.request(`/orgs/${ORG}/trust-page/documents`, { method: 'PUT', headers: H(), body: JSON.stringify({ documents }) });
+    it('422s DOCUMENT_UNAVAILABLE naming the missing id and runs no transaction', async () => {
+      dbm.rows = [[ctxRow], [{ id: D1 }]];
+      const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: true }, { documentId: D2, visibility: 'public', disclosureConfirmed: true }]);
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.code).toBe('DOCUMENT_UNAVAILABLE');
+      expect(body.details.documentIds).toEqual([D2]);
+      expect(dbm.tx).toBe(0);
+      expect(dbm.values).toEqual([]);
+    });
+    it('rejects an unconfirmed public document at the schema (400)', async () => {
+      const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: false }]);
+      expect(res.status).toBe(400);
+      expect(dbm.tx).toBe(0);
+    });
+    it('replaces links with confirmation stamps, audits added/removed/confirmed, returns the new revision', async () => {
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ ids: [D1, 'old-doc'] }], [], [], [], [{ publicationRevision: 5 }]];
+      const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: true }, { documentId: D2, visibility: 'public', disclosureConfirmed: true }]);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.publicationRevision).toBe(5);
+      expect(dbm.tx).toBe(1);
+      const rows = dbm.values[0] as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(2);
+      for (const r of rows) {
+        expect(r.disclosureConfirmedAt).toBeInstanceOf(Date);
+        expect(r.disclosureConfirmedByUserId).toBe('u1');
+      }
+      expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'trust_page.documents.update',
+        details: expect.objectContaining({ added: [D2], removed: ['old-doc'], confirmed: 2, publicationRevision: 5 }),
+      }));
+    });
+  });
+
+  it.each([
+    ['GET', 'trust-page', undefined],
+    ['PUT', 'trust-page', { showPercentages: true }],
+    ['PUT', 'trust-page/documents', { documents: [] }],
+    ['POST', 'trust-page/publish', { expectedRevision: 0 }],
+    ['POST', 'trust-page/unpublish', undefined],
+    ['POST', 'trust-page/partner-home', { isPartnerHome: true }],
+    ['POST', 'trust-page/preview-token', undefined],
+    ['GET', 'trust-page/controls', undefined],
+  ])('%s /%s 404s an inaccessible org without touching services', async (method, path, payload) => {
+    const res = await app.request(`/orgs/${OTHER}/${path}`, {
+      method,
+      headers: H({ 'x-mfa': '1', 'x-org-access': 'all', 'x-allow': 'organizations:read,organizations:write' }),
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'NOT_FOUND' });
+    expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+    expect(svc.publishTrustPage).not.toHaveBeenCalled();
+    expect(svc.unpublishTrustPage).not.toHaveBeenCalled();
+    expect(createTrustPreviewToken).not.toHaveBeenCalled();
   });
 });

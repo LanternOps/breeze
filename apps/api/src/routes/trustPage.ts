@@ -13,7 +13,7 @@ import { requireCapability, evaluateCapabilityContinuationForState } from '../se
 import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
-  buildSnapshotForPage, ensureTrustPage, publishTrustPage, unpublishTrustPage, TrustPageError, validatePublishSlugs,
+  ensureTrustPage, publishTrustPage, unpublishTrustPage, TrustPageError,
 } from '../services/trustPage/publication';
 import { isEdrVisibilityEnabled } from '../services/portal/edrVisibility';
 import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
@@ -131,9 +131,10 @@ trustPageRoutes.put('/:orgId/trust-page/documents', scopes, orgWrite, zValidator
       }
       await tx.update(trustPages).set({ publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
     });
+    const [{ publicationRevision } = { publicationRevision: page.publicationRevision + 1 }] = await db.select({ publicationRevision: trustPages.publicationRevision }).from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
     const after = new Set(ids); const prev = new Set(before?.ids ?? []);
-    await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), confirmed: documents.filter((d) => d.disclosureConfirmed).length });
-    return c.json({ data: { documents } });
+    await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), confirmed: documents.filter((d) => d.disclosureConfirmed).length, publicationRevision });
+    return c.json({ data: { documents, publicationRevision } });
   } catch (err) { return handleError(c, err); }
 });
 
@@ -163,7 +164,7 @@ trustPageRoutes.post('/:orgId/trust-page/unpublish', scopes, orgWrite, requireMf
   } catch (err) { return handleError(c, err); }
 });
 
-trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, zValidator('param', orgParam), zValidator('json', trustPagePartnerHomeSchema), async (c) => {
+trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, requireMfa(), zValidator('param', orgParam), zValidator('json', trustPagePartnerHomeSchema), async (c) => {
   const { orgId } = c.req.valid('param');
   const auth = c.get('auth') as AuthContext;
   if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'PARTNER_WIDE_REQUIRED' }, 403);
