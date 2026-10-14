@@ -39,7 +39,7 @@ vi.mock('./partnerTrust.repo', () => ({
   partnerForDevice: vi.fn(async () => 'p1'),
 }));
 vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
-vi.mock('./trustPage/servingSet', () => ({ refreshServingForPartner: vi.fn(async () => {}) }));
+vi.mock('./trustPage/servingSet', () => ({ scheduleServingRefreshForPartner: vi.fn() }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
@@ -53,7 +53,7 @@ import {
   unresolvedPartnerDecision,
 } from './partnerTrust';
 import { readTrust, writeTrust } from './partnerTrust.repo';
-import { refreshServingForPartner } from './trustPage/servingSet';
+import { scheduleServingRefreshForPartner } from './trustPage/servingSet';
 
 function sourceFilesUnder(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -175,7 +175,7 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 
 beforeEach(() => {
   audit.mockClear();
-  vi.mocked(refreshServingForPartner).mockClear();
+  vi.mocked(scheduleServingRefreshForPartner).mockClear();
   publish.mockClear();
   tryAutoPromote.mockClear();
   vi.mocked(writeTrust).mockClear();
@@ -218,18 +218,18 @@ describe('setTrustState', () => {
     expect(result).toBe(false);
     expect(publish).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
-    expect(refreshServingForPartner).not.toHaveBeenCalled();
+    expect(scheduleServingRefreshForPartner).not.toHaveBeenCalled();
   });
 
   it('refreshes the trust page serving set for the partner after a landed change', async () => {
     await setTrustState('p1', 'restricted', 'abuse', 'user-1');
 
-    expect(refreshServingForPartner).toHaveBeenCalledWith('p1');
+    expect(scheduleServingRefreshForPartner).toHaveBeenCalledWith('p1', 'partner.trust');
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.restricted' }));
   });
 
   it('a failing serving-set refresh never fails the trust-state change', async () => {
-    vi.mocked(refreshServingForPartner).mockRejectedValueOnce(new Error('redis down'));
+    vi.mocked(scheduleServingRefreshForPartner).mockImplementationOnce(() => { throw new Error('redis down'); });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(setTrustState('p1', 'restricted', 'abuse', 'user-1')).resolves.toBe(true);

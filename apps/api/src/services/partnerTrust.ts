@@ -450,8 +450,8 @@ export async function setTrustState(
   // publishes within the second via the live predicate; the serving-set is an admission filter
   // and is refreshed here so misses stay DB-free.
   try {
-    const { refreshServingForPartner } = await import('./trustPage/servingSet');
-    await refreshServingForPartner(partnerId);
+    const { scheduleServingRefreshForPartner } = await import('./trustPage/servingSet');
+    scheduleServingRefreshForPartner(partnerId, 'partner.trust');
   } catch (error) {
     console.warn('[partnerTrust] trust page serving-set refresh failed:', error);
   }
