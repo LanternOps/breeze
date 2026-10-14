@@ -321,11 +321,17 @@ function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
  */
 export function claimIdentityDeviceMismatchWarning(rowDeviceId: string, nowMs: number): boolean {
   const last = identityDeviceMismatchReportedAt.get(rowDeviceId);
-  if (last !== undefined && nowMs - last < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return false;
+  // An entry from the future (the clock stepped back) counts as stale, so a
+  // clock step cannot mute a device until the clock catches up.
+  if (
+    last !== undefined
+    && last <= nowMs
+    && nowMs - last < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS
+  ) return false;
   identityDeviceMismatchReportedAt.delete(rowDeviceId);
   if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {
     for (const [deviceId, loggedAt] of identityDeviceMismatchReportedAt) {
-      if (nowMs - loggedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) break;
+      if (loggedAt <= nowMs && nowMs - loggedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) break;
       identityDeviceMismatchReportedAt.delete(deviceId);
     }
     if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {

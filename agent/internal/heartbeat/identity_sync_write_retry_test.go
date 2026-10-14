@@ -65,6 +65,18 @@ func TestTransientRestartMarkerWriteFailureIsRetriedWithoutTheHold(t *testing.T)
 	}
 	expectIdentityNotRefused(t, h)
 
+	// On Windows the scan can also hold the fresh temp file, so the failed
+	// write could not remove it. The retry clears such leftovers, and only
+	// those.
+	dir := filepath.Dir(s.markerPath)
+	leftover := filepath.Join(dir, identityRestartMarkerFile+".123456.tmp")
+	unrelated := []string{filepath.Join(dir, "other.tmp"), filepath.Join(dir, identityRestartMarkerFile+".bak")}
+	for _, p := range append([]string{leftover}, unrelated...) {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// The scan is over. The first beat after the backoff (about one beat, not
 	// an hour) records the marker and restarts.
 	if err := os.Remove(s.markerPath); err != nil {
@@ -82,6 +94,14 @@ func TestTransientRestartMarkerWriteFailureIsRetriedWithoutTheHold(t *testing.T)
 	}
 	if h.identitySync.writeFailures.Load() != 0 || h.identitySync.writeRetryAt.Load() != nil {
 		t.Fatal("the backoff was not reset once the marker was written")
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("temp file left by a failed marker write was not removed: %v", err)
+	}
+	for _, p := range unrelated {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("removed a file that is not a marker temp file: %v", err)
+		}
 	}
 	if got := h.identityRejectionForBeat(); got != nil {
 		t.Fatalf("reported a refusal: %+v", got)

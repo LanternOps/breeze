@@ -111,8 +111,8 @@ const (
 	// overrides agent.yaml on every start, so no restart can apply it.
 	identityRejectionEnvOverride = "env_override"
 	// Gave up for the life of the process: restarting did not apply the
-	// identity. (Before #8623 a failed restart-marker write was reported this
-	// way too; it is now retried instead.)
+	// identity. (Before #8623 a failed restart-marker write was also reported,
+	// as gave_up or env_override; it is now retried instead.)
 	identityRejectionGaveUp = "gave_up"
 	// Signed with a key this agent never pinned.
 	identityRejectionUnpinnedKey = "unpinned_key"
@@ -428,6 +428,25 @@ func writeIdentityRestartMarker(path string, m identityRestartMarker) error {
 	return nil
 }
 
+// removeIdentityRestartMarkerTemps removes temp files that earlier failed
+// marker writes could not clean up (#8623): on Windows a scan can hold the
+// fresh temp file open, so neither the rename nor the remove goes through.
+// Without this, a marker write retried for hours could leave one behind per
+// try. Called under the restart latch, so no marker write is in progress.
+func removeIdentityRestartMarkerTemps(markerPath string) {
+	dir := filepath.Dir(markerPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasPrefix(name, identityRestartMarkerFile+".") && strings.HasSuffix(name, ".tmp") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
 // applyIdentityAssertion verifies a server identity assertion and, when it
 // names a different org or site, persists it and schedules one restart. It
 // reports whether a restart is pending, so the caller can hold back work this
@@ -540,6 +559,9 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		h.identitySync.restartRequested.Store(false)
 		return false
 	}
+	if h.identitySync.writeFailures.Load() > 0 {
+		removeIdentityRestartMarkerTemps(markerPath)
+	}
 	if err := writeIdentityRestartMarker(markerPath, identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, OwnershipEpoch: toEpoch, Attempts: attempts}); err != nil {
 		// The marker is the only thing bounding these restarts across
 		// processes: without it a new process counts attempt 1 again, so an
@@ -602,9 +624,8 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 
 // noteIdentityWriteFailure records a failed write of agent.yaml or the restart
 // marker and schedules the next try (#8623). Called while the restart latch is
-// held, before it is released, so the next beat sees the backoff. Logged on
-// every failure: the backoff already spaces them, and the error text names a
-// random temp file, so logIdentitySyncFailure would not dedupe it anyway.
+// held, so writes and this state stay serialized. Every failure is logged,
+// with the count and the wait: the backoff already spaces them.
 func (h *Heartbeat) noteIdentityWriteFailure(now time.Time, msg string, err error) {
 	failures := int(h.identitySync.writeFailures.Add(1))
 	delay := identityWriteRetryDelay(failures)

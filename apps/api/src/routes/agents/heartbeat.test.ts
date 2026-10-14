@@ -2501,6 +2501,9 @@ describe('claimIdentityDeviceMismatchWarning (per-device limit unit)', () => {
     expect(claim('dev-b', t0 + 9 * 60_000)).toBe(true);
     expect(claim('dev-b', t0 + 9 * 60_000 + 1)).toBe(false);
     expect(claim('dev-a', t0 + INTERVAL)).toBe(true);
+    // The clock stepped back an hour: the device is not muted until it catches up.
+    expect(claim('dev-a', t0 + INTERVAL - 60 * 60_000)).toBe(true);
+    expect(claim('dev-a', t0 + INTERVAL - 60 * 60_000 + 60_000)).toBe(false);
   });
 
   it('bounds the map: a full map drops the entries past the interval', async () => {
