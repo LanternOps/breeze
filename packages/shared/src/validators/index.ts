@@ -1389,6 +1389,7 @@ export const maintenanceInlineSettingsSchema = z
 
 export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;
 export * from './callerVerification';
+export * from './endpointMessage';
 
 // Business reports (#3198 W02)
 export * from './businessReports';

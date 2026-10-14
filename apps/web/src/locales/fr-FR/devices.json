@@ -4161,5 +4161,83 @@
       "dismissed": "Ignorée",
       "unknown": "Inconnu"
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Envoyer un message aux utilisateurs",
+    "sendAction": "Envoyer un message",
+    "fields": {
+      "title": "Titre",
+      "body": "Texte du message",
+      "severity": "Gravité",
+      "requiresAck": "Exiger un accusé de réception",
+      "expiry": "Expire"
+    },
+    "severity": {
+      "info": "Information",
+      "warning": "Avertissement",
+      "critical": "Critique"
+    },
+    "expiry": {
+      "h1": "1 heure",
+      "h4": "4 heures",
+      "h24": "24 heures",
+      "h72": "72 heures",
+      "untilClosed": "Jusqu'à la fermeture (7 jours max.)"
+    },
+    "preview": {
+      "heading": "Aperçu",
+      "sender": "De votre entreprise",
+      "footer": "Envoyé par votre fournisseur informatique",
+      "acknowledge": "Accuser réception"
+    },
+    "recipients": "Destinataires : {{count}} appareils",
+    "columns": {
+      "device": "Appareil",
+      "delivery": "Livraison"
+    },
+    "capability": {
+      "assist_card": "Carte Assist (session console) ou notification native de secours",
+      "native": "Notification native",
+      "unsupported": "Version de l'agent non prise en charge : ne sera pas livré"
+    },
+    "confirm": {
+      "text": "Ce message sera envoyé à {{count}} appareils. Vérifiez la carte exacte ci-dessous.",
+      "send": "Envoyer à {{count}} appareils"
+    },
+    "result": {
+      "summary": "{{queued}} en file, {{failed}} en échec",
+      "queued": "En file",
+      "failed": "Échec"
+    },
+    "actions": {
+      "send": "Envoyer le message",
+      "sending": "Envoi...",
+      "cancel": "Annuler",
+      "back": "Retour",
+      "close": "Fermer"
+    },
+    "errors": {
+      "send_failed": "Le message n'a pas pu être envoyé. Réessayez.",
+      "agent_unsupported": "L'agent de cet appareil ne prend pas encore en charge les messages.",
+      "no_permission": "Vous n'avez pas la permission d'envoyer des messages à cet appareil.",
+      "offline_rejected": "L'appareil est hors ligne et le message n'a pas été mis en file.",
+      "rate_limited": "Trop de messages envoyés récemment. Réessayez plus tard.",
+      "cap_exceeded": "Cet envoi dépasse la limite autorisée.",
+      "feature_disabled": "La messagerie des terminaux n'est pas activée pour cette organisation.",
+      "queue_failed": "Le message n'a pas pu être mis en file pour cet appareil.",
+      "in_progress": "Ce message est déjà en cours d'envoi. Patientez un instant, puis vérifiez le résultat.",
+      "unavailable": "L'envoi de messages est temporairement indisponible. Réessayez dans un instant.",
+      "no_devices_resolved": "Aucun appareil ne correspond à cette sélection.",
+      "idempotency_conflict": "Cet identifiant de message a déjà été utilisé pour un autre message. Modifiez le message puis renvoyez-le."
+    },
+    "issues": {
+      "html": "Le HTML n'est pas autorisé dans le corps du message.",
+      "images": "Les images ne sont pas autorisées dans le corps du message.",
+      "httpsLinks": "Les liens du corps du message doivent utiliser https.",
+      "referenceLinks": "Les liens de référence ne sont pas autorisés. Utilisez plutôt des liens en ligne.",
+      "titleHtml": "Le HTML n'est pas autorisé dans le titre.",
+      "titleLinks": "Les liens ne sont pas autorisés dans le titre.",
+      "invalid": "Le message contient du contenu non autorisé."
+    }
   }
 }

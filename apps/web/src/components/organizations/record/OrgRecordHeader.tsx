@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Building2, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { usePermissions } from '@/lib/permissions';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { statusColors, statusLabelKeys } from '@/lib/orgStatus';
 import type { Organization } from '@/stores/orgStore';
@@ -19,6 +20,8 @@ export interface OrgRecordHeaderProps {
   onArchive?: () => void;
   /** Merge is a partner-scope operation; system-scope sessions do not get it. */
   onMerge?: () => void;
+  /** Opens the endpoint-message dialog targeting every device in the org. */
+  onSendMessage?: () => void;
 }
 
 /**
@@ -40,9 +43,12 @@ export default function OrgRecordHeader({
   onOpenSettings,
   onArchive,
   onMerge,
+  onSendMessage,
 }: OrgRecordHeaderProps) {
   const { t } = useTranslation('organizations');
   const { t: tSettings } = useTranslation('settings');
+  const { can } = usePermissions();
+  const canSendMessage = can('endpoint_messages', 'send');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -143,6 +149,16 @@ export default function OrgRecordHeader({
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               {t('orgRecord.actions.workHere')}
+            </button>
+          )}
+          {!archived && onSendMessage && canSendMessage && (
+            <button
+              type="button"
+              data-testid="org-record-send-message"
+              onClick={onSendMessage}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            >
+              {t('orgRecord.actions.sendMessage')}
             </button>
           )}
           <button

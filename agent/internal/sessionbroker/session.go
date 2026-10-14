@@ -587,6 +587,8 @@ func expectedResponseType(cmdType string) string {
 		return backupipc.TypeBackupResult
 	case ipc.TypeCallerVerifyRequest:
 		return ipc.TypeCallerVerifyResponse
+	case ipc.TypeMessageShow:
+		return ipc.TypeMessagePresented
 	default:
 		return ""
 	}

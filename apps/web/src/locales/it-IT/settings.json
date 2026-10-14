@@ -5913,7 +5913,8 @@
       "title": "Indirizzo"
     },
     "actions": {
-      "saveChanges": "Salva modifiche"
+      "saveChanges": "Salva modifiche",
+      "sendMessage": "Invia messaggio"
     },
     "policies": {
       "assignedTitle": "Criteri assegnati",

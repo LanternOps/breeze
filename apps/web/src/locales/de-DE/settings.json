@@ -5865,7 +5865,8 @@
       "title": "Adresse"
     },
     "actions": {
-      "saveChanges": "Änderungen speichern"
+      "saveChanges": "Änderungen speichern",
+      "sendMessage": "Nachricht senden"
     },
     "policies": {
       "assignedTitle": "Zugewiesene Richtlinien",

@@ -298,6 +298,9 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.APPLY_AUDIT_POLICY_BASELINE,
   C.FILESYSTEM_ANALYSIS,
   C.SELF_UNINSTALL,
+  // Endpoint messages queue for an offline device; the send route caps each
+  // one at min(expiresAt, standard TTL) via an explicit deliverBy (#8293).
+  C.NOTIFY_USER,
   C.VAULT_SYNC,
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,

@@ -18,6 +18,9 @@ use super::consent::{
     ConsentRequest, ConsentTracker, Outbound, RequestAction, UiEvent, CONSENT_PROTOCOL_VERSION,
 };
 use super::desktop::{self, ConsentBridge};
+use super::message::{
+    MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
+};
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
 use super::token::HelperToken;
 use super::transport::{
@@ -101,6 +104,10 @@ struct AuthRequest {
     /// The consent prompt exchange this helper speaks (see `consent.rs`).
     #[serde(rename = "consentProtocolVersion")]
     consent_protocol_version: i32,
+    /// This helper renders `message_show` cards (#8293). The agent grants the
+    /// `messaging` scope only to an assist helper that says so.
+    #[serde(rename = "supportsMessaging")]
+    supports_messaging: bool,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -154,6 +161,7 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         binary_kind: "assist_helper".to_string(),
         desktop_context: String::new(),
         consent_protocol_version: CONSENT_PROTOCOL_VERSION,
+        supports_messaging: true,
     }
 }
 
@@ -191,6 +199,7 @@ pub struct DesktopCtx {
     pub app: AppHandle,
     pub bridge: std::sync::Arc<ConsentBridge>,
     pub caller_verify: std::sync::Arc<super::caller_verify::CallerVerifyBridge>,
+    pub messages: std::sync::Arc<super::message::MessageBridge>,
 }
 
 /// Run a single IPC session over an already-connected `stream` with an explicit
@@ -290,7 +299,13 @@ where
         bridge: desktop_ctx.map(|c| c.bridge.clone()),
         caller: desktop_ctx.map(|c| c.caller_verify.clone()),
         app: desktop_ctx.map(|c| c.app.clone()),
+        messages: desktop_ctx.map(|c| c.messages.clone()),
     };
+    // Endpoint messages (#8293): card events (ack / closed) arrive here.
+    let (msg_tx, mut msg_rx) = tokio::sync::mpsc::unbounded_channel::<MsgEvent>();
+    if let Some(ctx) = desktop_ctx {
+        ctx.messages.set_sender(msg_tx);
+    }
     let mut caller_tick = tokio::time::interval(Duration::from_millis(250));
     if desktop_ctx.is_some() {
         write_frame(
@@ -313,6 +328,19 @@ where
             Some(event) = event_rx.recv() => {
                 if let Some(frame) = consent.on_ui_event(event) {
                     write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+                continue;
+            }
+            // A message card event: Acknowledge, or closed without one.
+            Some(event) = msg_rx.recv() => {
+                if let Some(ctx) = desktop_ctx {
+                    let frame = match event {
+                        MsgEvent::Ack(id) => ctx.messages.tracker().on_ack(&id),
+                        MsgEvent::Closed(id) => ctx.messages.tracker().on_closed(&id),
+                    };
+                    if let Some(frame) = frame {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
                 }
                 continue;
             }
@@ -339,6 +367,13 @@ where
                 if let Some(ctx) = desktop_ctx {
                     for id in ctx.caller_verify.expire_due() {
                         super::caller_verify::close_window(&ctx.app, &id);
+                    }
+                    // Message cards past `expiresAt` close themselves; the
+                    // agent is told `message_dismissed` reason `expired`.
+                    let due = ctx.messages.tracker().expire_due(now_unix_ms());
+                    for (id, frame) in due {
+                        desktop::close_message_window(&ctx.app, &id);
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
                 }
                 continue;
@@ -433,6 +468,48 @@ where
                     }
                 }
             }
+            "message_show" => match parse_payload::<MessageShow>(&env.payload) {
+                Ok(req) => {
+                    // Never log title/body. The card is its own window; the
+                    // main Assist window is never shown for a message (#8138).
+                    let action =
+                        desktop_ctx.map(|ctx| ctx.messages.tracker().on_show(now_unix_ms(), &req));
+                    let frames: Vec<Outbound> = match (action, desktop_ctx) {
+                        (Some(ShowAction::Show { plan, view }), Some(ctx)) => {
+                            match desktop::show_message_window(&ctx.app, &plan, &view) {
+                                Ok(()) => vec![MessageTracker::presented(&env.id, &req.message_id)],
+                                Err(e) => {
+                                    eprintln!("[helper] message card could not be shown: {}", e);
+                                    ctx.messages.tracker().on_show_failed(&req.message_id);
+                                    vec![MessageTracker::presented_with_status(
+                                        &env.id,
+                                        &req.message_id,
+                                        PRESENTED_FAILED,
+                                    )]
+                                }
+                            }
+                        }
+                        (Some(action), _) => {
+                            if let ShowAction::Reject(why) = &action {
+                                eprintln!("[helper] message_show rejected: {}", why);
+                            }
+                            MessageTracker::replies_for(&env.id, &req.message_id, action)
+                        }
+                        _ => Vec::new(),
+                    };
+                    for frame in frames {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                Err(e) => eprintln!("[helper] bad message_show payload: {}", e),
+            },
+            "message_retract" => {
+                if let (Ok(r), Some(ctx)) = (parse_payload::<MessageRetract>(&env.payload), desktop_ctx) {
+                    if ctx.messages.tracker().on_retract(&r.message_id) {
+                        desktop::close_message_window(&ctx.app, &r.message_id);
+                    }
+                }
+            }
             "banner_show" => {
                 match parse_payload::<desktop::BannerShowRequest>(&env.payload) {
                     Ok(req) => {
@@ -506,10 +583,30 @@ struct BridgeClearGuard {
     bridge: Option<std::sync::Arc<ConsentBridge>>,
     caller: Option<std::sync::Arc<super::caller_verify::CallerVerifyBridge>>,
     app: Option<AppHandle>,
+    messages: Option<std::sync::Arc<super::message::MessageBridge>>,
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl Drop for BridgeClearGuard {
     fn drop(&mut self) {
+        // Message cards die with the session: the helper stores nothing and
+        // the agent replays sticky messages after the next auth (#8293).
+        if let Some(messages) = &self.messages {
+            messages.clear_sender();
+            let ids = messages.tracker().clear();
+            if let Some(app) = &self.app {
+                for id in ids {
+                    desktop::close_message_window(app, &id);
+                }
+            }
+        }
         if let Some(bridge) = &self.bridge {
             bridge.clear_sender();
         }
@@ -734,6 +831,9 @@ mod tests {
         // The agent only hands v2 consent prompts to a helper that says it
         // speaks v2.
         assert_eq!(v["consentProtocolVersion"], 2);
+        // Endpoint messaging (#8293): the agent grants the `messaging` scope only
+        // to an assist helper that advertises this.
+        assert_eq!(v["supportsMessaging"], true);
 
         // 2. Reply auth_response (still ZERO key) with a fixed session key.
         let session_key = [7u8; 32];

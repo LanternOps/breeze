@@ -159,7 +159,7 @@ const LEGACY_KEY_ORDER = [
 ];
 const LEGACY_REMOTE_FRAGMENT = '"upgradeTo":null,"manageRemoteManagement":true,"manifestTrustKeys":[]';
 const LEGACY_TAIL = '"manifestKeyDelegations":[],"uacInterceptionEnabled":false,"helperEnabled":false,'
-  + '"helperSettings":{"enabled":false,"showOpenPortal":true,"showDeviceInfo":true,"showRequestSupport":true}}';
+  + '"helperSettings":{"enabled":false,"showOpenPortal":true,"showDeviceInfo":true,"showRequestSupport":true,"endpointMessaging":{"enabled":false}}}';
 
 describe('heartbeat retainState (#8616) — real PostgreSQL', () => {
   afterEach(() => {

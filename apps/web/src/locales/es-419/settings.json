@@ -5865,7 +5865,8 @@
       "title": "DIRECCIÓN"
     },
     "actions": {
-      "saveChanges": "Guardar cambios"
+      "saveChanges": "Guardar cambios",
+      "sendMessage": "Enviar mensaje"
     },
     "policies": {
       "assignedTitle": "Políticas asignadas",

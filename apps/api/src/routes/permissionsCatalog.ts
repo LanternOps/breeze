@@ -50,7 +50,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   // Tool catalog (#5216): registering external MCP tool sources, and calling
   // the tools they expose from AI surfaces.
   tool_sources: 'External Tool Sources',
-  external_tools: 'External Tools'
+  external_tools: 'External Tools',
+  endpoint_messages: 'Endpoint Messages'
 };
 
 const ACTION_LABELS: Record<string, string> = {

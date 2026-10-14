@@ -5918,7 +5918,8 @@
       "title": "Endereço"
     },
     "actions": {
-      "saveChanges": "Salvar alterações"
+      "saveChanges": "Salvar alterações",
+      "sendMessage": "Enviar mensagem"
     },
     "policies": {
       "assignedTitle": "Políticas atribuídas",

@@ -82,7 +82,7 @@
     "archiver": "^8.0.0",
     "argon2": "^0.45.1",
     "bullmq": "^5.81.2",
-    "drizzle-orm": "^0.45.3",
+    "drizzle-orm": "^0.45.4",
     "fast-xml-parser": "^5.9.3",
     "firebase-admin": "^14.4.0",
     "google-auth-library": "^11.0.2",
