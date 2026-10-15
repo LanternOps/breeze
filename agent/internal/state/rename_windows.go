@@ -16,7 +16,13 @@ import (
 // fails with ERROR_ACCESS_DENIED while a reader keeps the old target
 // delete-pending; the watchdog reads agent.state continuously, so os.Rename
 // failed ~78% of the time under load (measured on Server 2022). This primitive
-// succeeds every time.
+// succeeds every time on Windows 10 1607+ / Server 2016+.
+//
+// Windows 10 2015 LTSB (build 10240) does not implement FileRenameInfoEx.
+// SetFileInformationByHandle returns ERROR_INVALID_PARAMETER (#8858), and
+// retrying the same call cannot succeed. Those builds use MoveFileEx.
+// renameReplacePlanned owns that choice; the sharing-violation behavior
+// above is unchanged on builds that have the POSIX rename.
 const (
 	fileRenameReplaceIfExists = 0x1
 	fileRenamePosixSemantics  = 0x2
@@ -24,9 +30,29 @@ const (
 	fileRenameInfoExClass = 22
 )
 
-// renameReplace atomically replaces newpath with oldpath using POSIX rename
-// semantics, so a concurrent reader never blocks or corrupts the swap.
+// renameReplace atomically replaces newpath with oldpath. Builds that support
+// FileRenameInfoEx use POSIX semantics so a concurrent reader never blocks
+// the swap. Older builds, and a kernel that refuses the class, use MoveFileEx.
 func renameReplace(oldpath, newpath string) error {
+	return renameReplacePlanned(windows.RtlGetVersion().BuildNumber, oldpath, newpath, renameWithInfoEx, renameWithMoveFile)
+}
+
+func renameWithMoveFile(oldpath, newpath string) error {
+	from, err := windows.UTF16PtrFromString(oldpath)
+	if err != nil {
+		return &os.PathError{Op: "rename", Path: oldpath, Err: err}
+	}
+	to, err := windows.UTF16PtrFromString(newpath)
+	if err != nil {
+		return &os.PathError{Op: "rename", Path: newpath, Err: err}
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING); err != nil {
+		return &os.PathError{Op: "rename", Path: newpath, Err: err}
+	}
+	return nil
+}
+
+func renameWithInfoEx(oldpath, newpath string) error {
 	src, err := windows.UTF16PtrFromString(oldpath)
 	if err != nil {
 		return &os.PathError{Op: "rename", Path: oldpath, Err: err}
