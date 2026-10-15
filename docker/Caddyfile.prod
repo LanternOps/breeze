@@ -52,6 +52,44 @@
     trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32 ::1/128}
     client_ip_headers {$CADDY_CLIENT_IP_HEADERS:CF-Connecting-IP X-Forwarded-For}
   }
+
+  # Credential-header redaction for EVERY Caddy logger. Caddy's error loggers
+  # (`http.log.error`, and `http.handlers.reverse_proxy` "aborting with
+  # incomplete response") write the full request header map. Caddy already
+  # redacts Authorization, Proxy-Authorization, Cookie and Set-Cookie, but not
+  # application credential headers. This sits on the `default` logger rather
+  # than a site-level `log` directive because a site `log` only configures the
+  # access log; the error entries go through the default logger. If a site
+  # `log` (access log) is ever added, it gets its own encoder and needs the
+  # same filter — the default logger's filter does not apply to it.
+  #
+  # Field paths match case-sensitively against Go's canonical header spelling
+  # (`X-Api-Key`, not `X-API-Key`) — apps/api/src/config/caddyLogRedaction.test.ts
+  # enforces that. Add a line here whenever the API starts accepting a new
+  # credential-bearing header. `wrap json` keeps the existing JSON output.
+  log default {
+    format filter {
+      wrap json
+      request>headers>X-Api-Key replace REDACTED
+      request>headers>X-Agent-Enrollment-Secret replace REDACTED
+      request>headers>X-Agent-Reenrollment-Token replace REDACTED
+      request>headers>X-Breeze-Bootstrap-Token replace REDACTED
+      request>headers>X-Breeze-Native-Auth-Binding replace REDACTED
+      request>headers>X-Breeze-Storage-Session replace REDACTED
+      request>headers>X-Recovery-Token replace REDACTED
+      request>headers>X-Automation-Secret replace REDACTED
+      request>headers>X-Webhook-Secret replace REDACTED
+      request>headers>X-Breeze-Signature replace REDACTED
+      request>headers>X-Signature replace REDACTED
+      request>headers>X-Huntress-Signature replace REDACTED
+      request>headers>X-Xero-Signature replace REDACTED
+      request>headers>Stripe-Signature replace REDACTED
+      request>headers>Svix-Signature replace REDACTED
+      request>headers>Intuit-Signature replace REDACTED
+      request>headers>Mcp-Session-Id replace REDACTED
+      resp_headers>X-Breeze-Native-Auth-Binding replace REDACTED
+    }
+  }
 }
 
 {$CADDY_SITE_ADDRESS::80} {
