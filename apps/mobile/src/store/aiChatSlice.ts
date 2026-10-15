@@ -10,6 +10,7 @@ import {
   type PlanDecision,
   type PlanStreamEvent,
 } from '../screens/chat/planState';
+import type { AiTurnModel } from '../screens/chat/modelPicker';
 
 export type ChatStatus = 'idle' | 'creating-session' | 'streaming' | 'error';
 
@@ -50,6 +51,12 @@ export type ChatMessage =
        * completeness still sees it running while the server waits.
        */
       plan?: ChatPlan;
+      /**
+       * What actually answered this turn (`turn_model` SSE event, W05). After a
+       * history reload only the LAST turn has one: the server persists just
+       * `ai_sessions.last_turn_model`, not a per-message record.
+       */
+      turnModel?: AiTurnModel;
     };
 
 export interface AiChatState {
@@ -204,6 +211,23 @@ const aiChatSlice = createSlice({
       state.status = 'error';
       state.error = action.payload.error;
     },
+    setTurnModel(state, action: PayloadAction<{ messageId: string; turnModel: AiTurnModel }>) {
+      const msg = state.messages.find((m) => m.id === action.payload.messageId);
+      if (msg && msg.role === 'assistant') msg.turnModel = action.payload.turnModel;
+    },
+    /**
+     * The server refused this turn before it ran (a model switch that needs a
+     * continuation, or a model that is no longer usable): drop its optimistic
+     * rows so the transcript matches the server's.
+     */
+    discardTurn(state, action: PayloadAction<{ ids: string[] }>) {
+      const ids = new Set(action.payload.ids);
+      state.messages = state.messages.filter((m) => !ids.has(m.id));
+      if (state.streamingMessageId && ids.has(state.streamingMessageId)) state.streamingMessageId = null;
+      state.inFlightTool = null;
+      state.status = 'idle';
+      state.error = null;
+    },
     setStatus(state, action: PayloadAction<ChatStatus>) {
       state.status = action.payload;
     },
@@ -275,6 +299,8 @@ export const {
   planNoLongerPending,
   finishAssistantMessage,
   failAssistantMessage,
+  setTurnModel,
+  discardTurn,
   setStatus,
   setError,
   clearError,

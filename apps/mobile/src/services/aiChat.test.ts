@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { abortAiPlan, createAiSession, decideAiPlan, getAiApprovalMode, listAiSessions, streamChat } from './aiChat';
+import {
+  abortAiPlan,
+  continueAiSession,
+  createAiSession,
+  decideAiPlan,
+  getAiApprovalMode,
+  getChatModelChoices,
+  listAiSessions,
+  streamChat,
+  StreamHttpError,
+} from './aiChat';
 import type { AiStreamEvent } from './aiChat';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
@@ -274,13 +284,14 @@ class FakeXhr {
 
 const flushAsync = () => new Promise((r) => setTimeout(r, 0));
 
-function startStream() {
+function startStream(extra: { model?: { offeringId: string; options?: Record<string, string> } } = {}) {
   const events: AiStreamEvent[] = [];
   const onError = vi.fn();
   const onDone = vi.fn();
   const handle = streamChat({
     sessionId: 'sess-1',
     content: 'hello there',
+    ...extra,
     onEvent: (e) => events.push(e),
     onError,
     onDone,
@@ -576,5 +587,125 @@ describe('streamChat plan events', () => {
       'plan_step_complete',
       'plan_complete',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model picker wire contract (AI model registry W05, mirrored from the web)
+// ---------------------------------------------------------------------------
+
+const OFFERING = '22222222-2222-4222-8222-222222222222';
+const choicesBody = {
+  data: {
+    surface: 'chat',
+    allowUserChoice: true,
+    defaultOfferingId: OFFERING,
+    choices: [{
+      offeringId: OFFERING,
+      displayName: 'Opus',
+      contextTokens: 1000000,
+      funding: 'platform',
+      priceHint: { inputCentsPerM: 500, outputCentsPerM: 2500, fast: null },
+      thinkingMode: 'adaptive',
+      options: { effort: ['low', 'high'], speed: ['standard'], budgetThinking: false },
+      defaults: {},
+      disabled: null,
+    }],
+    current: null,
+  },
+};
+
+describe('getChatModelChoices', () => {
+  it('GETs the chat menu for a session (never with an orgId)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(choicesBody));
+    await expect(getChatModelChoices({ sessionId: 'sess-1' })).resolves.toEqual({ ok: true, choices: choicesBody.data });
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/models/choices/chat?sessionId=sess-1');
+  });
+
+  it('GETs the caller-org menu when there is no session yet', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(choicesBody));
+    await getChatModelChoices({});
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('https://api.test/api/v1/ai/models/choices/chat');
+  });
+
+  it('reports registry_unavailable instead of throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'x', code: 'registry_unavailable' }, 503));
+    await expect(getChatModelChoices({})).resolves.toEqual({ ok: false, status: 503, code: 'registry_unavailable' });
+  });
+
+  it('maps a transport failure to status 0', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('Network request failed'));
+    await expect(getChatModelChoices({})).resolves.toEqual({ ok: false, status: 0, code: null });
+  });
+});
+
+describe('createAiSession with a model', () => {
+  it('sends offeringId + options flat, like the web create', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 's2', title: null, orgId: 'o', createdAt: 'now' }, 201));
+    await createAiSession({ model: { offeringId: OFFERING, options: { effort: 'high' } } });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ offeringId: OFFERING, options: { effort: 'high' } });
+  });
+
+  it('sends an empty body without a model', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 's2', title: null, orgId: 'o', createdAt: 'now' }, 201));
+    await createAiSession({});
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+});
+
+describe('continueAiSession', () => {
+  it('POSTs the model choice and returns the new session id', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { sessionId: 'new-1' } }, 201));
+    await expect(continueAiSession('sess-1', { offeringId: OFFERING })).resolves.toEqual({ ok: true, sessionId: 'new-1' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/sessions/sess-1/continue');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ model: { offeringId: OFFERING } });
+  });
+
+  it('returns the server error instead of throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Not enough AI budget' }, 402));
+    await expect(continueAiSession('sess-1', { offeringId: OFFERING })).resolves.toEqual({ ok: false, status: 402, error: 'Not enough AI budget' });
+  });
+});
+
+describe('streamChat model choice + provenance', () => {
+  beforeEach(() => {
+    FakeXhr.instances = [];
+    FakeXhr.throwOnNextSend = null;
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+  });
+
+  it('carries the pending model choice on the message body', async () => {
+    startStream({ model: { offeringId: OFFERING, options: { effort: 'low' } } });
+    await flushAsync();
+    expect(JSON.parse(FakeXhr.instances[0].sentBody!)).toEqual({ content: 'hello there', model: { offeringId: OFFERING, options: { effort: 'low' } } });
+  });
+
+  it('passes turn_model and model_refusal through as typed events', async () => {
+    const { events } = startStream();
+    await flushAsync();
+    const turnModel = { requestedModel: 'a', requestedDisplayName: 'A', servedModel: 'a', servedDisplayName: 'A', fallbackUsed: false, appliedOptions: {}, fastDowngraded: false };
+    FakeXhr.instances[0].emitChunk(
+      200,
+      `event: turn_model\ndata: ${JSON.stringify({ type: 'turn_model', turnModel })}\n\n`
+        + `event: model_refusal\ndata: ${JSON.stringify({ type: 'model_refusal', category: null, alternatives: [{ offeringId: OFFERING, displayName: 'Opus' }], docsUrl: 'x' })}\n\n`,
+    );
+    expect(events.map((e) => e.type)).toEqual(['turn_model', 'model_refusal']);
+  });
+
+  it('surfaces an HTTP failure as a StreamHttpError carrying status and body', async () => {
+    const { onError } = startStream();
+    await flushAsync();
+    const body = { error: 'switch', code: 'continuation_required', reason: 'cross_connection', recoverable: true, target: { offeringId: OFFERING, displayName: 'Opus' } };
+    FakeXhr.instances[0].finish(409, JSON.stringify(body));
+    const err = onError.mock.calls[0][0] as StreamHttpError;
+    expect(err).toBeInstanceOf(StreamHttpError);
+    expect(err.message).toBe('switch');
+    expect(err.status).toBe(409);
+    expect(err.body).toEqual(body);
   });
 });

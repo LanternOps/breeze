@@ -7,6 +7,7 @@ import reducer, {
   addUserMessage,
   appendDelta,
   appendToolEvent,
+  discardTurn,
   failAssistantMessage,
   finishAssistantMessage,
   loadHistory,
@@ -15,6 +16,7 @@ import reducer, {
   planNoLongerPending,
   planProposed,
   planStreamEvent,
+  setTurnModel,
   type AiChatState,
   type ChatMessage,
 } from './aiChatSlice';
@@ -346,5 +348,34 @@ describe('aiChatSlice action plans', () => {
       event: { toolUseId: 'tu-plan', toolName: 'tool', state: 'completed', output: { result: 'rejected' } },
     }));
     expect(planOf(s)?.status).toBe('rejected');
+  });
+});
+
+describe('aiChatSlice model provenance (W05)', () => {
+  const turnModel = {
+    requestedModel: 'm', requestedDisplayName: 'Opus', servedModel: 'm', servedDisplayName: 'Opus',
+    fallbackUsed: false, appliedOptions: { effort: 'high' as const }, fastDowngraded: false,
+  };
+
+  it('setTurnModel stamps what ran on that assistant message only', () => {
+    let s = reducer(INITIAL, addPendingAssistantMessage({ id: 'a1', sentAt: 't' }));
+    s = reducer(s, addPendingAssistantMessage({ id: 'a2', sentAt: 't' }));
+    s = reducer(s, setTurnModel({ messageId: 'a2', turnModel }));
+    const [a1, a2] = s.messages;
+    expect(a1.role === 'assistant' && a1.turnModel).toBeFalsy();
+    expect(a2.role === 'assistant' && a2.turnModel).toEqual(turnModel);
+  });
+
+  it('discardTurn drops the optimistic rows of a refused turn and returns to idle', () => {
+    let s = reducer(INITIAL, addUserMessage({ id: 'u0', content: 'keep', sentAt: 't' }));
+    s = reducer(s, addUserMessage({ id: 'u1', content: 'switch', sentAt: 't' }));
+    s = reducer(s, addPendingAssistantMessage({ id: 'a1', sentAt: 't' }));
+    s = reducer(s, setInFlightTool({ toolUseId: 't', toolName: 'x' }));
+    s = reducer(s, discardTurn({ ids: ['u1', 'a1'] }));
+    expect(s.messages.map((m) => m.id)).toEqual(['u0']);
+    expect(s.streamingMessageId).toBeNull();
+    expect(s.inFlightTool).toBeNull();
+    expect(s.status).toBe('idle');
+    expect(s.error).toBeNull();
   });
 });

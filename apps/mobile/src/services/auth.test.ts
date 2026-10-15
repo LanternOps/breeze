@@ -50,6 +50,15 @@ vi.mock('./localTimer', () => ({
   clearLocalTimer: (...a: unknown[]) => localTimer.clearLocalTimer(...a),
 }));
 
+// The last-picked AI chat model is a partner-scoped offering id (W05).
+const aiModelPrefs = {
+  clearAiModelPref: vi.fn(),
+};
+vi.mock('./aiModelPrefs', () => ({
+  AI_MODEL_PREF_KEY: 'breeze.aiModelPref.v1',
+  clearAiModelPref: (...a: unknown[]) => aiModelPrefs.clearAiModelPref(...a),
+}));
+
 // Work types are partner-owned labels cached in memory (#4628 W04). The next
 // account on this device must not be offered the previous partner's list.
 const workTypes = {
@@ -64,6 +73,7 @@ beforeEach(() => {
   secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
   timeQueue.clearQueueForSignOut.mockReset().mockResolvedValue(undefined);
   localTimer.clearLocalTimer.mockReset().mockResolvedValue(undefined);
+  aiModelPrefs.clearAiModelPref.mockReset().mockResolvedValue(undefined);
   sentry.captureException.mockReset();
   csrf.clearCsrfToken.mockReset().mockResolvedValue(undefined);
 });
@@ -204,6 +214,14 @@ describe('clearAuthData', () => {
     // The session-owned local timer still goes, on every path: it holds an
     // in-progress span, not unsent work.
     expect(localTimer.clearLocalTimer).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the last-picked AI chat model on every session end', async () => {
+    // The next account on this phone must start from its own menu default,
+    // not another partner's offering id.
+    await clearAuthData();
+    await clearAuthData({ deliberate: true });
+    expect(aiModelPrefs.clearAiModelPref).toHaveBeenCalledTimes(2);
   });
 
   it('names the time-entry queue when its wipe fails, rather than reporting a clean sign-out', async () => {

@@ -1,5 +1,6 @@
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
+import { parseTurnModel } from './modelPicker';
 import { applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
 
 // `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
@@ -13,7 +14,11 @@ function toolInputRecord(value: unknown): Record<string, unknown> | undefined {
 // system / tool_use / tool_result); the slice models user + assistant
 // (with toolEvents folded into the assistant turn). System messages skip
 // the UI; tool rows attach to the most recent assistant message.
-export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
+//
+// `lastTurnModel` (session GET, W05) is what answered the most recent turn;
+// the server keeps no per-message record, so only the final assistant turn
+// can show it after a reload — and only when that turn has been answered.
+export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unknown): ChatMessage[] {
   const out: ChatMessage[] = [];
 
   for (const row of rows) {
@@ -95,6 +100,10 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
       }
     }
   }
+
+  const turnModel = parseTurnModel(lastTurnModel);
+  const last = out[out.length - 1];
+  if (turnModel && last && last.role === 'assistant') last.turnModel = turnModel;
 
   return out;
 }

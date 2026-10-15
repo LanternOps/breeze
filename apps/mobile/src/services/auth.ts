@@ -5,6 +5,7 @@ import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 import { APP_LOCK_STATE_KEY } from './appLockState';
 import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
 import { LOCAL_TIMER_KEY, clearLocalTimer } from './localTimer';
+import { AI_MODEL_PREF_KEY, clearAiModelPref } from './aiModelPrefs';
 import { QUEUE_KEY, clearQueueForSignOut } from './timeEntryQueue';
 import { clearWorkTypeCache } from './workTypes';
 import {
@@ -153,6 +154,9 @@ export async function clearAuthData(
     // that work under the new identity. Safe to clear on ANY session end — it
     // holds no unsent work, only an in-progress span the technician can restart.
     { key: LOCAL_TIMER_KEY, run: () => clearLocalTimer() },
+    // The last-picked AI chat model is a partner-scoped offering id; the next
+    // account on this device starts from its own menu default.
+    { key: AI_MODEL_PREF_KEY, run: () => clearAiModelPref() },
     // Unsent time-entry writes ARE unsent work, so they are parked-and-cleared
     // only on a deliberate sign-out (see the doc comment above). The park has
     // to land first: `clearQueueForSignOut` rejects rather than delete rows it

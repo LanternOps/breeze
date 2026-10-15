@@ -6,6 +6,7 @@ import { useApprovalTheme, spacing, type } from '../../../theme';
 import type { ChatMessage } from '../../../store/aiChatSlice';
 import { renderBlockForOutput } from '../blocks';
 
+import { describeTurnModel } from '../modelPicker';
 import { isPlanTool } from '../planState';
 import { MarkdownBody } from './MarkdownBody';
 import { PlanCard } from './PlanCard';
@@ -91,6 +92,16 @@ export function AiMessage({ message, inFlightTool, onRetry, onPlanDecide, onPlan
 
       {message.isStreaming && toolCaption ? (
         <ToolIndicator toolName={toolCaption.toolName} state="started" input={toolCaption.input} />
+      ) : null}
+
+      {message.turnModel && !message.isStreaming ? (
+        // W05: the model and options that ACTUALLY answered (AiTurnModelBadge on web).
+        <Text
+          testID="ai-turn-model"
+          style={[type.meta, { color: theme.textLo, paddingHorizontal: spacing[6], paddingTop: spacing[2] }]}
+        >
+          {describeTurnModel(message.turnModel)}
+        </Text>
       ) : null}
 
       {message.failed ? (

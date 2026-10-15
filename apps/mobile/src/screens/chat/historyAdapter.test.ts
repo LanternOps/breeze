@@ -225,3 +225,34 @@ describe('historyToMessages action plans', () => {
     expect(a.role === 'assistant' ? a.plan : 'x').toBeUndefined();
   });
 });
+
+describe('historyToMessages model provenance (W05)', () => {
+  const turnModel = {
+    requestedModel: 'm', requestedDisplayName: 'Opus', servedModel: 'm', servedDisplayName: 'Opus',
+    fallbackUsed: false, appliedOptions: {}, fastDowngraded: false,
+  };
+
+  it('stamps the session lastTurnModel on the last assistant turn only', () => {
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'hi' }),
+      row({ id: 'a1', role: 'assistant', content: 'one' }),
+      row({ id: 'u2', role: 'user', content: 'again' }),
+      row({ id: 'a2', role: 'assistant', content: 'two' }),
+    ], turnModel);
+    expect(out[1].role === 'assistant' && out[1].turnModel).toBeFalsy();
+    expect(out[3].role === 'assistant' && out[3].turnModel).toEqual(turnModel);
+  });
+
+  it('does not stamp a turn that has not been answered yet', () => {
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: 'one' }),
+      row({ id: 'u2', role: 'user', content: 'pending' }),
+    ], turnModel);
+    expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();
+  });
+
+  it('ignores a malformed lastTurnModel', () => {
+    const out = historyToMessages([row({ id: 'a1', role: 'assistant', content: 'one' })], { servedDisplayName: 7 });
+    expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();
+  });
+});

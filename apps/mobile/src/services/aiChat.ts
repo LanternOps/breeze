@@ -7,6 +7,12 @@ import type { ApiError } from './api';
 import { refreshAccessToken } from './api';
 import { approvalModeFromUsage, type AiApprovalMode } from './aiApprovalMode';
 import type { PlanStreamEvent } from '../screens/chat/planState';
+import {
+  parseChoicesResponse,
+  type AiTurnModel,
+  type ChoicesResult,
+  type ModelChoice,
+} from '../screens/chat/modelPicker';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -20,8 +26,12 @@ export interface AiSessionSummary {
 }
 
 interface CreateSessionPayload {
-  orgId?: string;
   title?: string;
+  /**
+   * W05: a model picked before the first message creates the session ON that
+   * model (the web's create contract: `offeringId` + `options`, flat).
+   */
+  model?: ModelChoice;
 }
 
 async function getToken(): Promise<string | null> {
@@ -75,9 +85,13 @@ async function authedFetch(
 }
 
 export async function createAiSession(input: CreateSessionPayload = {}): Promise<AiSessionSummary> {
+  const { model, ...rest } = input;
   const res = await authedFetch('/ai/sessions', {
     method: 'POST',
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      ...rest,
+      ...(model ? { offeringId: model.offeringId, ...(model.options ? { options: model.options } : {}) } : {}),
+    }),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -116,7 +130,7 @@ export interface ServerAiMessage {
 
 export async function getAiSessionMessages(
   sessionId: string,
-): Promise<{ session: AiSessionSummary; messages: ServerAiMessage[] }> {
+): Promise<{ session: AiSessionSummary; messages: ServerAiMessage[]; lastTurnModel?: unknown }> {
   const res = await authedFetch(`/ai/sessions/${sessionId}`);
   if (!res.ok) throw new Error(`getAiSessionMessages failed: ${res.status}`);
   return res.json();
@@ -170,6 +184,62 @@ export async function getAiApprovalMode(): Promise<AiApprovalMode | null> {
   return approvalModeFromUsage(await res.json());
 }
 
+/**
+ * The chat composer's model menu (W05): `GET /ai/models/choices/chat`. With a
+ * session it is that chat's menu plus its stamped choice; without one it is
+ * the caller's org menu (a partner-scope token has no org of its own, so the
+ * server answers 400 — the picker then appears once the first message has
+ * created a session). Never both: the API refuses a sessionId with an orgId.
+ * Failures are returned, not thrown: no menu just means the server default.
+ */
+export async function getChatModelChoices(key: { sessionId?: string | null }): Promise<ChoicesResult> {
+  const qs = key.sessionId ? `?sessionId=${encodeURIComponent(key.sessionId)}` : '';
+  try {
+    const res = await authedFetch(`/ai/models/choices/chat${qs}`);
+    const body = await res.json().catch(() => null);
+    return parseChoicesResponse(res.status, body);
+  } catch {
+    return { ok: false, status: 0, code: null };
+  }
+}
+
+/**
+ * W05 (spec §9.2): a switch that cannot resume becomes a new chat seeded with
+ * a summary of this one. `POST /ai/sessions/:id/continue` → the new session.
+ */
+export async function continueAiSession(
+  sessionId: string,
+  model: ModelChoice,
+): Promise<{ ok: true; sessionId: string } | { ok: false; status: number; error: string }> {
+  try {
+    const res = await authedFetch(`/ai/sessions/${encodeURIComponent(sessionId)}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    });
+    const body = await res.json().catch(() => null);
+    const newId = body?.data?.sessionId;
+    if (res.ok && typeof newId === 'string') return { ok: true, sessionId: newId };
+    return { ok: false, status: res.status, error: typeof body?.error === 'string' ? body.error : `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * A non-2xx answer to the message POST. Carries the parsed body so the chat
+ * can tell a `continuation_required` 409 from a plain failure.
+ */
+export class StreamHttpError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = 'StreamHttpError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 // Subset of SSE event types the chat shell consumes. We tolerate unknown
 // event types (warning, title_updated, ...) by surfacing them through
 // the generic `unknown` callback if the caller wants them.
@@ -185,6 +255,9 @@ export type AiStreamEvent =
   | { type: 'message_end'; messageId?: string }
   | { type: 'approval_required'; executionId: string; toolName: string; description?: string; approvalRequestId?: string }
   | PlanStreamEvent
+  // W05: what actually ran this turn, and the alternatives after a refusal.
+  | { type: 'turn_model'; turnModel: AiTurnModel }
+  | { type: 'model_refusal'; category: string | null; alternatives: Array<{ offeringId: string; displayName: string }>; docsUrl?: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
   | { type: 'unknown'; raw: { event: string; data: unknown } };
@@ -196,6 +269,8 @@ export interface SseStreamHandle {
 export interface SseStreamOptions {
   sessionId: string;
   content: string;
+  /** W05: the composer's pending model choice for THIS turn. */
+  model?: ModelChoice;
   onEvent: (event: AiStreamEvent) => void;
   onError: (err: Error) => void;
   onDone: () => void;
@@ -212,6 +287,8 @@ const KNOWN_EVENT_TYPES = new Set([
   'plan_step_start',
   'plan_step_complete',
   'plan_complete',
+  'turn_model',
+  'model_refusal',
   'error',
   'done',
 ]);
@@ -259,13 +336,14 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
 
   const emitHttpError = (xhr: XMLHttpRequest) => {
     let msg = `HTTP ${xhr.status}`;
+    let body: unknown = null;
     try {
-      const body = JSON.parse(xhr.responseText);
-      if (body && typeof body.error === 'string') msg = body.error;
+      body = JSON.parse(xhr.responseText);
+      if (body && typeof (body as { error?: unknown }).error === 'string') msg = (body as { error: string }).error;
     } catch {
       // keep generic message
     }
-    opts.onError(new Error(msg));
+    opts.onError(new StreamHttpError(msg, xhr.status, body));
   };
 
   // Opens one stream attempt. Parse state (cursor/buffered) is per-attempt so
@@ -345,7 +423,7 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
       opts.onError(new Error('Network error'));
     };
 
-    xhr.send(JSON.stringify({ content: opts.content }));
+    xhr.send(JSON.stringify({ content: opts.content, ...(opts.model ? { model: opts.model } : {}) }));
   };
 
   (async () => {
