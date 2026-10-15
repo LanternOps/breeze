@@ -1141,7 +1141,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // everyone (2026-10-15). The auth SELECT above stays first: it is short and
   // rejects unauthenticated uploads before any body is read. Self-managed and
   // storage-session routes (returned above) read their own bodies, unbuffered.
-  const bodyRefusal = await bufferAgentRequestBody(c);
+  const bodyRefusal = await bufferAgentRequestBody(c, { agentId: device.agentId, orgId: device.orgId });
   if (bodyRefusal) return bodyRefusal;
 
   await withDbAccessContext(

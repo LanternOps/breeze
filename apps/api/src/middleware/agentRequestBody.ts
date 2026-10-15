@@ -123,11 +123,20 @@ function concat(chunks: Uint8Array[], size: number): Uint8Array {
  * Only call this for routes that run inside agentAuthMiddleware's
  * request-long wrap; self-managed routes read their own bodies.
  */
-export async function bufferAgentRequestBody(c: Context): Promise<Response | null> {
+export interface AgentBodyIdentity {
+  /** The authenticated device's agent id and org, for the refusal log only (never metric labels). */
+  agentId: string;
+  orgId: string;
+}
+
+export async function bufferAgentRequestBody(c: Context, identity: AgentBodyIdentity): Promise<Response | null> {
   if (!BUFFERED_METHODS.has(c.req.method)) return null;
   const raw = c.req.raw;
   const stream = raw.body;
-  if (!stream) return null;
+  // Nothing to receive, or an earlier reader already drained the body into
+  // HonoRequest's cache (nothing upstream does today) — reading it again
+  // would throw on the disturbed stream.
+  if (!stream || raw.bodyUsed) return null;
 
   const route = routeLabel(c);
   const startedAt = Date.now();
@@ -136,13 +145,16 @@ export async function bufferAgentRequestBody(c: Context): Promise<Response | nul
   const refuse = (reason: RejectReason, status: 400 | 408 | 413, error: string, detail?: string): Response => {
     try {
       rejectedCounter.inc({ route, reason });
-    } catch {
-      // Telemetry must never turn a precise refusal into a 500.
+    } catch (err) {
+      // Telemetry must never turn a precise refusal into a 500 — but a broken
+      // counter must not go dark silently either.
+      console.error('[agentAuth] body-refusal metric failed', err instanceof Error ? err.message : String(err));
     }
     // heldMs=0: the point of #8839 — no pooled connection was checked out
     // while this body was (not) arriving.
     console.warn(
       `[agentAuth] request body refused before DB context reason=${reason} route=${route} ` +
+        `agentId=${JSON.stringify(identity.agentId)} orgId=${identity.orgId} ` +
         `method=${c.req.method} receivedBytes=${receivedBytes} elapsedMs=${Date.now() - startedAt} heldMs=0 ` +
         `request_id=${requestCorrelationId(c)}` + (detail ? ` detail=${JSON.stringify(detail.slice(0, 200))}` : ''),
     );
@@ -155,8 +167,13 @@ export async function bufferAgentRequestBody(c: Context): Promise<Response | nul
     return refuse('too_large', 413, 'Request body too large');
   };
 
-  const declared = c.req.header('content-length');
-  if (declared && /^\d+$/.test(declared) && Number(declared) > AGENT_WRAPPED_BODY_MAX_BYTES) {
+  const declaredHeader = c.req.header('content-length');
+  // Transfer-Encoding overrides Content-Length on the wire, so only a lone
+  // Content-Length is a promise about the byte count.
+  const declared = declaredHeader && /^\d+$/.test(declaredHeader) && !c.req.header('transfer-encoding')
+    ? Number(declaredHeader)
+    : null;
+  if (declared !== null && declared > AGENT_WRAPPED_BODY_MAX_BYTES) {
     return tooLarge();
   }
 
@@ -173,29 +190,39 @@ export async function bufferAgentRequestBody(c: Context): Promise<Response | nul
   };
   const chunks: Uint8Array[] = [];
 
-  try {
-    for (;;) {
-      const remaining = totalMs - (Date.now() - startedAt);
-      const result = remaining > 0 ? await readWithin(reader, Math.min(stallMs, remaining)) : TIMED_OUT;
-      if (result === TIMED_OUT) {
-        release();
-        return refuse('timeout', 408, 'Request body not received in time');
-      }
-      if (result.done) break;
-      receivedBytes += result.value.byteLength;
-      if (receivedBytes > AGENT_WRAPPED_BODY_MAX_BYTES) {
-        release();
-        return tooLarge();
-      }
-      chunks.push(result.value);
+  for (;;) {
+    const remaining = totalMs - (Date.now() - startedAt);
+    let result: Awaited<ReturnType<typeof readWithin>>;
+    try {
+      result = remaining > 0 ? await readWithin(reader, Math.min(stallMs, remaining)) : TIMED_OUT;
+    } catch (err) {
+      // The client went away (or the transport failed) mid-body. Previously
+      // the route's own decode path (e.g. `[AgentLogs] Failed to decode
+      // request body`) reported this from INSIDE the held transaction; it now
+      // surfaces here, with the same response body. Only the stream read is
+      // in this try, so a server-side bug below is never blamed on the client.
+      release();
+      const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      return refuse('aborted', 400, 'Failed to decode request body', detail);
     }
-  } catch (err) {
-    // The client went away (or the transport failed) mid-body. Previously the
-    // route's own decode path (e.g. `[AgentLogs] Failed to decode request
-    // body`) reported this from INSIDE the held transaction; it now surfaces
-    // here, with the same response body.
-    release();
-    return refuse('aborted', 400, 'Failed to decode request body', err instanceof Error ? err.message : String(err));
+    if (result === TIMED_OUT) {
+      release();
+      return refuse('timeout', 408, 'Request body not received in time');
+    }
+    if (result.done) break;
+    receivedBytes += result.value.byteLength;
+    if (receivedBytes > AGENT_WRAPPED_BODY_MAX_BYTES) {
+      release();
+      return tooLarge();
+    }
+    chunks.push(result.value);
+  }
+
+  // Defence in depth: the HTTP parser errors a body that ends short of its
+  // Content-Length, but a truncated body must never reach a handler as if it
+  // were complete.
+  if (declared !== null && receivedBytes !== declared) {
+    return refuse('aborted', 400, 'Failed to decode request body', `received ${receivedBytes} of ${declared} declared bytes`);
   }
 
   c.req.raw = new Request(raw, { body: concat(chunks, receivedBytes), duplex: 'half' } as RequestInit);

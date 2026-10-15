@@ -71,6 +71,7 @@ vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
 
 import { createHash } from 'crypto';
 import { connect } from 'node:net';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
@@ -127,10 +128,17 @@ function buildApp() {
     },
   );
   // A wrapped route that reads the raw bytes itself, like routes/agents/logs.ts.
-  app.post('/api/v1/agents/:id/logs', async (c) => {
+  app.on(['POST', 'PATCH'], '/api/v1/agents/:id/logs', async (c) => {
+    const raw = Buffer.from(await c.req.arrayBuffer());
+    const decoded = c.req.header('content-encoding')?.includes('gzip') ? gunzipSync(raw) : raw;
+    handled(decoded.toString('utf-8'));
+    return c.json({ bytes: raw.byteLength });
+  });
+  // The REST command-result fallback: wrapped, no route bodyLimit, admitted up
+  // to 12 MiB by the global gate (#2401).
+  app.post('/api/v1/agents/:id/commands/:commandId/result', async (c) => {
     const bytes = new Uint8Array(await c.req.arrayBuffer());
-    handled(new TextDecoder().decode(bytes));
-    return c.json({ bytes: bytes.byteLength });
+    return c.json({ bytes: bytes.byteLength, last: bytes[bytes.byteLength - 1] });
   });
   app.delete('/api/v1/agents/:id/things', async (c) => c.json(await c.req.json()));
   app.get('/api/v1/agents/:id/config', (c) => c.json({ ok: true }));
@@ -224,6 +232,8 @@ describe('agentAuthMiddleware — request body is received before the org contex
     expect(line).toContain('reason=timeout');
     expect(line).toContain('heldMs=0');
     expect(line).toContain('route=/api/v1/agents/:id/connections');
+    expect(line).toContain(`agentId="${AGENT}"`);
+    expect(line).toContain('orgId=org-1');
   });
 
   it('(a) a body with no bytes at all is refused on the same stall deadline', async () => {
@@ -280,6 +290,52 @@ describe('agentAuthMiddleware — request body is received before the org contex
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ bytes: 11 });
     expect(handled).toHaveBeenCalledWith('{"logs":[]}');
+  });
+
+  it('(b) a PATCH with a streamed body is buffered and delivered', async () => {
+    const res = await streamRequest(buildApp(), 'logs', delayedStream(['{"a":', '1}'], 5), 'PATCH');
+    expect(res.status).toBe(200);
+    expect(handled).toHaveBeenCalledWith('{"a":1}');
+    expect(events.log.indexOf('body-done')).toBeLessThan(events.log.indexOf('context-opened'));
+  });
+
+  it('(b) a gzip body keeps its Content-Encoding and decodes in the handler', async () => {
+    const res = await buildApp().request(`/api/v1/agents/${AGENT}/logs`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      body: gzipSync(Buffer.from('{"logs":["compressed"]}')),
+    });
+    expect(res.status).toBe(200);
+    expect(handled).toHaveBeenCalledWith('{"logs":["compressed"]}');
+  });
+
+  it('(b) an empty POST body and a POST with no body both reach the handler', async () => {
+    const app = buildApp();
+    const empty = await app.request(`/api/v1/agents/${AGENT}/logs`, { method: 'POST', headers: auth, body: '' });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ bytes: 0 });
+    const none = await app.request(`/api/v1/agents/${AGENT}/logs`, { method: 'POST', headers: auth });
+    expect(none.status).toBe(200);
+    expect(await none.json()).toEqual({ bytes: 0 });
+  });
+
+  it('(b) an 8 MiB command result (above every route limit, below the ceiling) is delivered intact', async () => {
+    const chunk = new Uint8Array(1024 * 1024).fill(7);
+    let sent = 0;
+    const big = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 8) {
+          controller.enqueue(new Uint8Array([42]));
+          controller.close();
+          return;
+        }
+        sent += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const res = await streamRequest(buildApp(), 'commands/cmd-1/result', big, 'POST');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ bytes: 8 * 1024 * 1024 + 1, last: 42 });
   });
 
   it('(b) a DELETE with a body is buffered too', async () => {
@@ -346,6 +402,22 @@ describe('agentAuthMiddleware — request body is received before the org contex
     expect(withDbAccessContext).not.toHaveBeenCalled();
   });
 
+  it('a body that ends short of its declared Content-Length is refused, never handed on as complete', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await buildApp().request(`/api/v1/agents/${AGENT}/connections`, {
+      method: 'PUT',
+      headers: { ...auth, 'content-type': 'application/json', 'content-length': '100' },
+      body: delayedStream(['{"connections":[]}'], 1),
+      duplex: 'half',
+    } as RequestInit);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Failed to decode request body' });
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(handled).not.toHaveBeenCalled();
+    const line = warn.mock.calls.map((args) => String(args[0])).find((m) => m.includes('[agentAuth] request body'));
+    expect(line).toContain('received 18 of 100 declared bytes');
+  });
+
   it('(d) a self-managed route (heartbeat) is not buffered: its handler answers while the body is still stalled', async () => {
     const res = await streamRequest(buildApp(), 'heartbeat', stalledStream(['{"status":']), 'POST');
     expect(res.status).toBe(200);
@@ -370,6 +442,8 @@ describe('agentAuthMiddleware — request body is received before the org contex
   });
 
   it('(e) the org context opens only after the last body byte has arrived', async () => {
+    // Generous stall window: this asserts ordering, not the deadline.
+    process.env.AGENT_BODY_RECEIVE_TIMEOUT_MS = '2000';
     const res = await streamRequest(
       buildApp(),
       'connections',
@@ -443,20 +517,28 @@ describe('agentAuthMiddleware — stalled upload over a real node-server socket 
       socket.on('data', (chunk) => {
         response += chunk;
       });
-      socket.on('close', () => resolve(response));
-      socket.on('error', (err) => (response ? resolve(response) : reject(err)));
+      // Backstop only: every exchange below ends with the server closing.
+      const backstop = setTimeout(() => socket.destroy(), 3_000);
+      socket.on('close', () => {
+        clearTimeout(backstop);
+        resolve(response);
+      });
+      socket.on('error', (err) => (response ? undefined : reject(err)));
       socket.write(head + body);
-      setTimeout(() => socket.destroy(), 2_000);
+      if (halfClose) socket.end();
     });
   }
 
-  function head(contentLength: number): string {
+  let halfClose = false;
+
+  function head(contentLength: number, extra: string[] = []): string {
     return [
       `PUT /api/v1/agents/${AGENT}/connections HTTP/1.1`,
       'Host: localhost',
       `Authorization: Bearer ${TOKEN}`,
       'Content-Type: application/json',
       `Content-Length: ${contentLength}`,
+      ...extra,
       '',
       '',
     ].join('\r\n');
@@ -466,6 +548,7 @@ describe('agentAuthMiddleware — stalled upload over a real node-server socket 
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const response = await rawExchange(head(500), '{"connections":[');
     expect(response.startsWith('HTTP/1.1 408')).toBe(true);
+    expect(response.toLowerCase()).toContain('connection: close');
     expect(response).toContain('Request body not received in time');
     expect(withDbAccessContext).not.toHaveBeenCalled();
     expect(handled).not.toHaveBeenCalled();
@@ -473,10 +556,24 @@ describe('agentAuthMiddleware — stalled upload over a real node-server socket 
 
   it('a complete body is buffered and validated normally', async () => {
     const body = JSON.stringify({ connections: [{ port: 3389 }] });
-    const response = await rawExchange(head(Buffer.byteLength(body)), body);
+    const response = await rawExchange(head(Buffer.byteLength(body), ['Connection: close']), body);
     expect(response.startsWith('HTTP/1.1 200')).toBe(true);
     expect(handled).toHaveBeenCalledWith({ connections: [{ port: 3389 }] });
     expect(withDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('a client that sends part of its body and then closes never reaches the handler or the org context', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    halfClose = true;
+    try {
+      await rawExchange(head(500), '{"connections":[');
+    } finally {
+      halfClose = false;
+    }
+    // Give the server a beat to observe the close.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(handled).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
   });
 });
 
