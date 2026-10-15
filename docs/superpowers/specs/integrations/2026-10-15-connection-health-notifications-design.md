@@ -1,7 +1,7 @@
 # Connection Health Notifications — Design
 
 **Date:** 2026-10-15
-**Status:** Draft for review.
+**Status:** Approved 2026-10-15. Todd asked for a lower reconcile load and for the checks to scale, which §1.3 addresses. The open questions in §12 are settled on the recommended defaults.
 **Advisor quorum:** Claude (author) and Codex (xhigh, read-only).
 - **Agreed:** persisted incidents kept current by a reconciler, the dual-axis tenancy shape, one digest per user across orgs, and signed one-click unsubscribe.
 - **Codex amendments adopted, marked [Q]:** OAuth detection in the first wave, affirmative recovery evidence, a delivery ledger, a separate opt-out table, and an authorization recheck before send.
@@ -33,9 +33,9 @@ The same silence applies to every outbound integration. Most of them already rec
 
 ```
 health sources (one adapter per connection kind)
-        │  observe(): batch query per kind, never per org
+        │  observe(): reads only unhealthy + open-incident rows, never per org
         ▼
-reconciler job (every 5 min, global placement)
+reconciler job (every 15 min; each kind on its own cadence; global placement)
         │  diff observations against open incidents
         ▼
 connection_health_incidents  ──►  in-app notices (user_notifications, type 'integration')
@@ -74,8 +74,18 @@ export type HealthObservation = {
 
 export interface HealthSource {
   kind: ConnectionSourceKind;
-  /** All connections of this kind, in system scope, batched. Throw on failure; never return a partial set. */
-  observe(now: Date): Promise<HealthObservation[]>;
+  /** Minutes between observations; a multiple of 15, chosen to match how often the underlying signal changes (§1.3). */
+  intervalMinutes: number;
+  /**
+   * Runs in system scope, batched. Returns:
+   *   (a) every connection of this kind currently in a broken state, read through an
+   *       index on the broken predicate; and
+   *   (b) the current state of every id in `trackedSourceIds` (open and pending incidents),
+   *       including `retired` for an id that no longer exists.
+   * Healthy connections without an incident are never read. Throw on failure; never
+   * return a partial set.
+   */
+  observe(now: Date, trackedSourceIds: readonly string[]): Promise<HealthObservation[]>;
 }
 ```
 
@@ -91,27 +101,39 @@ The registry is `services/connectionHealth/sources/index.ts`: a list of `HealthS
 The job is `jobs/connectionHealthReconcile.ts`:
 - queue `connection-health-reconcile`;
 - stable jobId;
-- pattern `*/5 * * * *`;
+- pattern `2,17,32,47 * * * *` (every 15 minutes, offset from the top of the hour);
 - `WORKER_REGISTRY` placement `global`.
 
 Sub-hourly schedules do not go through `JOB_SCHEDULES`.
 
-Each run, for each source:
-1. `observe()`.
-2. Load that kind's open incidents and pending candidates.
+Each run, for each source **due** this run (its `intervalMinutes` has elapsed since its last successful observe):
+1. Load that kind's open incidents and pending candidates (the tracked ids).
+2. `observe(now, trackedIds)`.
 3. Apply the transitions below in one system-scope transaction per kind.
 
 | Observation | No open incident | Open incident |
 |---|---|---|
 | `broken`, permanent | open now | update condition/detail/last_observed_at; if condition escalated transient→permanent, re-notify in-app |
-| `broken`, transient | record `first_failed_at` on a pending row; open once broken observations span ≥ 15 min | update |
+| `broken`, transient | record `first_failed_at` on a pending row; open on the **second consecutive** broken observation | update |
 | `healthy` | clear any pending row | resolve after **2 consecutive** healthy observations (affirmative recovery) [Q] |
 | `unknown` | no-op | no-op |
-| `retired` / absent from the set | clear pending | resolve as `retired` |
+| `retired`, or a tracked id missing from the result | clear pending | resolve as `retired` |
+| not returned and not tracked | — (healthy; never read) | — |
 
-- **Reopen window.** If a connection breaks again within 30 minutes of resolving, the reconciler reopens the same incident: it clears `resolved_at` and increments `flap_count`. It does not create a new episode. [Q]
+- **Reopen window.** If a connection breaks again within 60 minutes of resolving, the reconciler reopens the same incident: it clears `resolved_at` and increments `flap_count`. It does not create a new episode. [Q]
 - **First run per kind.** The first successful `observe()` of a newly registered kind seeds incidents but creates no notices, so an existing backlog doesn't arrive as a burst. Seeded incidents appear in the next digest.
 - **Onboarding grace.** A connection created in the last 2 hours that has never succeeded is `unknown`, not `broken`, unless the failure is permanent. This covers onboarding.
+
+### 1.3 Load and scaling
+
+The reconciler's cost has to grow with **the number of broken connections**, not with the number of connections, orgs or agents. These rules also serve as the template for any future periodic health check:
+
+- **Never read the healthy set.** Every `observe()` query filters on the source's broken predicate, plus a primary-key lookup of the tracked ids. Each source must be backed by a partial index on that predicate (for example `WHERE last_sync_status IN ('error','failed')`), or must sit on a partner-axis table whose rows grow with partners. The plan lists the indexes each W2 source needs. A test runs `EXPLAIN` on each source query against a seeded DB and fails on a sequential scan of a table on the per-org list.
+- **Cadence follows the signal.** Polling faster than the column it reads changes is wasted work. Sources take the default of 15 minutes. A source whose underlying sync runs hourly or daily declares `intervalMinutes: 60`. W4 staleness checks run every 360 minutes. The shortest interval is 15, because in-app latency of up to about 30 minutes still meets the within-a-day goal.
+- **Latency comes from nudges, not polling.** Where a single shared write point already records a failure (the durable grant revocation in `oauth/grantStatus.ts`, the sync final-attempt helper `jobs/syncAttempt.ts`), W4 adds a nudge. The nudge enqueues `reconcile-kind:<kind>` with a stable jobId and a 60-second delay, so a burst of failures collapses into one run of that kind only. The nudge carries no policy. The poll remains the source of truth, and a lost nudge only delays detection to the next poll.
+- **Bounded work per run.** One global job runs at concurrency 1, and the stable jobId prevents overlapping runs. Each kind runs in its own transaction with `SET LOCAL statement_timeout = '5s'`. The whole run has a 60-second budget: kinds left over roll to the next run, and the overrun is logged and counted.
+- **Readers stop recomputing.** The W2 panel and the digest read the incidents table, a single indexed query on `partner_id WHERE resolved_at IS NULL`. They do not re-run the readiness aggregator's roughly 13 queries on every page load.
+- **Expected load.** About 12 kinds at 4 runs an hour or fewer gives roughly 50 indexed queries an hour. Each returns only broken or tracked rows, typically tens of rows. Scale is reached by keeping the broken set small, not by adding replicas.
 
 ## 2. Data model
 
@@ -255,7 +277,7 @@ A row left in `claimed` for over an hour is marked `failed`, not resent. The mod
 - **`ownerUserId`:** always notified (in-app and digest), whatever their role. Only they can re-consent. Their link goes to `/account/connected-apps`, where `lifecycle.ts:254` already binds grants to the authenticated owner.
 
 **In-app.**
-- One notice per (incident, user), created when the incident opens. The dedupe key is `connection-health:<incidentId>:<openedAtEpoch>`, so a reopen after the 30-minute window creates a new notice.
+- One notice per (incident, user), created when the incident opens. The dedupe key is `connection-health:<incidentId>:<openedAtEpoch>`, so a reopen after the 60-minute window creates a new notice.
 - Priority is `high` for permanent incidents and `normal` for transient ones.
 - On escalation to permanent, a second notice is sent with dedupe key `…:permanent`.
 - On resolve, the incident's unread notices are marked read. History stays.
@@ -314,10 +336,10 @@ Each wave can ship on its own and is useful without the later ones.
 
 | Wave | Ships | Useful because |
 |---|---|---|
-| **W1: Incident core and OAuth** | incidents table + RLS + all registrations; source contract + registry; reconciler; `oauth_grant` source; `integration` notification type; in-app notices to grant owner + `connected_apps:manage` partner admins; resolve clears; observability (§8); read API `GET /connection-health/incidents` | Today's motivating case is caught in-app within 5 minutes |
+| **W1: Incident core and OAuth** | incidents table + RLS + all registrations; source contract + registry; reconciler; `oauth_grant` source; `integration` notification type; in-app notices to grant owner + `connected_apps:manage` partner admins; resolve clears; observability (§8); read API `GET /connection-health/incidents` | Today's motivating case is caught in-app within about 15 minutes |
 | **W2: Existing integration sources and panel** | the W2 adapters in §3; shared state-function extraction from the readiness aggregator; **Connection Health** panel on `/integrations` listing open + recently resolved incidents with fix links; delete the mock `ConnectorStatusPanel.tsx` | Every integration that already records failure now notifies |
 | **W3: Daily digest** | digest job, email template, delivery ledger, decay, auth recheck, `user_email_optouts`, RFC 8058 endpoint + headers, My Account → Notifications toggle, new mail purpose | The within-a-day email goal is met |
-| **W4: Missing signals** | webhook terminal-failure classification; sync-staleness detection; Google verification probe; OAuth "still retrying" counter | Covers connections that fail without writing a failure |
+| **W4: Missing signals and nudges** | webhook terminal-failure classification; sync-staleness detection; Google verification probe; OAuth "still retrying" counter; debounced per-kind reconcile nudges from shared failure write points (§1.3) | Covers connections that fail without writing a failure |
 | **W5: Customer delivery and events** | `customerAdminsNotified` setting (partner → org) + UI; `integration.health_opened` / `_resolved` events (sanitized payload, no detail). A webhook incident's events are never delivered to the webhook the incident is about, which avoids a feedback loop. | Customer admins and automations can act on it |
 
 ## 10. Testing
@@ -345,11 +367,11 @@ Each wave can ship on its own and is useful without the later ones.
 | Authorization leak through email | Recipients and `viewPermission` rechecked at send time; partner-wide incidents only to `orgAccess = all`; detail sanitized and export-excluded |
 | Silent notifier | Per-kind failure alerts, heartbeat, zero-recipient counter |
 | Email spam leading to domain reputation damage | One per user per day; decay; skip empty; one-click unsubscribe |
-| Reconciler cost at scale | One batched query per kind, never per org; 5-minute cadence; per-kind transactions |
+| Reconciler cost at scale | Cost grows with the broken set, not with total connections; partial indexes enforced by an `EXPLAIN` test; per-kind cadence; run budget (§1.3) |
 | Tenancy registration missed | Registration table in §2.1; contract suites run before the PR |
 | Notice burst on first deploy | First run per kind seeds without notices (§1.2) |
 
-## 12. Open questions for Todd
+## 12. Decisions (settled 2026-10-15 on the recommended defaults)
 
 1. **Customer org admins.** Should they receive notices for their own org's connections by default?
    - **Off (MSP staff only)**, with a partner setting to turn it on. *Recommended:* most connections are partner-owned anyway, and an MSP may not want customers seeing raw "M365 sync degraded" mail.
