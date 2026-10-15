@@ -87,6 +87,10 @@ export function AlertCard({ alert }: Props) {
     haptic.tap();
     navigation.navigate('SystemsTab', {
       screen: 'SystemsAlertDetail',
+      // Keep the Systems root beneath the detail even when the Systems stack
+      // has never been mounted; otherwise there is no back button and the
+      // Systems tab is stuck on this alert (see navigateToTicket).
+      initial: false,
       params: { alert: toAlert(alert) },
     } as never);
   };
