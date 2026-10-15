@@ -133,3 +133,15 @@ Mechanism (**verified** by reading the bundled CLI 2.1.288, minified names): the
 ### Outcome
 
 `VERIFIED_AGENT_SDK_VERSION` moves to `0.3.288`. D1 **No** (unchanged, now enforced by the env guard rather than by the CLI's default), D2 **Yes** (unchanged), D3 unchanged. The W05 resume spike was re-run in full on 0.3.288 with the guard; see `2026-10-01-ai-model-registry-w05-resume-spike-findings.md`.
+
+## 2026-10-14: re-run on Agent SDK 0.3.296
+
+Run on 2026-10-13 for dependabot PR #8701 (`@anthropic-ai/claude-agent-sdk` 0.3.288 → **0.3.296**). Passthrough spike against the local capture server, same variants as the 0.3.288 run, with `SDK_CHILD_HOST_CONTEXT_GUARDS` in the env.
+
+- D1 **No**, unchanged: the CLI still defaults adaptive requests to `display: "updates"`, and the `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=0` guard (#7999) still keeps it off the wire.
+- D2 **Yes**, unchanged: `settings.fastMode` still produces `speed: "fast"` plus the fast beta.
+- No new betas or request fields appeared.
+
+### Outcome
+
+`VERIFIED_AGENT_SDK_VERSION` moves to `0.3.296`. The W05 resume spike was re-run in full on 0.3.296; see `2026-10-01-ai-model-registry-w05-resume-spike-findings.md`, 2026-10-14 section.
