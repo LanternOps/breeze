@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Dati e privacy dell'IA",
+    "orgDescription": "Cosa può leggere Breeze AI dai dispositivi di questa organizzazione e per quanto tempo vengono conservati gli output degli strumenti IA. Vuoto eredita il valore predefinito del partner; un'organizzazione può solo restringerlo.",
+    "partnerDescription": "Valori predefiniti per ogni organizzazione. Un'organizzazione può restringerli nella propria scheda IA, ma mai allentarli.",
+    "levelLabel": "Lettura dei file dei dispositivi da parte dell'IA",
+    "levels": {
+      "off": {
+        "label": "Disattivato",
+        "help": "L'IA non elenca né legge mai i file sui dispositivi. Le richieste di accesso diagnostico vengono rifiutate."
+      },
+      "no_user_profiles": {
+        "label": "Esclude le cartelle dei profili utente",
+        "help": "Percorsi di sistema e applicazioni con approvazione; Documenti, Desktop e cartelle home vengono rifiutati a meno che un amministratore approvi un accesso diagnostico a tempo."
+      },
+      "any_with_approval": {
+        "label": "Qualsiasi percorso, con approvazione",
+        "help": "Ogni lettura richiede comunque l'approvazione di un tecnico ed è sottoposta ad audit; gli archivi di credenziali restano bloccati."
+      }
+    },
+    "inherit": "Eredita: {{value}} ({{source}})",
+    "retentionLabel": "Conserva gli output degli strumenti IA per (giorni)",
+    "retentionInherit": "Eredita: {{value}} ({{source}})",
+    "retentionHelp": "Gli output più vecchi vengono sostituiti da un segnaposto durante l'esecuzione notturna. Vuoto eredita; un partner può scegliere di conservarli per sempre.",
+    "keepForever": "per sempre",
+    "sourceOrg": "questa organizzazione",
+    "sourcePartner": "predefinito del partner",
+    "sourceDefault": "predefinito di Breeze",
+    "abovePartnerCeiling": "Non disponibile: il valore predefinito del partner è più restrittivo.",
+    "saved": "Policy sui dati IA salvata",
+    "failedToSave": "Impossibile salvare la policy sui dati IA",
+    "partnerInheritDefault": "Predefinito di Breeze: {{value}}",
+    "readOnly": "Non hai l'autorizzazione per modificare questi valori predefiniti."
+  },
   "partnerServicePrincipals": {
     "title": "Entità servizio",
     "description": "Gestisci le identità macchina con ambito partner e le relative chiavi di accesso.",

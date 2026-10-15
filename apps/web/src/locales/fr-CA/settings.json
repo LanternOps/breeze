@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Données et confidentialité de l'IA",
+    "orgDescription": "Ce que Breeze AI peut lire sur les appareils de cette organisation et la durée de conservation des sorties des outils d'IA. Vide hérite de la valeur par défaut du partenaire; une organisation peut seulement la resserrer.",
+    "partnerDescription": "Valeurs par défaut pour chaque organisation. Une organisation peut les resserrer dans son propre onglet IA, mais jamais les assouplir.",
+    "levelLabel": "Lecture de fichiers d'appareils par l'IA",
+    "levels": {
+      "off": {
+        "label": "Désactivé",
+        "help": "L'IA ne liste ni ne lit jamais les fichiers des appareils. Les demandes d'accès de diagnostic sont refusées."
+      },
+      "no_user_profiles": {
+        "label": "Exclut les dossiers de profils utilisateur",
+        "help": "Chemins système et d'applications avec approbation; Documents, Bureau et dossiers personnels sont refusés à moins qu'un administrateur approuve un accès de diagnostic limité dans le temps."
+      },
+      "any_with_approval": {
+        "label": "N'importe quel chemin, avec approbation",
+        "help": "Chaque lecture exige toujours l'approbation d'un technicien et est auditée; les magasins d'identifiants restent bloqués."
+      }
+    },
+    "inherit": "Hériter : {{value}} ({{source}})",
+    "retentionLabel": "Conserver les sorties des outils d'IA pendant (jours)",
+    "retentionInherit": "Hériter : {{value}} ({{source}})",
+    "retentionHelp": "Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit. Vide hérite; un partenaire peut choisir de les conserver indéfiniment.",
+    "keepForever": "indéfiniment",
+    "sourceOrg": "cette organisation",
+    "sourcePartner": "valeur par défaut du partenaire",
+    "sourceDefault": "valeur par défaut de Breeze",
+    "abovePartnerCeiling": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "saved": "Politique de données d'IA enregistrée",
+    "failedToSave": "Échec de l'enregistrement de la politique de données d'IA",
+    "partnerInheritDefault": "Valeur par défaut de Breeze : {{value}}",
+    "readOnly": "Vous n'avez pas la permission de modifier ces valeurs par défaut."
+  },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
     "description": "Gérez les identités machines au niveau du partenaire et leurs clés d'accès.",

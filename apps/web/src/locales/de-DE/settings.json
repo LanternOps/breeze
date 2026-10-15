@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "KI-Daten & Datenschutz",
+    "orgDescription": "Was Breeze AI auf den Geräten dieser Organisation lesen darf und wie lange KI-Tool-Ausgaben aufbewahrt werden. Leer übernimmt den Partner-Standard; eine Organisation kann ihn nur verschärfen.",
+    "partnerDescription": "Standardwerte für jede Organisation. Eine Organisation kann diese im eigenen KI-Tab verschärfen, aber nie lockern.",
+    "levelLabel": "KI-Lesezugriff auf Gerätedateien",
+    "levels": {
+      "off": {
+        "label": "Aus",
+        "help": "Die KI listet oder liest niemals Dateien auf Geräten. Anfragen für Diagnosezugriff werden abgelehnt."
+      },
+      "no_user_profiles": {
+        "label": "Ohne Benutzerprofilordner",
+        "help": "System- und Anwendungspfade mit Genehmigung; Dokumente, Desktop und Home-Ordner werden abgelehnt, sofern ein Administrator keine zeitlich begrenzte Diagnosefreigabe erteilt."
+      },
+      "any_with_approval": {
+        "label": "Beliebiger Pfad, mit Genehmigung",
+        "help": "Jeder Lesezugriff erfordert weiterhin die Genehmigung eines Technikers und wird protokolliert; Anmeldedaten-Speicher bleiben gesperrt."
+      }
+    },
+    "inherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionLabel": "KI-Tool-Ausgaben aufbewahren für (Tage)",
+    "retentionInherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionHelp": "Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt. Leer übernimmt; ein Partner kann Ausgaben unbegrenzt aufbewahren.",
+    "keepForever": "unbegrenzt",
+    "sourceOrg": "diese Organisation",
+    "sourcePartner": "Partner-Standard",
+    "sourceDefault": "Breeze-Standard",
+    "abovePartnerCeiling": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "saved": "KI-Datenrichtlinie gespeichert",
+    "failedToSave": "KI-Datenrichtlinie konnte nicht gespeichert werden",
+    "partnerInheritDefault": "Breeze-Standard: {{value}}",
+    "readOnly": "Sie haben keine Berechtigung, diese Standardwerte zu ändern."
+  },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
     "description": "Partnerweite Maschinenidentitäten und ihre Zugriffsschlüssel verwalten.",

@@ -37,6 +37,7 @@ import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiModelsTab from './aiModels/PartnerAiModelsTab';
 import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
+import PartnerAiDataPolicyCard from './PartnerAiDataPolicyCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
@@ -765,6 +766,7 @@ export default function PartnerSettingsPage() {
           {/* AI Features: self-contained card with its own autosave switches. */}
           {activeTab === 'aiFeatures' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerAiDataPolicyCard />
               <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
             </section>
           )}

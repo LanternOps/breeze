@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Dados e privacidade da IA",
+    "orgDescription": "O que o Breeze AI pode ler nos dispositivos desta organização e por quanto tempo as saídas das ferramentas de IA são mantidas. Em branco herda o padrão do parceiro; uma organização só pode restringi-lo.",
+    "partnerDescription": "Padrões para todas as organizações. Uma organização pode restringi-los na própria aba de IA, mas nunca afrouxá-los.",
+    "levelLabel": "Leitura de arquivos de dispositivos pela IA",
+    "levels": {
+      "off": {
+        "label": "Desativado",
+        "help": "A IA nunca lista nem lê arquivos nos dispositivos. Solicitações de acesso de diagnóstico são recusadas."
+      },
+      "no_user_profiles": {
+        "label": "Exclui pastas de perfis de usuário",
+        "help": "Caminhos de sistema e de aplicativos com aprovação; Documentos, Área de Trabalho e pastas pessoais são recusados, a menos que um administrador aprove uma concessão de diagnóstico com prazo."
+      },
+      "any_with_approval": {
+        "label": "Qualquer caminho, com aprovação",
+        "help": "Toda leitura ainda exige a aprovação de um técnico e é auditada; os repositórios de credenciais continuam bloqueados."
+      }
+    },
+    "inherit": "Herdar: {{value}} ({{source}})",
+    "retentionLabel": "Manter saídas de ferramentas de IA por (dias)",
+    "retentionInherit": "Herdar: {{value}} ({{source}})",
+    "retentionHelp": "Saídas mais antigas são substituídas por um marcador na execução noturna. Em branco herda; um parceiro pode optar por mantê-las para sempre.",
+    "keepForever": "para sempre",
+    "sourceOrg": "esta organização",
+    "sourcePartner": "padrão do parceiro",
+    "sourceDefault": "padrão do Breeze",
+    "abovePartnerCeiling": "Indisponível: o padrão do parceiro é mais restritivo.",
+    "saved": "Política de dados de IA salva",
+    "failedToSave": "Falha ao salvar a política de dados de IA",
+    "partnerInheritDefault": "Padrão do Breeze: {{value}}",
+    "readOnly": "Você não tem permissão para alterar estes padrões."
+  },
   "partnerServicePrincipals": {
     "title": "Entidades de serviço",
     "description": "Gerencie identidades de máquina no nível do parceiro e suas chaves de acesso.",

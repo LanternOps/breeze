@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Datos y privacidad de IA",
+    "orgDescription": "Qué puede leer Breeze AI en los dispositivos de esta organización y cuánto tiempo se conservan las salidas de las herramientas de IA. En blanco hereda el valor predeterminado del socio; una organización solo puede restringirlo más.",
+    "partnerDescription": "Valores predeterminados para cada organización. Una organización puede restringirlos en su propia pestaña de IA, pero nunca relajarlos.",
+    "levelLabel": "Lectura de archivos de dispositivos por la IA",
+    "levels": {
+      "off": {
+        "label": "Desactivado",
+        "help": "La IA nunca lista ni lee archivos en los dispositivos. Se rechazan las solicitudes de acceso de diagnóstico."
+      },
+      "no_user_profiles": {
+        "label": "Excluye carpetas de perfiles de usuario",
+        "help": "Rutas del sistema y de aplicaciones con aprobación; Documentos, Escritorio y carpetas personales se rechazan salvo que un administrador apruebe una concesión de diagnóstico con límite de tiempo."
+      },
+      "any_with_approval": {
+        "label": "Cualquier ruta, con aprobación",
+        "help": "Cada lectura sigue requiriendo la aprobación de un técnico y queda auditada; los almacenes de credenciales siguen bloqueados."
+      }
+    },
+    "inherit": "Heredar: {{value}} ({{source}})",
+    "retentionLabel": "Conservar salidas de herramientas de IA durante (días)",
+    "retentionInherit": "Heredar: {{value}} ({{source}})",
+    "retentionHelp": "Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna. En blanco hereda; un socio puede optar por conservarlas siempre.",
+    "keepForever": "siempre",
+    "sourceOrg": "esta organización",
+    "sourcePartner": "predeterminado del socio",
+    "sourceDefault": "predeterminado de Breeze",
+    "abovePartnerCeiling": "No disponible: el valor predeterminado del socio es más estricto.",
+    "saved": "Política de datos de IA guardada",
+    "failedToSave": "No se pudo guardar la política de datos de IA",
+    "partnerInheritDefault": "Predeterminado de Breeze: {{value}}",
+    "readOnly": "No tiene permiso para cambiar estos valores predeterminados."
+  },
   "partnerServicePrincipals": {
     "title": "Principales de servicio",
     "description": "Administra identidades de máquina a nivel de partner y sus claves de acceso.",

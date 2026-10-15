@@ -81,6 +81,39 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Yapay zeka verileri ve gizlilik",
+    "orgDescription": "Breeze AI'nın bu kuruluşun cihazlarında neleri okuyabileceği ve yapay zeka araç çıktılarının ne kadar süre saklanacağı. Boş bırakmak iş ortağı varsayılanını devralır; kuruluş yalnızca daha sıkı hale getirebilir.",
+    "partnerDescription": "Her kuruluş için varsayılanlar. Kuruluş bunları kendi yapay zeka sekmesinde sıkılaştırabilir ancak asla gevşetemez.",
+    "levelLabel": "Yapay zekanın cihaz dosyalarını okuması",
+    "levels": {
+      "off": {
+        "label": "Kapalı",
+        "help": "Yapay zeka cihazlardaki dosyaları asla listelemez veya okumaz. Tanılama erişim istekleri reddedilir."
+      },
+      "no_user_profiles": {
+        "label": "Kullanıcı profili klasörleri hariç",
+        "help": "Sistem ve uygulama yolları onayla; Belgeler, Masaüstü ve ana klasörler, bir yönetici süre sınırlı bir tanılama izni onaylamadıkça reddedilir."
+      },
+      "any_with_approval": {
+        "label": "Herhangi bir yol, onayla",
+        "help": "Her okuma yine de bir teknisyenin onayını gerektirir ve denetlenir; kimlik bilgisi depoları engelli kalır."
+      }
+    },
+    "inherit": "Devral: {{value}} ({{source}})",
+    "retentionLabel": "Yapay zeka araç çıktılarını şu kadar sakla (gün)",
+    "retentionInherit": "Devral: {{value}} ({{source}})",
+    "retentionHelp": "Bundan eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir. Boş bırakmak devralır; iş ortağı çıktıları süresiz saklamayı seçebilir.",
+    "keepForever": "süresiz",
+    "sourceOrg": "bu kuruluş",
+    "sourcePartner": "iş ortağı varsayılanı",
+    "sourceDefault": "Breeze varsayılanı",
+    "abovePartnerCeiling": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "saved": "Yapay zeka veri ilkesi kaydedildi",
+    "failedToSave": "Yapay zeka veri ilkesi kaydedilemedi",
+    "partnerInheritDefault": "Breeze varsayılanı: {{value}}",
+    "readOnly": "Bu varsayılanları değiştirme izniniz yok."
+  },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
     "description": "İş ortağı kapsamındaki makine kimliklerini ve bunların erişim anahtarlarını yönetin.",
