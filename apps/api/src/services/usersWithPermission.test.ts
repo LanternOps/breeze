@@ -21,7 +21,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
+import { resolvePartnerUsersWithPermission, resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
 const dialect = new PgDialect();
 
@@ -135,5 +135,57 @@ describe('resolveUsersWithPermissionForOrg', () => {
 
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolvePartnerUsersWithPermission', () => {
+  const PERM = { resource: 'connected_apps', action: 'manage' };
+  const rows = [
+    { userId: 'u1', orgAccess: 'all', orgIds: null },
+    { userId: 'u2', orgAccess: 'selected', orgIds: ['A'] },
+    { userId: 'u3', orgAccess: 'selected', orgIds: ['B'] },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
+    roleWhereArgs = [];
+  });
+
+  it('partner-wide: only orgAccess=all partner users', async () => {
+    mockGrantingRoles([{ roleId: 'r1' }]);
+    mockPartnerMembers(rows);
+    await expect(resolvePartnerUsersWithPermission('P', PERM)).resolves.toEqual(['u1']);
+  });
+
+  it('org-scoped: all + selected covering the org; never org members', async () => {
+    mockGrantingRoles([{ roleId: 'r1' }]);
+    mockPartnerMembers(rows);
+    const out = await resolvePartnerUsersWithPermission('P', PERM, { orgId: 'A' });
+    expect(out.sort()).toEqual(['u1', 'u2']);
+    // roles query + partner_users query only: no organizations / organization_users lookups
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns [] and skips the partner query when no role grants the permission', async () => {
+    mockGrantingRoles([]);
+    await expect(resolvePartnerUsersWithPermission('P', PERM)).resolves.toEqual([]);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes an org-scoped ambient context before reading', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as any);
+    mockGrantingRoles([]);
+    await resolvePartnerUsersWithPermission('P', PERM);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('wildcard-aware role query', async () => {
+    mockGrantingRoles([]);
+    await resolvePartnerUsersWithPermission('P', PERM);
+    expect(renderedWhere(0)).toContain('connected_apps');
+    expect(renderedWhere(0)).toContain('*');
   });
 });
