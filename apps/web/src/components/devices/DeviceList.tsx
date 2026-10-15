@@ -387,6 +387,12 @@ export type Device = {
    */
   linkGroupRole?: 'host' | 'guest' | null;
   /**
+   * Workload host axis (#8193): true once the agent detects any container or
+   * VM runtime (devices.hosts_workloads). Gates the device page Workloads tab.
+   * undefined = not carried by this payload.
+   */
+  hostsWorkloads?: boolean;
+  /**
    * RDS per-session helper mode reported by the agent heartbeat
    * (devices.helper_lifecycle_mode). 'on-demand' gates Tasks 13/14's session
    * pickers (RD connect, script dialog). null/undefined = not reported
@@ -834,6 +840,7 @@ export default function DeviceList({
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
+  const canSendMessage = can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
@@ -2939,6 +2946,19 @@ export default function DeviceList({
                   {t("deviceList.rebootSelected")}
                   {agentOnlySuffix}
                 </button>
+                {canSendMessage && (
+                  <button
+                    type="button"
+                    data-testid="bulk-send-message"
+                    onClick={() => handleBulkAction("send-message")}
+                    disabled={agentOnlyDisabled}
+                    title={agentOnlyTitle}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("endpointMessages.sendAction")}
+                    {agentOnlySuffix}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleBulkAction("run-script")}

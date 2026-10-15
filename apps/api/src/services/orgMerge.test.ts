@@ -22,6 +22,28 @@ const mockState = vi.hoisted(() => ({
   insertedId: 'merge-event-1',
   ticketCandidates: [] as Array<{ id: string }>,
   revalidateTicketAssignee: vi.fn(),
+  /** >0 while a mocked withSystemDbAccessContext callback runs. */
+  txDepth: 0,
+  /** W05 (#8144): hot-path cache invalidations, with whether they ran inside the transaction. */
+  cacheInvalidations: [] as Array<{ fn: string; arg: string | undefined; inTx: boolean }>,
+}));
+
+vi.mock('./agentOrgSettingsCache', () => {
+  const record = (fn: string) => (arg?: string) => {
+    mockState.cacheInvalidations.push({ fn, arg, inTx: mockState.txDepth > 0 });
+  };
+  return {
+    invalidateAgentOrgSettingsCaches: vi.fn(record('invalidateAgentOrgSettingsCaches')),
+    invalidateOrgPolicyProbeCache: vi.fn(record('invalidateOrgPolicyProbeCache')),
+    invalidateOrgPamFallbackCache: vi.fn(record('invalidateOrgPamFallbackCache')),
+  };
+});
+vi.mock('./unifi/unifiCollectorService', () => ({
+  agentCollectorAbsenceCache: {
+    invalidateAroundCommit: vi.fn((arg?: string) => {
+      mockState.cacheInvalidations.push({ fn: 'agentCollectorAbsenceCache.invalidateAroundCommit', arg, inTx: mockState.txDepth > 0 });
+    }),
+  },
 }));
 
 function sqlToText(q: unknown): string {
@@ -71,7 +93,12 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     mockState.escalations.push('withSystemDbAccessContext');
-    return fn();
+    mockState.txDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      mockState.txDepth -= 1;
+    }
   }),
   getCurrentDbAccessContext: vi.fn(() => mockState.ambientContext),
   db: {
@@ -747,6 +774,65 @@ describe('stampTerminalShell', () => {
     }
   });
 
+  it('writes the evidence hold once, with the merge event id, after the event insert', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    const hold = vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockResolvedValue(null);
+
+    await orgMergeModule.executeOrgMerge(input);
+
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledWith({
+      loserOrgId: loser.id,
+      survivorOrgId: survivor.id,
+      partnerId: input.partnerId,
+      mergeEventId: 'merge-event-1',
+    });
+  });
+
+  it('invalidates the hot-path caches of both orgs inside the merge transaction (W05 #8144)', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockResolvedValue(null);
+    mockState.cacheInvalidations = [];
+
+    await orgMergeModule.executeOrgMerge(input);
+
+    const calls = mockState.cacheInvalidations;
+    for (const fn of ['invalidateAgentOrgSettingsCaches', 'invalidateOrgPolicyProbeCache', 'invalidateOrgPamFallbackCache']) {
+      expect(calls.filter((c) => c.fn === fn).map((c) => c.arg).sort(), fn).toEqual([loser.id, survivor.id].sort());
+    }
+    // A merge turns loser-org keys into survivor-org keys: the collector absence cache drops whole.
+    expect(calls.filter((c) => c.fn === 'agentCollectorAbsenceCache.invalidateAroundCommit')).toEqual([
+      { fn: 'agentCollectorAbsenceCache.invalidateAroundCommit', arg: undefined, inTx: true },
+    ]);
+    // Inside the repoint transaction, so invalidateAroundCommit publishes only if the merge commits.
+    expect(calls.every((c) => c.inTx)).toBe(true);
+  });
+
+  it('a merge that rolls back invalidates nothing cluster-wide: the calls are inside the failing transaction', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'unfenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockRejectedValue(new Error('walk failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockState.cacheInvalidations = [];
+
+    await expect(orgMergeModule.executeOrgMerge(input)).rejects.toThrow();
+    expect(mockState.cacheInvalidations).toEqual([]);
+  });
+
   it('a failing stamp still resolves executeOrgMerge and never unfences', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
@@ -777,6 +863,10 @@ describe('stampTerminalShell', () => {
 });
 
 describe('blocks-merge refusal', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('refuses before fencing and audits org.merge.failed', async () => {
     vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
       loser: { id: 'a', partnerId: 'p', name: 'Loser', type: 'standard', status: 'active', deletedAt: null },
@@ -792,6 +882,112 @@ describe('blocks-merge refusal', () => {
 
     expect(fence).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'org.merge.failed' }));
+  });
+
+  it('refuses a too-deep held lineage before fencing and audits reason lineage_depth', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: { id: 'a', partnerId: 'p', name: 'Loser', type: 'standard', status: 'active', deletedAt: null },
+      survivor: { id: 'b', partnerId: 'p', name: 'Survivor', type: 'standard', status: 'active', deletedAt: null },
+    } as never);
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined as never);
+    vi.spyOn(orgMergeModule, 'collectMergeBlockers').mockResolvedValue([]);
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockRejectedValue(new orgMergeModule.OrgMergeBlockedError([], 'lineage_depth'));
+    const audit = vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined as never);
+
+    await expect(
+      orgMergeModule.executeOrgMerge({ loserOrgId: 'a', survivorOrgId: 'b', partnerId: 'p', performedBy: 'u' }),
+    ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED', reason: 'lineage_depth' });
+
+    expect(fence).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'org.merge.failed',
+        details: expect.objectContaining({ reason: 'lineage_depth' }),
+      }),
+    );
+  });
+
+  const blockedPair = {
+    loser: { id: 'a', partnerId: 'p', name: 'Loser', type: 'standard', status: 'active', deletedAt: null },
+    survivor: { id: 'b', partnerId: 'p', name: 'Survivor', type: 'standard', status: 'active', deletedAt: null },
+  } as never;
+  const blockedInput = { loserOrgId: 'a', survivorOrgId: 'b', partnerId: 'p', performedBy: 'u' };
+
+  it('previewOrgMerge reports verdict blocked + the lineage message when the depth check refuses', async () => {
+    mockState.executeResponses = [];
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue(blockedPair);
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockRejectedValue(new orgMergeModule.OrgMergeBlockedError([], 'lineage_depth'));
+
+    const preview = await orgMergeModule.previewOrgMerge('a', 'b', 'p');
+
+    expect(preview.verdict).toBe('blocked');
+    expect(preview.blockers).toContain(orgMergeModule.LINEAGE_DEPTH_BLOCKED_MESSAGE);
+  });
+
+  it('previewOrgMerge rethrows a non-blocked error from the depth check', async () => {
+    mockState.executeResponses = [];
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue(blockedPair);
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockRejectedValue(new Error('db exploded'));
+
+    await expect(orgMergeModule.previewOrgMerge('a', 'b', 'p')).rejects.toThrow('db exploded');
+  });
+
+  function stubPhaseBUpToHold() {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue(blockedPair);
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined as never);
+    vi.spyOn(orgMergeModule, 'collectMergeBlockers').mockResolvedValue([]);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    return {
+      unfence: vi.spyOn(orgMergeModule, 'unfenceLoser').mockResolvedValue(undefined),
+      stamp: vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined),
+      audit: vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined as never),
+    };
+  }
+
+  it('a lineage_depth refusal inside Phase B unfences, audits the reason, and writes no hold or stamp', async () => {
+    const { unfence, stamp, audit } = stubPhaseBUpToHold();
+    // Pre-fence check passes; the in-transaction re-check (a held lineage deepened meanwhile) refuses.
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth')
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new orgMergeModule.OrgMergeBlockedError([], 'lineage_depth'));
+    const hold = vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockResolvedValue(null);
+
+    await expect(orgMergeModule.executeOrgMerge(blockedInput))
+      .rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED', reason: 'lineage_depth' });
+
+    expect(orgMergeModule.assertMergeLineageDepth).toHaveBeenCalledTimes(2);
+    expect(orgMergeModule.fenceLoser).toHaveBeenCalledTimes(1);
+    expect(unfence).toHaveBeenCalledTimes(1);
+    expect(hold).not.toHaveBeenCalled();
+    expect(stamp).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'org.merge.failed',
+        details: expect.objectContaining({ reason: 'lineage_depth' }),
+      }),
+    );
+  });
+
+  it('a failing evidence-hold write fails the whole merge: unfenced, audited, never stamped', async () => {
+    const { unfence, stamp, audit } = stubPhaseBUpToHold();
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'writeMergeEvidenceHold').mockRejectedValue(new Error('hold insert failed'));
+
+    await expect(orgMergeModule.executeOrgMerge(blockedInput)).rejects.toThrow('hold insert failed');
+
+    expect(unfence).toHaveBeenCalledTimes(1);
+    expect(stamp).not.toHaveBeenCalled();
+    const details = audit.mock.calls[0]![1] as { action: string; details: Record<string, unknown> };
+    expect(details.action).toBe('org.merge.failed');
+    expect(details.details.error).toBe('hold insert failed');
+    expect(details.details).not.toHaveProperty('reason');
   });
 
   it('builds the operator refusal text with per-table counts', () => {

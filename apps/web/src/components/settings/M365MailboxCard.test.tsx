@@ -293,6 +293,41 @@ describe('M365MailboxCard', () => {
     expect(await screen.findByText('Mailbox verification failed: Graph 403 (ErrorAccessDenied)')).toBeInTheDocument();
   });
 
+  describe('repeated transient poll failures (#8308)', () => {
+    const connectedRow = (transientPollFailures: unknown) => ({
+      id: 'c1',
+      mailboxAddress: 'support@a.com',
+      displayName: null,
+      status: 'connected',
+      lastPolledAt: null,
+      lastMessageAt: null,
+      verificationError: null,
+      transientPollFailures,
+    });
+
+    it('warns once the poll has failed three times in a row', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [connectedRow({ count: 5, lastAt: '2026-10-11T12:00:00.000Z' })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-poll-failing');
+      expect(note.textContent).toContain('5');
+      expect(note.textContent).toMatch(/temporary Microsoft 365 error/);
+    });
+
+    it.each([
+      ['a single blip', { count: 2, lastAt: '2026-10-11T12:00:00.000Z' }],
+      ['a healthy mailbox', null],
+      ['an older API with no field', undefined],
+      ['a malformed count', { count: 'many' }],
+    ])('stays quiet for %s', async (_label, value) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [connectedRow(value)] }));
+      render(<M365MailboxCard />);
+      expect(await screen.findByText('support@a.com')).toBeInTheDocument();
+      expect(screen.queryByTestId('m365-poll-failing')).toBeNull();
+    });
+  });
+
   describe('Application Access Policy snippet app id (#6935)', () => {
     const errorRow = {
       id: 'c1',

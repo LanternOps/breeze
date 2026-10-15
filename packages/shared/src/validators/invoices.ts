@@ -5,6 +5,7 @@ import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 import { BULK_ID_LIMIT } from '../constants';
 import { nullableHttpUrlField } from './httpUrl';
 import { currencyCodeSchema } from './currency';
+import { INVOICE_LINE_GROUPINGS } from '../utils/invoiceLineDetail';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -72,7 +73,13 @@ export const updateInvoiceSchema = z.object({
   notes: z.string().max(5000).optional(),
   siteId: z.string().guid().nullable().optional(),
   dueDate: isoDate.optional(),
-  termsAndConditions: z.string().max(20_000).nullable().optional()
+  termsAndConditions: z.string().max(20_000).nullable().optional(),
+  // #8604 per-invoice line itemization override (drafts only — the PATCH is
+  // draft-locked). null = inherit the partner default; frozen at issue.
+  lineGrouping: z.enum([...INVOICE_LINE_GROUPINGS]).nullable().optional(),
+  lineShowDate: z.boolean().nullable().optional(),
+  lineShowNote: z.boolean().nullable().optional(),
+  lineShowWorkedTime: z.boolean().nullable().optional()
 });
 
 export const recordPaymentSchema = z.object({
@@ -113,6 +120,12 @@ export const partnerBillingSettingsSchema = z.object({
   // OFF (partners.invoice_device_appendix NOT NULL DEFAULT false). Resolved once
   // at issue onto invoices.device_appendix and frozen there.
   invoiceDeviceAppendix: z.boolean().optional(),
+  // #8604: invoice labor line itemization defaults (date / note / worked time /
+  // per-day grouping). Resolved once at issue onto invoices.line_* and frozen.
+  invoiceLineGrouping: z.enum([...INVOICE_LINE_GROUPINGS]).optional(),
+  invoiceLineShowDate: z.boolean().optional(),
+  invoiceLineShowNote: z.boolean().optional(),
+  invoiceLineShowWorkedTime: z.boolean().optional(),
   // Auto-email the issued invoice (with its public pay link) when a quote is
   // accepted. Default ON — see partners.auto_email_invoice_on_quote_accept.
   autoEmailInvoiceOnQuoteAccept: z.boolean().optional(),

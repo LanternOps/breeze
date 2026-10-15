@@ -139,15 +139,17 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
-	// PAMEnabled gates privileged access management features, including the
-	// dormant local elevation account. Default false.
+	// PAMEnabled opts into dormant elevation-account provisioning at startup.
+	// Default false. After reconciliation, organization PAM policy is authoritative:
+	// an enabled policy provisions the account even when this flag is false.
+	// This flag is not a local opt-out from organization policy.
 	PAMEnabled bool `mapstructure:"pam_enabled"`
 
 	// PAMActuatorStrategy selects the Windows elevation actuator: "sendinput"
 	// (Path A — inject credentials into consent.exe) or "token_launch" (Path B —
 	// suppress consent.exe and launch the target elevated via CreateProcessAsUser
 	// as ~breeze_elev). Default "sendinput". Path B ships dark; flip per-device
-	// via agent.yaml. Ignored when PAMEnabled is false.
+	// via agent.yaml. Managed PAM v2 uses its own launch path.
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
 	// Concurrency limits
@@ -230,6 +232,14 @@ type Config struct {
 	// Persisted in the same SaveTo that adds the delegated key, so the two
 	// facts can never disagree. See manifestdelegation.go.
 	ManifestDelegationEpoch uint64 `mapstructure:"manifest_delegation_epoch" yaml:"manifest_delegation_epoch"`
+
+	// OwnershipEpoch is the device's PAM ownership epoch as last asserted by
+	// the server in a signed identity assertion v2 (#8202 W4), 0 when none was
+	// ever received. It moves with org_id/site_id: written only by
+	// PersistServerIdentity (never lowered) and enrollment, preserved from disk
+	// by every other save, and reported on each heartbeat so the server can
+	// record which epoch's identity this process has loaded.
+	OwnershipEpoch uint64 `mapstructure:"ownership_epoch" yaml:"ownership_epoch"`
 
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
@@ -967,9 +977,9 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 		return err
 	}
 
-	orgID, siteID := cfg.OrgID, cfg.SiteID
+	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
 	if identity == identityFromDisk {
-		orgID, siteID = resolveOrgSiteForSave(cfgPath, orgID, siteID)
+		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
 	}
 
 	viper.Set("agent_id", cfg.AgentID)
@@ -977,6 +987,7 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
+	viper.Set("ownership_epoch", ownershipEpoch)
 	viper.Set("device_id", cfg.DeviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)

@@ -28,12 +28,14 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { checkPoolMembershipTransition } from '../../services/unassignedPool/orgType';
 import { TicketServiceError } from '../../services/ticketService';
+import { scheduleTicketLinkRemovalNotes } from '../../services/ticketLinkMoveNotes';
 import {
   DevicePoolMembershipRefusedError,
   moveDeviceOrgInTransaction,
@@ -276,7 +278,8 @@ moveOrgRoutes.post(
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       // #8181: block-drawn time cannot change org — same rolled-back refusal.
-      if (err instanceof TicketMoveHourBlockError) {
+      // #4617: nor can a ticket with a pending customer approval request.
+      if (err instanceof TicketMoveHourBlockError || err instanceof TicketMoveApprovalPendingError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       // #5573 W02 — same shape: the transaction rolled back untouched, so this
@@ -314,6 +317,11 @@ moveOrgRoutes.post(
     }
 
     const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome } = moved!;
+
+    // #7900 W02: notes on tickets that lost a link to one of this device's
+    // tickets. Registered here, once the move is final, and run only after
+    // the request transaction commits (never inside the move: see moveTicketOrg).
+    scheduleTicketLinkRemovalNotes(moved!.removedTicketLinks);
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);

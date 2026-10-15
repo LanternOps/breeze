@@ -29,6 +29,10 @@ const GATE_CODES = [
   'PORTAL_HARDWARE_HEALTH_DISABLED',
   'PORTAL_HARDWARE_INVENTORY_DISABLED',
   'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  'PORTAL_HOUR_BLOCK_DISABLED',
+  'PORTAL_PATCH_DETAIL_DISABLED',
+  'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  'PORTAL_EDR_VISIBILITY_DISABLED',
 ];
 
 describe('isPortalPageDisabled', () => {
@@ -83,6 +87,10 @@ describe('redirectToPortalHomeAfterDisabled', () => {
     // or a loop, the moment the page it points at is the page that bounced.
     expect(PORTAL_GATED_PAGES).not.toContain(PORTAL_UNGATED_HOME);
     expect(PORTAL_UNGATED_HOME).toBe('/quotes');
+  });
+
+  it('lists /approvals as gated (it rides the tickets flag, #8200)', () => {
+    expect(PORTAL_GATED_PAGES).toContain('/approvals');
   });
 });
 

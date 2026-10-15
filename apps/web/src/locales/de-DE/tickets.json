@@ -245,7 +245,8 @@
       "deleteLost": "Der Eintrag wurde während des Löschens geändert. Neu laden und erneut versuchen.",
       "notFound": "Dieser Eintrag existiert nicht mehr."
     },
-    "deleteEntryWithDescription": "Zeiteintrag über {{duration}} von {{tech}} löschen: {{description}}"
+    "deleteEntryWithDescription": "Zeiteintrag über {{duration}} von {{tech}} löschen: {{description}}",
+    "noteInvoiceCue": "Kunden sehen diese Notiz auf ihrer Rechnung, sofern Ihre Abrechnungseinstellungen Notizen nicht ausblenden."
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",
@@ -303,7 +304,8 @@
       "normal": "Normal",
       "high": "Hoch",
       "urgent": "Dringend"
-    }
+    },
+    "type": "Typ"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Wählen Sie…"
@@ -398,7 +400,9 @@
       "title_other": "{{count}} Tickets löschen?",
       "message": "Dadurch werden sie aus allen Warteschlangen ausgeblendet. Ein Administrator kann sie aus dem Archiv wiederherstellen.",
       "confirm": "Tickets löschen"
-    }
+    },
+    "filterByType": "Nach Typ filtern",
+    "allTypes": "Alle Typen"
   },
   "ticketWorkbench": {
     "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",
@@ -533,7 +537,8 @@
       "assigned": "Zugewiesen",
       "unassigned": "Nicht zugewiesen",
       "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen.",
-      "attachmentFailed": "Der Anhang konnte nicht hochgeladen werden."
+      "attachmentFailed": "Der Anhang konnte nicht hochgeladen werden.",
+      "typeUpdateFailed": "Der Ticket-Typ konnte nicht aktualisiert werden."
     },
     "delete": {
       "failed": "Das Löschen ist fehlgeschlagen. Wiederholen.",
@@ -543,7 +548,8 @@
       "title": "Dieses Ticket löschen?",
       "message": "Dadurch wird das Ticket aus allen Warteschlangen ausgeblendet. Ein Administrator kann es aus der Warteschlange „Archiviert“ wiederherstellen.",
       "confirm": "Ticket löschen"
-    }
+    },
+    "typeLabel": "Ticket-Typ"
   },
   "billingOutcome": {
     "included": "Inklusive",
@@ -553,5 +559,185 @@
     "missingRate": "Abrechenbar · Stundensatz nicht konfiguriert",
     "recalculated": "Die Abrechnung wird beim Speichern für diese Tätigkeitsart neu berechnet.",
     "unavailable": "Abrechnungsergebnis nicht verfügbar"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Diese Freigabeanfrage ist nicht mehr offen.",
+      "requestChanged": "Die Anfrage hat sich geändert, während Sie sie angesehen haben. Die aktuelle Version wurde neu geladen; prüfen Sie sie und versuchen Sie es erneut.",
+      "requestExpired": "Diese Freigabeanfrage ist abgelaufen. Fragen Sie erneut an, um eine neue zu senden.",
+      "requestAlreadyPending": "Für dieses Ticket ist bereits eine Freigabeanfrage aus demselben Grund offen.",
+      "requestNotReaskable": "Nur eine abgelehnte, abgelaufene oder stornierte Anfrage mit zurückgehaltener Zeit kann erneut gestellt werden.",
+      "nothingHeld": "Für dieses Ticket gibt es keine zurückgehaltene Zeit, für die eine Freigabe angefragt werden könnte.",
+      "approvalsDisabled": "Die Kundenfreigabe ist für diesen Kunden nicht aktiviert.",
+      "entryNotResolvable": "Diese Zeit kann erst abgeschrieben werden, nachdem die Freigabeanfrage abgelehnt wurde, abgelaufen ist oder storniert wurde.",
+      "approvalRequestPending": "Für dieses Ticket wartet eine Freigabeanfrage auf den Kunden, daher kann es nicht verschoben werden. Stornieren oder klären Sie zuerst die Anfrage.",
+      "sourceAwaitingApproval": "Ein Teil der Zeit auf dieser Rechnung wartet auf die Freigabe des Kunden. Lassen Sie sie freigeben oder schreiben Sie sie ab, bevor Sie die Rechnung ausstellen.",
+      "approvalRequired": "Für abrechenbare Zeit auf diesem Ticket ist zuerst die Freigabe des Kunden nötig. Fordern Sie die Freigabe im Bereich „Freigaben“ des Tickets an."
+    },
+    "budget": {
+      "title": "Budget und Freigabe",
+      "hours": "Budget (Stunden)",
+      "amount": "Budgetbetrag",
+      "save": "Budget speichern",
+      "saved": "Budget gespeichert",
+      "saveFailed": "Das Budget konnte nicht gespeichert werden",
+      "invalidHours": "Geben Sie Stunden größer als 0 ein oder lassen Sie das Feld für kein Limit leer.",
+      "invalidAmount": "Geben Sie einen Betrag größer als 0 mit höchstens 2 Nachkommastellen ein oder lassen Sie das Feld leer.",
+      "ceiling": "Obergrenze {{ceiling}}",
+      "ceilingWithExtensions": "Obergrenze {{ceiling}} (Budget {{budget}} + {{extra}} freigegeben)",
+      "noBudget": "Kein Budget festgelegt",
+      "usedLegend": "Verbraucht {{value}}",
+      "heldLegend": "Wartet auf Freigabe {{value}}",
+      "unpriced_one": "{{count}} zurückgehaltener Eintrag hat noch keinen Preis.",
+      "unpriced_other": "{{count}} zurückgehaltene Einträge haben noch keinen Preis.",
+      "barLabel": "Budgetverbrauch",
+      "requestApproval": "Freigabe anfordern"
+    },
+    "request": {
+      "trigger": "Grund",
+      "triggerBudget": "Budget überschritten",
+      "triggerAfterHours": "Arbeit außerhalb der Geschäftszeiten",
+      "extensionMinutes": "Zusätzliche Minuten",
+      "extensionAmount": "Zusätzlicher Betrag",
+      "windowStart": "Gilt ab",
+      "windowEnd": "Gilt bis",
+      "message": "Nachricht an den Kunden (optional)",
+      "submit": "Anfrage senden",
+      "sent": "Freigabeanfrage gesendet",
+      "failed": "Die Freigabeanfrage konnte nicht gesendet werden",
+      "invalidExtension": "Geben Sie zusätzliche Minuten oder einen zusätzlichen Betrag größer als 0 ein.",
+      "invalidWindow": "Wählen Sie Beginn und Ende, wobei das Ende nach dem Beginn liegt und höchstens 14 Tage danach."
+    },
+    "panel": {
+      "title": "Kundenfreigaben",
+      "status": {
+        "pending": "Offen",
+        "approved": "Freigegeben",
+        "denied": "Abgelehnt",
+        "expired": "Abgelaufen",
+        "cancelled": "Storniert"
+      },
+      "revision": "Version {{n}}",
+      "ask": "Angefragt: {{ask}}",
+      "window": "Gilt von {{from}} bis {{to}}",
+      "expires": "Läuft ab {{when}}",
+      "heldEntries_one": "{{count}} zurückgehaltener Eintrag",
+      "heldEntries_other": "{{count}} zurückgehaltene Einträge",
+      "approvers": "Freigebende",
+      "notified": "Benachrichtigt",
+      "noneListed": "Keine",
+      "noApprover": "Kein Freigebender hinterlegt: Fügen Sie einen Rechnungskontakt hinzu oder erfassen Sie die Entscheidung stellvertretend.",
+      "decidedByCustomer": "Entschieden von {{who}}",
+      "customerFallback": "dem Kunden",
+      "decidedOnBehalf": "Erfasst von {{user}} im Namen von {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Mündlich",
+        "email": "E-Mail",
+        "signedDocument": "Unterzeichnetes Dokument",
+        "other": "Sonstiges"
+      },
+      "cancel": "Anfrage stornieren",
+      "cancelConfirmTitle": "Diese Freigabeanfrage stornieren?",
+      "cancelConfirmMessage": "Der Kunde kann nicht mehr antworten. Bereits zurückgehaltene Zeit bleibt zurückgehalten, bis Sie erneut anfragen oder sie abschreiben.",
+      "cancelled": "Freigabeanfrage storniert",
+      "cancelFailed": "Die Anfrage konnte nicht storniert werden",
+      "reask": "Erneut anfragen",
+      "reaskSubmit": "Erneut senden",
+      "reasked": "Freigabeanfrage erneut gesendet",
+      "reaskFailed": "Die erneute Anfrage ist fehlgeschlagen",
+      "record": "Entscheidung erfassen"
+    },
+    "record": {
+      "title": "Entscheidung des Kunden erfassen",
+      "intro": "Verwenden Sie dies, wenn der Kunde Ihnen seine Entscheidung außerhalb von Breeze mitgeteilt hat. Sie wird unter Ihrem Namen protokolliert.",
+      "target": "Version {{revision}} · {{ask}}",
+      "decision": "Entscheidung",
+      "approve": "Freigegeben",
+      "deny": "Abgelehnt",
+      "method": "Wie wurde sie mitgeteilt?",
+      "reference": "Referenz",
+      "referencePlaceholder": "z. B. Telefonat am 12. Okt., E-Mail-Betreff, Dokumentnummer",
+      "signerName": "Name des Kunden",
+      "signerEmail": "E-Mail des Kunden (optional)",
+      "note": "Notiz (optional)",
+      "submit": "Entscheidung erfassen",
+      "recorded": "Entscheidung erfasst",
+      "failed": "Die Entscheidung konnte nicht erfasst werden"
+    },
+    "held": {
+      "chip": "Wartet auf Kundenfreigabe",
+      "writeOff": "Abschreiben",
+      "writeOffTitle": "Zurückgehaltene Zeit abschreiben?",
+      "writeOffMessage": "Diese Zeit wird zurückgehalten, weil der Kunde sie nicht freigegeben hat. Beim Abschreiben wird sie als nicht berechenbar markiert und nicht in Rechnung gestellt.",
+      "writtenOff": "Zeit abgeschrieben",
+      "writeOffFailed": "Die Zeit konnte nicht abgeschrieben werden"
+    },
+    "timer": {
+      "startNonBillable": "Als nicht abrechenbar starten"
+    },
+    "loadError": "Kundenfreigaben konnten nicht geladen werden",
+    "retry": "Erneut versuchen"
+  },
+  "ticketType": {
+    "incident": "Störung",
+    "service_request": "Serviceanfrage",
+    "problem": "Problem",
+    "change": "Änderung"
+  },
+  "ticketLinks": {
+    "title": "Verknüpfte Tickets",
+    "loading": "Verknüpfte Tickets werden geladen …",
+    "loadFailed": "Verknüpfte Tickets konnten nicht geladen werden.",
+    "empty": "Keine verknüpften Tickets.",
+    "deleted": "Gelöscht",
+    "add": "Ticket verknüpfen",
+    "addTitle": "Ticket verknüpfen",
+    "linkType": "Dieses Ticket …",
+    "addType": {
+      "related": "steht in Zusammenhang mit",
+      "caused_by": "wurde verursacht durch",
+      "resolves": "löst",
+      "duplicate_of": "ist ein Duplikat von"
+    },
+    "searchLabel": "Ticket in dieser Organisation suchen",
+    "searchPlaceholder": "Nach Nummer oder Betreff suchen",
+    "searching": "Suche läuft …",
+    "searchFailed": "Die Suche ist fehlgeschlagen. Bitte erneut versuchen.",
+    "noResults": "Keine passenden Tickets.",
+    "changePick": "Anderes Ticket auswählen",
+    "addSubmit": "Verknüpfung hinzufügen",
+    "adding": "Wird hinzugefügt …",
+    "added": "Ticket verknüpft.",
+    "addFailed": "Die Verknüpfung konnte nicht hinzugefügt werden.",
+    "removed": "Verknüpfung entfernt.",
+    "removeFailed": "Die Verknüpfung konnte nicht entfernt werden.",
+    "remove": "Verknüpfung mit {{ticket}} entfernen",
+    "removeTitle": "Verknüpfung entfernen?",
+    "removeMessage": "Verknüpfung mit {{ticket}} entfernen? Die Tickets selbst bleiben unverändert.",
+    "removeConfirm": "Verknüpfung entfernen",
+    "linkedIncidents": "{{count}} verknüpfte Störungen",
+    "linkedIncidents_one": "{{count}} verknüpfte Störung",
+    "linkedIncidents_other": "{{count}} verknüpfte Störungen",
+    "group": {
+      "caused_by": "Verursacht durch",
+      "causes": "Verursacht",
+      "resolves": "Löst",
+      "resolved_by": "Gelöst durch",
+      "duplicate_of": "Duplikat von",
+      "duplicates": "Duplikate",
+      "related": "Verwandt"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Diese Tickets sind bereits verknüpft.",
+      "LINK_CYCLE": "Diese Verknüpfung würde eine zirkuläre Ursachenkette erzeugen.",
+      "LINK_LIMIT": "Ein Ticket kann höchstens 50 Verknüpfungen haben, einschließlich Verknüpfungen zu Tickets, die Sie nicht sehen können. Entfernen Sie eine Verknüpfung, bevor Sie eine weitere hinzufügen.",
+      "SOURCE_ALREADY_DUPLICATE": "Dieses Ticket ist bereits als Duplikat eines anderen Tickets markiert (das für Sie möglicherweise nicht sichtbar ist).",
+      "SOURCE_HAS_DUPLICATES": "Andere Tickets (möglicherweise solche, die Sie nicht sehen können) sind als Duplikate dieses Tickets markiert, daher kann es nicht selbst als Duplikat markiert werden.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Dieses Ticket ist selbst ein Duplikat. Verknüpfen Sie stattdessen das ursprüngliche Ticket.",
+      "CROSS_ORG": "Tickets können nur innerhalb derselben Organisation verknüpft werden.",
+      "SELF_LINK": "Ein Ticket kann nicht mit sich selbst verknüpft werden.",
+      "NOT_FOUND": "Dieses Ticket wurde nicht gefunden oder ist nicht mehr verfügbar.",
+      "LINK_GONE": "Diese Verknüpfung wurde bereits entfernt."
+    }
   }
 }

@@ -383,4 +383,29 @@ describe('ticket-events producer→consumer contract', () => {
     expect(hoisted.insertValuesMock).not.toHaveBeenCalled();
     expect(hoisted.sendEmailMock).not.toHaveBeenCalled();
   });
+
+  // #7900: a reclassification rides ticket.updated (no new event type).
+  it('updateTicketFields: a ticketType change emits ticket.updated changed=[ticketType] → consumer no-op', async () => {
+    hoisted.selectQueue.push([{
+      id: 't-c5', orgId: 'o-1', partnerId: 'p-1', status: 'open',
+      subject: 'S', priority: 'normal', description: null,
+      categoryId: null, dueDate: null, deviceId: null, tags: [], ticketType: 'incident'
+    }]);
+    hoisted.updateReturningQueue.push([{ id: 't-c5', ticketType: 'problem' }]);
+    hoisted.insertReturningQueue.push([{ id: 'feed-3' }]);
+
+    await updateTicketFields('t-c5', { ticketType: 'problem' }, actor);
+
+    expect(hoisted.emitCaptured).toHaveLength(1);
+    const event = hoisted.emitCaptured[0] as TicketEvent;
+    expect(event.type).toBe('ticket.updated');
+    if (event.type === 'ticket.updated') {
+      expect(event.payload.changed).toEqual(['ticketType']);
+    }
+
+    hoisted.insertValuesMock.mockClear();
+    await expect(handleTicketEvent(event)).resolves.toBeUndefined();
+    expect(hoisted.insertValuesMock).not.toHaveBeenCalled();
+    expect(hoisted.sendEmailMock).not.toHaveBeenCalled();
+  });
 });

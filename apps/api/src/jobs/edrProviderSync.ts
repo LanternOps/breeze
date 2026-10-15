@@ -29,6 +29,11 @@ import {
 } from '../services/edrProviders/persist';
 import { autoMapEdrTenants } from '../services/edrProviders/mapping';
 import { matchEdrEndpoints } from '../services/edrProviders/deviceMatching';
+import {
+  evaluateEdrAlerts,
+  evaluateEdrEndpointHealth,
+  evaluateEdrStaleTenants,
+} from '../services/edrProviders/alerts';
 import { attachWorkerObservability } from './workerObservability';
 import { isFinalSyncAttempt } from './syncAttempt';
 
@@ -145,6 +150,23 @@ export function selectDueStreams(
   return out;
 }
 
+
+/**
+ * Phase 4 (#8166): post-commit notification, OUTSIDE any db context and after
+ * Phase 3 committed. Its own try/catch: an alert-path outage is logged and
+ * never fails the sync job or marks the connection errored.
+ */
+async function runPhase4(label: string, connectionId: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await dbModule.runOutsideDbContext(fn);
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: ${label} failed (sync result kept):`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'edrProviderSync', operation: label, connectionId,
+    });
+  }
+}
+
 async function processSyncAll(): Promise<{ queued: number }> {
   // partner-axis table: a contextless read silently returns 0 rows (#1375).
   // `reauth_required` connections are skipped; only "Sync now" after a credentials PATCH retries them.
@@ -185,6 +207,11 @@ async function processSyncAll(): Promise<{ queued: number }> {
   // Enqueue with NO transaction held (#1105).
   const due = selectDueStreams(rows, new Date());
   await Promise.all(due.map((d) => enqueueEdrSync(d.connectionId, d.stream)));
+
+  // D10 (#8166): stale mapped tenants are checked on the tick, not after a
+  // sync, because a connection whose every sync throws before Phase 3 never
+  // reaches a post-commit hook. Never fails the tick.
+  await runPhase4('evaluateEdrStaleTenants', 'all', () => evaluateEdrStaleTenants(new Date()));
   return { queued: due.length };
 }
 
@@ -657,6 +684,7 @@ export async function syncEdrInventory(
     });
 
     if (done && done.dropped > 0) await reenqueueStream(connectionId, 'inventory');
+    if (done) await runPhase4('evaluateEdrEndpointHealth', connectionId, () => evaluateEdrEndpointHealth(connectionId));
 
     if (!done) {
       console.warn(
@@ -761,6 +789,7 @@ export async function syncEdrDetections(
     });
 
     if (done && done.dropped > 0) await reenqueueStream(connectionId, 'detections');
+    if (done) await runPhase4('evaluateEdrAlerts', connectionId, () => evaluateEdrAlerts(connectionId, { now: new Date() }));
 
     if (!done) {
       console.warn(
@@ -856,3 +885,5 @@ export async function shutdownEdrProviderSyncJob(): Promise<void> {
   await shutdownEdrProviderSyncQueue();
   console.log('[EdrProviderSync] EDR provider sync worker shut down');
 }
+
+export const __testOnly = { processSyncAll };

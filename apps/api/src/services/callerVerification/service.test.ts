@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn() }));
+const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn(), suggestions: vi.fn(), prepare: vi.fn(), available: vi.fn() }));
 vi.mock('../../db', () => ({
   db: new Proxy({}, { get: (_, key) => ref.db[key] }),
   assertInTransaction: vi.fn(),
@@ -9,14 +9,18 @@ vi.mock('../../db', () => ({
   getCurrentDbAccessContext: () => ({ scope: 'organization' }),
 }));
 vi.mock('./effects', () => ({ recordEffect: vi.fn() }));
+vi.mock('./rejection', () => ({ handleRejection: vi.fn() }));
 vi.mock('./gate', () => ({ fencedUntil: async () => null }));
 vi.mock('./policy', async (original) => ({ ...await original<typeof import('./policy')>(), getEffectivePolicy: ref.policy }));
 vi.mock('./subjects', () => ({ bindingsForContact: ref.bindings }));
+vi.mock('./deviceSuggestions', () => ({ deviceSuggestions: ref.suggestions }));
+vi.mock('./ports', () => ({ callerVerificationPorts: { prepare: ref.prepare, available: ref.available, deliver: vi.fn() } }));
 vi.mock('./destinations', async (original) => ({ ...await original<typeof import('./destinations')>(), currentDestination: async () => null }));
 
 import { makeDbMock } from './testing';
 import { resolveEffectivePolicy } from './policy';
-import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel } from './service';
+import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel, applyDecision, methodsForContact } from './service';
+import { handleRejection } from './rejection';
 import { recordEffect } from './effects';
 import type { VerificationRow, CallerVerificationActor } from './types';
 
@@ -31,6 +35,9 @@ beforeEach(() => {
   ref.db = state.db;
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
   ref.policy.mockResolvedValue(resolveEffectivePolicy(null, null));
+  ref.suggestions.mockReset().mockResolvedValue([]);
+  ref.prepare.mockReset().mockResolvedValue(undefined);
+  ref.available.mockReset().mockResolvedValue(false);
   ref.bindings.mockImplementation(async (_org: string, contactId: string) => [{ id: contactId, contactId, orgId: org, entraOid: contactId, entraTenantId: 'tenant', revokedAt: null }]);
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -94,10 +101,54 @@ it('a site-level manager cannot authorize another account at initiation', async 
   await expect(start(actor, { ...input, targetContactId: target, actionScope: 'disable_user' })).rejects.toMatchObject({ code: 'requester_not_authorized' });
 });
 
-it('does not advertise or start a workstation without its adapter', async () => {
-  state.results.push([contact], [contact], [contact]);
-  await expect(start(actor, { ...input, method: 'workstation', deviceId: user, username: 'caller' })).rejects.toMatchObject({ code: 'helper_outdated' });
-  expect(state.calls.filter((c) => c.name === 'insert')).toEqual([]);
+describe('workstation availability (#6354 W02)', () => {
+  const device = { id: '55555555-5555-4555-8555-555555555555', orgId: org, siteId: null, hostname: 'pc-1' };
+
+  it('advertises workstation only when one of the contact suggested devices is ready', async () => {
+    state.results.push([contact]);
+    ref.suggestions.mockResolvedValueOnce([{ deviceId: device.id, hostname: 'pc-1', username: 'alex', hasBinding: false, available: false, unavailableReason: 'helper_outdated' }]);
+    const off = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(off).toMatchObject({ available: false, unavailableReason: 'helper_outdated', tier: 1 });
+
+    state.results.push([contact]);
+    ref.suggestions.mockResolvedValueOnce([
+      { deviceId: device.id, hostname: 'pc-1', username: 'alex', hasBinding: false, available: false, unavailableReason: 'helper_outdated' },
+      { deviceId: 'd2', hostname: 'pc-2', username: 'alex', hasBinding: false, available: true },
+    ]);
+    const on = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(on).toMatchObject({ available: true });
+    expect(on).not.toHaveProperty('unavailableReason');
+    expect(ref.suggestions).toHaveBeenLastCalledWith(actor, org, user);
+  });
+
+  it('never consults suggestions when policy disables the method', async () => {
+    ref.policy.mockResolvedValue({ ...resolveEffectivePolicy(null, null), allowedMethods: ['callback_attestation'] });
+    state.results.push([contact]);
+    const row = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(row).toMatchObject({ available: false, unavailableReason: 'method_disabled' });
+    expect(ref.suggestions).not.toHaveBeenCalled();
+  });
+
+  it('refuses a workstation start with no ready suggestion and no selected device', async () => {
+    state.results.push([contact], [contact], [contact]);
+    await expect(start(actor, { ...input, method: 'workstation', username: 'alex' })).rejects.toMatchObject({ code: 'helper_outdated' });
+    expect(state.calls.filter((c) => c.name === 'insert')).toEqual([]);
+    expect(ref.prepare).not.toHaveBeenCalled();
+  });
+
+  it('lets the adapter judge a hand-picked device and fails the start when it refuses', async () => {
+    state.results.push([contact], [contact], [contact], [device], [contact], [contact], [{ count: 0 }], [{ id: user, method: 'workstation' }]);
+    ref.prepare.mockRejectedValueOnce(Object.assign(new Error('No compatible console helper'), { code: 'helper_outdated' }));
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'helper_outdated' });
+    expect(ref.prepare).toHaveBeenCalledWith(expect.objectContaining({ method: 'workstation' }), null);
+  });
+
+  it('still refuses a hand-picked device for any other unavailability', async () => {
+    ref.policy.mockResolvedValue({ ...resolveEffectivePolicy(null, null), allowedMethods: ['callback_attestation'] });
+    state.results.push([contact], [contact], [contact]);
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'method_disabled' });
+    expect(ref.prepare).not.toHaveBeenCalled();
+  });
 });
 
 it('creates a callback row and returns its initiator secrets', async () => {
@@ -187,4 +238,53 @@ it('cancel only cancels a pending row', async () => {
   state.results.push(...getReads(cancelled), [], ...getReads(cancelled));
   expect((await cancel(actor, org, user)).status).toBe('cancelled');
   expect(recordEffect).not.toHaveBeenCalled();
+});
+
+it('cancelling a workstation verification withdraws its undelivered command (#6354 W02)', async () => {
+  const command = '66666666-6666-4666-8666-666666666666';
+  const pending = stored({ method: 'workstation', agentCommandId: command });
+  const cancelled = stored({ method: 'workstation', agentCommandId: command, status: 'cancelled', decidedAt: new Date() });
+  state.results.push(...getReads(pending), [cancelled], [], ...getReads(cancelled));
+  await cancel(actor, org, user);
+  const sets = state.calls.filter((c) => c.name === 'set').map((c) => c.args[0] as Record<string, unknown>);
+  expect(sets).toContainEqual(expect.objectContaining({ status: 'cancelled', result: expect.objectContaining({ reason: 'caller_verification_cancelled' }) }));
+});
+
+describe('public not_me window (#6354 W03)', () => {
+  const DAY = 86_400_000;
+  beforeEach(() => vi.mocked(handleRejection).mockClear());
+
+  it('honours a late link not_me within 24 hours of creation and records the first decision IP', async () => {
+    const row = stored({ method: 'sms', status: 'expired', createdAt: new Date(Date.now() - DAY + 60_000) });
+    state.results.push([row], [], [{ ...row, status: 'rejected_by_user' }]);
+    const result = await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '198.51.100.10' });
+    expect(handleRejection).toHaveBeenCalledWith(user);
+    expect(result.status).toBe('rejected_by_user');
+    const set = state.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
+    expect(set).toEqual({ decidedFromIp: '198.51.100.10' });
+  });
+
+  it.each(['sms', 'email'] as const)('ignores a %s not_me older than 24 hours', async (method) => {
+    const row = stored({ method, status: 'expired', createdAt: new Date(Date.now() - DAY - 1_000) });
+    state.results.push([row]);
+    const result = await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '198.51.100.10' });
+    expect(handleRejection).not.toHaveBeenCalled();
+    expect(result.status).toBe('expired');
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
+
+  it('keeps the unbounded rejection window for non-link methods', async () => {
+    const row = stored({ method: 'workstation', status: 'expired', createdAt: new Date(Date.now() - 3 * DAY) });
+    state.results.push([row], [{ ...row, status: 'rejected_by_user' }]);
+    await applyDecision({ verificationId: user, decision: { kind: 'not_me' } });
+    expect(handleRejection).toHaveBeenCalledWith(user);
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
+
+  it('a repeated not_me never overwrites the first decision IP', async () => {
+    const row = stored({ method: 'email', status: 'rejected_by_user', createdAt: new Date() });
+    state.results.push([row], [row]);
+    await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '203.0.113.20' });
+    expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
 });

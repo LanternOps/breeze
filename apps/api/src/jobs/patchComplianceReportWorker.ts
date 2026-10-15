@@ -21,6 +21,12 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { compliancePercentWithImageTerm, type ContainerImageComplianceTerms } from '@breeze/shared';
+import {
+  containerImageComplianceTerms,
+  imageTermAppliesToView,
+  sumContainerImageTerms,
+} from '../services/workloads/imageCompliance';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -67,12 +73,17 @@ type ComplianceSummary = {
   missing: number;
   skipped: number;
   compliancePercent: number;
+  /** W06: present only when the org has container images to count (and the report is unfiltered). */
+  containerImages?: ContainerImageComplianceTerms;
 };
 
 let patchComplianceReportQueue: Queue<PatchComplianceReportJobData> | null = null;
 let patchComplianceReportWorker: Worker<PatchComplianceReportJobData> | null = null;
 
-function buildSummaryFromRows(rows: Array<{ status: string; count: number }>): ComplianceSummary {
+function buildSummaryFromRows(
+  rows: Array<{ status: string; count: number }>,
+  imageTerms: ContainerImageComplianceTerms | null = null,
+): ComplianceSummary {
   const summary = {
     total: 0,
     pending: 0,
@@ -91,13 +102,15 @@ function buildSummaryFromRows(rows: Array<{ status: string; count: number }>): C
     }
   }
 
-  const compliancePercent = summary.total > 0
-    ? Math.round((summary.installed / summary.total) * 100)
-    : 100;
+  // W06 (#8195): a stale image is one more pending item, a current image one
+  // more installed item; unknowns never enter the ratio. `total` and the
+  // status counts stay OS-patch counts (rowCount is derived from them).
+  const compliancePercent = compliancePercentWithImageTerm(summary.installed, summary.total, imageTerms);
 
   return {
     ...summary,
-    compliancePercent
+    compliancePercent,
+    ...(imageTerms ? { containerImages: imageTerms } : {})
   };
 }
 
@@ -152,11 +165,22 @@ export async function generateComplianceSummary(
     .where(and(...complianceConditions))
     .groupBy(devicePatches.status);
 
+  // Same device population as the aggregate above (org, non-ephemeral, not
+  // parked, the effective site scope). A severity/source-filtered report is
+  // about patches with that property, which an image does not have.
+  const imageTerms = imageTermAppliesToView({ source, severity })
+    ? sumContainerImageTerms((await containerImageComplianceTerms({
+        orgIds: [orgId],
+        ...(scope.kind === 'restricted' ? { siteIds: scope.siteIds } : {}),
+      })).values())
+    : null;
+
   return buildSummaryFromRows(
     statusCounts.map((row) => ({
       status: row.status,
       count: Number(row.count)
-    }))
+    })),
+    imageTerms
   );
 }
 
@@ -176,6 +200,13 @@ export function formatComplianceCsv(reportId: string, orgId: string, source: Pat
     ['skipped', summary.skipped],
     ['compliance_percent', summary.compliancePercent]
   ];
+  if (summary.containerImages) {
+    rows.push(
+      ['stale_images', summary.containerImages.stale],
+      ['current_images', summary.containerImages.current],
+      ['images_not_checked', summary.containerImages.unknown]
+    );
+  }
 
   return [
     csvRow(['metric', 'value']),

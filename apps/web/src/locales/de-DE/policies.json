@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Diese Richtlinie steuert nur, ob Geräte Aufforderungen zur Rechteerhöhung erfassen. Entscheidungen (automatisch genehmigen, ablehnen oder Genehmigung anfordern), die Anforderungswarteschlange und der Auditverlauf werden in der",
         "privilegedAccessConsole": "Konsole für privilegierten Zugriff"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Anwendungsregeln",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Blockieren Sie bestimmte Anwendungen vom automatischen Patchen oder heften Sie sie an eine maximale Version.",
-        "blocked": "Blockiert",
-        "pinned": "Angepinnt",
-        "maxVersion": "Max-Version",
-        "pinnedApplicationsNeedAVersion": "Angepinnte Anwendungen benötigen eine Version.",
-        "addApplication": "Anwendung hinzufügen",
-        "searchCatalogAndDetectedApplications": "Katalog und erkannte Anwendungen durchsuchen...",
-        "searching": "Suche...",
-        "catalog": "Katalog",
-        "couldnTLoadApplicationsYouCanStill": "Anwendungen konnten nicht geladen werden. Sie können sie trotzdem über die Paket-ID unten hinzufügen.",
-        "noMatches": "Keine Übereinstimmungen.",
-        "orEnterAPackageIDManually": "Oder geben Sie manuell eine Paket-ID ein",
-        "block": "blockieren",
-        "pin": "Stift",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Regel für {{application}} entfernen"
-      },
       "patchTab": {
         "daily": "Täglich",
         "weekly": "Wöchentlich",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Änderungen speichern",
         "createRing": "Ring erstellen",
-        "thirdPartyRingHint": "Regeln zur automatischen Genehmigung von Drittanbieter-Updates werden im verknüpften Update-Ring konfiguriert."
+        "thirdPartyRingHint": "Regeln zur automatischen Genehmigung von Drittanbieter-Updates werden im verknüpften Update-Ring konfiguriert.",
+        "ringOwnsApprovalHint": "Automatische Genehmigung und Anwendungsregeln werden im verknüpften Update-Ring festgelegt.",
+        "noRingManualApprovalHint": "Kein Ring verknüpft – Patches werden erst nach manueller Genehmigung installiert.",
+        "unavailableRingOption": "Nicht verfügbarer Ring",
+        "ringInvalidTitle": "Der verknüpfte Update-Ring ist nicht mehr verfügbar.",
+        "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
+        "ringInvalidLegacyRules": "Diese Richtlinie enthält noch Anwendungsregeln aus der Zeit vor der Verlagerung in Ringe ({{rules}}). Der gewählte Ring muss bereits genau diese Regeln enthalten – fügen Sie sie zuerst dort hinzu.",
+        "approvalRulesMovedToRing": "Automatische Genehmigung und Anwendungsregeln werden jetzt im Update-Ring festgelegt. Bearbeiten Sie sie im verknüpften Ring. War diese Seite schon vor dem Update geöffnet, laden Sie sie neu und speichern Sie erneut."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",
@@ -1116,6 +1104,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "Die Befunde werden im Schwachstellen-Dashboard angezeigt",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Diese Richtlinie steuert nur, ob Geräte gescannt werden. Erkannte CVEs, Risikobewertungen und Abhilfemaßnahmen werden im verwaltet",
         "vulnerabilitiesConsole": "Schwachstellenkonsole"
+      },
+      "systemProtectionTab": {
+        "title": "Systemschutz",
+        "description": "Vor Patches, Skripten und Softwareinstallationen einen Windows-Systemwiederherstellungspunkt versuchen",
+        "beforePatching": "Vor Patch-Installationen",
+        "beforePatchingHelp": "Vor der Installation von Betriebssystem-Updates einen Wiederherstellungspunkt versuchen.",
+        "beforeScripts": "Vor Skripten",
+        "beforeScriptsHelp": "Vor dem Ausführen eines Skripts auf dem Gerät einen Wiederherstellungspunkt versuchen.",
+        "beforeSoftwareInstall": "Vor Softwareinstallationen",
+        "beforeSoftwareInstallHelp": "Vor dem Installieren oder Aktualisieren von Software einen Wiederherstellungspunkt versuchen.",
+        "labelPrefix": "Präfix für die Bezeichnung",
+        "labelPrefixHelp": "Wird in Windows am Anfang der Beschreibung jedes Wiederherstellungspunkts angezeigt. Höchstens 64 Zeichen.",
+        "platformDefaultNote": "Keine Richtlinie zugewiesen. Plattformstandard: Ein Wiederherstellungspunkt wird nur vor Patch-Installationen versucht.",
+        "legacyAgentWarning": "Das Deaktivieren wirkt nur bei Agents, die Unterstützung für die Systemwiederherstellung melden. Ältere Agents versuchen weiterhin vor Patch-Installationen einen Wiederherstellungspunkt.",
+        "aboutTitle": "Über die Systemwiederherstellung",
+        "aboutBody": "Gilt nur für Windows-Geräte. Die Systemwiederherstellung umfasst Systemdateien, die Registrierung, installierte Programme und Einstellungen. Sie ist keine Sicherung und umfasst keine persönlichen Dateien. Windows erlaubt standardmäßig höchstens einen Wiederherstellungspunkt pro 24 Stunden, und ein erstellter Punkt kann später von Windows entfernt werden oder unbrauchbar werden."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",

@@ -2754,7 +2754,7 @@ jobs:
     runs-on: macos-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2775,7 +2775,7 @@ jobs:
         working-directory: agent
         env:
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-        run: CGO_ENABLED=1 go test -race -count=1 ./...
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 20m ./...
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
@@ -4295,6 +4295,19 @@ jobs:
       - name: Run the portal hydration specs
         run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts tests/partner-sending-domains.spec.ts
 
+      # Playwright replaces both output directories on each invocation. Upload
+      # this slice before the approval run can erase its failed traces.
+      - name: Upload portal hydration Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: portal-dev-e2e-playwright-report
+          path: |
+            e2e-tests/playwright-report
+            e2e-tests/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
       # #5786 — the two WebAuthn approval specs (real ceremonies via Chrome's
       # virtual authenticator). A spec no job runs cannot go red; #5273 stayed
       # stale for weeks that way. What they need from the stack is already
@@ -4318,11 +4331,11 @@ jobs:
           E2E_MACOS_DEVICE_ID: 42fc7de0-48f5-48f2-846b-6dd95924baf9
         run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/intent-self-approve.spec.ts tests/ai-operator-approve-after-browser-close.spec.ts --workers=1
 
-      - name: Upload Playwright report
+      - name: Upload WebAuthn approval Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: portal-dev-e2e-playwright-report
+          name: portal-dev-e2e-approval-playwright-report
           path: |
             e2e-tests/playwright-report
             e2e-tests/test-results

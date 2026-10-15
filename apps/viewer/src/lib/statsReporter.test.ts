@@ -172,4 +172,59 @@ describe('createStatsReporter', () => {
     await tick(5000);
     expect(sent.length).toBe(1);
   });
+
+  describe('onSample (stats overlay, #8241)', () => {
+    function pairReports(): Record<string, unknown>[] {
+      return [
+        { type: 'candidate-pair', state: 'succeeded', currentRoundTripTime: 0.042, localCandidateId: 'L', remoteCandidateId: 'R' },
+        { id: 'L', candidateType: 'relay', protocol: 'udp' },
+        { id: 'R', candidateType: 'srflx' },
+        { id: 'C1', type: 'codec', mimeType: 'video/H264' },
+      ];
+    }
+
+    it('hands the overlay RTT, bitrate, loss, codec, decoder and ICE path each tick', async () => {
+      const { conn, setReports } = makeConnection({
+        reports: [...pairReports(), inboundRtp({ codecId: 'C1', decoderImplementation: 'VideoToolbox', packetsReceived: 100, packetsLost: 0 })],
+      });
+      const samples: unknown[] = [];
+      const stop = createStatsReporter({ getConnection: () => conn, intervalMs: 1000, onSample: (s) => samples.push(s) });
+      await tick(1000);
+      setReports([...pairReports(), inboundRtp({
+        codecId: 'C1', decoderImplementation: 'VideoToolbox',
+        bytesReceived: 251000, timestamp: 2000, packetsReceived: 190, packetsLost: 10,
+      })]);
+      await tick(1000);
+      expect(samples).toHaveLength(2);
+      expect(samples[1]).toEqual({
+        rttMs: 42,
+        kbps: 2000,
+        lossPct: 10,
+        codec: 'H264',
+        decoder: 'VideoToolbox',
+        iceLocal: 'relay/udp',
+        iceRemote: 'srflx',
+      });
+      stop();
+    });
+
+    it('reports loss as null until there is an interval to measure it over', async () => {
+      const { conn } = makeConnection({ reports: [inboundRtp()] });
+      const samples: Array<{ lossPct: number | null }> = [];
+      const stop = createStatsReporter({ getConnection: () => conn, intervalMs: 1000, onSample: (s) => samples.push(s) });
+      await tick(1000);
+      expect(samples[0].lossPct).toBeNull();
+      stop();
+    });
+
+    it('still samples when the control channel is closed (the overlay is local)', async () => {
+      const { conn, sent } = makeConnection({ readyState: 'closed', reports: [inboundRtp()] });
+      const onSample = vi.fn();
+      const stop = createStatsReporter({ getConnection: () => conn, intervalMs: 1000, onSample });
+      await tick(1000);
+      expect(sent).toHaveLength(0);
+      expect(onSample).toHaveBeenCalledTimes(1);
+      stop();
+    });
+  });
 });

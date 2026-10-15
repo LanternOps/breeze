@@ -57,6 +57,7 @@ export const SETTINGS_SECRET_JSON_PATHS: readonly (readonly string[])[] = [
 
 export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'billing_link_tokens', column: 'token_ct', kind: 'text', aadBinding: 'row', description: 'Autopay bearer link token, encrypted and bound to its row id' },
+  { table: 'caller_verifications', column: 'sealed_link_token', kind: 'text', aadBinding: 'row', description: 'Caller verification SMS/email link token (#6354 W03), sealed for post-commit (re)delivery and bound to its row id' },
 
   { table: 'sso_providers', column: 'client_secret', kind: 'text', description: 'OIDC client secret' },
   { table: 'user_sso_identities', column: 'access_token', kind: 'text', description: 'SSO access token' },

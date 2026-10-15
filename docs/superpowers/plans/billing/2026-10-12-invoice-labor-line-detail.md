@@ -1,6 +1,7 @@
 ---
 issue: 8078
 status: draft-for-approval
+tracking_issue: LanternOps/breeze#8601
 ---
 
 # Invoice Labor Line Detail Implementation Plan
@@ -279,7 +280,7 @@ Setting shape (Open Decision 3, appendix pattern): `partners.invoice_line_detail
 ### Task 3.1: Migration, schema, resolver, freeze at issue
 
 **Files:**
-- Create: `apps/api/migrations/2026-12-23-180100-invoice-line-detail-setting.sql`
+- Create: `apps/api/migrations/2026-12-27-020000-invoice-line-detail-setting.sql`
 - Modify: `db/schema/orgs.ts` (~153), `db/schema/invoices.ts` (~91), `invoiceService.ts` (issue stamp ~1580; `quoteAcceptService.ts` ~556 when it issues), `routes/invoices/settings.ts`, `routes/invoices/lifecycle.ts` (per-send override, mirror ~52 only if the appendix has one: it does), `lib/sendComposer.ts`, `invoicePresentation.ts` or a new `resolveLineDetail(invoice, partner)` beside the appendix resolver, `tenantExportPolicyRegistry.ts` (`invoices` ~521 `included` += `line_detail`, `line_grouping`)
 - Test: `invoiceLineDetail.resolve.test.ts`, `invoiceIssue.lineDetailFreeze.integration.test.ts`, export-policy/cascade/RLS suites
 

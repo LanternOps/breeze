@@ -84,6 +84,9 @@ const C = CommandTypes;
  * synchronous answer, so an offline device is a hard `device_offline`.
  */
 const LIVE: readonly string[] = [
+  // Caller verification (#6354 W02): a challenge with its own short deadline;
+  // delivering it after the caller hung up would prompt a user out of context.
+  C.CALLER_VERIFY,
   C.LIST_PROCESSES,
   C.GET_PROCESS,
   C.KILL_PROCESS,
@@ -278,6 +281,7 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.SOFTWARE_UNINSTALL,
   C.SOFTWARE_UPDATE,
   C.HOMEBREW_BOOTSTRAP,
+  C.PAM_RECONCILE_V2,
   C.CIS_BENCHMARK,
   C.APPLY_CIS_REMEDIATION,
   C.PATCH_SCAN,
@@ -295,6 +299,9 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.APPLY_AUDIT_POLICY_BASELINE,
   C.FILESYSTEM_ANALYSIS,
   C.SELF_UNINSTALL,
+  // Endpoint messages queue for an offline device; the send route caps each
+  // one at min(expiresAt, standard TTL) via an explicit deliverBy (#8293).
+  C.NOTIFY_USER,
   C.VAULT_SYNC,
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,

@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Cette politique ne contrôle que la capture des indications d’élévation par les appareils. Les verdicts (approbation automatique, refus, exigence d’approbation), la file d’attente des requêtes et l’historique d’audit sont gérés dans le",
         "privilegedAccessConsole": "Console d’accès privilégié"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Règles d’application",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquez certaines applications pour les exclure de l’application automatique des correctifs, ou limitez-les à une version maximale.",
-        "blocked": "Bloqué",
-        "pinned": "Épinglé",
-        "maxVersion": "Version Max",
-        "pinnedApplicationsNeedAVersion": "Les applications épinglées ont besoin d’une version.",
-        "addApplication": "Ajouter une application",
-        "searchCatalogAndDetectedApplications": "Rechercher dans le catalogue et les applications détectées...",
-        "searching": "Cherche...",
-        "catalog": "Catalogue",
-        "couldnTLoadApplicationsYouCanStill": "Impossible de charger les applications — vous pouvez toujours ajouter par paquet ID ci-dessous.",
-        "noMatches": "Pas d’allumettes.",
-        "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
-        "block": "Bloquer",
-        "pin": "Épingle",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Supprimer la règle pour {{application}}"
-      },
       "patchTab": {
         "daily": "Quotidien",
         "weekly": "Hebdomadaire",
@@ -897,7 +878,14 @@
         "text2xl": "2XL",
         "saveChanges": "Enregistrer les modifications",
         "createRing": "Créer un anneau",
-        "thirdPartyRingHint": "Les règles d'approbation automatique des mises à jour tierces se configurent dans l'anneau de mise à jour lié."
+        "thirdPartyRingHint": "Les règles d'approbation automatique des mises à jour tierces se configurent dans l'anneau de mise à jour lié.",
+        "ringOwnsApprovalHint": "L'approbation automatique et les règles d'application se configurent dans l'anneau de mise à jour lié.",
+        "noRingManualApprovalHint": "Aucun anneau lié — les correctifs ne s'installent qu'après une approbation manuelle.",
+        "unavailableRingOption": "Anneau indisponible",
+        "ringInvalidTitle": "L'anneau de mise à jour lié n'est plus disponible.",
+        "ringInvalidBody": "Les correctifs de cette stratégie sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
+        "ringInvalidLegacyRules": "Cette stratégie contient encore des règles d'application antérieures à leur transfert vers les anneaux ({{rules}}). L'anneau choisi doit déjà comporter exactement ces règles : ajoutez-les-y d'abord.",
+        "approvalRulesMovedToRing": "L'approbation automatique et les règles d'application se configurent désormais dans l'anneau de mise à jour. Modifiez-les dans l'anneau lié. Si cette page était ouverte avant la mise à jour, rechargez-la puis enregistrez à nouveau."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",
@@ -1116,6 +1104,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "Les constats apparaissent dans le tableau de bord Vulnérabilités",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Cette politique ne contrôle que la possibilité de scanner les appareils. Les CVE détectés, les scores de risque et les actions de remédiation sont gérés dans le",
         "vulnerabilitiesConsole": "Console des vulnérabilités"
+      },
+      "systemProtectionTab": {
+        "title": "Protection du système",
+        "description": "Tenter un point de restauration Windows avant les correctifs, les scripts et les installations de logiciels",
+        "beforePatching": "Avant l’installation des correctifs",
+        "beforePatchingHelp": "Tenter un point de restauration avant d’installer les mises à jour du système d’exploitation.",
+        "beforeScripts": "Avant les scripts",
+        "beforeScriptsHelp": "Tenter un point de restauration avant d’exécuter un script sur l’appareil.",
+        "beforeSoftwareInstall": "Avant l’installation de logiciels",
+        "beforeSoftwareInstallHelp": "Tenter un point de restauration avant d’installer ou de mettre à jour un logiciel.",
+        "labelPrefix": "Préfixe du libellé",
+        "labelPrefixHelp": "Affiché au début de la description de chaque point de restauration dans Windows. 64 caractères au maximum.",
+        "platformDefaultNote": "Aucune stratégie n’est attribuée. Valeur par défaut de la plateforme : un point de restauration est tenté uniquement avant l’installation des correctifs.",
+        "legacyAgentWarning": "La désactivation ne s’applique qu’aux agents qui signalent la prise en charge de la Restauration du système. Les agents plus anciens continueront de tenter un point de restauration avant l’installation des correctifs.",
+        "aboutTitle": "À propos de la Restauration du système",
+        "aboutBody": "S’applique uniquement aux appareils Windows. La Restauration du système couvre les fichiers système, le registre, les programmes installés et les paramètres. Ce n’est pas une sauvegarde et elle ne couvre pas les fichiers personnels. Par défaut, Windows limite la création de points de restauration à un toutes les 24 heures, et un point créé peut ensuite être supprimé par Windows ou devenir inutilisable."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Les alertes de garantie sont facultatives : les appareils sans stratégie de garantie attribuée ne génèrent aucune alerte. Les seuils ci-dessous s’appliquent uniquement aux couvertures à durée déterminée. Les abonnements AppleCare actifs se renouvellent au lieu d’expirer ; leurs alertes d’expiration sont donc toujours masquées.",

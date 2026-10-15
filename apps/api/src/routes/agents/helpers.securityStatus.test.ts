@@ -77,6 +77,31 @@ describe('upsertSecurityStatusForDevice — avProducts persistence (#3641)', () 
       .resolves.toEqual({ provider: 'other', threatCount: 0 });
   });
 
+  // #8538 — the agent omits realTimeProtection when every applicable AV source
+  // failed (#7965) but still marshals provider:"other". "other" must stay a real
+  // attribution for an unmapped product; a failed collection stores "unknown".
+  it('stores provider unknown when collection failed (provider other, realTimeProtection omitted)', async () => {
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'other' }))
+      .resolves.toMatchObject({ provider: 'unknown' });
+    expect(firstInsert().provider).toBe('unknown');
+    expect(lastSet().provider).toBe('unknown');
+    expect(firstInsert().realTimeProtection).toBeNull();
+  });
+
+  it('keeps provider other for a real reading (unmapped product, realTimeProtection known)', async () => {
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'other', realTimeProtection: false }))
+      .resolves.toMatchObject({ provider: 'other' });
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'other', realTimeProtection: true }))
+      .resolves.toMatchObject({ provider: 'other' });
+  });
+
+  it('accepts an explicit provider unknown and leaves successful collections alone', async () => {
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'unknown' }))
+      .resolves.toMatchObject({ provider: 'unknown' });
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'windows_defender' }))
+      .resolves.toMatchObject({ provider: 'windows_defender' });
+  });
+
   it('persists the per-product array on insert and on conflict update', async () => {
     await upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, {
       provider: 'windows_defender',

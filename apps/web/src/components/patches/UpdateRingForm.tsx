@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import { useForm, useFieldArray, type UseFormRegisterReturn } from 'react-hook-form';
+import { useForm, useFieldArray, Controller, type UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
 
 function makeRingSchema(t: TFunction<'patches'>) {
   const categoryRuleSchema = z.object({
@@ -51,6 +52,28 @@ function makeRingSchema(t: TFunction<'patches'>) {
     // Ring-owned approval gate (#1317): the default rule of the approval policy.
     autoApprove: ringAutoApproveFormSchema,
     categoryRules: z.array(categoryRuleSchema).optional(),
+    // Per-app block / pin rules (#8187): the ring owns them now. The API
+    // (ringAppRulesSchema) rejects duplicates by canonical key and surfaces
+    // that as a save error; the editor itself dedupes on add.
+    appRules: z
+      .array(
+        z.object({
+          source: z.string().min(1),
+          packageId: z.string().min(1),
+          displayName: z.string().optional(),
+          action: z.enum(['block', 'pin']),
+          pinnedVersion: z.string().optional(),
+        }),
+      )
+      .max(200)
+      .superRefine((rules, ctx) => {
+        if (rules.some((rule) => rule.action === 'pin' && !rule.pinnedVersion?.trim())) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: t('ringAppRules.pinnedApplicationsNeedAVersion'),
+          });
+        }
+      }),
   });
 }
 
@@ -60,7 +83,8 @@ export type UpdateRingFormValues = z.infer<RingSchema>;
 /** Defaults arrive from the API, which may omit the third-party fields (older
  *  rings) or send `thirdPartyDeferralDays: null` meaning "inherit the ring
  *  hold". Both are normalized to concrete form values in `initialValues`. */
-export type UpdateRingFormDefaults = Partial<Omit<UpdateRingFormValues, 'autoApprove'>> & {
+export type UpdateRingFormDefaults = Partial<Omit<UpdateRingFormValues, 'autoApprove' | 'appRules'>> & {
+  appRules?: RingAppRule[];
   autoApprove?: Partial<Omit<UpdateRingFormValues['autoApprove'], 'thirdPartyDeferralDays'>> & {
     thirdPartyDeferralDays?: number | null;
   };
@@ -230,6 +254,7 @@ export default function UpdateRingForm({
       gracePeriodHours: 4,
       autoApprove: { enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: 0, autoApproveUnrated: false },
       categoryRules: [],
+      appRules: [],
       ...defaultValues,
     } satisfies UpdateRingFormDefaults;
     const inheritedHold = merged.autoApprove?.deferralDays ?? merged.deferralDays ?? 0;
@@ -255,6 +280,7 @@ export default function UpdateRingForm({
         autoApproveUnrated: r.autoApproveUnrated ?? false,
         deferralDaysOverride: r.deferralDaysOverride ?? inheritedHold,
       })),
+      appRules: merged.appRules ?? [],
     };
     // defaultValues is only read on mount by react-hook-form, so the empty
     // dependency array is intentional.
@@ -570,6 +596,18 @@ export default function UpdateRingForm({
           )}
         </div>
       </div>
+
+      {/* Zone C — Application rules (#8187): per-app block / pin, owned by the ring. */}
+      <Controller
+        control={control}
+        name="appRules"
+        render={({ field }) => (
+          <RingAppRulesSection
+            rules={(field.value ?? []) as RingAppRule[]}
+            onChange={(rules) => field.onChange(rules)}
+          />
+        )}
+      />
 
       {/* Blast-radius note (edit only) */}
       {usage?.deviceCount != null && usage.deviceCount > 0 && (

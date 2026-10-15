@@ -329,7 +329,8 @@ export function matchesSearchQuery(d: Device, query: string): boolean {
     (d.lanIp?.includes(query) ?? false) ||
     (d.wanIp?.includes(query) ?? false) ||
     (d.serialNumber?.toLowerCase().includes(query) ?? false) ||
-    (d.assetTag?.toLowerCase().includes(query) ?? false)
+    (d.assetTag?.toLowerCase().includes(query) ?? false) ||
+    (d.lastUser?.toLowerCase().includes(query) ?? false)
   );
 }
 

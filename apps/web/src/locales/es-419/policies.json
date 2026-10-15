@@ -793,25 +793,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Esta política solo controla si los dispositivos capturan indicaciones de elevación. Los veredictos (aprobar automáticamente, denegar, requerir aprobación), la cola de solicitudes y el historial de auditoría se administran en el",
         "privilegedAccessConsole": "Consola de acceso privilegiado"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Reglas de aplicación",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquee aplicaciones específicas para que no se apliquen parches automatizados o fíjelas a una versión máxima.",
-        "blocked": "Bloqueado",
-        "pinned": "Fijado",
-        "maxVersion": "versión máxima",
-        "pinnedApplicationsNeedAVersion": "Las aplicaciones fijadas necesitan una versión.",
-        "addApplication": "Agregar aplicación",
-        "searchCatalogAndDetectedApplications": "Buscar catálogo y aplicaciones detectadas...",
-        "searching": "Buscando...",
-        "catalog": "catálogo",
-        "couldnTLoadApplicationsYouCanStill": "No se pudieron cargar las aplicaciones; aún puede agregarlas mediante el paquete ID a continuación.",
-        "noMatches": "Sin coincidencias.",
-        "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
-        "block": "bloquear",
-        "pin": "PIN",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Eliminar regla para {{application}}"
-      },
       "patchTab": {
         "daily": "A diario",
         "weekly": "Semanalmente",
@@ -897,7 +878,14 @@
         "text2xl": "2xl",
         "saveChanges": "Guardar cambios",
         "createRing": "Crear anillo",
-        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado."
+        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado.",
+        "ringOwnsApprovalHint": "La aprobación automática y las reglas de aplicación se configuran en el anillo de actualización vinculado.",
+        "noRingManualApprovalHint": "Ningún anillo vinculado: los parches se instalan solo después de la aprobación manual.",
+        "unavailableRingOption": "Anillo no disponible",
+        "ringInvalidTitle": "El anillo de actualización vinculado ya no está disponible.",
+        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
+        "ringInvalidLegacyRules": "Esta directiva aún tiene reglas de aplicación de antes de que pasaran a los anillos ({{rules}}). El anillo que elija ya debe tener exactamente estas reglas: agréguelas primero a él.",
+        "approvalRulesMovedToRing": "La aprobación automática y las reglas de aplicación ahora se configuran en el anillo de actualización. Edítelas en el anillo vinculado. Si esta página estaba abierta antes de la actualización, recárguela y vuelva a guardar."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",
@@ -1116,6 +1104,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "Los hallazgos aparecen en el panel de vulnerabilidades.",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Esta política solo controla si los dispositivos se analizan. Los CVE detectados, las puntuaciones de riesgo y las acciones correctivas se gestionan en el",
         "vulnerabilitiesConsole": "Consola de vulnerabilidades"
+      },
+      "systemProtectionTab": {
+        "title": "Protección del sistema",
+        "description": "Intentar un punto de restauración de Windows antes de parches, scripts e instalaciones de software",
+        "beforePatching": "Antes de instalar parches",
+        "beforePatchingHelp": "Intentar un punto de restauración antes de instalar actualizaciones del sistema operativo.",
+        "beforeScripts": "Antes de scripts",
+        "beforeScriptsHelp": "Intentar un punto de restauración antes de ejecutar un script en el dispositivo.",
+        "beforeSoftwareInstall": "Antes de instalar software",
+        "beforeSoftwareInstallHelp": "Intentar un punto de restauración antes de instalar o actualizar software.",
+        "labelPrefix": "Prefijo de la etiqueta",
+        "labelPrefixHelp": "Aparece al inicio de la descripción de cada punto de restauración en Windows. Hasta 64 caracteres.",
+        "platformDefaultNote": "No hay ninguna política asignada. Valor predeterminado de la plataforma: solo se intenta un punto de restauración antes de instalar parches.",
+        "legacyAgentWarning": "Desactivar esta opción solo tiene efecto en agentes que informan compatibilidad con Restaurar sistema. Los agentes anteriores seguirán intentando un punto de restauración antes de instalar parches.",
+        "aboutTitle": "Acerca de Restaurar sistema",
+        "aboutBody": "Solo se aplica a dispositivos Windows. Restaurar sistema abarca archivos del sistema, el registro, los programas instalados y la configuración. No es una copia de seguridad y no abarca archivos personales. De forma predeterminada, Windows limita la creación de puntos de restauración a uno cada 24 horas, y un punto creado puede ser eliminado más tarde por Windows o dejar de ser utilizable."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Las alertas de garantía son voluntarias: los dispositivos sin una política de garantía asignada nunca alertan. Los umbrales a continuación se aplican únicamente a la cobertura de plazo fijo: las suscripciones activas de AppleCare se renuevan en lugar de caducar, por lo que sus alertas de vencimiento siempre se suprimen.",

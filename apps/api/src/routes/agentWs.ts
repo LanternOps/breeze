@@ -71,6 +71,7 @@ import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import { ingestRestorePointOutcome } from '../services/restorePointIngest';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import {
@@ -136,6 +137,7 @@ import {
 import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
 import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
 import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
+import { registerConnectedAgentSource } from '../services/capacityMetrics';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = [
   'terminal_output_base64',
@@ -2120,6 +2122,68 @@ async function runWithAgentOrgDbAccess<T>(
  *   'handled' for everything else (recorded, duplicate, orphaned, ignored, or
  *   an error in a post-commit follow-up).
  */
+/**
+ * Late caller-verification rejection on the WS transport (#6354 W02).
+ *
+ * Returns false (nothing done) unless the result is a readable "not_me" for
+ * a caller_verify command owned by THIS socket's agent. Otherwise: re-check
+ * containment, commit a durable receipt on the command row in its own short
+ * system context, then apply the decision in the agent's org context. If the
+ * decision step fails the committed receipt lets reconciliation finish it.
+ */
+async function applyLateCallerVerifyRejection(
+  agentId: string,
+  result: z.infer<typeof commandResultSchema>,
+  orgId: string,
+  partnerId: string,
+  credentialAlreadyReauthorized: boolean,
+): Promise<boolean> {
+  const late = await import('../services/callerVerification/workstationResult');
+  if (!late.isCallerNotMe(result.stdout, result.result)) return false;
+  const [owned] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ command: deviceCommands, deviceId: devices.id })
+        .from(deviceCommands)
+        .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
+        .where(and(
+          eq(deviceCommands.id, result.commandId),
+          eq(devices.agentId, agentId),
+          eq(deviceCommands.type, 'caller_verify'),
+          eq(deviceCommands.targetRole, 'agent'),
+        ))
+        .limit(1),
+    'callerVerification.wsLateRejection.owner'),
+  );
+  if (!owned) return false;
+  if (!credentialAlreadyReauthorized && !(await isAgentDeviceStillAuthorized(agentId))) {
+    disconnectAgent(agentId, 4001, 'Device no longer authorized');
+    return true;
+  }
+  const recorded = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => late.persistCallerNotMeReceipt({
+      commandId: result.commandId, deviceId: owned.deviceId, stdout: result.stdout, result: result.result,
+    }), 'callerVerification.wsLateRejection.receipt'),
+  );
+  if (!recorded) {
+    console.warn(`[AgentWs] late caller rejection for command ${result.commandId} could not be recorded; ignored`);
+    return true;
+  }
+  try {
+    await runWithAgentOrgDbAccess('agentWs.commandResult.callerRejection', orgId, partnerId, () =>
+      late.handleCallerVerifyResult({
+        agentId, command: owned.command, commandId: result.commandId, result,
+        resolvedDeviceId: owned.deviceId, stdout: result.stdout,
+      }),
+    );
+  } catch (err) {
+    // The receipt is committed; reconciliation re-applies the rejection.
+    console.error(`[AgentWs] late caller rejection for command ${result.commandId} not applied yet; reconciliation will retry`, err);
+    captureException(err, undefined, { command_result_phase: 'ws_caller_late_rejection', commandId: result.commandId });
+  }
+  return true;
+}
+
 async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
@@ -2255,6 +2319,13 @@ async function processCommandResult(
     }
 
     if (!command || !resolvedDeviceId) {
+      // Caller verification (#6354 W02): a "This is not me" for a caller_verify
+      // command that is already terminal never matches the lookup above, but
+      // must still be honoured. Owned/authorized inside; anything else falls
+      // through to the orphaned path exactly as before.
+      if (await applyLateCallerVerifyRejection(agentId, result, orgId, partnerId, credentialAlreadyReauthorized)) {
+        return 'handled';
+      }
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here (short org
       // wrap for the same reason as the non-UUID branch above, #3021).
@@ -2548,6 +2619,24 @@ async function processCommandResult(
       return 'handled';
     }
     if (finalized === 'queue_ack') return 'handled';
+
+    // #4757 W06: terminalise the restore-point ledger only now -- the CAS won
+    // and its transaction committed, so a losing duplicate frame never reaches
+    // here. Before the validationError return: the command still went
+    // terminal, so the observation is real. Skipped entirely when the agent
+    // sent no restorePoint (every agent shipped to date). The ingest opens its
+    // own system context and is non-throwing; the catch is the last line
+    // keeping a ledger problem out of an already-recorded command result.
+    if (result.restorePoint !== undefined) {
+      try {
+        await ingestRestorePointOutcome(result.restorePoint, {
+          orgId, deviceId: resolvedDeviceId!, deviceCommandId: result.commandId,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] restore-point ledger ingest failed for ${result.commandId}; result unaffected:`, err);
+        captureException(err, undefined, { restore_point_ingest: 'call_site' });
+      }
+    }
 
     // Derived from the authoritative command state, so it runs only AFTER that
     // state committed. It opens its own system context (automation ledger).
@@ -4935,6 +5024,9 @@ export function getConnectedAgentIds(): string[] {
 export function getConnectedAgentCount(): number {
   return activeConnections.size;
 }
+
+// W07 (#8146): publish the owned-socket count as breeze_agent_ws_connections (spec §3 agent-cost denominator).
+registerConnectedAgentSource(getConnectedAgentCount);
 
 /**
  * Broadcast a message to all connected agents

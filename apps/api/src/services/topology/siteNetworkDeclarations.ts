@@ -67,3 +67,27 @@ export async function readSiteNetworkDeclarations(tx: Pick<typeof db, 'execute'>
   const folded = foldDeclarations(list.slice(0, SITE_DECLARATION_ENTRY_CAP));
   return { prefixes: folded.bySite.get(scope.siteId.toLowerCase()) ?? new Map(), ignored: folded.ignored + Math.max(0, list.length - SITE_DECLARATION_ENTRY_CAP) };
 }
+
+/** Declaration entries read per org (site location W2 evaluator); past it the org's presence coverage is limited. */
+export const ORG_DECLARATION_ENTRY_CAP = 16_384;
+
+/**
+ * Every site's declarations in one org (W2 presence evaluator, S§7.2 step 1): enabled discovery profiles' subnets
+ * plus network baselines, normalized by the same rule as the per-site read.
+ */
+export async function readOrgNetworkDeclarations(tx: Pick<typeof db, 'execute'>, orgId: string): Promise<{
+  bySite: Map<string, Map<string, DeclarationSource[]>>; ignored: number; truncated: boolean;
+}> {
+  const rows = await tx.execute<DeclarationRow>(sql`
+    SELECT 'discovery_profile' AS kind, p.id::text AS id, p.site_id::text AS site_id, s.subnet AS raw
+      FROM discovery_profiles p CROSS JOIN LATERAL unnest(p.subnets) AS s(subnet)
+      WHERE p.org_id = ${orgId}::uuid AND p.enabled
+    UNION ALL
+    SELECT 'network_baseline', b.id::text, b.site_id::text, b.subnet
+      FROM network_baselines b WHERE b.org_id = ${orgId}::uuid
+    ORDER BY 3, 1, 2, 4 LIMIT ${ORG_DECLARATION_ENTRY_CAP + 1}`);
+  const list = [...rows];
+  const truncated = list.length > ORG_DECLARATION_ENTRY_CAP;
+  const folded = foldDeclarations(list.slice(0, ORG_DECLARATION_ENTRY_CAP));
+  return { bySite: folded.bySite, ignored: folded.ignored, truncated };
+}

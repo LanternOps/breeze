@@ -237,6 +237,34 @@ describe('GET /invoices/public/:token', () => {
     expect(data.lines[0]).not.toHaveProperty('ticketSubject');
   });
 
+  // #8604: the public link applies the invoice's FROZEN line-detail toggles
+  // server-side — a withheld note never reaches the customer payload.
+  it('applies the frozen line detail: date + per-day carried, note and worked time withheld', async () => {
+    resolveMock.mockResolvedValue(invoice({ lineGrouping: 'day', lineShowDate: true, lineShowNote: false, lineShowWorkedTime: false }));
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{
+      ticketId: null, ticketNumber: null, ticketCategory: null, name: null, description: 'Diagnosed paper jam',
+      quantity: '1.50', unitPrice: '100.00', taxable: false, lineTotal: '150.00', workedMinutes: 110,
+      sourceType: 'time_entry', workDate: '2026-09-16',
+    }]);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.invoice.lineGrouping).toBe('day');
+    expect(data.lines[0]).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });
+    expect(data.lines[0]).not.toHaveProperty('sourceType');
+    expect(JSON.stringify(data)).not.toContain('Diagnosed paper jam');
+  });
+
+  it('an invoice issued before #8604 (NULL columns) keeps the default customer view', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{
+      ticketId: null, ticketNumber: null, ticketCategory: null, name: null, description: 'Diagnosed paper jam',
+      quantity: '1.50', unitPrice: '100.00', taxable: false, lineTotal: '150.00', workedMinutes: 110,
+      sourceType: 'time_entry', workDate: '2026-09-16',
+    }]);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.invoice.lineGrouping).toBe('entry');
+    expect(data.lines[0]).toMatchObject({ name: null, description: 'Diagnosed paper jam', workedMinutes: 110, workDate: null });
+  });
+
   it('renders the calm no-amounts state for a void invoice', async () => {
     resolveMock.mockResolvedValue(invoice({ status: 'void', replacedByInvoiceId: 'r1' }));
     dbResults.push(PARTNER_ROW, BRAND_ROW);

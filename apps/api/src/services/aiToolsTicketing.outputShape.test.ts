@@ -28,7 +28,7 @@ import { aiTools } from './aiToolNames';
 import './aiTools';
 
 const TICKET_ROW = {
-  id: 'id', internalNumber: 'num', subject: 'medium', status: 'short', priority: 'short',
+  id: 'id', internalNumber: 'num', subject: 'medium', status: 'short', priority: 'short', ticketType: 'short',
   assignedTo: 'id', orgId: 'id', deviceId: 'id', createdAt: 'ts',
 } as const;
 const auth = () => ({
@@ -43,7 +43,7 @@ describe('manage_tickets (list) output shape (A-W05)', () => {
 
   it('declares limit/offset/cursor with the shared text', () => {
     const props = (tool.definition.input_schema as { properties: Record<string, { description: string }> }).properties;
-    expect(props.limit!.description).toBe('Max results (default 20, max 100)');
+    expect(props.limit!.description).toBe('Max results (default 18, max 100)');
     expect(props.offset!.description).toBe('Pagination offset (default 0)');
     expect(props.cursor!.description).toBe('nextCursor from a previous call with the same filters');
   });
@@ -53,7 +53,7 @@ describe('manage_tickets (list) output shape (A-W05)', () => {
     const raw = await tool.handler({ action: 'list' }, auth());
     const out = JSON.parse(raw) as Record<string, unknown>;
     expect(Object.keys(out)).toEqual(expect.arrayContaining(['tickets', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor']));
-    expect(out.limit).toBe(20);
+    expect(out.limit).toBe(18);
     expect(out.offset).toBe(0);
     expectDefaultPageFits('manage_tickets', raw);
   });

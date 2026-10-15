@@ -118,6 +118,9 @@ const m = vi.hoisted(() => ({
   isDeadlockError: vi.fn(),
   buildEdrAdapterContext: vi.fn(),
   enqueueOrReplaceStale: vi.fn(),
+  evaluateEdrAlerts: vi.fn(),
+  evaluateEdrEndpointHealth: vi.fn(),
+  evaluateEdrStaleTenants: vi.fn(),
 }));
 
 vi.mock('../services/edrProviders/types', () => ({ EdrProviderRequestError: FakeEdrError }));
@@ -149,6 +152,11 @@ vi.mock('../services/edrProviders/persist', () => ({
   isDeadlockError: m.isDeadlockError,
 }));
 vi.mock('../services/edrProviders/mapping', () => ({ autoMapEdrTenants: m.autoMapEdrTenants }));
+vi.mock('../services/edrProviders/alerts', () => ({
+  evaluateEdrAlerts: (...a: unknown[]) => { events.push(`alerts@${contextDepth}`); return m.evaluateEdrAlerts(...a); },
+  evaluateEdrEndpointHealth: (...a: unknown[]) => { events.push(`health@${contextDepth}`); return m.evaluateEdrEndpointHealth(...a); },
+  evaluateEdrStaleTenants: m.evaluateEdrStaleTenants,
+}));
 vi.mock('../services/edrProviders/deviceMatching', () => ({ matchEdrEndpoints: m.matchEdrEndpoints }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
@@ -163,7 +171,7 @@ vi.mock('../services/bullmqQueue', () => ({
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: m.enqueueOrReplaceStale }));
 
 import {
-  edrSyncJobId, enqueueEdrSync, isFinalSyncAttempt, selectDueStreams, syncEdrDetections, syncEdrInventory,
+  __testOnly, edrSyncJobId, enqueueEdrSync, isFinalSyncAttempt, selectDueStreams, syncEdrDetections, syncEdrInventory,
 } from './edrProviderSync';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000e1';
@@ -212,6 +220,9 @@ beforeEach(() => {
   m.refreshDetectionDeviceLinks.mockResolvedValue(undefined);
   m.isDeadlockError.mockImplementation((e: unknown) => pgErrorCode(e) === '40P01');
   m.enqueueOrReplaceStale.mockResolvedValue({ id: 'job-1' });
+  m.evaluateEdrAlerts.mockResolvedValue({ published: 0, suppressed: 0 });
+  m.evaluateEdrEndpointHealth.mockResolvedValue({ raised: 0, resolved: 0 });
+  m.evaluateEdrStaleTenants.mockResolvedValue({ published: 0 });
 });
 
 describe('isFinalSyncAttempt', () => {
@@ -620,5 +631,42 @@ describe('detections resilience + secret scrubbing (test gap)', () => {
     await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow();
     expect(JSON.stringify(updatePayloads)).not.toContain(SECRET_KEY);
     expect(updatePayloads.find((u) => u.payload.lastInventorySyncStatus === 'error')).toBeDefined();
+  });
+});
+
+// #8166 A6: Phase 4 runs after the Phase 3 commit, outside any db context, and
+// can never fail the sync job or mark the connection errored.
+describe('Phase 4 notifier wiring (#8166)', () => {
+  it('detections: evaluateEdrAlerts runs after Phase 3, outside the db context', async () => {
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.evaluateEdrAlerts).toHaveBeenCalledWith(CONNECTION_ID, expect.objectContaining({ now: expect.any(Date) }));
+    expect(events).toContain('alerts@0');
+    expect(events.indexOf('alerts@0')).toBeGreaterThan(events.indexOf('for-update'));
+  });
+
+  it('detections: a fence trip (nothing persisted) publishes nothing', async () => {
+    reReadRow = { ...BASE_ROW, baseUrl: 'https://other.gravityzone.bitdefender.com' };
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.evaluateEdrAlerts).not.toHaveBeenCalled();
+  });
+
+  it('detections: a throwing notifier never fails the job nor writes an error status', async () => {
+    m.evaluateEdrAlerts.mockRejectedValueOnce(new Error('alert path down'));
+    await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+    expect(updatePayloads.some((u) => u.payload.lastDetectionSyncStatus === 'error' || u.payload.status === 'error')).toBe(false);
+  });
+
+  it('inventory: evaluateEdrEndpointHealth runs after Phase 3; a throw never fails the job', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.evaluateEdrEndpointHealth).toHaveBeenCalledWith(CONNECTION_ID);
+    expect(events).toContain('health@0');
+    m.evaluateEdrEndpointHealth.mockRejectedValueOnce(new Error('down'));
+    await expect(syncEdrInventory(CONNECTION_ID)).resolves.toBeUndefined();
+  });
+
+  it('sync-all tick runs the stale-tenant check; a throw there still enqueues due streams', async () => {
+    m.evaluateEdrStaleTenants.mockRejectedValueOnce(new Error('redis down'));
+    await expect(__testOnly.processSyncAll()).resolves.toEqual(expect.objectContaining({ queued: expect.any(Number) }));
+    expect(m.evaluateEdrStaleTenants).toHaveBeenCalledTimes(1);
   });
 });

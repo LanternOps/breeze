@@ -1771,7 +1771,8 @@
       "saveNotes": "Notizen konnten nicht gespeichert werden.",
       "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
       "updateLine": "Position konnte nicht aktualisiert werden.",
-      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
+      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
+      "saveLineDetail": "Die Darstellung der Zeiteinträge konnte nicht aktualisiert werden"
     },
     "fields": {
       "descriptionOptional": "Beschreibung (optional)",
@@ -1838,6 +1839,35 @@
     "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
     "unsavedField": {
       "lines": "Positionen"
+    },
+    "lineDetail": {
+      "default": "Abrechnungsvorgabe",
+      "grouping": "Darstellung",
+      "groupingDay": "Nach Tag gruppieren",
+      "groupingEntry": "Eine Zeile pro Eintrag",
+      "help": "Überschreibt Ihre Abrechnungsvorgabe nur für diesen Entwurf.",
+      "hide": "Ausblenden",
+      "show": "Anzeigen",
+      "showDate": "Arbeitsdatum",
+      "showNote": "Notiz des Technikers",
+      "showWorkedTime": "Geleistete vs. abgerechnete Zeit",
+      "title": "Zeiteintragszeilen"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_one": "{{count}} Zeile blockiert die Ausstellung: Ihr Zeiteintrag wurde auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_other": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "button": "Aus Zeiteinträgen aktualisieren",
+      "drifted": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_one": "{{count}} Zeile unverändert: Die abgerechnete Zeit des Zeiteintrags passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_other": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "error": "Aktualisierung aus Zeiteinträgen fehlgeschlagen",
+      "help": "Übernimmt Notizen, Arbeitsdatum und Freigabe aus den Zeiteinträgen. Mengen, Preise und von Hand bearbeitete Beschreibungen ändern sich nie.",
+      "running": "Wird aktualisiert…",
+      "skipped": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_one": "{{count}} Zeile übersprungen: Der Zeiteintrag wurde anderweitig abgerechnet, entfernt oder ist für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_other": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "summary": "Aktualisiert: {{refreshed}} · Bereits aktuell: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2115,7 @@
     "empty": "Diese Rechnung enthält noch keine Einzelposten.",
     "fallbackTitle": "Rechnung",
     "issued": "Ausgestellt",
+    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
@@ -2354,7 +2385,15 @@
       "prefixInvalid": "Geben Sie ein Präfix mit 1 bis 12 Zeichen ein.",
       "taxRateInvalid": "Geben Sie einen Steuersatz von 0 bis 100 ein.",
       "termsDaysInvalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
-      "title": "Abrechnungsvorgaben"
+      "title": "Abrechnungsvorgaben",
+      "lineDetailTitle": "Zeiteintragszeilen auf Rechnungen",
+      "lineDetailHelp": "Legen Sie fest, was Kunden bei Zeiteinträgen sehen. Ein Rechnungsentwurf kann dies überschreiben; die Auswahl wird bei der Ausstellung der Rechnung festgeschrieben.",
+      "lineShowDate": "Arbeitsdatum anzeigen",
+      "lineShowNote": "Notiz des Technikers anzeigen",
+      "lineShowWorkedTime": "Geleistete und abgerechnete Zeit anzeigen",
+      "lineGrouping": "Darstellung",
+      "lineGroupingEntry": "Eine Zeile pro Eintrag",
+      "lineGroupingDay": "Nach Tag gruppieren"
     },
     "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
     "loading": "Abrechnungseinstellungen werden geladen…",

@@ -18,6 +18,7 @@ import type {
   WorkloadKind,
   WorkloadRuntime,
   WorkloadState,
+  WorkloadUpstreamStatus,
 } from '@breeze/shared';
 import { devices } from './devices';
 import { organizations } from './orgs';
@@ -61,12 +62,23 @@ export const deviceWorkloads = pgTable(
     firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
     lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    // Image currency (W05, spec §9). Written by the imageCurrencyWorker; ingest
+    // resets them to pending when the row's image reference or digest changes.
+    upstreamStatus: varchar('upstream_status', { length: 20 }).$type<WorkloadUpstreamStatus>().default('pending').notNull(),
+    upstreamDigest: varchar('upstream_digest', { length: 80 }),
+    upstreamCheckedAt: timestamp('upstream_checked_at'),
+    // W06 (spec §10.2): when upstream_status first became `behind` for the
+    // current local image. Transition logic lives in services/workloads/behindSince.ts.
+    behindSince: timestamp('behind_since'),
   },
   (t) => [
     uniqueIndex('device_workloads_device_runtime_workload_uniq').on(t.deviceId, t.runtime, t.workloadId),
     index('device_workloads_org_id_idx').on(t.orgId),
     index('device_workloads_org_image_idx')
       .on(t.orgId, t.imageRepository, t.imageTag)
+      .where(sql`${t.kind} = 'container'`),
+    index('device_workloads_upstream_due_idx')
+      .on(t.upstreamCheckedAt.asc().nullsFirst())
       .where(sql`${t.kind} = 'container'`),
     foreignKey({
       columns: [t.deviceId, t.orgId],
@@ -80,6 +92,10 @@ export const deviceWorkloads = pgTable(
     check(
       'device_workloads_state_chk',
       sql`${t.state} IN ('running', 'stopped', 'paused', 'restarting', 'other')`,
+    ),
+    check(
+      'device_workloads_upstream_status_chk',
+      sql`${t.upstreamStatus} IN ('pending', 'current', 'behind', 'pinned', 'local', 'private', 'unsupported_registry', 'not_found', 'error')`,
     ),
   ],
 );

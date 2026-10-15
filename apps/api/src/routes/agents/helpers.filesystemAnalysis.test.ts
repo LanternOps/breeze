@@ -83,8 +83,16 @@ vi.mock('../../services/filesystemAnalysis', () => ({
 vi.mock('../../services/cloudflareMtls', () => ({ CloudflareMtlsService: vi.fn() }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../metrics', () => ({ recordSoftwareRemediationDecision: vi.fn() }));
+vi.mock('../../services/aiRemoteToolsPolicy', () => ({
+  checkDeviceRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+}));
+vi.mock('../../services/filesystemAnalysisPolicyMetrics', () => ({
+  recordFilesystemAutoTriggerSkipped: vi.fn(),
+}));
 
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
+import { recordFilesystemAutoTriggerSkipped } from '../../services/filesystemAnalysisPolicyMetrics';
 
 import { handleFilesystemAnalysisCommandResult, maybeQueueThresholdFilesystemAnalysis } from './helpers';
 import {
@@ -123,6 +131,7 @@ beforeEach(() => {
   vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('claimed');
   vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({ ok: true });
   vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
+  vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue({ allowed: true });
 });
 
 describe('handleFilesystemAnalysisCommandResult — baseline completion', () => {
@@ -464,5 +473,85 @@ describe('filesystem analysis for a device parked in a holding org', () => {
       ([vals]) => (vals as { type?: string }).type === 'filesystem_analysis',
     );
     expect(commandInserts).toEqual([]);
+  });
+});
+
+describe('automatic filesystem_analysis triggers honour the remote-tools policy (#8509)', () => {
+  const DENIED = { allowed: false, reason: 'Remote tools are disabled by configuration policy' } as const;
+  // The refusal memo is module-level state: give every test its own device.
+  let seq = 0;
+  let device: never;
+  beforeEach(() => {
+    seq += 1;
+    device = { id: `00000000-0000-4000-8000-0000000001${String(seq).padStart(2, '0')}`, osType: 'windows', orgId: ORG_ID } as never;
+  });
+
+  function pendingBaseline() {
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([{ path: 'D:\\media', depth: 1 }]);
+    selectQueue.push([{ osType: 'windows' }]);
+    selectQueue.push([{ mountPoint: 'D:\\', usedPercent: 5 }]);
+    selectQueue.push([]); // no in-flight scan
+  }
+  const chainCommand = () => ({
+    id: '00000000-0000-4000-8000-0000000000cc',
+    deviceId: DEVICE_ID,
+    payload: { scanMode: 'baseline', trigger: 'threshold', autoContinue: true, resumeAttempt: 3, path: 'D:\\' },
+    createdBy: null,
+  }) as never;
+
+  it('threshold scan: policy off -> no command row, skip counted', async () => {
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue(DENIED);
+    const out = await maybeQueueThresholdFilesystemAnalysis(device, 99);
+    expect(out).toEqual({ queued: false });
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledWith((device as { id: string }).id);
+    expect(recordFilesystemAutoTriggerSkipped).toHaveBeenCalledWith('threshold');
+  });
+
+  it('threshold scan: a refused device is not re-looked-up on the next heartbeat', async () => {
+    const other = device;
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue(DENIED);
+    await maybeQueueThresholdFilesystemAnalysis(other, 99);
+    await maybeQueueThresholdFilesystemAnalysis(other, 99);
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledTimes(1);
+    expect(recordFilesystemAutoTriggerSkipped).toHaveBeenCalledTimes(1);
+  });
+
+  it('threshold scan: policy on -> queues as before', async () => {
+    const out = await maybeQueueThresholdFilesystemAnalysis(device, 99);
+    expect(out.queued).toBe(true);
+    expect(insertValuesMock).toHaveBeenCalledTimes(1);
+    expect(recordFilesystemAutoTriggerSkipped).not.toHaveBeenCalled();
+  });
+
+  it('threshold scan: below the disk threshold never looks up the policy', async () => {
+    await maybeQueueThresholdFilesystemAnalysis(device, 10);
+    expect(checkDeviceRemoteToolsPolicy).not.toHaveBeenCalled();
+  });
+
+  it('continuation: policy off -> chain stops, no queue and no raw insert', async () => {
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue(DENIED);
+    pendingBaseline();
+    await handleFilesystemAnalysisCommandResult(chainCommand(), result(), ORG_ID);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(recordFilesystemAutoTriggerSkipped).toHaveBeenCalledWith('auto_resume');
+  });
+
+  it('continuation: the in-flight result is still persisted when the policy is off', async () => {
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValue(DENIED);
+    pendingBaseline();
+    await handleFilesystemAnalysisCommandResult(chainCommand(), result(), ORG_ID);
+    expect(saveFilesystemSnapshot).toHaveBeenCalled();
+  });
+
+  it('continuation: policy on -> resumes as before', async () => {
+    pendingBaseline();
+    await handleFilesystemAnalysisCommandResult(chainCommand(), result(), ORG_ID);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID, 'filesystem_analysis', expect.objectContaining({ resumeAttempt: 4 }), expect.anything(),
+    );
+    expect(recordFilesystemAutoTriggerSkipped).not.toHaveBeenCalled();
   });
 });

@@ -17,7 +17,7 @@
     "@fontsource/dm-sans": "^5.3.0",
     "@fontsource/hanken-grotesk": "^5.3.0",
     "@fontsource/literata": "^5.3.0",
-    "@hookform/resolvers": "^5.4.0",
+    "@hookform/resolvers": "^5.9.1",
     "astro": "^7.3.5",
     "clsx": "^2.1.1",
     "lucide-react": "^1.21.0",

@@ -33,6 +33,8 @@ export interface TimerEffects {
   toast: { kind: 'success' | 'error'; text: string };
   /** Inline note next to the control, or null to clear it. */
   notice: string | null;
+  /** #8196: the approval gate refused a billable start; offer "log as non-billable". */
+  offerNonBillable: boolean;
 }
 
 const QUEUED_TOAST = 'Saved offline — it will sync when you reconnect.';
@@ -48,6 +50,7 @@ function base(): TimerEffects {
     reload: false,
     toast: { kind: 'success', text: '' },
     notice: null,
+    offerNonBillable: false,
   };
 }
 
@@ -117,6 +120,10 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
       },
       toast: { kind: 'success', text: LOCAL_START_TOAST },
     };
+  }
+
+  if (outcome.reason === 'approval-required') {
+    return failure(outcome, { offerNonBillable: true });
   }
 
   return failure(outcome);

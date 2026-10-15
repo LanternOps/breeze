@@ -24,8 +24,9 @@ import type { SQL } from 'drizzle-orm';
  *    green against exactly that style of test (the wave-3825 test-hardening
  *    pass, `8763a3239`, which is not on main).
  */
-const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
+const { dbMock, updateWheres, updateSets, updateReturns, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
+  const updateSets: Record<string, unknown>[] = [];
   const updateReturns: unknown[][] = [];
   const alertRow = {
     id: '55555555-5555-4555-8555-555555555555',
@@ -42,15 +43,18 @@ const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
       from: () => ({ where: () => ({ limit: () => Promise.resolve([alertRow]) }) }),
     }),
     update: () => ({
-      set: () => ({
-        where: (predicate: unknown) => {
-          updateWheres.push(predicate);
-          return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
-        },
-      }),
+      set: (values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return {
+          where: (predicate: unknown) => {
+            updateWheres.push(predicate);
+            return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
+          },
+        };
+      },
     }),
   };
-  return { dbMock, updateWheres, updateReturns, alertRow };
+  return { dbMock, updateWheres, updateSets, updateReturns, alertRow };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -93,6 +97,7 @@ const resolve = (overrides: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   updateWheres.length = 0;
+  updateSets.length = 0;
   updateReturns.length = 0;
   vi.clearAllMocks();
   publishEvent.mockResolvedValue('evt');
@@ -133,6 +138,17 @@ describe('manage_alerts resolve — the winning caller', () => {
     expect(publishEvent).toHaveBeenCalledTimes(1);
     expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.resolved');
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('manage_alerts resolve — resolution reason (#7281)', () => {
+  it("stamps resolution_reason 'manual' on the human resolve", async () => {
+    updateReturns.push([{ id: alertRow.id }]);
+
+    await resolve();
+
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toMatchObject({ status: 'resolved', resolutionReason: 'manual' });
   });
 });
 

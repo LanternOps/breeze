@@ -29,6 +29,8 @@ export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './warrantyInlineSettings';
+export * from './systemProtectionInlineSettings';
+export * from './securityAgents';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';
@@ -1129,6 +1131,7 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export * from './backupDestinationPrefix';
 export {
   deliverableCadenceSchema,
   deliverableCompletionModeSchema,
@@ -1229,6 +1232,8 @@ export * from './topology';
 export * from './topologyCollection';
 
 export * from './topologyConfiguration';
+
+export * from './topologyPresence';
 
 export * from './topologyDiagnostics';
 
@@ -1384,6 +1389,7 @@ export const maintenanceInlineSettingsSchema = z
 
 export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;
 export * from './callerVerification';
+export * from './endpointMessage';
 
 // Business reports (#3198 W02)
 export * from './businessReports';

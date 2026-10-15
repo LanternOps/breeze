@@ -49,6 +49,9 @@ const workloadRow = (over: Record<string, unknown> = {}) =>
     firstSeenAt: T,
     lastSeenAt: T,
     updatedAt: T,
+    upstreamStatus: 'pending',
+    upstreamDigest: null,
+    upstreamCheckedAt: null,
     ...over,
   }) as never;
 
@@ -81,6 +84,18 @@ it('sorts workloads by runtime, then state, then name, then workloadId', () => {
     ],
   );
   expect(view.workloads.map((w) => w.id)).toEqual(['5', '4', '3', '2', '1']);
+});
+
+it('carries the image-currency verdict (W05) after the existing keys', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const view = buildDeviceWorkloadsView(
+    1,
+    [],
+    [workloadRow({ upstreamStatus: 'behind', upstreamDigest: digest, upstreamCheckedAt: T }), workloadRow({ id: 'w2', workloadId: 'b' })],
+  );
+  expect(view.workloads[0]).toMatchObject({ upstreamStatus: 'behind', upstreamDigest: digest, upstreamCheckedAt: '2026-10-06T12:00:00.000Z' });
+  expect(view.workloads[1]).toMatchObject({ upstreamStatus: 'pending', upstreamDigest: null, upstreamCheckedAt: null });
+  expect(Object.keys(view.workloads[0]!).slice(-3)).toEqual(['upstreamStatus', 'upstreamDigest', 'upstreamCheckedAt']);
 });
 
 it('sorts runtimes by name', () => {

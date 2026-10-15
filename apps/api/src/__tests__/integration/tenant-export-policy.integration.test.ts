@@ -76,4 +76,9 @@ describe('tenant export policy registry (live schema)', () => {
       expect(columns?.[column]?.decision).toBe('include');
     }
   });
+
+  it('exports the Support hours flag (block hours W04)', () => {
+    const columns = getTenantExportPolicyRegistry().portal_branding?.columns;
+    expect(columns?.enable_hour_block?.decision).toBe('include');
+  });
 });

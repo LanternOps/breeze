@@ -110,6 +110,10 @@ elif [ -f "breeze-watchdog" ]; then
     cp breeze-watchdog "$TRUSTED_BIN_DIR/breeze-watchdog"
     chown root:wheel "$TRUSTED_BIN_DIR/breeze-watchdog"
     chmod 755 "$TRUSTED_BIN_DIR/breeze-watchdog"
+elif [ ! -f "$TRUSTED_BIN_DIR/breeze-watchdog" ]; then
+    # Nothing bundled and nothing installed: say so instead of finishing
+    # silently. The enrolled agent installs the watchdog itself (#8621).
+    echo "Warning: no watchdog bundled; the agent installs one after enrollment when the control plane offers a watchdog build for this platform" >&2
 fi
 
 # Install backup helper. The agent spawns breeze-backup from its own directory

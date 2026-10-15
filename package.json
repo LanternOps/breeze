@@ -6,6 +6,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev": "turbo run dev",
+    "dev:app": "turbo run dev --filter=@breeze/api --filter=@breeze/web --filter=@breeze/portal",
     "build": "turbo run build",
     "lint": "node --test scripts/eslint/no-direct-sqlstate.test.mjs && turbo run lint",
     "test": "turbo run test",
@@ -38,7 +39,7 @@
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.65.0",
-    "eslint": "^10.11.0",
+    "eslint": "^10.12.0",
     "tsx": "^4.23.15",
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"

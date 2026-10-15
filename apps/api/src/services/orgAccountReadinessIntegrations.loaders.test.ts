@@ -11,6 +11,8 @@ import {
   accountingConnections,
   accountingEntityMappings,
   dnsFilterIntegrations,
+  edrConnections,
+  edrTenants,
   huntressIntegrations,
   huntressOrgMappings,
   m365Connections,
@@ -24,6 +26,7 @@ import {
 import {
   loadAccounting,
   loadDns,
+  loadEdr,
   loadHuntress,
   loadIntegrationReadiness,
   loadM365,
@@ -287,6 +290,93 @@ describe('loadHuntress / loadSentinelOne', () => {
   });
 });
 
+describe('loadEdr', () => {
+  const conn = (id: string, status: string, provider = 'bitdefender') => ({ id, provider, status });
+  const tenant = (connectionId: string, orgId: string, lastDetectionSyncStatus: string | null) => ({ connectionId, orgId, lastDetectionSyncStatus });
+
+  it('not_configured: no active connection → no connector and no rows, tenants never read', async () => {
+    setupDb(new Map<unknown, unknown[]>([[edrConnections, []]]));
+    expect(await loadEdr(PARTNER, [ORG_A])).toEqual({ connectors: [], rows: [] });
+    expect(wheres.has(edrTenants)).toBe(false);
+    const where = compiled(wheres, edrConnections);
+    expect(where.sql).toContain('"edr_connections"."partner_id" = ');
+    expect(where.sql).toContain('"edr_connections"."is_active" = ');
+    expect(where.params).toEqual([PARTNER, true]);
+  });
+
+  it('unmapped: active connection but no tenant maps to the org → connector, no row', async () => {
+    setupDb(new Map<unknown, unknown[]>([[edrConnections, [conn('c1', 'connected')]], [edrTenants, []]]));
+    const out = await loadEdr(PARTNER, [ORG_A]);
+    expect(out.connectors).toEqual([{ system: 'edr', state: 'connected' }]);
+    expect(out.rows).toEqual([]);
+    const where = compiled(wheres, edrTenants);
+    expect(where.sql).toContain('"edr_tenants"."partner_id" = ');
+    expect(where.sql).toContain('"edr_tenants"."org_id" in (');
+    expect(where.params).toEqual([PARTNER, ORG_A]);
+  });
+
+  it('connected: mapped tenant whose detection sync succeeded (success or partial) → linked with the provider label', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [edrConnections, [conn('c1', 'connected')]],
+      [edrTenants, [tenant('c1', ORG_A, 'success'), tenant('c1', ORG_B, 'partial')]],
+    ]));
+    const out = await loadEdr(PARTNER, [ORG_A, ORG_B]);
+    expect(out.rows).toEqual([
+      { orgId: ORG_A, integration: { system: 'edr', state: 'linked', provider: 'Bitdefender GravityZone' } },
+      { orgId: ORG_B, integration: { system: 'edr', state: 'linked', provider: 'Bitdefender GravityZone' } },
+    ]);
+  });
+
+  it('needs_attention: reauth_required / error connection or errored tenant → error row', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [edrConnections, [conn('c1', 'reauth_required'), conn('c2', 'error')]],
+      [edrTenants, [tenant('c1', ORG_A, 'success'), tenant('c2', ORG_B, 'success')]],
+    ]));
+    let out = await loadEdr(PARTNER, [ORG_A, ORG_B]);
+    expect(out.connectors).toEqual([{ system: 'edr', state: 'reauth_required' }]);
+    expect(out.rows.map((r) => r.integration.state)).toEqual(['error', 'error']);
+    expect(out.rows[0]!.integration.reason).toBe('connector_error');
+
+    setupDb(new Map<unknown, unknown[]>([
+      [edrConnections, [conn('c1', 'connected')]],
+      [edrTenants, [tenant('c1', ORG_A, 'error')]],
+    ]));
+    out = await loadEdr(PARTNER, [ORG_A]);
+    expect(out.rows).toEqual([{ orgId: ORG_A, integration: { system: 'edr', state: 'error', reason: 'sync_error', provider: 'Bitdefender GravityZone' } }]);
+  });
+
+  it('pending: connected tenant that never synced or is mid-run is not yet connected', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [edrConnections, [conn('c1', 'connected')]],
+      [edrTenants, [tenant('c1', ORG_A, null), tenant('c1', ORG_B, 'running')]],
+    ]));
+    const out = await loadEdr(PARTNER, [ORG_A, ORG_B]);
+    expect(out.rows.map((r) => [r.integration.state, r.integration.reason])).toEqual([
+      ['pending', 'never_synced'],
+      ['pending', 'never_synced'],
+    ]);
+  });
+
+  it('two connections, one failing for the org → needs_attention; no provider label when two providers map the org', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [edrConnections, [conn('c1', 'connected', 'bitdefender'), conn('c2', 'reauth_required', 'sophos')]],
+      [edrTenants, [tenant('c1', ORG_A, 'success'), tenant('c2', ORG_A, 'success')]],
+    ]));
+    const out = await loadEdr(PARTNER, [ORG_A]);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0]!.integration.state).toBe('error');
+    expect(out.rows[0]!.integration.provider).toBeUndefined();
+    expect(JSON.stringify(out)).not.toMatch(/vendor|secret/i);
+  });
+
+  it('with no accepted org still reports the connector and reads no tenants', async () => {
+    setupDb(new Map<unknown, unknown[]>([[edrConnections, [conn('c1', 'connected')]]]));
+    const out = await loadEdr(PARTNER, []);
+    expect(out).toEqual({ connectors: [{ system: 'edr', state: 'connected' }], rows: [] });
+    expect(wheres.has(edrTenants)).toBe(false);
+  });
+});
+
 describe('loadIntegrationReadiness', () => {
   it('composes every source, aggregates per org and keys every accepted org', async () => {
     setupDb(new Map<unknown, unknown[]>([
@@ -302,6 +392,7 @@ describe('loadIntegrationReadiness', () => {
       [dnsFilterIntegrations, []],
       [huntressIntegrations, []],
       [s1Integrations, []],
+      [edrConnections, []],
     ]));
     const out = await loadIntegrationReadiness({ partnerId: PARTNER, orgIds: [ORG_A, ORG_B], grants: { accounting: true, pax8: true }, now: NOW });
     expect(out.connectors).toEqual([{ system: 'quickbooks', state: 'connected' }]);

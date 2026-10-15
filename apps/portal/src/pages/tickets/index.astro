@@ -6,8 +6,8 @@ import TicketList from '../../components/portal/TicketList';
 import { SupportUsagePanel } from '../../components/portal/SupportUsagePanel';
 import { PageHeader } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
-import { buildServerApiConfig } from '../../lib/server';
-import { decideTicketsPage } from '../../lib/ticketsPage';
+import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
+import { decideTicketsPage, hourBlockPanelState, shouldLoadHourBlock } from '../../lib/ticketsPage';
 
 const config = buildServerApiConfig(Astro.request);
 const [response, usageResponse] = await Promise.all([
@@ -19,6 +19,18 @@ if (response.statusCode === 401 || usageResponse.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
 }
+
+// Block hours (#8179): the "Support hours" card renders inside the Support
+// usage panel. Fetched only when the MSP enabled it AND usage itself loaded
+// (branding is memoised per request by the layout, so this is not a 2nd call).
+const branding = await loadPortalBranding(Astro.request);
+const hourBlockResponse = shouldLoadHourBlock(branding, usageResponse)
+  ? await portalApi.getHourBlock(config)
+  : null;
+if (hourBlockResponse?.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+const { hourBlock, hourBlockStartsOn, hourBlockError } = hourBlockPanelState(hourBlockResponse);
 
 const { ticketsDisabled, usageStrictlyDisabled, redirectHome } =
   decideTicketsPage(response, usageResponse);
@@ -63,6 +75,9 @@ const showSupportUsage =
         <SupportUsagePanel
           usage={usageResponse.data ?? null}
           error={usageResponse.error}
+          hourBlock={hourBlock}
+          hourBlockStartsOn={hourBlockStartsOn}
+          hourBlockError={hourBlockError}
         />
       </section>
     )

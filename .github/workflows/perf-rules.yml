@@ -1,0 +1,52 @@
+name: Perf rules (promtool + KPI comparator)
+
+# Scaling W07 (#8146). GitHub-hosted and non-blocking: not part of ci-success.
+# Checks the Prometheus rules (promtool check + the capacity KPI unit tests) and
+# runs the perf comparator / CLI / script tests in load-tests/perf. The perf gate
+# itself (perf.yml) never runs on a pull request.
+on:
+  pull_request:
+    paths:
+      - 'monitoring/rules/**'
+      - 'monitoring/grafana/dashboards/**'
+      - 'load-tests/perf/**'
+      - '.github/workflows/perf-rules.yml'
+
+concurrency:
+  group: perf-rules-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    name: promtool + comparator tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+
+      # The same image tag docker-compose.monitoring.yml pins, so the rule engine
+      # under test is the one the monitoring stack runs. Move both together.
+      - name: promtool check rules
+        run: |
+          docker run --rm -v "$PWD/monitoring/rules:/rules:ro" --entrypoint promtool \
+            prom/prometheus:v2.52.0 check rules /rules/breeze-rules.yml
+
+      - name: promtool test rules
+        run: |
+          docker run --rm -v "$PWD/monitoring/rules:/rules:ro" --entrypoint promtool \
+            prom/prometheus:v2.52.0 test rules /rules/tests/breeze-capacity-kpis.test.yml
+
+      - name: Comparator, CLI and script tests
+        working-directory: load-tests
+        run: node --test perf/*.test.mjs

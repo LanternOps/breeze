@@ -16,8 +16,18 @@ import { observeLogin } from './subjects';
 
 export type SessionPrincipal = { sid?: string; uid?: number; username: string; upn?: string };
 
+/**
+ * True when a reported principal could bind (carries a UPN, matches the session
+ * username, exactly one of SID/UID). Pure, so the sessions route can skip its
+ * device share-lock for reports that will never write — the common case.
+ */
+export function isObservablePrincipal(username: string, p: SessionPrincipal | undefined): p is SessionPrincipal & { upn: string } {
+  return Boolean(p?.upn) && p!.username.toLowerCase() === username.toLowerCase()
+    && ((p!.sid !== undefined) !== (p!.uid !== undefined));
+}
+
 export async function observeSessionPrincipal(orgId: string, hostname: string, username: string, p: SessionPrincipal | undefined): Promise<void> {
-  if (!p?.upn || p.username.toLowerCase() !== username.toLowerCase() || ((p.sid !== undefined) === (p.uid !== undefined))) return;
+  if (!isObservablePrincipal(username, p)) return;
   assertInTransaction('observeSessionPrincipal');
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${orgId}`}))`);
   const rows = await db.select().from(b).where(and(

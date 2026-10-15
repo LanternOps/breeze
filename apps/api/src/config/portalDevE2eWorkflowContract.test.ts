@@ -38,6 +38,31 @@ describe('portal-dev-e2e CI job contract', () => {
     expect(job).toContain('E2E_MODE=true');
   });
 
+  it('preserves failed hydration traces before the next Playwright run replaces them', () => {
+    const hydration = job.indexOf('- name: Run the portal hydration specs');
+    const upload = job.indexOf('- name: Upload portal hydration Playwright report');
+    const approval = job.indexOf('- name: Run the WebAuthn approval specs');
+    expect(hydration).toBeGreaterThan(-1);
+    expect(upload).toBeGreaterThan(hydration);
+    expect(approval).toBeGreaterThan(upload);
+    const step = job.slice(upload, nextStepIndex(job, upload));
+    expect(step).toMatch(/^ {8}if: failure\(\)$/m);
+    expect(step).toContain('name: portal-dev-e2e-playwright-report');
+    expect(step).toContain('e2e-tests/playwright-report');
+    expect(step).toContain('e2e-tests/test-results');
+  });
+
+  it('keeps the approval report in a distinct artifact after its own run', () => {
+    const approval = job.indexOf('- name: Run the WebAuthn approval specs');
+    const upload = job.indexOf('- name: Upload WebAuthn approval Playwright report');
+    expect(upload).toBeGreaterThan(approval);
+    const step = job.slice(upload, nextStepIndex(job, upload));
+    expect(step).toMatch(/^ {8}if: failure\(\)$/m);
+    expect(step).toContain('name: portal-dev-e2e-approval-playwright-report');
+    expect(step).toContain('e2e-tests/playwright-report');
+    expect(step).toContain('e2e-tests/test-results');
+  });
+
   /**
    * #5786 — `intent-self-approve` and `ai-operator-approve-after-browser-close`
    * drive real WebAuthn ceremonies and were in no job's spec list, so they

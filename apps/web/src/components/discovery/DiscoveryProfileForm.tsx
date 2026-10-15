@@ -421,6 +421,9 @@ export default function DiscoveryProfileForm({
             <p className="mt-2 text-xs text-muted-foreground">
               {t('discoveryProfileForm.subnetsHelp')}
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('discoveryProfileForm.subnetTopologyNote')}
+            </p>
             {subnetErrors.length > 0 && (
               <div className="mt-1 space-y-0.5">
                 {subnetErrors.map((err, i) => (

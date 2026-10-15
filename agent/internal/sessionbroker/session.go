@@ -32,6 +32,10 @@ type Session struct {
 	TCCStatus      *ipc.TCCStatus
 	AllowedScopes  []string
 	WinSessionID   string         // Windows session ID string (e.g., "1", "2") for targeting
+	// WinSessionVerified is true when WinSessionID came from the kernel (the
+	// peer PID's session) rather than the helper's self-report. Caller
+	// verification (#6354) only targets verified sessions on Windows.
+	WinSessionVerified bool
 	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
 	BinaryKind     string
 	DesktopContext string
@@ -581,6 +585,10 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypeLaunchResult
 	case backupipc.TypeBackupCommand:
 		return backupipc.TypeBackupResult
+	case ipc.TypeCallerVerifyRequest:
+		return ipc.TypeCallerVerifyResponse
+	case ipc.TypeMessageShow:
+		return ipc.TypeMessagePresented
 	default:
 		return ""
 	}
@@ -588,6 +596,24 @@ func expectedResponseType(cmdType string) string {
 
 func responseValidator(cmdType string, payload any) func(*ipc.Envelope) error {
 	switch cmdType {
+	case ipc.TypeCallerVerifyRequest:
+		// Only an offered number, not_me or timeout is a legal answer. A
+		// malformed answer is dropped here, so the caller times out (never
+		// approves) instead of acting on it.
+		req, ok := payload.(ipc.CallerVerifyRequest)
+		if !ok {
+			return func(*ipc.Envelope) error { return fmt.Errorf("caller_verify request payload has unexpected type") }
+		}
+		return func(env *ipc.Envelope) error {
+			var answer ipc.CallerVerifyResponse
+			if err := json.Unmarshal(env.Payload, &answer); err != nil {
+				return fmt.Errorf("unmarshal caller_verify response: %w", err)
+			}
+			if !req.AnswerAllowed(answer.Choice) {
+				return fmt.Errorf("caller_verify response carries an unoffered choice")
+			}
+			return nil
+		}
 	case ipc.TypeCommand:
 		req, ok := payload.(ipc.IPCCommand)
 		if !ok || req.CommandID == "" {

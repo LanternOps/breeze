@@ -1771,7 +1771,8 @@
       "saveNotes": "Não foi possível salvar as observações.",
       "saveTerms": "Não foi possível salvar os termos.",
       "updateLine": "Não foi possível atualizar a linha.",
-      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
+      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
+      "saveLineDetail": "Não foi possível atualizar como os apontamentos são impressos"
     },
     "fields": {
       "descriptionOptional": "Descrição (opcional)",
@@ -1838,6 +1839,35 @@
     "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
     "unsavedField": {
       "lines": "Itens"
+    },
+    "lineDetail": {
+      "default": "Padrão de faturamento",
+      "grouping": "Disposição",
+      "groupingDay": "Agrupar por dia",
+      "groupingEntry": "Uma linha por apontamento",
+      "help": "Substitui o padrão de faturamento somente neste rascunho.",
+      "hide": "Ocultar",
+      "show": "Mostrar",
+      "showDate": "Data trabalhada",
+      "showNote": "Observação do técnico",
+      "showWorkedTime": "Tempo trabalhado vs. faturado",
+      "title": "Linhas de apontamento de horas"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "billedElsewhere_one": "{{count}} linha vai bloquear a emissão: o apontamento foi faturado em outra fatura. Remova-a antes de emitir:",
+      "billedElsewhere_other": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "button": "Atualizar a partir dos apontamentos",
+      "drifted": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_one": "{{count}} linha mantida: o tempo faturado do apontamento não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_other": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "error": "Não foi possível atualizar a partir dos apontamentos",
+      "help": "Atualiza notas, datas trabalhadas e aprovação a partir dos apontamentos de horas. Quantidades, preços e descrições editadas à mão nunca mudam.",
+      "running": "Atualizando…",
+      "skipped": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "skipped_one": "{{count}} linha ignorada: o apontamento foi faturado em outra fatura, removido ou não é mais faturável neste rascunho.",
+      "skipped_other": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "summary": "Atualizadas: {{refreshed}} · Já atualizadas: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2085,6 +2115,7 @@
     "empty": "Esta fatura ainda não tem itens.",
     "fallbackTitle": "Fatura",
     "issued": "Emitida",
+    "laborLine": "Mão de obra",
     "preview": {
       "description": "Isto é o que o cliente vê na fatura.",
       "downloadError": "Não foi possível baixar o PDF da fatura.",
@@ -2354,7 +2385,15 @@
       "prefixInvalid": "Informe um prefixo de 1 a 12 caracteres.",
       "taxRateInvalid": "Informe uma alíquota de imposto de 0 a 100.",
       "termsDaysInvalid": "Informe um número inteiro de dias de 0 a 365.",
-      "title": "Padrões de cobrança"
+      "title": "Padrões de cobrança",
+      "lineDetailTitle": "Linhas de apontamento de horas nas faturas",
+      "lineDetailHelp": "Escolha o que os clientes veem nos apontamentos de horas. Um rascunho de fatura pode substituir esta opção; ela é congelada quando a fatura é emitida.",
+      "lineShowDate": "Mostrar a data trabalhada",
+      "lineShowNote": "Mostrar a observação do técnico",
+      "lineShowWorkedTime": "Mostrar tempo trabalhado vs. faturado",
+      "lineGrouping": "Disposição",
+      "lineGroupingEntry": "Uma linha por apontamento",
+      "lineGroupingDay": "Agrupar por dia"
     },
     "loadError": "Falha ao carregar as configurações de cobrança.",
     "loading": "Carregando configurações de cobrança…",

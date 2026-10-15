@@ -15,6 +15,13 @@ import { minorUnitScaleSql } from './currencySql';
 import { isMissingRateGap } from './invoiceAssembly';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
+import { emitTicketEvent } from './ticketEvents';
+import {
+  peekEntry, peekRunningEntry, planGatedWrite, settleGatedWrite, settleRemovedEntry,
+  type GatedWritePlan,
+} from './ticketApproval/writerGate';
+import type { GateTrigger } from './ticketApproval/gate';
+import type { ApprovalEvent } from './ticketApproval/requests';
 
 export type TimeEntryServiceErrorCode =
   | 'TICKET_NOT_FOUND'
@@ -80,18 +87,32 @@ export type TimeEntryServiceErrorCode =
    * reported as a verdict rather than a retryable fault (see
    * {@link refuseBillableMinutesDrift}).
    */
-  | 'BILLABLE_MINUTES_DRIFT';
+  | 'BILLABLE_MINUTES_DRIFT'
+  /**
+   * 409 — #4617 hard enforcement: a billable timer may not START at or over the
+   * ticket budget, on an uncovered after-hours work type, or while a budget
+   * request is pending. `details: { trigger, pendingRequestId }`. Never raised
+   * for finished work (create/stop/edit): past work is held, not refused.
+   */
+  | 'APPROVAL_REQUIRED'
+  /** 409 — #4617: the entry was stopped, relinked or deleted between the unlocked read and the lock; retry. */
+  | 'ENTRY_CHANGED';
 
 export class TimeEntryServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 403 | 404 | 409 | 410 | 422 = 400,
-    public code?: TimeEntryServiceErrorCode
+    public code?: TimeEntryServiceErrorCode,
+    /** Machine-readable context for `code` (passed through by the REST mapper). */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'TimeEntryServiceError';
   }
 }
+
+/** #4617: what each writer returns alongside the row — the hold this write placed, if any. */
+export type ApprovalHold = { requestId: string; trigger: GateTrigger } | null;
 
 /**
  * #6463 — the missing half of the #4628 W03 contract.
@@ -203,6 +224,8 @@ export type TimeEntryAuditMutation = {
     | 'time_entry.deleted'
     | 'time_entry.approved'
     | 'time_entry.unapproved'
+    // #4617: held time on a denied/expired/cancelled request set to no_charge.
+    | 'time_entry.approval_written_off'
     // W06 (#3900): the suggestions ledger writes, filed under resourceType
     // 'time_suggestion' by the route audit writers — a dismissal is not a
     // time entry.
@@ -283,6 +306,12 @@ function assertRepresentable(value: string | null, currencyCode: string | null):
 
 /** Reject a forged invoice lifecycle fact at every routine service entrypoint. */
 function assertRoutineBillingStatus(status: BillingStatus | undefined): void {
+  if (status === 'awaiting_approval') {
+    // #4617: only the approval gate holds or releases an entry. The shared
+    // validator already refuses it; this guards internal callers too.
+    throw new TimeEntryServiceError(
+      'Awaiting approval is set only by the customer approval gate', 400, 'BILLING_STATUS_RESERVED');
+  }
   if (status === 'billed') {
     throw new TimeEntryServiceError(
       'Billed status is assigned only when an invoice is issued',
@@ -292,21 +321,6 @@ function assertRoutineBillingStatus(status: BillingStatus | undefined): void {
   }
 }
 
-type StoredBillingStatus = typeof timeEntries.$inferSelect['billingStatus'];
-
-/**
- * #4617 W01: the DB enum gained 'awaiting_approval' (held from billing until
- * the customer approves), but nothing writes it until the W02 gate lands. These
- * readers have no defined behaviour for a held entry yet, so they fail LOUDLY
- * rather than map it onto another status; W02's billing_status reader audit
- * (plan Task 6) replaces every call site of this function.
- */
-function settledBillingStatus(status: StoredBillingStatus): BillingStatus {
-  if (status === 'awaiting_approval') {
-    throw new Error('awaiting_approval not handled (W02)');
-  }
-  return status;
-}
 
 interface TicketForTimeTracking {
   id: string;
@@ -373,7 +387,7 @@ function billingStampFromEntry(entry: typeof timeEntries.$inferSelect): BillingS
     coverage: entry.coverage ?? (entry.isBillable ? 'billable' : 'non_billable'),
     hourlyRate: entry.hourlyRate, minimumMinutes: entry.minimumMinutes,
     roundingIncrementMinutes: entry.roundingIncrementMinutes,
-    isBillable: entry.isBillable, billingStatus: settledBillingStatus(entry.billingStatus),
+    isBillable: entry.isBillable, billingStatus: entry.billingStatus,
   };
 }
 
@@ -545,12 +559,51 @@ async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: str
 }
 
 /**
+ * #4617 spec §5.2: a write that touches TWO tickets (a relink, or startTimer
+ * auto-stopping a timer on another ticket) takes every org SHARE first, then
+ * the ticket rows in ascending id order, so two users crossing timers between
+ * the same two tickets serialize instead of deadlocking (40P01). `orgIds` are
+ * the SHAREs to take; the ticket ids' own orgs are read unlocked here.
+ * Re-locking a row this transaction already holds is a no-op.
+ */
+async function lockTicketsInOrder(ticketIds: Array<string | null | undefined>, orgIds: string[] = []): Promise<Set<string>> {
+  const ids = [...new Set(ticketIds.filter((id): id is string => !!id))].sort();
+  if (ids.length === 0) return new Set();
+  const orgs = new Set(orgIds);
+  for (const id of ids) orgs.add((await getTicketForTimeTracking(id)).orgId);
+  for (const orgId of [...orgs].sort()) await readOrgStampingDefaults(db, orgId);
+  for (const id of ids) await lockTicketRow(id);
+  return new Set(ids);
+}
+
+/**
  * resolveTicketLink (access gates, unlocked system-context reads) THEN the
  * lock; if the ticket moved between the two, resolve once more under the lock
  * so the stamped currency is the org the row will actually land in.
+ *
+ * `alsoLock` (#4617): other tickets this write touches (the entry's current
+ * ticket on a relink, the running timer's ticket on a start). They are locked
+ * together with `ticketId` in ascending id order, after every org SHARE.
  */
-async function resolveAndLockTicketLink(ticketId: string, actor: TimeEntryActor, workTypeId?: string | null) {
+async function resolveAndLockTicketLink(
+  ticketId: string, actor: TimeEntryActor, workTypeId?: string | null, alsoLock: Array<string | null | undefined> = [],
+) {
   let link = await resolveTicketLink(ticketId, actor, workTypeId);
+  const extras = [...new Set(alsoLock.filter((id): id is string => !!id && id !== ticketId))];
+  if (extras.length > 0) {
+    // Same barrier, two tickets: every SHARE first, then both rows ascending.
+    await lockTicketsInOrder([ticketId, ...extras], [link.ticket.orgId]);
+    const [lockedRow] = await db.select({ orgId: tickets.orgId }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+    if (!lockedRow || lockedRow.orgId !== link.ticket.orgId) {
+      // Moved between the unlocked resolve and the lock: SHARE the new org
+      // (cannot cycle, see below) and re-resolve under the lock.
+      if (lockedRow) await readOrgStampingDefaults(db, lockedRow.orgId);
+      link = await resolveTicketLink(ticketId, actor, workTypeId);
+    }
+    const org = await readOrgStampingDefaults(db, link.ticket.orgId);
+    if (org.currencyCode !== link.currencyCode) link = await resolveTicketLink(ticketId, actor, workTypeId);
+    return link;
+  }
   // Creation barrier (#3778), ticket-child protocol:
   //   organizations FOR SHARE -> tickets FOR UPDATE -> time/part INSERT.
   // resolveTicketLink's reads run in a SYSTEM context (a separate transaction),
@@ -735,6 +788,54 @@ async function resolveLocationLink(
   return { orgLink, siteId: input.siteId ?? null };
 }
 
+// ── Customer work approval gate (#4617) ─────────────────────────────────
+
+type WritePlan = Extract<GatedWritePlan, { kind: 'write' }>;
+
+const REFUSAL_MESSAGE: Record<GateTrigger, string> = {
+  budget: 'This ticket is at its approved budget. Request customer approval, or log the work as non-billable.',
+  after_hours: 'After-hours work on this ticket needs customer approval first. Request approval, or log the work as non-billable.',
+};
+
+/** Hard enforcement refuses only a timer START (gate.ts); everything else is planned for writing. */
+function assertNotRefused(plan: GatedWritePlan): WritePlan {
+  if (plan.kind === 'refuse') {
+    throw new TimeEntryServiceError(REFUSAL_MESSAGE[plan.trigger], 409, 'APPROVAL_REQUIRED',
+      { trigger: plan.trigger, pendingRequestId: plan.pendingRequestId });
+  }
+  return plan;
+}
+
+/** Columns a plan contributes to the INSERT/UPDATE (approvalRequestId only when it changes). */
+function planColumns(plan: WritePlan): { billingStatus: BillingStatus; approvalRequestId?: string | null } {
+  return plan.approvalRequestId === undefined
+    ? { billingStatus: plan.billingStatus }
+    : { billingStatus: plan.billingStatus, approvalRequestId: plan.approvalRequestId };
+}
+
+function holdOf(plan: WritePlan | null): ApprovalHold {
+  return plan?.hold ? { requestId: plan.hold.requestId, trigger: plan.hold.trigger } : null;
+}
+
+async function settleAndEmit(
+  plan: WritePlan, row: { ticketId: string | null; orgId: string | null; partnerId: string }, actor: TimeEntryActor,
+): Promise<void> {
+  const events: ApprovalEvent[] = await settleGatedWrite(plan, {
+    ticketId: row.ticketId, orgId: row.orgId, partnerId: row.partnerId,
+    author: { kind: 'staff', userId: actor.userId, name: actor.name ?? null },
+  });
+  for (const event of events) await emitTicketEvent({ ...event, actorUserId: event.actorUserId ?? actor.userId });
+}
+
+/** The gate's quantity is the INVOICE's: COALESCE(billable_minutes, duration_minutes). */
+function gateMinutes(durationMinutes: number | null, billableMinutes: number | null): number | null {
+  if (durationMinutes == null) return null;
+  return billableMinutes ?? durationMinutes;
+}
+
+const heldSuffix = (row: { billingStatus: string }) =>
+  row.billingStatus === 'awaiting_approval' ? ' — held for customer approval' : '';
+
 export async function createTimeEntry(
   input: CreateTimeEntryInput,
   actor: TimeEntryActor,
@@ -798,6 +899,21 @@ export async function createTimeEntry(
   const stamp = applyBillingInput(billing, input, actor);
   assertRepresentable(stamp.hourlyRate, currencyCode);
 
+  const durationMinutes = computeDurationMinutes(input.startedAt, input.endedAt);
+  const billableMinutes = computeBillableMinutes({
+    durationMinutes, minimumMinutes: stamp.minimumMinutes, roundingIncrementMinutes: stamp.roundingIncrementMinutes,
+  });
+  // #4617: under the ticket lock taken above, after the stamp, before the INSERT.
+  const plan = assertNotRefused(await planGatedWrite({
+    operation: 'create_finished', ticketId: input.ticketId ?? null, partnerId, orgId, before: null,
+    after: {
+      startedAt: input.startedAt, workTypeId, isBillable: stamp.isBillable, coverage: stamp.coverage,
+      hourlyRate: stamp.hourlyRate, currencyCode, billingStatus: stamp.billingStatus,
+      minutes: gateMinutes(durationMinutes, billableMinutes),
+    },
+    afterHoursFactsUnchanged: false,
+  }));
+
   const rows = await refuseBillableMinutesDrift({
     op: 'createTimeEntry',
     entryId: null,
@@ -832,16 +948,18 @@ export async function createTimeEntry(
       // W06 (#3900): server-stamped provenance. #4186: a client may assert only
       // 'location' (zod-restricted); internal callers pass it via provenance.
       source: input.source ?? provenance.source,
-      siteId
+      siteId,
+      ...planColumns(plan),
     })
     .returning());
   const entry = rows[0]!;
   recordAuditMutation(actor, 'time_entry.created', entry);
+  await settleAndEmit(plan, entry, actor);
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
     actor,
-    `${actor.name ?? 'Technician'} logged ${fmtMinutes(entry.durationMinutes)}${entry.isBillable ? ' (billable)' : ''}`
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(entry.durationMinutes)}${entry.isBillable ? ' (billable)' : ''}${heldSuffix(entry)}`
   );
 
   await emitTimeEntryEvent({
@@ -857,12 +975,12 @@ export async function createTimeEntry(
       source: provenance.source
     }
   });
-  return entry;
+  return { ...entry, approvalHold: holdOf(plan) };
 }
 
 /** An entry exactly as this service returns it. Exported so callers (the
  *  suggestions confirm path) can name it without re-deriving the selection. */
-export type TimeEntryRow = Awaited<ReturnType<typeof createTimeEntry>>;
+export type TimeEntryRow = typeof timeEntries.$inferSelect & { approvalHold?: ApprovalHold };
 
 /**
  * Re-read one entry with the SAME selection createTimeEntry returns. Runs in
@@ -878,11 +996,133 @@ export async function readTimeEntryById(id: string): Promise<TimeEntryRow | null
   return (row as TimeEntryRow | undefined) ?? null;
 }
 
-/** Stops the actor's running entry if any (CAS on ended_at IS NULL). Returns the stopped row or null. */
+/**
+ * Stops the actor's running entry if any (CAS on ended_at IS NULL). Returns the
+ * stopped row (with the approval hold it received) or null.
+ *
+ * #4617 lock order (spec §5.2): a ticket-linked timer is read UNLOCKED, its
+ * org SHAREd and its ticket locked, and only then is the entry locked and
+ * re-checked — the same order as every other writer, so a stop never takes
+ * the entry before the ticket. A timer that changed in between (stopped,
+ * relinked) is re-read once, then refused with 409 ENTRY_CHANGED.
+ *
+ * `lockedTickets` (startTimer's auto-stop): the tickets the caller already
+ * locked in ascending order. A running timer found on any OTHER ticket would
+ * have to be locked out of order, so it is refused (409) rather than risk a
+ * deadlock; the caller's retry starts over with a fresh read.
+ */
 async function stopRunningEntry(
   actor: TimeEntryActor,
-  overrides: { description?: string; isBillable?: boolean } = {}
+  overrides: { description?: string; isBillable?: boolean } = {},
+  lockedTickets?: Set<string>,
+): Promise<(typeof timeEntries.$inferSelect & { approvalHold: ApprovalHold }) | null> {
+  // A retry is only taken when NOTHING was locked by the failed attempt (an
+  // ungated CAS that matched no row). Once a ticket and the entry are locked,
+  // a mismatch is refused (409) instead: retrying would take the next ticket
+  // lock while holding the entry lock — the entry-before-ticket order this
+  // whole sequence exists to rule out.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const peek = await peekRunningEntry(actor.userId);
+    if (peek?.ticketId && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+      // The technician lost access to the timer's org while it ran. RLS hides
+      // that org and ticket, so neither can be locked; the timer is still
+      // theirs, so it is stopped UNGATED (pinned to this entry), as before
+      // the approval gate existed, rather than wedging every future start.
+      const stopped = await stopUnlinkedEntry(actor, overrides, { id: peek.id, ticketless: false });
+      if (stopped !== 'changed') return stopped;
+      continue;
+    }
+    if (peek?.ticketId) {
+      if (lockedTickets) {
+        if (!lockedTickets.has(peek.ticketId)) {
+          throw new TimeEntryServiceError('Your running timer changed while starting a new one — try again', 409, 'ENTRY_CHANGED');
+        }
+      } else {
+        await lockTicketsInOrder([peek.ticketId]);
+      }
+      const [entry] = await db.select().from(timeEntries).where(eq(timeEntries.id, peek.id)).limit(1).for('update');
+      if (!entry || entry.userId !== actor.userId || entry.endedAt != null) return null; // stopped (or gone) meanwhile
+      if (entry.ticketId !== peek.ticketId) {
+        throw new TimeEntryServiceError('Your running timer changed while stopping it — try again', 409, 'ENTRY_CHANGED');
+      }
+      return stopLockedTicketEntry(entry, actor, overrides);
+    }
+    const stopped = await stopUnlinkedEntry(actor, overrides, { id: peek?.id, ticketless: true });
+    if (stopped !== 'changed') return stopped;
+  }
+  throw new TimeEntryServiceError('Your running timer changed while stopping it — try again', 409, 'ENTRY_CHANGED');
+}
+
+/** Ticket-linked stop: the entry is locked under its ticket, so the gate sees exact figures. */
+async function stopLockedTicketEntry(
+  entry: typeof timeEntries.$inferSelect,
+  actor: TimeEntryActor,
+  overrides: { description?: string; isBillable?: boolean },
 ) {
+  const now = new Date();
+  const billingOverride = overrides.isBillable !== undefined
+    ? applyBillingInput(billingStampFromEntry(entry), overrides, actor, entry.billingOverridden)
+    : undefined;
+  const stamp = billingOverride ?? billingStampFromEntry(entry);
+  // Computed in JS from the LOCKED row, so the figure the gate judges is the
+  // figure the row stores (time_entries_billable_minutes_chk re-checks it).
+  const durationMinutes = computeDurationMinutes(entry.startedAt, now);
+  const billableMinutes = computeBillableMinutes({
+    durationMinutes, minimumMinutes: stamp.minimumMinutes, roundingIncrementMinutes: stamp.roundingIncrementMinutes,
+  });
+  const plan = assertNotRefused(await planGatedWrite({
+    operation: 'stop', ticketId: entry.ticketId, partnerId: entry.partnerId, orgId: entry.orgId,
+    before: { id: entry.id, billingStatus: entry.billingStatus, approvalRequestId: entry.approvalRequestId, ticketId: entry.ticketId, orgId: entry.orgId },
+    after: {
+      startedAt: entry.startedAt, workTypeId: entry.workTypeId, isBillable: stamp.isBillable, coverage: stamp.coverage,
+      hourlyRate: stamp.hourlyRate, currencyCode: entry.currencyCode, billingStatus: stamp.billingStatus,
+      minutes: gateMinutes(durationMinutes, billableMinutes),
+    },
+    afterHoursFactsUnchanged: true,
+  }));
+  const rows = await refuseBillableMinutesDrift({
+    op: 'stopRunningEntry',
+    entryId: entry.id,
+    userId: actor.userId,
+    partnerId: entry.partnerId,
+    orgId: entry.orgId,
+    durationMinutes,
+    minimumMinutes: stamp.minimumMinutes ?? null,
+    roundingIncrementMinutes: stamp.roundingIncrementMinutes ?? null,
+    at: now.toISOString(),
+  }, () => db
+    .update(timeEntries)
+    .set({
+      endedAt: now,
+      durationMinutes,
+      billableMinutes,
+      ...(overrides.description !== undefined ? { description: overrides.description } : {}),
+      ...(billingOverride ?? {}),
+      ...planColumns(plan),
+    })
+    .where(and(eq(timeEntries.id, entry.id), isNull(timeEntries.endedAt)))
+    .returning());
+  const stopped = rows[0];
+  if (!stopped) return null;
+  await settleAndEmit(plan, stopped, actor);
+  return { ...stopped, approvalHold: holdOf(plan) };
+}
+
+/**
+ * The ungated, single-statement CAS stop: for a timer with no ticket, and for
+ * a ticket-linked timer whose org the technician can no longer see.
+ * `pin.ticketless` restricts the CAS to a timer with no ticket, so a timer
+ * linked to a ticket after the caller's read is never stopped past the gate;
+ * `pin.id` pins it to the row the caller read, and a miss then reports
+ * 'changed' so the caller re-reads.
+ */
+async function stopUnlinkedEntry(
+  actor: TimeEntryActor,
+  overrides: { description?: string; isBillable?: boolean },
+  pin: { id?: string; ticketless: boolean },
+) {
+  const peekedId = pin.id;
+  const pinned = and(peekedId ? eq(timeEntries.id, peekedId) : undefined, pin.ticketless ? isNull(timeEntries.ticketId) : undefined);
   const now = new Date();
   let billingOverride: ReturnType<typeof applyBillingInput> | undefined;
   let entryId: string | undefined;
@@ -891,9 +1131,9 @@ async function stopRunningEntry(
     // this branch with entry edits and pin the CAS to this timer so a concurrent
     // start cannot receive the old timer's override. Plain stops stay one UPDATE.
     const [entry] = await db.select().from(timeEntries)
-      .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt)))
+      .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt), pinned))
       .limit(1).for('update');
-    if (!entry) return null;
+    if (!entry) return peekedId ? 'changed' as const : null;
     billingOverride = applyBillingInput(billingStampFromEntry(entry), overrides, actor, entry.billingOverridden);
     entryId = entry.id;
   }
@@ -938,13 +1178,20 @@ async function stopRunningEntry(
       ...(billingOverride ?? {})
     })
     .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt),
-      entryId ? eq(timeEntries.id, entryId) : undefined))
+      entryId ? eq(timeEntries.id, entryId) : undefined, pinned))
     .returning());
-  return rows[0] ?? null;
+  const stopped = rows[0];
+  if (!stopped) return peekedId ? 'changed' as const : null;
+  return { ...stopped, approvalHold: null as ApprovalHold };
 }
 
 export async function startTimer(
-  input: { ticketId?: string; orgId?: string; siteId?: string; source?: 'timer' | 'location'; description?: string; workTypeId?: string | null },
+  input: {
+    ticketId?: string; orgId?: string; siteId?: string; source?: 'timer' | 'location'; description?: string;
+    workTypeId?: string | null;
+    /** #4617: "log as non-billable" — same manage-billing rule as createTimeEntry's isBillable. */
+    isBillable?: boolean;
+  },
   actor: TimeEntryActor,
 ) {
   let partnerId = actor.partnerId;
@@ -953,14 +1200,25 @@ export async function startTimer(
   let workTypeId = input.workTypeId ?? null;
   let currencyCode: string | null = null;
 
+  // #4617 spec §5.2: the auto-stop below may stop a timer on ANOTHER ticket.
+  // Both tickets are locked up front, in ascending id order, before either
+  // write — two users crossing timers between the same two tickets serialize.
+  const peeked = await peekRunningEntry(actor.userId);
+  // A timer in an org the technician lost access to cannot be locked (RLS
+  // hides it); stopRunningEntry stops it ungated instead.
+  const running = peeked && entryOrgAllowed(peeked, actor.accessibleOrgIds) ? peeked : null;
+  let lockedTickets: Set<string> | undefined;
   if (input.ticketId) {
     // Same lock discipline as createTimeEntry (tickets → time_entries).
-    const link = await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId);
+    const link = await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId, [running?.ticketId]);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
     currencyCode = link.currencyCode;
     billing = link.billing;
     workTypeId = link.workTypeId;
+    lockedTickets = new Set([input.ticketId, ...(running?.ticketId ? [running.ticketId] : [])]);
+  } else if (running?.ticketId) {
+    lockedTickets = await lockTicketsInOrder([running.ticketId]);
   }
   // #4186: client-supplied org/site (ticket org wins; no-ticket goes through
   // resolveAndLockOrgLink). A no-op when neither orgId nor siteId is sent.
@@ -974,17 +1232,35 @@ export async function startTimer(
   }
   await assertWorkTypeUsable(input.workTypeId, partnerId);
   billing ??= await resolveEntryBilling(orgId, partnerId, currencyCode, workTypeId);
-  assertRepresentable(billing.hourlyRate, currencyCode);
+  const stamp = input.isBillable !== undefined
+    ? applyBillingInput(billing, { isBillable: input.isBillable }, actor)
+    : { ...billing, billingOverridden: false };
+  assertRepresentable(stamp.hourlyRate, currencyCode);
+  if (input.ticketId) {
+    // #4617: a START is the one write hard enforcement refuses (409
+    // APPROVAL_REQUIRED). Checked before the auto-stop; a refusal rolls the
+    // whole request back, so the previous timer keeps running.
+    assertNotRefused(await planGatedWrite({
+      operation: 'start_timer', ticketId: input.ticketId, partnerId, orgId, before: null,
+      after: {
+        startedAt: new Date(), workTypeId, isBillable: stamp.isBillable, coverage: stamp.coverage,
+        hourlyRate: stamp.hourlyRate, currencyCode, billingStatus: stamp.billingStatus, minutes: null,
+      },
+      afterHoursFactsUnchanged: false,
+    }));
+  }
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
     // unique index time_entries_one_running_per_user_uq is the race backstop.
-    const autoStopped = await stopRunningEntry(actor);
+    const autoStopped = await stopRunningEntry(actor, {}, lockedTickets);
     if (autoStopped) {
       recordAuditMutation(actor, 'time_entry.stopped', autoStopped);
+      // A timer stopped in an org the technician can no longer see gets no
+      // feed line: the insert is RLS-refused, which would abort the request.
       await insertTimeEntryFeedComment(
-        autoStopped.ticketId,
+        entryOrgAllowed(autoStopped, actor.accessibleOrgIds) ? autoStopped.ticketId : null,
         actor,
-        `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}`
+        `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}${heldSuffix(autoStopped)}`
       );
     }
     // ON CONFLICT DO NOTHING instead of catch-and-retry (issue #2189): the
@@ -1012,8 +1288,7 @@ export async function startTimer(
         // A running timer has no billed quantity yet; stopRunningEntry lands it.
         billableMinutes: null,
         description: input.description ?? null,
-        ...billing,
-        billingOverridden: false,
+        ...stamp,
         // Snapshot (spec §7): the ticket org's currency, or null for a
         // standalone timer (no rate yet); never restamped.
         currencyCode,
@@ -1047,7 +1322,7 @@ export async function startTimer(
     actorUserId: actor.userId,
     payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable, source: entry.source }
   });
-  return entry;
+  return { ...entry, approvalHold: null as ApprovalHold };
 }
 
 export async function stopTimer(input: { description?: string; isBillable?: boolean }, actor: TimeEntryActor) {
@@ -1058,9 +1333,9 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
 
   recordAuditMutation(actor, 'time_entry.stopped', stopped);
   await insertTimeEntryFeedComment(
-    stopped.ticketId,
+    entryOrgAllowed(stopped, actor.accessibleOrgIds) ? stopped.ticketId : null,
     actor,
-    `${actor.name ?? 'Technician'} logged ${fmtMinutes(stopped.durationMinutes)}${stopped.isBillable ? ' (billable)' : ''}`
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(stopped.durationMinutes)}${stopped.isBillable ? ' (billable)' : ''}${heldSuffix(stopped)}`
   );
 
   await emitTimeEntryEvent({
@@ -1122,11 +1397,41 @@ function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: 
   }
 }
 
+/** Fields whose change can move an entry across an approval ceiling (#4617): everything but the description. */
+const GATE_RELEVANT_UPDATE_FIELDS = ['startedAt', 'endedAt', 'workTypeId', 'isBillable', 'hourlyRate', 'minimumMinutes',
+  'billingStatus', 'ticketId', 'resetBilling'] as const;
+
+/**
+ * #4617 spec §5.2 lock order for an edit: read the entry UNLOCKED to learn its
+ * ticket, SHARE the org(s) and lock the ticket(s) — the current one and, on a
+ * relink, the target, ascending — and only then lock the entry and re-check
+ * that it is still on the ticket that was locked. A relink in between is
+ * retried once, then refused (409 ENTRY_CHANGED).
+ */
+async function lockEntryForWrite(id: string, actor: TimeEntryActor, input: { ticketId?: string | null; workTypeId?: string | null }) {
+  const peek = await peekEntry(id);
+  // Same answer getEntryOr404 gives, but BEFORE the org SHARE / ticket lock:
+  // RLS hides a non-granted org's row, which would surface as a 500.
+  if (peek && !entryOrgAllowed(peek, actor.accessibleOrgIds)) {
+    throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
+  }
+  const link = typeof input.ticketId === 'string'
+    ? await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId, [peek?.ticketId])
+    : null;
+  if (!link && peek?.ticketId) await lockTicketsInOrder([peek.ticketId]);
+  const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
+  // Relinked between the read and the lock. Refused rather than retried: a
+  // retry would take the new ticket's lock while holding the entry lock.
+  if (peek && entry.ticketId !== peek.ticketId) {
+    throw new TimeEntryServiceError('This entry was changed by someone else — reload and retry', 409, 'ENTRY_CHANGED');
+  }
+  return { entry, link };
+}
+
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
-  // Global lock order: the TARGET ticket (relink) before the entry row.
-  const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor, input.workTypeId) : null;
-  const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
+  // Global lock order: org SHARE -> tickets (current + relink target, ascending) -> the entry row.
+  const { entry, link } = await lockEntryForWrite(id, actor, input);
   assertCanMutate(entry, actor);
   await assertWorkTypeUsable(input.workTypeId, entry.partnerId);
   if (entry.billingStatus === 'billed' && BILLED_LOCKED_ENTRY_FIELDS.some((k) => (input as Record<string, unknown>)[k] !== undefined)) {
@@ -1260,6 +1565,33 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
     );
   }
 
+  // #4617: re-gate an edit that can move the entry across a ceiling (spec
+  // §5.5: a held entry is re-evaluated as if new). The reprice above may have
+  // re-derived billingStatus from the card; the gate overrides it, so a
+  // reprice can never clear a hold on its own. Description-only edits leave a
+  // hold, and its request's revision, alone.
+  let plan: WritePlan | null = null;
+  if (GATE_RELEVANT_UPDATE_FIELDS.some((k) => (input as Record<string, unknown>)[k] !== undefined)) {
+    const pick = <K extends keyof typeof entry>(k: K): (typeof entry)[K] =>
+      (set[k as string] !== undefined ? set[k as string] : entry[k]) as (typeof entry)[K];
+    const isBillable = pick('isBillable');
+    const nextDurationMinutes = pick('durationMinutes');
+    plan = assertNotRefused(await planGatedWrite({
+      operation: entry.endedAt == null && endedAt != null ? 'stop' : 'update',
+      ticketId: pick('ticketId'), partnerId: entry.partnerId, orgId: pick('orgId'),
+      before: { id: entry.id, billingStatus: entry.billingStatus, approvalRequestId: entry.approvalRequestId, ticketId: entry.ticketId, orgId: entry.orgId },
+      after: {
+        startedAt, workTypeId: pick('workTypeId'), isBillable,
+        coverage: pick('coverage') ?? (isBillable ? 'billable' : 'non_billable'),
+        hourlyRate: pick('hourlyRate'), currencyCode: pick('currencyCode'), billingStatus: pick('billingStatus'),
+        minutes: endedAt ? gateMinutes(nextDurationMinutes, pick('billableMinutes')) : null,
+      },
+      afterHoursFactsUnchanged: pick('workTypeId') === entry.workTypeId && startedAt.getTime() === entry.startedAt.getTime(),
+    }));
+    Object.assign(set, planColumns(plan));
+    if (plan.billingStatus !== entry.billingStatus && !changed.includes('billingStatus')) changed.push('billingStatus');
+  }
+
   // Spec §3: any edit clears approval — re-approval required, including for approvers.
   set.isApproved = false;
   set.approvedBy = null;
@@ -1291,6 +1623,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   }
 
   recordAuditMutation(actor, 'time_entry.updated', mutated);
+  if (plan) await settleAndEmit(plan, mutated, actor);
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
     timeEntryId: id,
@@ -1299,11 +1632,12 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
     actorUserId: actor.userId,
     payload: { changed }
   });
-  return mutated;
+  return { ...mutated, approvalHold: holdOf(plan) };
 }
 
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
-  const entry = await getEntryOr404(id, actor);
+  // #4617: ticket before entry (spec §5.2) — deleting a held entry settles its request.
+  const { entry } = await lockEntryForWrite(id, actor, {});
   assertCanMutate(entry, actor);
   if (entry.billingStatus === 'billed') {
     throw new TimeEntryServiceError(
@@ -1335,6 +1669,9 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
     );
   }
   recordAuditMutation(actor, 'time_entry.deleted', deletedRow);
+  for (const event of await settleRemovedEntry(entry, { kind: 'staff', userId: actor.userId, name: actor.name ?? null })) {
+    await emitTicketEvent({ ...event, actorUserId: event.actorUserId ?? actor.userId });
+  }
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
@@ -1578,7 +1915,7 @@ export interface ListTimeEntriesFilters {
   from?: Date;
   to?: Date;
   running?: boolean;
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: BillingStatus;
   approved?: boolean;
   limit: number;
   offset: number;
@@ -1602,6 +1939,9 @@ function entrySelection() {
     hourlyRate: timeEntries.hourlyRate,
     currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
+    // #4617: the customer approval request a held entry waits on (or, once
+    // released, the one that released it). Read-only.
+    approvalRequestId: timeEntries.approvalRequestId,
     workTypeId: timeEntries.workTypeId,
     billingProfileId: timeEntries.billingProfileId,
     coverage: timeEntries.coverage,
@@ -1994,7 +2334,7 @@ export async function listBillables(
     // null rate is an intentional zero — includes `billed` rows: a
     // previously-billed entry that has since lost its rate (or never had a
     // resolvable one) still has no amount to report or sum.
-    const missingRate = isMissingRateGap(rate, settledBillingStatus(r.billingStatus));
+    const missingRate = isMissingRateGap(rate, r.billingStatus);
     rows.push({
       kind: 'time',
       date: r.date,
@@ -2016,7 +2356,7 @@ export async function listBillables(
           : '0.00',
       missingRate,
       currencyCode: r.currencyCode,
-      billingStatus: settledBillingStatus(r.billingStatus),
+      billingStatus: r.billingStatus,
       isApproved: r.isApproved,
       workTypeName: r.workTypeName ?? null,
       coverage: r.coverage ?? null,
@@ -2043,7 +2383,7 @@ export async function listBillables(
         : '0.00',
       missingRate: false,
       currencyCode: r.currencyCode,
-      billingStatus: settledBillingStatus(r.billingStatus),
+      billingStatus: r.billingStatus,
       isApproved: null,
       // A part has no labour dimension.
       workTypeName: null,
@@ -2058,6 +2398,9 @@ export async function listBillables(
   const totals = new Map<string, number>();
   for (const r of rows) {
     if (r.currencyCode == null || r.missingRate || r.amount == null) continue;
+    // #4617: held time is exported with its status and would-be amount, but it
+    // is not billable until the customer approves it — never in the totals.
+    if (r.billingStatus === 'awaiting_approval') continue;
     totals.set(r.currencyCode, (totals.get(r.currencyCode) ?? 0) + toMinorUnits(r.amount, r.currencyCode));
   }
   const totalsByCurrency: CurrencyAmount[] = [...totals].map(([currencyCode, minor]) => ({

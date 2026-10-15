@@ -22,7 +22,8 @@
       "archive": "Arşivle",
       "merge": "Birleştir",
       "restore": "Geri yükle",
-      "retry": "Tekrar dene"
+      "retry": "Tekrar dene",
+      "sendMessage": "Mesaj gönder"
     },
     "tabs": {
       "overview": "Genel bakış",

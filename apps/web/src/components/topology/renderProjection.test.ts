@@ -23,7 +23,7 @@ function graph(nodes: GraphNode[], relationships: GraphRelationship[], presentat
   return { schemaVersion: 1, siteId: id(999), view: 'overview', asOf: '2026-10-02T00:00:00.000Z', revisions: { graph: '1', health: '1', layout: '0' }, nodes, relationships,
     presentation: { nodes: presentationNodes, edges: presentationEdges }, layout: { algorithm: 'none', version: 0, positions: [] },
     counts: { totalNodes: nodes.length, totalRelationships: relationships.length, visibleNodes: nodes.length, visibleRelationships: relationships.length, omittedNodes: 0, omittedRelationships: 0 },
-    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } };
+    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } };
 }
 
 /** One LAN, two observers each with its own canonical subnet + gateway node, one phone matched by address, one link-local net. */
@@ -251,7 +251,8 @@ describe('compileTopologyRender', () => {
     g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
       meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
     const text: RenderText = { devices: (n) => `${n} Geräte`, gatewayFor: (n) => `Gateway für ${n} Geräte`, via: (gw) => `über ${gw}`, gatewaysDiffer: 'Gateways unterschiedlich',
-      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}` };
+      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}`,
+      visiting: (n) => `+${n} zu Besuch`, assignedTo: (site) => `Zugewiesen zu ${site}`, visitorAlt: (site) => `Gerät zu Besuch, zugewiesen zu ${site}`, visitingCard: (prefix) => `Gäste (${prefix})` };
     const render = compileTopologyRender(g, { showAllNetworks: false, text });
     const byId = new Map(render.nodes.map((n) => [n.id, n]));
     expect(byId.get(P('net-lan'))!.detail).toBe('3 Geräte · über 10.1.2.100 · Gateways unterschiedlich');

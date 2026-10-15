@@ -7,7 +7,7 @@ import type { CatalogItem } from '../../lib/api/catalog';
 function item(over: Partial<CatalogItem> = {}): CatalogItem {
   return {
     id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
-    billingType: 'one_time', costBasis: null, costCurrency: 'USD', markupPercent: null,
+    billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null, costBasis: null, costCurrency: 'USD', markupPercent: null,
     unitOfMeasure: 'each', taxable: false, taxCategory: null, isBundle: false, isActive: true,
     createdAt: '', updatedAt: '', prices: [{ currencyCode: 'EUR', unitPrice: '120.00' }],
     ...over,

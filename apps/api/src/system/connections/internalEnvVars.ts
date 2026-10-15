@@ -179,6 +179,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DEV_PUSH_WORK_DIR: 'filesystem path',
   // E2E_*
   E2E_MODE: 'E2E test mode',
+  // EDR_*
+  EDR_DETECTION_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  EDR_DETECTION_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // EMAIL_*
   EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: 'sending-domain policy knob',
   EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: 'sending-domain policy knob',
@@ -222,6 +225,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
+  // HEARTBEAT_*
+  HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
@@ -255,6 +260,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // IS_*
   IS_HOSTED: 'shown as report.deployMode',
   // LLM_*
+  LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  LLM_EGRESS_EVENTS_RETENTION_DAYS: 'data retention window',
+  LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   LLM_FIDELITY_API_KEY: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_AUTH_MODE: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_BASE_URL: 'dev script (services/llm/__scripts__)',
@@ -316,6 +324,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   METRIC_ROLLUP_PARTITION_MONTHS_BACK: 'partition maintenance tuning',
   // MFA_*
   MFA_FORCE_FOR_PARTNER_ADMIN: 'auth policy flag',
+  // MIGRATION_*
+  MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: 'rate limit knob',
+  MIGRATION_WINDOW_MAX_DAYS: 'timing knob',
+  MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: 'rate limit knob',
   // ML_*
   ML_DISABLED_FLAGS: 'ML kill switch',
   ML_FEATURES_DISABLED: 'ML kill switch',

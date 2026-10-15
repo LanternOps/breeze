@@ -94,7 +94,7 @@ import {
   submitLabel,
   type CommentMode,
 } from './commentMode';
-import { startForTicket, stopRunningTimer } from './timerActions';
+import { APPROVAL_REQUIRED_PROMPT, startForTicket, stopRunningTimer } from './timerActions';
 import { SitePinButton } from '../time/SitePinButton';
 import {
   startOutcomeEffects,
@@ -603,7 +603,7 @@ export function TicketDetailScreen() {
     };
   }, []);
 
-  const onStartTimer = useCallback(async () => {
+  const onStartTimer = useCallback(async (nonBillable = false) => {
     if (timerInFlight.current) return;
     timerInFlight.current = true;
     setTimerBusy(true);
@@ -619,7 +619,7 @@ export function TicketDetailScreen() {
           stamp: stampNow,
         },
         // startForTicket owns the tri-state: undefined is omitted from the start.
-        { workTypeId }
+        { workTypeId, ...(nonBillable ? { isBillable: false as const } : {}) }
       );
       if (!mounted.current) return;
       // One decision table, shared with the TimerBar — see timerOutcomeEffects.ts.
@@ -632,6 +632,14 @@ export function TicketDetailScreen() {
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
       showToast(effects.toast);
+      if (effects.offerNonBillable) {
+        // #8196: the customer-approval gate refused a billable start. Retrying
+        // is the technician's call, so ask rather than silently re-sending.
+        Alert.alert('Approval required', APPROVAL_REQUIRED_PROMPT, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Log as non-billable', onPress: () => void onStartTimer(true) },
+        ]);
+      }
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);

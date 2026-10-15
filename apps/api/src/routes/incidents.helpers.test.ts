@@ -4,6 +4,7 @@ import {
   resolveFindingLinkOut,
   buildIncidentFeedQueries,
   buildIncidentFeed,
+  foldLegs,
 } from './incidents.helpers';
 import type { AuthContext } from '../middleware/auth';
 import { withHostTimeZone } from '../testUtils/hostTimeZone';
@@ -43,7 +44,7 @@ describe('resolveFindingLinkOut', () => {
 // exist"). `.toSQL()` builds the statement synchronously without a DB
 // connection, so this runs in the normal unit suite.
 describe('buildIncidentFeedQueries (DB-less build guard)', () => {
-  const params = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null } as const;
+  const params = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null } as const;
 
   it('builds the union feed query without throwing', () => {
     expect(() => buildIncidentFeedQueries(orgAuth, params)).not.toThrow();
@@ -143,13 +144,88 @@ describe('buildIncidentFeedQueries (DB-less build guard)', () => {
   });
 });
 
+// #8166 A3: the EDR-framework leg (edr_detections) with the D14 site rule.
+describe('buildIncidentFeedQueries — EDR provider framework leg (#8166)', () => {
+  const base = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null } as const;
+  const sqlOf = (p: Record<string, unknown>) => buildIncidentFeedQueries(orgAuth, { ...base, ...p } as never)!.rowsQuery.toSQL();
+
+  it('includes the EDR leg by default, live rows only, deduped against promoted incidents', () => {
+    const { sql } = sqlOf({});
+    expect(sql).toContain('"edr_detections"');
+    expect(sql).toContain('"detached_at" is null');
+    expect(sql).toMatch(/source_type = 'edr_detection' AND i\.source_ref = "edr_detections"\."id"::text/);
+    // Vendor jsonb never reaches the feed.
+    expect(sql).not.toMatch(/"edr_detections"\."details"/);
+  });
+
+  it('source=<provider key> includes only the EDR leg, filtered to that provider', () => {
+    const { sql, params } = sqlOf({ source: 'bitdefender' });
+    expect(sql).toContain('"edr_detections"');
+    expect(sql).not.toContain('from "incidents"');
+    expect(sql).not.toContain('huntress_incidents');
+    expect(sql).not.toContain('s1_threats');
+    expect(sql).toContain('"edr_detections"."provider" = $');
+    expect(params).toContain('bitdefender');
+  });
+
+  it('source=huntress, source=breeze and kind=tracked exclude the EDR leg', () => {
+    for (const p of [{ source: 'huntress' }, { source: 'breeze' }, { kind: 'tracked' }]) {
+      expect(sqlOf(p).sql).not.toContain('"edr_detections"');
+    }
+  });
+
+  it('omits the EDR leg without devices:read', () => {
+    expect(sqlOf({ hasDevicesRead: false }).sql).not.toContain('"edr_detections"');
+    expect(buildIncidentFeedQueries(orgAuth, { ...base, hasDevicesRead: false, source: 'bitdefender' } as never)).toBeNull();
+  });
+
+  it('unrestricted caller: no site predicate on the EDR leg', () => {
+    const { sql } = sqlOf({});
+    expect(sql).not.toContain('"device_detached_at"');
+    expect(sql).not.toContain('"last_site_id"');
+  });
+
+  it('site-restricted caller: device branch, never-linked branch and detached-last-site branch', () => {
+    const { sql } = sqlOf({
+      allowedDeviceIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      allowedSiteIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    });
+    expect(sql).toMatch(/"edr_detections"\."breeze_device_id" in \(/);
+    expect(sql).toMatch(/"edr_detections"\."breeze_device_id" is null and "edr_detections"\."device_detached_at" is null/);
+    expect(sql).toMatch(/"edr_detections"\."device_detached_at" is not null and "edr_detections"\."last_site_id" in \(/);
+  });
+
+  it('site-restricted caller with empty allowlists: never-linked rows only, no empty IN ()', () => {
+    const { sql } = sqlOf({ allowedDeviceIds: [], allowedSiteIds: [] });
+    expect(sql).toMatch(/"edr_detections"\."breeze_device_id" is null and "edr_detections"\."device_detached_at" is null/);
+    expect(sql).not.toMatch(/"edr_detections"\."breeze_device_id" in \(/);
+    expect(sql).not.toMatch(/"last_site_id" in \(/);
+    expect(sql).not.toMatch(/in \(\)/);
+  });
+});
+
+// #8166 A2: the per-combination ternary became a leg list. Every one of the
+// 2^4 include combinations must keep the included legs, in order, and drop
+// none; zero legs is an empty feed (null).
+describe('foldLegs', () => {
+  const KEYS = ['tracked', 'huntress', 's1', 'edr'] as const;
+  it.each(Array.from({ length: 16 }, (_, m) => m))('include mask %i', (mask) => {
+    const legs = KEYS.map((key, i) => ({ key, include: !!(mask & (1 << i)), query: { __leg: key } }));
+    const included = legs.filter((l) => l.include).map((l) => l.query);
+    const out = foldLegs(legs, (queries: unknown[]) => ({ union: queries }));
+    if (included.length === 0) expect(out).toBeNull();
+    else if (included.length === 1) expect(out).toBe(included[0]);
+    else expect(out).toEqual({ union: included });
+  });
+});
+
 describe('buildIncidentFeed detectedAt parsing', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it.each(['America/Denver', 'Asia/Tokyo'] as const)(
     'reads offsetless detectedAt text as UTC on a %s host',
     async (zone) => {
-      const feedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null } as const;
+      const feedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null } as const;
       const built = buildIncidentFeedQueries(orgAuth, feedParams)!;
       // Stand in for the driver: the union feed hands back detectedAt as raw
       // offsetless text (the leg columns are timestamp WITHOUT time zone).

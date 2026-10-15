@@ -122,3 +122,29 @@ func TestInstallScriptDoesNotLetTheWatchdogAbortTheAgentInstall(t *testing.T) {
 		t.Skip("install-linux.sh no longer invokes the watchdog installer; guard not applicable")
 	}
 }
+
+// watchdogNotBundledWarning is printed by both shell installers when the
+// package carries no watchdog binary and none is installed yet (#8621,
+// Decision 7): the enrolled agent installs one itself.
+const watchdogNotBundledWarning = "Warning: no watchdog bundled; the agent installs one after enrollment when the control plane offers a watchdog build for this platform"
+
+func TestInstallScriptsWarnWhenNoWatchdogIsBundled(t *testing.T) {
+	for _, path := range []string{installLinuxScript, "../../scripts/install/install-darwin.sh"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		script := string(data)
+		warn := strings.Index(script, watchdogNotBundledWarning)
+		if warn < 0 {
+			t.Errorf("%s: missing the no-watchdog-bundled warning", path)
+			continue
+		}
+		// It belongs to the else branch of the bundled-watchdog copy (after
+		// the `elif [ -f "breeze-watchdog" ]` arm), never unconditional.
+		elif := strings.Index(script, `elif [ -f "breeze-watchdog" ]; then`)
+		if elif < 0 || warn < elif {
+			t.Errorf("%s: the warning must sit in the else branch after the bundled-watchdog checks", path)
+		}
+	}
+}

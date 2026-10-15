@@ -92,6 +92,15 @@ vi.mock('../../services/patchInstallFailures', () => ({
   loadFailedInstallPairs: loadFailedInstallPairsMock,
 }));
 
+// W06 image term — the real SQL is covered by
+// services/workloads/imageCompliance.integration.test.ts. Default: no device
+// has workload rows, so every response must be exactly what it was before.
+const imageTermsMock = vi.hoisted(() => vi.fn(async () => new Map()));
+vi.mock('../../services/workloads/imageCompliance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/workloads/imageCompliance')>()),
+  containerImageComplianceTerms: imageTermsMock,
+}));
+
 import { complianceRoutes } from './compliance';
 import { db } from '../../db';
 
@@ -380,4 +389,133 @@ describe('patch compliance failed installs', () => {
     expect(body.data.devicesNeedingPatches[0].failedMissing).toBe(0);
     expect(loadFailedInstallPairsMock).toHaveBeenCalledWith([DEVICE_ID]);
   });
+});
+
+
+describe('patch compliance container image term (W06)', () => {
+  const breakdownRow = (over: Record<string, unknown> = {}) => ({
+    deviceId: DEVICE_ID, hostname: 'h1', osType: 'linux', lastSeenAt: null,
+    missingCount: 2, approvedMissing: 0, unapprovedMissing: 2, failedMissing: 0,
+    criticalCount: 0, importantCount: 0, osMissing: 2, thirdPartyMissing: 0,
+    lastInstalledAt: null, pendingReboot: false, lastScannedAt: null, ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadFailedInstallPairsMock.mockResolvedValue([]);
+    permissionsState = undefined;
+    vi.mocked(db.select).mockReset();
+    imageTermsMock.mockResolvedValue(new Map());
+  });
+
+  function mockQueries(opts: {
+    statusRows: Array<{ status: string; count: number }>;
+    breakdown: unknown[];
+    staleOnlyDevices?: unknown[];
+  }) {
+    const chain = vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: DEVICE_ID }, { id: OTHER_DEVICE_ID }]) }),
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue(opts.statusRows) }),
+          }),
+        }),
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                groupBy: vi.fn().mockReturnValue({
+                  having: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(opts.breakdown) }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      } as never);
+    // stale-image-only devices are looked up right after the breakdown
+    if (opts.staleOnlyDevices) {
+      chain.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(opts.staleOnlyDevices) }),
+      } as never);
+    }
+    // severity counts
+    chain.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) }),
+        }),
+      }),
+    } as never);
+  }
+
+  const get = async (qs = '') => {
+    const res = await mountApp().request(`/patches/compliance${qs}`, { method: 'GET', headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    return (await res.json()).data;
+  };
+
+  it('is byte-identical to the pre-W06 response when no device has workload rows', async () => {
+    mockQueries({ statusRows: [{ status: 'installed', count: 3 }, { status: 'pending', count: 1 }], breakdown: [breakdownRow()] });
+    const data = await get();
+    expect(imageTermsMock).toHaveBeenCalledWith({ deviceIds: [DEVICE_ID, OTHER_DEVICE_ID] });
+    expect(data.compliancePercent).toBe(75);
+    expect(data.compliantDevices).toBe(1);
+    expect(Object.keys(data)).toEqual([
+      'summary', 'compliancePercent', 'totalDevices', 'compliantDevices', 'criticalSummary',
+      'importantSummary', 'unratedSummary', 'devicesNeedingPatches', 'filters',
+    ]);
+    expect(Object.keys(data.devicesNeedingPatches[0])).not.toContain('staleImages');
+  });
+
+  it('folds summed image terms into the org %, and a stale-image-only device is not compliant', async () => {
+    imageTermsMock.mockResolvedValue(new Map([
+      [DEVICE_ID, { stale: 1, current: 0, unknown: 2 }],
+      [OTHER_DEVICE_ID, { stale: 1, current: 2, unknown: 0 }],
+    ]));
+    mockQueries({
+      statusRows: [{ status: 'installed', count: 3 }, { status: 'pending', count: 1 }],
+      breakdown: [breakdownRow()],
+      staleOnlyDevices: [{ id: OTHER_DEVICE_ID, hostname: 'h2', osType: 'linux', lastSeenAt: null }],
+    });
+    const data = await get();
+    // (3 installed + 2 current) / (4 OS items + 2 stale + 2 current)
+    expect(data.compliancePercent).toBe(63);
+    expect(data.containerImages).toEqual({ stale: 2, current: 2, unknown: 2 });
+    expect(data.compliantDevices).toBe(0);
+    expect(data.totalDevices - data.compliantDevices).toBe(data.devicesNeedingPatches.length);
+    expect(data.devicesNeedingPatches[0]).toMatchObject({ id: DEVICE_ID, missingCount: 2, staleImages: 1, unknownImages: 2 });
+    expect(data.devicesNeedingPatches[1]).toMatchObject({
+      id: OTHER_DEVICE_ID, name: 'h2', missingCount: 0, approvedMissing: 0, staleImages: 1, unknownImages: 0,
+    });
+    // summary stays an OS-patch status count
+    expect(data.summary).toMatchObject({ installed: 3, pending: 1 });
+  });
+
+  it('unknown images alone change nothing but the coverage count', async () => {
+    imageTermsMock.mockResolvedValue(new Map([[OTHER_DEVICE_ID, { stale: 0, current: 0, unknown: 4 }]]));
+    mockQueries({ statusRows: [{ status: 'installed', count: 0 }, { status: 'pending', count: 2 }], breakdown: [breakdownRow()] });
+    const data = await get();
+    expect(data.compliancePercent).toBe(0);
+    expect(data.compliantDevices).toBe(1);
+    expect(data.containerImages).toEqual({ stale: 0, current: 0, unknown: 4 });
+    expect(data.devicesNeedingPatches).toHaveLength(1);
+  });
+
+  it.each([['severity', '?severity=critical'], ['source', '?source=microsoft']])(
+    'a %s-filtered view excludes the term entirely',
+    async (_name, qs) => {
+      imageTermsMock.mockResolvedValue(new Map([[OTHER_DEVICE_ID, { stale: 5, current: 0, unknown: 0 }]]));
+      mockQueries({ statusRows: [{ status: 'installed', count: 1 }], breakdown: [] });
+      const data = await get(qs);
+      expect(imageTermsMock).not.toHaveBeenCalled();
+      expect(data.compliancePercent).toBe(100);
+      expect(data.compliantDevices).toBe(2);
+      expect(data).not.toHaveProperty('containerImages');
+    },
+  );
 });

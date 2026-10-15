@@ -233,6 +233,11 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // #4617 W02 customer approval: the gate holds/releases a ticket's own time
+  // entries (awaiting_approval <-> not_billed/no_charge) under that ticket's
+  // row lock, keyed by entry id on one ticket of one org — never partner-wide config.
+  'services/ticketApproval/requests.ts': 'customer approval gate: holds one ticket\'s time entries on its approval request, ticket/org-axis authority — same billing-status class as timeEntryService.ts',
+  'services/ticketApproval/decisions.ts': 'customer approval decisions: release, re-hold or write off one ticket\'s held time entries under the ticket lock, ticket/org-axis authority — same class as timeEntryService.ts',
   // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
   // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
   // every write is `user_id = actor.userId` and every read/delete is scoped to
@@ -372,6 +377,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/portal/reportsSelfService.ts': 'customer-portal self-service: inserts portal definitions with the portal org_id and updates a definition it loaded by org_id + portal_self_service; partner-owned rows are never portal-visible (spec 3.5)',
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
+  'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
 };
 
 /**

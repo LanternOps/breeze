@@ -30,6 +30,7 @@ const EXEMPT: Record<string, string> = {
   publicShortLinkRoutes: 'Public short links resolve enrollment downloads.',
   installerRoutes: 'Installer bootstrap/download flow uses bootstrap tokens.',
   supportPublicRoutes: 'Public support-code check/download bootstraps unattended support.',
+  callerVerifyPublicRoutes: 'Public caller-verification card authenticates via the SMS/email link token.',
   docsRoutes: 'Public API documentation and OpenAPI documents.',
   emailWebhookRoutes: 'Inbound email webhook authenticates provider signatures.',
   stripeWebhookRoutes: 'Stripe webhook authenticates provider signatures.',

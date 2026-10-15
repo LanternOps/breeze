@@ -16,6 +16,8 @@ const OPEN_STATUSES = ['open', 'in_progress', 'unknown'] as const;
 const listQuerySchema = z.object({
   connectionId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+  /** #8166: the device panel's rows — only endpoints linked to this device. */
+  deviceId: z.string().guid().optional(),
   // A malformed value is a 400, never a silently-ignored filter.
   state: z.enum(['unlinked', 'ambiguous', 'linked', 'all']).default('all'),
 });
@@ -47,6 +49,7 @@ edrEndpointRoutes.get(
       if (scoped) conditions.push(scoped);
     }
     if (query.connectionId) conditions.push(eq(edrEndpoints.connectionId, query.connectionId));
+    if (query.deviceId) conditions.push(eq(edrEndpoints.breezeDeviceId, query.deviceId));
 
     if (query.state === 'linked') conditions.push(isNotNull(edrEndpoints.breezeDeviceId));
     if (query.state === 'unlinked' || query.state === 'ambiguous') {

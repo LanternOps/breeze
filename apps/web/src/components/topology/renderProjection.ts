@@ -1,6 +1,7 @@
-import type { GraphNode, GraphResponse, HealthStatus, PresentationNode, TopologyNetworkClass } from '@breeze/shared';
+import type { GraphNode, GraphResponse, HealthStatus, PresenceResponse, PresenceVisitor, PresentationNode, TopologyNetworkClass } from '@breeze/shared';
 import { inIpv4Prefix, ipSortKey } from './ipOrder';
 import { topologyGlyph, type TopologyGlyph } from './topologyGlyphs';
+import { placeVisitors } from './visitorPlacement';
 
 /**
  * One closed render projection of a graph response, shared by measurement, layout
@@ -9,7 +10,7 @@ import { topologyGlyph, type TopologyGlyph } from './topologyGlyphs';
  * not drawn, and the edges they carried are represented by the group's aggregate
  * edge or by containment.
  */
-export type RenderKind = 'device' | 'gateway' | 'internet' | 'network' | 'group' | 'unidentified' | 'outside';
+export type RenderKind = 'device' | 'gateway' | 'internet' | 'network' | 'group' | 'unidentified' | 'outside' | 'visitor';
 export type RenderNode = {
   id: string; label: string; detail: string | null; kind: RenderKind; glyph: TopologyGlyph;
   parent?: string; presence: 'online' | 'offline' | 'unknown' | null;
@@ -23,6 +24,10 @@ export type RenderNode = {
   note: string | null;
   /** How many other tiles report this tile's address; drives the tile's compact "Shared IP" marker. */
   sharedWith: number;
+  /** A device assigned to another site, drawn here because it reports one of this site's networks (site location W2). Presentation only. */
+  visiting?: true;
+  /** W3: that visitor carries a wrong-site suggestion for this site (a suggestion, never an assignment). */
+  suggested?: true;
 };
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
@@ -64,14 +69,14 @@ function canonicalNode(node: GraphNode, strings: RenderText, parent?: string, me
     networkClass: null, memberCount: 0, address: node.inventory?.addresses[0] ?? null, note: null, sharedWith: 0 };
 }
 
-function groupNode(group: PresentationNode, text: RenderText): RenderNode {
+function groupNode(group: PresentationNode, text: RenderText, visiting = 0): RenderNode {
   const g = group.group!;
   if (g.kind === 'gateway') {
     return { id: group.id, label: g.address ?? group.label, detail: text.gatewayFor(g.observerCount), kind: 'gateway', glyph: 'router',
       presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: group.memberCount, address: null, note: null, sharedWith: 0 };
   }
   const devices = text.devices(group.memberCount);
-  const detail = [devices, g.gatewayAddresses.length ? text.via(g.gatewayAddresses.join(', ')) : null, g.conflict ? text.gatewaysDiffer : null].filter(Boolean).join(' · ');
+  const detail = [devices, g.gatewayAddresses.length ? text.via(g.gatewayAddresses.join(', ')) : null, g.conflict ? text.gatewaysDiffer : null, visiting ? text.visiting(visiting) : null].filter(Boolean).join(' · ');
   return { id: group.id, label: group.label, detail: g.kind === 'unidentified' ? devices : detail,
     kind: g.kind === 'unidentified' ? 'unidentified' : 'group', glyph: 'network', presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false,
     networkClass: g.networkClass, memberCount: group.memberCount, address: null, note: null, sharedWith: 0 };
@@ -89,11 +94,21 @@ export type RenderText = {
   gatewaysDiffer: string; agentOffline: string; sharedEdge: (count: number) => string;
   /** Label of a link between two network cards, naming the device or gateway that ties them. */
   linkVia: (name: string) => string;
+  /** "+N visiting" on a card header. */
+  visiting: (count: number) => string;
+  /** Visitor tile subtitle: the site the device is assigned to. */
+  assignedTo: (site: string) => string;
+  /** Visitor tile text alternative. */
+  visitorAlt: (site: string) => string;
+  /** Label of the presentation-only card that holds visitors no network card claims. */
+  visitingCard: (prefix: string) => string;
 };
 const plural = (count: number, one: string, other: string) => `${count} ${count === 1 ? one : other}`;
 export const ENGLISH_RENDER_TEXT: RenderText = {
   devices: (count) => plural(count, 'device', 'devices'), gatewayFor: (count) => `Gateway for ${plural(count, 'device', 'devices')}`,
   via: (gateways) => `via ${gateways}`, gatewaysDiffer: 'gateways differ', agentOffline: 'Agent offline', sharedEdge: (count) => `${count} shared`, linkVia: (name) => `via ${name}`,
+  visiting: (count) => `+${count} visiting`, assignedTo: (site) => `Assigned to ${site}`, visitorAlt: (site) => `Visiting device, assigned to ${site}`,
+  visitingCard: (prefix) => `Visiting devices (${prefix})`,
 };
 
 export type RenderOptions = {
@@ -105,7 +120,38 @@ export type RenderOptions = {
   sharedAddress?: (count: number) => string;
 };
 
-export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, showOtherNetworks = false, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions): TopologyRender {
+/** Breeze device id -> the graph node bound to it (a device-backed node carries a `device` binding). */
+export function nodeIdsByDevice(graph: Pick<GraphResponse, 'nodes'>): Map<string, string> {
+  const byDevice = new Map<string, string>();
+  for (const node of graph.nodes) for (const binding of node.bindings) if (binding.type === 'device' && !byDevice.has(binding.referenceId)) byDevice.set(binding.referenceId, node.id);
+  return byDevice;
+}
+
+/**
+ * What layout and measurement are keyed on. Visitor tiles contribute their ids, labels and parent card only: a presence refresh that
+ * moves just `freshUntil` / `observedAt` produces the same key and never re-runs layout.
+ */
+export const renderLayoutKey = (nodes: readonly RenderNode[]) => JSON.stringify(nodes.map((node) => [node.id, node.label, node.detail, node.note, node.address, node.kind, node.parent]));
+
+/** A tile for a device assigned to another site that reports one of this site's networks. Never pinnable, diagnosable or counted as a member. */
+function visitorNode(visitor: PresenceVisitor, parent: string, text: RenderText): RenderNode {
+  return { id: visitor.id, label: visitor.label, detail: text.assignedTo(visitor.assignedSite.name), kind: 'visitor', glyph: 'device', parent, presence: null, agentPresence: null,
+    health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: text.visitorAlt(visitor.assignedSite.name), sharedWith: 0, visiting: true,
+    ...(visitor.suggestion ? { suggested: true as const } : {}) };
+}
+
+export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, showOtherNetworks = false, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions, presence?: PresenceResponse | null): TopologyRender {
+  // Presence is only ever applied to the site it describes: a late response for the previous site must not draw its visitors here.
+  const activePresence = presence && presence.siteId === graph.siteId ? presence : null;
+  const nodeByDevice = nodeIdsByDevice(graph);
+  // Presence classification wins over placement: a visiting device leaves this site's cards (it is listed in the roster instead).
+  const departing = new Set<string>(), claimed = new Set<string>();
+  for (const entry of activePresence?.assigned ?? []) {
+    const nodeId = nodeByDevice.get(entry.deviceId);
+    if (!nodeId || entry.state === 'home') continue;
+    claimed.add(nodeId);
+    if (entry.state === 'visiting') departing.add(nodeId);
+  }
   const allGroups = graph.presentation.nodes.filter((node) => node.group);
   // A hidden group (#7879) is never drawn: it only folds away the nodes the overview leaves out.
   const groups = allGroups.filter((group) => group.group!.kind !== 'hidden');
@@ -127,9 +173,12 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
       }
     }
   }
+  for (const nodeId of departing) home.delete(nodeId);
+  // Visitors go into a drawn network card that reports their prefix and gateway; the rest into a "Visiting devices" card per prefix.
+  const placement = activePresence ? placeVisitors(cards, activePresence.visitors) : { byGroup: new Map<string, PresenceVisitor[]>(), unplaced: [] as PresenceVisitor[] };
   // A card with nothing homed in it (a dual-homed host's second LAN, or members on another page) has no
-  // bounds to draw; its gateways disappear with it unless another drawn card routes via them.
-  const homed = new Set([...home.values()].map((entry) => entry.group));
+  // bounds to draw; its gateways disappear with it unless another drawn card routes via them. A card hosting visitors is drawn.
+  const homed = new Set([...[...home.values()].map((entry) => entry.group), ...placement.byGroup.keys()]);
   const drawnCards = new Set(cards.filter((group) => homed.has(group.id)).map((group) => group.id));
   const routes = graph.presentation.edges.filter((edge) => edge.meaning === 'aggregate' && edge.role === 'routes_via');
   const shownGateways = new Set(routes.filter((edge) => drawnCards.has(edge.sourceNodeId)).map((edge) => edge.targetNodeId));
@@ -145,14 +194,23 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   const renderedGroups = visibleGroups.filter((group) => group.group!.kind === 'gateway' ? shownGateways.has(group.id) : true);
   const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
   const nodes: RenderNode[] = [];
-  for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group, text) : groupNode(group, text));
+  for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group, text) : groupNode(group, text, placement.byGroup.get(group.id)?.length ?? 0));
   // A device that belongs only to roster networks leaves the canvas with them; one also drawn in a kept card stays.
   const rosterOnly = new Set(undeclaredCards.flatMap((group) => group.group!.members.map((member) => member.nodeId)).filter((nodeId) => !home.has(nodeId)));
   for (const node of graph.nodes) {
-    if (folded.has(node.id) || rosterOnly.has(node.id)) continue;
+    if (folded.has(node.id) || rosterOnly.has(node.id) || departing.has(node.id)) continue;
     const member = home.get(node.id);
     nodes.push(canonicalNode(node, text, member?.group, member));
   }
+  const visitingCards = new Map<string, { id: string; prefix: string; count: number }>();
+  for (const visitor of placement.unplaced) {
+    const prefix = visitor.network.prefix, cardId = `presentation:overview:visiting:${prefix.replace(/[^0-9A-Za-z.]/g, '-')}`;
+    visitingCards.set(cardId, { id: cardId, prefix, count: (visitingCards.get(cardId)?.count ?? 0) + 1 });
+    nodes.push(visitorNode(visitor, cardId, text));
+  }
+  for (const card of visitingCards.values()) nodes.push({ id: card.id, label: text.visitingCard(card.prefix), detail: text.visiting(card.count), kind: 'group', glyph: 'network', presence: null, agentPresence: null,
+    health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: null, sharedWith: 0 });
+  for (const [cardId, visitors] of placement.byGroup) for (const visitor of visitors) nodes.push(visitorNode(visitor, cardId, text));
   for (const node of graph.presentation.nodes) {
     if (!node.group) nodes.push({ id: node.id, label: node.label, detail: null, kind: 'outside', glyph: 'device', presence: null, agentPresence: null, health: null, stale: false,
       unverified: false, corroborated: false, networkClass: null, memberCount: node.memberCount, address: null, note: null, sharedWith: 0 });
@@ -188,12 +246,17 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   const hiddenNetworkCount = [...groups.filter((group) => group.group!.kind === 'network' && !undeclaredIds.has(group.id)), ...unroutedOverlay].filter((group) => !renderedGroupIds.has(group.id)).length;
   const hiddenDeviceCount = allGroups.filter((group) => group.group!.kind === 'hidden' && group.group!.basis === 'decommissioned').reduce((sum, group) => sum + group.memberCount, 0);
   const site = linkNetworks(graph, [...drawnCards].map((cardId) => groups.find((group) => group.id === cardId)!), nodes, edges, text);
+  // A device presence lists in its own roster section is not listed again under its W01 network (a network left with nothing is dropped).
+  const rosterEntry = (entry: RosterNetwork): RosterNetwork | undefined => {
+    const memberNodeIds = entry.memberNodeIds.filter((nodeId) => !claimed.has(nodeId));
+    return memberNodeIds.length || !entry.memberNodeIds.length ? { ...entry, memberNodeIds } : undefined;
+  };
   const roster: RosterNetwork[] = [
     ...undeclaredCards.map((group): RosterNetwork => ({ groupId: group.id, prefix: group.group!.prefix, gatewayAddresses: group.group!.gatewayAddresses, kind: 'undeclared',
       memberNodeIds: group.group!.members.map((member) => member.nodeId).filter((nodeId) => !home.has(nodeId)) })),
     ...groups.filter((group) => group.group!.kind === 'unidentified').map((group): RosterNetwork => ({ groupId: group.id, prefix: null, gatewayAddresses: [], kind: 'unidentified',
       memberNodeIds: group.group!.members.map((member) => member.nodeId) })),
-  ];
+  ].flatMap((entry) => rosterEntry(entry) ?? []);
   return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount, site, roster, siteHasDeclarations };
 }
 

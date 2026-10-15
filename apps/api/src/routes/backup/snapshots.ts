@@ -576,6 +576,8 @@ snapshotsRoutes.post(
           provider: storage.provider,
           providerConfig: storage.providerConfig,
           snapshotId: updated.snapshotId,
+          keyLayout: updated.keyLayout,
+          keyPrefix: updated.keyPrefix,
           metadata: updated.metadata,
           retainUntil: immutableUntil,
         });

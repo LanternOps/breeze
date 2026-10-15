@@ -514,6 +514,25 @@ describe('manage_automations managed-row protection', () => {
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
   });
 
+  // #8600 (device-group targets, Open Decision 10): AI automation authoring is
+  // NOT widened to group targets. create/update/delete stay disabled for a
+  // human caller too, whatever the target shape, and nothing is written.
+  it.each(['create', 'update', 'delete'])('%s stays disabled, even with a device-group target', async (action) => {
+    const result = JSON.parse(await tool.handler({
+      action,
+      automationId: managed.id,
+      name: 'Group run',
+      trigger: { type: 'manual' },
+      conditions: { type: 'groups', groupIds: ['44444444-4444-4444-8444-444444444444'] },
+      actions: [{ type: 'run_script', scriptId: '11111111-1111-4111-8111-111111111111' }],
+    }, auth));
+
+    expect(result.error).toContain(`Action "${action}" is disabled`);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
   // Structural, and the limitation is worth stating: manage_automations returns
   // early for create/update/delete, so no behavioural test can reach those
   // branches today. Pinning the source is narrow but honest — it fails if the
@@ -771,7 +790,15 @@ describe('manage_patches handler', () => {
   it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
-    expect(result.error).toContain('configuration policies');
+    expect(result.error).toContain('manage_update_rings');
+    expect(result.error).toContain('manage_policy_feature_link');
+    expect(result.error).not.toMatch(/auto-approval rules on a policy/i);
+  });
+
+  it('setup_auto_approval no longer advertises policy auto-approve fields', () => {
+    const props = tool.definition.input_schema.properties as Record<string, unknown>;
+    expect(props.autoApprove).toBeUndefined();
+    expect(props.autoApproveSeverities).toBeUndefined();
   });
 
   it('list requires org context (never returns the unscoped global catalog)', async () => {

@@ -112,6 +112,17 @@ it('email mailbox uncertainty refuses while callback needs no mailbox read', asy
   expect(m.mailboxes).not.toHaveBeenCalled();
 });
 
+it('reads the mailbox set attributed to the gate technician (#6354 W03)', async () => {
+  const { currentMailboxReader } = await import('./mailboxReader');
+  let reader: string | undefined;
+  m.mailboxes.mockImplementation(async () => { reader = currentMailboxReader(); return ['other@example.com']; });
+  seed(candidate({ method: 'email' }));
+  await requireCallerVerification(ok).catch(() => undefined);
+  expect(m.mailboxes).toHaveBeenCalledWith({ orgId: input.orgId, target: input.target });
+  expect(reader).toBe(input.technicianUserId);
+  expect(currentMailboxReader()).toBeUndefined();
+});
+
 it('same mailbox aliases and removed methods cannot supply assurance', async () => {
   m.mailboxes.mockResolvedValue(['SMTP:Caller@example.com']);
   seed(candidate({ method: 'email' }));

@@ -214,6 +214,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // and fire regardless.
   'pam_actuations.pam_actuations_transition_guard':
     'RAISEs 42501 iff org_id changed (apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql); generation/tombstone checks otherwise',
+  // PAM ownership epochs W2 (#8204, 2026-12-23-120000): RAISEs 42501 iff
+  // (device_id, org_id, device_epoch) changes. pam_actuations is blocks-merge,
+  // so a merge never writes it.
+  'pam_actuations.pam_actuations_epoch_guard':
+    'RAISEs 42501 iff (device_id, org_id, device_epoch) changes; blocks-merge table, never repointed',
   // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
   // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
@@ -240,6 +245,9 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // 2026-10-26-160000): unconditional RAISE (55000) on UPDATE, same
   // retention-GUC-only bypass. Table is leave-for-erasure.
   'ai_operator_task_events.ai_operator_task_events_block_update': 'unconditional append-only RAISE',
+  // Recipe Library E4 (#6169): both plan-approval tables are leave-for-erasure.
+  'ai_operator_plan_approval_effects.ai_operator_plan_approval_effects_no_update': 'unconditional RAISE: approved effect rows are immutable evidence',
+  'ai_operator_plan_approvals.ai_operator_plan_approvals_immutable_trg': 'RAISEs on any org_id/content change (only lifecycle columns may move)',
 };
 
 /**
@@ -276,12 +284,22 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Backup key root W01 (#8731, 2026-12-28-110000): BEFORE UPDATE OF key_layout, key_prefix.
+  'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  'backup_snapshot_retirements.backup_snapshot_retirements_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
   // fires on the devices repoint and only APPENDS lineage (closes the loser
   // epoch, opens survivor epoch +1, writes retirement markers); it never
   // RAISEs and never reverts org_id. The write guard fires only when the
   // UPDATE targets ownership_epoch, and passes whenever org_id changes too.
   'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
+  // Topology site location W2 (#7886, 2026-12-25-140000): deletes the device's presence read-model row and
+  // marks the affected orgs dirty on a site/org change; writes nothing on devices, never RAISEs.
+  'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row (and, outside a merge, its day rows on an org change) and marks presence dirty; never RAISEs or reverts org_id',
+  // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
+  // change; touches no other column, never RAISEs.
+  'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   // Customer work approval (#4617, 2026-12-20-200200): freezes a DECIDED
   // request, but org_id is in its exempt list (to_jsonb(NEW) - org_id …), so an
@@ -474,6 +492,24 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
     dischargedBy: 'pam_actuations',
     requiredPolicyKind: 'blocks-merge',
     note: 'RAISEs 23514 on any devices.org_id change while the device has a pam_actuations row; a loser org with such rows is refused by the blocks-merge policy before the devices repoint',
+  },
+  // PAM ownership epochs W2 (#8204). Two branches on an org_id change:
+  //  - the request has a pam_actuations row: RAISE 42501 (evidence is frozen
+  //    to its epoch). A loser with such a row is refused by blocks-merge.
+  //  - no actuation: the row is re-anchored to its device's current epoch,
+  //    which requires the device to already be in the new org (else 23514).
+  //    The walk guarantees it even though elevation_requests sorts BEFORE
+  //    devices: the `sites` repoint (near the head of the walk) moves every
+  //    loser device through devices_site_org_fk ON UPDATE CASCADE (site_id is
+  //    NOT NULL, and PostgreSQL never defers a referential action), and that
+  //    devices UPDATE fires breeze_cascade_device_org_id, which restamps the
+  //    device's requests in the same statement. Pinned end to end by
+  //    orgMerge.integration.test.ts ('an un-actuated elevation request
+  //    follows its device into the survivor epoch').
+  'elevation_requests.elevation_requests_epoch_guard': {
+    dischargedBy: 'pam_actuations',
+    requiredPolicyKind: 'blocks-merge',
+    note: 'RAISEs 42501 on an org_id change of an actuated request (loser refused by blocks-merge); an un-actuated request is re-anchored to its device epoch, and follows its device via the devices repoint cascade',
   },
 };
 

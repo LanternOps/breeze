@@ -18,7 +18,7 @@ func TestPersistServerIdentityRewritesOrgAndSiteOnly(t *testing.T) {
 		t.Fatalf("SaveTo: %v", err)
 	}
 
-	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"); err != nil {
+	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2", 0); err != nil {
 		t.Fatalf("PersistServerIdentity: %v", err)
 	}
 
@@ -50,7 +50,7 @@ func TestPersistServerIdentityIsANoOpWhenUnchanged(t *testing.T) {
 	}
 	before := readFileBytes(t, cfgPath)
 
-	if err := PersistServerIdentity(cfgPath, base.OrgID, base.SiteID); err != nil {
+	if err := PersistServerIdentity(cfgPath, base.OrgID, base.SiteID, 0); err != nil {
 		t.Fatalf("PersistServerIdentity: %v", err)
 	}
 	if after := readFileBytes(t, cfgPath); !bytes.Equal(before, after) {
@@ -62,7 +62,7 @@ func TestPersistServerIdentityRefusesAnIncompleteIdentity(t *testing.T) {
 	cfgPath := writeBaseConfig(t, t.TempDir())
 	before := readFileBytes(t, cfgPath)
 	for _, tc := range []struct{ org, site string }{{"", "site"}, {"org", ""}} {
-		if err := PersistServerIdentity(cfgPath, tc.org, tc.site); err == nil {
+		if err := PersistServerIdentity(cfgPath, tc.org, tc.site, 0); err == nil {
 			t.Fatalf("expected an error for org=%q site=%q", tc.org, tc.site)
 		}
 	}
@@ -86,7 +86,7 @@ func TestSaveToKeepsAServerAssignedIdentity(t *testing.T) {
 		t.Fatalf("SaveTo: %v", err)
 	}
 
-	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"); err != nil {
+	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2", 0); err != nil {
 		t.Fatalf("PersistServerIdentity: %v", err)
 	}
 	// An in-flight cert renewal saves its stale copy, with another change.
@@ -110,7 +110,7 @@ func TestSaveToKeepsAServerAssignedIdentity(t *testing.T) {
 // Enrollment stays authoritative for the identity it was just issued.
 func TestSaveEnrollmentStillWritesItsIdentity(t *testing.T) {
 	cfgPath := writeBaseConfig(t, t.TempDir())
-	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"); err != nil {
+	if err := PersistServerIdentity(cfgPath, "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2", 0); err != nil {
 		t.Fatalf("PersistServerIdentity: %v", err)
 	}
 	enrolled, err := Load(cfgPath)

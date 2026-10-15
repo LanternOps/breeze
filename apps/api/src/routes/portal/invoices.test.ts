@@ -19,7 +19,7 @@ const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
   getCustomerInvoiceMock: vi.fn(),
   markViewedMock: vi.fn(),
 }));
-// toCustomerInvoiceLine is deliberately kept REAL (importActual) — it is the
+// projectCustomerInvoiceLine is deliberately kept REAL (importActual) — it is the
 // serialization boundary this suite's leak-guard test exists to police. A
 // hand-written stub here would only ever assert itself: it silently drifted
 // from the real field list when `name` was added (#3319), leaving the keyset
@@ -29,7 +29,7 @@ vi.mock('../../services/invoiceService', async (importActual) => {
   return {
     getCustomerInvoice: getCustomerInvoiceMock,
     markViewed: markViewedMock,
-    toCustomerInvoiceLine: actual.toCustomerInvoiceLine,
+    projectCustomerInvoiceLine: actual.projectCustomerInvoiceLine,
   };
 });
 
@@ -382,6 +382,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
         // IN the safe keyset (ordinary numeric fact, like quantity), unlike
         // sourceType/sourceId/costBasis/revenueAllocation/isUnapprovedTime above.
         workedMinutes: 30,
+        // #8604: applied upstream from the frozen columns; must pass through.
+        workDate: '2026-09-16',
       }],
     });
 
@@ -389,7 +391,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
     expect(body.lines[0]).not.toHaveProperty('sourceType');
     expect(body.lines[0]).not.toHaveProperty('sourceId');
@@ -399,6 +401,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(body.lines[0].description).toBe('Support');
     // #6467: workedMinutes itself survives the route boundary too.
     expect(body.lines[0].workedMinutes).toBe(30);
+    // #8604: the route must not re-apply default toggles (which would drop the date).
+    expect(body.lines[0].workDate).toBe('2026-09-16');
   });
 
   it('GET /invoices/:id resolves branding from the OUT-OF-HEADER partnerId', async () => {

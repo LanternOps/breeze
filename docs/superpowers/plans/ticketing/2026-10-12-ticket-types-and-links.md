@@ -2,6 +2,7 @@
 status: draft-awaiting-approval
 issue: 7900
 discussion: 7792
+tracking_issue: LanternOps/breeze#8592
 ---
 
 # Ticket Types + Ticket-to-Ticket Links Implementation Plan

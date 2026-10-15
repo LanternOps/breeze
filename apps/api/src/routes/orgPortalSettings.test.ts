@@ -89,6 +89,10 @@ vi.mock('../db/schema', () => ({
     enablePerformanceMetrics: 'enablePerformanceMetrics',
     enableSoftwareInventory: 'enableSoftwareInventory',
     enableNetworkVisibility: 'enableNetworkVisibility',
+    enableHourBlock: 'enableHourBlock',
+    enablePatchDetail: 'enablePatchDetail',
+    enableVulnerabilityDetail: 'enableVulnerabilityDetail',
+    enableEdrVisibility: 'enableEdrVisibility',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -130,6 +134,7 @@ const FULL_ROW = {
   enablePerformanceMetrics: false,
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -192,6 +197,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enablePerformanceMetrics: false,
       enableSoftwareInventory: false,
       enableNetworkVisibility: false,
+      enableEdrVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
@@ -231,6 +237,10 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSoftwareInventory: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
+      enableHourBlock: false,
+      enablePatchDetail: false,
+      enableVulnerabilityDetail: false,
+      enableEdrVisibility: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
@@ -302,6 +312,95 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
       .onConflictDoUpdate.mock.results[0]?.value.returning;
     expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableDevices', 'enableDevices');
+  });
+
+  it('persists the Support hours flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableHourBlock: true }]);
+
+    const res = await patch({ enableHourBlock: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableHourBlock: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableHourBlock: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableHourBlock', 'enableHourBlock');
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableHourBlock'] }) }),
+    );
+  });
+
+  it('persists the strict EDR visibility flag and treats it as a visibility flag (Enable all)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableEdrVisibility: true }]);
+
+    const res = await patch({ enableEdrVisibility: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableEdrVisibility: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableEdrVisibility: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableEdrVisibility', 'enableEdrVisibility');
+    expect(onPortalFlagsChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ requested: { enableEdrVisibility: true } }),
+    );
+  });
+
+  it('refuses the EDR visibility PATCH for a caller who cannot access the org (no write)', async () => {
+    resetAuth({ canAccessOrg: () => false });
+
+    const res = await patch({ enableEdrVisibility: true });
+
+    expect(res.status).toBe(404);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('persists the sensitive vulnerability detail flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableVulnerabilityDetail: true }]);
+
+    const res = await patch({ enableVulnerabilityDetail: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableVulnerabilityDetail: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableVulnerabilityDetail: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableVulnerabilityDetail', 'enableVulnerabilityDetail');
+  });
+
+  it('persists the sensitive patch detail flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enablePatchDetail: true }]);
+
+    const res = await patch({ enablePatchDetail: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enablePatchDetail: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enablePatchDetail: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enablePatchDetail', 'enablePatchDetail');
+  });
+
+  it('still rejects an unknown portal setting (strict schema)', async () => {
+    expect((await patch({ enableHourBlockz: true })).status).toBe(400);
   });
 
   it('upserts and returns the managed subset', async () => {
@@ -458,7 +557,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
         enableSoftwareInventory: true,
-        enableNetworkVisibility: true
+        enableNetworkVisibility: true,
+        enableEdrVisibility: false
       }
     });
   });

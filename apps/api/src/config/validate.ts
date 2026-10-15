@@ -1028,6 +1028,14 @@ const envObjectSchema = z
     // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
 
+    // #8616 heartbeat retain-state kill switch (routes/agents/
+    // heartbeatSettingsDecision.ts). Default on: a beat that advertises
+    // securityCapabilities.retainStateProtocolVersion 1 gets `retainState`
+    // for features with no decision this beat. 'false' answers every agent
+    // with the legacy payload, as an older API would. Strict enum so a typo
+    // boot-refuses instead of silently staying on.
+    HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
+
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a
     // rolling deploy or rollback never exposes catalog selection ahead of

@@ -1,0 +1,14 @@
+{
+  "name": "rolling-deploy",
+  "description": "Roll a deploy: graceful stop of the api container (SIGTERM, up to 30 s of shutdown phases), then start it. With one API instance this is planned downtime, the baseline curve, not a rolling deploy; W5c extends this file per api-N instance with server-paced drain.",
+  "events": [
+    {
+      "name": "rolling-deploy",
+      "at": "3m",
+      "hold": "0s",
+      "recovery": "5m",
+      "start": [{ "exec": ["docker", "stop", "--time", "30", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "start", "${STORM_API}"] }]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDR_PROVIDER_KEYS, getEdrProvider, isEdrProviderKey, listEdrProviders } from './registry';
+import { EDR_PROVIDER_LABELS } from './providerKeys';
 
 describe('edr provider registry', () => {
   it('throws on an unknown key, including inherited object keys', () => {
@@ -21,6 +22,10 @@ describe('edr provider registry', () => {
   it('registry keys are the pinned set and each adapter reports its own key', () => {
     expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender']);
     for (const k of EDR_PROVIDER_KEYS) expect(getEdrProvider(k).key).toBe(k);
+  });
+
+  it('the import-free display labels match each adapter label (#8166)', () => {
+    for (const k of EDR_PROVIDER_KEYS) expect(EDR_PROVIDER_LABELS[k]).toBe(getEdrProvider(k).label);
   });
 
   it('declares the incidents operation class budget', () => {

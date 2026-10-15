@@ -51,3 +51,71 @@ export type EdrActionStatus = (typeof EDR_ACTION_STATUSES)[number];
 export type EdrActionRequestedVia = (typeof EDR_ACTION_REQUESTED_VIA)[number];
 export type EdrVendorKind = (typeof EDR_VENDOR_KINDS)[number];
 export type EdrActionKey = (typeof EDR_ACTIONS)[number];
+
+/**
+ * One EDR-framework detection as the read routes, AI tools and web UI see it
+ * (#8166 W02). Vendor jsonb (`details`) and raw payloads are never part of it.
+ * `title`/`threatName`/`filePath`/`processName` are vendor-supplied
+ * (attacker-influenced) text: AI output fences them as raw text.
+ */
+export interface EdrDetectionDto {
+  id: string;
+  /** Omitted for organization-scope callers: they cannot read connections. */
+  connectionId?: string;
+  orgId: string;
+  provider: string;
+  providerLabel: string;
+  vendorDetectionId: string;
+  vendorKind: EdrVendorKind;
+  severity: EdrSeverity;
+  status: EdrDetectionStatus;
+  title: string | null;
+  category: string | null;
+  threatName: string | null;
+  filePath: string | null;
+  processName: string | null;
+  mitreTechniques: string[];
+  detectedAt: string | null;
+  resolvedAt: string | null;
+  endpointId: string | null;
+  breezeDeviceId: string | null;
+  deviceName: string | null;
+  /** The device link was cleared by an org move / device delete (D14). */
+  detached: boolean;
+  promotedIncidentId: string | null;
+}
+
+/**
+ * Coverage disclosure carried by every EDR read (D6): an empty detection list
+ * with `partial: true` is NOT evidence of "no threats". `notes` are
+ * Breeze-generated sentences only, never vendor-supplied text.
+ */
+export interface EdrCoverage {
+  orgsWithEdr: number;
+  partial: boolean;
+  notes: string[];
+}
+
+export interface EdrStatusProviderSummary {
+  provider: string;
+  label: string;
+  /** Partner/system scope only (org tokens cannot read connections/tenants under RLS). */
+  connectionId?: string;
+  connectionStatus?: EdrConnectionStatus;
+  tenantsMapped?: number;
+  tenantsUnmapped?: number;
+  tenantsStale?: number;
+  tenantsFailed?: number;
+  /** Mapped tenants that have never completed a detection sync. */
+  tenantsPending?: number;
+  endpoints: number;
+  linkedEndpoints: number;
+  unhealthyEndpoints: number;
+  openDetections: number;
+  lastDetectionSyncAt: string | null;
+}
+
+export interface EdrStatusSummary {
+  providers: EdrStatusProviderSummary[];
+  coverage: EdrCoverage;
+}

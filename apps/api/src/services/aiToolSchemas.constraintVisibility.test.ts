@@ -174,3 +174,18 @@ describe('set_device_context / summary length (#7130 case 3)', () => {
     ).toEqual({ success: true });
   });
 });
+
+describe('network_discovery / subnet (#8799)', () => {
+  it('the model-facing schema marks subnet required, matching validateToolInput', () => {
+    const schema = emittedInputSchema('network_discovery');
+    expect(schema.required).toContain('subnet');
+  });
+
+  it('rejects a call with no subnet before the agent is ever asked to scan', () => {
+    expect(validateToolInput('network_discovery', { deviceId: TEST_UUID }).success).toBe(false);
+  });
+
+  it('accepts a CIDR subnet', () => {
+    expect(validateToolInput('network_discovery', { deviceId: TEST_UUID, subnet: '10.0.0.0/24' }).success).toBe(true);
+  });
+});

@@ -582,6 +582,7 @@ export default function NetworkBaselinesPanel({
               disabled={!!editingBaseline}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             />
+            <p className="mt-1 text-xs text-muted-foreground">{t('networkBaselinesPanel.subnetTopologyNote')}</p>
             {editingBaseline && (
               <p className="mt-1 text-xs text-muted-foreground">{t('networkBaselinesPanel.form.immutableHint')}</p>
             )}

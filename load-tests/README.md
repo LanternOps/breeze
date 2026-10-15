@@ -5,7 +5,8 @@ Load and stress test scenarios for the Breeze RMM API using [k6](https://k6.io/)
 > **Agent load:** `scenarios/heartbeat.js` shares one token across fake agent
 > IDs with a toy payload, so its "10k agents" runs do not measure what an agent
 > costs the API. For agent counts and per-agent cost use the Go simulator in
-> [`agentsim/`](agentsim/README.md).
+> [`agentsim/`](agentsim/README.md). The regression gate built on it is in
+> [`perf/`](perf/README.md).
 
 ## Prerequisites
 

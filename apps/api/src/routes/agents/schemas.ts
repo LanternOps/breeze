@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { softwareInventoryReportSchema } from '@breeze/shared';
+import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { redactSecretsFromOutput } from '../../services/secretRedaction';
 
 // ============================================
 // Enrollment
@@ -147,10 +148,40 @@ const agentHealthObservationWireV1Schema = z.object({
   observedAt: z.string().datetime({ offset: true }),
 }).strict();
 
+// #8382 — the closed set of reasons an agent refuses a signed identity
+// assertion (agent/internal/heartbeat/identity_sync.go):
+// - env_override: it gave up, and BREEZE_ORG_ID / BREEZE_SITE_ID are set in
+//   its environment, which override agent.yaml on every start.
+// - gave_up: restarting did not apply the identity, so it stopped trying for
+//   the life of the process.
+// - unpinned_key: the assertion is signed by a key it never pinned.
+// - invalid: the assertion did not verify for any other lasting reason.
+// Agents before #8623 also sent gave_up (or env_override, with those variables
+// set) when they could not write their restart marker; newer agents retry that
+// write and report nothing, since a local write failure is not a refusal.
+export const IDENTITY_ASSERTION_REJECTION_CODES = ['env_override', 'gave_up', 'unpinned_key', 'invalid'] as const;
+
+export const identityAssertionRejectionSchema = z.object({
+  code: z.enum(IDENTITY_ASSERTION_REJECTION_CODES),
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid(),
+}).strict();
+
+export type IdentityAssertionRejection = z.infer<typeof identityAssertionRejectionSchema>;
+
 export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
   networkContextReset: z.unknown().optional(),
+  // #8608 — log-shipping health. z.unknown() so a malformed object can never
+  // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
+  // it separately (a bad value is `invalid`, never coerced to a healthy zero).
+  logShipping: z.unknown().optional(),
+  // #8620 — watchdog install health. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
+  // separately (a bad value is `invalid`: no state change, never coerced).
+  watchdogInstall: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),
@@ -190,6 +221,13 @@ export const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
+  // Caller verification readiness (#6354 W02): console logins whose Assist
+  // helper can render the card right now. Telemetry, not authorization; a
+  // malformed report degrades to "absent" (readiness cleared), never a 400.
+  helperCapabilities: z.object({
+    callerVerify: z.boolean(),
+    usernames: z.array(z.string().min(1).max(255)).max(32),
+  }).optional().catch(undefined),
   // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
   // 'awaiting_server_offer'). Omitted when there is none, and the route reads
   // absence as "healthy, clear it". A present but malformed value therefore
@@ -362,6 +400,7 @@ export const heartbeatSchema = z.object({
     peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
     pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliationResetProtocolVersion: z.number().int().optional().catch(undefined),
     // Revocation lease (fail-closed desktop session revalidation). Same
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".
@@ -379,9 +418,14 @@ export const heartbeatSchema = z.object({
     // value drops this field alone rather than rejecting the beat.
     workloadInventoryProtocolVersion: z.number().int().optional().catch(undefined),
     // #8317 — the agent verifies a signed identity assertion and adopts the
-    // row's org/site. Same tolerant contract; anything but exactly 1 means no
+    // row's org/site. Same tolerant contract. 1 = v1 assertions; 2 or later =
+    // v2, which adds the ownership epoch (#8206); anything else means no
     // assertion is sent.
     identitySyncProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8616 — the agent honours the response's `retainState` list. Parse-only
+    // (never persisted): the beat being answered is the only source of truth.
+    // Same tolerant contract; anything but exactly 1 gets the legacy payload.
+    retainStateProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),
@@ -407,7 +451,16 @@ export const heartbeatSchema = z.object({
     orgId: z.string().uuid(),
     siteId: z.string().uuid(),
     nonce: z.string().regex(/^[0-9a-f]{32}$/),
+    // #8206 — the PAM ownership epoch whose identity the agent loaded (v2
+    // agents; absent until it has received one). Its own catch: a malformed
+    // epoch drops this field alone, never the identity sync above.
+    ownershipEpoch: z.number().int().positive().max(2_147_483_647).optional().catch(undefined),
   }).optional().catch(undefined),
+  // #8382 — why the agent refused the last identity assertion, and the
+  // org/site that assertion named. The server stops signing for that target
+  // for a while instead of signing one every beat. Same tolerant contract: a
+  // malformed value drops this field alone and the server signs as before.
+  identityAssertionRejection: identityAssertionRejectionSchema.optional().catch(undefined),
   // Signed rollback progress is informational and restart-resend safe. A
   // malformed optional observation must never take the ordinary heartbeat
   // offline; the server simply withholds an acknowledgement for that value.
@@ -566,6 +619,109 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
   return typeof value === 'string' && AGENT_COMMAND_ERROR_CODE_SET.has(value);
 }
 
+/**
+ * The nine statuses an agent can report for a System Restore checkpoint
+ * attempt (#4609, W06 #4757). Mirrors `Status` in
+ * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * it is server-only, written at command-creation time, and an agent claiming
+ * it is malformed. Pinned against the shared union and the ledger statuses in
+ * restorePointResultSchema.test.ts.
+ */
+export const RESTORE_POINT_OUTCOME_STATUSES = [
+  'created',
+  'existing_accepted',
+  'skipped_disabled',
+  'skipped_definition_only',
+  'unsupported',
+  'busy',
+  'insufficient_privileges',
+  'verification_failed',
+  'failed',
+] as const satisfies ReadonlyArray<RestorePointOutcome['status']>;
+
+const RESTORE_POINT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INT64_MIN = -(2n ** 63n);
+const INT64_MAX = 2n ** 63n - 1n;
+/** The ledger's duration/age/frequency columns are Postgres `integer`. */
+const PG_INT4_MAX = 2_147_483_647;
+
+/**
+ * The agent's checkpoint outcome, carried under the top-level `restorePoint`
+ * key of a command result. Validated INSIDE the ingest step, never at the
+ * transport (see `commandResultSchema.restorePoint`). Unknown keys are stripped.
+ */
+export const restorePointOutcomeSchema = z.object({
+  status: z.enum(RESTORE_POINT_OUTCOME_STATUSES),
+  // Echo of the server-stamped request id; the ledger column is uuid, so a
+  // non-uuid value is rejected here rather than raising 22P02 in the UPDATE.
+  requestId: z.string().max(64).regex(RESTORE_POINT_UUID_REGEX),
+  // STRING, never a number: Windows sequence numbers are INT64 and exceed the
+  // JS safe-integer range, so a numeric field would silently round large values.
+  sequenceNumber: z
+    .string()
+    .regex(/^-?[0-9]{1,20}$/)
+    // Zod runs this even after the regex fails, so re-check the shape before
+    // BigInt() (which throws on non-decimal input).
+    .refine((v) => {
+      if (!/^-?[0-9]{1,20}$/.test(v)) return false;
+      const n = BigInt(v);
+      return n >= INT64_MIN && n <= INT64_MAX;
+    }, 'sequenceNumber is outside the int64 range')
+    .optional(),
+  description: z.string().max(512).optional(),
+  message: z.string().max(10_000).optional(),
+  // Agent clock; parsed defensively at ingest (the Go agent may send '').
+  attemptedAt: z.string().max(64),
+  durationMs: z.number().int().min(0).max(PG_INT4_MAX),
+  existingPointAgeMinutes: z.number().int().min(0).max(PG_INT4_MAX).optional(),
+  frequencyMinutes: z.number().int().min(0).max(PG_INT4_MAX).optional(),
+});
+
+// Compile-time: the parsed shape is assignable to the shared wire type.
+const _restorePointOutcomeMatchesShared = (o: z.infer<typeof restorePointOutcomeSchema>): RestorePointOutcome => o;
+void _restorePointOutcomeMatchesShared;
+
+export type RestorePointOutcomeClassification =
+  | { ok: true; outcome: RestorePointOutcome }
+  | { ok: false; reason: 'unknown_status' | 'malformed' };
+
+/**
+ * Validate a raw agent-supplied `restorePoint` value. Never throws.
+ * `unknown_status` is an otherwise-recognisable outcome whose status is not one
+ * of the nine (a future agent value, or the server-only 'requested');
+ * everything else that fails is `malformed`.
+ */
+export function classifyRestorePointOutcome(raw: unknown): RestorePointOutcomeClassification {
+  const parsed = restorePointOutcomeSchema.safeParse(raw);
+  if (parsed.success) {
+    // #2434: `message` / `description` are agent-authored free text (a VSS or
+    // PowerShell error can embed a path or token). Redacted HERE, at the one
+    // parse point, so both consumers -- the stored device_commands result and
+    // the ledger row (exported as `included`) -- only ever see redacted text.
+    const outcome = parsed.data;
+    return {
+      ok: true,
+      outcome: {
+        ...outcome,
+        ...(outcome.message !== undefined ? { message: redactSecretsFromOutput(outcome.message) } : {}),
+        ...(outcome.description !== undefined ? { description: redactSecretsFromOutput(outcome.description) } : {}),
+      },
+    };
+  }
+  const statusIsUnknownString =
+    raw !== null &&
+    typeof raw === 'object' &&
+    typeof (raw as { status?: unknown }).status === 'string' &&
+    parsed.error.issues.some((issue) => issue.path.length === 1 && issue.path[0] === 'status');
+  return { ok: false, reason: statusIsUnknownString ? 'unknown_status' : 'malformed' };
+}
+
+/** The validated outcome, or null when absent/invalid. Never throws. */
+export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | null {
+  const classified = classifyRestorePointOutcome(raw);
+  return classified.ok ? classified.outcome : null;
+}
+
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
@@ -584,6 +740,12 @@ export const commandResultSchema = z.object({
   // them as absent (prose fallback); a malformed value is dropped via
   // `.catch` rather than failing the parse.
   errorCode: z.string().max(64).optional().catch(undefined),
+  // #4609 W06: the System Restore checkpoint outcome. Deliberately LENIENT at
+  // the transport (same reasoning as errorCode): a newer agent may add a status
+  // this API has not learned, and a 400 here would strand a completed patch /
+  // script / install. Validated by classifyRestorePointOutcome inside the
+  // ingest step, after the terminal compare-and-set.
+  restorePoint: z.unknown().optional(),
   result: z.any().optional().refine(
     (val) => {
       const size = commandResultResultByteLength(val);
@@ -614,7 +776,8 @@ export const securityProviderValues = [
   'emsisoft',
   'webroot',
   'withsecure',
-  'other'
+  'other',
+  'unknown'
 ] as const;
 
 export type SecurityProviderValue = (typeof securityProviderValues)[number];

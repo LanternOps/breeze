@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { postScriptExecute, type ScriptExecuteResult, type ScriptRunTarget } from '@/lib/scriptExecute';
 import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronRight, ChevronUp, Copy, Check, Loader2, AlertOctagon, RotateCcw, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { handleActionError } from '@/lib/runAction';
 import {
@@ -25,7 +25,7 @@ import {
 } from '../scripts/executionStatus';
 import type { Script } from '../scripts/ScriptList';
 import type { ScriptParameter } from '../scripts/ScriptForm';
-import type { CancelState, ExecutionStatus, ScriptAdmissionResult } from '@breeze/shared';
+import type { CancelState, ExecutionStatus } from '@breeze/shared';
 import { RunContextChip, type RunContextValue } from '../common/RunContext';
 import { AiInitiatorChip } from '../common/AiInitiatorChip';
 import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
@@ -489,20 +489,17 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
 
   const handleExecuteRunAgain = async (
     scriptId: string,
-    deviceIds: string[],
+    target: ScriptRunTarget,
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ): Promise<ScriptAdmissionResult> => {
-    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
-      method: 'POST',
-      body: JSON.stringify({ deviceIds, parameters, runAs })
-    });
-
-    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
-
-    if (!response.ok) {
-      throw new Error(extractApiError(data, tScripts('scriptExecutionsPage.errors.execute')));
-    }
+  ): Promise<ScriptExecuteResult> => {
+    const data = await postScriptExecute(
+      scriptId,
+      target,
+      parameters,
+      runAs,
+      tScripts('scriptExecutionsPage.errors.execute'),
+    );
 
     if (data.targets.some(target => target.admission === 'admitted')) {
       await fetchHistory(true);

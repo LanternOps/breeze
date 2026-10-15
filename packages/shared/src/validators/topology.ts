@@ -191,6 +191,41 @@ function ipv4Number(address: string): number | null {
   return parts.reduce((value, part) => value * 256 + Number(part), 0);
 }
 /**
+ * Prefixes that consumer routers ship with by default. Many unrelated sites share them, so a
+ * "gateway matches" signal on one of these is not evidence of the same network (a visit needs a
+ * corroborated gateway MAC). Spec 2026-10-03 topology-site-location §6.5.
+ *
+ * Changing this list requires a reviewed PR: it changes presence classification for every org.
+ */
+export const TOPOLOGY_CONSUMER_DEFAULT_PREFIXES: readonly string[] = Object.freeze([
+  '192.168.0.0/24', '192.168.1.0/24', '192.168.2.0/24', '192.168.3.0/24', '192.168.4.0/24',
+  '192.168.8.0/24', '192.168.11.0/24', '192.168.31.0/24', '192.168.50.0/24', '192.168.68.0/22',
+  '192.168.86.0/24', '192.168.88.0/24', '192.168.100.0/24', '192.168.178.0/24',
+  '192.168.254.0/24', '10.0.0.0/24', '10.0.1.0/24', '10.1.10.0/24', '172.16.0.0/24',
+]);
+
+function ipv4Range(prefix: string): [number, number] | null {
+  const match = /^([^/]+)\/(\d{1,2})$/.exec(prefix);
+  if (!match) return null;
+  const length = Number(match[2]);
+  const value = ipv4Number(match[1]!);
+  if (value === null || length > 32) return null;
+  const size = 2 ** (32 - length);
+  const start = Math.floor(value / size) * size;
+  return [start, start + size - 1];
+}
+
+/** True when the IPv4 range of `prefix` overlaps (contains, or is contained by) a consumer default. Non-IPv4 or unparsable input is false. */
+export function isTopologyConsumerDefaultPrefix(prefix: string): boolean {
+  const range = ipv4Range(prefix);
+  if (!range) return false;
+  return TOPOLOGY_CONSUMER_DEFAULT_PREFIXES.some((entry) => {
+    const other = ipv4Range(entry);
+    return !!other && range[0] <= other[1] && other[0] <= range[1];
+  });
+}
+
+/**
  * Display class of a network for the grouped overview. Only `lan` prefixes form visible
  * network cards by default; the rest are real but rarely what an operator means by
  * "the network" (link-local, single-host, overlay/VPN ranges, over-broad prefixes).
@@ -461,6 +496,8 @@ export const graphResponseSchema = z.object({
     canEdit: z.boolean(),
     canDiagnose: z.boolean(),
     canConfigureMonitoring: z.boolean(),
+    /** Site location W3: devices:write (live and request permissions), for the wrong-site suggestion actions. */
+    canMoveDevices: z.boolean(),
   }).strict(),
 }).strict();
 

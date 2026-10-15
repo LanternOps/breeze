@@ -10,6 +10,11 @@ vi.mock('./invoiceService', () => ({
   addContractLine: vi.fn().mockResolvedValue({ id: 'line-1' }),
   updateLine: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
   removeLine: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
+  refreshDraftTimeLines: vi.fn().mockResolvedValue({
+    invoiceId: 'inv-1', orgId: 'org-1',
+    summary: { refreshed: 1, unchanged: 0, skipped: 0, quantityDrifted: 0 },
+    lines: [{ lineId: 'line-1', status: 'refreshed', changed: ['description'] }],
+  }),
   updateInvoice: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
   deleteDraftInvoice: vi.fn().mockResolvedValue(undefined),
   assembleDraftFromOrg: vi.fn().mockResolvedValue({ invoice: { id: 'inv-1' }, lines: [] }),
@@ -646,6 +651,39 @@ describe('manage_invoices', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(invoiceService.updateLine).not.toHaveBeenCalled();
   });
+
+  it('refresh_time_lines (#8606) refreshes the draft and returns the per-line outcome', async () => {
+    const out = await getTool().handler({ action: 'refresh_time_lines', invoiceId: 'inv-1' }, auth);
+    expect(JSON.parse(out)).toMatchObject({ summary: { refreshed: 1 }, lines: [{ lineId: 'line-1', status: 'refreshed' }] });
+    expect(invoiceService.refreshDraftTimeLines).toHaveBeenCalledWith('inv-1', expect.objectContaining({ partnerId: expect.anything() }));
+  });
+
+  it('refresh_time_lines warns the model when a billed-elsewhere line will block issue', async () => {
+    vi.mocked(invoiceService.refreshDraftTimeLines).mockResolvedValueOnce({
+      invoiceId: 'inv-1', orgId: 'org-1',
+      summary: { refreshed: 0, unchanged: 0, skipped: 1, quantityDrifted: 0 },
+      lines: [{ lineId: 'line-9', status: 'skipped', reason: 'billed_elsewhere' }],
+    });
+    const parsed = JSON.parse(await getTool().handler({ action: 'refresh_time_lines', invoiceId: 'inv-1' }, auth));
+    expect(parsed.issueBlockedByLineIds).toEqual(['line-9']);
+    expect(parsed.warning).toMatch(/SOURCE_ALREADY_BILLED/);
+  });
+
+  it('refresh_time_lines without invoiceId is refused before the service', async () => {
+    const out = await getTool().handler({ action: 'refresh_time_lines' }, auth);
+    expect(JSON.parse(out).code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.refreshDraftTimeLines).not.toHaveBeenCalled();
+  });
+
+  it('refresh_time_lines is a Tier-2 invoices:write action in every schema and guardrail map', async () => {
+    const { toolInputSchemas } = await import('./aiToolSchemas');
+    const { TOOL_PERMISSIONS, TIER3_ACTIONS } = await import('./aiGuardrails');
+    expect(toolInputSchemas.manage_invoices!.safeParse({ action: 'refresh_time_lines', invoiceId: '11111111-1111-4111-8111-111111111111' }).success).toBe(true);
+    expect((TOOL_PERMISSIONS.manage_invoices as Record<string, unknown>).refresh_time_lines).toEqual({ resource: 'invoices', action: 'write' });
+    expect(TIER3_ACTIONS.manage_invoices).not.toContain('refresh_time_lines');
+    const def = getTool().definition.input_schema.properties as Record<string, { enum?: string[] }>;
+    expect(def.action!.enum).toContain('refresh_time_lines');
+  }, 60_000);
 
   it('update_header with an invalid patch field returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
     const out = await getTool().handler(
