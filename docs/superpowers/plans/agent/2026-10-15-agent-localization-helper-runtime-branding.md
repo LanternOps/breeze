@@ -5,7 +5,7 @@ spec_pr: LanternOps/breeze#8277
 status: draft
 date: 2026-10-15
 area: agent / api / helper / web
-verified_main: 6e83eb078f63
+verified_main: 1598822fc6a4
 ---
 
 # Agent localization and Helper runtime branding (Phase 2): implementation plan
@@ -20,7 +20,7 @@ verified_main: 6e83eb078f63
 
 ## Deltas since the spec
 
-The #8277 design remains the product source of truth. These are implementation-surface changes verified on current `upstream/main` (`6e83eb078f63`, 2026-10-15); none reopen OD1-OD5.
+The #8277 design remains the product source of truth. These are implementation-surface changes verified on current `upstream/main` (`1598822fc6a4`, 2026-10-15); none reopen OD1-OD5.
 
 1. **`devicePolicySet` is now on the heartbeat hot path.** `loadDevicePolicySet` / `withPolicySet` load candidate assignments once, and `resolveDeviceHelperSettings` already accepts that set. The branding pass must produce the same result in policy-set and standalone resolution, covered by the existing resolver-parity integration pattern.
 2. **Heartbeat retain-state v1 is on main.** `heartbeatSettingsDecision.ts` omits `helperEnabled` / `helperSettings` when the API has no valid Helper decision and emits `retainState: ['helper']` to capable agents. Branding therefore belongs inside `helperSettings`: a retained beat naturally carries no branding decision and the Agent keeps the persisted last-known brand.
