@@ -57,7 +57,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-hook-form": "^7.81.0",
-    "react-i18next": "^17.0.10",
+    "react-i18next": "^17.0.16",
     "react-markdown": "^10.1.0",
     "recharts": "^3.9.2",
     "remark-gfm": "^4.0.1",
