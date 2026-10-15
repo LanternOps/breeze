@@ -381,7 +381,11 @@ export function HomeScreen() {
               dispatch(discardTurn({ ids: optimisticIds }));
               dispatch(setError(failure.message));
               setDraft(content);
-              void picker.load({ sessionId: sid });
+              // Drop the stored pref too: for a partner-scope technician the
+              // pref is applied on each new chat's FIRST message rather than
+              // on create, so a refusal here would otherwise repeat on every
+              // new chat (same reasoning as the create path below).
+              void picker.forgetPref().then(() => picker.load({ sessionId: sid }));
               return;
             }
           }
