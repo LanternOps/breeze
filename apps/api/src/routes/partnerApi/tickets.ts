@@ -195,6 +195,7 @@ const ticketColumns = {
   deletedAt: tickets.deletedAt,
   createdAt: tickets.createdAt,
   updatedAt: tickets.updatedAt,
+  migrationWindowId: tickets.migrationWindowId,
   changeXid: sql<string>`${tickets.partnerFeedXid}::text`,
 };
 
@@ -246,6 +247,7 @@ export function toPartnerTicketRecord(row: TicketRow, ref: TicketExternalRef | n
     slaBreachReason: truncateText(row.slaBreachReason ?? null, 1000),
     createdAt: iso(row.createdAt ?? null)!,
     updatedAt: iso(row.updatedAt ?? null)!,
+    migrationWindowId: row.migrationWindowId ?? null,
     changeVersion: String(row.changeXid),
   };
   return { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };
@@ -280,6 +282,10 @@ export function toPartnerTicketCommentRecord(row: CommentRow, orgId: string): Pa
     newValue: truncateText(row.newValue ?? null, 2000),
     createdAt: iso(row.createdAt)!,
     editedAt: iso(row.editedAt ?? null),
+    migrationWindowId: row.migrationWindowId ?? null,
+    originalAuthor: row.originalAuthorKind
+      ? { name: row.authorName ?? null, email: row.originalAuthorEmail ?? null, kind: row.originalAuthorKind }
+      : null,
   };
   return { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };
 }

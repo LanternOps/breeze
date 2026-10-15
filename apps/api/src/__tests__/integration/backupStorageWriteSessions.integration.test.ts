@@ -31,10 +31,12 @@ import { applyBackupCommandResultToJob } from '../../services/backupResultPersis
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
 import {
+  abortWriteSessionMultipart,
   completeWriteSessionMultipart,
   createWriteSessionMultipart,
   deleteWriteSessionKeys,
   ensureWriteSessionLive,
+  listWriteSessionPrefix,
   mintBackupWriteSession,
   resolveWriteSessionObjects,
   resumeWriteSession,
@@ -605,5 +607,453 @@ describe('delivering a queued database backup', () => {
     expect(row!.status).not.toBe('sent');
     expect(JSON.stringify(row)).not.toContain(WRITE_DESTINATION.secretKey);
     expect(JSON.stringify(row!.result)).toMatch(/Update the Breeze agent on this device, then try again\. Backups now require/);
+  });
+});
+
+// #7081 / #8731: every write-session storage call composes its physical key
+// from the reservation's recorded key root. The writer stays legacy in this
+// wave, so these tests force a prefixed root through the injectable
+// `resolveMintKeyRoot` dependency.
+describe('write sessions resolve physical keys from the reservation key root', () => {
+  const PREFIX = 'msp/acme';
+  const P_ROOT = { layout: 'prefixed_flat', prefix: PREFIX } as const;
+  const LEGACY_ROOT = { layout: 'legacy_flat', prefix: null } as const;
+
+  type Call = { op: string; key: string; uploadId?: string };
+
+  function recordingDeps(
+    calls: Call[],
+    root: { layout: 'legacy_flat'; prefix: null } | { layout: 'prefixed_flat'; prefix: string } = P_ROOT,
+    overrides: Partial<WriteSessionDeps['storage']> = {},
+  ): WriteSessionDeps {
+    const base = fakeDeps();
+    return {
+      ...base,
+      resolveMintKeyRoot: () => ({ ok: true, root }),
+      storage: {
+        ...base.storage,
+        presignPut: async (cfg, key, size, sse, opts) => {
+          calls.push({ op: 'presignPut', key });
+          return base.storage.presignPut(cfg, key, size, sse, opts);
+        },
+        presignPart: async (cfg, key, uploadId, partNumber, size, ttl) => {
+          calls.push({ op: 'presignPart', key, uploadId });
+          return base.storage.presignPart(cfg, key, uploadId, partNumber, size, ttl);
+        },
+        presignGet: async (cfg, key, ttl) => {
+          calls.push({ op: 'presignGet', key });
+          return base.storage.presignGet(cfg, key, ttl);
+        },
+        createMultipart: async (cfg, key, sse) => {
+          calls.push({ op: 'createMultipart', key });
+          return base.storage.createMultipart(cfg, key, sse);
+        },
+        completeMultipart: async (_cfg, key, uploadId) => { calls.push({ op: 'completeMultipart', key, uploadId }); },
+        abortMultipart: async (_cfg, key, uploadId) => { calls.push({ op: 'abortMultipart', key, uploadId }); },
+        listKeys: async (_cfg, prefix) => {
+          calls.push({ op: 'listKeys', key: prefix });
+          return { keys: [], nextToken: null };
+        },
+        deleteKeys: async (_cfg, keys) => {
+          for (const key of keys) calls.push({ op: 'deleteKeys', key });
+          return { deleted: keys, failed: [] };
+        },
+        ...overrides,
+      },
+    };
+  }
+
+  async function mintWith(t: WriteTenant, deps: WriteSessionDeps, jobId = t.jobId, baseManifestKey: string | null = null) {
+    const minted = await mint(t, jobId, deps, baseManifestKey);
+    if (minted.mode !== 'brokered') throw new Error(`expected brokered, got ${minted.reason}`);
+    return { minted, session: await authed(t, minted.envelope) };
+  }
+
+  /** Rewrites a reservation's root behind the immutability trigger (test-only corruption). */
+  async function corruptReservationRoot(snapshotId: string, layout: string, prefix: string | null) {
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`
+        UPDATE backup_snapshot_id_reservations SET key_layout = ${layout}, key_prefix = ${prefix} WHERE snapshot_id = ${snapshotId}
+      `);
+    });
+  }
+
+  runDb('(1) mint records the root on the reservation; PUT/PART presign the physical key, the answer keeps the logical key', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls);
+    const { minted, session } = await mintWith(t, deps);
+    const id = minted.snapshotId;
+    expect(await reservationRow(id)).toMatchObject({ key_layout: 'prefixed_flat', key_prefix: PREFIX });
+
+    const key = `snapshots/${id}/files/a`;
+    const result = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [
+      { method: 'PUT', key, size: 1 },
+      { method: 'GET', key },
+    ], deps));
+    expect(result.status).toBe(200);
+    if (result.status !== 200) return;
+    expect(calls).toEqual([
+      { op: 'presignPut', key: `${PREFIX}/${key}` },
+      { op: 'presignGet', key: `${PREFIX}/${key}` },
+    ]);
+    expect(result.body.objects.map((o) => o.key)).toEqual([key, key]);
+  });
+
+  runDb('(1) a composed physical key over 1024 bytes is refused per key before any presign', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls);
+    const { minted, session } = await mintWith(t, deps);
+    // Under 1024 bytes as a logical key, over it once the prefix is added.
+    const long = `snapshots/${minted.snapshotId}/files/${'a'.repeat(1020 - `snapshots/${minted.snapshotId}/files/`.length)}`;
+    expect(Buffer.byteLength(long)).toBe(1020);
+    const result = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [
+      { method: 'PUT', key: long, size: 1 },
+    ], deps));
+    expect(result).toMatchObject({ status: 200, body: { objects: [], denied: [{ key: long, code: 'key_too_long' }] } });
+    expect(calls).toEqual([]);
+    const create = await createWriteSessionMultipart(session, long, runFor(t), deps);
+    expect(create).toMatchObject({ status: 400, code: 'key_too_long' });
+    expect(calls).toEqual([]);
+  });
+
+  runDb('(2) multipart create/part/complete/abort use the physical key; the upload row keeps the logical key', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls);
+    const { minted, session } = await mintWith(t, deps);
+    const key = `snapshots/${minted.snapshotId}/files/big.bin`;
+    const physical = `${PREFIX}/${key}`;
+
+    const created = await createWriteSessionMultipart(session, key, runFor(t), deps);
+    if (created.status !== 200) throw new Error(`create failed: ${JSON.stringify(created)}`);
+    const uploadId = created.body.uploadId;
+    const rows = (await getTestDb().execute(sql`
+      SELECT object_key FROM backup_storage_session_uploads WHERE upload_id = ${uploadId}
+    `)) as unknown as Array<{ object_key: string }>;
+    expect(rows).toEqual([{ object_key: key }]);
+
+    const part = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [
+      { method: 'UPLOAD_PART', key, uploadId, partNumber: 1, size: 5 },
+    ], deps));
+    expect(part).toMatchObject({ status: 200, body: { objects: [{ key, uploadId, partNumber: 1 }] } });
+
+    expect(await completeWriteSessionMultipart(session, key, uploadId, [{ partNumber: 1, etag: '"e"' }], runFor(t), deps))
+      .toMatchObject({ status: 200 });
+
+    const second = await createWriteSessionMultipart(session, key, runFor(t), deps);
+    if (second.status !== 200) throw new Error('second create failed');
+    expect(await abortWriteSessionMultipart(session, key, second.body.uploadId, runFor(t), deps)).toMatchObject({ status: 200 });
+
+    expect(calls.map((c) => `${c.op} ${c.key}`)).toEqual([
+      `createMultipart ${physical}`,
+      `presignPart ${physical}`,
+      `completeMultipart ${physical}`,
+      `createMultipart ${physical}`,
+      `abortMultipart ${physical}`,
+    ]);
+  });
+
+  runDb('(3) list lists under the physical root and answers logical keys, dropping any not under the root', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const base = recordingDeps(calls);
+    const { minted, session } = await mintWith(t, base);
+    const id = minted.snapshotId;
+    const deps = recordingDeps(calls, P_ROOT, {
+      listKeys: async (_cfg, prefix) => {
+        calls.push({ op: 'listKeys', key: prefix });
+        return { keys: [`${PREFIX}/snapshots/${id}/files/a`, `snapshots/${id}/x`], nextToken: 'next' };
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const listed = await listWriteSessionPrefix(session, `snapshots/${id}/`, null, runFor(t), deps);
+      expect(listed).toEqual({ status: 200, body: { keys: [`snapshots/${id}/files/a`], nextToken: 'next' } });
+      expect(calls).toEqual([{ op: 'listKeys', key: `${PREFIX}/snapshots/${id}/` }]);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+    // Authorization still runs on the logical prefix.
+    expect(await listWriteSessionPrefix(session, `${PREFIX}/snapshots/${id}/`, null, runFor(t), deps))
+      .toMatchObject({ status: 403, code: 'outside_reservation' });
+  });
+
+  runDb('(4) delete removes the physical keys and answers logical keys', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls, P_ROOT, {
+      deleteKeys: async (_cfg, keys) => {
+        for (const key of keys) calls.push({ op: 'deleteKeys', key });
+        return { deleted: [keys[0]!], failed: keys.slice(1).map((key) => ({ key, code: 'AccessDenied' })) };
+      },
+    });
+    const { minted, session } = await mintWith(t, deps);
+    const a = `snapshots/${minted.snapshotId}/files/a`;
+    const b = `snapshots/${minted.snapshotId}/files/b`;
+    const result = await deleteWriteSessionKeys(session, [a, b], runFor(t), deps);
+    expect(result).toEqual({
+      status: 200,
+      body: { deleted: [a], denied: [], failed: [{ key: b, code: 'AccessDenied' }] },
+    });
+    expect(calls).toEqual([
+      { op: 'deleteKeys', key: `${PREFIX}/${a}` },
+      { op: 'deleteKeys', key: `${PREFIX}/${b}` },
+    ]);
+  });
+
+  runDb('(6) redelivery keeps the reservation root even when the mint root has changed', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const first = await mintWith(t, recordingDeps(calls, P_ROOT));
+    await getTestDb().execute(sql`UPDATE backup_storage_sessions SET url_horizon_at = NULL WHERE id = ${first.session.id}`);
+
+    const legacyDeps = recordingDeps(calls, LEGACY_ROOT);
+    const second = await mintWith(t, legacyDeps);
+    expect(second.minted.snapshotId).toBe(first.minted.snapshotId);
+    expect(await reservationRow(second.minted.snapshotId)).toMatchObject({ key_layout: 'prefixed_flat', key_prefix: PREFIX });
+
+    const key = `snapshots/${second.minted.snapshotId}/files/a`;
+    const put = await asAgent(t, second.session, (r) => resolveWriteSessionObjects(second.session, r, [
+      { method: 'PUT', key, size: 1 },
+    ], legacyDeps));
+    expect(put.status).toBe(200);
+    expect(calls).toEqual([{ op: 'presignPut', key: `${PREFIX}/${key}` }]);
+  });
+
+  runDb('(6) a refused mint root reserves nothing and is reported as invalid_destination_prefix', async () => {
+    const t = await seedWriteTenant();
+    const deps: WriteSessionDeps = { ...fakeDeps(), resolveMintKeyRoot: () => ({ ok: false, reason: 'invalid_destination_prefix' }) };
+    const result = await mint(t, t.jobId, deps);
+    expect(result).toEqual({ mode: 'unbrokered', reason: 'invalid_destination_prefix' });
+    const rows = await getTestDb().execute(sql`SELECT 1 FROM backup_snapshot_id_reservations WHERE current_job_id = ${t.jobId}`);
+    expect(rows).toHaveLength(0);
+    const sessions = await getTestDb().execute(sql`SELECT 1 FROM backup_storage_sessions WHERE job_id = ${t.jobId}`);
+    expect(sessions).toHaveLength(0);
+  });
+
+  runDb('(7) resume onto an earlier prefixed reservation aborts and writes under ITS root, not the current mint root', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    // An earlier job reserved J under the prefixed root and has ended.
+    const prevJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const earlier = await mintWith(t, recordingDeps(calls, P_ROOT), prevJob);
+    const j = earlier.minted.snapshotId;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_storage_session_uploads (org_id, device_id, session_id, reservation_snapshot_id, reservation_generation, object_key, upload_id, state)
+      VALUES (${t.orgId}, ${t.deviceId}, ${earlier.session.id}, ${j}, 1, ${`snapshots/${j}/files/big.bin`}, 'u-prev-root', 'open')
+    `);
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${prevJob}`);
+
+    // The new job's mint root is legacy (e.g. the prefix was removed since).
+    const newJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const legacyDeps = recordingDeps(calls, LEGACY_ROOT);
+    const fresh = await mintWith(t, legacyDeps, newJob);
+    expect(await reservationRow(fresh.minted.snapshotId)).toMatchObject({ key_layout: 'legacy_flat', key_prefix: null });
+
+    const result = await resumeWriteSession(fresh.session, j, runFor(t), legacyDeps);
+    expect(result).toMatchObject({ status: 200, body: { mode: 'write', takeover: true, snapshotId: j } });
+    expect(calls).toContainEqual({ op: 'abortMultipart', key: `${PREFIX}/snapshots/${j}/files/big.bin`, uploadId: 'u-prev-root' });
+
+    calls.length = 0;
+    const resumed = await authed(t, fresh.minted.envelope);
+    const key = `snapshots/${j}/files/a`;
+    const put = await asAgent(t, resumed, (r) => resolveWriteSessionObjects(resumed, r, [{ method: 'PUT', key, size: 1 }], legacyDeps));
+    expect(put.status).toBe(200);
+    expect(calls).toEqual([{ op: 'presignPut', key: `${PREFIX}/${key}` }]);
+  });
+
+  runDb('(8) the base manifest GET resolves under the base snapshot row\'s root', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const base = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+    const baseJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'completed');
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, key_layout, key_prefix)
+      VALUES (${t.orgId}, ${baseJob}, ${t.deviceId}, ${t.configId}, ${base}, ${WRITE_IDENTITY}, 'prefixed_flat', ${PREFIX})
+    `);
+    const deps = recordingDeps(calls, P_ROOT);
+    const { session } = await mintWith(t, deps, t.jobId, `snapshots/${base}/manifest.json`);
+    const result = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [
+      { method: 'GET', key: `snapshots/${base}/manifest.json` },
+    ], deps));
+    expect(result).toMatchObject({ status: 200, body: { objects: [{ key: `snapshots/${base}/manifest.json` }] } });
+    expect(calls).toEqual([{ op: 'presignGet', key: `${PREFIX}/snapshots/${base}/manifest.json` }]);
+  });
+
+  runDb('(8) a base row whose root is unreadable, or differs from the run\'s root, refuses the call', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const insertBase = async (layout: string, prefix: string | null) => {
+      const id = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+      const job = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'completed');
+      await getTestDb().execute(sql`
+        INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, key_layout, key_prefix)
+        VALUES (${t.orgId}, ${job}, ${t.deviceId}, ${t.configId}, ${id}, ${WRITE_IDENTITY}, ${layout}, ${prefix})
+      `);
+      return id;
+    };
+    for (const [layout, prefix] of [['device_scoped', null], ['legacy_flat', null]] as const) {
+      const base = await insertBase(layout, prefix);
+      const job = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+      const deps = recordingDeps(calls, P_ROOT);
+      const { session } = await mintWith(t, deps, job, `snapshots/${base}/manifest.json`);
+      const result = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [
+        { method: 'GET', key: `snapshots/${base}/manifest.json` },
+      ], deps));
+      expect(result).toMatchObject({ status: 409, code: 'base_key_root_invalid' });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  runDb('a reservation whose recorded root is unreadable revokes the session (fail closed)', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls, P_ROOT);
+    const { minted, session } = await mintWith(t, deps);
+    // Structurally valid for the CHECK, but not a valid prefix (reserved segment).
+    await corruptReservationRoot(minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+
+    // A storage call refuses on its own, without relying on the route's live check…
+    expect(await listWriteSessionPrefix(session, `snapshots/${minted.snapshotId}/`, null, runFor(t), deps))
+      .toMatchObject({ status: 410, code: 'key_root_invalid' });
+    expect((await sessionRow(session.id)).revoked_reason).toBe('key_root_invalid');
+    expect(calls).toEqual([]);
+
+    // …and the live check refuses a session on such a reservation too.
+    const second = await mintWith(t, recordingDeps(calls, P_ROOT), await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running'));
+    await corruptReservationRoot(second.minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+    const live = await withDbAccessContext(orgContext(t.orgId), () => ensureWriteSessionLive(second.session));
+    expect(live).toMatchObject({ ok: false, status: 410 });
+    expect((await sessionRow(second.session.id)).revoked_reason).toBe('key_root_invalid');
+    expect(calls).toEqual([]);
+  });
+
+  runDb('publishing a prefixed id copies the reservation root onto the row; a helper-reported root cannot override it', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const { minted } = await mintWith(t, recordingDeps(calls, P_ROOT));
+    const outcome = await withDbAccessContext(orgContext(t.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+        result: {
+          snapshotId: minted.snapshotId, filesBackedUp: 1, bytesBackedUp: 1,
+          metadata: { storagePrefix: `evil/snapshots/${minted.snapshotId}` },
+          // Not part of the result contract; sent anyway to prove it is ignored.
+          ...({ keyLayout: 'legacy_flat' } as Record<string, unknown>),
+        },
+      }),
+    );
+    expect(outcome.snapshotDbId).not.toBeNull();
+    const rows = (await getTestDb().execute(sql`
+      SELECT key_layout, key_prefix, location FROM backup_snapshots WHERE snapshot_id = ${minted.snapshotId}
+    `)) as unknown as Array<Record<string, unknown>>;
+    expect(rows).toEqual([{ key_layout: 'prefixed_flat', key_prefix: PREFIX, location: `${PREFIX}/snapshots/${minted.snapshotId}` }]);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
+
+    // A second publish of the same id (a redelivered result) updates the row
+    // without touching its root (the immutability trigger would refuse).
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'running' WHERE id = ${t.jobId}`);
+    const again = await withDbAccessContext(orgContext(t.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+        result: { snapshotId: minted.snapshotId, filesBackedUp: 2, bytesBackedUp: 2 },
+      }),
+    );
+    expect(again).toMatchObject({ applied: true, snapshotDbId: outcome.snapshotDbId });
+    const after = (await getTestDb().execute(sql`
+      SELECT key_layout, key_prefix, file_count FROM backup_snapshots WHERE snapshot_id = ${minted.snapshotId}
+    `)) as unknown as Array<Record<string, unknown>>;
+    expect(after).toEqual([{ key_layout: 'prefixed_flat', key_prefix: PREFIX, file_count: 2 }]);
+  });
+
+  runDb('a redelivery onto a reservation whose root became unreadable is refused and writes nothing', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const { minted } = await mintWith(t, recordingDeps(calls, P_ROOT));
+    await corruptReservationRoot(minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+    const generation = (await reservationRow(minted.snapshotId))?.write_generation;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await mint(t, t.jobId, recordingDeps(calls, P_ROOT))).toEqual({ mode: 'unbrokered', reason: 'key_root_invalid' });
+    } finally {
+      error.mockRestore();
+    }
+    expect((await reservationRow(minted.snapshotId))?.write_generation).toBe(generation);
+    expect((await sessionRow(minted.sessionId)).revoked_at).toBeNull();
+  });
+
+  runDb('a resume onto an id whose root is unreadable is refused; nothing moves', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const prevJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const earlier = await mintWith(t, recordingDeps(calls, P_ROOT), prevJob);
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${prevJob}`);
+    await corruptReservationRoot(earlier.minted.snapshotId, 'prefixed_flat', 'x/snapshots');
+    const newJob = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const fresh = await mintWith(t, recordingDeps(calls, P_ROOT), newJob);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await resumeWriteSession(fresh.session, earlier.minted.snapshotId, runFor(t), recordingDeps(calls, P_ROOT)))
+        .toMatchObject({ status: 409, code: 'not_resumable' });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await reservationRow(earlier.minted.snapshotId)).toMatchObject({ current_job_id: prevJob, write_generation: 1 });
+    expect(calls).toEqual([]);
+  });
+
+  runDb('delete never passes on a key storage answered with that was not requested', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const deps = recordingDeps(calls, P_ROOT, {
+      deleteKeys: async (_cfg, keys) => ({
+        deleted: [...keys, `${PREFIX}/snapshots/other/x`],
+        failed: [{ key: 'unrelated', code: 'AccessDenied' }],
+      }),
+    });
+    const { minted, session } = await mintWith(t, deps);
+    const a = `snapshots/${minted.snapshotId}/files/a`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await deleteWriteSessionKeys(session, [a], runFor(t), deps))
+        .toEqual({ status: 200, body: { deleted: [a], denied: [], failed: [] } });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  runDb('a base read resolves through a retired base\'s recorded root; a prefixed run refuses a base with no row left', async () => {
+    const t = await seedWriteTenant();
+    const calls: Call[] = [];
+    const retired = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, reason, key_layout, key_prefix)
+      VALUES (${t.orgId}, ${t.configId}, ${t.deviceId}, ${retired}, ${WRITE_IDENTITY}, 'manual', 'prefixed_flat', ${PREFIX})
+    `);
+    const deps = recordingDeps(calls, P_ROOT);
+    const first = await mintWith(t, deps, t.jobId, `snapshots/${retired}/manifest.json`);
+    expect(await asAgent(t, first.session, (r) => resolveWriteSessionObjects(first.session, r, [
+      { method: 'GET', key: `snapshots/${retired}/manifest.json` },
+    ], deps))).toMatchObject({ status: 200 });
+    expect(calls).toEqual([{ op: 'presignGet', key: `${PREFIX}/snapshots/${retired}/manifest.json` }]);
+
+    calls.length = 0;
+    const gone = `snapshot-20261101T000000Z-${randomBytes(12).toString('hex')}`;
+    const job = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const second = await mintWith(t, deps, job, `snapshots/${gone}/manifest.json`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await asAgent(t, second.session, (r) => resolveWriteSessionObjects(second.session, r, [
+        { method: 'GET', key: `snapshots/${gone}/manifest.json` },
+      ], deps))).toMatchObject({ status: 409, code: 'base_key_root_invalid' });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(calls).toEqual([]);
   });
 });

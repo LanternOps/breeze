@@ -100,6 +100,9 @@ export type McpExemptReason =
    * one an AI should be able to trigger.
    */
   | 'human_only_agent_rollback'
+  /** Operator recovery of privileged-access verification requires a human reason
+   * and independent agent evidence; an AI must not restore its own elevation availability. */
+  | 'human_only_pam_reconciliation'
   /**
    * Bulk compliance export of the PAM elevation ledger (#4910) to a SIEM or
    * an auditor: up to a year per request, `audit:export` + `requireMfa()`,
@@ -227,6 +230,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/heartbeat.ts': { exempt: 'agent_transport' },
   'agents/inventory.ts': { exempt: 'agent_transport' },
   'agents/logs.ts': { exempt: 'agent_transport' },
+  'agents/messageEvents.ts': { exempt: 'agent_transport' },
   'agents/mtls.ts': { exempt: 'agent_transport' },
   'agents/pamObservations.ts': { exempt: 'agent_transport' },
   'agents/pamReconciliation.ts': { exempt: 'agent_transport' },
@@ -391,6 +395,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'deployments.ts': { tools: ['manage_deployments'] },
   'desktopWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'devPush.ts': { exempt: 'internal_plumbing' },
+  'devices/pamReconciliation.ts': { exempt: 'human_only_pam_reconciliation', note: 'Privileged-access recovery is a human operator decision requiring PAM approval, device execution permission, MFA policy and an audited reason. No AI reset tool: restoring elevation availability must not be initiated by an autonomous agent.' },
   'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
@@ -455,6 +460,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
   'docs.ts': { tools: ['search_documentation'] },
   'dr.ts': { tools: ['query_dr_plans', 'get_dr_plan_details', 'get_dr_execution_status', 'execute_dr_plan', 'manage_dr_plan'] },
+  'endpointMessages/send.ts': { exempt: 'tool_in_later_wave', note: 'endpoint messaging W02 (#8742) ships the approval-gated send_endpoint_message AI tool.' },
   'enrollmentKeys.ts': { exempt: 'identity' },
   'eventWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'extensionsAdmin.ts': { exempt: 'platform_admin', note: 'Extension runtime administration is platform-admin gated.' },
@@ -518,6 +524,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // Per-org billing profile read/write/delete; no AI tool surfaces it yet.
   'orgBillingProfile.ts': { gap: '#6784' },
   'orgContacts.ts': { tools: ['list_org_contacts', 'manage_organizations'] },
+  'orgContactResponsibilities.ts': { exempt: 'tool_in_later_wave', note: 'Read-only resolved responsibilities for a Site/Device (UI view, spec #8087). No AI tool yet.' },
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },

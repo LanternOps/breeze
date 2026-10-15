@@ -6,7 +6,7 @@ import { organizations } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { auditRetentionPolicySchema } from '@breeze/shared';
+import { ERROR_CODES, auditRetentionPolicySchema } from '@breeze/shared';
 import {
   AuditRetentionFloorError,
   getOrgAuditRetentionPolicy,
@@ -30,10 +30,10 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
   // alone; system scope is unbounded. The identity check runs before the
   // org lookup so a cross-tenant probe never touches the table.
   if (auth.scope === 'organization' && auth.orgId !== id) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   if (auth.scope !== 'system' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
     .select({ id: organizations.id })
@@ -41,7 +41,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   return { id };
 }

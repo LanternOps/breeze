@@ -4280,7 +4280,16 @@
     "partnerCurrencyUnavailable": "Die Partnerwährung konnte nicht geladen werden.",
     "retry": "Erneut versuchen",
     "priceCouldNotBeSavedRetry": "Der {{currency}}-Preis konnte nicht gespeichert werden. Erneut versuchen.",
-    "priceCouldNotBeRemovedRetry": "Der {{currency}}-Preis konnte nicht entfernt werden. Erneut versuchen."
+    "priceCouldNotBeRemovedRetry": "Der {{currency}}-Preis konnte nicht entfernt werden. Erneut versuchen.",
+    "billing": "Abrechnung",
+    "billingOneTime": "Einmalig",
+    "billingRecurring": "Wiederkehrend",
+    "billingFrequency": "Häufigkeit",
+    "frequencyMonthly": "Monatlich",
+    "frequencyAnnual": "Jährlich",
+    "commitmentTerm": "Bindungsdauer (Monate)",
+    "commitmentTermPlaceholder": "z. B. 12",
+    "commitmentTermRange": "Bindungsdauer: Geben Sie eine ganze Zahl von 1 bis 120 Monaten ein."
   },
   "catalogItemsTab": {
     "itemArchived": "Element archiviert",
@@ -5865,7 +5874,8 @@
       "title": "Adresse"
     },
     "actions": {
-      "saveChanges": "Änderungen speichern"
+      "saveChanges": "Änderungen speichern",
+      "sendMessage": "Nachricht senden"
     },
     "policies": {
       "assignedTitle": "Zugewiesene Richtlinien",

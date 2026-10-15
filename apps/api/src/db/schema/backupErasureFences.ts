@@ -47,6 +47,13 @@ export const backupErasureTargets = pgTable('backup_erasure_targets', {
   isImmutable: boolean('is_immutable'),
   immutableUntil: timestamp('immutable_until', { withTimezone: true }),
   immutabilityEnforcement: text('immutability_enforcement'),
+  /**
+   * Key root of a fenced snapshot prefix (#7081), from the deleted source row.
+   * NULL for recovery-media targets and targets captured before the column
+   * existed (all legacy_flat).
+   */
+  keyLayout: text('key_layout'),
+  keyPrefix: text('key_prefix'),
   /** fenced */
   state: text('state').notNull().default('fenced'),
   capturedAt: timestamp('captured_at', { withTimezone: true }).defaultNow().notNull(),

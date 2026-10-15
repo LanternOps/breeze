@@ -32,6 +32,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors/workloads"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
@@ -266,6 +267,8 @@ type SecurityCapabilities struct {
 	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
 	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
 	PamLifetimeProtocolVersion      int `json:"pamLifetimeProtocolVersion,omitempty"`
+	// Recovery remains supported while lifetime admission is unavailable.
+	PamReconciliationResetProtocolVersion int `json:"pamReconciliationResetProtocolVersion,omitempty"`
 	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
 	// session's revocation lease alive and stops streaming when it lapses. The
 	// API refuses to start a desktop session against an agent reporting 0.
@@ -414,6 +417,12 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
+	// not yet closed, for replay after a helper restart; and the upstream event
+	// sink (nil = post to the API; tests override it).
+	endpointMessages     *messageStore
+	endpointMessagesOnce sync.Once
+	messageEventSink     func(messageEvent)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
 	unifiCollectorWake        atomic.Pointer[func()]
@@ -800,6 +809,13 @@ type Heartbeat struct {
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
 	pamLifetimeManager          pamlifetime.Manager
+	pamPolicyMu                 sync.Mutex
+	pamPolicyDesiredMu          sync.Mutex   // never held across lifecycle or account operations
+	pamPolicyEnabled            bool         // latest desired policy, guarded by pamPolicyDesiredMu
+	pamPolicyRevision           uint64       // guarded by pamPolicyDesiredMu
+	pamPolicyAppliedRevision    uint64       // guarded by pamPolicyDesiredMu
+	pamAccountProvisioned       atomic.Bool  // never rotate an account retained by reconciliation or repeated heartbeats
+	pamProvisionAccountFn       func() error // test seam; production uses elevaccount on Windows
 	pamReconciled               atomic.Bool
 	pamReceivedObservationReady atomic.Bool
 	pamVerificationAvailable    atomic.Bool
@@ -1594,6 +1610,21 @@ func (h *Heartbeat) SetStatePath(path string) {
 }
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
+	h.pamPolicyMu.Lock()
+	defer h.finishPAMPolicyOperation()
+	results := h.reconcilePAMLifetimeLocked(ctx)
+	h.pamPolicyDesiredMu.Lock()
+	hasPolicy := h.pamPolicyRevision != 0
+	h.pamPolicyDesiredMu.Unlock()
+	if hasPolicy {
+		h.applyLatestPAMPolicyLocked()
+	}
+	return results
+}
+
+// Startup reconciliation and recovery share the policy lock. In particular,
+// no policy update may provision or enable the account during either scan.
+func (h *Heartbeat) reconcilePAMLifetimeLocked(ctx context.Context) []pamlifetime.Result {
 	h.pamReconciled.Store(false)
 	h.pamReceivedObservationReady.Store(false)
 	h.pamVerificationAvailable.Store(false)
@@ -1604,6 +1635,24 @@ func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Resu
 		return nil
 	}
 	results := h.pamLifetimeManager.Reconcile(ctx)
+	retainedActive := false
+	for _, result := range results {
+		if result.State == pamlifetime.ResultVerifiedActive {
+			// Reconciliation adopted a live elevation, proving the account
+			// already exists. EnsureProvisioned would reset its credentials and
+			// demote it, so policy enable must preserve this account.
+			h.pamAccountProvisioned.Store(true)
+			retainedActive = true
+			break
+		}
+	}
+	if proof, ok := h.pamLifetimeManager.(interface{ AccountProvisioningRequired() bool }); ok && !retainedActive && proof.AccountProvisioningRequired() {
+		// A previously provisioned account can be deleted while the agent
+		// keeps running. Clear the latch only after independent reconciliation
+		// proves that absence and verifies cleanup, so policy admission creates
+		// it again without rotating any retained active account.
+		h.pamAccountProvisioned.Store(false)
+	}
 	h.setPamReconciliationManagerAvailable(h.refreshPamLifetimeAvailability())
 	results = h.stagePamReconciliationResults(results)
 	h.pamLocalReconcileRunning.Store(false)
@@ -1670,6 +1719,8 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		log.Info("tray action from user helper", "uid", session.UID, "sessionId", session.SessionID)
 	case ipc.TypeNotifyResult:
 		log.Debug("notify result from user helper", "uid", session.UID)
+	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
+		h.handleMessageEventFromHelper(session, env)
 	case ipc.TypeSASRequest:
 		go func() {
 			defer func() {
@@ -5543,7 +5594,77 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 // "keep the current state" — only HeartbeatResponse.RetainState expresses
 // that, and applyPAMDecision handles it before calling here (#8258).
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
-	on := enabled != nil && *enabled
+	h.pamPolicyDesiredMu.Lock()
+	h.pamPolicyEnabled = enabled != nil && *enabled
+	h.pamPolicyRevision++
+	if !h.pamPolicyEnabled {
+		// Both UAC capture and apply-command admission consult this flag.
+		// Close them immediately, even while an older enable is provisioning.
+		h.uacInterceptionEnabled.Store(false)
+	}
+	h.pamPolicyDesiredMu.Unlock()
+	if !h.pamPolicyMu.TryLock() {
+		// The operation holder applies the latest desired policy after its
+		// work, before atomically releasing the operation lock.
+		return
+	}
+	defer h.finishPAMPolicyOperation()
+	h.applyLatestPAMPolicyLocked()
+}
+
+func (h *Heartbeat) applyLatestPAMPolicyLocked() {
+	for {
+		h.pamPolicyDesiredMu.Lock()
+		on := h.pamPolicyEnabled
+		h.pamPolicyDesiredMu.Unlock()
+		h.handleUACInterceptionLocked(on)
+		h.pamPolicyDesiredMu.Lock()
+		// Repeated heartbeats with the same desired value need no additional
+		// work. Retry only when the effective policy changed during an operation.
+		unchanged := h.pamPolicyEnabled == on
+		if unchanged {
+			h.pamPolicyAppliedRevision = h.pamPolicyRevision
+		}
+		h.pamPolicyDesiredMu.Unlock()
+		if unchanged {
+			return
+		}
+	}
+}
+
+// Release atomically with the last desired-state check. A heartbeat either
+// records its change before this check (and is applied here), or records it
+// after release and can acquire the operation lock itself. Never perform OS
+// operations while holding the short desired-state mutex.
+func (h *Heartbeat) finishPAMPolicyOperation() {
+	for {
+		h.pamPolicyDesiredMu.Lock()
+		if h.pamPolicyRevision == h.pamPolicyAppliedRevision {
+			h.pamPolicyMu.Unlock()
+			h.pamPolicyDesiredMu.Unlock()
+			return
+		}
+		h.pamPolicyDesiredMu.Unlock()
+		h.applyLatestPAMPolicyLocked()
+	}
+}
+
+// reconcileAndReapplyPAMPolicy retries verified cleanup without erasing the
+// ledger or bypassing pending evidence. Policy updates serialize with the reset.
+func (h *Heartbeat) reconcileAndReapplyPAMPolicy(ctx context.Context) []pamlifetime.Result {
+	h.pamPolicyMu.Lock()
+	defer h.finishPAMPolicyOperation()
+	return h.reconcileAndReapplyPAMPolicyLocked(ctx)
+}
+
+func (h *Heartbeat) reconcileAndReapplyPAMPolicyLocked(ctx context.Context) []pamlifetime.Result {
+	h.uacInterceptionEnabled.Store(false)
+	results := h.reconcilePAMLifetimeLocked(ctx)
+	h.applyLatestPAMPolicyLocked()
+	return results
+}
+
+func (h *Heartbeat) handleUACInterceptionLocked(on bool) {
 	if !on {
 		prev := h.uacInterceptionEnabled.Swap(false)
 		if h.pamLifetimeManager != nil {
@@ -5566,6 +5687,30 @@ func (h *Heartbeat) handleUACInterception(enabled *bool) {
 		log.Error("refusing to enable UAC interception before PAM reconciliation is verified")
 		return
 	}
+	// Policy is authoritative even when agent.yaml has pam_enabled=false.
+	// Provision only after startup reconciliation, before opening admission.
+	// EnsureProvisioned also resets the account, so never call it again while
+	// elevations may be running. A failed attempt remains retryable next heartbeat.
+	if h.supportMode {
+		log.Error("refusing to enable UAC interception in support mode")
+		return
+	}
+	if !h.pamAccountProvisioned.Load() {
+		provision := h.pamProvisionAccountFn
+		if provision == nil {
+			provision = func() error {
+				if runtime.GOOS != "windows" {
+					return nil
+				}
+				return elevaccount.New().EnsureProvisioned()
+			}
+		}
+		if err := provision(); err != nil {
+			log.Error("PAM dormant elevation account provisioning failed", "error", err.Error())
+			return
+		}
+		h.pamAccountProvisioned.Store(true)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	err := h.pamLifetimeManager.SetEnabled(ctx, true)
 	cancel()
@@ -5578,7 +5723,13 @@ func (h *Heartbeat) handleUACInterception(enabled *bool) {
 		log.Error("PAM enable rejected because lifecycle verification remains unavailable")
 		return
 	}
+	h.pamPolicyDesiredMu.Lock()
+	if !h.pamPolicyEnabled {
+		h.pamPolicyDesiredMu.Unlock()
+		return // a newer disable must never publish stale capture/admission
+	}
 	prev := h.uacInterceptionEnabled.Swap(true)
+	h.pamPolicyDesiredMu.Unlock()
 	if prev != on {
 		log.Info("UAC interception enabled by configuration policy")
 	}
@@ -6645,6 +6796,9 @@ func (h *Heartbeat) pushHelperToken(session *sessionbroker.Session, token string
 // SessionAuthenticatedHandler. It pushes the current helper token to a freshly
 // authenticated assist session.
 func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Session) {
+	// Endpoint messaging (#8293): resend still-open cards to a (re)started
+	// Assist helper. Independent of the token push below.
+	h.replayEndpointMessages(session)
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}
@@ -8233,16 +8387,17 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 // a fleet-wide outage rather than a degraded feature.
 func compiledSecurityCapabilities() SecurityCapabilities {
 	return SecurityCapabilities{
-		OutboundNetworkPolicyVersion:     1,
-		ScriptSecretEnvVersion:           1,
-		PeripheralPolicyProtocolVersion:  2,
-		RollbackProtocolVersion:          1,
-		RevocationLeaseProtocolVersion:   1,
-		DesktopFenceProtocolVersion:      1,
-		DesktopWsFenceProtocolVersion:    1,
-		ConsentPromptProtocolVersion:     2,
-		IdentitySyncProtocolVersion:      identitySyncProtocolVersion,
-		WorkloadInventoryProtocolVersion: workloads.ProtocolVersion,
-		RetainStateProtocolVersion:       retainStateProtocolVersion,
+		OutboundNetworkPolicyVersion:          1,
+		ScriptSecretEnvVersion:                1,
+		PeripheralPolicyProtocolVersion:       2,
+		RollbackProtocolVersion:               1,
+		PamReconciliationResetProtocolVersion: 1,
+		RevocationLeaseProtocolVersion:        1,
+		DesktopFenceProtocolVersion:           1,
+		DesktopWsFenceProtocolVersion:         1,
+		ConsentPromptProtocolVersion:          2,
+		IdentitySyncProtocolVersion:           identitySyncProtocolVersion,
+		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
+		RetainStateProtocolVersion:            retainStateProtocolVersion,
 	}
 }

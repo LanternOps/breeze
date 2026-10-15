@@ -89,19 +89,30 @@ const (
 	identityIntakePauseMax = identityRestartMaxJitter + identityRestartMaxWait + 2*time.Minute
 	// The message a WebSocket command gets while the pause holds.
 	identityRestartRefusal = "agent is restarting to apply a new org/site assignment; retry in a few minutes"
+	// #8623 — a failed write of agent.yaml or of the restart marker is a
+	// local problem that usually passes: a full disk, or on Windows an
+	// antivirus or backup scan holding the file. It is not a refusal of the
+	// identity, so it is never reported to the server (which would hold back
+	// assertions for an hour) and this process never gives up on it. It tries
+	// again after a backoff: about one beat at first, doubling to the restart
+	// cooldown, so a disk that stays broken is retried a few times an hour.
+	identityWriteRetryMin = 30 * time.Second
+	identityWriteRetryMax = identityRestartCooldown
 )
 
 // Why this agent refused an identity assertion (#8382), reported on its next
 // beat so the server stops signing one per beat for a target it will not
 // adopt. The server validates this closed set (apps/api/src/routes/agents/schemas.ts).
 // Refusals it will retry by itself (a cooldown, a rollback in progress, a
-// failed write, an assertion for an earlier beat) are not reported.
+// failed write of agent.yaml or of the restart marker, an assertion for an
+// earlier beat) are not reported.
 const (
 	// Gave up, and BREEZE_ORG_ID / BREEZE_SITE_ID are set: the environment
 	// overrides agent.yaml on every start, so no restart can apply it.
 	identityRejectionEnvOverride = "env_override"
 	// Gave up for the life of the process: restarting did not apply the
-	// identity, or the restart could not be bounded.
+	// identity. (Before #8623 a failed restart-marker write was also reported,
+	// as gave_up or env_override; it is now retried instead.)
 	identityRejectionGaveUp = "gave_up"
 	// Signed with a key this agent never pinned.
 	identityRejectionUnpinnedKey = "unpinned_key"
@@ -296,8 +307,8 @@ var (
 
 // identitySync holds the per-process state: the nonce of the latest beat, the
 // restart latch and when it was set, until when new work is refused, the
-// identity given up on, the refusal to report on the next beat, and the
-// bounded log of the last failure.
+// identity given up on, the refusal to report on the next beat, the backoff
+// after a failed local write, and the bounded log of the last failure.
 type identitySync struct {
 	nonce              atomic.Pointer[string]
 	restartRequested   atomic.Bool
@@ -308,8 +319,13 @@ type identitySync struct {
 	intakePausedUntil atomic.Pointer[time.Time]
 	gaveUpOn          atomic.Pointer[string]
 	rejection         atomic.Pointer[IdentityAssertionRejection]
-	failureLogged     atomic.Pointer[string]
-	markerChecked     sync.Once
+	// #8623 — failed writes of agent.yaml or the restart marker in a row,
+	// and the earliest time to try again (nil = no backoff). Monotonic, like
+	// intakePausedUntil.
+	writeFailures atomic.Int32
+	writeRetryAt  atomic.Pointer[time.Time]
+	failureLogged atomic.Pointer[string]
+	markerChecked sync.Once
 }
 
 func newIdentityNonce() string {
@@ -412,6 +428,25 @@ func writeIdentityRestartMarker(path string, m identityRestartMarker) error {
 	return nil
 }
 
+// removeIdentityRestartMarkerTemps removes temp files that earlier failed
+// marker writes could not clean up (#8623): on Windows a scan can hold the
+// fresh temp file open, so neither the rename nor the remove goes through.
+// Without this, a marker write retried for hours could leave one behind per
+// try. Called under the restart latch, so no marker write is in progress.
+func removeIdentityRestartMarkerTemps(markerPath string) {
+	dir := filepath.Dir(markerPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasPrefix(name, identityRestartMarkerFile+".") && strings.HasSuffix(name, ".tmp") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
 // applyIdentityAssertion verifies a server identity assertion and, when it
 // names a different org or site, persists it and schedules one restart. It
 // reports whether a restart is pending, so the caller can hold back work this
@@ -508,28 +543,39 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 		}
 		attempts = previous + 1
 	}
+	// #8623 — a write failed recently: wait out the backoff. Nothing is
+	// reported, so the server keeps signing, and the first beat after the
+	// backoff tries again.
+	if retryAt := h.identitySync.writeRetryAt.Load(); retryAt != nil && now.Before(*retryAt) {
+		return false
+	}
 
 	if !h.identitySync.restartRequested.CompareAndSwap(false, true) {
 		return true
 	}
 	h.identitySync.restartRequestedAt.Store(now.UnixNano())
 	if err := persistServerIdentityFn(config.ActiveConfigFile(), a.OrgID, a.SiteID, toEpoch); err != nil {
+		h.noteIdentityWriteFailure(now, "failed to persist the server-assigned identity; keeping the enrolled one for now", err)
 		h.identitySync.restartRequested.Store(false)
-		h.logIdentitySyncFailure("error", "failed to persist the server-assigned identity; keeping the enrolled one", err.Error())
 		return false
+	}
+	if h.identitySync.writeFailures.Load() > 0 {
+		removeIdentityRestartMarkerTemps(markerPath)
 	}
 	if err := writeIdentityRestartMarker(markerPath, identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID, OwnershipEpoch: toEpoch, Attempts: attempts}); err != nil {
 		// The marker is the only thing bounding these restarts across
 		// processes: without it a new process counts attempt 1 again, so an
 		// identity that never takes effect would restart the agent forever.
-		// The identity is already on disk and applies on the next start.
-		h.identitySync.gaveUpOn.Store(&target)
+		// So no marker, no restart. But the failure is local and usually
+		// passes (#8623): this process neither gives up on the identity nor
+		// reports a refusal; it tries again after the backoff. The identity is
+		// already on disk and applies on the next start either way.
+		h.noteIdentityWriteFailure(now, "failed to record the identity restart marker; not restarting yet, the new identity applies on the next start", err)
 		h.identitySync.restartRequested.Store(false)
-		log.Error("failed to record the identity restart marker; not restarting, the new identity applies on the next start",
-			"error", err.Error())
-		h.noteIdentityRejection(identityGiveUpCode(), a.OrgID, a.SiteID)
 		return false
 	}
+	h.identitySync.writeFailures.Store(0)
+	h.identitySync.writeRetryAt.Store(nil)
 	pausedUntil := now.Add(identityIntakePauseMax)
 	h.identitySync.intakePausedUntil.Store(&pausedUntil)
 	log.Info("device was reassigned by the server; restarting to load the new identity",
@@ -574,6 +620,28 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 		h.releaseIdentityRestart()
 		log.Error("restart after identity change failed; resuming normal work, the new identity applies on the next start", "error", err.Error())
 	}
+}
+
+// noteIdentityWriteFailure records a failed write of agent.yaml or the restart
+// marker and schedules the next try (#8623). Called while the restart latch is
+// held, so writes and this state stay serialized. Every failure is logged,
+// with the count and the wait: the backoff already spaces them.
+func (h *Heartbeat) noteIdentityWriteFailure(now time.Time, msg string, err error) {
+	failures := int(h.identitySync.writeFailures.Add(1))
+	delay := identityWriteRetryDelay(failures)
+	retryAt := now.Add(delay)
+	h.identitySync.writeRetryAt.Store(&retryAt)
+	log.Warn(msg, "error", err.Error(), "failures", failures, "retryIn", delay.String())
+}
+
+// identityWriteRetryDelay is the wait after the given number of failed writes
+// in a row: identityWriteRetryMin, doubling, capped at identityWriteRetryMax.
+func identityWriteRetryDelay(failures int) time.Duration {
+	delay := identityWriteRetryMin
+	for i := 1; i < failures && delay < identityWriteRetryMax; i++ {
+		delay *= 2
+	}
+	return min(delay, identityWriteRetryMax)
 }
 
 // releaseIdentityRestart reopens everything a pending identity restart holds

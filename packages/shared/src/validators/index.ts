@@ -1131,6 +1131,7 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export * from './backupDestinationPrefix';
 export {
   deliverableCadenceSchema,
   deliverableCompletionModeSchema,
@@ -1388,6 +1389,7 @@ export const maintenanceInlineSettingsSchema = z
 
 export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;
 export * from './callerVerification';
+export * from './endpointMessage';
 
 // Business reports (#3198 W02)
 export * from './businessReports';

@@ -2230,7 +2230,7 @@ export function buildBreezeSdkTools(
       registryDescription('network_discovery'),
       {
         deviceId: uuid,
-        subnet: z.string().max(50).optional(),
+        subnet: z.string().max(50).regex(/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, 'Invalid CIDR notation'),
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
       makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)

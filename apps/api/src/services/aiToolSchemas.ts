@@ -1408,7 +1408,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     subnet: z.string().max(50).regex(
       /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/,
       'Invalid CIDR notation'
-    ).optional(),
+    ),
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 

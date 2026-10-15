@@ -149,3 +149,24 @@ func (b *Broker) NotifySessionInWinSession(winSessionID string) *Session {
 	}
 	return best
 }
+
+// NotifyTargetsExcept returns the notify targets (one helper per interactive
+// session, as notifyTargets) minus any helper drawing in the given Windows
+// session. Endpoint messaging (#8293) uses it to fan the native fallback out to
+// every OTHER session once the Assist card has been drawn in the console
+// session, so an RDS user is never suppressed by the console Assist helper.
+// An empty id or the "0" unknown-session sentinel excludes nothing.
+func (b *Broker) NotifyTargetsExcept(winSessionID string) []*Session {
+	targets := b.notifyTargets()
+	if winSessionID == "" || winSessionID == "0" {
+		return targets
+	}
+	out := make([]*Session, 0, len(targets))
+	for _, s := range targets {
+		if s.WinSessionID == winSessionID {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}

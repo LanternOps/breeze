@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@/lib/i18n';
+
+const granted = vi.hoisted(() => new Set<string>());
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
+}));
 import OrgRecordHeader from './OrgRecordHeader';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
 
@@ -95,5 +100,20 @@ describe('OrgRecordHeader', () => {
     unmount();
     renderHeader({ mismatchedScopeOrgName: null });
     expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
+  });
+});
+
+describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', () => {
+  it('hides the button without the permission even when a handler is passed', () => {
+    granted.clear();
+    renderHeader({ onSendMessage: vi.fn() });
+    expect(screen.queryByTestId('org-record-send-message')).toBeNull();
+  });
+
+  it('shows the button with the permission', () => {
+    granted.clear();
+    granted.add('endpoint_messages:send');
+    renderHeader({ onSendMessage: vi.fn() });
+    expect(screen.getByTestId('org-record-send-message')).toBeTruthy();
   });
 });

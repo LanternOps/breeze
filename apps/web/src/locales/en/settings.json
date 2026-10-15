@@ -4280,7 +4280,16 @@
     "partnerCurrencyUnavailable": "Could not load your partner currency.",
     "retry": "Retry",
     "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
-    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry.",
+    "billing": "Billing",
+    "billingOneTime": "One-time",
+    "billingRecurring": "Recurring",
+    "billingFrequency": "Frequency",
+    "frequencyMonthly": "Monthly",
+    "frequencyAnnual": "Annual",
+    "commitmentTerm": "Commitment term (months)",
+    "commitmentTermPlaceholder": "e.g. 12",
+    "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -5913,7 +5922,8 @@
       "title": "Address"
     },
     "actions": {
-      "saveChanges": "Save changes"
+      "saveChanges": "Save changes",
+      "sendMessage": "Send message"
     },
     "policies": {
       "assignedTitle": "Assigned Policies",

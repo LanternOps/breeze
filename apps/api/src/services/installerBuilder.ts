@@ -257,8 +257,29 @@ sudo installer -pkg "$TMPPKG" -target /
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$ENROLLMENT_SECRET" ] && ENROLL_ARGS+=(--enrollment-secret "$ENROLLMENT_SECRET")
 
+# The .pkg installs the agent to /Library/Breeze/bin or /usr/local/bin
+# (agent/installer/macos/install-location.sh, #7211); enroll with the binary it
+# actually installed (#8778). Mirrors choose_bin_dir there: an agent already in
+# the trusted dir stays there, so it wins over a leftover /usr/local/bin copy.
+MACOS_TRUSTED_BIN_DIR="/Library/Breeze/bin"
+MACOS_LEGACY_BIN_DIR="/usr/local/bin"
+resolve_macos_agent_bin() {
+  local p
+  for p in "$MACOS_TRUSTED_BIN_DIR/breeze-agent" "$MACOS_LEGACY_BIN_DIR/breeze-agent"; do
+    if [[ -f "$p" && ! -L "$p" && -x "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+AGENT_BIN="$(resolve_macos_agent_bin)" || {
+  echo "Error: the package installed, but no breeze-agent was found in /Library/Breeze/bin or /usr/local/bin."
+  exit 1
+}
+
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
+sudo "$AGENT_BIN" enroll "\${ENROLL_ARGS[@]}"
 
 # Restart the service so it picks up the new enrollment config. Surface a failure
 # rather than swallowing it — a silent kickstart failure leaves an enrolled
