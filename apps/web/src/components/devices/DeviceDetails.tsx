@@ -90,6 +90,7 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
 import ExtensionSlotHost, {
   useExtensionSlotDescriptors,
@@ -853,6 +854,7 @@ export default function DeviceDetails({
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
+            <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — side by side on ≥xl (stacked and wrapping below,
                 since the Activity rail narrows this card at lg). Stats are

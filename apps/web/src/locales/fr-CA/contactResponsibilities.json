@@ -1,0 +1,22 @@
+{
+  "title": "Contacts responsables",
+  "subtitle": "Résolu pour cet enregistrement. Les affectations plus précises ont priorité.",
+  "loading": "Chargement des contacts responsables…",
+  "loadFailed": "Impossible de charger les contacts responsables.",
+  "empty": "Aucun contact responsable n’est encore attribué.",
+  "primary": "Principal",
+  "roles": {
+    "billing": "Facturation",
+    "technical": "Technique",
+    "escalation": "Escalade",
+    "admin": "Administration",
+    "site": "Contact local",
+    "after_hours": "Hors des heures d’ouverture",
+    "portal": "Portail"
+  },
+  "scope": {
+    "organization": "Organisation entière",
+    "site": "Ce site",
+    "device_group": "Groupe d’appareils"
+  }
+}

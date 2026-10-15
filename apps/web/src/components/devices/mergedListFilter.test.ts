@@ -147,6 +147,15 @@ describe('matchesMergedListFilters', () => {
     expect(matchesMergedListFilters(agent({ displayName: 'Front Desk' }), { ...base, query: 'front' })).toBe(true);
   });
 
+  it('search matches the last logged-in user, case-insensitively (#8716)', () => {
+    const base = { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false };
+    const pc = agent({ lastUser: 'CORP\\Harry.Smith' });
+    expect(matchesMergedListFilters(pc, { ...base, query: 'harry' })).toBe(true);
+    expect(matchesMergedListFilters(pc, { ...base, query: 'HARRY.S' })).toBe(true);
+    expect(matchesMergedListFilters(pc, { ...base, query: 'sally' })).toBe(false);
+    expect(matchesMergedListFilters(agent(), { ...base, query: 'harry' })).toBe(false);
+  });
+
   it('search matches serial number and asset tag (manual assets)', () => {
     const base = { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false };
     expect(matchesMergedListFilters(manual(), { ...base, query: 'sn-123' })).toBe(true);

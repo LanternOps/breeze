@@ -35,6 +35,7 @@ type lifetimeStore interface {
 	PrepareCleanup(CleanupCommand) (Decision, error)
 	BindProcess(string, uint64, ProcessIdentity) error
 	ClearProcessIdentity(string, uint64) error
+	MarkReconciledClean(string, uint64) error
 	Entry(string) (LedgerEntry, bool)
 	Entries() []LedgerEntry
 	Retire(string) error
@@ -107,6 +108,7 @@ type lifecycleManager struct {
 	enabled       bool
 	admissionOpen bool
 	available     bool
+	accountAbsent bool // positive account-absence proof from the latest reconciliation
 	unresolved    map[string]uint64
 }
 
@@ -124,6 +126,21 @@ func (m *lifecycleManager) Available() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.available
+}
+
+// AccountProvisioningRequired is true only after a successful reconciliation
+// positively identified a missing account. Clean or disabled account evidence
+// alone does not justify rotating an account retained by a live elevation.
+func (m *lifecycleManager) AccountProvisioningRequired() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.available && m.accountAbsent
+}
+
+func (m *lifecycleManager) setAccountAbsent(absent bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accountAbsent = absent
 }
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
@@ -288,6 +305,19 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 	if !ok {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "missing_tombstone")
 	}
+	if entry.RecoveredFromActive {
+		result := m.reconcileRecoveredCleanEntry(ctx, entry)
+		if verifiedCleanupOutcome(result) {
+			m.emit(result)
+		}
+		return result
+	}
+	if recovered, ok := m.recoverAbsentAccountEntry(ctx, entry); ok {
+		if recovered.State == ResultCleaned {
+			m.emit(recovered)
+		}
+		return recovered
+	}
 	process := ProcessIdentity{PID: entry.PID, JobName: entry.JobName, BootID: entry.BootID}
 	if entry.ProcessCreationTime != nil {
 		process.ProcessCreationTime = *entry.ProcessCreationTime
@@ -380,10 +410,31 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 		return results
 	}
 	defer m.releaseOperation()
+	m.setAccountAbsent(false)
 	m.setAvailable(false)
 	entries := m.store.Entries()
 	results := make([]Result, 0, len(entries))
+	if m.store.LoadError() != nil {
+		m.markUnresolved("__account__", 0)
+		return results
+	}
 	verificationAvailable := true
+	if len(entries) == 0 {
+		// A readable empty history can still have a transient account-level
+		// cleanup failure from policy disable. Retry independent account proof
+		// before clearing that failure; emptiness alone never restores admission.
+		bootID, bootErr := m.currentBootID(ctx)
+		verified := false
+		if bootErr == nil {
+			_, _, verified = m.verifyAccountClean(ctx, ResultEvidence{BootID: bootID})
+		}
+		if verified {
+			m.clearUnresolved("__account__")
+		} else {
+			m.markUnresolved("__account__", 0)
+		}
+		verificationAvailable = verified
+	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			result := m.failed(entry.ActuationID, entry.Generation, "windows-boot-unavailable", "reconcile_cancelled")
@@ -393,10 +444,30 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 			verificationAvailable = false
 			continue
 		}
+		if entry.RecoveredFromActive {
+			result := m.reconcileRecoveredCleanEntry(ctx, entry)
+			m.recordCleanupOutcome(entry.ActuationID, result)
+			m.emit(result)
+			results = append(results, result)
+			verificationAvailable = verificationAvailable && verifiedCleanupOutcome(result)
+			continue
+		}
+		if recovered, ok := m.recoverAbsentAccountEntry(ctx, entry); ok {
+			verified := verifiedCleanupOutcome(recovered)
+			if verified {
+				m.clearUnresolvedThrough(entry.ActuationID, entry.Generation)
+			} else {
+				m.markUnresolved(entry.ActuationID, entry.Generation)
+			}
+			m.emit(recovered)
+			results = append(results, recovered)
+			verificationAvailable = verificationAvailable && verified
+			continue
+		}
 		if entry.DesiredState == DesiredCleanup {
 			result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, entry.Generation))
 			m.recordCleanupOutcome(entry.ActuationID, result)
-			if result.State == ResultFailed {
+			if result.State == ResultFailed && !verifiedCleanupOutcome(result) {
 				m.emit(result)
 				verificationAvailable = false
 			}
@@ -461,7 +532,9 @@ func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry Ledg
 // record of ever having applied an actuation. The account is provisioned
 // lazily when PAM is first enabled, so on the majority of the fleet it was
 // never created. Reconciling a recorded actuation is the opposite case, where
-// a missing account is anomalous and must keep failing closed.
+// a missing account needs the independent job, process and token probes
+// in recoverAbsentAccountEntry before reconciliation can resolve it. Routine
+// cleanup keeps failing closed without that evidence.
 //
 // That condition is derived here rather than passed in by the caller. It is
 // not simply "the ledger is empty": a ledger that could not be READ also
@@ -507,6 +580,7 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 		// disable settles, and the next call returns at SetEnabled's early
 		// return without reaching this code.
 		tokenScanned = false
+		m.setAccountAbsent(true)
 		log.Info("PAM token scan skipped: elevation account absent and no actuation on record",
 			"account", elevaccount.AccountName)
 	case privileged:
@@ -582,7 +656,7 @@ func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
 		}
 		result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, generation))
 		m.recordCleanupOutcome(entry.ActuationID, result)
-		if result.State == ResultFailed {
+		if result.State == ResultFailed && !verifiedCleanupOutcome(result) {
 			m.emit(result)
 			failures = append(failures, fmt.Sprintf("%s:%s", entry.ActuationID, result.FailureCode))
 		}
@@ -675,7 +749,7 @@ func (m *lifecycleManager) acquireOperation(ctx context.Context) error {
 func (m *lifecycleManager) releaseOperation() { m.operationGate <- struct{}{} }
 
 func (m *lifecycleManager) recordCleanupOutcome(actuationID string, result Result) {
-	if result.State == ResultCleaned {
+	if verifiedCleanupOutcome(result) {
 		m.clearUnresolvedThrough(actuationID, result.Generation)
 		return
 	}

@@ -24,6 +24,7 @@ import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { usePermissions } from '@/lib/permissions';
 import SendMessageDialog from '../endpointMessages/SendMessageDialog';
+import ContactResponsibilitiesCard from '../shared/ContactResponsibilitiesCard';
 
 // --- Types ---
 
@@ -502,6 +503,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {/* Details Tab */}
           {activeTab === 'details' && (
             <div className="space-y-6">
+              {site && <ContactResponsibilitiesCard orgId={site.orgId} siteId={site.id} />}
               <section className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">{t('siteDetailPage.details.title')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
