@@ -175,3 +175,53 @@ describe('historyToMessages', () => {
     }
   });
 });
+
+describe('historyToMessages action plans', () => {
+  const input = {
+    title: 'Fix printing',
+    steps: [
+      { toolName: 'manage_services', input: { name: 'Spooler' }, reasoning: 'Restart' },
+      { toolName: 'run_script', input: {}, reasoning: 'Clear' },
+    ],
+  };
+
+  it('rebuilds the plan from the propose_action_plan tool_use input', () => {
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'fix printing' }),
+      row({ id: 'a1', role: 'assistant', content: 'Here is the plan.' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+    ]);
+    const a = out[1];
+    expect(a.role).toBe('assistant');
+    if (a.role !== 'assistant') return;
+    expect(a.plan).toMatchObject({ toolUseId: 'tu-plan', title: 'Fix printing', status: 'awaiting' });
+    expect(a.plan?.steps.map((st) => st.toolName)).toEqual(['manage_services', 'run_script']);
+    // The tool row itself stays, so turn-completeness still sees it as running.
+    expect(a.toolEvents[0]).toMatchObject({ toolUseId: 'tu-plan', state: 'started' });
+  });
+
+  it('settles the plan from its tool_result (approved, rejected, dropped-call wrapper)', () => {
+    const decided = (output: unknown) => {
+      const out = historyToMessages([
+        row({ id: 'a1', role: 'assistant', content: '' }),
+        row({ id: 't1', role: 'tool_use', toolName: 'mcp__breeze__propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+        row({ id: 't2', role: 'tool_result', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolOutput: output }),
+      ]);
+      const a = out[0];
+      return a.role === 'assistant' ? a.plan?.status : undefined;
+    };
+    expect(decided({ result: 'approved' })).toBe('approved');
+    expect(decided({ result: 'rejected' })).toBe('rejected');
+    expect(decided({ error: '{"result":"approved"}', droppedBeforeExecution: true })).toBe('approved');
+    expect(decided({ error: 'Failed to create action plan' })).toBe('expired');
+  });
+
+  it('leaves non-plan tool rows without a plan', () => {
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-1', toolInput: {} }),
+    ]);
+    const a = out[0];
+    expect(a.role === 'assistant' ? a.plan : 'x').toBeUndefined();
+  });
+});

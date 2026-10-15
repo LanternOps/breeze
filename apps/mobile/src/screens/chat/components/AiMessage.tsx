@@ -6,7 +6,9 @@ import { useApprovalTheme, spacing, type } from '../../../theme';
 import type { ChatMessage } from '../../../store/aiChatSlice';
 import { renderBlockForOutput } from '../blocks';
 
+import { isPlanTool } from '../planState';
 import { MarkdownBody } from './MarkdownBody';
+import { PlanCard } from './PlanCard';
 import { StreamingPulse } from './StreamingPulse';
 import { ToolIndicator } from './ToolIndicator';
 import { toolRowStatus } from './toolIndicatorLogic';
@@ -15,21 +17,28 @@ interface Props {
   message: Extract<ChatMessage, { role: 'assistant' }>;
   inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   onRetry?: () => void;
+  onPlanDecide?: (approved: boolean) => Promise<string | null>;
+  onPlanStop?: () => Promise<string | null>;
 }
+
+const noPlanAction = async () => null;
 
 // AI messages are unboxed text-on-canvas. No bubble, no avatar bezel. The
 // row contains: completed tool events (rendered as ToolIndicator), streamed
 // text content, then either a pulse (waiting for first delta) or an
 // in-flight tool caption.
-export function AiMessage({ message, inFlightTool, onRetry }: Props) {
+export function AiMessage({ message, inFlightTool, onRetry, onPlanDecide, onPlanStop }: Props) {
   const theme = useApprovalTheme('dark');
+  // The plan card stands in for the propose_action_plan tool row and its
+  // RUNNING caption: while the server waits on the plan, the card says so.
+  const toolCaption = inFlightTool && !isPlanTool(inFlightTool.toolName) ? inFlightTool : null;
   const showPulse =
     message.isStreaming && !message.content && !inFlightTool;
 
   return (
     <Animated.View entering={FadeIn.duration(240)} style={{ marginTop: spacing[5] }}>
       {message.toolEvents
-        .filter((t) => t.state === 'completed')
+        .filter((t) => t.state === 'completed' && !(message.plan && isPlanTool(t.toolName)))
         .map((t) => {
           const status = toolRowStatus({ isError: t.isError, output: t.output, handoff: t.handoff });
           // Anything that is not a plain completion renders as the audit
@@ -59,6 +68,15 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
           );
         })}
 
+      {message.plan ? (
+        <PlanCard
+          plan={message.plan}
+          live={message.isStreaming}
+          onDecide={onPlanDecide ?? noPlanAction}
+          onStop={onPlanStop ?? noPlanAction}
+        />
+      ) : null}
+
       {message.content ? (
         <View style={{ paddingHorizontal: spacing[6] }}>
           <MarkdownBody content={message.content} streaming={message.isStreaming} />
@@ -71,8 +89,8 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
         </View>
       ) : null}
 
-      {message.isStreaming && inFlightTool ? (
-        <ToolIndicator toolName={inFlightTool.toolName} state="started" input={inFlightTool.input} />
+      {message.isStreaming && toolCaption ? (
+        <ToolIndicator toolName={toolCaption.toolName} state="started" input={toolCaption.input} />
       ) : null}
 
       {message.failed ? (

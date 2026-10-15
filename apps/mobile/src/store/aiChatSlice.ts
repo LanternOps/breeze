@@ -1,5 +1,16 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
+import {
+  applyPlanEvent,
+  applyPlanToolResult,
+  planDecided,
+  planGone,
+  proposedPlan,
+  type ChatPlan,
+  type PlanDecision,
+  type PlanStreamEvent,
+} from '../screens/chat/planState';
+
 export type ChatStatus = 'idle' | 'creating-session' | 'streaming' | 'error';
 
 export interface ToolEvent {
@@ -33,6 +44,12 @@ export type ChatMessage =
       sentAt: string;
       isStreaming: boolean;
       failed?: boolean;
+      /**
+       * The action plan this turn proposed (`propose_action_plan`, plan-first
+       * approval modes). The tool call also stays in `toolEvents` so turn
+       * completeness still sees it running while the server waits.
+       */
+      plan?: ChatPlan;
     };
 
 export interface AiChatState {
@@ -109,6 +126,47 @@ const aiChatSlice = createSlice({
         } else {
           msg.toolEvents.push(action.payload.event);
         }
+        if (
+          action.payload.event.state === 'completed'
+          && msg.plan
+          && msg.plan.toolUseId === action.payload.event.toolUseId
+        ) {
+          msg.plan = applyPlanToolResult(msg.plan, action.payload.event.output);
+        }
+      }
+    },
+    /** A `propose_action_plan` call started on this message (live `tool_use_start`). */
+    planProposed(state, action: PayloadAction<{ messageId: string; toolUseId: string }>) {
+      const msg = state.messages.find((m) => m.id === action.payload.messageId);
+      if (msg && msg.role === 'assistant') {
+        msg.plan = proposedPlan(action.payload.toolUseId, undefined);
+      }
+    },
+    /**
+     * A `plan_*` SSE event. `plan_approval_required` lands on the streaming
+     * message; step/complete events follow the plan by id wherever it is.
+     */
+    planStreamEvent(state, action: PayloadAction<{ messageId: string; event: PlanStreamEvent }>) {
+      const { event } = action.payload;
+      const msg = event.type === 'plan_approval_required'
+        ? state.messages.find((m) => m.id === action.payload.messageId)
+        : state.messages.find((m) => m.role === 'assistant' && m.plan?.planId === event.planId);
+      if (msg && msg.role === 'assistant') {
+        msg.plan = applyPlanEvent(msg.plan, event);
+      }
+    },
+    /** The server accepted the user's approve/reject. */
+    planDecision(state, action: PayloadAction<{ messageId: string; decision: PlanDecision }>) {
+      const msg = state.messages.find((m) => m.id === action.payload.messageId);
+      if (msg && msg.role === 'assistant' && msg.plan) {
+        msg.plan = planDecided(msg.plan, action.payload.decision);
+      }
+    },
+    /** The server no longer holds this plan open (timed out, aborted, decided elsewhere). */
+    planNoLongerPending(state, action: PayloadAction<{ messageId: string }>) {
+      const msg = state.messages.find((m) => m.id === action.payload.messageId);
+      if (msg && msg.role === 'assistant' && msg.plan) {
+        msg.plan = planGone(msg.plan);
       }
     },
     finishAssistantMessage(
@@ -211,6 +269,10 @@ export const {
   appendDelta,
   setInFlightTool,
   appendToolEvent,
+  planProposed,
+  planStreamEvent,
+  planDecision,
+  planNoLongerPending,
   finishAssistantMessage,
   failAssistantMessage,
   setStatus,

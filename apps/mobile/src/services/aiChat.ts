@@ -5,6 +5,8 @@ import { getServerUrl } from './serverConfig';
 import { fetchWithTimeout } from './fetchWithTimeout';
 import type { ApiError } from './api';
 import { refreshAccessToken } from './api';
+import { approvalModeFromUsage, type AiApprovalMode } from './aiApprovalMode';
+import type { PlanStreamEvent } from '../screens/chat/planState';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -120,8 +122,56 @@ export async function getAiSessionMessages(
   return res.json();
 }
 
+/**
+ * Outcome of an action-plan call. Failures are returned, not thrown, so the
+ * plan card can tell "no longer pending" (400/404/409) from "try again"
+ * (anything else; status 0 = transport failure). See planState.ts.
+ */
+export type PlanCallResult = { ok: true } | { ok: false; status: number; error: string };
+
+async function planCall(path: string, body?: unknown): Promise<PlanCallResult> {
+  try {
+    const res = await authedFetch(path, {
+      method: 'POST',
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (res.ok) return { ok: true };
+    let error = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data && typeof data.error === 'string') error = data.error;
+    } catch {
+      // keep the generic message
+    }
+    return { ok: false, status: res.status, error };
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Approve or reject the plan the session is blocked on (`plan_approval_required`). */
+export function decideAiPlan(sessionId: string, approved: boolean): Promise<PlanCallResult> {
+  return planCall(`/ai/sessions/${sessionId}/approve-plan`, { approved });
+}
+
+/** Stop an approved plan that is still running. */
+export function abortAiPlan(sessionId: string): Promise<PlanCallResult> {
+  return planCall(`/ai/sessions/${sessionId}/abort-plan`);
+}
+
+/**
+ * The approval mode the server enforces for the caller's org, read from
+ * `GET /ai/usage` (same `ai_sessions:use` gate as chat, same effective-budget
+ * resolver as the approval gate). Null when there is no org budget to report.
+ */
+export async function getAiApprovalMode(): Promise<AiApprovalMode | null> {
+  const res = await authedFetch('/ai/usage');
+  if (!res.ok) throw new Error(`getAiApprovalMode failed: ${res.status}`);
+  return approvalModeFromUsage(await res.json());
+}
+
 // Subset of SSE event types the chat shell consumes. We tolerate unknown
-// event types (plan_*, warning, title_updated) by surfacing them through
+// event types (warning, title_updated, ...) by surfacing them through
 // the generic `unknown` callback if the caller wants them.
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
@@ -134,6 +184,7 @@ export type AiStreamEvent =
   | { type: 'tool_result'; toolUseId: string; output?: unknown; isError?: boolean; handoff?: string }
   | { type: 'message_end'; messageId?: string }
   | { type: 'approval_required'; executionId: string; toolName: string; description?: string; approvalRequestId?: string }
+  | PlanStreamEvent
   | { type: 'error'; message: string }
   | { type: 'done' }
   | { type: 'unknown'; raw: { event: string; data: unknown } };
@@ -157,6 +208,10 @@ const KNOWN_EVENT_TYPES = new Set([
   'tool_result',
   'message_end',
   'approval_required',
+  'plan_approval_required',
+  'plan_step_start',
+  'plan_step_complete',
+  'plan_complete',
   'error',
   'done',
 ]);

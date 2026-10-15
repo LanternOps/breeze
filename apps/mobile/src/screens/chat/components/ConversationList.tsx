@@ -11,6 +11,8 @@ interface Props {
   messages: ChatMessage[];
   inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   onRetry?: (messageId: string) => void;
+  onPlanDecide?: (messageId: string, approved: boolean) => Promise<string | null>;
+  onPlanStop?: (messageId: string) => Promise<string | null>;
 }
 
 const STICK_THRESHOLD_PX = 80;
@@ -22,12 +24,12 @@ function latestStreamSignature(messages: ChatMessage[]): string {
   const last = messages[messages.length - 1];
   if (!last) return 'empty';
   if (last.role === 'user') return `u-${last.id}`;
-  return `a-${last.id}-${last.content.length}-${last.toolEvents.length}`;
+  return `a-${last.id}-${last.content.length}-${last.toolEvents.length}-${last.plan?.steps.length ?? 0}`;
 }
 
 // Auto-stick-to-bottom only when the user is already near the bottom.
 // If they've scrolled up mid-stream, we leave their position alone.
-export function ConversationList({ messages, inFlightTool, onRetry }: Props) {
+export function ConversationList({ messages, inFlightTool, onRetry, onPlanDecide, onPlanStop }: Props) {
   const ref = useRef<ComponentRef<typeof ScrollView>>(null);
   const stickToBottom = useRef(true);
   const signature = latestStreamSignature(messages);
@@ -65,6 +67,8 @@ export function ConversationList({ messages, inFlightTool, onRetry }: Props) {
             message={m}
             inFlightTool={m.isStreaming ? inFlightTool : null}
             onRetry={m.failed && onRetry ? () => onRetry(m.id) : undefined}
+            onPlanDecide={m.plan && onPlanDecide ? (approved) => onPlanDecide(m.id, approved) : undefined}
+            onPlanStop={m.plan && onPlanStop ? () => onPlanStop(m.id) : undefined}
           />
         ),
       )}

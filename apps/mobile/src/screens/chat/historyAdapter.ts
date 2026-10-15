@@ -1,5 +1,6 @@
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
+import { applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
 
 // `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
 // way `HomeScreen`'s live SSE handler does before it lands on a `ToolEvent`.
@@ -64,8 +65,14 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
         input: toolInputRecord(row.toolInput),
       };
       target.toolEvents.push(evt);
+      // A plan-first turn: the proposal is the tool input, so the plan card
+      // can be rebuilt from history; its decision comes from the tool_result.
+      if (isPlanTool(row.toolName)) target.plan = proposedPlan(evt.toolUseId, row.toolInput);
     } else if (row.role === 'tool_result') {
       const matchId = row.toolUseId ?? '';
+      if (target.plan && target.plan.toolUseId === matchId) {
+        target.plan = applyPlanToolResult(target.plan, row.toolOutput);
+      }
       const existing = target.toolEvents.find((t) => t.toolUseId === matchId);
       if (existing) {
         existing.state = 'completed';

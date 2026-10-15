@@ -22,6 +22,10 @@ import {
   failAssistantMessage,
   finishAssistantMessage,
   loadHistory,
+  planDecision,
+  planNoLongerPending,
+  planProposed,
+  planStreamEvent,
   reconcileHistory,
   resetChat,
   sessionCreated,
@@ -31,7 +35,9 @@ import {
 } from '../../store/aiChatSlice';
 import { useApprovalTheme, spacing, type } from '../../theme';
 import {
+  abortAiPlan,
   createAiSession,
+  decideAiPlan,
   getAiSessionMessages,
   streamChat,
   type AiStreamEvent,
@@ -50,6 +56,7 @@ import { HomeFleetStrip } from './components/HomeFleetStrip';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
+import { isPlanTool, planDecisionFailure } from './planState';
 import { isStreamLostError, isTurnComplete, isTurnSettlingError, transcriptSignature } from './turnState';
 
 /** Catch-up poll cadence while the server is still writing the turn. */
@@ -229,6 +236,11 @@ export function HomeScreen() {
                 messageId: assistantId,
                 event: { toolUseId: ev.toolUseId, toolName: ev.toolName, state: 'started', input },
               }));
+              // Plan-first approval mode: the card appears now and fills in
+              // when plan_approval_required brings the steps.
+              if (isPlanTool(ev.toolName)) {
+                dispatch(planProposed({ messageId: assistantId, toolUseId: ev.toolUseId }));
+              }
               break;
             }
             case 'tool_result':
@@ -249,6 +261,14 @@ export function HomeScreen() {
               dispatch(setInFlightTool(null));
               break;
             case 'message_end':
+              break;
+            case 'plan_approval_required':
+            case 'plan_step_start':
+            case 'plan_step_complete':
+            case 'plan_complete':
+              // In-chat only: the server creates no approval_requests row and
+              // sends no push for a plan, so the PlanCard is its only answer.
+              dispatch(planStreamEvent({ messageId: assistantId, event: ev }));
               break;
             case 'approval_required':
               // When approvalRequestId is present (server linked the AI tool execution
@@ -274,7 +294,7 @@ export function HomeScreen() {
               }));
               break;
             case 'unknown':
-              // plan_*, warning, title_updated — ignored in step 1.
+              // warning, title_updated, tool_use_input, … — ignored.
               break;
           }
         },
@@ -393,6 +413,41 @@ export function HomeScreen() {
     [cancelTurnWork, dispatch],
   );
 
+  /**
+   * Approve or reject the plan the server is blocked on. Resolves to an
+   * inline error for the card, or null. A 400/404/409 means the server no
+   * longer holds the plan open, so the card settles instead of nagging.
+   */
+  const handlePlanDecide = useCallback(
+    async (messageId: string, approved: boolean): Promise<string | null> => {
+      const sid = sessionIdRef.current;
+      if (!sid) return 'This conversation is no longer open.';
+      const res = await decideAiPlan(sid, approved);
+      if (res.ok) {
+        dispatch(planDecision({ messageId, decision: approved ? 'approved' : 'rejected' }));
+        return null;
+      }
+      if (planDecisionFailure(res.status) === 'gone') {
+        dispatch(planNoLongerPending({ messageId }));
+        return null;
+      }
+      reportInternalError(new Error(`approve-plan failed: ${res.status} ${res.error}`), 'ai-plan-decide');
+      return approved ? 'Could not approve the plan. Try again.' : 'Could not reject the plan. Try again.';
+    },
+    [dispatch],
+  );
+
+  /** Stop a running plan; plan_complete(aborted) then settles the card. */
+  const handlePlanStop = useCallback(async (_messageId: string): Promise<string | null> => {
+    const sid = sessionIdRef.current;
+    if (!sid) return 'This conversation is no longer open.';
+    const res = await abortAiPlan(sid);
+    if (res.ok) return null;
+    if (planDecisionFailure(res.status) === 'gone') return 'This plan has already finished.';
+    reportInternalError(new Error(`abort-plan failed: ${res.status} ${res.error}`), 'ai-plan-abort');
+    return 'Could not stop the plan. Try again.';
+  }, []);
+
   const isCold = messages.length === 0 && status !== 'creating-session';
 
   return (
@@ -423,6 +478,8 @@ export function HomeScreen() {
                 handleRetry();
               }
             }}
+            onPlanDecide={handlePlanDecide}
+            onPlanStop={handlePlanStop}
           />
         )}
 

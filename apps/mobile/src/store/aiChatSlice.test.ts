@@ -11,6 +11,10 @@ import reducer, {
   finishAssistantMessage,
   loadHistory,
   resetChat,
+  planDecision,
+  planNoLongerPending,
+  planProposed,
+  planStreamEvent,
   type AiChatState,
   type ChatMessage,
 } from './aiChatSlice';
@@ -279,5 +283,68 @@ describe('reconcileHistory', () => {
     expect(s.streamingMessageId).toBeNull();
     expect(s.inFlightTool).toBeNull();
     expect(s.error).toBeNull();
+  });
+});
+
+describe('aiChatSlice action plans', () => {
+  const STEPS = [
+    { toolName: 'manage_services', input: {}, reasoning: 'Restart', status: 'pending' },
+    { toolName: 'run_script', input: {}, reasoning: 'Clear', status: 'pending' },
+  ];
+
+  function streaming(): AiChatState {
+    return reducer(INITIAL, addPendingAssistantMessage({ id: 'a1', sentAt: 'now' }));
+  }
+
+  function planOf(s: AiChatState) {
+    const msg = s.messages.find((m) => m.id === 'a1');
+    return msg && msg.role === 'assistant' ? msg.plan : undefined;
+  }
+
+  it('planProposed + plan_approval_required build an awaiting plan on the streaming message', () => {
+    let s = reducer(streaming(), planProposed({ messageId: 'a1', toolUseId: 'tu-plan' }));
+    expect(planOf(s)).toMatchObject({ toolUseId: 'tu-plan', status: 'awaiting', steps: [] });
+    s = reducer(s, planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    expect(planOf(s)).toMatchObject({ toolUseId: 'tu-plan', planId: 'plan-1', status: 'awaiting' });
+    expect(planOf(s)?.steps).toHaveLength(2);
+  });
+
+  it('step events find the plan by planId even when the messageId is stale', () => {
+    let s = reducer(streaming(), planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    s = reducer(s, planDecision({ messageId: 'a1', decision: 'approved' }));
+    s = reducer(s, planStreamEvent({
+      messageId: 'other',
+      event: { type: 'plan_step_complete', planId: 'plan-1', stepIndex: 0, isError: false },
+    }));
+    expect(planOf(s)?.status).toBe('executing');
+    expect(planOf(s)?.steps[0]?.status).toBe('completed');
+  });
+
+  it('planDecision rejected and planNoLongerPending settle the plan', () => {
+    const base = reducer(streaming(), planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    expect(planOf(reducer(base, planDecision({ messageId: 'a1', decision: 'rejected' })))?.status).toBe('rejected');
+    expect(planOf(reducer(base, planNoLongerPending({ messageId: 'a1' })))?.status).toBe('expired');
+  });
+
+  it('the plan tool_result settles the plan through appendToolEvent', () => {
+    let s = reducer(streaming(), appendToolEvent({
+      messageId: 'a1',
+      event: { toolUseId: 'tu-plan', toolName: 'propose_action_plan', state: 'started' },
+    }));
+    s = reducer(s, planProposed({ messageId: 'a1', toolUseId: 'tu-plan' }));
+    s = reducer(s, appendToolEvent({
+      messageId: 'a1',
+      event: { toolUseId: 'tu-plan', toolName: 'tool', state: 'completed', output: { result: 'rejected' } },
+    }));
+    expect(planOf(s)?.status).toBe('rejected');
   });
 });

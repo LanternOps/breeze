@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createAiSession, listAiSessions, streamChat } from './aiChat';
+import { abortAiPlan, createAiSession, decideAiPlan, getAiApprovalMode, listAiSessions, streamChat } from './aiChat';
 import type { AiStreamEvent } from './aiChat';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
@@ -484,5 +484,97 @@ describe('streamChat 401 refresh-and-reopen', () => {
     expect(FakeXhr.instances).toHaveLength(1);
     expect(onError).toHaveBeenCalledTimes(1);
     expect((onError.mock.calls[0][0] as Error).message).toBe('boom');
+  });
+});
+
+describe('action plan endpoints', () => {
+  it('decideAiPlan POSTs the decision with the CSRF header and reports success', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, approved: true }));
+
+    await expect(decideAiPlan('sess-1', true)).resolves.toEqual({ ok: true });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/sessions/sess-1/approve-plan');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify({ approved: true }));
+    expect((init.headers as Record<string, string>)['x-breeze-csrf']).toBe('1');
+  });
+
+  it('decideAiPlan returns the status and server error on failure instead of throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'No pending plan approval' }, 400));
+
+    await expect(decideAiPlan('sess-1', false)).resolves.toEqual({
+      ok: false,
+      status: 400,
+      error: 'No pending plan approval',
+    });
+  });
+
+  it('decideAiPlan maps a transport failure to status 0', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('Network request failed'));
+
+    await expect(decideAiPlan('sess-1', true)).resolves.toEqual({
+      ok: false,
+      status: 0,
+      error: 'Network request failed',
+    });
+  });
+
+  it('abortAiPlan POSTs to abort-plan', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+    await expect(abortAiPlan('sess-1')).resolves.toEqual({ ok: true });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/sessions/sess-1/abort-plan');
+    expect(init.method).toBe('POST');
+  });
+});
+
+describe('getAiApprovalMode', () => {
+  it('reads the effective mode from GET /ai/usage', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ budget: { approvalMode: 'hybrid_plan' } }));
+
+    await expect(getAiApprovalMode()).resolves.toBe('hybrid_plan');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/usage');
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  it('is null when the caller has no org budget', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ budget: null }));
+    await expect(getAiApprovalMode()).resolves.toBeNull();
+  });
+
+  it('throws on an HTTP failure so the caller can show it could not load', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'nope' }, 403));
+    await expect(getAiApprovalMode()).rejects.toThrow(/403/);
+  });
+});
+
+describe('streamChat plan events', () => {
+  beforeEach(() => {
+    FakeXhr.instances = [];
+    FakeXhr.throwOnNextSend = null;
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+  });
+
+  it('passes plan events through as typed events, not unknown', async () => {
+    const { events } = startStream();
+    await flushAsync();
+    const xhr = FakeXhr.instances[0];
+    xhr.emitChunk(
+      200,
+      'event: plan_approval_required\ndata: {"type":"plan_approval_required","planId":"p1","steps":[]}\n\n'
+        + 'event: plan_step_start\ndata: {"type":"plan_step_start","planId":"p1","stepIndex":0,"toolName":"x"}\n\n'
+        + 'event: plan_step_complete\ndata: {"type":"plan_step_complete","planId":"p1","stepIndex":0,"toolName":"x","isError":false}\n\n'
+        + 'event: plan_complete\ndata: {"type":"plan_complete","planId":"p1","status":"completed"}\n\n',
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'plan_approval_required',
+      'plan_step_start',
+      'plan_step_complete',
+      'plan_complete',
+    ]);
   });
 });
