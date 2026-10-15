@@ -8,17 +8,14 @@
 -- so that a NULL p_org_id selects the system chain. Postgres cannot use a
 -- btree index for IS NOT DISTINCT FROM, so none of the (org_id, ...) indexes
 -- apply and the planner falls back to walking audit_log_chain_pkey (or a seq
--- scan of audit_logs) and filtering by org. Measured on the US production
--- primary on 2026-10-12 (6.7 M chain rows, 510 orgs):
---   - min/max(chain_seq) for one small org: 33.7 s / 6.5 M buffers with
---     IS NOT DISTINCT FROM, 8 ms / 10 buffers with `=`.
---   - the nightly incremental sweep took 9.9 h (04:13Z -> 14:07Z), mean 37 s
---     per org, 13 B shared blocks read since 09-06 -- enough to evict the whole
---     buffer cache every night and drag every other query into disk reads.
---   - each 100k-row rolling re-scan block read all 100k rows of the global
---     chain_seq range for every org, not just the org's own rows.
---   - on slice-0 nights the unsealed sweep seq-scanned the 5.8 GB audit_logs
---     table once per org.
+-- scan of audit_logs) and filtering by org. On a large deployment that meant:
+--   - min/max(chain_seq) for one small org read millions of buffers with
+--     IS NOT DISTINCT FROM, versus a handful with `=`.
+--   - the nightly incremental sweep ran for hours, reading enough blocks to
+--     evict the buffer cache and push every other query onto disk reads.
+--   - each rolling re-scan block read the whole global chain_seq range for
+--     every org, not just the org's own rows.
+--   - the unsealed sweep seq-scanned audit_logs once per org.
 -- audit_log_seal_one already branches on NULL (`IF a.org_id IS NULL ... ELSE
 -- ... = ...`) for exactly this reason; this migration carries that pattern into
 -- the three verify functions. Behaviour and the (broken_id, expected, actual)

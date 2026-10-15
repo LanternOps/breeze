@@ -3,8 +3,8 @@
  * (migration 2026-10-03-audit-chain-verify-range.sql).
  *
  * audit_log_verify_chain(org) walks the org's whole chain every night, which
- * is O(total rows) and was measured at ~13h/day of random reads on the US
- * production primary. The bounded plan verifies (a) everything after the org's
+ * is O(total rows) and on a large deployment cost hours per day of random
+ * reads. The bounded plan verifies (a) everything after the org's
  * latest anchor and (b) one rolling slice of the historical chain, and must
  * detect the same tamper classes within the slice window.
  *
@@ -271,11 +271,10 @@ describe('audit_log_verify_chain_incremental / _range', () => {
     expect(await verifyIncremental(orgId, 3, 2, 1000)).toEqual([]);
   });
 
-  // 2026-12-23 migration (US prod 2026-10-12): `org_id IS NOT DISTINCT FROM p_org_id`
-  // cannot use the (org_id, …) btree indexes, so each nightly per-org call
-  // walked the whole chain pkey (33.7 s / 6.5 M buffers for one small org vs
-  // 8 ms with `=`) and the 510-org sweep ran ~10 h. The functions must branch
-  // on NULL (like audit_log_seal_one) instead.
+  // 2026-12-28 migration: `org_id IS NOT DISTINCT FROM p_org_id` cannot use the
+  // (org_id, …) btree indexes, so each nightly per-org call walked the whole
+  // chain pkey instead of seeking by org. The functions must branch on NULL
+  // (like audit_log_seal_one) instead.
   it('verify functions carry no IS NOT DISTINCT FROM predicate (index-defeating)', async () => {
     const rows = (await getTestDb().execute(sql`
       SELECT p.proname, pg_get_functiondef(p.oid) AS def
