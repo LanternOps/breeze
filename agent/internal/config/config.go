@@ -139,15 +139,17 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
-	// PAMEnabled gates privileged access management features, including the
-	// dormant local elevation account. Default false.
+	// PAMEnabled opts into dormant elevation-account provisioning at startup.
+	// Default false. After reconciliation, organization PAM policy is authoritative:
+	// an enabled policy provisions the account even when this flag is false.
+	// This flag is not a local opt-out from organization policy.
 	PAMEnabled bool `mapstructure:"pam_enabled"`
 
 	// PAMActuatorStrategy selects the Windows elevation actuator: "sendinput"
 	// (Path A — inject credentials into consent.exe) or "token_launch" (Path B —
 	// suppress consent.exe and launch the target elevated via CreateProcessAsUser
 	// as ~breeze_elev). Default "sendinput". Path B ships dark; flip per-device
-	// via agent.yaml. Ignored when PAMEnabled is false.
+	// via agent.yaml. Managed PAM v2 uses its own launch path.
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
 	// Concurrency limits

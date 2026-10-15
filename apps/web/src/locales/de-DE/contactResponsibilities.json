@@ -1,0 +1,22 @@
+{
+  "title": "Verantwortliche Kontakte",
+  "subtitle": "Für diesen Datensatz ermittelt. Spezifischere Zuordnungen haben Vorrang.",
+  "loading": "Verantwortliche Kontakte werden geladen …",
+  "loadFailed": "Verantwortliche Kontakte konnten nicht geladen werden.",
+  "empty": "Es sind noch keine verantwortlichen Kontakte zugewiesen.",
+  "primary": "Hauptkontakt",
+  "roles": {
+    "billing": "Abrechnung",
+    "technical": "Technik",
+    "escalation": "Eskalation",
+    "admin": "Verwaltung",
+    "site": "Lokaler Kontakt",
+    "after_hours": "Außerhalb der Geschäftszeiten",
+    "portal": "Portal"
+  },
+  "scope": {
+    "organization": "Gesamte Organisation",
+    "site": "Dieser Standort",
+    "device_group": "Gerätegruppe"
+  }
+}

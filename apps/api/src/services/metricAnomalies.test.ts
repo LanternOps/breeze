@@ -167,7 +167,24 @@ describe('metric anomalies service', () => {
     expect(executedSql).toContain('network_egress');
     expect(executedSql).toContain('memory_growth');
 
+    // US prod 2026-10-12: the open-episode exclusion set must be bounded to
+    // the buckets the baseline can actually reach, or stale open rows (860 on
+    // one org, three weeks old) ride along into every tick's join.
+    // Both UNION arms must carry `window_start >= from - lookback`; a bound at
+    // plain `from` would let still-open buckets in [from-24h, from) rejoin the
+    // baseline and inflate their own threshold (spec §10).
+    // The SQL is captured as serialized chunks, so count the two literal
+    // fragments the bound is built from (the `recent`/baseline CTEs use
+    // `bucket_start` and never `::timestamp - (`).
+    const countBound = (text: string) => ({
+      windowStart: text.split('ma.window_start >= ').length - 1,
+      lookback: text.split("::timestamp - (").length - 1,
+    });
+    const baselineStatementSql = detectorStatements()[0] ?? '';
+    expect(countBound(baselineStatementSql)).toEqual({ windowStart: 2, lookback: 2 });
+
     const processStatementSql = detectorStatements()[2] ?? '';
+    expect(countBound(processStatementSql)).toEqual({ windowStart: 2, lookback: 2 });
     expect(processStatementSql).toContain("mr.source_table = 'device_process_samples'");
     expect(processStatementSql).toContain('top_process_cpu_percent_sum');
     expect(processStatementSql).toContain('top_process_cpu_percent_max');
