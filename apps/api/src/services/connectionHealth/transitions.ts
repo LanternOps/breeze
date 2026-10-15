@@ -26,17 +26,19 @@ export function planTransitions(input: {
   const handled = new Set<string>();
 
   for (const t of tracked) {
-    handled.add(t.sourceId);
     const o = bySource.get(t.sourceId);
 
     if (t.resolvedAt) {
       // Recently resolved: only a broken observation inside the window matters.
       if (o?.state === 'broken' && now.getTime() - t.resolvedAt.getTime() <= REOPEN_WINDOW_MS) {
+        handled.add(t.sourceId);
         actions.push({ type: 'reopen', incidentId: t.id, obs: o });
       }
+      // Outside the window the row is history: a broken observation falls through to a new incident.
       continue;
     }
 
+    handled.add(t.sourceId);
     const pending = t.openedAt === null;
     if (!o || o.state === 'retired') {
       actions.push(pending
@@ -44,6 +46,7 @@ export function planTransitions(input: {
         : { type: 'resolve', incidentId: t.id, resolution: 'retired' });
       continue;
     }
+    // unknown is a no-op: "consecutive" counts decisive observations only, so it neither breaks nor advances a streak (intentional per spec).
     if (o.state === 'unknown') continue;
     if (o.state === 'healthy') {
       if (pending) {

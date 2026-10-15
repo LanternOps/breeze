@@ -54,7 +54,7 @@ describe('planTransitions', () => {
       { type: 'resolve', incidentId: 'i1', resolution: 'recovered' },
     ]);
   });
-  it('a broken observation after one healthy tick resets the streak via update', () => {
+  it('a broken observation after one healthy tick emits an update (store resets the streak)', () => {
     expect(plan([obs()], [open({ healthyStreak: 1 })])[0]).toMatchObject({ type: 'update', incidentId: 'i1' });
   });
   it('unknown never opens, resolves or ticks', () => {
@@ -72,6 +72,16 @@ describe('planTransitions', () => {
   it('reopens an incident resolved inside the 60-minute window instead of creating one', () => {
     const resolved = open({ resolvedAt: new Date('2026-10-15T11:30:00Z') });
     expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs() }]);
+  });
+  it('reopens at exactly the 60-minute boundary (inclusive)', () => {
+    const resolved = open({ resolvedAt: new Date(NOW.getTime() - 60 * 60 * 1000) });
+    expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs() }]);
+  });
+  it('opens a new incident when the resolved row is outside the reopen window', () => {
+    const resolved = open({ resolvedAt: new Date(NOW.getTime() - 61 * 60 * 1000) });
+    const p = obs({ severity: 'permanent' });
+    expect(plan([p], [resolved])).toEqual([{ type: 'insertOpen', obs: p, notify: true }]);
+    expect(plan([obs()], [resolved])).toEqual([{ type: 'insertPending', obs: obs() }]);
   });
   it('ignores a recently resolved incident that stays healthy or is missing', () => {
     const resolved = open({ resolvedAt: new Date('2026-10-15T11:30:00Z') });
