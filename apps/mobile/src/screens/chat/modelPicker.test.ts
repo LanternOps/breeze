@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   classifySendFailure,
   commitSelection,
   continuationCopy,
+  continuationStep,
   continuationTarget,
   describeTurnModel,
+  firstSendMenuWait,
   effectiveChoice,
   formatCentsPerM,
   formatContextTokens,
@@ -17,8 +19,11 @@ import {
   pickerRows,
   resolvePersistedPref,
   selectOffering,
+  sessionCreateFailure,
   showPicker,
+  stateAfterFailedLoad,
   survivingSelection,
+  withinCap,
   withOption,
   type AiModelChoiceDto,
   type AiModelChoicesDto,
@@ -200,10 +205,9 @@ describe('selection state (mirrors aiModelPickerStore)', () => {
     expect(withOption(state({ choices: null }), 'effort', 'high')).toBeNull();
   });
 
-  it('pending is nothing while loading, without a selection, or when choice is locked', () => {
+  it('pending is nothing without a selection, or when choice is locked', () => {
     const sel = { offeringId: OPUS, options: { effort: 'high' as const } };
     expect(pendingChoice(state({ selection: sel }))).toEqual(sel);
-    expect(pendingChoice(state({ selection: sel, loading: true }))).toBeUndefined();
     expect(pendingChoice(state())).toBeUndefined();
     expect(pendingChoice(state({ selection: sel, choices: menu({ allowUserChoice: false }) }))).toBeUndefined();
   });
@@ -212,6 +216,13 @@ describe('selection state (mirrors aiModelPickerStore)', () => {
     const choices = menu({ current: { offeringId: OPUS, options: { speed: 'standard', effort: 'high' } } });
     expect(pendingChoice(state({ choices, selection: { offeringId: OPUS, options: { effort: 'high', speed: 'standard' } } }))).toBeUndefined();
     expect(pendingChoice(state({ choices, selection: { offeringId: OPUS, options: { effort: 'low', speed: 'standard' } } }))).toBeDefined();
+  });
+
+  it('pending is still the visible pick while a menu reload is in flight', () => {
+    // The pill keeps showing the pick during the reload, so a send in that
+    // window must carry it rather than silently run on the old model.
+    const sel = { offeringId: OPUS, options: { effort: 'high' as const } };
+    expect(pendingChoice(state({ selection: sel, loading: true }))).toEqual(sel);
   });
 
   it('commit stamps the selection as current and clears it', () => {
@@ -226,6 +237,67 @@ describe('selection state (mirrors aiModelPickerStore)', () => {
     expect(survivingSelection(menu({ choices: [sonnet] }), sel)).toBeNull();
     expect(survivingSelection(menu({ choices: [{ ...opus, disabled: locked.disabled }] }), sel)).toBeNull();
     expect(survivingSelection(null, sel)).toBeNull();
+  });
+});
+
+describe('menu load failures', () => {
+  const sel = { offeringId: OPUS, options: {} };
+  const prev = state({ selection: sel, loading: true });
+
+  it('a definitive "no menu" answer clears the menu and the pick', () => {
+    for (const status of [400, 403, 404]) {
+      expect(stateAfterFailedLoad(prev, { status, code: null }, true)).toEqual({ choices: null, loading: false, selection: null });
+    }
+  });
+
+  it('a transport failure or a transient 5xx keeps the menu and the pick', () => {
+    for (const failure of [{ status: 0, code: null }, { status: 500, code: null }, { status: 503, code: 'registry_unavailable' }]) {
+      expect(stateAfterFailedLoad(prev, failure, true)).toEqual({ choices: prev.choices, loading: false, selection: sel });
+    }
+  });
+
+  it('a transient failure loading ANOTHER chat does not show the old chat menu', () => {
+    expect(stateAfterFailedLoad(prev, { status: 0, code: null }, false)).toEqual({ choices: null, loading: false, selection: sel });
+  });
+});
+
+describe('first send without a menu', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('waits for the menu only when it was missing for lack of org context', () => {
+    expect(firstSendMenuWait({ status: 400, code: null })).toBe('await');
+    expect(firstSendMenuWait({ status: 503, code: 'registry_unavailable' })).toBe('race');
+    expect(firstSendMenuWait({ status: 0, code: null })).toBe('race');
+    expect(firstSendMenuWait(null)).toBe('race');
+  });
+
+  it('withinCap resolves with the value when the work beats the cap', async () => {
+    await expect(withinCap(Promise.resolve(7), 1_500)).resolves.toEqual({ done: true, value: 7 });
+  });
+
+  it('withinCap gives up at the cap instead of waiting for a slow load', async () => {
+    vi.useFakeTimers();
+    const never = new Promise<number>(() => undefined);
+    const raced = withinCap(never, 1_500);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await expect(raced).resolves.toEqual({ done: false });
+  });
+});
+
+describe('sessionCreateFailure', () => {
+  it('a create refused for the model shows the server reason and drops the stored pick', () => {
+    for (const code of ['plan_required', 'residency_unavailable', 'not_permitted', 'model_unavailable']) {
+      expect(sessionCreateFailure(409, { error: 'Not on your plan', code })).toEqual({ message: 'Not on your plan', modelRefused: true });
+    }
+    expect(sessionCreateFailure(403, { code: 'permission_required' })).toEqual({ message: 'That model is unavailable. Choose another.', modelRefused: true });
+  });
+
+  it('anything else keeps the static message and the pick', () => {
+    expect(sessionCreateFailure(500, { error: 'boom', code: 'plan_required' })).toEqual({ message: 'Could not start a session.', modelRefused: false });
+    expect(sessionCreateFailure(409, { error: 'busy', code: 'turn_in_progress' })).toEqual({ message: 'Could not start a session.', modelRefused: false });
+    expect(sessionCreateFailure(0, null)).toEqual({ message: 'Could not start a session.', modelRefused: false });
   });
 });
 
@@ -313,6 +385,17 @@ describe('continuation copy (mirrors AiContinuationPrompt.tsx / en ai.json)', ()
     expect(continuationTarget({ ...base, reason: 'cross_connection' }, sel)).toEqual(sel);
     expect(continuationTarget({ ...base, reason: 'cross_connection' }, null)).toEqual({ offeringId: OPUS });
     expect(continuationTarget({ ...base, reason: 'cross_connection', target: { offeringId: null, displayName: 'X' } }, null)).toBeNull();
+  });
+
+  it('a retry after the new chat was created opens it instead of creating another', () => {
+    const required = { ...base, reason: 'cross_connection' as const };
+    const sel = { offeringId: OPUS, options: {} };
+    expect(continuationStep({ required }, sel)).toEqual({ kind: 'continue', target: sel });
+    expect(continuationStep({ required, createdSessionId: 'new-1' }, sel)).toEqual({ kind: 'open', sessionId: 'new-1' });
+    // Even with no target left to continue on, the created chat can still be opened.
+    expect(continuationStep({ required: { ...required, target: { offeringId: null, displayName: 'X' } }, createdSessionId: 'new-1' }, null))
+      .toEqual({ kind: 'open', sessionId: 'new-1' });
+    expect(continuationStep({ required: { ...required, target: { offeringId: null, displayName: 'X' } } }, null)).toBeNull();
   });
 });
 

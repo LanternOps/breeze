@@ -38,6 +38,7 @@ import {
 import { useApprovalTheme, spacing, type } from '../../theme';
 import {
   abortAiPlan,
+  AiHttpError,
   continueAiSession,
   createAiSession,
   decideAiPlan,
@@ -65,9 +66,13 @@ import { historyToMessages } from './historyAdapter';
 import {
   CONTINUATION_FAILED,
   CONTINUATION_OPEN_FAILED,
+  FIRST_SEND_MENU_CAP_MS,
   classifySendFailure,
-  continuationTarget,
+  continuationStep,
+  firstSendMenuWait,
   parseTurnModel,
+  sessionCreateFailure,
+  withinCap,
   type ModelChoice,
 } from './modelPicker';
 import { isPlanTool, planDecisionFailure } from './planState';
@@ -128,6 +133,12 @@ export function HomeScreen() {
   const [draft, setDraft] = useState<string | undefined>(undefined);
   // W05: the composer's model menu, and a switch parked for a continuation.
   const picker = useChatModelPicker();
+  // The callbacks below read the picker through a ref: its object identity
+  // changes on every picker state change, and depending on it would tear
+  // down and re-subscribe the AppState listener (losing its `previous`) on
+  // every menu load or pick. Its action functions are stable.
+  const pickerRef = useRef(picker);
+  pickerRef.current = picker;
   const [continuing, setContinuing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -157,7 +168,7 @@ export function HomeScreen() {
         else dispatch(setError(message));
       };
       try {
-        const { messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
         // A send, new chat or session switch superseded this catch-up.
         if (gen !== turnGenRef.current || sessionIdRef.current !== sid) return;
         const msgs = historyToMessages(rows, lastTurnModel);
@@ -166,11 +177,12 @@ export function HomeScreen() {
         // between two polls: a tool_result can be persisted a beat before the
         // model's follow-up text, and that instant looks finished.
         const complete = isTurnComplete(msgs) && signature === previousSignature;
-        dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete }));
+        dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete, orgId: session?.orgId }));
         if (complete) {
           // The stream that would have committed a pick is gone: re-read the
           // chat's stamped choice instead.
-          if (picker.selection()) void picker.load({ sessionId: sid });
+          const p = pickerRef.current;
+          if (p.selection()) void p.load({ sessionId: sid });
           return;
         }
         if (attempt >= RECONCILE_MAX_POLLS) {
@@ -186,7 +198,7 @@ export function HomeScreen() {
         giveUp('Could not reconnect to this conversation. Tap to retry.');
       }
     },
-    [dispatch, picker],
+    [dispatch],
   );
 
   // A remount mid-turn (the approval takeover used to unmount this screen;
@@ -198,7 +210,7 @@ export function HomeScreen() {
       void reconcileFromServer(sid);
     }
     // W05: this chat's model menu (or a new chat's, from the caller's org).
-    void picker.load({ sessionId: sid });
+    void pickerRef.current.load({ sessionId: sid });
     // Mount only.
   }, []);
 
@@ -239,6 +251,7 @@ export function HomeScreen() {
     ) => {
       const assistantId = retry?.assistantId ?? `m-${Date.now()}-a`;
       const { model } = turn;
+      const picker = pickerRef.current;
       // The pick that rode on this turn is the chat's choice once the turn ran.
       // Reference check: a pick changed since (the menu is disabled mid-turn,
       // but be exact) is not what ran.
@@ -404,7 +417,7 @@ export function HomeScreen() {
         },
       });
     },
-    [dispatch, picker, reconcileFromServer],
+    [dispatch, reconcileFromServer],
   );
 
   const handleSend = useCallback(
@@ -425,6 +438,7 @@ export function HomeScreen() {
 
       // W05: the composer's pending choice rides on this message — or, for
       // the first message of a new chat, on the session create (web parity).
+      const picker = pickerRef.current;
       let model = picker.pending();
       let sid = opts.sessionId ?? sessionId;
       if (!sid) {
@@ -434,16 +448,26 @@ export function HomeScreen() {
           const session = await createAiSession(model ? { model } : {});
           sid = session.id;
           if (gen !== turnGenRef.current) return;
-          dispatch(sessionCreated({ sessionId: sid }));
+          dispatch(sessionCreated({ sessionId: sid, orgId: session.orgId }));
           track('chat_session_created');
         } catch (err) {
           dispatch(setStatus('error'));
-          // The raw message is internal (function name + HTTP status) — report it
-          // to Sentry and show the user a static string instead (issue #3141).
-          reportInternalError(err, 'ai-session-create');
-          dispatch(failAssistantMessage({ id: userMessageId, error: 'Could not start a session.' }));
-          // A refused pick (model gone since the menu loaded): re-read the menu.
-          if (model) void picker.load({});
+          // Same classification as a refused message: a model code (the
+          // stored pick is not on this plan / region / role) shows the
+          // server's reason and drops the pref, or every new chat would
+          // re-apply it and fail. Anything else is internal (function name +
+          // HTTP status) — report it and show a static string (issue #3141).
+          const failure = err instanceof AiHttpError
+            ? sessionCreateFailure(err.status, err.body)
+            : sessionCreateFailure(0, null);
+          if (!failure.modelRefused) reportInternalError(err, 'ai-session-create');
+          dispatch(failAssistantMessage({ id: userMessageId, error: failure.message }));
+          if (failure.modelRefused) {
+            void picker.forgetPref().then(() => picker.load({}));
+          } else if (model) {
+            // A refused pick (model gone since the menu loaded): re-read the menu.
+            void picker.load({});
+          }
           return;
         }
         if (model) {
@@ -454,11 +478,23 @@ export function HomeScreen() {
         if (hadMenu) {
           void picker.load({ sessionId: sid });
         } else {
-          // No menu before the session existed (a partner-scope token has no
-          // org of its own). The session's menu is known now: apply the stored
-          // pick to this first turn, which starts a fresh transcript, so a
-          // switch here never needs a continuation.
-          await picker.load({ sessionId: sid, applyPref: true });
+          // No menu before the session existed. The session's menu applies
+          // the stored pick to this first turn, which starts a fresh
+          // transcript, so a switch here never needs a continuation. Worth
+          // waiting for only when the menu was missing for lack of org
+          // context (a partner-scope token, 400); a registry outage or a bad
+          // link must not hold the first reply for a fetch timeout.
+          const menuLoad = picker.load({ sessionId: sid, applyPref: true });
+          if (firstSendMenuWait(picker.lastLoadFailure()) === 'await') {
+            await menuLoad;
+          } else if (!(await withinCap(menuLoad, FIRST_SEND_MENU_CAP_MS)).done) {
+            // Lost the race: this turn runs on the server default. Supersede
+            // the pref load so the pref is not shown as this chat's pick.
+            if (gen !== turnGenRef.current) return;
+            void picker.load({ sessionId: sid });
+            beginStream(sid, text, { userMessageId });
+            return;
+          }
           if (gen !== turnGenRef.current) return;
           model = picker.pending();
         }
@@ -466,33 +502,48 @@ export function HomeScreen() {
 
       beginStream(sid, text, { userMessageId, model });
     },
-    [beginStream, cancelTurnWork, dispatch, picker, sessionId],
+    [beginStream, cancelTurnWork, dispatch, sessionId],
   );
 
   /** W05: continue the parked message in a new chat seeded with a summary. */
   const handleContinue = useCallback(async () => {
+    const picker = pickerRef.current;
     const parked = picker.continuationRef.current;
     if (!parked) return;
-    const target = continuationTarget(parked.required, picker.selection());
-    if (!target) return;
+    const step = continuationStep(parked, picker.selection());
+    if (!step) return;
     setContinuing(true);
     try {
-      const res = await continueAiSession(parked.sourceSessionId, target);
-      if (!res.ok) {
-        // A 4xx carries a user-facing reason (budget, a reply still running);
-        // anything else is internal. The prompt stays open to retry.
-        if (res.status < 400 || res.status >= 500) {
-          reportInternalError(new Error(`continue failed: ${res.status} ${res.error}`), 'ai-session-continue');
+      let newSessionId: string;
+      if (step.kind === 'open') {
+        // `/continue` already created the chat; only opening it failed.
+        newSessionId = step.sessionId;
+      } else {
+        const res = await continueAiSession(parked.sourceSessionId, step.target);
+        if (!res.ok) {
+          // A 4xx carries a user-facing reason (budget, a reply still running);
+          // anything else is internal. The prompt stays open to retry.
+          if (res.status < 400 || res.status >= 500) {
+            reportInternalError(new Error(`continue failed: ${res.status} ${res.error}`), 'ai-session-continue');
+          }
+          dispatch(setError(res.status >= 400 && res.status < 500 ? res.error : CONTINUATION_FAILED));
+          return;
         }
-        dispatch(setError(res.status >= 400 && res.status < 500 ? res.error : CONTINUATION_FAILED));
-        return;
+        newSessionId = res.sessionId;
+        // Remember the new chat: a retry after a failed open must open it,
+        // not create another linked chat (and bill another summary).
+        picker.setContinuation({ ...parked, createdSessionId: newSessionId });
+        // The pick was spent creating the new chat; it must not ride on it again.
+        picker.clearSelection();
       }
-      // The pick was spent creating the new chat; it must not ride on it again.
-      picker.clearSelection();
       cancelTurnWork();
       try {
-        const { messages: rows, lastTurnModel } = await getAiSessionMessages(res.sessionId);
-        dispatch(loadHistory({ sessionId: res.sessionId, messages: historyToMessages(rows, lastTurnModel) }));
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(newSessionId);
+        dispatch(loadHistory({
+          sessionId: newSessionId,
+          messages: historyToMessages(rows, lastTurnModel),
+          orgId: session?.orgId,
+        }));
       } catch (err) {
         // Send only into the chat we actually opened. The parked message stays
         // (the prompt is still bound to the old chat on screen).
@@ -502,21 +553,22 @@ export function HomeScreen() {
       }
       lastUserContentRef.current = null;
       picker.setContinuation(null);
-      void picker.load({ sessionId: res.sessionId });
-      await handleSend(parked.pendingContent, { sessionId: res.sessionId });
+      void picker.load({ sessionId: newSessionId });
+      await handleSend(parked.pendingContent, { sessionId: newSessionId });
     } finally {
       setContinuing(false);
     }
-  }, [cancelTurnWork, dispatch, handleSend, picker]);
+  }, [cancelTurnWork, dispatch, handleSend]);
 
   /** W05: drop the pick and send the parked message on the current model. */
   const handleKeepModel = useCallback(() => {
+    const picker = pickerRef.current;
     const parked = picker.continuationRef.current;
     if (!parked) return;
     picker.clearSelection();
     picker.setContinuation(null);
     void handleSend(parked.pendingContent, { sessionId: parked.sourceSessionId });
-  }, [handleSend, picker]);
+  }, [handleSend]);
 
   const handleRetry = useCallback(() => {
     const lastContent = lastUserContentRef.current;
@@ -535,9 +587,9 @@ export function HomeScreen() {
     cancelTurnWork();
     lastUserContentRef.current = null;
     dispatch(resetChat());
-    picker.reset();
-    void picker.load({});
-  }, [cancelTurnWork, dispatch, picker]);
+    pickerRef.current.reset();
+    void pickerRef.current.load({});
+  }, [cancelTurnWork, dispatch]);
 
   const handleOpenHistory = useCallback(() => {
     setHistoryOpen(true);
@@ -548,11 +600,12 @@ export function HomeScreen() {
       setHistoryOpen(false);
       cancelTurnWork();
       try {
-        const { messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
         const messages = historyToMessages(rows, lastTurnModel);
-        dispatch(loadHistory({ sessionId: sid, messages }));
+        dispatch(loadHistory({ sessionId: sid, messages, orgId: session?.orgId }));
         // A continuation parked for another chat never follows us here, and a
         // pick made there must not ride on this one.
+        const picker = pickerRef.current;
         if (picker.continuationRef.current?.sourceSessionId !== sid) picker.setContinuation(null);
         picker.clearSelection();
         picker.setSuggested([]);
@@ -564,7 +617,7 @@ export function HomeScreen() {
         dispatch(setError('Could not load that conversation.'));
       }
     },
-    [cancelTurnWork, dispatch, picker],
+    [cancelTurnWork, dispatch],
   );
 
   /**
@@ -658,7 +711,7 @@ export function HomeScreen() {
           <ContinuationPrompt
             required={parkedContinuation.required}
             busy={continuing}
-            canContinue={continuationTarget(parkedContinuation.required, picker.state.selection) !== null}
+            canContinue={continuationStep(parkedContinuation, picker.state.selection) !== null}
             onContinue={() => void handleContinue()}
             onKeep={handleKeepModel}
           />

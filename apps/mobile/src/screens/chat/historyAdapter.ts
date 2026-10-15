@@ -2,6 +2,7 @@ import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
 import { parseTurnModel } from './modelPicker';
 import { applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
+import { isTurnComplete } from './turnState';
 
 // `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
 // way `HomeScreen`'s live SSE handler does before it lands on a `ToolEvent`.
@@ -17,7 +18,8 @@ function toolInputRecord(value: unknown): Record<string, unknown> | undefined {
 //
 // `lastTurnModel` (session GET, W05) is what answered the most recent turn;
 // the server keeps no per-message record, so only the final assistant turn
-// can show it after a reload — and only when that turn has been answered.
+// can show it after a reload — and only when that turn has been answered
+// (not a catch-up fetch of a reply still in progress).
 export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unknown): ChatMessage[] {
   const out: ChatMessage[] = [];
 
@@ -103,7 +105,7 @@ export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unkno
 
   const turnModel = parseTurnModel(lastTurnModel);
   const last = out[out.length - 1];
-  if (turnModel && last && last.role === 'assistant') last.turnModel = turnModel;
+  if (turnModel && last && last.role === 'assistant' && isTurnComplete(out)) last.turnModel = turnModel;
 
   return out;
 }

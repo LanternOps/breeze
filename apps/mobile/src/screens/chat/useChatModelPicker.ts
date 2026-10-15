@@ -1,15 +1,17 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { getChatModelChoices } from '../../services/aiChat';
-import { loadAiModelPref, saveAiModelPref } from '../../services/aiModelPrefs';
+import { clearAiModelPref, loadAiModelPref, saveAiModelPref } from '../../services/aiModelPrefs';
 import {
   commitSelection,
   pendingChoice,
   resolvePersistedPref,
   selectOffering,
+  stateAfterFailedLoad,
   survivingSelection,
   withOption,
   type AiContinuationRequired,
+  type ChoicesLoadFailure,
   type ModelChoice,
   type OfferingOptions,
   type PickerState,
@@ -22,6 +24,8 @@ export interface ParkedContinuation {
   required: AiContinuationRequired;
   pendingContent: string;
   sourceSessionId: string;
+  /** Set once `/continue` created the new chat: a retry opens it, never re-POSTs. */
+  createdSessionId?: string;
 }
 
 /**
@@ -35,6 +39,10 @@ export function useChatModelPicker() {
   const stateRef = useRef(state);
   /** The load key on screen: `s:<sessionId>` or `none` (a new chat). */
   const keyRef = useRef('none');
+  /** The load key the menu on screen (`state.choices`) belongs to. */
+  const choicesKeyRef = useRef<string | null>(null);
+  /** Why the last finished load produced no menu, or null when it did. */
+  const lastFailureRef = useRef<ChoicesLoadFailure | null>(null);
   /** The key the current selection was made under; a pick never crosses chats. */
   const selectionKeyRef = useRef<string | null>(null);
   const tokenRef = useRef(0);
@@ -70,12 +78,18 @@ export function useChatModelPicker() {
     ]);
     if (token !== tokenRef.current) return;
     if (!result.ok) {
-      // No menu (registry unavailable, no org context, offline): the composer
-      // keeps working on the server default; the picker just isn't shown.
-      selectionKeyRef.current = null;
-      update({ choices: null, loading: false, selection: null });
+      // No org context / 404: no menu, the composer works on the server
+      // default. Offline, 5xx or registry_unavailable is transient: keep the
+      // menu and the pick rather than wipe them on a blip.
+      lastFailureRef.current = { status: result.status, code: result.code };
+      const next = stateAfterFailedLoad(stateRef.current, result, choicesKeyRef.current === loadKey);
+      if (!next.choices) choicesKeyRef.current = null;
+      if (!next.selection) selectionKeyRef.current = null;
+      update(next);
       return;
     }
+    lastFailureRef.current = null;
+    choicesKeyRef.current = loadKey;
     let selection = selectionKeyRef.current === loadKey
       ? survivingSelection(result.choices, stateRef.current.selection)
       : null;
@@ -102,6 +116,7 @@ export function useChatModelPicker() {
   const pending = useCallback(() => pendingChoice(stateRef.current), []);
   const selection = useCallback(() => stateRef.current.selection, []);
   const hasMenu = useCallback(() => stateRef.current.choices !== null, []);
+  const lastLoadFailure = useCallback(() => lastFailureRef.current, []);
 
   const commit = useCallback(() => update(commitSelection(stateRef.current)), [update]);
 
@@ -110,10 +125,26 @@ export function useChatModelPicker() {
     update({ ...stateRef.current, selection: null });
   }, [update]);
 
+  /**
+   * The server refused the stored pick outright (plan, residency,
+   * permission): drop it on this device too, or every new chat re-applies it.
+   */
+  const forgetPref = useCallback(async () => {
+    selectionKeyRef.current = null;
+    update({ ...stateRef.current, selection: null });
+    try {
+      await clearAiModelPref();
+    } catch {
+      // best effort: the reload below still resolves the pref against the menu
+    }
+  }, [update]);
+
   /** A new chat: drop everything, including a continuation parked for the old one. */
   const reset = useCallback(() => {
     tokenRef.current += 1;
     keyRef.current = 'none';
+    choicesKeyRef.current = null;
+    lastFailureRef.current = null;
     selectionKeyRef.current = null;
     update(INITIAL);
     setSuggested([]);
@@ -131,12 +162,14 @@ export function useChatModelPicker() {
     pending,
     selection,
     hasMenu,
+    lastLoadFailure,
     commit,
     clearSelection,
+    forgetPref,
     reset,
     setSuggested,
     setContinuation,
-  }), [state, suggested, continuation, load, select, setOption, pending, selection, hasMenu, commit, clearSelection, reset, setContinuation]);
+  }), [state, suggested, continuation, load, select, setOption, pending, selection, hasMenu, lastLoadFailure, commit, clearSelection, forgetPref, reset, setContinuation]);
 }
 
 export type ChatModelPicker = ReturnType<typeof useChatModelPicker>;

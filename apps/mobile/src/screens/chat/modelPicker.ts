@@ -325,10 +325,15 @@ function sameOptions(a: Partial<OfferingOptions> | null | undefined, b: Partial<
   return norm(a) === norm(b);
 }
 
-/** The choice the next message (or session create) must carry, if any. */
+/**
+ * The choice the next message (or session create) must carry, if any. A
+ * reload in flight does not hide it: the pill keeps showing the pick, so a
+ * send must carry it (the server resolves it strictly and refuses a pick the
+ * new menu no longer offers).
+ */
 export function pendingChoice(state: PickerState): ModelChoice | undefined {
-  const { selection, choices, loading } = state;
-  if (loading || !selection || !choices?.allowUserChoice) return undefined;
+  const { selection, choices } = state;
+  if (!selection || !choices?.allowUserChoice) return undefined;
   const current = choices.current;
   if (current?.offeringId === selection.offeringId && sameOptions(current.options, selection.options)) return undefined;
   return selection;
@@ -350,6 +355,49 @@ export function survivingSelection(next: AiModelChoicesDto | null, selection: Mo
   if (!selection || !next) return null;
   const still = next.choices.find((c) => c.offeringId === selection.offeringId);
   return still && !still.disabled ? selection : null;
+}
+
+export interface ChoicesLoadFailure {
+  status: number;
+  code: string | null;
+}
+
+/** 400 (no org context), 403, 404: the server says there is no menu here. */
+function isDefinitiveNoMenu(failure: ChoicesLoadFailure): boolean {
+  return failure.status === 400 || failure.status === 403 || failure.status === 404;
+}
+
+/**
+ * The picker after a failed menu load. Only a definitive "no menu" clears
+ * the menu and the pick; a transport failure, a 5xx or 503
+ * `registry_unavailable` is transient and keeps both (`sameKey`: the menu on
+ * screen is this chat's — another chat's menu is never shown for this one).
+ */
+export function stateAfterFailedLoad(prev: PickerState, failure: ChoicesLoadFailure, sameKey: boolean): PickerState {
+  if (isDefinitiveNoMenu(failure)) return { choices: null, loading: false, selection: null };
+  return { choices: sameKey ? prev.choices : null, loading: false, selection: prev.selection };
+}
+
+/** How long a new chat's first send waits for a menu it does not have yet. */
+export const FIRST_SEND_MENU_CAP_MS = 1_500;
+
+/**
+ * A new chat's first send without a menu. A 400 (a partner-scope token has
+ * no org menu before the session exists) is answered by the session's menu,
+ * so it is worth waiting for; anything else (registry down, bad link, still
+ * loading) is only raced against FIRST_SEND_MENU_CAP_MS.
+ */
+export function firstSendMenuWait(lastFailure: ChoicesLoadFailure | null): 'await' | 'race' {
+  return lastFailure?.status === 400 ? 'await' : 'race';
+}
+
+/** `work`'s value if it settles within `ms`, else `{ done: false }`. */
+export function withinCap<T>(work: Promise<T>, ms: number): Promise<{ done: true; value: T } | { done: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<{ done: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ done: false }), ms);
+  });
+  return Promise.race([work.then((value) => ({ done: true as const, value })), cap]).finally(() => clearTimeout(timer));
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +484,21 @@ export function classifySendFailure(status: number, body: unknown): SendFailure 
   return { kind: 'other' };
 }
 
+export const SESSION_CREATE_FAILED = 'Could not start a session.';
+
+/**
+ * A refused `POST /ai/sessions`. A model code means the pick (usually the
+ * stored pref) is not usable: show the server's reason and drop the pref, or
+ * every new chat would re-apply it and fail the same way. Anything else keeps
+ * the static message (the raw error is internal, issue #3141).
+ */
+export function sessionCreateFailure(status: number, body: unknown): { message: string; modelRefused: boolean } {
+  if (status >= 400 && status < 500 && isObj(body) && isStr(body.code) && RECOVERABLE_MODEL_CODES.has(body.code)) {
+    return { message: isStr(body.error) ? body.error : 'That model is unavailable. Choose another.', modelRefused: true };
+  }
+  return { message: SESSION_CREATE_FAILED, modelRefused: false };
+}
+
 // ---------------------------------------------------------------------------
 // Continuation prompt (AiContinuationPrompt.tsx; en `aiContinuation`)
 // ---------------------------------------------------------------------------
@@ -463,12 +526,26 @@ export function continuationCopy(required: AiContinuationRequired): {
 
 export const CONTINUATION_FAILED = "Couldn't start the new chat. Try again.";
 export const CONTINUATION_OPEN_FAILED =
-  "The new chat was created but couldn't be opened. Find it in your chat history; your message was not sent.";
+  "The new chat was created but couldn't be opened. Try again, or find it in your chat history; your message was not sent.";
 
 /** The model the new chat starts on: the pending pick, else the refused target. */
 export function continuationTarget(required: AiContinuationRequired, selection: ModelChoice | null): ModelChoice | null {
   if (selection) return selection;
   return required.target.offeringId ? { offeringId: required.target.offeringId } : null;
+}
+
+/**
+ * What the prompt's Continue does. Once `/continue` has created the new chat
+ * (`createdSessionId`), a retry only opens it: another POST would create a
+ * second linked chat and bill a second summary.
+ */
+export function continuationStep(
+  parked: { required: AiContinuationRequired; createdSessionId?: string },
+  selection: ModelChoice | null,
+): { kind: 'open'; sessionId: string } | { kind: 'continue'; target: ModelChoice } | null {
+  if (parked.createdSessionId) return { kind: 'open', sessionId: parked.createdSessionId };
+  const target = continuationTarget(parked.required, selection);
+  return target ? { kind: 'continue', target } : null;
 }
 
 // ---------------------------------------------------------------------------

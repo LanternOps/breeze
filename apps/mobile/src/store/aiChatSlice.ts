@@ -69,6 +69,11 @@ export interface AiChatState {
   inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   status: ChatStatus;
   error: string | null;
+  /**
+   * The open chat's org. A partner-scope token has no org of its own, so
+   * org-keyed reads (the approval mode on `GET /ai/usage`) need this one.
+   */
+  sessionOrgId: string | null;
 }
 
 const initialState: AiChatState = {
@@ -78,14 +83,16 @@ const initialState: AiChatState = {
   inFlightTool: null,
   status: 'idle',
   error: null,
+  sessionOrgId: null,
 };
 
 const aiChatSlice = createSlice({
   name: 'aiChat',
   initialState,
   reducers: {
-    sessionCreated(state, action: PayloadAction<{ sessionId: string }>) {
+    sessionCreated(state, action: PayloadAction<{ sessionId: string; orgId?: string | null }>) {
       state.sessionId = action.payload.sessionId;
+      state.sessionOrgId = action.payload.orgId ?? null;
     },
     addUserMessage(state, action: PayloadAction<{ id: string; content: string; sentAt: string }>) {
       state.messages.push({
@@ -244,9 +251,10 @@ const aiChatSlice = createSlice({
     },
     loadHistory(
       state,
-      action: PayloadAction<{ sessionId: string; messages: ChatMessage[] }>,
+      action: PayloadAction<{ sessionId: string; messages: ChatMessage[]; orgId?: string | null }>,
     ) {
       state.sessionId = action.payload.sessionId;
+      state.sessionOrgId = action.payload.orgId ?? null;
       state.messages = action.payload.messages;
       state.streamingMessageId = null;
       state.inFlightTool = null;
@@ -263,8 +271,10 @@ const aiChatSlice = createSlice({
      */
     reconcileHistory(
       state,
-      action: PayloadAction<{ sessionId: string; messages: ChatMessage[]; complete: boolean }>,
+      action: PayloadAction<{ sessionId: string; messages: ChatMessage[]; complete: boolean; orgId?: string | null }>,
     ) {
+      // Same chat: an absent org keeps the one already known.
+      if (action.payload.orgId) state.sessionOrgId = action.payload.orgId;
       state.sessionId = action.payload.sessionId;
       state.messages = action.payload.messages;
       state.error = null;

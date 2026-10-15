@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 
+import { useAppSelector } from '../../../store';
 import { spacing, type, useApprovalTheme } from '../../../theme';
 import { getAiApprovalMode } from '../../../services/aiChat';
 import { approvalModeCopy, type AiApprovalMode } from '../../../services/aiApprovalMode';
@@ -15,14 +16,20 @@ type LoadState =
  * org setting, edited under AI Usage on the web) that the server enforces on
  * every message. Showing it here tells a technician why a multi-step task
  * asks once per step, and where that is changed. See services/aiApprovalMode.ts.
+ *
+ * Read for the open chat's org: a partner-scope token (an MSP technician) has
+ * no org of its own, so without one the server can only answer "no budget".
+ * With no chat open it falls back to the caller's own org.
  */
 export function AiApprovalModeRow() {
   const theme = useApprovalTheme('dark');
+  const orgId = useAppSelector((s) => s.aiChat.sessionOrgId);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
 
   useEffect(() => {
     let cancelled = false;
-    getAiApprovalMode()
+    setState({ kind: 'loading' });
+    getAiApprovalMode(orgId)
       .then((mode) => {
         if (!cancelled) setState({ kind: 'loaded', mode });
       })
@@ -32,7 +39,7 @@ export function AiApprovalModeRow() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [orgId]);
 
   const copy = approvalModeCopy(state.kind === 'loaded' ? state.mode : null);
   const value =

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   abortAiPlan,
+  AiHttpError,
   continueAiSession,
   createAiSession,
   decideAiPlan,
@@ -551,6 +552,14 @@ describe('getAiApprovalMode', () => {
     expect(init.method ?? 'GET').toBe('GET');
   });
 
+  it("asks for the open chat's org, so a partner-scope token gets that org's mode", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ budget: { approvalMode: 'action_plan' } }));
+
+    await expect(getAiApprovalMode('org 1')).resolves.toBe('action_plan');
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.test/api/v1/ai/usage?orgId=org%201');
+  });
+
   it('is null when the caller has no org budget', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ budget: null }));
     await expect(getAiApprovalMode()).resolves.toBeNull();
@@ -646,6 +655,15 @@ describe('createAiSession with a model', () => {
     await createAiSession({ model: { offeringId: OFFERING, options: { effort: 'high' } } });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ offeringId: OFFERING, options: { effort: 'high' } });
+  });
+
+  it('a refused create rejects with the status and parsed body, so the caller can classify it', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Not on your plan', code: 'plan_required' }, 409));
+    const err = await createAiSession({ model: { offeringId: OFFERING } }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AiHttpError);
+    expect((err as AiHttpError).status).toBe(409);
+    expect((err as AiHttpError).body).toEqual({ error: 'Not on your plan', code: 'plan_required' });
+    expect((err as AiHttpError).message).toMatch(/createAiSession failed: 409/);
   });
 
   it('sends an empty body without a model', async () => {

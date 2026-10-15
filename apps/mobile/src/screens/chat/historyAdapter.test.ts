@@ -251,6 +251,17 @@ describe('historyToMessages model provenance (W05)', () => {
     expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();
   });
 
+  it('does not stamp a trailing assistant row that is still in progress', () => {
+    // A catch-up fetch mid-turn: the previous turn's provenance must not
+    // render "Answered by" under a reply that has not finished.
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'restart it' }),
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'restart_device', toolUseId: 'tu1', toolInput: {} }),
+    ], turnModel);
+    expect(out[1].role === 'assistant' && out[1].turnModel).toBeFalsy();
+  });
+
   it('ignores a malformed lastTurnModel', () => {
     const out = historyToMessages([row({ id: 'a1', role: 'assistant', content: 'one' })], { servedDisplayName: 7 });
     expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();

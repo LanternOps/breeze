@@ -12,6 +12,7 @@ import reducer, {
   finishAssistantMessage,
   loadHistory,
   resetChat,
+  sessionCreated,
   planDecision,
   planNoLongerPending,
   planProposed,
@@ -28,6 +29,7 @@ const INITIAL: AiChatState = {
   inFlightTool: null,
   status: 'idle',
   error: null,
+  sessionOrgId: null,
 };
 
 describe('aiChatSlice', () => {
@@ -212,6 +214,7 @@ describe('aiChatSlice', () => {
       inFlightTool: { toolUseId: 'tu', toolName: 'x' },
       status: 'streaming',
       error: 'previous',
+      sessionOrgId: 'org-old',
     };
     const fresh: ChatMessage[] = [
       { id: 'u1', role: 'user', content: 'hi', sentAt: 't' },
@@ -231,6 +234,19 @@ describe('aiChatSlice', () => {
     expect(next.inFlightTool).toBeNull();
     expect(next.status).toBe('idle');
     expect(next.error).toBeNull();
+    // No org on the payload: the old chat's org must not linger.
+    expect(next.sessionOrgId).toBeNull();
+  });
+
+  it("tracks the open chat's org from create, history load and catch-up", () => {
+    let s = reducer(INITIAL, sessionCreated({ sessionId: 's1', orgId: 'org-a' }));
+    expect(s.sessionOrgId).toBe('org-a');
+    s = reducer(s, loadHistory({ sessionId: 's2', messages: [], orgId: 'org-b' }));
+    expect(s.sessionOrgId).toBe('org-b');
+    s = reducer(s, reconcileHistory({ sessionId: 's2', messages: [], complete: true, orgId: 'org-c' }));
+    expect(s.sessionOrgId).toBe('org-c');
+    s = reducer(s, resetChat());
+    expect(s.sessionOrgId).toBeNull();
   });
 
   it('resetChat returns to initial state', () => {
