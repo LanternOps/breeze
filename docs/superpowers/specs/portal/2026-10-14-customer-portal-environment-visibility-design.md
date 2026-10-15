@@ -88,12 +88,30 @@ Each family exposed by CPEV must have an explicit gate, per organization, with d
 
 A missing, `false`, or `null` row must fail closed.
 
+### 5.1.1 Enforcement of "outside Enable all" (maintainer review, 15/10/2026)
+
+Keeping a flag outside "Enable all" is enforced by a mechanism, not by convention:
+
+- every new flag that reveals layout or other sensitive data (`enableNetworkTopology`, `enableObservedLocation`, the future monitoring/SNMP flag, and `enablePhysicalPlacement`) is added to `PORTAL_SENSITIVE_FLAG_KEYS` in `packages/shared/src/validators/portal.ts`;
+- `apps/api/src/services/portal/portalFlags.test.ts` pins the exact list of that constant, so adding a key requires updating that test in the same change;
+- `apps/web/src/components/settings/OrgPortalSettingsEditor.test.tsx` checks specific sensitive flags (for example `enablePatchDetail`) stay off through "Enable all". It does not iterate over the whole list, so each new sensitive flag needs its own case there;
+- a flag that is not in `PORTAL_VISIBILITY_FLAG_KEYS` is not turned on by "Enable all", so the two tests together are what keep the boundary true.
+
+### 5.1.2 Gate pattern per family
+
+The existing gates are of two kinds, in `apps/api/src/routes/portal/featureFlags.ts`:
+
+- `not_enabled` with null metrics or an empty list, as for `enableNetworkVisibility` (the approved shared contract from #5438);
+- strict fail-closed `403`, as for `enablePatchDetail`, `enableVulnerabilityDetail` and `enableHourBlock`.
+
+Each family must state which kind it follows. **Decision:** W1 (`enablePhysicalPlacement`) follows the `not_enabled` contract, the same as `enableNetworkVisibility`, so the network surface keeps a single shared contract. W5 and W6 also follow `not_enabled`, as a suggestion of this specification. W4 must choose its pattern when its flag is defined.
+
 ### 5.2 Family and flag matrix
 
 | Family | Waves | Flag | Decision status | "Enable all" |
 |---|---:|---|---|---|
 | Network | W2, W3 | `enableNetworkVisibility` / `enable_network_visibility` | **Existing and confirmed in code** | follows existing behavior |
-| Placement | W1 | `enablePhysicalPlacement` / `enable_physical_placement` | **Name proposed in this spec; new flag** | proposed: may be included only after explicit sensitivity review |
+| Placement | W1 | `enablePhysicalPlacement` / `enable_physical_placement` | **Name proposed in this spec; new flag** | **outside "Enable all"** (decided 15/10/2026; rack and room are physical layout) |
 | Monitoring / SNMP detail | W4 | **TBD: new dedicated monitoring-family flag** | family required by the maintainer; name not yet defined | proposed: outside "Enable all" until the maintainer decides |
 | Topology | W5 | `enableNetworkTopology` / `enable_network_topology` | **Name proposed in this spec; new flag** | **outside "Enable all" — mandatory** |
 | Observed location | W6 | `enableObservedLocation` / `enable_observed_location` | **Name proposed in this spec; new flag** | **outside "Enable all" — mandatory** |
@@ -102,6 +120,20 @@ A missing, `false`, or `null` row must fail closed.
 `enableNetworkAlerts` remains the existing flag for alert/ticket enrichment of Network Visibility assets. It must not be reused as the gate for Advanced SNMP; alerts and SNMP are distinct contracts with distinct sensitivities.
 
 **Decision still needed:** the names of the new flags are suggestions of this specification. What is confirmed as required is per-family isolation and per-organization opt-in, not these specific names.
+
+### 5.3 Per-family implementation checklist
+
+The flags are columns on `portal_branding`, which is org-scoped. Partner-Wide First (`docs/agents/tenancy-rls.md`) does not apply, because these are per-organization visibility switches, not policy or config rows that could be partner-wide. The existing mechanics are described in §3 of `docs/superpowers/specs/portal/2026-10-01-portal-advanced-visibility-design.md` and are reused, not re-derived here.
+
+For each family, the implementation must include:
+
+1. a `portal_branding` column with `default false`, in a new migration named per `apps/api/migrations/README.md` (sorted after the newest committed migration, `set_config('breeze.scope', 'system', true)` when it writes rows);
+2. a classification of **each new column** in `CORE_TENANT_EXPORT_POLICY` (`apps/api/src/services/tenantExportPolicyRegistry.ts`); any `json`/`jsonb`/`bytea` column is `excludedOpen`;
+3. a `.strict()` validator entry in `packages/shared/src/validators/portal.ts`;
+4. the column in the `/portal/branding` select (`apps/api/src/routes/portal/branding.ts`) and the matching type additions in the portal;
+5. the key in `PORTAL_VISIBILITY_FLAG_KEYS` (only if it is inside "Enable all") or in `PORTAL_SENSITIVE_FLAG_KEYS` (if it is outside), with the corresponding update to `portalFlags.test.ts` and `OrgPortalSettingsEditor.test.tsx` (see §5.1.1);
+6. the gate pattern chosen in §5.1.2;
+7. the reference to the field allow-list for the wave (§6).
 
 ## 6. Field exposure rule
 
@@ -447,7 +479,7 @@ The need for `id`, `sourceId`, and `targetId` is functional, to render relations
 
 ### 12.1 Confirmed current state
 
-Breeze already has its own presence/location read model. The canonical state distinguishes `home`, `visiting`, `unrecognized`, `ambiguous`, `stale`, and `unknown`, and keeps assignment separate from observation. The model also contains `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions, and history — this data is operational and is not appropriate for passthrough to the Portal.
+Breeze already has its own presence/location read model. The classifier produces `home`, `visiting`, `unrecognized`, `ambiguous`, and `unknown` (`apps/api/src/services/topology/presenceClassifier.ts:43`). `stale` is not a classifier output: it is a persisted presence state, set on stored rows whose evidence is no longer current (`apps/api/src/db/schema/topologyPresence.ts:79`). Assignment is kept separate from observation. The model also contains `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions, and history — this data is operational and is not appropriate for passthrough to the Portal.
 
 ### 12.2 Flag
 
@@ -671,7 +703,7 @@ The names `enablePhysicalPlacement`, `enableNetworkTopology`, `enableObservedLoc
 
 ### Q2 — Placement and "Enable all"
 
-The maintainer explicitly required that topology and observed location stay outside "Enable all". There was no equivalent decision for placement. This spec does not turn that absence into a requirement; the sensitivity of placement must be decided in review.
+The maintainer explicitly required that topology and observed location stay outside "Enable all". There was no equivalent decision for placement. Decided on 15/10/2026: placement stays outside "Enable all", as recommended in the maintainer's review of PR #8790, because rack and room are physical layout.
 
 ### Q3 — Monitoring / Advanced SNMP
 
