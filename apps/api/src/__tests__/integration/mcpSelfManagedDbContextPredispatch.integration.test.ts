@@ -5,9 +5,11 @@
  * For a `tools/call` whose tool (or action) declares `selfManagedDbContext`,
  * the MCP auth middleware opens no request transaction. The pre-dispatch
  * resolver (`resolveMcpExecutionContext` -> `verifyDeviceAccess`) then read
- * `devices` with no RLS settings, saw nothing, and every such call failed
- * with -32602 "Invalid params" before reaching the tool, even for a device
- * the caller can access.
+ * `devices` with no RLS settings and saw nothing, so every such call that
+ * names a device (a declared `deviceArgs` value) failed with -32602 "Invalid
+ * params" before reaching the tool, even for a device the caller can access.
+ * Calls with no device argument take the attribution-only path and were not
+ * affected.
  *
  * `system_cleanup` is the cleanest probe: `list` is self-managed, `status` is
  * not, and both target a device. The fix opens a SHORT context for the
