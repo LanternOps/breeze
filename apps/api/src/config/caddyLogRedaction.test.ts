@@ -51,10 +51,22 @@ const REQUEST_CREDENTIAL_HEADERS = [
 ];
 const RESPONSE_CREDENTIAL_HEADERS = ['X-Breeze-Native-Auth-Binding'];
 
+// Credential-bearing URL query parameters (WS/SSE/tunnel tickets, emailed
+// reset/verify/invite tokens, OAuth callback code/state, legacy webhook secret).
+const QUERY_CREDENTIAL_PARAMS = ['ticket', '__bzt', 't', 'token', 'access_token', 'code', 'state', 'secret'];
+
 // The global options block is the first top-level `{` in the file.
 const globalOptions = blockBody(caddyfile, /^\{/m) ?? '';
 const defaultLog = blockBody(globalOptions, /^\s*log\s+default\s*\{/m) ?? '';
 const filterFormat = blockBody(defaultLog, /^\s*format\s+filter\s*\{/m) ?? '';
+const uriQueryFilter = blockBody(filterFormat, /^\s*request>uri\s+query\s*\{/m) ?? '';
+
+// docs/operations/TLS_SETUP.md ships a sample Caddyfile for host-installed
+// Caddy; its redaction stanza must stay identical to the canonical one.
+const tlsSetupDoc = readFileSync(path.join(REPO_ROOT, 'docs/operations/TLS_SETUP.md'), 'utf8');
+const docSample = /```caddyfile\n([\s\S]*?)```/.exec(tlsSetupDoc)?.[1]?.replace(/#[^\n]*/g, '') ?? '';
+const docDefaultLog = blockBody(blockBody(docSample, /^\{/m) ?? '', /^\s*log\s+default\s*\{/m) ?? '';
+const normalizeLines = (block: string) => block.split('\n').map(line => line.trim()).filter(Boolean);
 
 describe('Caddy log credential redaction', () => {
   it('configures the default logger (covers error and reverse_proxy loggers, not just access logs)', () => {
@@ -70,6 +82,19 @@ describe('Caddy log credential redaction', () => {
 
   it.each(RESPONSE_CREDENTIAL_HEADERS)('redacts response header %s', header => {
     expect(filterFormat).toMatch(new RegExp(`^\\s*resp_headers>${header}\\s+replace\\s+REDACTED\\s*$`, 'm'));
+  });
+
+  it('has a request>uri query filter block', () => {
+    expect(uriQueryFilter, '`format filter` needs a `request>uri query { ... }` block').not.toBe('');
+  });
+
+  it.each(QUERY_CREDENTIAL_PARAMS)('redacts query parameter %s in request>uri', param => {
+    expect(uriQueryFilter).toMatch(new RegExp(`^\\s*replace\\s+${param}\\s+REDACTED\\s*$`, 'm'));
+  });
+
+  it('keeps the TLS_SETUP.md sample Caddyfile redaction identical to docker/Caddyfile.prod', () => {
+    expect(docDefaultLog, 'TLS_SETUP.md sample needs a global `log default { ... }` block').not.toBe('');
+    expect(normalizeLines(docDefaultLog)).toEqual(normalizeLines(defaultLog));
   });
 
   it('spells every redacted header in Go canonical form', () => {
