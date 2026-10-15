@@ -46,8 +46,7 @@ jobs:
       - name: promtool test rules
         run: |
           docker run --rm -v "$PWD/monitoring/rules:/rules:ro" --entrypoint promtool \
-            prom/prometheus:v2.52.0 test rules \
-              /rules/tests/breeze-capacity-kpis.test.yml \
+            prom/prometheus:v2.52.0 test rules /rules/tests/breeze-capacity-kpis.test.yml \
               /rules/tests/breeze-saturation-alerts.test.yml
 
       - name: Comparator, CLI and script tests
