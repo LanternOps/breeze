@@ -46,7 +46,12 @@ export type BodyLimitRule =
   // share this namespace so all body-limit 413s group on one tag.
   | 'agent-logs'
   | 'agent-process-sample'
-  | 'agent-pam-observation';
+  | 'agent-pam-observation'
+  // #8839: agentAuthMiddleware's own ceiling while it buffers a wrapped agent
+  // route's body before opening the org transaction (agentRequestBody.ts). It
+  // sits ABOVE every agent carve-out here, so behind the global gate it only
+  // answers if the gate is ever bypassed or reordered.
+  | 'agent-wrapped-body';
 
 export interface BodyLimitPolicy {
   rule: BodyLimitRule;

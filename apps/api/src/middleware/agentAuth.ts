@@ -22,6 +22,7 @@ import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
 import { isParkedAllowedAgentPath, PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import { agentAuthNegativeCache, type AgentAuthTerminalRejection } from './agentAuthNegativeCache';
+import { bufferAgentRequestBody } from './agentRequestBody';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -1131,6 +1132,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     await next();
     return;
   }
+
+  // #8839 — receive the WHOLE request body before the request-long org
+  // transaction opens. Routes inside the wrap parse their body (`bodyLimit` →
+  // `zValidator` → handler) after `next()`, so reading it inside the wrap held
+  // a pooled connection idle-in-transaction for as long as a stalled upload
+  // took to arrive — one tenant's misbehaving proxy drained the whole pool for
+  // everyone (2026-10-15). The auth SELECT above stays first: it is short and
+  // rejects unauthenticated uploads before any body is read. Self-managed and
+  // storage-session routes (returned above) read their own bodies, unbuffered.
+  const bodyRefusal = await bufferAgentRequestBody(c);
+  if (bodyRefusal) return bodyRefusal;
 
   await withDbAccessContext(
     {
