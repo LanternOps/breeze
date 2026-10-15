@@ -48,6 +48,7 @@ const REQUEST_CREDENTIAL_HEADERS = [
   'Svix-Signature',
   'Intuit-Signature',
   'Mcp-Session-Id',
+  'Cf-Access-Jwt-Assertion',
 ];
 const RESPONSE_CREDENTIAL_HEADERS = ['X-Breeze-Native-Auth-Binding'];
 

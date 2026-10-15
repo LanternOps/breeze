@@ -87,6 +87,7 @@
       request>headers>Svix-Signature replace REDACTED
       request>headers>Intuit-Signature replace REDACTED
       request>headers>Mcp-Session-Id replace REDACTED
+      request>headers>Cf-Access-Jwt-Assertion replace REDACTED
       resp_headers>X-Breeze-Native-Auth-Binding replace REDACTED
       # Credential-bearing query parameters in the logged URI: WS/SSE and
       # tunnel tickets (ticket, __bzt, t), emailed reset/verify/invite and

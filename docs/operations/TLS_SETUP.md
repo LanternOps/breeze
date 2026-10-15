@@ -64,6 +64,7 @@ Create `/etc/caddy/Caddyfile`:
             request>headers>Svix-Signature replace REDACTED
             request>headers>Intuit-Signature replace REDACTED
             request>headers>Mcp-Session-Id replace REDACTED
+            request>headers>Cf-Access-Jwt-Assertion replace REDACTED
             resp_headers>X-Breeze-Native-Auth-Binding replace REDACTED
             request>uri query {
                 replace ticket REDACTED
