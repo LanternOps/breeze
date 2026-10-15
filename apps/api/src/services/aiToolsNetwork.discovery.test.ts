@@ -31,9 +31,9 @@ vi.mock('../db', () => ({
   withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-// aiToolsNetwork.ts reaches the queue through the mandatory-origin adapter;
-// none of these tests exercise network_discovery, so a bare stub keeps the
-// (much heavier) real commandQueue/dispatchDeviceCommand/scriptDispatch
+// aiToolsNetwork.ts reaches the queue through the mandatory-origin adapter.
+// Stubbing it lets these tests capture the exact payload network_discovery
+// dispatches, and keeps the heavier commandQueue/dispatchDeviceCommand
 // import graph out of this suite.
 vi.mock('./aiDispatch', () => ({
   aiExecuteCommand: vi.fn(),
