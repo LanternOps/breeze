@@ -45,6 +45,7 @@ type LedgerEntry struct {
 	OrgID               string       `json:"orgId"`
 	Generation          uint64       `json:"generation"`
 	DesiredState        DesiredState `json:"desiredState"`
+	RecoveredFromActive bool         `json:"recoveredFromActive,omitempty"`
 	PID                 int          `json:"pid,omitempty"`
 	ProcessCreationTime *time.Time   `json:"processCreationTime,omitempty"`
 	JobName             string       `json:"jobName,omitempty"`
@@ -204,6 +205,28 @@ func (s *Store) ClearProcessIdentity(actuationID string, generation uint64) erro
 	if !ok || entry.DesiredState != DesiredCleanup || entry.Generation != generation {
 		return errors.New("cannot clear process identity from non-current cleanup tombstone")
 	}
+	entry.PID = 0
+	entry.ProcessCreationTime = nil
+	entry.JobName = ""
+	entry.BootID = ""
+	entry.UpdatedAt = time.Now().UTC()
+	return s.replaceLocked(actuationID, entry)
+}
+
+// MarkReconciledClean retains the generation tombstone so a replayed apply
+// cannot resurrect a grant after independent endpoint evidence proved it clean.
+func (s *Store) MarkReconciledClean(actuationID string, generation uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	entry, ok := s.entries[actuationID]
+	if !ok || entry.Generation != generation {
+		return errors.New("cannot reconcile a non-current generation")
+	}
+	entry.RecoveredFromActive = entry.RecoveredFromActive || entry.DesiredState == DesiredActive
+	entry.DesiredState = DesiredCleanup
 	entry.PID = 0
 	entry.ProcessCreationTime = nil
 	entry.JobName = ""

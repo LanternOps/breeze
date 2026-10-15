@@ -7,8 +7,16 @@ export function formatInternalNumber(year: number, counter: number): string {
 
 // Race-safe per-partner allocation: a single upsert with RETURNING means two
 // concurrent creates can never get the same counter.
-export async function allocateInternalTicketNumber(partnerId: string, now: Date = new Date()): Promise<string> {
-  const year = now.getFullYear();
+//
+// `utcYear` (import mode, #8313 §4.2): the year is the UTC year of `now`, the
+// source's historic time, so a 2021 ticket is T-2021-NNNN whatever the
+// server's zone. Live creates keep the server-local year.
+export async function allocateInternalTicketNumber(
+  partnerId: string,
+  now: Date = new Date(),
+  options: { utcYear?: boolean } = {},
+): Promise<string> {
+  const year = options.utcYear ? now.getUTCFullYear() : now.getFullYear();
   // Allocation must run in a system-scope DB context for three reasons:
   //   1. RLS. org-scoped request contexts have empty accessiblePartnerIds, so
   //      the `partner_ticket_sequences` policy (partner-axis) would reject the

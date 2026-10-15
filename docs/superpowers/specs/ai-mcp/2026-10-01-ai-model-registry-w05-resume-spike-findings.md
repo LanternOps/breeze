@@ -149,3 +149,23 @@ Run on 2026-10-06 by the SDK-bump runner (Claude Opus 5.5) for dependabot PR #79
 New, not a resume question: each `query()` makes one `GET /api/hello` to `ANTHROPIC_BASE_URL` before its first Messages call (**unknown whether new**; the 0.3.286 run did not report non-Messages paths).
 
 **Verdict unchanged: SAFE**, with the same six constraints. The pin moves to 0.3.288.
+
+## 2026-10-14: re-run on Agent SDK 0.3.296
+
+Run on 2026-10-14 for dependabot PR #8701, on `@anthropic-ai/claude-agent-sdk` **0.3.296**, all scenarios (`--sonnet claude-sonnet-5-5 --opus claude-opus-5-5 --haiku claude-haiku-4-5`), with the same harness env as the 0.3.288 run. Estimated spend **≈ USD 1.22**.
+
+| # | 0.3.296 result | Same as 0.3.288 |
+|---|---|---|
+| Q1 | All five pairs: every B request carried 0 thinking / 2 tool_use / 2 tool_result, all 200, every check ✓ (`SECOND=bravo-7 CODE=CODE-4417 GAMMA=GAMMA-9031`, `gamma` called once). | yes |
+| Q2 | Thinking blocks sent on B: cross-model **0**; same-model **2**; round trip **0** then **2**. | yes |
+| Q3 | **Changed.** No 400s. Before resuming on Haiku, the CLI compacts on the **previous** model: one Sonnet 5.5 request (344,054 cache-read tokens, 748 output tokens) produces the summary and a `system:compact_boundary`. Haiku then answers `STILL-HERE` correctly from 1,593 input tokens. The compaction's usage lands on model A's `modelUsage` key in turn B's result. | **no** |
+| Q4 | Effort changes fine; fast on resume → `429`, CLI silently retries without `speed`. | yes |
+| Q5 | `modelUsage` per key matches the proxy; cumulative across `resume`; `result.usage` per turn. | yes |
+| Q6 | B re-ran the interrupted `bravo-7` call in all three runs; usage still under-counts interrupted/aborted turns (1 of 2, 2 of 3). | yes |
+
+**Effect of the Q3 change on the constraints:** none need to change.
+
+- **Constraint 1** (fit check before switching, never let the CLI auto-compact) still holds. The new path is no longer lossy, but compaction remains a CLI-side decision that rewrites the transcript, and it bills a large previous-model request inside the new turn. The fit check stays the gate.
+- **D4** (per-key usage deltas) still bills correctly: the compaction appears as a delta on model A's key, at model A's rates, attributed to turn B.
+
+**Verdict unchanged: SAFE.** The pin moves to 0.3.296.

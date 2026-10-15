@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../db';
-import { migrationWindows, partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
+import { partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
+import { hasOpenWindowForPrincipal } from './migrationWindows';
 import { PARTNER_SERVICE_PRINCIPAL_OWNER_REQUIRED_MESSAGE } from './partnerServicePrincipalDelegation';
 
 export type PartnerServicePrincipalKeyErrorCode =
@@ -109,16 +110,9 @@ async function assertPrincipalCanIssue(
   if (principal.expiresAt && principal.expiresAt.getTime() <= Date.now()) {
     throw new PartnerServicePrincipalKeyError('expired', 'Service principal has expired');
   }
-  const [openWindow] = await tx
-    .select({ id: migrationWindows.id })
-    .from(migrationWindows)
-    .where(and(
-      eq(migrationWindows.partnerServicePrincipalId, partnerServicePrincipalId),
-      eq(migrationWindows.partnerId, partnerId),
-      eq(migrationWindows.status, 'open'),
-    ))
-    .limit(1);
-  if (openWindow) {
+  // Read after the principal row is locked above, which is what keeps it
+  // exclusive with opening a window.
+  if (await hasOpenWindowForPrincipal(tx, partnerServicePrincipalId, partnerId)) {
     throw new PartnerServicePrincipalKeyError(
       'MIGRATION_WINDOW_ACTIVE',
       'A migration window is open for this service principal; no key can be issued or rotated until it closes',

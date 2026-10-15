@@ -355,6 +355,9 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
               // author_type alone showed the customer their IT team's reply
               // labelled "Customer email".
               const isCustomerEmail = c.authorType === 'email' && c.senderPortalUserId != null;
+              // A reply the customer wrote in the helpdesk this one was
+              // imported from (#8313): theirs, though it has no portal login.
+              const isImportedCustomerReply = c.originalAuthorKind === 'requester';
               return (
               <li key={c.id} className="py-4" data-testid="ticket-comment">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -363,7 +366,10 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
                     {isCustomerEmail && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Customer email</span>
                     )}
-                    {c.authorType !== 'portal' && !isCustomerEmail && (
+                    {isImportedCustomerReply && !isCustomerEmail && (
+                      <span className="ml-1.5 text-xs font-medium text-muted-foreground" data-testid="ticket-comment-imported-customer">Customer</span>
+                    )}
+                    {c.authorType !== 'portal' && !isCustomerEmail && !isImportedCustomerReply && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Your IT team</span>
                     )}
                   </span>

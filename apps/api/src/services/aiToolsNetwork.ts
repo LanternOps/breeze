@@ -83,6 +83,14 @@ function normalizeIpLiteral(value: string): string | null {
   return parsed === 6 ? withoutZone.toLowerCase() : withoutZone;
 }
 
+// network_discovery scanType -> the agent's scan methods. `full` is the
+// agent's own default set (agent/internal/discovery/scanner.go normalizeConfig).
+const DISCOVERY_SCAN_METHODS: Record<string, string[]> = {
+  ping: ['ping'],
+  arp: ['arp'],
+  full: ['arp', 'ping', 'port_scan', 'snmp'],
+};
+
 async function verifyDeviceAccess(
   deviceId: string,
   auth: AuthContext,
@@ -945,7 +953,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           subnet: { type: 'string', description: 'CIDR subnet to scan (e.g., "192.168.1.0/24")' },
           scanType: { type: 'string', enum: ['ping', 'arp', 'full'], description: 'Type of scan (default: ping)' }
         },
-        required: ['deviceId']
+        required: ['deviceId', 'subnet']
       }
     },
     handler: async (input, auth) => {
@@ -954,9 +962,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
+      // The agent's handleNetworkDiscovery reads `subnets` and `methods`
+      // (agent/internal/heartbeat/handlers_network.go), the same shape the
+      // discovery-profile worker sends. A singular `subnet` / `scanType` left
+      // Subnets empty and every scan failed with "no valid subnets provided"
+      // (#8799).
+      const scanType = (input.scanType as string | undefined) ?? 'ping';
       const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
-        subnet: input.subnet,
-        scanType: input.scanType ?? 'ping'
+        subnets: [input.subnet as string],
+        methods: DISCOVERY_SCAN_METHODS[scanType] ?? DISCOVERY_SCAN_METHODS.ping,
       }, { userId: auth.user.id, timeoutMs: 120000 });
 
       return JSON.stringify(result);

@@ -4280,7 +4280,16 @@
     "partnerCurrencyUnavailable": "Impossible de charger la devise de votre partenaire.",
     "retry": "Réessayer",
     "priceCouldNotBeSavedRetry": "Le prix en {{currency}} n’a pas pu être enregistré. Réessayez.",
-    "priceCouldNotBeRemovedRetry": "Le prix en {{currency}} n’a pas pu être supprimé. Réessayez."
+    "priceCouldNotBeRemovedRetry": "Le prix en {{currency}} n’a pas pu être supprimé. Réessayez.",
+    "billing": "Facturation",
+    "billingOneTime": "Ponctuel",
+    "billingRecurring": "Récurrent",
+    "billingFrequency": "Fréquence",
+    "frequencyMonthly": "Mensuel",
+    "frequencyAnnual": "Annuel",
+    "commitmentTerm": "Durée d’engagement (mois)",
+    "commitmentTermPlaceholder": "par exemple 12",
+    "commitmentTermRange": "Durée d’engagement : saisissez un nombre entier de 1 à 120 mois."
   },
   "catalogItemsTab": {
     "itemArchived": "Article archivé",

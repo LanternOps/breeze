@@ -14,6 +14,7 @@ import {
 import { PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
+import { ERROR_CODES } from '@breeze/shared';
 
 // Partner admin read/write for the MSP's own technician-login branding
 // (#2183). Deliberately NOT under orgRoutes' /orgs/partners/me or the
@@ -39,7 +40,7 @@ const brandingSchema = z.object({
 
 partnerLoginBrandingRoutes.get('/me/login-branding', authMiddleware, requireScope('partner'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 400);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 400);
 
   const [row] = await db
     .select({
@@ -63,9 +64,9 @@ partnerLoginBrandingRoutes.put(
   zValidator('json', brandingSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 400);
+    if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 400);
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     const body = c.req.valid('json');

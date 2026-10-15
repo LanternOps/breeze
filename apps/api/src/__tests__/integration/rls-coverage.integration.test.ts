@@ -328,7 +328,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Policy: breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // Functional forge: customerEmailDomainsRls.integration.test.ts.
   ['customer_email_domains', 'partner_id'],
-  // Ticket migration windows (#8313, 2026-12-23-110000): partner-axis grants
+  // Ticket migration windows (#8313, 2026-12-25-120000): partner-axis grants
   // of import mode to one keyless principal across chosen orgs. Policy:
   // breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // migration_window_orgs also carries a non-tenancy org_id and is in
@@ -484,6 +484,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'service_catalogs',
+  'service_catalog_items',
   'billing_payment_settings',
   // caller_verification_policies (#6354 W01): org XOR partner via
   // caller_verification_policies_one_owner_chk; SELECT-only partner-wide branch

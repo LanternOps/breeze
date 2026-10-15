@@ -131,6 +131,7 @@ export const GATED_COMMAND_TYPES = [
   'network_tcp_check',
   'notify_user',
   'pam_apply_v2',
+  'pam_reconcile_v2',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',

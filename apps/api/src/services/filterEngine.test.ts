@@ -403,15 +403,30 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).toMatch(/> \$\d/);
   });
 
+  const G1 = '4d68e998-1048-48d6-a267-e1aacf2f556e';
+  const G2 = '0b2f6c1e-5d7a-4c3b-9e8f-1a2b3c4d5e6f';
+
   it('groupId equals → EXISTS membership', () => {
-    const sql = render({ field: 'groupId', operator: 'equals', value: 'g1' });
+    const sql = render({ field: 'groupId', operator: 'equals', value: G1 });
     expect(sql).toMatch(/exists \(select 1 from "device_group_memberships"/i);
-    expect(sql).toMatch(/"group_id" = \$\d/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d\)/i);
   });
 
-  it('groupId in → EXISTS membership ANY', () => {
-    const sql = render({ field: 'groupId', operator: 'in', value: ['g1', 'g2'] });
-    expect(sql).toMatch(/"group_id" = any\(/i);
+  // #8760: `= ANY(${array})` bound a one-element list as a bare string and
+  // Postgres 500'd with "malformed array literal". Explicit IN list instead.
+  it('groupId in → EXISTS membership with an explicit IN list, never = ANY(array)', () => {
+    const sql = render({ field: 'groupId', operator: 'in', value: [G1, G2] });
+    expect(sql).toMatch(/"group_id" in \(\$\d, \$\d\)/i);
+    expect(sql).not.toMatch(/any\s*\(/i);
+  });
+
+  // #8760: a group NAME where an id belongs raised 22P02 and failed the whole
+  // filter. A non-UUID value can match no membership, so it is dropped.
+  it('groupId drops non-UUID values instead of sending them to a uuid column', () => {
+    expect(render({ field: 'groupId', operator: 'equals', value: 'Cash Registers' })).toMatch(/false/i);
+    expect(render({ field: 'groupId', operator: 'in', value: ['Cash Registers'] })).toMatch(/false/i);
+    const mixed = dialect.sqlToQuery(buildConditionSQL({ field: 'groupId', operator: 'in', value: ['Cash Registers', G1] }));
+    expect(mixed.params).toEqual([G1]);
   });
 
   it('device-column fields still compare directly (no subquery)', () => {
@@ -667,7 +682,6 @@ describe('filterEngine datetime binding (#3369)', () => {
       { field: 'hostname', operator: 'matches', value: at as unknown as string },
       { field: 'lastSeenAt', operator: 'in', value: [at] as unknown as string[] },
       { field: 'lastSeenAt', operator: 'notIn', value: [at] as unknown as string[] },
-      { field: 'groupId', operator: 'equals', value: at },
     ];
 
     for (const condition of cases) {
@@ -677,6 +691,15 @@ describe('filterEngine datetime binding (#3369)', () => {
       }
       expect(params).toContain(at.toISOString());
     }
+  });
+
+  it('a Date on the group membership path never reaches the driver (#8760)', () => {
+    // group_id is a uuid column; a non-UUID value (here a Date) is dropped and
+    // the condition matches nothing, so no param is bound at all.
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const { sql, params } = render({ field: 'groupId', operator: 'equals', value: at });
+    expect(sql).toMatch(/false/i);
+    expect(params.some((p) => p instanceof Date)).toBe(false);
   });
 
   it('still binds ordinary scalars unchanged', () => {
@@ -710,6 +733,16 @@ describe('filterEngine workload inventory fields (W04)', () => {
     const q = dialect.sqlToQuery(buildConditionSQL({ field: 'hostsWorkloads', operator: 'equals', value: true }));
     expect(q.sql).toMatch(/"hosts_workloads" = \$/i);
     expect(q.sql).not.toMatch(/exists/i);
+  });
+
+  // #8760 review: a bare `${value}` bound the JS array as a row tuple and
+  // Postgres 500'd with "text[] && record". Bind a real text[] instead.
+  it('tags hasAny/hasAll bind an ARRAY[...]::text[] of one param per element', () => {
+    const any = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAny', value: ['a', 'b'] }));
+    expect(any.sql).toMatch(/"tags" && ARRAY\[\$\d::text, \$\d::text\]::text\[\]/);
+    expect(any.params).toEqual(['a', 'b']);
+    const all = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAll', value: ['a'] }));
+    expect(all.sql).toMatch(/"tags" @> ARRAY\[\$\d::text\]::text\[\]/);
   });
 
   it('workloadRuntimes hasAny/hasAll compile to array overlap/containment on the column', () => {

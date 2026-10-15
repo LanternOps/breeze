@@ -28,6 +28,9 @@ import { defaultTicketTypeForSource } from './ticketType';
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
+import { LIVE_TICKET_WRITE, isImportWrite, type ImportTicketWriteMode, type TicketWriteMode } from './ticketWriteMode';
+
+export type { OpenWindow, TicketWriteMode } from './ticketWriteMode';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -79,7 +82,11 @@ export type TicketServiceErrorCode =
   | 'DELIVERABLE_TICKET_PINNED'
   // A machine actor asked for something only a human session may do (soft
   // delete, AI drafts, attachment claims, proposal notes).
-  | 'HUMAN_SESSION_REQUIRED';
+  | 'HUMAN_SESSION_REQUIRED'
+  // #8313 import mode (spec §4.2, §4.4): a historic time in the future or
+  // before the ticket was created, or a write outside the window's orgs.
+  | 'IMPORT_TIME_INVALID'
+  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -111,7 +118,8 @@ export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'plan
  * - `'service_principal'`: a partner service principal (`brz_sp_` key) on the
  *   Partner API. It has NO human owner, so it acts as ITSELF, identified by
  *   the PRINCIPAL id (stable across key rotations); the key id is credential
- *   detail for audit rows only.
+ *   detail for audit rows only. `keyId` is null for the keyless principal of
+ *   a migration window, which writes only through the import writer (#8313).
  *
  * No member but `'user'` carries a `userId`.
  */
@@ -130,7 +138,7 @@ export type TicketActor =
   // the portal route with `portal_user_id`.
   | { kind: 'portal_user'; portalUserId: string; name?: string; email?: string }
   | { kind: 'system'; source: TicketSystemSource; name?: string }
-  | { kind: 'service_principal'; principalId: string; keyId: string; name: string };
+  | { kind: 'service_principal'; principalId: string; keyId: string | null; name: string };
 
 export type TicketActorKind = TicketActor['kind'];
 
@@ -328,6 +336,79 @@ async function writeTicketOutbox(
 }
 
 /**
+ * Every side effect the five Partner API writes (createTicket,
+ * updateTicketFields, changeTicketStatus, assignTicket, addTicketComment) can
+ * produce, behind one mode-aware switch (#8313; spec §4.5). In import mode
+ * each is a no-op: no queue event (requester email, ticket.updated), no outbox
+ * row (assignee notifications, webhooks, automations, AI triage, deliverable
+ * status), no per-write audit row (the window's opened/closed rows and the
+ * window id on every row are the audit trail) and no ML triage feedback.
+ *
+ * Those five functions call these ONLY through this object;
+ * ticketService.sideEffects.test.ts fails on a direct call inside them, so a
+ * side effect added there later cannot fire during an import by accident.
+ */
+export interface TicketSideEffects {
+  emitTicketEvent: typeof emitTicketEvent;
+  writeTicketOutbox: typeof writeTicketOutbox;
+  createAuditLogAsync: typeof createAuditLogAsync;
+  emitTicketTriageFeedback: typeof emitTicketTriageFeedback;
+}
+
+const IMPORT_SIDE_EFFECTS: TicketSideEffects = Object.freeze({
+  emitTicketEvent: async () => {},
+  writeTicketOutbox: async () => {},
+  createAuditLogAsync: async () => {},
+  emitTicketTriageFeedback: async () => {},
+});
+
+export function ticketSideEffects(mode: TicketWriteMode): TicketSideEffects {
+  if (isImportWrite(mode)) return IMPORT_SIDE_EFFECTS;
+  return { emitTicketEvent, writeTicketOutbox, createAuditLogAsync, emitTicketTriageFeedback };
+}
+
+/**
+ * Preconditions of every import write (spec §4.2, §4.4): the actor is the
+ * window's principal, the ticket's org is one of the window's (RLS bounds the
+ * same set: the import transaction runs with the window's orgs only), and the
+ * historic time is not in the future nor before the ticket was created.
+ */
+function assertImportWrite(
+  mode: ImportTicketWriteMode,
+  actor: TicketActor,
+  target: { orgId: string; createdAt?: Date | null },
+): void {
+  if (actor.kind !== 'service_principal' || actor.principalId !== mode.window.principalId) {
+    throw new Error('an import write must act as its migration window principal');
+  }
+  if (!mode.window.orgIds.has(target.orgId)) {
+    throw new TicketServiceError('Organization is not part of the migration window', 403, 'MIGRATION_WINDOW_ORG_NOT_ALLOWED');
+  }
+  const at = mode.at.getTime();
+  if (!Number.isFinite(at) || at > Date.now()) {
+    throw new TicketServiceError('An imported time cannot be in the future', 400, 'IMPORT_TIME_INVALID');
+  }
+  if (target.createdAt && at < target.createdAt.getTime()) {
+    throw new TicketServiceError('An imported time cannot precede the ticket creation', 400, 'IMPORT_TIME_INVALID');
+  }
+}
+
+/**
+ * `tickets.updated_at` for an import write: advanced to the historic time,
+ * never moved backwards (spec §4.2). The column has no time zone and holds
+ * UTC wall-clock time, as every Date write here does; the zone suffix of the
+ * ISO literal is ignored by the cast.
+ */
+function importUpdatedAt(at: Date) {
+  return sql`GREATEST(${tickets.updatedAt}, ${at.toISOString()}::timestamp)`;
+}
+
+/** The ticket_comments stamp of an import write (feed rows and comments): historic time and window. */
+function importRowStamp(mode: TicketWriteMode): { createdAt?: Date; migrationWindowId?: string } {
+  return isImportWrite(mode) ? { createdAt: mode.at, migrationWindowId: mode.window.id } : {};
+}
+
+/**
  * The `ticket.commented` outbox row for a comment inserted outside this file —
  * the email-authored writer (`inboundEmail/emailComments.ts`, #8326). Same
  * payload as every comment writer here: ids only, with the origin read off the
@@ -423,11 +504,11 @@ async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId:
  *
  * Exported for the bulk route's request-level pre-validation.
  */
-export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string; status?: string; email?: string | null } | null> {
+export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string; orgId?: string | null; status?: string; email?: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: users.id, partnerId: users.partnerId, status: users.status, email: users.email })
+        .select({ id: users.id, partnerId: users.partnerId, orgId: users.orgId, status: users.status, email: users.email })
         .from(users)
         .where(eq(users.id, assigneeId))
         .limit(1)
@@ -472,6 +553,23 @@ async function assertAssigneeEligible(
     deviceId
   );
   if (!eligible) {
+    throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
+  }
+}
+
+/**
+ * The assignee check of an import write (spec §4.2). Kept: the user exists,
+ * belongs to the ticket's partner, and is partner staff or a user of the
+ * ticket's org. Relaxed: their status and current-role authorisation — the
+ * assignment is historic, the role is today's, so a deactivated agent can be
+ * the assignee. Another partner's user, or another org's user, is still
+ * ASSIGNEE_NOT_ELIGIBLE.
+ */
+async function assertImportAssigneeEligible(assigneeId: string, partnerId: string | null, orgId: string) {
+  const assignee = await getAssigneeForValidation(assigneeId);
+  if (!assignee) throw new TicketServiceError('Assignee not found', 404, 'ASSIGNEE_NOT_FOUND');
+  throwIfPartnerUnresolvable(partnerId);
+  if (assignee.partnerId !== partnerId || (assignee.orgId != null && assignee.orgId !== orgId)) {
     throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
   }
 }
@@ -845,6 +943,8 @@ interface BaseCreateTicketInput {
    * value is the caller's decision and is stamped with its provenance.
    */
   ticketType?: TicketType;
+  /** Import mode only (#8313): the source ticket's tags. Ignored on a live create. */
+  tags?: string[];
 }
 
 export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
@@ -958,7 +1058,15 @@ export type CreateTicketInput =
 // audit row survives — this is an accepted codebase pattern (see
 // auditService.ts). The `ticket.created` job is NOT queued here any more: it is
 // queued from the committed outbox row (see the note at writeTicketOutbox).
-export async function createTicket(input: CreateTicketInput, actor: TicketActor) {
+//
+// Import mode (#8313 §4.2): created_at = updated_at = the source's time; null
+// SLA targets with both SLA fields' provenance 'service_principal', so the
+// restamp never gives them a clock (§4.3); the number takes the UTC year of
+// that time; the assignee check is the relaxed import one; the window id is
+// stamped; no outbox or audit row.
+export async function createTicket(input: CreateTicketInput, actor: TicketActor, mode: TicketWriteMode = LIVE_TICKET_WRITE) {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
   const orgRows = await db
     .select({ id: organizations.id, partnerId: organizations.partnerId })
     .from(organizations)
@@ -966,6 +1074,12 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     .limit(1);
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
+  if (importMode) {
+    assertImportWrite(importMode, actor, { orgId: input.orgId });
+    if (org.partnerId !== importMode.window.partnerId) {
+      throw new TicketServiceError('Organization is not part of the migration window', 403, 'MIGRATION_WINDOW_ORG_NOT_ALLOWED');
+    }
+  }
 
   // #5075 W04 — Service Management 'off' withdraws NEW ticket creation for the
   // whole partner. This is the ONE gate: every native creation surface (the
@@ -1024,7 +1138,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   }
 
   if (input.assigneeId) {
-    await assertAssigneeEligible(input.assigneeId, org.partnerId, input.orgId, input.deviceId);
+    if (importMode) await assertImportAssigneeEligible(input.assigneeId, org.partnerId, input.orgId);
+    else await assertAssigneeEligible(input.assigneeId, org.partnerId, input.orgId, input.deviceId);
   }
 
   const effectiveCategoryId = input.categoryId ?? intake?.categoryId ?? undefined;
@@ -1125,11 +1240,19 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const ticketType: TicketType =
     input.ticketType ?? defaultTicketTypeForSource(input.source, { plannedWork: workKind !== 'support' });
   const [effectiveSla, statusId] = await Promise.all([
-    resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
+    // §4.3: an imported ticket carries null targets, open or closed — the
+    // existing "no SLA" representation, which the breach sweep skips and the
+    // SLA report counts as no_target.
+    importMode
+      ? Promise.resolve({ responseMinutes: null, resolutionMinutes: null })
+      : resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
     getSystemStatusId(org.partnerId, initialCoreStatus),
   ]);
 
-  const internalNumber = await allocateInternalTicketNumber(org.partnerId);
+  // An imported 2021 ticket is T-2021-NNNN: the UTC year of its source time.
+  const internalNumber = importMode
+    ? await allocateInternalTicketNumber(org.partnerId, importMode.at, { utcYear: true })
+    : await allocateInternalTicketNumber(org.partnerId);
 
   const insertValues = {
     orgId: input.orgId,
@@ -1156,9 +1279,18 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     workKind,
     ticketType,
     // Provenance keys follow the update path's field names (camelCase).
-    fieldProvenance: input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
-    tags: intake?.defaultTags.length ? intake.defaultTags : undefined,
-    customFields: intake ? intake.intakeSnapshot : undefined
+    // Import: both SLA fields are stamped human-authoritative so the
+    // pre-first-response restamp skips them (§4.3).
+    fieldProvenance: importMode
+      ? {
+          ...(input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : {}),
+          responseSlaMinutes: 'service_principal' as const,
+          resolutionSlaMinutes: 'service_principal' as const,
+        }
+      : input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
+    tags: importMode && input.tags?.length ? input.tags : intake?.defaultTags.length ? intake.defaultTags : undefined,
+    customFields: intake ? intake.intakeSnapshot : undefined,
+    ...(importMode ? { createdAt: importMode.at, updatedAt: importMode.at, migrationWindowId: importMode.window.id } : {}),
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
@@ -1179,14 +1311,14 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   // Ids and enum labels only (never subject/description). No external id:
   // that key is namespaced per Partner API principal (ticket_external_refs)
   // and an org webhook has no single principal to answer for.
-  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
+  await fx.writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
     internalNumber,
     source: input.source,
     assigneeId: input.assigneeId ?? null,
     ...actorEventIdentity(actor),
     partnerId: org.partnerId ?? null,
   });
-  await createAuditLogAsync({
+  await fx.createAuditLogAsync({
     orgId: input.orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.create',
@@ -1301,13 +1433,23 @@ function aiDraftOutboxClaim(
   return { aiDraft: { draftId: draft.id, runId: draft.runId, trigger } };
 }
 
+/**
+ * Import mode (#8313 §4.2): the same transition table, but `resolved` may
+ * omit the note; resolved/closed times come from the source; no SLA pause
+ * bookkeeping (an imported ticket has no targets); the feed row is stamped at
+ * the source time with the window id; nothing is emitted, queued or audited.
+ */
 export async function changeTicketStatus(
   ticketId: string,
   target: ChangeStatusTarget,
   opts: ChangeStatusOptions,
-  actor: TicketActor
+  actor: TicketActor,
+  mode: TicketWriteMode = LIVE_TICKET_WRITE
 ) {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
   const ticket = await getTicketOrThrow(ticketId);
+  if (importMode) assertImportWrite(importMode, actor, ticket);
   const fromStatus = ticket.status as TicketStatus;
 
   // Validate target: exactly one of status/statusId must be set
@@ -1371,8 +1513,9 @@ export async function changeTicketStatus(
   // statusId/resolutionNote only (skip FSM validation; core status is
   // unchanged either way).
   if (toStatus === fromStatus) {
-    const now = new Date();
+    const now = importMode ? importMode.at : new Date();
     const patch: Partial<typeof tickets.$inferInsert> = { statusId: resolvedStatusId ?? null, updatedAt: now };
+    if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
     // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
     // (e.g. the technician edited the prefilled AI draft before submitting)
     // wins over the draft's content — the draft is still consumed below.
@@ -1416,14 +1559,15 @@ export async function changeTicketStatus(
         content: feedContent,
         isPublic: false,
         oldValue: fromStatus,
-        newValue: toStatus
+        newValue: toStatus,
+        ...importRowStamp(mode)
       });
     }
     // Do NOT emit ticket.status_changed — core status is unchanged; only the
     // custom-status label (statusId) and/or resolutionNote differ.  Emitting
     // with identical from/to would produce noise and confuse downstream
     // consumers.
-    await createAuditLogAsync({
+    await fx.createAuditLogAsync({
       orgId: ticket.orgId,
       ...actorAuditIdentity(actor),
       action: 'ticket.status_change',
@@ -1443,7 +1587,8 @@ export async function changeTicketStatus(
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
     throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
-  if (toStatus === 'resolved' && !opts.resolutionNote && !opts.aiDraftId) {
+  // An imported ticket may have been resolved without a note in its source.
+  if (toStatus === 'resolved' && !opts.resolutionNote && !opts.aiDraftId && !importMode) {
     throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
   }
 
@@ -1461,8 +1606,9 @@ export async function changeTicketStatus(
     draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
-  const now = new Date();
+  const now = importMode ? importMode.at : new Date();
   const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, statusId: resolvedStatusId ?? null, updatedAt: now };
+  if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
 
   if (toStatus === 'resolved') {
     patch.resolvedAt = ticket.resolvedAt ?? now;
@@ -1488,8 +1634,9 @@ export async function changeTicketStatus(
   // SLA clock pause/resume (spec §3, decision D4): the clock pauses while the
   // ticket sits in pending/on_hold. Fold elapsed pause time on ANY exit —
   // including resolve/close — so reopen resumes from a consistent ledger.
-  const wasPaused = fromStatus === 'pending' || fromStatus === 'on_hold';
-  const willBePaused = toStatus === 'pending' || toStatus === 'on_hold';
+  // Import mode skips it: an imported ticket has no targets to pause (§4.2).
+  const wasPaused = !importMode && (fromStatus === 'pending' || fromStatus === 'on_hold');
+  const willBePaused = !importMode && (toStatus === 'pending' || toStatus === 'on_hold');
   if (!wasPaused && willBePaused) {
     patch.slaPausedAt = now;
   } else if (wasPaused && !willBePaused) {
@@ -1525,10 +1672,11 @@ export async function changeTicketStatus(
     content: resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
     isPublic: false,
     oldValue: fromStatus,
-    newValue: toStatus
+    newValue: toStatus,
+    ...importRowStamp(mode)
   });
 
-  await emitTicketEvent({
+  await fx.emitTicketEvent({
     type: 'ticket.status_changed',
     ticketId,
     orgId: ticket.orgId,
@@ -1536,7 +1684,7 @@ export async function changeTicketStatus(
     ...actorEventIdentity(actor),
     payload: { from: fromStatus, to: toStatus }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+  await fx.writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
     from: fromStatus,
     to: toStatus,
     // The partner's custom status row the core status was set through, if any.
@@ -1544,7 +1692,7 @@ export async function changeTicketStatus(
     // #4177: the consumed AI resolution draft, for the time-entry proposal.
     ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
   });
-  await createAuditLogAsync({
+  await fx.createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.status_change',
@@ -1564,7 +1712,7 @@ export async function changeTicketStatus(
   const wasResolved = fromStatus === 'resolved' || fromStatus === 'closed';
   const willBeResolved = toStatus === 'resolved' || toStatus === 'closed';
   if (!wasResolved && willBeResolved) {
-    await emitTicketTriageFeedback({
+    await fx.emitTicketTriageFeedback({
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.resolved',
@@ -1586,7 +1734,7 @@ export async function changeTicketStatus(
       }),
     });
   } else if (wasResolved && !willBeResolved) {
-    await emitTicketTriageFeedback({
+    await fx.emitTicketTriageFeedback({
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.reopened',
@@ -1738,12 +1886,39 @@ function ticketTriageDedupeKey(field: string, oldValue: unknown, newValue: unkno
   return `${field}:${JSON.stringify(oldValue ?? null)}:${JSON.stringify(newValue ?? null)}`;
 }
 
+/**
+ * The fields an import write may set on an existing ticket: what the import
+ * writer converges from the source (#8313). Everything else (device,
+ * requester, SLA targets, budget, due date) has side paths of its own and is
+ * refused in import mode.
+ */
+const IMPORT_UPDATABLE_FIELDS: ReadonlySet<keyof UpdateTicketFieldsInput> = new Set([
+  'subject', 'description', 'categoryId', 'priority', 'tags', 'ticketType',
+]);
+
+/**
+ * Import mode (#8313 §4.2): only IMPORT_UPDATABLE_FIELDS; no SLA restamp;
+ * updated_at advanced to the source time, never backwards; the feed row is
+ * stamped at that time with the window id; nothing is emitted, queued or
+ * audited. Provenance is stamped as for any service principal.
+ */
 export async function updateTicketFields(
   ticketId: string,
   fields: UpdateTicketFieldsInput,
-  actor: TicketActor
+  actor: TicketActor,
+  mode: TicketWriteMode = LIVE_TICKET_WRITE
 ) {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
   const ticket = await getTicketOrThrow(ticketId);
+  if (importMode) {
+    assertImportWrite(importMode, actor, ticket);
+    const refused = (Object.keys(fields) as Array<keyof UpdateTicketFieldsInput>)
+      .filter((key) => fields[key] !== undefined && !IMPORT_UPDATABLE_FIELDS.has(key));
+    if (refused.length > 0) {
+      throw new TicketServiceError(`An import cannot set ${refused.join(', ')}`, 400, 'INVALID_INPUT', { fields: refused });
+    }
+  }
 
   // Cross-org guard: a deviceId reassignment must reference a device in the
   // ticket's org (mirrors the same-org device check in createTicket).
@@ -1904,7 +2079,8 @@ export async function updateTicketFields(
   // commitment stands.
   const restamped: SlaTargetField[] = [];
   const slaRestampPatch: Partial<Record<SlaTargetField, number | null>> = {};
-  if ((changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(ticket)) {
+  // Never in import mode: an imported ticket keeps its null targets (§4.3).
+  if (!importMode && (changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(ticket)) {
     const categoryId = changed.includes('categoryId') ? fields.categoryId ?? null : ticket.categoryId;
     const category = changed.includes('categoryId')
       ? newCategory
@@ -1936,6 +2112,7 @@ export async function updateTicketFields(
   ];
 
   const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
+  if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
   for (const key of changed) {
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
@@ -1982,10 +2159,11 @@ export async function updateTicketFields(
     // reclassification is reportable history (incident -> problem).
     ...(changed.includes('ticketType')
       ? { oldValue: ticket.ticketType ?? null, newValue: fields.ticketType ?? null }
-      : {})
+      : {}),
+    ...importRowStamp(mode)
   });
 
-  await emitTicketEvent({
+  await fx.emitTicketEvent({
     type: 'ticket.updated',
     ticketId,
     orgId: ticket.orgId,
@@ -1994,8 +2172,8 @@ export async function updateTicketFields(
     payload: { changed: changedForLog }
   });
   // Field NAMES only — never the values.
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated', { changed: changedForLog });
-  await createAuditLogAsync({
+  await fx.writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated', { changed: changedForLog });
+  await fx.createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.update',
@@ -2005,7 +2183,7 @@ export async function updateTicketFields(
     result: 'success'
   });
   if (changed.includes('categoryId')) {
-    await emitTicketTriageFeedback({
+    await fx.emitTicketTriageFeedback({
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.category_changed',
@@ -2019,7 +2197,7 @@ export async function updateTicketFields(
     });
   }
   if (changed.includes('priority')) {
-    await emitTicketTriageFeedback({
+    await fx.emitTicketTriageFeedback({
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.priority_changed',
@@ -2035,15 +2213,31 @@ export async function updateTicketFields(
   return updated[0];
 }
 
-export async function assignTicket(ticketId: string, assigneeId: string | null, actor: TicketActor) {
+/**
+ * Import mode (#8313 §4.2): the relaxed import assignee check (a deactivated
+ * agent can be the historic assignee; the partner and org boundary is kept);
+ * updated_at advanced to the source time; the feed row stamped at that time
+ * with the window id; nobody is notified, nothing is published or audited.
+ */
+export async function assignTicket(
+  ticketId: string,
+  assigneeId: string | null,
+  actor: TicketActor,
+  mode: TicketWriteMode = LIVE_TICKET_WRITE
+) {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
   const ticket = await getTicketOrThrow(ticketId);
+  if (importMode) assertImportWrite(importMode, actor, ticket);
   const prevAssignedTo = ticket.assignedTo;
 
   if (assigneeId) {
-    await assertAssigneeEligible(assigneeId, await resolveTicketPartnerId(ticket), ticket.orgId, ticket.deviceId);
+    if (importMode) await assertImportAssigneeEligible(assigneeId, await resolveTicketPartnerId(ticket), ticket.orgId);
+    else await assertAssigneeEligible(assigneeId, await resolveTicketPartnerId(ticket), ticket.orgId, ticket.deviceId);
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
+  if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
   const implicitOpen = Boolean(assigneeId) && ticket.status === 'new';
   if (implicitOpen) {
     patch.status = 'open';
@@ -2074,7 +2268,8 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     content: '',
     isPublic: false,
     oldValue: prevAssignedTo ?? null,
-    newValue: assigneeId
+    newValue: assigneeId,
+    ...importRowStamp(mode)
   });
 
   // #7963: no emitTicketEvent here. A job queued now could run before this
@@ -2083,7 +2278,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   // commits (or rolls back) with the assignment, and ticketOutboxPublisher
   // queues the `ticket.assigned` job from it. The actor and partner ride the
   // row so the worker can still skip a self-assign.
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', {
+  await fx.writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', {
     assigneeId,
     ...actorEventIdentity(actor),
     partnerId: ticket.partnerId ?? null,
@@ -2092,13 +2287,13 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   // API consumers only see the outbox, so announce that transition too, in the
   // same transaction as `ticket.assigned`. Payload mirrors changeTicketStatus.
   if (implicitOpen) {
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+    await fx.writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
       from: 'new',
       to: 'open',
       statusId: updated[0]?.statusId ?? null,
     });
   }
-  await createAuditLogAsync({
+  await fx.createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.assign',
@@ -2107,7 +2302,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     details: { from: prevAssignedTo ?? null, to: assigneeId, ...actorAuditDetails(actor) },
     result: 'success'
   });
-  await emitTicketTriageFeedback({
+  await fx.emitTicketTriageFeedback({
     orgId: ticket.orgId,
     ticketId,
     eventType: 'ticket.assignee_changed',
@@ -2132,10 +2327,48 @@ export interface AddCommentInput {
    * comment whose photos silently vanished.
    */
   attachmentIds?: string[];
+  /**
+   * Import mode only, and required there (#8313 §4.2): the source comment's
+   * id (the resume key, unique per principal) and its original author,
+   * display-only — no user or contact is created or linked. Refused on a
+   * live write.
+   */
+  imported?: ImportedCommentAuthorship;
 }
 
-export async function addTicketComment(ticketId: string, input: AddCommentInput, actor: TicketActor) {
+export interface ImportedCommentAuthorship {
+  sourceId: string;
+  author: { kind: 'staff' | 'requester'; name: string; email?: string | null };
+}
+
+/**
+ * Import mode (#8313 §4.2): created_at = the source time; author_name is the
+ * original author's, with original_author_email/kind beside it and
+ * author_type 'internal' for staff, 'email' for requesters (user_id and
+ * portal_user_id stay null, as the principal INSERT policy requires);
+ * import_source_id and the window id are stamped. Only a public STAFF comment
+ * stamps first_response_at, at its source time (the earliest one wins on a
+ * resume), and advances updated_at with it, never backwards — as on a live
+ * comment, no other comment touches updated_at. Nothing is emitted, queued or
+ * audited.
+ */
+export async function addTicketComment(
+  ticketId: string,
+  input: AddCommentInput,
+  actor: TicketActor,
+  mode: TicketWriteMode = LIVE_TICKET_WRITE
+) {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
+  const imported = input.imported ?? null;
+  if (!importMode && imported) {
+    throw new TicketServiceError('Imported authorship is only accepted by an import', 400, 'INVALID_INPUT');
+  }
+  if (importMode && !imported) {
+    throw new TicketServiceError('An imported comment needs its source id and original author', 400, 'INVALID_INPUT');
+  }
   const ticket = await getTicketOrThrow(ticketId);
+  if (importMode) assertImportWrite(importMode, actor, ticket);
   const attachmentIds = input.attachmentIds ?? [];
   // The claim below matches on uploaded_by_user_id; a machine principal has
   // no uploads to claim. Rejected up front rather than failing the claim.
@@ -2153,7 +2386,17 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
       ...actorAuthorFields(actor),
       commentType: input.isPublic ? 'comment' : 'internal',
       content: input.content,
-      isPublic: input.isPublic
+      isPublic: input.isPublic,
+      ...(importMode && imported
+        ? {
+            authorName: imported.author.name.slice(0, 255),
+            authorType: imported.author.kind === 'staff' ? 'internal' : 'email',
+            originalAuthorEmail: imported.author.email ?? null,
+            originalAuthorKind: imported.author.kind,
+            importSourceId: imported.sourceId,
+            ...importRowStamp(mode),
+          }
+        : {})
     }).returning();
     const row = inserted[0];
     if (!row) throw new TicketServiceError('Failed to add comment', 500);
@@ -2161,7 +2404,22 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     // First PUBLIC technician response stamps firstResponseAt (spec §2).
     // Internal notes do NOT stamp it.
     let stamped = false;
-    if (input.isPublic && !ticket.firstResponseAt) {
+    if (importMode && imported) {
+      // Only a STAFF reply is a first response; a requester's own public
+      // message is not. LEAST keeps the earliest one when a resume inserts a
+      // comment older than the stamp. As on a live comment, updated_at moves
+      // only with that stamp (never backwards); other comments leave it.
+      if (input.isPublic && imported.author.kind === 'staff') {
+        const at = importMode.at.toISOString();
+        await tx.update(tickets)
+          .set({
+            firstResponseAt: sql`LEAST(COALESCE(${tickets.firstResponseAt}, ${at}::timestamp), ${at}::timestamp)`,
+            updatedAt: importUpdatedAt(importMode.at),
+          } as unknown as Partial<typeof tickets.$inferInsert>)
+          .where(eq(tickets.id, ticketId));
+        stamped = !ticket.firstResponseAt;
+      }
+    } else if (input.isPublic && !ticket.firstResponseAt) {
       await tx.update(tickets)
         .set({ firstResponseAt: new Date(), updatedAt: new Date() })
         .where(eq(tickets.id, ticketId));
@@ -2209,7 +2467,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     return { comment: row, firstResponseStamped: stamped, attachments: claimed };
   });
 
-  await emitTicketEvent({
+  await fx.emitTicketEvent({
     type: 'ticket.commented',
     ticketId,
     orgId: ticket.orgId,
@@ -2221,7 +2479,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   // exactly the comments it authored itself (loop guard for PSA/ITSM syncs,
   // even when several integrations share one partner). Read off the stored
   // row, so the webhook always says what the feed says for this comment.
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+  await fx.writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
     commentId: comment.id,
     isPublic: input.isPublic,
     originPrincipalKind: comment.originPrincipalKind,
@@ -2230,7 +2488,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   // Record the comment id + visibility only — the comment body can carry
   // sensitive/large content, so it stays out of the audit details (matching the
   // sibling pattern of keeping details lean).
-  await createAuditLogAsync({
+  await fx.createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.comment',
