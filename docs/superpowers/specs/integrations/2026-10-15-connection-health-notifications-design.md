@@ -152,8 +152,9 @@ CREATE TABLE IF NOT EXISTS connection_health_incidents (
   condition        text NOT NULL,
   severity         text NOT NULL CHECK (severity IN ('permanent','transient')),
   detail           text NULL CHECK (char_length(detail) <= 300),
-  display_name     text NOT NULL,
+  display_name     text NOT NULL CHECK (char_length(display_name) <= 120),
   fix_href         text NOT NULL CHECK (fix_href LIKE '/%' AND fix_href NOT LIKE '//%'),
+  owner_fix_href   text NULL CHECK (owner_fix_href IS NULL OR (owner_fix_href LIKE '/%' AND owner_fix_href NOT LIKE '//%')),
   view_permission  text NOT NULL,     -- 'resource:action'
   repair_permission text NOT NULL,
   first_failed_at  timestamptz NOT NULL,
@@ -163,6 +164,10 @@ CREATE TABLE IF NOT EXISTS connection_health_incidents (
   flap_count       integer NOT NULL DEFAULT 0,
   resolved_at      timestamptz NULL,
   resolution       text NULL CHECK (resolution IN ('recovered','retired')),
+  pending_notice   text NULL CHECK (pending_notice IN ('opened','escalated','resolved')),
+  notified_user_ids uuid[] NOT NULL DEFAULT '{}',
+  CONSTRAINT connection_health_incidents_resolution_chk
+    CHECK ((resolved_at IS NULL) = (resolution IS NULL)),
   CONSTRAINT connection_health_incidents_org_partner_fk
     FOREIGN KEY (org_id, partner_id) REFERENCES organizations(id, partner_id)
     ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
@@ -172,6 +177,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS connection_health_incidents_open_uniq
 CREATE INDEX IF NOT EXISTS connection_health_incidents_partner_open_idx
   ON connection_health_incidents (partner_id) WHERE resolved_at IS NULL;
 ```
+
+The migration (`2026-12-29-100100-connection-health-incidents.sql`) adds three more partial indexes for the reconciler's scans: `(source_kind, resolved_at) WHERE resolved_at IS NOT NULL` (retention and the reopen window), `(id) WHERE pending_notice IS NOT NULL` (the outbox drain), and `(org_id) WHERE org_id IS NOT NULL` (org cascade and merge).
+
+**Owner link.** `owner_fix_href` holds the connection owner's link (`/account/connected-apps`), which differs from the admin `fix_href`. Both are same-origin relative paths by CHECK.
+
+**Notice outbox.** `pending_notice` is a durable outbox: the store sets it in the same transaction as the state change, and the notifier clears it after delivery, so a crash between commit and notify can't lose a notice.
+
+**Notified users.** `notified_user_ids` records who received the open notice, so resolution marks exactly those users' notices read through the `(user_id, dedupe_key)` index instead of scanning `user_notifications`.
 
 **Keying.** **[R]** The key is one incident per connection, not one per condition. Codex proposed `(…, condition_kind)`. But a connection that goes from `sync_failed` to `reauth_required` is one broken thing to the admin, and two episodes would mean two notices. So `condition` is a mutable column, and an escalation re-notifies (see §1.2).
 

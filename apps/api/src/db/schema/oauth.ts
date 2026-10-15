@@ -144,6 +144,11 @@ export const oauthGrants = pgTable('oauth_grants', {
   accountClientActiveIdx: index('oauth_grants_account_client_active_idx')
     .on(table.accountId, table.clientId)
     .where(sql`${table.revokedAt} IS NULL`),
+  // Connection health OAuth source (spec 2026-10-15 §1.3): automatically
+  // revoked grants. Created in 2026-12-29-100100-connection-health-incidents.
+  autoRevokedIdx: index('oauth_grants_auto_revoked_idx')
+    .on(table.revokedAt)
+    .where(sql`${table.revokedReason} IN ('refresh-token-reuse','provider-revoke-grant') AND ${table.revokedByUserId} IS NULL`),
 }));
 
 // oauth_client_blocks: org-wide block of an OAuth client (e.g. "no Cursor

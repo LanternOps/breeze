@@ -493,6 +493,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'config_policy_onedrive_libraries',
   'config_policy_onedrive_settings',
   'configuration_policies',
+  'connection_health_incidents',
   // NB: 'contact_external_links' sorts BEFORE 'contacts' — localeCompare puts
   // the '_' in 'contact_' ahead of the 's' in 'contacts' (the same
   // prefix-extension trap noted below for custom_field_definitions).
