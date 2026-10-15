@@ -416,6 +416,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
   // CEILING rows have org_id NULL and are not merge participants at all.
   ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL
+  // AI device file read policy (#8852): org override row is singleton org config
+  // (ai_data_policies_org_uq, total UNIQUE on org_id); survivor's wins. Partner
+  // default rows have org_id NULL and are not merge participants.
+  ai_data_policies: { kind: 'keep-survivor' }, // verified: ai_data_policies_org_uq (org_id)
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the
